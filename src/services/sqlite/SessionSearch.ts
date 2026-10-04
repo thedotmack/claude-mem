@@ -16,6 +16,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/p
 import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
+import { pageMatchingRows } from './stream-rows.js';
 
 /**
  * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
@@ -653,28 +654,9 @@ export class SessionSearch {
     // filePath is the file filter; a caller's own `files` filter is not added on top.
     delete filters.files;
 
-    // Folder matching removes nested descendants. Page the matching rows, not
-    // a guessed multiple of the broader SQL candidates.
-    const pageDirectChildren = <T>(rows: Iterable<T>, matches: (row: T) => boolean): T[] => {
-      const page: T[] = [];
-      const pageLimit = Number(limit);
-      if (!Number.isInteger(pageLimit) || pageLimit < 0) {
-        throw new Error('Folder search limit must be a non-negative integer');
-      }
-      const pageOffset = Number(offset);
-      if (!Number.isInteger(pageOffset)) {
-        throw new Error('Folder search offset must be an integer');
-      }
-      if (pageLimit === 0) return page;
-      let skipped = 0;
-      for (const row of rows) {
-        if (!matches(row)) continue;
-        if (skipped < Math.max(0, pageOffset)) { skipped++; continue; }
-        page.push(row);
-        if (page.length === pageLimit) break;
-      }
-      return page;
-    };
+    // Folder matching removes nested descendants, so a folder query pages the
+    // matching rows (pageMatchingRows), not a guessed multiple of the broader
+    // SQL candidates.
     const paginationSql = isFolder ? '' : 'LIMIT ? OFFSET ?';
     const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
@@ -698,9 +680,11 @@ export class SessionSearch {
 
     const observationStatement = this.db.prepare(observationsSql);
     const observations = isFolder
-      ? pageDirectChildren(
-          observationStatement.iterate(...params) as Iterable<ObservationSearchResult>,
+      ? pageMatchingRows<ObservationSearchResult>(
+          observationStatement,
+          params,
           obs => this.hasDirectChildFile(obs, filePath),
+          { limit, offset },
         )
       : observationStatement.all(...params) as ObservationSearchResult[];
 
@@ -752,9 +736,11 @@ export class SessionSearch {
 
     const sessionStatement = this.db.prepare(sessionsSql);
     const sessions = isFolder
-      ? pageDirectChildren(
-          sessionStatement.iterate(...sessionParams) as Iterable<SessionSummarySearchResult>,
+      ? pageMatchingRows<SessionSummarySearchResult>(
+          sessionStatement,
+          sessionParams,
           row => this.hasDirectChildFileSession(row, filePath),
+          { limit, offset },
         )
       : sessionStatement.all(...sessionParams) as SessionSummarySearchResult[];
 

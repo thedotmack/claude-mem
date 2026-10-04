@@ -73,4 +73,15 @@ describe('folder pages count direct children', () => {
     expect(() => search.findByFile('src', { project: 'project', isFolder: true, limit: 1.5 })).toThrow('limit must be a non-negative integer');
     expect(search.findByFile('src', { project: 'project', isFolder: true, limit: 1, offset: 2 })).toEqual({ observations: [], sessions: [] });
   });
+  it('releases both folder queries once their page is full', () => {
+    store = new SessionStore(':memory:'); const search = new SessionSearch(store.db);
+    seed('src/first.ts', 100); seed('src/second.ts', 101);
+    store.db.run('CREATE TABLE release_probe (x)');
+    const page = search.findByFile('src', { project: 'project', isFolder: true, limit: 1 });
+    expect(page.observations).toHaveLength(1);
+    expect(page.sessions).toHaveLength(1);
+    // bun:sqlite keeps an iterate() cursor open after an early break until GC,
+    // and SQLite refuses DROP TABLE while any statement is still reading.
+    expect(() => store.db.run('DROP TABLE release_probe')).not.toThrow();
+  });
 });
