@@ -92,12 +92,13 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, [logs]);
 
   const filteredLines = useMemo(() => {
+    const allComponents = LOG_COMPONENTS.every(component => activeComponents.has(component.key));
     return parsedLines.filter(line => {
       if (alignmentOnly) {
         return line.raw.includes('[ALIGNMENT]');
       }
       if (!line.level || !line.component) return true;
-      return activeLevels.has(line.level) && activeComponents.has(line.component);
+      return activeLevels.has(line.level) && (allComponents || activeComponents.has(line.component));
     });
   }, [parsedLines, activeLevels, activeComponents, alignmentOnly]);
 
