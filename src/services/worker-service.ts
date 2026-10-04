@@ -10,7 +10,8 @@ import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
-import { DeferredSessionEndQueue } from '../shared/deferred-session-end.js';
+import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
+import { HookSpoolDrainer } from './worker/hook-spool-drain.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -81,6 +82,7 @@ import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdopt
 import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
+import { InitPhaseTracker } from './server/init-phase.js';
 import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
@@ -126,12 +128,16 @@ import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHoo
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
+import { ContextCacheService } from './worker/ContextCacheService.js';
+import { projectReadKeys } from './sqlite/project-read-keys.js';
+import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
+import { WorkStateRoutes } from './worker/http/routes/WorkStateRoutes.js';
 import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
@@ -241,11 +247,13 @@ export class WorkerService implements WorkerRef {
 
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
+  /** Boot progress streamed on GET /api/ready (starting → db_ready → routes_ready → ready | failed). */
+  readonly initPhaseTracker = new InitPhaseTracker();
   private isShuttingDown: boolean = false;
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
-  private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
   private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly deferredSessionEndQueue = new DeferredSessionEndQueue();
+  private readonly hookSpool = new HookSpool();
+  private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -266,6 +274,7 @@ export class WorkerService implements WorkerRef {
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
+  private contextCacheService: ContextCacheService | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -327,6 +336,7 @@ export class WorkerService implements WorkerRef {
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
+      initPhaseSource: this.initPhaseTracker,
       getMcpReady: () => this.mcpReady,
       getDependencyHealth: () => snapshotDependencyHealth(),
       getChromaCrashState: () => this.chromaMcpManager
@@ -373,38 +383,21 @@ export class WorkerService implements WorkerRef {
     });
   }
 
-  private async drainDeferredSessionEndQueue(): Promise<void> {
-    const store = this.dbManager.getSessionStore();
-    const result = await this.deferredSessionEndQueue.drain(async (entry) => {
-      const sessionDbId = store.findSessionDbIdByContentSessionId(
-        entry.contentSessionId,
-        entry.platformSource,
-      );
-      if (sessionDbId === null) {
-        // Keep the durable entry: SessionStart/session-init may have been
-        // delayed by the same worker outage that deferred SessionEnd.
-        return false;
-      }
-
-      await this.sessionManager.requestSessionWrapup(sessionDbId);
-      return true;
-    });
-
-    if (result.drained > 0) {
-      logger.info('SESSION', 'Replayed deferred SessionEnd requests', { count: result.drained });
+  /**
+   * Write hooks (observation, file edit, summarize, advisor calls, SessionEnd)
+   * spool one file per event and exit without waiting on the worker. Start
+   * draining as soon as SQLite is ready: migrate any leftover entries of the
+   * retired SessionEnd replay queue, then drain now and on every fs.watch
+   * event, hook nudge (POST /api/spool/nudge) and 30 s safety sweep.
+   */
+  private startHookSpoolDrain(): void {
+    try {
+      migrateLegacySessionEndReplay(this.hookSpool);
+    } catch (error: unknown) {
+      logger.error('HOOK', 'Legacy SessionEnd replay migration failed; its directory is left in place', {},
+        error instanceof Error ? error : new Error(String(error)));
     }
-  }
-
-  private startDeferredSessionEndReplay(): void {
-    if (this.deferredSessionEndReplayTimer !== null) return;
-
-    this.deferredSessionEndReplayTimer = setInterval(() => {
-      void this.drainDeferredSessionEndQueue().catch((error: unknown) => {
-        logger.warn('SESSION', 'Deferred SessionEnd replay loop failed', {},
-          error instanceof Error ? error : new Error(String(error)));
-      });
-    }, 30_000);
-    this.deferredSessionEndReplayTimer.unref?.();
+    this.hookSpoolDrainer.start();
   }
 
   private startPendingSessionResume(sessionRoutes: SessionRoutes): void {
@@ -442,6 +435,7 @@ export class WorkerService implements WorkerRef {
         req.path === '/chroma/status' ||
         req.path === '/health' ||
         req.path === '/readiness' ||
+        req.path === '/ready' ||
         req.path === '/version' ||
         req.path === '/settings/dependency-health'
       ) {
@@ -462,6 +456,14 @@ export class WorkerService implements WorkerRef {
       return;
     });
 
+    // Hook spool nudge. Behind the init gate on purpose: before init it gets a
+    // harmless 503 (the hook ignores the result) and the boot drain covers the
+    // entry. Answers immediately; the drain is single-flight.
+    this.server.app.post('/api/spool/nudge', (_req, res) => {
+      void this.hookSpoolDrainer.requestDrain();
+      res.status(202).json({ status: 'draining' });
+    });
+
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
@@ -471,6 +473,7 @@ export class WorkerService implements WorkerRef {
     );
     this.server.registerRoutes(new DataRoutes(this.paginationHelper, this.dbManager, this.sessionManager, this.sseBroadcaster, this, this.startTime));
     this.server.registerRoutes(new AdvisorRoutes(this.dbManager));
+    this.server.registerRoutes(new WorkStateRoutes(this.dbManager));
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
@@ -645,13 +648,12 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+      this.initPhaseTracker.setInitPhase('db_ready');
 
-      // A SessionEnd hook gets a tiny host budget and persists its identifier
-      // when the worker is unavailable. Drain that idempotent spool as soon as
-      // SQLite is ready, then keep polling lightly for an event that raced the
-      // tail of worker startup or a transient later IPC failure.
-      await this.drainDeferredSessionEndQueue();
-      this.startDeferredSessionEndReplay();
+      // Write hooks never wait on the worker: they spool one file per event.
+      // Drain it as soon as SQLite is ready (not awaited — a backlog after an
+      // outage must not hold readiness), then on watch/nudge/sweep.
+      this.startHookSpoolDrain();
 
       runOneTimeV12_4_3Cleanup();
 
@@ -670,6 +672,7 @@ export class WorkerService implements WorkerRef {
         if (adoptions) {
           for (const adoption of adoptions) {
             if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              emitContextInvalidation('all', 'worktree-adoption');
               logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
             }
             if (adoption.errors.length > 0) {
@@ -709,7 +712,18 @@ export class WorkerService implements WorkerRef {
           wsEnabled: settings.CLAUDE_MEM_CLOUD_SYNC_WS !== 'false',
           // While the socket is live, pushes debounce at the fast tier —
           // fan-out makes the push the delivery (Phase 4 task 3).
-          onSocketLiveChange: (live) => cloudSyncForPull.setFastDebounce(live),
+          // Precomputed SessionStart files are current only once Realtime is
+          // joined AND the join's catch-up pull has applied whatever was
+          // published while the socket was down (e.g. a remote deletion) —
+          // so servable follows onRealtimeCaughtUpChange, never the join. A
+          // later advance beyond the cursor flips it off until that is applied.
+          // Down = remove them at once so the hook takes the live path,
+          // which pulls first.
+          onSocketLiveChange: (live) => {
+            cloudSyncForPull.setFastDebounce(live);
+            if (!live) this.contextCacheService?.setServable(false);
+          },
+          onRealtimeCaughtUpChange: (caughtUp) => this.contextCacheService?.setServable(caughtUp),
         });
         // Push piggyback: a flush that reveals unseen hub ops pulls without
         // waiting for the poll timer (free poll for the active device).
@@ -732,8 +746,21 @@ export class WorkerService implements WorkerRef {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager, this.syncClient);
+      // Precomputed SessionStart context (liveness plan, Phase 6): the route
+      // records each live render, the service re-renders on writes.
+      const contextCacheDb = this.dbManager.getConnection();
+      this.contextCacheService = new ContextCacheService({
+        renderVariant: (keys) => {
+          if (!this.searchRoutes) throw new Error('Context cache render before search routes exist');
+          return this.searchRoutes.renderContextVariant(keys);
+        },
+        expandProjectReadKeys: (projects) => projectReadKeys(contextCacheDb, projects),
+        // Sync on: nothing is servable until Realtime joins and catches up (onRealtimeCaughtUpChange above).
+        initiallyServable: this.syncClient === null || this.syncClient.isRealtimeCaughtUp(),
+      });
+      this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient);
       this.server.registerRoutes(this.searchRoutes);
+      this.contextCacheService.start();
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
       const corpusBuilder = new CorpusBuilder(
@@ -751,9 +778,11 @@ export class WorkerService implements WorkerRef {
       // unconfigured install answers {configured: false} instead of 404.
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      this.initPhaseTracker.setInitPhase('routes_ready');
 
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
+      this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
@@ -854,6 +883,12 @@ export class WorkerService implements WorkerRef {
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+      // A throw after `ready` (transcript watcher, telemetry, …) leaves a worker
+      // that serves requests; only a pre-ready failure is the wedged state that
+      // /api/ready readers must recycle.
+      if (!this.initializationCompleteFlag) {
+        this.initPhaseTracker.setInitPhase('failed', error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
@@ -980,10 +1015,10 @@ export class WorkerService implements WorkerRef {
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
         this.stopPendingSessionResume();
-        if (this.deferredSessionEndReplayTimer !== null) {
-          clearInterval(this.deferredSessionEndReplayTimer);
-          this.deferredSessionEndReplayTimer = null;
-        }
+        this.hookSpoolDrainer.stop();
+        // Before the DB closes: a pending re-render would read a closed connection.
+        this.contextCacheService?.stop();
+        this.contextCacheService = null;
 
         await this.codexAgent.close();
         if (this.transcriptWatcher) {

@@ -4,12 +4,14 @@ import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '.
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import {
   CODEX_ISOLATION_UNATTESTED_CODE,
+  CODEX_MALFORMED_OUTPUT_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
   CODEX_SETUP_REQUIRED_CODE,
   type CodexAppServerTurnResult,
 } from './CodexAppServerClient.js';
 import { CodexAppServerPool, boundedInteger } from './CodexAppServerPool.js';
 import { ClassifiedProviderError, CODEX_COOLDOWN_REFUSAL_CODE, isClassified } from './provider-errors.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
 import { resolveLlmTimeoutMs, withRetry } from './retry.js';
 import {
   clearQuotaCooldown,
@@ -117,9 +119,13 @@ export function classifyCodexError(cause: unknown): ClassifiedProviderError {
   const structuredKind = classifyCodexErrorInfo((cause as { codexErrorInfo?: unknown } | null)?.codexErrorInfo);
   let kind: CodexErrorKind = 'transient';
   let action: string | undefined;
-  if (code === CODEX_NO_AGENT_MESSAGE_CODE) {
-    // Its diagnostic counts must not be read as an HTTP status.
-    kind = 'transient';
+  if (code === CODEX_NO_AGENT_MESSAGE_CODE || code === CODEX_MALFORMED_OUTPUT_CODE) {
+    // A completed, billed turn whose output was missing or malformed: an
+    // output failure, never resent. Decided by code, so its diagnostic counts
+    // are never read as an HTTP status.
+    return new ClassifiedProviderError(`Codex: ${message.slice(0, 500)}`, {
+      kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause, code,
+    });
   } else if (code === CODEX_ISOLATION_UNATTESTED_CODE) {
     kind = 'setup_required';
     action = CODEX_ISOLATION_REMEDY;
@@ -293,6 +299,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     config: CodexConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult> {
     const abortSignal = config.signal && signal
       ? AbortSignal.any([config.signal, signal])
@@ -310,20 +317,13 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     const admittedSetup = getDependencyStatus('codex_cli');
     let result: CodexAppServerTurnResult;
     try {
-      result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal);
+      result = await this.runTurnWithRetry(prompt, config, timeoutMs, abortSignal, paidSendBudget);
     } catch (error) {
       this.noteServerFault(error, config.sessionDbId);
-      // A turn that completes without any agent message gets withRetry's one
-      // retry. A second one is passed on as an empty reply, for the skip
-      // contract to settle, rather than pausing the batch as a transport fault
-      // again and again.
-      if (!isClassified(error) || (error.cause as { code?: unknown } | null)?.code !== CODEX_NO_AGENT_MESSAGE_CODE) {
-        throw error;
-      }
-      logger.warn('SDK', 'Codex completed twice without an agent message; passing an empty reply on', {
-        message: error.message,
-      });
-      return { content: '' };
+      // A completed turn with no agent message, or with malformed structured
+      // output, surfaces as an output failure; the session turn passes it on
+      // as an empty reply (OpenAICompatibleProvider.queryObserverTurn).
+      throw error;
     }
     if (config.sessionDbId !== undefined) this.serverFaultsBySession.delete(config.sessionDbId);
     // A served request is the recovery probe succeeding.
@@ -364,6 +364,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     config: CodexConfig,
     timeoutMs: number,
     abortSignal: AbortSignal | undefined,
+    paidSendBudget: PaidSendBudget | undefined,
   ): Promise<CodexAppServerTurnResult> {
     return withRetry(async attemptSignal => {
       try {
@@ -397,7 +398,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
         if (attemptSignal.aborted || isClassified(error)) throw error;
         throw classifyCodexError(error);
       }
-    }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: timeoutMs, abortSignal });
+      // maxRetries bounds in-place retries of refusals only (a rate limit, an
+      // armed breaker); the paid-send budget bounds every resend of the batch.
+    }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: timeoutMs, abortSignal, paidSendBudget });
   }
 }
 

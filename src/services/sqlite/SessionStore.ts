@@ -1,3 +1,4 @@
+import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -29,6 +30,13 @@ import {
   type UpsertToolUseInput,
   type ToolUseQueryFilters,
 } from './tool-uses.js';
+import {
+  createWorkStateSchema,
+  appendWorkStateEntry as appendWorkStateEntryRow,
+  getWorkStateEntries as getWorkStateEntriesRows,
+  type WorkStateEntry,
+  type WorkStateFields,
+} from './work-state.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
@@ -266,6 +274,8 @@ export class SessionStore {
     this.ensureAdvisorCallsTable();
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
+    this.ensureWorkStateTable();
+    this.ensureHookSpoolConsumedTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -914,6 +924,28 @@ export class SessionStore {
         raw_body TEXT,
         created_at_epoch INTEGER NOT NULL,
         UNIQUE(lane, queue_key, entity_rev, reason)
+      )
+    `);
+    // Pull-side counterpart: hub ops this device can never apply (malformed,
+    // equal-revision hash conflict, violated constraint), set aside by
+    // SyncApply so the cursor moves past them instead of wedging. retryable
+    // = 1 marks constraint violations SyncApply re-tries after each batch.
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS sync_pull_quarantine (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        epoch TEXT NOT NULL,
+        seq TEXT NOT NULL,
+        kind TEXT,
+        entity_id TEXT,
+        origin_device_id TEXT,
+        origin_local_id TEXT,
+        entity_rev TEXT,
+        operation_sha256 TEXT,
+        reason TEXT NOT NULL,
+        raw_body TEXT NOT NULL,
+        retryable INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0, 1)),
+        created_at_epoch INTEGER NOT NULL,
+        UNIQUE(epoch, seq)
       )
     `);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)')
@@ -1933,6 +1965,43 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(51, new Date().toISOString());
   }
 
+  // v61 — the agent's to-do lists and working state (./work-state.ts). Idempotent
+  // DDL like v51, so fresh and migrating databases converge.
+  private ensureWorkStateTable(): void {
+    createWorkStateSchema(this.db);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
+  }
+
+  // v62 — exactly-once hand-off marker for hook spool entries (HookSpool.drain):
+  // written the moment ingest irrevocably accepts an entry, cleared once its file is gone.
+  private ensureHookSpoolConsumedTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS hook_spool_consumed (
+        entry_key TEXT PRIMARY KEY,
+        consumed_at_epoch_ms INTEGER NOT NULL
+      )
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
+  }
+
+  isHookSpoolEntryConsumed(entryKey: string): boolean {
+    return this.db.prepare('SELECT 1 FROM hook_spool_consumed WHERE entry_key = ?').get(entryKey) != null;
+  }
+
+  markHookSpoolEntryConsumed(entryKey: string, consumedAtEpochMs: number): void {
+    this.db.prepare(
+      'INSERT INTO hook_spool_consumed (entry_key, consumed_at_epoch_ms) VALUES (?, ?) ON CONFLICT(entry_key) DO UPDATE SET consumed_at_epoch_ms = excluded.consumed_at_epoch_ms'
+    ).run(entryKey, consumedAtEpochMs);
+  }
+
+  clearHookSpoolEntryConsumed(entryKey: string): void {
+    this.db.prepare('DELETE FROM hook_spool_consumed WHERE entry_key = ?').run(entryKey);
+  }
+
+  pruneHookSpoolConsumedMarkersBefore(epochMs: number): void {
+    this.db.prepare('DELETE FROM hook_spool_consumed WHERE consumed_at_epoch_ms < ?').run(epochMs);
+  }
+
   // v52 — durable claim ledger for one Telegram session wrap-up per route.
   // The DDL is intentionally idempotent so fresh installs and existing DBs
   // converge even if a fixture has an incomplete schema_versions ledger.
@@ -2949,6 +3018,16 @@ export class SessionStore {
     return queryToolUsesRows(this.db, filters);
   }
 
+  appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
+    const entryId = appendWorkStateEntryRow(this.db, entry);
+    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry');
+    return entryId;
+  }
+
+  getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
+    return getWorkStateEntriesRows(this.db, projects, listName);
+  }
+
   countToolUses(filters: ToolUseQueryFilters = {}): Array<{ tool_name: string; uses: number }> {
     return countToolUsesRows(this.db, filters);
   }
@@ -3246,18 +3325,30 @@ export class SessionStore {
     return stmt.all(...memorySessionIds) as any[];
   }
 
-  getPromptNumberFromUserPrompts(contentSessionId: string, sessionDbId?: number): number {
+  /**
+   * The session's current prompt number (count of its user_prompts rows).
+   * `createdAtOrBeforeEpochMs` answers "which prompt was current at that
+   * moment" instead — for an event that happened earlier than it is being
+   * ingested (a hook spool entry drained after an outage).
+   */
+  getPromptNumberFromUserPrompts(
+    contentSessionId: string,
+    sessionDbId?: number,
+    createdAtOrBeforeEpochMs?: number,
+  ): number {
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
-    if (resolvedSessionDbId !== null) {
+    const sessionClause = resolvedSessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?';
+    const sessionParam = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+    if (createdAtOrBeforeEpochMs !== undefined) {
       const result = this.db.prepare(`
-        SELECT COUNT(*) as count FROM user_prompts WHERE session_db_id = ?
-      `).get(resolvedSessionDbId) as { count: number };
+        SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
+      `).get(sessionParam, createdAtOrBeforeEpochMs) as { count: number };
       return result.count;
     }
 
     const result = this.db.prepare(`
-      SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
-    `).get(contentSessionId) as { count: number };
+      SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause}
+    `).get(sessionParam) as { count: number };
     return result.count;
   }
 
@@ -3595,6 +3686,7 @@ export class SessionStore {
       timestampIso,
       timestampEpoch
     );
+    emitContextInvalidation({ projects: [project] }, 'storeSummary');
 
     return {
       id: Number(result.lastInsertRowid),
@@ -3797,7 +3889,9 @@ export class SessionStore {
       return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    return storeTx();
+    const stored = storeTx();
+    emitContextInvalidation({ projects: [project] }, 'storeObservations');
+    return stored;
   }
 
   /**
@@ -4267,6 +4361,7 @@ export class SessionStore {
       summary.created_at,
       summary.created_at_epoch
     );
+    emitContextInvalidation({ projects: [summary.project] }, 'importSessionSummary');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
@@ -4341,6 +4436,7 @@ export class SessionStore {
       obs.created_at,
       obs.created_at_epoch
     );
+    emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }

@@ -460,12 +460,16 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
     const postToolUse = parsed.hooks.PostToolUse[0].hooks[0];
+    const postToolUseFailure = parsed.hooks.PostToolUseFailure[0].hooks[0];
     const preToolUse = parsed.hooks.PreToolUse[0].hooks[0];
     const stop = parsed.hooks.Stop[0].hooks[0];
     const sessionEnd = parsed.hooks.SessionEnd[0].hooks[0];
 
     expect(postToolUse.command).toContain('observation');
     expect(postToolUse.async).toBe(true);
+    expect(parsed.hooks.PostToolUseFailure[0].matcher).toBe('*');
+    expect(postToolUseFailure.command).toContain('observation');
+    expect(postToolUseFailure.async).toBe(true);
     expect(preToolUse.command).toContain('file-context');
     expect(preToolUse.async).toBe(true);
     expect(stop.command).toContain('summarize');
@@ -544,6 +548,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
       timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
     },
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
+    'PostToolUseFailure.0.0': claudeHook(['hook', 'claude-code', 'observation']),
     'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
     'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),

@@ -30,6 +30,7 @@ import {
 import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services/hooks/runtime-selector.js';
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
+import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
 // server, so SessionStart reads from it too, straight from this hook process.
@@ -125,6 +126,23 @@ export const contextHandler: EventHandler = {
         )
       : null;
 
+    // Precomputed SessionStart context (liveness plan, Phase 6): the worker
+    // keeps each variant it has served rendered on disk, keyed exactly like
+    // the URLs above. A hit needs no worker at all; a miss takes the live path.
+    const cacheNowEpochMs = Date.now();
+    const readCachedRender = (colors: boolean): string | null => {
+      if (serverRuntime) return null;
+      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors);
+      const cached = readContextCache(keys, cacheNowEpochMs);
+      if (!cached) return null;
+      logger.debug('HOOK', 'SessionStart context served from the context cache', {
+        colors,
+        renderedAgoMs: cacheNowEpochMs - cached.renderedAtEpochMs,
+      });
+      return fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
+    };
+    const cachedModelContext = readCachedRender(false);
+
     // ponytail: Codex's MCP normally starts the worker; this one bounded
     // fallback covers cold sessions without the old startup process chain.
     const workerOptions = input.platform === 'codex'
@@ -132,7 +150,7 @@ export const contextHandler: EventHandler = {
       : undefined;
     const contextResult = serverRender
       ? serverRender.model
-      : await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+      : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
     if (isWorkerFallback(contextResult)) {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
@@ -201,7 +219,8 @@ export const contextHandler: EventHandler = {
     if (showTerminalOutput) {
       const colorResult = serverRender
         ? serverRender.terminal
-        : await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
+        : readCachedRender(input.platform === 'claude-code')
+          ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
       }

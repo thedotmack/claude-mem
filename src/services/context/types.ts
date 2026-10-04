@@ -16,6 +16,17 @@ export interface ContextInput {
    * itself must opt out (#4221).
    */
   includeHealthWarning?: boolean;
+  /**
+   * Characters delivered beside this block (the work-state section), taken off
+   * the 10K delivery limit so the combined output still fits it.
+   */
+  reserveChars?: number;
+  /**
+   * Render the header time as a placeholder that `fillContextPlaceholders`
+   * fills at read time, so the block can be cached (shared/context-cache.ts).
+   * The fitter's limit shrinks by what the placeholder can grow by.
+   */
+  timePlaceholders?: boolean;
   [key: string]: any;
 }
 

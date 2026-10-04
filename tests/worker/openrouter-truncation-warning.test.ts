@@ -122,8 +122,10 @@ describe('OpenRouter output-token limit', () => {
     let call = 0;
     fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
       call += 1;
+      // A 429 (refused before work) is the only failure still retried in place
+      // since Phase 1 ("never pay twice"); a 500 is ambiguous and no longer is.
       if (call === 1) {
-        return new Response('upstream hiccup', { status: 500, headers: { 'x-request-id': 'req-failed-attempt' } });
+        return new Response('slow down', { status: 429, headers: { 'x-request-id': 'req-failed-attempt', 'retry-after': '0' } });
       }
       return new Response(JSON.stringify({
         model: 'test/model',

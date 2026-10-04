@@ -143,6 +143,9 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
           timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
         },
         'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
+        // A tool call that fails (e.g. Bash exiting non-zero) is delivered here
+        // instead of PostToolUse, so without it memory never sees a failed attempt.
+        'PostToolUseFailure.0.0': claudeHook(['hook', 'claude-code', 'observation']),
         'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
         'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),

@@ -1,6 +1,18 @@
 /**
  * Per-user ordered sync log. Port of workers/sync-hub/src/do/SyncHub.ts
  * onto Postgres: one transaction + advisory lock replaces DO single-threading.
+ *
+ * Writers (push, projection lease/checkpoint, reset, rename, socket accept)
+ * take a per-user turn: an in-process FIFO first (waiting holds no pool
+ * connection), then the advisory lock inside a short transaction. Pulls and
+ * status reads take no per-user lock: they read one consistent snapshot and
+ * record the device cursor with a single-row UPDATE.
+ *
+ * Seq is canonical decimal TEXT ordered by (length(seq), seq). Range filters
+ * must be written as row comparisons on that pair so the btree
+ * (user_id, length(seq), seq) can seek to them; the equivalent OR form is only
+ * a post-fetch filter and walks the user's whole log (12.7s at seq 73,000 on
+ * Neon, versus 2.7ms as a row comparison).
  */
 import type postgres from "postgres";
 import {
@@ -17,9 +29,10 @@ import {
 import {
 	PROJECTION_PAGE_MAX_BYTES,
 	PROJECTION_PAGE_MAX_OPS,
-	projectionRequestBytes,
+	ProjectionPageByteCounter,
 } from "./projection-protocol";
 import type { SocketRegistry } from "./sockets";
+import { CLIENT_CLOSED_REQUEST_ERROR, UserQueue } from "./user-queue";
 
 const MAX_PAGE = 500;
 const ADVANCE_MAX_OPS = 100;
@@ -27,6 +40,8 @@ const ADVANCE_MAX_FRAME_BYTES = 262_144;
 export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 export const PROJECTION_LEASE_MS = 90_000;
+/** Longest a request waits in-process for earlier same-user work before a retryable 503. */
+export const DEFAULT_USER_TURN_MAX_WAIT_MS = 15_000;
 const encoder = new TextEncoder();
 
 export type PushOp = CanonicalWireOp;
@@ -77,8 +92,6 @@ export interface StatusResult {
 	op_count: number;
 	device_count: number;
 }
-
-export type StatusOutcome = StatusResult | HubRefusal;
 
 export interface DeviceMetadata {
 	device_id: string;
@@ -160,7 +173,14 @@ interface ValidatedOp {
 interface HeadRow {
 	entity_rev: string;
 	operation_sha256: string;
-	deleted: number;
+	seq: string;
+}
+
+/** An op a push appends to the log (and, if it is the entity's last op in the batch, its new head). */
+interface InsertedOp {
+	body: CanonicalContentBody;
+	serialized: string;
+	operationSha256: string;
 	seq: string;
 }
 
@@ -186,25 +206,59 @@ function toChange(row: {
 	};
 }
 
+function changesPage(epoch: string, headSeq: string, rows: ChangeOp[], limit: number): ChangesResult {
+	const more = rows.length > limit;
+	const page = more ? rows.slice(0, limit) : rows;
+	return {
+		protocol_version: 2 as const,
+		epoch,
+		ops: page.map(toChange),
+		head_seq: headSeq,
+		more,
+	};
+}
+
 type Tx = postgres.TransactionSql;
+/** A query target that is either the pool or an open transaction. */
+type Db = postgres.ISql;
 
 export class HubStore {
+	private readonly userQueue = new UserQueue();
+
 	constructor(
 		private readonly sql: postgres.Sql,
 		private readonly sockets: SocketRegistry,
+		private readonly userTurnMaxWaitMs = DEFAULT_USER_TURN_MAX_WAIT_MS,
 	) {}
 
-	private async withUserLock<T>(userId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
-		return this.sql.begin(async (tx) => {
-			await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
-			await this.ensureUser(tx, userId);
-			return fn(tx);
-		});
+	/**
+	 * Serialized per-user write transaction. Waiting for the user's turn
+	 * happens in-process (no pool connection held); the advisory lock is then
+	 * normally free and guards against other processes. Rejects with
+	 * SYNC_HUB_BUSY_ERROR after userTurnMaxWaitMs, or CLIENT_CLOSED_REQUEST_ERROR
+	 * when `signal` aborts before the turn starts.
+	 *
+	 * `fn` must only await queries on `tx`. Never await HTTP or other slow work
+	 * inside it: that holds the user's lock, and if
+	 * idle_in_transaction_session_timeout ends the session meanwhile, the next
+	 * `tx` query makes postgres.js write to the closed socket and crash the process.
+	 */
+	private async withUserLock<T>(
+		userId: string,
+		fn: (tx: Tx) => Promise<T>,
+		signal?: AbortSignal,
+	): Promise<T> {
+		return this.userQueue.run(userId, { maxWaitMs: this.userTurnMaxWaitMs, signal }, () =>
+			this.sql.begin(async (tx) => {
+				await tx`SELECT pg_advisory_xact_lock(hashtextextended(${userId}, 0))`;
+				await this.ensureUser(tx, userId);
+				return fn(tx);
+			}));
 	}
 
-	private async ensureUser(tx: Tx, userId: string): Promise<void> {
+	private async ensureUser(db: Db, userId: string): Promise<void> {
 		const epoch = newEpoch();
-		await tx`
+		await db`
 			INSERT INTO sync_users (user_id, epoch, head_seq, projected_seq)
 			VALUES (${userId}, ${epoch}, '0', '0')
 			ON CONFLICT (user_id) DO NOTHING
@@ -226,6 +280,10 @@ export class HubStore {
 	async resetAllState(userId: string): Promise<ResetResult> {
 		this.sockets.closeUser(userId, "sync-hub reset");
 		return this.withUserLock(userId, async (tx) => {
+			// Deleting a whole log (600k ops for the largest user) legitimately
+			// outlasts the pool's statement_timeout; reset is a deliberate admin
+			// action, so it alone may hold the user's turn that long.
+			await tx`SET LOCAL statement_timeout = 0`;
 			await tx`DELETE FROM sync_ops WHERE user_id = ${userId}`;
 			await tx`DELETE FROM sync_entity_heads WHERE user_id = ${userId}`;
 			await tx`DELETE FROM sync_devices WHERE user_id = ${userId}`;
@@ -244,12 +302,17 @@ export class HubStore {
 		});
 	}
 
-	async acceptWebSocket(userId: string, deviceId: string, deviceName: string | null): Promise<HubRefusal | { ok: true }> {
+	async acceptWebSocket(
+		userId: string,
+		deviceId: string,
+		deviceName: string | null,
+		signal?: AbortSignal,
+	): Promise<HubRefusal | { ok: true }> {
 		try {
 			await this.withUserLock(userId, async (tx) => {
 				this.assertDeviceId(deviceId);
 				await this.touchDevice(tx, userId, deviceId, normalizeDeviceName(deviceName));
-			});
+			}, signal);
 			return { ok: true };
 		} catch (error) {
 			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
@@ -296,6 +359,7 @@ export class HubStore {
 		deviceId: string,
 		ops: PushOp[],
 		deviceName: string | null = null,
+		signal?: AbortSignal,
 	): Promise<PushOutcome> {
 		let rows: ValidatedOp[];
 		try {
@@ -333,15 +397,17 @@ export class HubStore {
 				const user = await this.loadUser(tx, userId);
 				headBefore = user.head_seq;
 				epoch = user.epoch;
+				// One lookup and three set-based writes per push, instead of three
+				// round trips per op while holding the user's lock. The loop below
+				// keeps the old per-op semantics: each op sees the heads written by
+				// earlier ops in the same batch, and any refusal rolls back all of it.
+				const heads = await this.loadEntityHeads(tx, userId, rows);
+				const inserted: InsertedOp[] = [];
+				const finalHeads = new Map<string, InsertedOp>();
 				let head = user.head_seq;
 				for (const row of rows) {
 					const body = row.body;
-					const heads = await tx<HeadRow[]>`
-						SELECT entity_rev, operation_sha256, deleted, seq
-						FROM sync_entity_heads
-						WHERE user_id = ${userId} AND entity_id = ${body.id}
-					`;
-					const existing = heads[0];
+					const existing = heads.get(body.id);
 					if (existing) {
 						const order = compareCanonicalDecimals(body.entity_rev, existing.entity_rev);
 						if (order < 0) throw invalid(`stale_revision:${body.id}:${body.entity_rev}<${existing.entity_rev}`);
@@ -362,34 +428,10 @@ export class HubStore {
 					}
 
 					const seq = incrementCanonicalDecimal(head);
-					await tx`
-						INSERT INTO sync_ops
-						 (user_id, seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
-						  operation_sha256, body, deleted, server_ts)
-						 VALUES (
-						  ${userId}, ${seq}, ${body.id}, ${body.kind}, ${body.origin_device_id},
-						  ${body.origin_local_id}, ${body.entity_rev}, ${row.operationSha256},
-						  ${row.serialized}, ${body.deleted ? 1 : 0}, ${nowDecimal}
-						 )
-					`;
-					await tx`
-						INSERT INTO sync_entity_heads
-						 (user_id, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
-						  operation_sha256, deleted, seq)
-						 VALUES (
-						  ${userId}, ${body.id}, ${body.kind}, ${body.origin_device_id},
-						  ${body.origin_local_id}, ${body.entity_rev}, ${row.operationSha256},
-						  ${body.deleted ? 1 : 0}, ${seq}
-						 )
-						 ON CONFLICT (user_id, entity_id) DO UPDATE SET
-						  kind = EXCLUDED.kind,
-						  origin_device_id = EXCLUDED.origin_device_id,
-						  origin_local_id = EXCLUDED.origin_local_id,
-						  entity_rev = EXCLUDED.entity_rev,
-						  operation_sha256 = EXCLUDED.operation_sha256,
-						  deleted = EXCLUDED.deleted,
-						  seq = EXCLUDED.seq
-					`;
+					const op: InsertedOp = { body, serialized: row.serialized, operationSha256: row.operationSha256, seq };
+					inserted.push(op);
+					finalHeads.set(body.id, op);
+					heads.set(body.id, { entity_rev: body.entity_rev, operation_sha256: row.operationSha256, seq });
 					head = seq;
 					newOps.push({
 						seq,
@@ -407,14 +449,16 @@ export class HubStore {
 					});
 				}
 				headAfter = head;
-				if (head !== user.head_seq) {
+				if (inserted.length > 0) {
+					await this.insertOps(tx, userId, inserted, nowDecimal);
+					await this.upsertEntityHeads(tx, userId, [...finalHeads.values()]);
 					await tx`
 						UPDATE sync_users
 						SET head_seq = ${head}, updated_at = now()
 						WHERE user_id = ${userId}
 					`;
 				}
-			});
+			}, signal);
 		} catch (error) {
 			if (error instanceof Error && error.message.startsWith(INVALID_OPS_PREFIX)) {
 				return { refused: true, error: error.message };
@@ -427,83 +471,133 @@ export class HubStore {
 		return { acked, head_seq: headAfter };
 	}
 
+	/**
+	 * Pull one page. Lock-free on the hot path: the page and head come from one
+	 * REPEATABLE READ snapshot (never a mix of epochs or a page past head), and
+	 * the device cursor is a single-row UPDATE guarded by that snapshot's epoch.
+	 * Only a device's first pull (64-device cap), a user's first contact, or a
+	 * reset racing the cursor write takes the per-user lock.
+	 */
 	async getChanges(
 		userId: string,
 		deviceId: string,
 		sinceSeq: string,
 		limit = MAX_PAGE,
 		deviceName: string | null = null,
+		signal?: AbortSignal,
 	): Promise<ChangesOutcome> {
 		if (typeof deviceId !== "string" || deviceId.length === 0) throw invalid("deviceId must be non-empty");
 		const since = assertCanonicalDecimal(sinceSeq);
 		const lim = Number.isFinite(limit) ? Math.min(MAX_PAGE, Math.max(1, Math.floor(limit))) : MAX_PAGE;
+		const normalizedId = this.normalizeDeviceId(deviceId);
+		const name = normalizeDeviceName(deviceName);
+		throwIfClientClosed(signal);
+		const snapshot = await this.sql.begin("isolation level repeatable read read only", async (tx) => {
+			const users = await tx<{ epoch: string; head_seq: string }[]>`
+				SELECT epoch, head_seq FROM sync_users WHERE user_id = ${userId}
+			`;
+			const user = users[0];
+			if (!user) return null;
+			return { user, rows: await this.selectChangesPage(tx, userId, since, lim) };
+		});
+		if (snapshot !== null) {
+			const acknowledged = decimalMin(since, snapshot.user.head_seq);
+			if (await this.advanceDeviceCursor(this.sql, userId, normalizedId, name, acknowledged, snapshot.user.epoch)) {
+				return changesPage(snapshot.user.epoch, snapshot.user.head_seq, snapshot.rows, lim);
+			}
+		}
 		try {
 			return await this.withUserLock(userId, async (tx) => {
 				const user = await this.loadUser(tx, userId);
-				const head = user.head_seq;
-				const acknowledged = decimalMin(since, head);
-				await this.touchDevice(tx, userId, deviceId, normalizeDeviceName(deviceName));
-				const existing = await tx<{ last_ack_seq: string }[]>`
-					SELECT last_ack_seq FROM sync_devices
-					WHERE user_id = ${userId} AND device_id = ${deviceId.trim()}
-				`;
-				const currentAck = existing[0]?.last_ack_seq ?? "0";
-				const nextAck = compareCanonicalDecimals(currentAck, acknowledged) > 0 ? currentAck : acknowledged;
-				await tx`
-					UPDATE sync_devices SET last_ack_seq = ${nextAck}
-					WHERE user_id = ${userId} AND device_id = ${deviceId.trim()}
-				`;
-				const rows = await tx<ChangeOp[]>`
-					SELECT seq, body, operation_sha256, server_ts
-					FROM sync_ops
-					WHERE user_id = ${userId}
-					  AND (length(seq) > length(${since}) OR (length(seq) = length(${since}) AND seq > ${since}))
-					ORDER BY length(seq), seq
-					LIMIT ${lim + 1}
-				`;
-				const more = rows.length > lim;
-				const page = more ? rows.slice(0, lim) : rows;
-				return {
-					protocol_version: 2 as const,
-					epoch: user.epoch,
-					ops: page.map(toChange),
-					head_seq: head,
-					more,
-				};
-			});
+				await this.touchDevice(tx, userId, normalizedId, name);
+				const acknowledged = decimalMin(since, user.head_seq);
+				await this.advanceDeviceCursor(tx, userId, normalizedId, name, acknowledged, user.epoch);
+				const rows = await this.selectChangesPage(tx, userId, since, lim);
+				return changesPage(user.epoch, user.head_seq, rows, lim);
+			}, signal);
 		} catch (error) {
 			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
 			throw error;
 		}
 	}
 
+	private async selectChangesPage(db: Db, userId: string, since: string, limit: number): Promise<ChangeOp[]> {
+		return db<ChangeOp[]>`
+			SELECT seq, body, operation_sha256, server_ts
+			FROM sync_ops
+			WHERE user_id = ${userId}
+			  AND (length(seq), seq) > (length(${since}), ${since})
+			ORDER BY length(seq), seq
+			LIMIT ${limit + 1}
+		`;
+	}
+
+	/**
+	 * Touch a registered device and raise its cursor monotonically, only if the
+	 * user is still on `epoch`. False when the device is not registered or a
+	 * reset changed the epoch; the caller then takes the locked path.
+	 */
+	private async advanceDeviceCursor(
+		db: Db,
+		userId: string,
+		deviceId: string,
+		name: string | null,
+		acknowledged: string,
+		epoch: string,
+		now = Date.now(),
+	): Promise<boolean> {
+		const result = await db`
+			UPDATE sync_devices AS d
+			SET last_seen = ${now},
+			    name = COALESCE(d.name, ${name}),
+			    last_ack_seq = CASE
+			      WHEN (length(d.last_ack_seq), d.last_ack_seq) >= (length(${acknowledged}), ${acknowledged})
+			        THEN d.last_ack_seq
+			      ELSE ${acknowledged}
+			    END
+			FROM sync_users AS u
+			WHERE d.user_id = ${userId} AND d.device_id = ${deviceId}
+			  AND u.user_id = d.user_id AND u.epoch = ${epoch}
+		`;
+		return result.count > 0;
+	}
+
+	/** Lock-free: one statement reads a consistent row; first contact creates the user. */
 	async getStatus(
 		userId: string,
 		deviceId: string | null = null,
 		deviceName: string | null = null,
-	): Promise<StatusOutcome> {
-		try {
-			return await this.withUserLock(userId, async (tx) => {
-				if (deviceId !== null) {
-					await this.touchExistingDevice(tx, userId, deviceId, normalizeDeviceName(deviceName));
-				}
-				const user = await this.loadUser(tx, userId);
-				const counts = await tx<{ n: number }[]>`
-					SELECT COUNT(*)::int AS n FROM sync_devices WHERE user_id = ${userId}
-				`;
-				return {
-					protocol_version: 2 as const,
-					epoch: user.epoch,
-					head_seq: user.head_seq,
-					projected_seq: user.projected_seq,
-					op_count: Number(user.head_seq),
-					device_count: counts[0]?.n ?? 0,
-				};
-			});
-		} catch (error) {
-			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
-			throw error;
+		signal?: AbortSignal,
+	): Promise<StatusResult> {
+		throwIfClientClosed(signal);
+		if (deviceId !== null) {
+			await this.touchExistingDevice(this.sql, userId, deviceId, normalizeDeviceName(deviceName));
 		}
+		const readStatus = async () => (await this.sql<{
+			epoch: string;
+			head_seq: string;
+			projected_seq: string;
+			device_count: number;
+		}[]>`
+			SELECT u.epoch, u.head_seq, u.projected_seq,
+			       (SELECT COUNT(*)::int FROM sync_devices AS d WHERE d.user_id = u.user_id) AS device_count
+			FROM sync_users AS u
+			WHERE u.user_id = ${userId}
+		`)[0];
+		let status = await readStatus();
+		if (!status) {
+			await this.ensureUser(this.sql, userId);
+			status = await readStatus();
+		}
+		if (!status) throw new Error(`sync-hub invariant: missing user ${userId}`);
+		return {
+			protocol_version: 2 as const,
+			epoch: status.epoch,
+			head_seq: status.head_seq,
+			projected_seq: status.projected_seq,
+			op_count: Number(status.head_seq),
+			device_count: status.device_count,
+		};
 	}
 
 	async getMetadata(userId: string): Promise<HubMetadata> {
@@ -624,23 +718,20 @@ export class HubStore {
 				SELECT seq, body, operation_sha256, server_ts
 				FROM sync_ops
 				WHERE user_id = ${userId}
-				  AND (length(seq) > length(${projected}) OR (length(seq) = length(${projected}) AND seq > ${projected}))
-				  AND (length(seq) < length(${target}) OR (length(seq) = length(${target}) AND seq <= ${target}))
+				  AND (length(seq), seq) > (length(${projected}), ${projected})
+				  AND (length(seq), seq) <= (length(${target}), ${target})
 				ORDER BY length(seq), seq
 				LIMIT ${limit}
 			`;
 			const ops: ChangeOp[] = [];
+			const pageBytes = new ProjectionPageByteCounter({
+				userId: projectionUserId,
+				epoch,
+				fromSeqExclusive: projected,
+			});
 			for (const row of rows) {
 				const op = toChange(row);
-				const candidate = [...ops, op];
-				const bytes = projectionRequestBytes({
-					userId: projectionUserId,
-					epoch,
-					fromSeqExclusive: projected,
-					throughSeq: op.seq,
-					ops: candidate,
-				});
-				if (bytes > byteLimit) {
+				if (pageBytes.add(op) > byteLimit) {
 					if (ops.length === 0) throw projectionError("one operation exceeds projection request byte budget");
 					break;
 				}
@@ -712,10 +803,18 @@ export class HubStore {
 		});
 	}
 
+	/** Lock-free read of the checkpoint; first contact creates the user. */
 	async getProjectionState(userId: string): Promise<ProjectionState> {
-		return this.withUserLock(userId, async (tx) => {
-			return this.projectionStateFrom(await this.loadUser(tx, userId));
-		});
+		const readState = async () => (await this.sql<{ epoch: string; head_seq: string; projected_seq: string }[]>`
+			SELECT epoch, head_seq, projected_seq FROM sync_users WHERE user_id = ${userId}
+		`)[0];
+		let state = await readState();
+		if (!state) {
+			await this.ensureUser(this.sql, userId);
+			state = await readState();
+		}
+		if (!state) throw new Error(`sync-hub invariant: missing user ${userId}`);
+		return { protocol_version: 1, epoch: state.epoch, head_seq: state.head_seq, projected_seq: state.projected_seq };
 	}
 
 	private projectionStateFrom(user: UserRow): ProjectionState {
@@ -779,17 +878,82 @@ export class HubStore {
 	}
 
 	private async touchExistingDevice(
-		tx: Tx,
+		db: Db,
 		userId: string,
 		deviceId: string,
 		name: string | null,
 		now = Date.now(),
 	): Promise<void> {
 		const normalizedId = this.normalizeDeviceId(deviceId);
-		await tx`
+		await db`
 			UPDATE sync_devices
 			SET name = COALESCE(name, ${name}), last_seen = ${now}
 			WHERE user_id = ${userId} AND device_id = ${normalizedId}
+		`;
+	}
+
+	private async loadEntityHeads(tx: Tx, userId: string, rows: ValidatedOp[]): Promise<Map<string, HeadRow>> {
+		const heads = new Map<string, HeadRow>();
+		if (rows.length === 0) return heads;
+		const entityIds = [...new Set(rows.map((row) => row.body.id))];
+		const found = await tx<(HeadRow & { entity_id: string })[]>`
+			SELECT entity_id, entity_rev, operation_sha256, seq
+			FROM sync_entity_heads
+			WHERE user_id = ${userId} AND entity_id = ANY(${entityIds}::text[])
+		`;
+		for (const head of found) heads.set(head.entity_id, head);
+		return heads;
+	}
+
+	private async insertOps(tx: Tx, userId: string, ops: InsertedOp[], serverTs: string): Promise<void> {
+		await tx`
+			INSERT INTO sync_ops
+			 (user_id, seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+			  operation_sha256, body, deleted, server_ts)
+			SELECT ${userId}, op.seq, op.entity_id, op.kind, op.origin_device_id, op.origin_local_id,
+			       op.entity_rev, op.operation_sha256, op.body, op.deleted, ${serverTs}
+			FROM unnest(
+			  ${ops.map((op) => op.seq)}::text[],
+			  ${ops.map((op) => op.body.id)}::text[],
+			  ${ops.map((op) => op.body.kind)}::text[],
+			  ${ops.map((op) => op.body.origin_device_id)}::text[],
+			  ${ops.map((op) => op.body.origin_local_id)}::text[],
+			  ${ops.map((op) => op.body.entity_rev)}::text[],
+			  ${ops.map((op) => op.operationSha256)}::text[],
+			  ${ops.map((op) => op.serialized)}::text[],
+			  ${ops.map((op) => (op.body.deleted ? 1 : 0))}::int[]
+			) AS op(seq, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+			        operation_sha256, body, deleted)
+		`;
+	}
+
+	/** `heads` holds each entity at most once (ON CONFLICT cannot touch a row twice). */
+	private async upsertEntityHeads(tx: Tx, userId: string, heads: InsertedOp[]): Promise<void> {
+		await tx`
+			INSERT INTO sync_entity_heads
+			 (user_id, entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+			  operation_sha256, deleted, seq)
+			SELECT ${userId}, head.entity_id, head.kind, head.origin_device_id, head.origin_local_id,
+			       head.entity_rev, head.operation_sha256, head.deleted, head.seq
+			FROM unnest(
+			  ${heads.map((head) => head.body.id)}::text[],
+			  ${heads.map((head) => head.body.kind)}::text[],
+			  ${heads.map((head) => head.body.origin_device_id)}::text[],
+			  ${heads.map((head) => head.body.origin_local_id)}::text[],
+			  ${heads.map((head) => head.body.entity_rev)}::text[],
+			  ${heads.map((head) => head.operationSha256)}::text[],
+			  ${heads.map((head) => (head.body.deleted ? 1 : 0))}::int[],
+			  ${heads.map((head) => head.seq)}::text[]
+			) AS head(entity_id, kind, origin_device_id, origin_local_id, entity_rev,
+			          operation_sha256, deleted, seq)
+			ON CONFLICT (user_id, entity_id) DO UPDATE SET
+			 kind = EXCLUDED.kind,
+			 origin_device_id = EXCLUDED.origin_device_id,
+			 origin_local_id = EXCLUDED.origin_local_id,
+			 entity_rev = EXCLUDED.entity_rev,
+			 operation_sha256 = EXCLUDED.operation_sha256,
+			 deleted = EXCLUDED.deleted,
+			 seq = EXCLUDED.seq
 		`;
 	}
 
@@ -804,6 +968,10 @@ export class HubStore {
 	private assertDeviceId(deviceId: string): string {
 		return this.normalizeDeviceId(deviceId);
 	}
+}
+
+function throwIfClientClosed(signal: AbortSignal | undefined): void {
+	if (signal?.aborted) throw new Error(CLIENT_CLOSED_REQUEST_ERROR);
 }
 
 function normalizeDeviceName(value: string | null): string | null {

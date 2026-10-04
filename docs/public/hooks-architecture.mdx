@@ -54,7 +54,7 @@ Claude Code's hook system provides exactly what we need:
 
 <CardGroup cols={2}>
   <Card title="Lifecycle Events" icon="clock">
-    SessionStart, UserPromptSubmit, PreToolUse (Read), PostToolUse, Stop, SessionEnd
+    SessionStart, UserPromptSubmit, PreToolUse (Read), PostToolUse, PostToolUseFailure, Stop, SessionEnd
   </Card>
 
   <Card title="Non-Blocking" icon="forward">
@@ -206,7 +206,7 @@ VALUES (?, ?, ?, ...)
 
 **Purpose:** Capture tool execution observations for later processing
 
-**When:** Immediately after any tool completes successfully
+**When:** Immediately after any tool completes successfully. A failed call (e.g. Bash exiting non-zero) arrives on `PostToolUseFailure` instead, which runs the same handler and records `{ error, is_interrupt }` as the tool output, so memory also sees attempts that failed.
 
 **What it does:**
 1. Receives tool name, input, output from stdin
@@ -430,6 +430,7 @@ sequenceDiagram
 | **SessionStart (context)** | Before session | No | 60s | JSON → additionalContext (silent) |
 | **UserPromptSubmit** | Before processing | No | 15s (10s internal budget; 7s on Windows) | stdout → context |
 | **PostToolUse** | After tool | No | 120s | Transcript only |
+| **PostToolUseFailure** | After a failed tool | No | 120s | Transcript only |
 | **Summary** | Worker triggered | No | 120s | Database |
 | **SessionEnd** | On exit | No | 120s | Log only |
 

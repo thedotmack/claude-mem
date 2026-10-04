@@ -3,7 +3,7 @@
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
 // caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
 import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
 import { detectObservedBilling } from '../../shared/observed-billing.js';
@@ -18,7 +18,8 @@ import { isServerClientError } from '../../services/hooks/server-client.js';
 import { extractAdvisorCalls } from '../../shared/advisor-transcript.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 
-// The ingest route accepts at most this many calls per request.
+// The ingest route accepts at most this many calls per request; one spool
+// entry carries at most the same.
 const ADVISOR_CALLS_PER_REQUEST = 50;
 
 /**
@@ -31,12 +32,12 @@ const ADVISOR_CALLS_PER_REQUEST = 50;
  * server runtime this must not start a local worker (plan-24 step 4), and the
  * server-side store is a follow-up.
  */
-async function recordAdvisorCalls(
+function recordAdvisorCalls(
   sessionId: string,
   transcriptPath: string | undefined,
   cwd: string | undefined,
   platformSource: string,
-): Promise<void> {
+): void {
   if (!transcriptPath) return;
   if (loadFromFileOnce().CLAUDE_MEM_CAPTURE_ADVISOR_CALLS !== 'true') return;
   if (resolveRuntimeContext().runtime === 'server') return;
@@ -44,9 +45,9 @@ async function recordAdvisorCalls(
   const calls = extractAdvisorCalls(transcriptPath, { currentTurnOnly: true });
   if (calls.length === 0) return;
 
-  logger.debug('HOOK', 'Stop: recording advisor calls', { count: calls.length });
+  logger.debug('HOOK', 'Stop: spooling advisor calls', { count: calls.length });
   for (let start = 0; start < calls.length; start += ADVISOR_CALLS_PER_REQUEST) {
-    await executeWithWorkerFallback<{ status?: string }>('/api/advisor-calls', 'POST', {
+    spoolHookEvent('advisor_calls', {
       contentSessionId: sessionId,
       platformSource,
       cwd,
@@ -143,7 +144,7 @@ export const summarizeHandler: EventHandler = {
     // assistant message must not drop the turn's advisor calls) and is
     // failure-isolated from it.
     try {
-      await recordAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
+      recordAdvisorCalls(sessionId, transcriptPath, input.cwd, normalizePlatformSource(input.platform));
     } catch (err) {
       logger.warn('HOOK', 'Advisor-call capture failed; continuing with summary', {
         sessionId,
@@ -217,7 +218,7 @@ export const summarizeHandler: EventHandler = {
             message: error.message,
             route: '/v1/sessions/end',
           });
-          // fall through to worker fallback
+          // fall through to the worker spool
         } else {
           logger.error('HOOK', 'Server summarize failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
@@ -227,22 +228,15 @@ export const summarizeHandler: EventHandler = {
       }
     }
 
-    const queueResult = await executeWithWorkerFallback<{ status?: string }>(
-      '/api/sessions/summarize',
-      'POST',
-      {
-        contentSessionId: sessionId,
-        last_assistant_message: lastAssistantMessage,
-        platformSource,
-        observedModel,
-        observedBilling,
-      },
-    );
-    if (isWorkerFallback(queueResult)) {
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
+    spoolHookEvent('summarize', {
+      contentSessionId: sessionId,
+      platformSource,
+      lastAssistantMessage,
+      observedModel,
+      observedBilling,
+    });
 
-    logger.debug('HOOK', 'Summary request queued, exiting hook');
+    logger.debug('HOOK', 'Summary request spooled, exiting hook');
     return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
   },
 };
