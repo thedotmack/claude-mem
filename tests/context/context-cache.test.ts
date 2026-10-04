@@ -122,6 +122,8 @@ describe('ContextCacheService invalidation', () => {
   let renders: string[];
   let renderCount: number;
   let tempDir: string;
+  /** When set, each re-render waits on it (an in-flight render a removal can overtake). */
+  let renderGate: Promise<void> | null;
 
   const keys = contextCacheKeys([project], 'claude', false);
   const otherKeys = contextCacheKeys(['unrelated-proj'], 'claude', false);
@@ -139,9 +141,11 @@ describe('ContextCacheService invalidation', () => {
     tempDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-cache-'));
     renders = [];
     renderCount = 0;
+    renderGate = null;
     service = new ContextCacheService({
       debounceMs: DEBOUNCE_MS,
       renderVariant: async (variantKeys): Promise<ContextVariantRender> => {
+        if (renderGate) await renderGate;
         renderCount++;
         renders.push(variantKeys.projects.join(','));
         return { body: `render #${renderCount} at ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, cacheable: true };
@@ -288,6 +292,93 @@ describe('ContextCacheService invalidation', () => {
     store.close();
   });
 
+  it('DataRoutes observation delete removes the cached file before the route responds', async () => {
+    const store = memoryStore();
+    const { observationIds } = store.storeObservations('memory-1', project, [observation], null);
+    await waitPastDebounce();
+    expect(existsSync(contextCacheFilePath(keys))).toBe(true);
+    let deleteHandler: ((req: any, res: any) => void) | undefined;
+    const routes = new DataRoutes(
+      {} as any,
+      { getSessionStore: () => store, getCloudSync: () => null } as any,
+      {} as any,
+      { broadcast: () => {} } as any,
+      {} as any,
+      Date.now(),
+    );
+    routes.setupRoutes({
+      get: () => {}, post: () => {}, use: () => {},
+      delete: (path: string, handler: (req: any, res: any) => void) => {
+        if (path === '/api/observation/:id') deleteHandler = handler;
+      },
+    } as any);
+    let fileExistedWhenResponded: boolean | null = null;
+    const res = {
+      json: mock(() => { fileExistedWhenResponded = existsSync(contextCacheFilePath(keys)); }),
+      status: mock(() => res), setHeader: () => {}, headersSent: false,
+    };
+    deleteHandler!({ params: { id: String(observationIds[0]) }, query: {} }, res);
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+    // Inside the debounce window: no re-render yet, and nothing stale to serve.
+    expect(fileExistedWhenResponded).toBe(false);
+    expect(existsSync(contextCacheFilePath(otherKeys))).toBe(false);
+    await waitPastDebounce();
+    expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+    store.close();
+  });
+
+  it('an additive write keeps serving the cached file until the re-render', async () => {
+    emitContextInvalidation({ projects: [project] }, 'storeObservations');
+    expect(existsSync(contextCacheFilePath(keys))).toBe(true);
+    await waitPastDebounce();
+    expect(renders).toEqual([project]);
+  });
+
+  it('a pulled tombstone (SyncApply) removes the cached files synchronously', async () => {
+    const db = new Database(':memory:');
+    new SessionStore(db);
+    const apply = new SyncApply(db, { deviceId: 'device-self', now: () => Date.now() });
+    const tombstone: SyncOp = {
+      seq: '1', kind: 'observation', origin_device: 'device-remote', origin_id: '42', rev: '2',
+      body: '{}', server_ts: Date.now(), entity_id: 'entity-42', entity_rev: '2',
+      operation_sha256: 'a'.repeat(64), deleted: true, deleted_at: new Date().toISOString(),
+    };
+    expect(apply.applyOps([tombstone]).applied).toBe(1);
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    expect(existsSync(contextCacheFilePath(otherKeys))).toBe(false);
+    await waitPastDebounce();
+    expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+    db.close();
+  });
+
+  it('a render in flight when a removal lands is discarded and re-run', async () => {
+    let releaseGate!: () => void;
+    renderGate = new Promise<void>(resolve => { releaseGate = resolve; });
+    emitContextInvalidation({ projects: [project] }, 'storeObservations');
+    await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS * 4));
+    // The re-render is now waiting on the gate (it started before the delete).
+    emitContextInvalidation('all', 'delete-observation', 'removal');
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    renderGate = null;
+    releaseGate();
+    // Let the in-flight render finish: it must not write its pre-delete body back.
+    await new Promise(resolve => setImmediate(resolve));
+    await new Promise(resolve => setImmediate(resolve));
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    await waitPastDebounce();
+    await waitPastDebounce();
+    expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+  });
+
+  it('a live render a removal overtook is not written to the cache', async () => {
+    const generationAtStart = service.removalGenerationNow();
+    emitContextInvalidation('all', 'delete-session', 'removal');
+    service.recordLiveRender(keys, { body: 'pre-delete live render', cacheable: true }, Date.now(), generationAtStart);
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    await waitPastDebounce();
+    expect(readContextCache(keys, Date.now())?.body).toStartWith('render #');
+  });
+
   it('observer-health writer (banner)', async () => {
     const healthPath = join(tempDir, 'observer-health.json');
     // Below the threshold the banner stays hidden, so nothing re-renders.
@@ -360,6 +451,59 @@ describe('ContextCacheService invalidation', () => {
     expect(renders).toContain('unrelated-proj');
     expect(readContextCache(keys, Date.now())?.body).toBe('boot render');
     booted.stop();
+  });
+});
+
+describe('ContextCacheService with cloud sync (servable only while Realtime is live)', () => {
+  const keys = contextCacheKeys(['servable-proj'], 'claude', false);
+  let renders: number;
+
+  function syncedService(): ContextCacheService {
+    renders = 0;
+    return new ContextCacheService({
+      debounceMs: 10,
+      initiallyServable: false,
+      renderVariant: async () => {
+        renders++;
+        return { body: `synced render #${renders}`, cacheable: true };
+      },
+      expandProjectReadKeys: projects => projects,
+    });
+  }
+
+  afterEach(() => rmSync(contextCacheFilePath(keys), { force: true }));
+
+  it('writes no file while Realtime has not joined; the hook takes the live (pulling) path', async () => {
+    writeContextCache(keys, 'left by a previous worker', Date.now());
+    const service = syncedService();
+    service.recordLiveRender(keys, { body: 'live', cacheable: true }, Date.now());
+    service.stop();
+    const booted = syncedService();
+    booted.start();
+    // A previous worker's file may predate remote ops: gone before any render.
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    booted.recordLiveRender(keys, { body: 'live', cacheable: true }, Date.now());
+    await booted.flushPendingRenders();
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    booted.stop();
+  });
+
+  it('re-renders every variant when Realtime joins, and removes the files when it drops', async () => {
+    const service = syncedService();
+    service.start();
+    service.recordLiveRender(keys, { body: 'live', cacheable: true }, Date.now());
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+
+    service.setServable(true);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    await service.flushPendingRenders();
+    expect(readContextCache(keys, Date.now())?.body).toStartWith('synced render #');
+
+    service.setServable(false);
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    service.recordLiveRender(keys, { body: 'live again', cacheable: true }, Date.now());
+    expect(existsSync(contextCacheFilePath(keys))).toBe(false);
+    service.stop();
   });
 });
 

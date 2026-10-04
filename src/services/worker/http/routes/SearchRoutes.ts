@@ -32,6 +32,7 @@ import { buildWorkStateContextSection } from '../../../context/sections/WorkStat
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { currentUserSettingsSaveCount } from '../../../../shared/context-invalidation.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
@@ -75,6 +76,9 @@ function getOnboardingExplainer(): string | null {
 // practice and long enough to absorb hook bursts.
 const SETTINGS_CACHE_TTL_MS = 5000;
 
+/** Bound on the session-start pull when sync's Realtime channel is not live. */
+const SESSION_START_SYNC_PULL_TIMEOUT_MS = 1500;
+
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
 This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
@@ -103,6 +107,7 @@ const semanticContextSchema = z.object({
 export class SearchRoutes extends BaseRouteHandler {
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
+  private cachedSettingsSaveCount = -1;
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
   private readonly projectsKnownNonEmpty = new Set<string>();
@@ -112,20 +117,25 @@ export class SearchRoutes extends BaseRouteHandler {
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: Pick<ContextCacheService, 'recordLiveRender'> | null = null
+    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow'> | null = null,
+    // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
+    private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
   ) {
     super();
   }
 
   private getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
     const now = Date.now();
-    if (this.cachedSettings && now - this.cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
+    // A settings save (SettingsRoutes) invalidates the snapshot immediately.
+    const saveCount = currentUserSettingsSaveCount();
+    if (this.cachedSettings && now - this.cachedSettingsAt < SETTINGS_CACHE_TTL_MS && this.cachedSettingsSaveCount === saveCount) {
       return this.cachedSettings;
     }
     // Keep env overrides out of the cache so toggles remain request-local and
     // tests do not inherit a transient process.env value for the next 5 seconds.
     this.cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
     this.cachedSettingsAt = now;
+    this.cachedSettingsSaveCount = saveCount;
     return this.cachedSettings;
   }
 
@@ -349,6 +359,15 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const injectStartedAt = Date.now();
+    // Session-start freshness: with Realtime joined, other devices' ops are
+    // already applied as they happen. Without it (dropped, never joined,
+    // disabled), pull once, bounded — pullOnce never throws, so a dead network
+    // costs at most this wait and the render proceeds on local memory.
+    if (this.syncClient && !this.syncClient.isSocketLive()) {
+      await this.syncClient.pullOnce({ timeoutMs: SESSION_START_SYNC_PULL_TIMEOUT_MS });
+    }
+    // A delete that lands while this renders must not see its row written back to the cache.
+    const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
     let rendered: ContextInjectRender;
     try {
       rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full });
@@ -388,6 +407,7 @@ export class SearchRoutes extends BaseRouteHandler {
         contextCacheKeys(projects, platformSource, forHuman),
         { body: rendered.body, cacheable: rendered.cacheable },
         respondedAtEpochMs,
+        removalGenerationAtRenderStart,
       );
     }
 
@@ -461,9 +481,9 @@ export class SearchRoutes extends BaseRouteHandler {
 
     const { generateContextWithStats } = await import('../../../context-generator.js');
 
-    // No session-start sync pull here: the sync client's own Realtime/poll
-    // loop applies other devices' ops through SyncApply, which invalidates the
-    // cached block, so the block is already current when a session starts.
+    // Session-start sync freshness lives in handleContextInject (the live
+    // path); a cached re-render needs none: ContextCacheService only keeps
+    // files servable while Realtime delivers ops as they happen.
     const primaryProject = projects[projects.length - 1];
     const cwd = `/context/${primaryProject}`;
 

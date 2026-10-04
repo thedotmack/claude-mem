@@ -112,6 +112,22 @@ function guardedUrl(input: RequestInfo | URL, label: string, protocols: string[]
   return url;
 }
 
+/**
+ * The ONE fetch this script makes to the Hub (status, log reads, and every
+ * client request via guardedFetch). The URL is guarded, and redirects are
+ * never followed: a 3xx could send the request (and its bearer token) to a
+ * host outside the one-host boundary, so any 3xx fails the run.
+ */
+async function hubFetch(input: RequestInfo | URL, init: RequestInit | undefined, label: string): Promise<Response> {
+  const url = guardedUrl(input, label);
+  const response = await fetch(input, { ...init, redirect: 'manual' });
+  if ((response.status >= 300 && response.status < 400) || response.type === 'opaqueredirect') {
+    await response.body?.cancel().catch(() => {});
+    throw new Error(`${label} refused redirect ${response.status} from ${url.origin}${url.pathname} (redirects are never followed)`);
+  }
+  return response;
+}
+
 const hubUrl = (process.env.CMEM_SYNC_E2E_HUB_URL ?? DEFAULT_HUB_URL).trim().replace(/\/+$/, '');
 guardedUrl(hubUrl, 'Hub');
 if (ALLOWED_REMOTE_HUB_HOST && new URL(hubUrl).hostname !== ALLOWED_REMOTE_HUB_HOST) {
@@ -138,8 +154,7 @@ interface HubStatus {
 }
 
 async function getHubStatus(): Promise<HubStatus> {
-  guardedUrl(hubUrl, 'Hub status');
-  const response = await fetch(`${hubUrl}/v1/sync/status`, { headers: authHeaders() });
+  const response = await hubFetch(`${hubUrl}/v1/sync/status`, { headers: authHeaders() }, 'Hub status');
   if (!response.ok) throw new Error(`Hub status ${response.status}: ${(await response.text()).slice(0, 200)}`);
   invariant(response.headers.get('X-Sync-Mode') === 'poll', 'Hub status carries X-Sync-Mode: poll');
   const status = await response.json() as HubStatus;
@@ -167,9 +182,9 @@ async function readWholeLog(): Promise<CanonicalContentBody[]> {
   const bodies: CanonicalContentBody[] = [];
   let since = '0';
   for (;;) {
-    const response = await fetch(`${hubUrl}/v1/sync/changes?since=${since}&limit=500`, {
+    const response = await hubFetch(`${hubUrl}/v1/sync/changes?since=${since}&limit=500`, {
       headers: authHeaders(DEVICE_IDS.a),
-    });
+    }, 'Hub changes');
     if (!response.ok) throw new Error(`Hub changes ${response.status}: ${(await response.text()).slice(0, 200)}`);
     const page = await response.json() as ChangesPage;
     let expected = incrementCanonicalDecimal(since);
@@ -246,7 +261,7 @@ function guardedFetch(gate: NetworkGate): typeof fetch {
     }
     let response: Response;
     try {
-      response = await fetch(input, init);
+      response = await hubFetch(input, init, 'sync client');
     } finally {
       if (isPull) gate.pullsInFlight--;
     }

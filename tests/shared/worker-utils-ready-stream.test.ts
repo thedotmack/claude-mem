@@ -15,8 +15,10 @@ const realHealthMonitorSnapshot = { ...realHealthMonitor };
 
 // Phase 4 (liveness over deadlines): the hook decides "ready / booting /
 // wedged" from ONE GET /api/ready read instead of polling /api/readiness and
-// guessing from uptime. failed ⇒ recycle, silence ⇒ recycle, ready ⇒ go,
-// progress under a spent budget ⇒ leave it alone, 404 ⇒ legacy probe.
+// guessing from uptime. failed ⇒ recycle, close without a terminal phase ⇒
+// recycle, silence (before or after headers) ⇒ recycle only once the same pid
+// stays silent ≥30 s across hooks, ready ⇒ go, progress under a spent budget ⇒
+// leave it alone, 404 ⇒ legacy probe.
 
 const VERSION = '13.4.0';
 const WEDGED_PID = 4343;
@@ -208,19 +210,35 @@ describe('worker readiness via GET /api/ready', () => {
     expect(spawnCalls).toHaveLength(1);
   });
 
-  it('silence past the idle window ⇒ wedged ⇒ recycled', async () => {
-    wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'starting' }], then: 'hang' };
-    const workerUtils = await loadWithOwnedPid();
+  describe('post-header silence (headers sent, then no phase or ping)', () => {
+    const unresponsiveRecordPath = () => join(tempDataDir, 'worker-unresponsive.json');
 
-    const startedAt = Date.now();
-    expect(await workerUtils.ensureWorkerRunning()).toBe(true);
-    const elapsedMs = Date.now() - startedAt;
-    // The 5 s idle window, not the 10 s readiness budget, decided.
-    expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
-    expect(elapsedMs).toBeLessThan(9_000);
-    expect(killCalls).toEqual([{ pid: WEDGED_PID, signal: 'SIGKILL' }]);
-    expect(spawnCalls).toHaveLength(1);
-  }, 15_000);
+    it('once ⇒ unresponsive: skips the hook without killing and records the pid', async () => {
+      wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'starting' }], then: 'hang' };
+      const workerUtils = await loadWithOwnedPid();
+
+      const startedAt = Date.now();
+      expect(await workerUtils.ensureWorkerRunning()).toBe(false);
+      const elapsedMs = Date.now() - startedAt;
+      // The 5 s idle window, not the 10 s readiness budget, decided.
+      expect(elapsedMs).toBeGreaterThanOrEqual(4_500);
+      expect(elapsedMs).toBeLessThan(9_000);
+      expect(killCalls).toHaveLength(0);
+      expect(spawnCalls).toHaveLength(0);
+      expect(JSON.parse(readFileSync(unresponsiveRecordPath(), 'utf-8')).pid).toBe(WEDGED_PID);
+    }, 15_000);
+
+    it('same pid silent for ≥30 s across hooks (headers do not reset the record) ⇒ wedged ⇒ recycled', async () => {
+      wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'starting' }], then: 'hang' };
+      const workerUtils = await loadWithOwnedPid();
+      writeFileSync(unresponsiveRecordPath(), JSON.stringify({ pid: WEDGED_PID, firstUnresponsiveAtEpochMs: Date.now() - 31_000 }));
+
+      expect(await workerUtils.ensureWorkerRunning()).toBe(true);
+      expect(killCalls).toEqual([{ pid: WEDGED_PID, signal: 'SIGKILL' }]);
+      expect(spawnCalls).toHaveLength(1);
+      expect(existsSync(unresponsiveRecordPath())).toBe(false);
+    }, 15_000);
+  });
 
   it('progress still arriving when the hook budget runs out ⇒ booting: no kill, no spawn', async () => {
     wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'starting' }, { phase: 'db_ready' }], then: 'ping' };
@@ -352,7 +370,7 @@ describe('worker readiness via GET /api/ready', () => {
       expect(JSON.parse(readFileSync(unresponsiveRecordPath(), 'utf-8')).pid).toBe(WEDGED_PID);
     }, 15_000);
 
-    it('response headers from the worker clear the record', async () => {
+    it('a ready read clears the record', async () => {
       wedgedWorkerScenario = { kind: 'phases', phases: [{ phase: 'ready' }], then: 'end' };
       const workerUtils = await loadWithOwnedPid();
       writeFileSync(unresponsiveRecordPath(), JSON.stringify({ pid: WEDGED_PID, firstUnresponsiveAtEpochMs: Date.now() - 20_000 }));

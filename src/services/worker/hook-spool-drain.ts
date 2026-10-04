@@ -1,7 +1,8 @@
 import { mkdirSync, watch as fsWatch } from 'fs';
-import { HookSpool, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
+import { HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
+import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize } from './http/shared.js';
+import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
@@ -39,8 +40,18 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry): Promise<boolean> {
   }
 }
 
+/** The worker DB's hook_spool_consumed table: makes the hand-off at-most-once across restarts. */
+export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumedMarkers {
+  return {
+    isConsumed: entryKey => store.isHookSpoolEntryConsumed(entryKey),
+    markConsumed: (entryKey, consumedAtEpochMs) => store.markHookSpoolEntryConsumed(entryKey, consumedAtEpochMs),
+    clearConsumed: entryKey => store.clearHookSpoolEntryConsumed(entryKey),
+    pruneConsumedBefore: epochMs => store.pruneHookSpoolConsumedMarkersBefore(epochMs),
+  };
+}
+
 export async function drainHookSpool(spool: HookSpool = new HookSpool()): Promise<HookSpoolDrainResult> {
-  const result = await spool.drain(ingestHookSpoolEntry);
+  const result = await spool.drain(ingestHookSpoolEntry, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
   if (result.drained > 0 || result.quarantined > 0 || result.expired > 0) {
     logger.info('HOOK', 'Drained hook spool', { ...result });
   }

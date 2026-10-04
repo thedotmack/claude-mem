@@ -166,6 +166,57 @@ describe('drainHookSpool', () => {
   });
 });
 
+describe('drainHookSpool at-most-once hand-off across restarts', () => {
+  it('a worker that dies after handing an observation to ingest but before unlinking it does not send it again', async () => {
+    const spoolDirectory = join(spoolDir, 'spool');
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    new HookSpool(spoolDirectory).enqueue('observation', {
+      contentSessionId: 'crash-session', platformSource: 'claude', toolName: 'Bash',
+      toolInput: { command: 'ls' }, toolResponse: { stdout: 'x' }, cwd: '/repo', toolUseId: 'toolu_crash_1',
+    });
+
+    // Worker 1: ingest reaches the provider-bound queue, then the process
+    // "dies" before the drain can unlink the file (the promise never settles).
+    const realIngestObservation = ingestShared.ingestObservation;
+    const crashAfterIngest = spyOn(ingestShared, 'ingestObservation').mockImplementation(async (payload) => {
+      await realIngestObservation(payload);
+      return new Promise<never>(() => {});
+    });
+    void drainHookSpool(new HookSpool(spoolDirectory));
+    for (let tick = 0; tick < 20 && sessionManager.queueObservation.mock.calls.length === 0; tick++) {
+      await new Promise(resolve => setTimeout(resolve, 5));
+    }
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+    expect(spoolFiles(new HookSpool(spoolDirectory))).toEqual(['observation-toolu_crash_1.json']);
+    crashAfterIngest.mockRestore();
+
+    // Worker 2 boots on the same database and spool directory.
+    const result = await drainHookSpool(new HookSpool(spoolDirectory));
+    expect(result).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+    expect(spoolFiles(new HookSpool(spoolDirectory))).toEqual([]);
+    expect(store.isHookSpoolEntryConsumed('observation-toolu_crash_1')).toBe(false);
+  });
+
+  it('a declined entry keeps no marker, so the next drain retries it', async () => {
+    const spool = new HookSpool(join(spoolDir, 'spool'));
+    spool.enqueue('session_end', { contentSessionId: 'not-yet-known', platformSource: 'claude' });
+    expect(await drainHookSpool(spool)).toEqual({ drained: 0, retained: 1, quarantined: 0, expired: 0 });
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM hook_spool_consumed').get()).toEqual({ n: 0 });
+    store.createSDKSession('not-yet-known', 'project', 'prompt', undefined, 'claude');
+    expect(await drainHookSpool(spool)).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
+    expect(sessionManager.requestSessionWrapup).toHaveBeenCalledTimes(1);
+  });
+
+  it('prunes markers older than the spool retry window', async () => {
+    store.markHookSpoolEntryConsumed('observation-ancient', Date.now() - 8 * 24 * 60 * 60 * 1000);
+    store.markHookSpoolEntryConsumed('observation-recent', Date.now() - 60_000);
+    await drainHookSpool(new HookSpool(join(spoolDir, 'spool')));
+    expect(store.isHookSpoolEntryConsumed('observation-ancient')).toBe(false);
+    expect(store.isHookSpoolEntryConsumed('observation-recent')).toBe(true);
+  });
+});
+
 describe('HookSpoolDrainer', () => {
   it('never runs two drains at once and coalesces requests made during a drain into one more pass', async () => {
     let active = 0;

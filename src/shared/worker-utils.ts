@@ -743,14 +743,15 @@ async function waitForWorkerPort(
  * What one GET /api/ready read concluded:
  * - ready:        the worker finished init.
  * - failed:       the worker reported its background init died (it never will be ready).
- * - wedged:       AFTER response headers, the stream went silent past the idle
- *                 window, or closed before a terminal phase. Never read as ready.
- * - unresponsive: the connection was accepted but NO response headers arrived
- *                 within the idle window. Not proof of a wedge: bun:sqlite's
- *                 busy_timeout blocks the worker's event loop during lock
- *                 contention, so a booting worker can be silent for >5 s. Only
- *                 the same pid staying unresponsive across hooks for
- *                 UNRESPONSIVE_WORKER_WEDGED_AFTER_MS counts as wedged.
+ * - wedged:       AFTER response headers, the stream closed (or errored)
+ *                 before a terminal phase. Never read as ready.
+ * - unresponsive: silence past the idle window, before response headers OR
+ *                 after them (no phase and no ping). Not proof of a wedge:
+ *                 bun:sqlite's busy_timeout blocks the worker's event loop
+ *                 during lock contention, so a booting worker can be silent for
+ *                 >5 s at any point of the stream. Only the same pid staying
+ *                 unresponsive across hooks for UNRESPONSIVE_WORKER_WEDGED_AFTER_MS
+ *                 counts as wedged.
  * - still_booting: progress kept arriving but the caller's budget ran out first.
  * - not_running:  nothing accepted the connection.
  */
@@ -802,14 +803,14 @@ async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead>
     });
   });
 
-  // Headers arrived: whatever owns the port is answering, so any earlier
-  // pre-header silence was a stall, not a wedge.
-  clearUnresponsiveWorkerRecord();
-
+  // Headers alone do not clear the unresponsive record: a worker that answers
+  // headers and then goes silent on every hook must still reach the same-pid
+  // threshold. Only a read that shows the worker progressing clears it.
   const contentType = stream.headers?.get('content-type') ?? '';
   if (!stream.ok || !contentType.includes('text/event-stream')) {
     // Not our SSE stream (an older worker's 404 / init-gate 503, or anything
     // else answering the port): drop the body and use the legacy probe.
+    clearUnresponsiveWorkerRecord();
     await releaseStream();
     return { outcome: 'unsupported' };
   }
@@ -821,6 +822,7 @@ async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead>
       const parsed = JSON.parse(event.data) as { phase?: unknown; message?: unknown };
       lastPhase = typeof parsed.phase === 'string' ? parsed.phase : null;
       if (lastPhase === 'ready') {
+        clearUnresponsiveWorkerRecord();
         await releaseStream();
         return { outcome: 'ready' };
       }
@@ -830,9 +832,17 @@ async function readWorkerReadyStream(budgetMs: number): Promise<ReadyStreamRead>
       }
     }
   } catch (error: unknown) {
-    if (isAbsoluteCapTimeoutError(error)) return { outcome: 'still_booting', detail: `last phase ${lastPhase ?? 'none'}` };
-    const reason = isIdleTimeoutError(error) ? 'silent past the idle window' : `stream error: ${error instanceof Error ? error.message : String(error)}`;
-    return { outcome: 'wedged', detail: `${reason} (last phase ${lastPhase ?? 'none'})` };
+    if (isAbsoluteCapTimeoutError(error)) {
+      // Progress (phases or pings) kept arriving until the budget ran out.
+      clearUnresponsiveWorkerRecord();
+      return { outcome: 'still_booting', detail: `last phase ${lastPhase ?? 'none'}` };
+    }
+    if (isIdleTimeoutError(error)) {
+      // Same persistence guard as pre-header silence: a stall, until the same
+      // pid stays silent across hooks for UNRESPONSIVE_WORKER_WEDGED_AFTER_MS.
+      return { outcome: 'unresponsive', detail: `silent past the idle window after response headers (last phase ${lastPhase ?? 'none'})` };
+    }
+    return { outcome: 'wedged', detail: `stream error: ${error instanceof Error ? error.message : String(error)} (last phase ${lastPhase ?? 'none'})` };
   }
   return { outcome: 'wedged', detail: `stream closed before ready/failed (last phase ${lastPhase ?? 'none'})` };
 }
@@ -972,7 +982,7 @@ async function warnIfVersionStillMismatched(
 
 /**
  * How long the SAME worker pid must stay unresponsive (accepts connections,
- * sends no response headers) across hook events before it is treated as
+ * then goes silent before or after the /api/ready headers) across hook events before it is treated as
  * wedged and recycled. Comfortably above bun:sqlite's 5 s busy_timeout
  * (src/services/sqlite/connection.ts), which blocks the worker's event loop
  * under lock contention, and above any single boot stall — so a worker that
@@ -1012,7 +1022,7 @@ function clearUnresponsiveWorkerRecord(): void {
 }
 
 /**
- * Pre-header silence from the worker on the port. True ⇒ the same pid has been
+ * Silence from the worker on the port (before or after /api/ready headers). True ⇒ the same pid has been
  * unresponsive for UNRESPONSIVE_WORKER_WEDGED_AFTER_MS across hooks: treat it
  * as wedged. False ⇒ record (or keep) the first sighting and leave it alone.
  */
@@ -1107,7 +1117,7 @@ function neverReadyFailureMessage(readiness: WorkerReadyResult): string {
  */
 function neverReadyWorkerMayBeRecycled(readiness: WorkerReadyResult, buildKey: string): boolean {
   if (readiness.outcome === 'unresponsive' && !unresponsiveWorkerIsWedged()) {
-    logger.warn('SYSTEM', 'Worker accepted the connection but sent no response headers; skipping this hook without killing it', {
+    logger.warn('SYSTEM', 'Worker went silent on /api/ready; skipping this hook without killing it', {
       detail: readiness.detail,
       wedgedAfterMs: UNRESPONSIVE_WORKER_WEDGED_AFTER_MS,
     });

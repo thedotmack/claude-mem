@@ -275,6 +275,7 @@ export class SessionStore {
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
+    this.ensureHookSpoolConsumedTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1969,6 +1970,36 @@ export class SessionStore {
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
+  }
+
+  // v62 — at-most-once hand-off marker for hook spool entries (HookSpool.drain):
+  // written before an entry is handed to ingest, cleared once its file is gone.
+  private ensureHookSpoolConsumedTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS hook_spool_consumed (
+        entry_key TEXT PRIMARY KEY,
+        consumed_at_epoch_ms INTEGER NOT NULL
+      )
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
+  }
+
+  isHookSpoolEntryConsumed(entryKey: string): boolean {
+    return this.db.prepare('SELECT 1 FROM hook_spool_consumed WHERE entry_key = ?').get(entryKey) != null;
+  }
+
+  markHookSpoolEntryConsumed(entryKey: string, consumedAtEpochMs: number): void {
+    this.db.prepare(
+      'INSERT INTO hook_spool_consumed (entry_key, consumed_at_epoch_ms) VALUES (?, ?) ON CONFLICT(entry_key) DO UPDATE SET consumed_at_epoch_ms = excluded.consumed_at_epoch_ms'
+    ).run(entryKey, consumedAtEpochMs);
+  }
+
+  clearHookSpoolEntryConsumed(entryKey: string): void {
+    this.db.prepare('DELETE FROM hook_spool_consumed WHERE entry_key = ?').run(entryKey);
+  }
+
+  pruneHookSpoolConsumedMarkersBefore(epochMs: number): void {
+    this.db.prepare('DELETE FROM hook_spool_consumed WHERE consumed_at_epoch_ms < ?').run(epochMs);
   }
 
   // v52 — durable claim ledger for one Telegram session wrap-up per route.

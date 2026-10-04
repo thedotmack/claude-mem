@@ -84,6 +84,38 @@ describe('sync matrix E2E (Supabase cmem-sync) safety contract', () => {
     }
   }, 60_000);
 
+  it('never follows a Hub redirect: one fetch call site, redirect manual, any 3xx fails', () => {
+    expect(supabaseScript.match(/\bfetch\(/g)).toHaveLength(1);
+    expect(supabaseScript).toContain("const response = await fetch(input, { ...init, redirect: 'manual' });");
+    expect(supabaseScript).toContain('response.status >= 300 && response.status < 400');
+    expect(supabaseScript).toContain("response = await hubFetch(input, init, 'sync client');");
+  });
+
+  it('fails the run on a 3xx from the Hub without contacting the redirect target', async () => {
+    let targetHits = 0;
+    const target = Bun.serve({ hostname: '127.0.0.1', port: 0, fetch: () => { targetHits++; return Response.json({}); } });
+    const hub = Bun.serve({
+      hostname: '127.0.0.1', port: 0,
+      fetch: (request) => Response.redirect(`http://127.0.0.1:${target.port}${new URL(request.url).pathname}`, 302),
+    });
+    try {
+      const child = Bun.spawn(['bun', join(root, 'scripts/sync-matrix-e2e-supabase.ts')], {
+        env: {
+          PATH: process.env.PATH ?? '', CMEM_SYNC_E2E_USER_ID: 'u', CMEM_SYNC_E2E_TOKEN: 't',
+          CMEM_SYNC_E2E_HUB_URL: `http://127.0.0.1:${hub.port}/functions/v1/cmem-sync`,
+        },
+        stdout: 'pipe', stderr: 'pipe',
+      });
+      const [stderr, exitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
+      expect(exitCode).not.toBe(0);
+      expect(stderr).toContain('refused redirect 302');
+      expect(targetHits).toBe(0);
+    } finally {
+      hub.stop(true);
+      target.stop(true);
+    }
+  }, 30_000);
+
   it('spawns nothing and inherits no credentials beyond the two explicit test variables', () => {
     expect(supabaseScript).not.toContain('Bun.spawn');
     expect(supabaseScript).not.toContain('...process.env');

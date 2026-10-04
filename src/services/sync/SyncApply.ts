@@ -497,6 +497,7 @@ export class SyncApply {
     const chromaJobs: ChromaJob[] = [];
     const setAside: Array<Record<string, unknown>> = [];
     const recovered: Array<Record<string, unknown>> = [];
+    let removedOrRemapped = false;
 
     const tx = this.db.transaction(() => {
       const cursor = this.getCursor();
@@ -554,8 +555,13 @@ export class SyncApply {
           result.quarantined++;
           continue;
         }
-        if (attempt.outcome === 'applied') result.applied++;
-        else result.skippedStale++;
+        if (attempt.outcome === 'applied') {
+          result.applied++;
+          // A tombstone deletes a row; a mutation can re-key or retitle rows.
+          if (op.kind === 'mutation' || op.deleted === true) removedOrRemapped = true;
+        } else {
+          result.skippedStale++;
+        }
       }
 
       this.retrySetAside(chromaJobs, recovered);
@@ -571,8 +577,10 @@ export class SyncApply {
 
     // Pulled rows change what SessionStart shows. 'all': a mutation (remap,
     // set-title) can move rows between projects, so no single project names it.
+    // 'removal' when a tombstone or mutation applied: the cached block may show
+    // what is now gone, so it must not be served until re-rendered.
     if (result.applied > 0 || recovered.length > 0) {
-      emitContextInvalidation('all', 'SyncApply.applyOps');
+      emitContextInvalidation('all', 'SyncApply.applyOps', removedOrRemapped ? 'removal' : 'additive');
     }
 
     // Logged after commit so a batch that later rolls back (and is retried)

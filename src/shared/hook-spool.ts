@@ -91,6 +91,18 @@ export type HookSpoolEntry = {
   }
 }[HookSpoolKind];
 
+/**
+ * Durable record of the entries handed to ingest (the worker's
+ * hook_spool_consumed table). Makes the hand-off at-most-once across restarts:
+ * see HookSpool.drain.
+ */
+export interface HookSpoolConsumedMarkers {
+  isConsumed(entryKey: string): boolean;
+  markConsumed(entryKey: string, consumedAtEpochMs: number): void;
+  clearConsumed(entryKey: string): void;
+  pruneConsumedBefore(epochMs: number): void;
+}
+
 export interface HookSpoolDrainResult {
   drained: number;
   retained: number;
@@ -231,13 +243,49 @@ export class HookSpool {
     return this.readEntries().files.map(file => file.entry);
   }
 
-  async drain(accept: (entry: HookSpoolEntry) => boolean | Promise<boolean>): Promise<HookSpoolDrainResult> {
+  /**
+   * Hands each entry to `accept` in order; an accepted entry is unlinked.
+   *
+   * With `consumedMarkers`, the hand-off is AT-MOST-ONCE across restarts: the
+   * entry's key is marked consumed in the worker DB BEFORE `accept` runs, and
+   * the marker is cleared once the file is gone (or when `accept` declines, so
+   * it is retried). A worker that dies after the marker and before the unlink
+   * finds the marker on its next drain and removes the file without ingesting
+   * it again, so an observation already handed to provider-bound work is never
+   * sent (and billed) twice. The trade-off: a crash after the marker but before
+   * the entry reached the queue drops that one event — the same loss an
+   * in-memory queue has on a crash, chosen over double-billing.
+   */
+  async drain(
+    accept: (entry: HookSpoolEntry) => boolean | Promise<boolean>,
+    consumedMarkers?: HookSpoolConsumedMarkers,
+  ): Promise<HookSpoolDrainResult> {
     const { files, quarantined } = this.readEntries();
     let drained = 0;
     let retained = 0;
     let expired = 0;
 
+    // A marker outlives its file only when a crash hit between unlink and clear.
+    consumedMarkers?.pruneConsumedBefore(Date.now() - HOOK_SPOOL_RETRY_WINDOW_MS);
+
     for (const file of files) {
+      const entryKey = file.filename.replace(/\.json$/, '');
+      if (consumedMarkers?.isConsumed(entryKey)) {
+        logger.info('HOOK', 'Hook spool entry was already handed to ingest before a restart; removing it without ingesting again', {
+          kind: file.entry.kind,
+          contentSessionId: file.entry.payload.contentSessionId,
+          file: file.filename,
+        });
+        if (this.unlinkEntry(file)) {
+          consumedMarkers.clearConsumed(entryKey);
+          drained++;
+        } else {
+          retained++;
+        }
+        continue;
+      }
+
+      consumedMarkers?.markConsumed(entryKey, Date.now());
       let accepted: boolean;
       try {
         accepted = await accept(file.entry);
@@ -251,6 +299,8 @@ export class HookSpool {
       }
 
       if (!accepted) {
+        // Not handed off: the next drain must retry it.
+        consumedMarkers?.clearConsumed(entryKey);
         if (this.expireIfPastRetryWindow(file)) {
           expired++;
         } else {
@@ -259,24 +309,32 @@ export class HookSpool {
         continue;
       }
 
-      try {
-        unlinkSync(file.path);
+      if (this.unlinkEntry(file)) {
+        consumedMarkers?.clearConsumed(entryKey);
         drained++;
-      } catch (error) {
-        // ENOENT: a concurrent drain (another worker process) already removed it.
-        if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-          drained++;
-          continue;
-        }
-        logger.warn('HOOK', 'Hook spool entry was ingested but could not be removed', {
-          kind: file.entry.kind,
-          file: file.filename,
-        }, error instanceof Error ? error : new Error(String(error)));
+      } else {
+        // The marker stays: the next drain removes the file without re-ingesting it.
         retained++;
       }
     }
 
     return { drained, retained, quarantined, expired };
+  }
+
+  /** True when the file is gone (removed here, or by a concurrent drain). */
+  private unlinkEntry(file: HookSpoolFile): boolean {
+    try {
+      unlinkSync(file.path);
+      return true;
+    } catch (error) {
+      // ENOENT: a concurrent drain (another worker process) already removed it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      logger.warn('HOOK', 'Hook spool entry was ingested but could not be removed', {
+        kind: file.entry.kind,
+        file: file.filename,
+      }, error instanceof Error ? error : new Error(String(error)));
+      return false;
+    }
   }
 
   /** Moves a retained entry older than HOOK_SPOOL_RETRY_WINDOW_MS to `expired/`. */
