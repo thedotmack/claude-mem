@@ -7,6 +7,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
+import { PI_EXTENSION_BUILD_OPTIONS, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -775,6 +776,16 @@ async function buildHooks() {
       const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
+
+    fs.mkdirSync('dist/pi-extension', { recursive: true });
+    await build({ ...PI_EXTENSION_BUILD_OPTIONS, outfile: 'dist/pi-extension/index.js' });
+    console.log('✓ Pi memory extension built');
+    fs.mkdirSync('dsh/lib', { recursive: true });
+    const dshManifest = JSON.parse(fs.readFileSync('dsh/package.json', 'utf8'));
+    dshManifest.version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+    fs.writeFileSync('dsh/package.json', JSON.stringify(dshManifest, null, 2) + '\n');
+    await build({ ...DSH_PLUGIN_BUILD_OPTIONS, outfile: 'dsh/lib/index.js' });
+    console.log('✓ DeepSeek Harness memory plugin built');
 
     console.log('\n📋 Copying onboarding explainer to plugin tree...');
     const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';

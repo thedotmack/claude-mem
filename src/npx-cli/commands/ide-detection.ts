@@ -113,6 +113,18 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 'pi',
+      label: 'Pi',
+      detected: isCommandInPath('pi') || existsSync(process.env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
+      hint: 'native memory extension',
+    },
+    {
+      id: 'dsh',
+      label: 'DeepSeek Harness',
+      detected: isCommandInPath('dsh') || existsSync(process.env.DSH_HOME || join(home, '.dsh')),
+      hint: 'native plugin + transcript capture',
+    },
+    {
       id: 'goose',
       label: 'Goose',
       detected:

@@ -1,0 +1,2 @@
+Derived from Bleed00/dsh-claude-mem, copyright 2026 Bleed00, Apache-2.0.
+Native transcript capture remains authoritative; plugin ingestion is off to avoid duplicate observer calls.

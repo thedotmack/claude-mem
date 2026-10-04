@@ -172,6 +172,15 @@ Or install for OMP (Oh My Pi):
 npx claude-mem install --ide omp
 ```
 
+Or install the native Pi extension or DeepSeek Harness plugin:
+
+```bash
+npx claude-mem install --ide pi
+npx claude-mem install --ide dsh --dsh-profile tui
+```
+
+Pi and DeepSeek Harness use the worker runtime. See [native harness setup](docs/native-harness-integrations.md) for capture, recall, and troubleshooting.
+
 Or install from the plugin marketplace inside Claude Code:
 
 ```bash

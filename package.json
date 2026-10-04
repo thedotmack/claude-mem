@@ -51,7 +51,9 @@
     "plugin/skills",
     "plugin/ui",
     "openclaw",
-    "omp"
+    "omp",
+    "pi",
+    "dsh"
   ],
   "engines": {
     "node": ">=20.12.0",
@@ -125,7 +127,7 @@
     "@better-auth/api-key": "^1.6.16",
     "better-auth": "^1.6.16"
   },
-  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (or, for zod's plugin runtime copy, resolved from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
+  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here \u2014 better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (or, for zod's plugin runtime copy, resolved from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
   "overrides": {
     "tmp": "^0.2.7"
   },
@@ -183,7 +185,17 @@
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "unified": "^11.0.5",
-    "unist-util-visit": "^5.1.0"
+    "unist-util-visit": "^5.1.0",
+    "typebox": "^1.1.24",
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-skill": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
+    "@deepseek-ai/schemastery": "^3.18.1",
+    "@deepseek-ai/dsh-timeout": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-scope": "0.0.1-rc.1",
+    "@deepseek-ai/dsh-session": "0.0.1-rc.1"
   },
   "trustedDependencies": [
     "esbuild",

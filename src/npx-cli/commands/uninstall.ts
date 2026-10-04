@@ -366,6 +366,14 @@ export async function runUninstallCommand(): Promise<void> {
   ]);
 
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
+    { label: 'Pi memory', fn: async () => {
+      const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
+      return uninstallPiExtension();
+    }},
+    { label: 'DeepSeek Harness memory', fn: async () => {
+      const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
+      return uninstallDeepSeekHarness();
+    }},
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
