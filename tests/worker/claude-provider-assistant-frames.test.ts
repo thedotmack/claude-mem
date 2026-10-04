@@ -383,6 +383,56 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
   });
 });
 
+describe('ClaudeProvider invalid API key detection (#4253)', () => {
+  beforeEach(() => {
+    scriptedMessages = [];
+  });
+
+  it('stores an observation that quotes "Invalid API key" mid-content', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const quotingXml = OBSERVATION_XML.replace(
+      'The queued batch reached the parser.',
+      'The login test asserted the CLI prints "Invalid API key" for a revoked key.',
+    );
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: quotingXml }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw on a reply that puts ordinary narrative after an "Invalid API key ·" prefix', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: 'Invalid API key · the login test covers the revoked-key path.' }]),
+      resultFrame(),
+    ];
+
+    await expect(harness.provider.startSession(session)).resolves.toBeUndefined();
+  });
+
+  it('still throws when the CLI answers with its invalid API key status line', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      { ...assistantFrame([{ type: 'text', text: 'Invalid API key · Fix external API key' }]), error: 'authentication_failed' },
+      resultFrame({ is_error: true }),
+    ];
+
+    await expect(harness.provider.startSession(session)).rejects.toThrow('Invalid API key');
+    expect(harness.storeObservations).not.toHaveBeenCalled();
+  });
+});
+
 describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
   let infoSpy: ReturnType<typeof spyOn>;
 

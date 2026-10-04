@@ -83,7 +83,7 @@ describe('SyncClient', () => {
       fetchImpl,
       // This suite covers the HTTP lanes exactly as they behave with the
       // advisory socket absent (prime directive #2: deleting the socket path
-      // leaves Phase 3 intact). Socket coverage: sync-client-ws.test.ts.
+      // leaves Phase 3 intact). Realtime coverage: sync-client-realtime.test.ts.
       wsEnabled: false,
       // Poll fast in tests unless a test overrides a tier.
       activePollMs: 20,

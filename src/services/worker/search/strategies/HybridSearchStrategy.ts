@@ -27,13 +27,13 @@ export class HybridSearchStrategy {
     sessions: SessionSummarySearchResult[];
     usedChroma: boolean;
   }> {
-    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, project, projects, platformSource, dateRange, orderBy, isFolder } = options;
+    const { limit = SEARCH_CONSTANTS.DEFAULT_LIMIT, offset, project, projects, platformSource, dateRange, orderBy, isFolder } = options;
     // The keys SearchManager scopes by, resolved once: the SQLite lookup that
     // decides which rows match the file, the Chroma ranking and the hydration
     // all read the same projects.
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const projectScope = readKeys.length > 0 ? { projects: readKeys } : {};
-    const filterOptions = { limit, ...projectScope, platformSource, dateRange, orderBy, isFolder };
+    const filterOptions = { limit, offset, ...projectScope, platformSource, dateRange, orderBy, isFolder };
 
     logger.debug('SEARCH', 'HybridSearchStrategy: findByFile', { filePath });
 

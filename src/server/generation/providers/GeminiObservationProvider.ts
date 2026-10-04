@@ -14,6 +14,7 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
 
 // v1beta is required: current Gemini 3.x models and the `-latest` aliases are
 // only served under v1beta, and the retired v1-only 2.x models 404 for new keys.
@@ -281,7 +282,7 @@ export { parseRetryAfterMs };
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (readError) {
     const err = readError instanceof Error ? readError : new Error(String(readError));
     logger.warn('SDK', 'Failed to read Gemini error response body', { provider: 'gemini', status: response.status }, err);

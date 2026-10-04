@@ -4,11 +4,7 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
-import { isProjectExcluded } from '../../../../utils/project-filter.js';
-import { stripMemoryTags } from '../../../../utils/tag-stripping.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
-import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
-import { getProjectContext } from '../../../../utils/project-name.js';
+import { ingestAdvisorCalls } from '../shared.js';
 
 const advisorCallsIngestSchema = z.object({
   contentSessionId: z.string().min(1),
@@ -72,55 +68,12 @@ export class AdvisorRoutes extends BaseRouteHandler {
 
   private handleIngestAdvisorCalls = this.wrapHandler((req: Request, res: Response): void => {
     const { contentSessionId, cwd, transcriptPath, calls } = req.body as z.infer<typeof advisorCallsIngestSchema>;
-    const platformSource = this.getPlatformSourceFromRequest(req);
-
-    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-    if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
-      res.json({ status: 'skipped', reason: 'project_excluded' });
-      return;
-    }
-
-    const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
-
-    const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
-
-    let stored = 0;
-    let duplicates = 0;
-    let privateOnly = 0;
-    for (const call of calls) {
-      // <private> content never reaches the database, the same rule as
-      // prompts and tool payloads. Advice that was entirely private is dropped.
-      const advice = stripMemoryTags(call.advice).trim();
-      if (!advice) {
-        privateOnly++;
-        continue;
-      }
-      const lastUserMessage = call.lastUserMessage ? stripMemoryTags(call.lastUserMessage).trim() || null : null;
-
-      const result = store.recordAdvisorCall({
-        sessionDbId,
-        contentSessionId,
-        project,
-        platformSource,
-        toolUseId: call.toolUseId,
-        advisorModel: call.advisorModel ?? null,
-        cwd: cwd ?? null,
-        lastUserMessage,
-        transcriptPath: transcriptPath ?? null,
-        transcriptByteOffset: call.transcriptByteOffset ?? null,
-        advice,
-        occurredAtEpoch: call.occurredAtEpoch,
-      });
-
-      if (result.inserted) {
-        stored++;
-      } else {
-        duplicates++;
-      }
-    }
-
-    logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates, privateOnly });
-    res.json({ status: 'stored', stored, duplicates, privateOnly });
+    res.json(ingestAdvisorCalls({
+      contentSessionId,
+      platformSource: this.getPlatformSourceFromRequest(req),
+      cwd,
+      transcriptPath,
+      calls,
+    }, this.dbManager));
   });
 }

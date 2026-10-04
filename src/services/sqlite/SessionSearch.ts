@@ -16,6 +16,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/p
 import { resolveDateBound } from '../../shared/date-bounds.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
+import { pageMatchingRows } from './stream-rows.js';
 
 /**
  * Code-point ranges of the scripts FTS5's unicode61 tokenizer cannot segment: Thai and Lao,
@@ -242,14 +243,15 @@ export class SessionSearch {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
       const fileConditions = files.map(() => {
         return `(
-          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ?)
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ?)
+          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
         conditions.push(`(${fileConditions.join(' OR ')})`);
         files.forEach(file => {
-          params.push(`%${file}%`, `%${file}%`);
+          const literal = file.replace(/[\\%_]/g, '\\$&');
+          params.push(`%${literal}%`, `%${literal}%`);
         });
       }
     }
@@ -620,7 +622,8 @@ export class SessionSearch {
    * them.
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
-    const patterns = [`%${filePath}%`];
+    const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
+    const patterns = [`%${escape(filePath)}%`];
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
     }
@@ -628,9 +631,9 @@ export class SessionSearch {
     const firstRelativeSegment = /^[A-Za-z]:$/.test(segments[0] ?? '') ? 1 : 0;
     for (let start = firstRelativeSegment; start < segments.length; start += 1) {
       const trailing = segments.slice(start);
-      patterns.push(`${trailing.join('/')}/%`);
+      patterns.push(`${escape(trailing.join('/') + '/')}%`);
       if (filePath.includes('\\')) {
-        patterns.push(`${trailing.join('\\')}\\%`);
+        patterns.push(`${escape(trailing.join('\\') + '\\')}%`);
       }
     }
     return patterns;
@@ -638,7 +641,7 @@ export class SessionSearch {
 
   /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
   private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
-    const anyPattern = Array.from({ length: patternCount }, () => 'value LIKE ?').join(' OR ');
+    const anyPattern = Array.from({ length: patternCount }, () => "value LIKE ? ESCAPE '\\'").join(' OR ');
     return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
   }
 
@@ -651,7 +654,10 @@ export class SessionSearch {
     // filePath is the file filter; a caller's own `files` filter is not added on top.
     delete filters.files;
 
-    const queryLimit = isFolder ? limit * 3 : limit;
+    // Folder matching removes nested descendants, so a folder query pages the
+    // matching rows (pageMatchingRows), not a guessed multiple of the broader
+    // SQL candidates.
+    const paginationSql = isFolder ? '' : 'LIMIT ? OFFSET ?';
     const pathPatterns = SessionSearch.filePathPatterns(filePath, isFolder);
 
     const filterClause = this.buildFilterClause(filters, params, 'o');
@@ -667,16 +673,20 @@ export class SessionSearch {
       FROM observations o
       WHERE ${whereClause}
       ${orderClause}
-      LIMIT ? OFFSET ?
+      ${paginationSql}
     `;
 
-    params.push(queryLimit, offset);
+    if (!isFolder) params.push(limit, offset);
 
-    let observations = this.db.prepare(observationsSql).all(...params) as ObservationSearchResult[];
-
-    if (isFolder) {
-      observations = observations.filter(obs => this.hasDirectChildFile(obs, filePath)).slice(0, limit);
-    }
+    const observationStatement = this.db.prepare(observationsSql);
+    const observations = isFolder
+      ? pageMatchingRows<ObservationSearchResult>(
+          observationStatement,
+          params,
+          obs => this.hasDirectChildFile(obs, filePath),
+          { limit, offset },
+        )
+      : observationStatement.all(...params) as ObservationSearchResult[];
 
     const sessionParams: any[] = [];
     const sessionFilters = { ...filters };
@@ -719,16 +729,20 @@ export class SessionSearch {
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
       ORDER BY s.created_at_epoch DESC
-      LIMIT ? OFFSET ?
+      ${paginationSql}
     `;
 
-    sessionParams.push(queryLimit, offset);
+    if (!isFolder) sessionParams.push(limit, offset);
 
-    let sessions = this.db.prepare(sessionsSql).all(...sessionParams) as SessionSummarySearchResult[];
-
-    if (isFolder) {
-      sessions = sessions.filter(s => this.hasDirectChildFileSession(s, filePath)).slice(0, limit);
-    }
+    const sessionStatement = this.db.prepare(sessionsSql);
+    const sessions = isFolder
+      ? pageMatchingRows<SessionSummarySearchResult>(
+          sessionStatement,
+          sessionParams,
+          row => this.hasDirectChildFileSession(row, filePath),
+          { limit, offset },
+        )
+      : sessionStatement.all(...sessionParams) as SessionSummarySearchResult[];
 
     return { observations, sessions };
   }

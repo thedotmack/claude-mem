@@ -190,17 +190,21 @@ itPosix('passes an empty structured reply on in one turn and logs counts, never 
   }
 });
 
-itPosix('retries a turn without an agent message once, then passes an empty reply on', async () => {
+// Never pay twice (Phase 1): the completed turn was billed, so its missing
+// agent message is an output failure after ONE turn, passed on to the session
+// as an empty reply (queryObserverTurn); it no longer earns an in-place resend.
+itPosix('passes a turn without an agent message on as an empty reply, without a second turn', async () => {
   const fake = createFakeCodex({ mode: 'missing-message' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   const provider = new CodexProvider(null as any, null as any) as any;
   provider.appServer = client;
   try {
-    const result = await provider.query([{ role: 'user', content: 'Remember this.' }], {
+    const session = { sessionDbId: 9101, claimedMessageIds: [], conversationHistory: [{ role: 'user', content: 'Remember this.' }] };
+    const result = await provider.queryObserverTurn(session, {
       apiKey: 'codex-subscription', codexPath: fake.executable, model: '', reasoningEffort: null,
-    });
+    }, undefined);
     expect(result.content).toBe('');
-    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(2);
+    expect(readTrace(fake.trace).filter(entry => entry.method === 'turn/start')).toHaveLength(1);
   } finally {
     await client.close();
     rmSync(fake.root, { recursive: true, force: true });

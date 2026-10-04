@@ -1,3 +1,4 @@
+import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
 import { randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
@@ -47,6 +48,7 @@ import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
 import { applySqliteConnectionPragmas } from './connection.js';
+import { streamRows } from './stream-rows.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
   assertCanonicalDecimal,
@@ -59,41 +61,6 @@ import {
 // a slow request while allowing a later SessionEnd delivery to recover work
 // abandoned by a process crash between claiming and marking the row sent.
 export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
-
-let warnedMissingIterate = false;
-
-/**
- * Iterate a prepared statement's rows, preferring the streaming `.iterate()`
- * added in Bun v1.1.31 and falling back to the materializing `.all()` on
- * older runtimes.
- *
- * package.json declares `engines.bun >= 1.1.31`, but engines is advisory —
- * nothing enforces it when the plugin is installed through the Claude Code
- * marketplace. On an older Bun the bare `.iterate()` call threw
- * "…iterate is not a function" from inside schema migration v46, which runs
- * during background init. That rejection left the worker permanently
- * `initialized:false` while still serving 200 on /api/health, so every hook
- * silently skipped until the failure counter began blocking them outright.
- *
- * Falling back keeps the migration correct on old runtimes (it only costs
- * peak memory, and this scan runs once per install) and the one-time warning
- * names the real cause instead of a cryptic TypeError.
- */
-function streamRows(statement: {
-  iterate?: () => Iterable<unknown>;
-  all: () => unknown[];
-}): Iterable<unknown> {
-  if (typeof statement.iterate === 'function') return statement.iterate();
-  if (!warnedMissingIterate) {
-    warnedMissingIterate = true;
-    logger.warn('DB', 'bun:sqlite lacks Statement.iterate(); falling back to .all()', {
-      bunVersion: typeof Bun !== 'undefined' ? Bun.version : 'unknown',
-      requiredBunVersion: '>=1.1.31',
-      impact: 'migration rows are materialized in memory; upgrade Bun to restore streaming',
-    });
-  }
-  return statement.all();
-}
 
 /**
  * Coerce a value to something bun:sqlite can bind. The cloud/export shape
@@ -274,6 +241,7 @@ export class SessionStore {
     this.ensureSessionProjectKeySourceColumn();
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
+    this.ensureHookSpoolConsumedTable();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1970,6 +1938,36 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
   }
 
+  // v62 — exactly-once hand-off marker for hook spool entries (HookSpool.drain):
+  // written the moment ingest irrevocably accepts an entry, cleared once its file is gone.
+  private ensureHookSpoolConsumedTable(): void {
+    this.db.run(`
+      CREATE TABLE IF NOT EXISTS hook_spool_consumed (
+        entry_key TEXT PRIMARY KEY,
+        consumed_at_epoch_ms INTEGER NOT NULL
+      )
+    `);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(62, new Date().toISOString());
+  }
+
+  isHookSpoolEntryConsumed(entryKey: string): boolean {
+    return this.db.prepare('SELECT 1 FROM hook_spool_consumed WHERE entry_key = ?').get(entryKey) != null;
+  }
+
+  markHookSpoolEntryConsumed(entryKey: string, consumedAtEpochMs: number): void {
+    this.db.prepare(
+      'INSERT INTO hook_spool_consumed (entry_key, consumed_at_epoch_ms) VALUES (?, ?) ON CONFLICT(entry_key) DO UPDATE SET consumed_at_epoch_ms = excluded.consumed_at_epoch_ms'
+    ).run(entryKey, consumedAtEpochMs);
+  }
+
+  clearHookSpoolEntryConsumed(entryKey: string): void {
+    this.db.prepare('DELETE FROM hook_spool_consumed WHERE entry_key = ?').run(entryKey);
+  }
+
+  pruneHookSpoolConsumedMarkersBefore(epochMs: number): void {
+    this.db.prepare('DELETE FROM hook_spool_consumed WHERE consumed_at_epoch_ms < ?').run(epochMs);
+  }
+
   // v52 — durable claim ledger for one Telegram session wrap-up per route.
   // The DDL is intentionally idempotent so fresh installs and existing DBs
   // converge even if a fixture has an incomplete schema_versions ledger.
@@ -2987,7 +2985,9 @@ export class SessionStore {
   }
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {
-    return appendWorkStateEntryRow(this.db, entry);
+    const entryId = appendWorkStateEntryRow(this.db, entry);
+    emitContextInvalidation({ projects: [entry.project] }, 'appendWorkStateEntry');
+    return entryId;
   }
 
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
@@ -3048,10 +3048,12 @@ export class SessionStore {
     if (files) {
       const filesList = Array.isArray(files) ? files : [files];
       const fileConditions = filesList.map(() => {
-        return '(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ?) OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ?))';
+        return "(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ? ESCAPE '\\'))";
       });
       filesList.forEach(file => {
-        params.push(`%${file}%`, `%${file}%`);
+        // The hydration filter receives literal file paths, like SQLite search.
+        const literal = file.replace(/[\\%_]/g, '\\$&');
+        params.push(`%${literal}%`, `%${literal}%`);
       });
       additionalConditions.push(`(${fileConditions.join(' OR ')})`);
     }
@@ -3291,18 +3293,30 @@ export class SessionStore {
     return stmt.all(...memorySessionIds) as any[];
   }
 
-  getPromptNumberFromUserPrompts(contentSessionId: string, sessionDbId?: number): number {
+  /**
+   * The session's current prompt number (count of its user_prompts rows).
+   * `createdAtOrBeforeEpochMs` answers "which prompt was current at that
+   * moment" instead — for an event that happened earlier than it is being
+   * ingested (a hook spool entry drained after an outage).
+   */
+  getPromptNumberFromUserPrompts(
+    contentSessionId: string,
+    sessionDbId?: number,
+    createdAtOrBeforeEpochMs?: number,
+  ): number {
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
-    if (resolvedSessionDbId !== null) {
+    const sessionClause = resolvedSessionDbId !== null ? 'session_db_id = ?' : 'content_session_id = ?';
+    const sessionParam = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+    if (createdAtOrBeforeEpochMs !== undefined) {
       const result = this.db.prepare(`
-        SELECT COUNT(*) as count FROM user_prompts WHERE session_db_id = ?
-      `).get(resolvedSessionDbId) as { count: number };
+        SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
+      `).get(sessionParam, createdAtOrBeforeEpochMs) as { count: number };
       return result.count;
     }
 
     const result = this.db.prepare(`
-      SELECT COUNT(*) as count FROM user_prompts WHERE content_session_id = ?
-    `).get(contentSessionId) as { count: number };
+      SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause}
+    `).get(sessionParam) as { count: number };
     return result.count;
   }
 
@@ -3640,6 +3654,7 @@ export class SessionStore {
       timestampIso,
       timestampEpoch
     );
+    emitContextInvalidation({ projects: [project] }, 'storeSummary');
 
     return {
       id: Number(result.lastInsertRowid),
@@ -3842,7 +3857,9 @@ export class SessionStore {
       return { observationIds, mergedIntoExisting, insertedObservationIds, summaryId, createdAtEpoch: timestampEpoch };
     });
 
-    return storeTx();
+    const stored = storeTx();
+    emitContextInvalidation({ projects: [project] }, 'storeObservations');
+    return stored;
   }
 
   /**
@@ -4312,6 +4329,7 @@ export class SessionStore {
       summary.created_at,
       summary.created_at_epoch
     );
+    emitContextInvalidation({ projects: [summary.project] }, 'importSessionSummary');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
@@ -4386,6 +4404,7 @@ export class SessionStore {
       obs.created_at,
       obs.created_at_epoch
     );
+    emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
     return { imported: true, id: result.lastInsertRowid as number };
   }
