@@ -109,7 +109,8 @@ describe("claudeMemPlugin", () => {
     assert.ok(getEventHandlers("after_compaction").length > 0, "after_compaction handler registered");
     assert.ok(getEventHandlers("before_agent_start").length > 0, "before_agent_start handler registered");
     assert.ok(getEventHandlers("before_prompt_build").length > 0, "before_prompt_build handler registered");
-    assert.ok(getEventHandlers("tool_result_persist").length > 0, "tool_result_persist handler registered");
+    assert.ok(getEventHandlers("after_tool_call").length > 0, "after_tool_call handler registered");
+    assert.equal(getEventHandlers("tool_result_persist").length, 0, "transcript transforms must not duplicate completed observations");
     assert.ok(getEventHandlers("agent_end").length > 0, "agent_end handler registered");
     assert.ok(getEventHandlers("gateway_start").length > 0, "gateway_start handler registered");
     assert.ok(logs.some((l) => l.includes("plugin loaded")));
@@ -352,17 +353,17 @@ describe("Observation I/O event handlers", () => {
     assert.equal(initRequests.length, 1, "before_agent_start should init session");
   });
 
-  it("tool_result_persist sends observation to worker", async () => {
+  it("after_tool_call sends observation to worker", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
     await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "test-agent" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    await fireEvent("tool_result_persist", {
+    await fireEvent("after_tool_call", {
       toolName: "Read",
       params: { file_path: "/src/index.ts" },
-      message: {
+      result: {
         content: [{ type: "text", text: "file contents here..." }],
       },
     }, { sessionKey: "test-agent" });
@@ -377,11 +378,11 @@ describe("Observation I/O event handlers", () => {
     assert.ok(obsRequest!.body.contentSessionId.startsWith("openclaw-test-agent-"));
   });
 
-  it("tool_result_persist skips memory_ tools", async () => {
+  it("after_tool_call skips memory_ tools", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
-    await fireEvent("tool_result_persist", {
+    await fireEvent("after_tool_call", {
       toolName: "memory_search",
       params: {},
     }, {});
@@ -392,15 +393,15 @@ describe("Observation I/O event handlers", () => {
     assert.ok(!obsRequest, "should skip memory_ tools");
   });
 
-  it("tool_result_persist truncates long responses", async () => {
+  it("after_tool_call truncates long responses", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);
 
     const longText = "x".repeat(2000);
-    await fireEvent("tool_result_persist", {
+    await fireEvent("after_tool_call", {
       toolName: "Bash",
       params: { command: "ls" },
-      message: {
+      result: {
         content: [{ type: "text", text: longText }],
       },
     }, {});
@@ -410,6 +411,20 @@ describe("Observation I/O event handlers", () => {
     const obsRequest = receivedRequests.find((r) => r.url === "/api/sessions/observations");
     assert.ok(obsRequest, "should send observation");
     assert.equal(obsRequest!.body.tool_response.length, 1000, "should truncate to 1000 chars");
+  });
+
+  it("after_tool_call captures plain-string results and truncates them", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+    await fireEvent("after_tool_call", {
+      toolName: "custom_tool", params: { owned: true }, result: "x".repeat(2000),
+    }, { sessionKey: "string-result" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const request = receivedRequests.find((r) => r.url === "/api/sessions/observations");
+    assert.ok(request);
+    assert.equal(request.body.tool_response, "x".repeat(1000));
+    assert.equal(request.body.tool_name, "custom_tool");
+    assert.deepEqual(request.body.tool_input, { owned: true });
   });
 
   it("agent_end sends summarize and complete to worker", async () => {
@@ -506,10 +521,10 @@ describe("Observation I/O event handlers", () => {
     await fireEvent("session_start", { sessionId: "s1" }, { sessionKey: "reuse-test" });
     await new Promise((resolve) => setTimeout(resolve, 100));
 
-    await fireEvent("tool_result_persist", {
+    await fireEvent("after_tool_call", {
       toolName: "Read",
       params: { file_path: "/src/index.ts" },
-      message: { content: [{ type: "text", text: "contents" }] },
+      result: { content: [{ type: "text", text: "contents" }] },
     }, { sessionKey: "reuse-test" });
 
     await new Promise((resolve) => setTimeout(resolve, 100));
@@ -627,7 +642,7 @@ describe("before_prompt_build context injection", () => {
     }
   });
 
-  it("does not sync MEMORY.md on tool_result_persist", async () => {
+  it("does not sync MEMORY.md on after_tool_call", async () => {
     const tmpDir = await mkdtemp(join(tmpdir(), "claude-mem-test-"));
     try {
       const { api, fireEvent } = createMockApi({ workerPort });
@@ -639,16 +654,16 @@ describe("before_prompt_build context injection", () => {
 
       await new Promise((resolve) => setTimeout(resolve, 200));
 
-      await fireEvent("tool_result_persist", {
+      await fireEvent("after_tool_call", {
         toolName: "Read",
         params: { file_path: "/src/app.ts" },
-        message: { content: [{ type: "text", text: "file contents" }] },
+        result: { content: [{ type: "text", text: "file contents" }] },
       }, { sessionKey: "tool-sync" });
 
       await new Promise((resolve) => setTimeout(resolve, 200));
 
       const contextRequests = receivedRequests.filter((r) => r.url?.startsWith("/api/context/inject"));
-      assert.equal(contextRequests.length, 0, "tool_result_persist should not fetch context");
+      assert.equal(contextRequests.length, 0, "after_tool_call should not fetch context");
 
       let memoryExists = true;
       try {
@@ -656,7 +671,7 @@ describe("before_prompt_build context injection", () => {
       } catch {
         memoryExists = false;
       }
-      assert.ok(!memoryExists, "MEMORY.md should not be written by tool_result_persist");
+      assert.ok(!memoryExists, "MEMORY.md should not be written by after_tool_call");
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
