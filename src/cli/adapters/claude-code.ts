@@ -19,18 +19,18 @@ const failedToolResponse = (r: Record<string, unknown>): { error: unknown; is_in
   r.hook_event_name === 'PostToolUseFailure' ? { error: r.error, is_interrupt: r.is_interrupt === true } : undefined;
 
 /**
- * Read Qwen Code's `submitted_prompt` into the three states the handler needs.
- *
- * The distinction that matters is presence, not truthiness: an absent field
- * means the host cannot tell a continuation send from a user turn, and an empty
- * one means the host can and is saying this was not a user turn. Collapsing
- * those two is what wrote a fake `[media prompt]` row for every tool round
- * (#4215).
+ * Read the host's submitted text without substituting model-bound input.
+ * Qwen command hooks set QWEN_PROJECT_DIR and can omit submitted_prompt when
+ * user provenance is unavailable. That omission must skip prompt recording;
+ * falling back to prompt manufactures user turns from continuation sends.
+ * Other hosts retain the legacy empty-prompt behavior for image submissions.
  */
 export const normalizeSubmittedPrompt = (raw: unknown): string | null | undefined => {
   if (typeof raw !== 'object' || raw === null) return undefined;
   const record = raw as Record<string, unknown>;
-  if (!Object.prototype.hasOwnProperty.call(record, 'submitted_prompt')) return undefined;
+  if (!Object.prototype.hasOwnProperty.call(record, 'submitted_prompt')) {
+    return process.env.QWEN_PROJECT_DIR ? null : undefined;
+  }
   const value = record.submitted_prompt;
   if (typeof value !== 'string') return null;
   return value.trim() ? value : null;
