@@ -5,11 +5,11 @@
  * @module dsh-claude-mem/hooks
  */
 
-import type { Context } from '@deepseek-ai/cordis'
-import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock, UserMessage } from '@deepseek-ai/dsh-llm'
-import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { ToolExecution, ToolExecutionResult, PostToolDecision } from '@deepseek-ai/dsh-tools'
+import type { Context } from './sdk-contract.js'
+import type { Agent } from './sdk-contract.js'
+import type { ContentBlock, UserMessage } from './sdk-contract.js'
+import { createUserMessage } from './vendor/sdk.mjs'
+import type { ToolExecution, ToolExecutionResult, PostToolDecision } from './sdk-contract.js'
 import { basename } from 'node:path'
 import { createHarnessWorkerClient } from '../harness-worker.js'
 import type { WorkerClient } from './worker.js'

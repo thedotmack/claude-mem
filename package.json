@@ -186,16 +186,7 @@
     "typescript": "^6.0.3",
     "unified": "^11.0.5",
     "unist-util-visit": "^5.1.0",
-    "typebox": "^1.1.24",
-    "@deepseek-ai/cordis": "^4.0.1",
-    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
-    "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
-    "@deepseek-ai/dsh-skill": "^0.0.1-rc.1",
-    "@deepseek-ai/dsh-tools": "^0.0.1-rc.1",
-    "@deepseek-ai/schemastery": "^3.18.1",
-    "@deepseek-ai/dsh-timeout": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-scope": "0.0.1-rc.1",
-    "@deepseek-ai/dsh-session": "0.0.1-rc.1"
+    "typebox": "^1.1.24"
   },
   "trustedDependencies": [
     "esbuild",

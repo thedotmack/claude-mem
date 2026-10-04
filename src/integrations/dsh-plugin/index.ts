@@ -10,9 +10,8 @@
  * @module dsh-claude-mem
  */
 
-import type { Context } from '@deepseek-ai/cordis'
-import Schema from '@deepseek-ai/schemastery'
-import type {} from '@deepseek-ai/dsh-skill'
+import type { Context } from './sdk-contract.js'
+import { Schema } from './vendor/sdk.mjs'
 import { WorkerClient } from './worker.js'
 import { applyMemoryTools } from './tools.js'
 import { applyMemoryHooks } from './hooks.js'

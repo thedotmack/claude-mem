@@ -307,6 +307,21 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
+  // DSH may link the local package. Remove it while the marketplace package
+  // and its bundle manifest still exist; never leave a dangling host plugin.
+  try {
+    const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
+    if (await uninstallDeepSeekHarness() !== 0) {
+      p.log.error('DeepSeek Harness cleanup failed. Installation files were preserved; repair DSH and re-run uninstall.');
+      process.exitCode = 1;
+      return;
+    }
+  } catch (error) {
+    p.log.error('DeepSeek Harness cleanup failed; installation files were preserved: ' + String(error));
+    process.exitCode = 1;
+    return;
+  }
+
   await p.tasks([
     {
       title: 'Removing marketplace directory',
@@ -369,10 +384,6 @@ export async function runUninstallCommand(): Promise<void> {
     { label: 'Pi memory', fn: async () => {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();
-    }},
-    { label: 'DeepSeek Harness memory', fn: async () => {
-      const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
-      return uninstallDeepSeekHarness();
     }},
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');

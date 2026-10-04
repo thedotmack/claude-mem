@@ -4,13 +4,14 @@
  * @module dsh-claude-mem/tools
  */
 
-import type { Context } from '@deepseek-ai/cordis'
-import { defineTool } from '@deepseek-ai/dsh-tools'
+import type { Context } from './sdk-contract.js'
+import { defineTool } from './vendor/sdk.mjs'
 import type { WorkerClient } from './worker.js'
 import type {
   MemGetObservationsRequest,
   MemObservation,
   MemSaveRequest,
+  MemSaveResult,
   MemSearchRequest,
   MemSearchResult,
   MemTimelineRequest,
@@ -142,7 +143,7 @@ export function applyMemoryTools(ctx: Context, worker: WorkerClient, config: Too
 }
 
 function applySearchTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
-  ctx.tools.register(defineTool({
+  ctx.tools.register(defineTool<QueryOutput>({
     name: 'mem_search',
     description: 'Search persistent cross-session memory for observations matching a query. Returns an index with ids, titles, and types — fetch full details only for filtered ids.',
     parameters: {
@@ -186,7 +187,7 @@ function applySearchTool(ctx: Context, worker: WorkerClient, timeoutMs: number):
 }
 
 function applyTimelineTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
-  ctx.tools.register(defineTool({
+  ctx.tools.register(defineTool<QueryOutput>({
     name: 'mem_timeline',
     description: 'Get context around one memory observation (its surrounding observations) by id or query.',
     parameters: {
@@ -233,7 +234,7 @@ function applyTimelineTool(ctx: Context, worker: WorkerClient, timeoutMs: number
 }
 
 function applyGetObservationsTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
-  ctx.tools.register(defineTool({
+  ctx.tools.register(defineTool<FullQueryOutput>({
     name: 'mem_get_observations',
     description: 'Fetch full details for memory observations by id. Returns every field the worker reports (narrative, facts, concepts, files, metadata and timestamps) for parity with the raw API.',
     parameters: {
@@ -279,7 +280,7 @@ function applyGetObservationsTool(ctx: Context, worker: WorkerClient, timeoutMs:
           content: { type: 'string' },
         },
       },
-      render: (_args, value) => [{ type: 'text', text: formatFullOutput(value as unknown as FullQueryOutput) }],
+      render: (_args, value) => [{ type: 'text', text: formatFullOutput(value) }],
     },
     timeoutMs,
     isConcurrencySafe: () => true,
@@ -289,13 +290,13 @@ function applyGetObservationsTool(ctx: Context, worker: WorkerClient, timeoutMs:
         ids: args.ids,
         ...args.project !== undefined ? { project: args.project } : {},
       }
-      return projectFullResult(await worker.getObservations(input, exec.signal)) as never
+      return projectFullResult(await worker.getObservations(input, exec.signal))
     },
   }))
 }
 
 function applySaveTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
-  ctx.tools.register(defineTool({
+  ctx.tools.register(defineTool<MemSaveResult>({
     name: 'mem_save',
     description: 'Save one manual memory as an observation in persistent memory (no generation job; stores the text as given).',
     parameters: {
@@ -333,7 +334,7 @@ function applySaveTool(ctx: Context, worker: WorkerClient, timeoutMs: number): v
 }
 
 function applyContextTool(ctx: Context, worker: WorkerClient, timeoutMs: number): void {
-  ctx.tools.register(defineTool({
+  ctx.tools.register(defineTool<string>({
     name: 'mem_context',
     description: 'Render the worker\'s session-start context text for one or more projects (the same text injected at startup).',
     parameters: {

@@ -45,6 +45,8 @@ describe('installed harness bundles', () => {
       const injected: any[] = [];
       await events.get('agent/created')({ agent: { session: { id: 'dsh-id', header: { cwd: '/work/checkout' } }, inject(message: any) { injected.push(message); } } });
       expect(injected[0].content[0].text).toBe('Project memory');
+      expect(injected[0].role).toBe('user');
+      expect(typeof injected[0].id).toBe('string');
       expect(requests).toHaveLength(1);
       expect(requests[0].hostname).toBe('remote.example');
       expect(requests[0].searchParams.get('cwd')).toBe('/work/checkout');

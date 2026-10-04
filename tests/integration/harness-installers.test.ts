@@ -4,11 +4,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { canonicalIntegrationId } from '../../src/shared/integration-id.js';
 import { installPiExtension, piExtensionPath, uninstallPiExtension } from '../../src/services/integrations/PiInstaller.js';
-import { installDshTranscriptWatch, uninstallDshTranscriptWatch, dshWatchConfigPath } from '../../src/services/integrations/DeepSeekHarnessInstaller.js';
+import { installDshTranscriptWatch, uninstallDshTranscriptWatch, dshWatchConfigPath, installDeepSeekHarness, uninstallDeepSeekHarness } from '../../src/services/integrations/DeepSeekHarnessInstaller.js';
 
 let dir: string;
 let previous: Record<string, string | undefined>;
-const keys = ['PI_CODING_AGENT_DIR', 'DSH_HOME', 'CLAUDE_MEM_DEV_HOOK_SOURCE', 'CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH'];
+const keys = ['PI_CODING_AGENT_DIR', 'DSH_HOME', 'CLAUDE_MEM_DEV_HOOK_SOURCE', 'CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH', 'PATH', 'DSH_TEST_LOG', 'DSH_TEST_FAIL'];
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'cmem-harness-install-'));
   previous = Object.fromEntries(keys.map(key => [key, process.env[key]]));
@@ -26,6 +26,13 @@ function writeConfig(value: any): void {
   writeFileSync(dshWatchConfigPath(), JSON.stringify(value));
 }
 const readConfig = () => JSON.parse(readFileSync(dshWatchConfigPath(), 'utf8'));
+function fakeDsh(): void {
+  const bin = join(dir, 'bin'); mkdirSync(bin);
+  writeFileSync(join(bin, 'dsh'), '#!/usr/bin/env node\n' +
+    'const fs=require("node:fs");fs.appendFileSync(process.env.DSH_TEST_LOG,JSON.stringify(process.argv.slice(2))+"\\n");process.exit(process.env.DSH_TEST_FAIL==="1"?1:0);\n', { mode: 0o755 });
+  process.env.PATH = bin + ':' + process.env.PATH;
+  process.env.DSH_TEST_LOG = join(dir, 'dsh-calls.jsonl');
+}
 
 describe('first-party harness installers', () => {
   it('accepts Pi/DeepSeek aliases', () => {
@@ -76,5 +83,29 @@ describe('first-party harness installers', () => {
     writeFileSync(dshWatchConfigPath(), original);
     expect(() => installDshTranscriptWatch(join(process.cwd(), 'dsh'))).toThrow();
     expect(readFileSync(dshWatchConfigPath(), 'utf8')).toBe(original);
+  });
+
+  it.skipIf(process.platform === 'win32')('uses the requested DSH profile for native add/remove and preserves unrelated watches', async () => {
+    fakeDsh();
+    const other = { name: 'other', path: '/other', schema: 'custom' };
+    writeConfig({ version: 1, watches: [other], schemas: { custom: { name: 'custom', events: [] } } });
+    expect(await installDeepSeekHarness('review')).toBe(0);
+    expect(readConfig().watches).toHaveLength(2);
+    expect(await uninstallDeepSeekHarness()).toBe(0);
+    expect(readConfig().watches).toEqual([other]);
+    const calls = readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(calls[0].slice(0,4)).toEqual(['plugin','--profile','review','add']);
+    expect(calls[0][4]).toContain('dsh');
+    expect(calls[1]).toEqual(['plugin','--profile','review','remove','@claude-mem/dsh']);
+  });
+
+  it.skipIf(process.platform === 'win32')('does not add a watch on CLI failure or run invalid profiles', async () => {
+    fakeDsh(); process.env.DSH_TEST_FAIL = '1';
+    const original = { version: 1, watches: [] };
+    writeConfig(original);
+    expect(await installDeepSeekHarness('review')).toBe(1);
+    expect(readConfig()).toEqual(original);
+    expect(await installDeepSeekHarness('invalid;profile')).toBe(1);
+    expect(readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 });

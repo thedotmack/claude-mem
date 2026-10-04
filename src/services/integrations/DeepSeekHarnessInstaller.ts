@@ -105,10 +105,19 @@ export async function installDeepSeekHarness(profile = 'tui'): Promise<number> {
     }
     previous = readInstallState();
   } catch (error) { console.error(String(error)); return 1; }
-  if (await runDsh(profile, 'add', packageDir) !== 0) return 1;
+  // Persist ownership before external installation. If this directory cannot
+  // be written, no plugin is installed that a later uninstall cannot identify.
+  try { writeJsonFileAtomic(markerPath(), { profiles: [...new Set([...previous.profiles, profile])] }); }
+  catch (error) { console.error('Cannot record DSH installation: ' + String(error)); return 1; }
+  if (await runDsh(profile, 'add', packageDir) !== 0) {
+    try {
+      if (previous.profiles.length) writeJsonFileAtomic(markerPath(), previous);
+      else rmSync(markerPath(), { force: true });
+    } catch (error) { console.error('Could not restore DSH installation state: ' + String(error)); }
+    return 1;
+  }
   try {
     installDshTranscriptWatch(packageDir);
-    writeJsonFileAtomic(markerPath(), { profiles: [...new Set([...previous.profiles, profile])] });
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
     if (settings.CLAUDE_MEM_TRANSCRIPTS_ENABLED === 'false') {
       console.error('DSH recall installed, but automatic capture is disabled by CLAUDE_MEM_TRANSCRIPTS_ENABLED=false.');

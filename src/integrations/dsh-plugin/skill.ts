@@ -4,7 +4,6 @@
  * @module dsh-claude-mem/skill
  */
 
-import type {} from '@deepseek-ai/dsh-skill'
 
 const MEM_SEARCH_SKILL_NAME = 'mem-search'
 const MEM_SEARCH_SKILL_DESCRIPTION = 'Search persistent cross-session memory. Use when the user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.'
