@@ -88,7 +88,16 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   const parsedLines = useMemo(() => {
     if (!logs) return [];
-    return logs.split('\n').map(parseLogLine);
+    let record: ParsedLogLine | undefined;
+    return logs.split('\n').map(raw => {
+      const line = parseLogLine(raw);
+      if (line.timestamp) record = line;
+      else if (record) {
+        line.level = record.level;
+        line.component = record.component;
+      }
+      return line;
+    });
   }, [logs]);
 
   const filteredLines = useMemo(() => {
