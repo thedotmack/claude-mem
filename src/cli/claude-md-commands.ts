@@ -66,7 +66,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
 
   let output: string;
   try {
-    output = execSync('git ls-files', {
+    output = execSync('git ls-files -z', {
       cwd: workingDir,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024
@@ -78,7 +78,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
     return folders;
   }
 
-  const files = output.trim().split('\n').filter(f => f);
+  const files = output.split('\0').filter(f => f);
 
   for (const file of files) {
     const absPath = path.join(workingDir, file);
@@ -145,7 +145,7 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   `;
 
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
-  const likePattern = `%"${normalizedFolderPath}/%`;
+  const likePattern = `%"${JSON.stringify(normalizedFolderPath + '/').slice(1, -1)}%`;
   // Page the folder's direct children themselves, not a guessed window of the
   // broader candidates that nested files can fill.
   return pageMatchingRows<ObservationRow>(
