@@ -10,7 +10,7 @@ import _paths
 @unittest.skipUnless(os.name == "nt", "Native Windows default-encoding regression")
 class TranscriptEncoding(unittest.TestCase):
     def check_reader(self, kind):
-        program = r''' 
+        program = r'''
 import json, locale, pathlib, sys, tempfile
 sys.path.insert(0, sys.argv[1])
 from acr import transcripts, behavior, wins, rules
@@ -30,7 +30,7 @@ with tempfile.TemporaryDirectory() as folder:
         assert len(rows) == 1 and rows[0]["input"] == 10
         assert rows[0]["cwd"] == "C:/workspace/中文", repr(rows[0]["cwd"])
     elif sys.argv[2] == "behavior":
-        sessions = behavior.scan(None, None, session="session", pattern=str(source))
+        sessions, _ = behavior.scan(None, None, session="session", pattern=str(source))
         turn = next(iter(sessions["session"]["turns"].values()))
         assert turn["text"] == "完成工作", repr(turn["text"])
     elif sys.argv[2] == "wins":
