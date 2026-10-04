@@ -39,4 +39,4 @@ jobs:
       - name: Test rendering with the legacy Windows default encoding
         env:
           PYTHONUTF8: '0'
-        run: python -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -p 'test_render_encoding.py'
+        run: python -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -p 'test_render*.py'
