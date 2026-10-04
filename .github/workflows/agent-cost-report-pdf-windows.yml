@@ -34,6 +34,8 @@ jobs:
         with:
           python-version: '3.13'
       - name: Exercise PDF discovery in every shipped distribution
+        env:
+          ACR_EXPECT_WINDOWS_CHROME: '1'
         shell: pwsh
         run: |
           $distributions = @('plugin', 'claude-mem-cursor', 'claude-mem-grok-bot', 'cowork', 'openclaw')

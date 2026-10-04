@@ -19,6 +19,8 @@ class WindowsChromePdf(unittest.TestCase):
                       if key in os.environ]
         self.chrome = next((p for p in candidates if p.is_file()), None)
         if self.chrome is None:
+            if os.environ.get("ACR_EXPECT_WINDOWS_CHROME") == "1":
+                self.fail("Windows CI must provide Chrome for the native PDF regressions")
             self.skipTest("Chrome is optional and is not installed in a standard Windows location")
         print("native Chrome:", self.chrome, "google-chrome on PATH:", shutil.which("google-chrome"))
         self.tmp = tempfile.TemporaryDirectory(prefix="acr-native-pdf-")
