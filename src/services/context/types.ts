@@ -93,6 +93,7 @@ export interface SessionSummary {
   learned: string | null;
   completed: string | null;
   next_steps: string | null;
+  notes?: string | null;
   created_at: string;
   created_at_epoch: number;
   project?: string;
