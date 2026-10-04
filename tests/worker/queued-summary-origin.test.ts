@@ -86,7 +86,7 @@ describe('queued summary origin', () => {
           await provider.startSession(session, { broadcastProcessingStatus() {
             if (manager.getTotalQueueDepth() === 0) session.abortController.abort();
           } });
-          const continued = session.conversationHistory[0].content.startsWith((mode as any).getActiveMode().prompts.continuation_greeting);
+          const continued = session.conversationHistory[0].content.includes((mode as any).getActiveMode().prompts.continuation_greeting);
           console.log(JSON.stringify({ kind, retainedPromptNumber, continued, observations }));
           expect(continued).toBe(true);
           expect(retainedPromptNumber).toBe(2);

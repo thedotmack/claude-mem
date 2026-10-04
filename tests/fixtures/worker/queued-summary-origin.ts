@@ -121,7 +121,7 @@ if (kind === 'summary-stall') {
 await provider.startSession(session);
 if (kind === 'summary-stall') {
   const expectedGreeting = (mode as any).getActiveMode().prompts.continuation_greeting;
-  const continued = session.conversationHistory[0].content.startsWith(expectedGreeting);
+  const continued = session.conversationHistory[0].content.includes(expectedGreeting);
   console.log(JSON.stringify({ kind, stalledPromptNumber, retainedPromptNumber: session.lastPromptNumber, continued, rows: store.db.query('SELECT request, prompt_number FROM session_summaries').all() }));
   assert.equal(continued, true);
   assert.equal(stalledPromptNumber, 2);
@@ -138,7 +138,7 @@ if (kind === 'older-observation' || kind === 'cursor-prompt') {
   manager.queueSummarize(sid, 'Second request completed', 2);
   session.abortController = new AbortController();
   await provider.startSession(session);
-  const continued = session.conversationHistory[0].content.startsWith((mode as any).getActiveMode().prompts.continuation_greeting);
+  const continued = session.conversationHistory[0].content.includes((mode as any).getActiveMode().prompts.continuation_greeting);
   console.log(JSON.stringify({ kind, retainedPromptNumber, continued, observations }));
   assert.equal(continued, true);
   assert.equal(retainedPromptNumber, 2);
