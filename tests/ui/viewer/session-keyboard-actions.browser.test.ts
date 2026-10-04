@@ -37,11 +37,12 @@ for (const key of ['Enter', 'Space'] as const) {
     try {
       const startupDeadline = Date.now() + 10000;
       const portFile = join(profile, 'DevToolsActivePort');
-      while (!existsSync(portFile)) {
+      let port = '';
+      while (!/^\d+$/.test(port)) {
         if (Date.now() > startupDeadline) throw new Error('Owned browser did not start');
-        await Bun.sleep(10);
+        if (existsSync(portFile)) port = readFileSync(portFile, 'utf8').split('\n')[0];
+        if (!/^\d+$/.test(port)) await Bun.sleep(10);
       }
-      const port = readFileSync(portFile, 'utf8').split('\n')[0];
       const targets = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
       const target = targets.find((entry: any) => entry.type === 'page' && entry.url === server.url.href);
       if (!target) throw new Error('Owned browser page was not found');
