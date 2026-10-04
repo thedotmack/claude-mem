@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import {
   RateLimitStore,
   shouldAbortForQuota,
@@ -8,6 +8,7 @@ import {
   minutesUntilReset,
   buildUsageLimitHitProps,
   type RateLimitInfo,
+  type RateLimitWindow,
 } from '../../src/services/worker/RateLimitStore.js';
 
 // Quota-aware wall-clock guard (#2234).
@@ -488,6 +489,79 @@ describe('shouldAbortForQuota — per-account profile scoping', () => {
       unifiedWindows: { seven_day: { utilization: 0.2 } },
     });
     expect(store.get('seven_day')?.resetsAt).toBeUndefined();
+  });
+});
+
+// Configurable thresholds (#4230). Settings are read through the env override
+// here; the data dir is pinned to a temp dir by tests/preload.ts.
+describe('shouldAbortForQuota — configurable thresholds', () => {
+  const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn)';
+  const THRESHOLD_KEYS = [
+    'CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR',
+    'CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY',
+    'CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS',
+    'CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET',
+    'CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE',
+  ];
+  let savedEnv: Record<string, string | undefined>;
+  beforeEach(() => {
+    savedEnv = {};
+    for (const key of THRESHOLD_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+  afterEach(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  function storeAt(window: RateLimitWindow, utilization: number, status: RateLimitInfo['status'] = 'allowed'): RateLimitStore {
+    const store = freshStore();
+    store.set({ rateLimitType: window, status, utilization, resetsAt: FIXED_NOW + 2 * 24 * 60 * 60 * 1000 });
+    return store;
+  }
+
+  it('defaults behave exactly like the previous constants', () => {
+    const previous: Array<[RateLimitWindow, number]> = [
+      ['five_hour', 0.95],
+      ['seven_day_opus', 0.93],
+      ['seven_day_sonnet', 0.92],
+      ['seven_day', 0.93],
+      ['overage', 0.95],
+    ];
+    for (const [window, threshold] of previous) {
+      expect(shouldAbortForQuota(cliAuth, storeAt(window, threshold - 0.001), FIXED_NOW)).toEqual({ abort: false });
+      expect(shouldAbortForQuota(cliAuth, storeAt(window, threshold), FIXED_NOW)).toEqual({
+        abort: true,
+        window,
+        reason: `quota:${window} utilization ${(threshold * 100).toFixed(1)}% >= ${(threshold * 100).toFixed(0)}%`,
+      });
+    }
+  });
+
+  it('a configured threshold replaces the default for its window only', () => {
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '0.99';
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.95), FIXED_NOW).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.99), FIXED_NOW).abort).toBe(true);
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day_opus', 0.93), FIXED_NOW).abort).toBe(true);
+  });
+
+  it('an unparseable value falls back to the default', () => {
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = 'not-a-number';
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.92), FIXED_NOW).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.93), FIXED_NOW).abort).toBe(true);
+  });
+
+  it('a provider rejection still stops the observer whatever the threshold', () => {
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '2';
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.5, 'rejected'), FIXED_NOW)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day rejected by provider',
+    });
   });
 });
 
