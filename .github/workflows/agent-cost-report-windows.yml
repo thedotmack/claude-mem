@@ -39,4 +39,11 @@ jobs:
       - name: Test rendering with the legacy Windows default encoding
         env:
           PYTHONUTF8: '0'
-        run: python -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -p 'test_render*.py'
+        shell: pwsh
+        run: |
+          $distributions = @('plugin', 'claude-mem-cursor', 'claude-mem-grok-bot', 'cowork', 'openclaw')
+          foreach ($distribution in $distributions) {
+            $tests = "$distribution/skills/agent-cost-report/scripts/tests"
+            python -m unittest discover -s $tests -p 'test_render*.py'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
