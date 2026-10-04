@@ -9,14 +9,16 @@ const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 /**
  * Hand one spool entry to the SAME ingest function its HTTP route uses.
  * true = done (accepted or deliberately skipped) → unlink; false = keep.
+ * `markHandedOff` goes to ingest, which calls it synchronously at the exact
+ * point the entry is irrevocably accepted (see HookSpool.drain).
  */
-async function ingestHookSpoolEntry(entry: HookSpoolEntry): Promise<boolean> {
+async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean> {
   switch (entry.kind) {
     case 'observation':
     case 'file_edit': {
       // Attribute it to the prompt that was current when the hook saw it, not
       // the one current now (the drain may run prompts later).
-      const result = await ingestObservation({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs });
+      const result = await ingestObservation({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, { markHandedOff });
       if (!result.ok) {
         logger.warn('HOOK', 'Spooled observation was not ingested; keeping it for the next drain', {
           kind: entry.kind,
@@ -31,16 +33,16 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry): Promise<boolean> {
     case 'summarize':
       // unknown_session: init may not have landed yet (it raced the same
       // outage) — keep the entry, exactly like the old SessionEnd replay.
-      return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs })).status !== 'unknown_session';
+      return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status !== 'unknown_session';
     case 'session_end':
-      return (await ingestSessionEnd(entry.payload)).status !== 'unknown_session';
+      return (await ingestSessionEnd(entry.payload, undefined, { markHandedOff })).status !== 'unknown_session';
     case 'advisor_calls':
-      ingestAdvisorCalls(entry.payload);
+      ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
       return true;
   }
 }
 
-/** The worker DB's hook_spool_consumed table: makes the hand-off at-most-once across restarts. */
+/** The worker DB's hook_spool_consumed table: makes the hand-off exactly-once across restarts. */
 export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumedMarkers {
   return {
     isConsumed: entryKey => store.isHookSpoolEntryConsumed(entryKey),

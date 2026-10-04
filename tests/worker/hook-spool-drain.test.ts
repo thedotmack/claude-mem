@@ -166,36 +166,119 @@ describe('drainHookSpool', () => {
   });
 });
 
-describe('drainHookSpool at-most-once hand-off across restarts', () => {
-  it('a worker that dies after handing an observation to ingest but before unlinking it does not send it again', async () => {
-    const spoolDirectory = join(spoolDir, 'spool');
-    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
-    new HookSpool(spoolDirectory).enqueue('observation', {
-      contentSessionId: 'crash-session', platformSource: 'claude', toolName: 'Bash',
-      toolInput: { command: 'ls' }, toolResponse: { stdout: 'x' }, cwd: '/repo', toolUseId: 'toolu_crash_1',
-    });
+describe('drainHookSpool exactly-once hand-off across restarts', () => {
+  const spoolDirectory = () => join(spoolDir, 'spool');
+  const crashObservation = {
+    contentSessionId: 'crash-session', platformSource: 'claude', toolName: 'Bash',
+    toolInput: { command: 'ls' }, toolResponse: { stdout: 'x' }, cwd: '/repo', toolUseId: 'toolu_crash_1',
+  };
+  const ENTRY_KEY = 'observation-toolu_crash_1';
+  const neverSettles = () => new Promise<never>(() => {});
 
-    // Worker 1: ingest reaches the provider-bound queue, then the process
-    // "dies" before the drain can unlink the file (the promise never settles).
-    const realIngestObservation = ingestShared.ingestObservation;
-    const crashAfterIngest = spyOn(ingestShared, 'ingestObservation').mockImplementation(async (payload) => {
-      await realIngestObservation(payload);
-      return new Promise<never>(() => {});
-    });
-    void drainHookSpool(new HookSpool(spoolDirectory));
-    for (let tick = 0; tick < 20 && sessionManager.queueObservation.mock.calls.length === 0; tick++) {
+  async function waitUntil(condition: () => boolean, label: string): Promise<void> {
+    for (let tick = 0; tick < 200 && !condition(); tick++) {
       await new Promise(resolve => setTimeout(resolve, 5));
     }
+    if (!condition()) throw new Error(`timed out waiting for: ${label}`);
+  }
+
+  it('a worker that dies after markHandedOff (mid generator kick) does not send the entry again', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    new HookSpool(spoolDirectory()).enqueue('observation', crashObservation);
+
+    // Worker 1: the real ingest enqueues and marks the hand-off, then the
+    // process "dies" inside the generator kick (the promise never settles),
+    // before the drain can unlink the file.
+    ensureGeneratorRunning.mockImplementation(neverSettles);
+    void drainHookSpool(new HookSpool(spoolDirectory()));
+    await waitUntil(() => ensureGeneratorRunning.mock.calls.length === 1, 'generator kick reached');
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
-    expect(spoolFiles(new HookSpool(spoolDirectory))).toEqual(['observation-toolu_crash_1.json']);
-    crashAfterIngest.mockRestore();
+    expect(store.isHookSpoolEntryConsumed(ENTRY_KEY)).toBe(true);
+    expect(spoolFiles(new HookSpool(spoolDirectory()))).toEqual([`${ENTRY_KEY}.json`]);
 
     // Worker 2 boots on the same database and spool directory.
-    const result = await drainHookSpool(new HookSpool(spoolDirectory));
+    ensureGeneratorRunning.mockImplementation(async () => {});
+    const result = await drainHookSpool(new HookSpool(spoolDirectory()));
     expect(result).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
-    expect(spoolFiles(new HookSpool(spoolDirectory))).toEqual([]);
-    expect(store.isHookSpoolEntryConsumed('observation-toolu_crash_1')).toBe(false);
+    expect(spoolFiles(new HookSpool(spoolDirectory()))).toEqual([]);
+    expect(store.isHookSpoolEntryConsumed(ENTRY_KEY)).toBe(false);
+  });
+
+  it('a worker that dies before markHandedOff (ingest never reaches the enqueue) loses nothing: the next drain ingests it', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    new HookSpool(spoolDirectory()).enqueue('observation', crashObservation);
+
+    // Worker 1 dies while ingest is still resolving the session (before the
+    // enqueue, so before markHandedOff).
+    const stuckIngest = spyOn(ingestShared, 'ingestObservation').mockImplementation(neverSettles);
+    void drainHookSpool(new HookSpool(spoolDirectory()));
+    await waitUntil(() => stuckIngest.mock.calls.length === 1, 'ingest entered');
+    expect(store.isHookSpoolEntryConsumed(ENTRY_KEY)).toBe(false);
+    stuckIngest.mockRestore();
+
+    // Worker 2 boots: the entry is ingested — exactly once.
+    const result = await drainHookSpool(new HookSpool(spoolDirectory()));
+    expect(result).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+    expect(ensureGeneratorRunning).toHaveBeenCalledTimes(1);
+    expect(spoolFiles(new HookSpool(spoolDirectory()))).toEqual([]);
+  });
+
+  it('an enqueue that throws leaves no marker and keeps the entry for the next drain', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    const spool = new HookSpool(spoolDirectory());
+    spool.enqueue('observation', crashObservation);
+    sessionManager.queueObservation.mockImplementationOnce(() => { throw new Error('enqueue failed'); });
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 0, retained: 1, quarantined: 0, expired: 0 });
+    expect(store.isHookSpoolEntryConsumed(ENTRY_KEY)).toBe(false);
+    expect(ensureGeneratorRunning).not.toHaveBeenCalled();
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(2);
+    expect(ensureGeneratorRunning).toHaveBeenCalledTimes(1);
+  });
+
+  it('a generator kick that throws after markHandedOff still removes the entry (a retry would send it twice)', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    const spool = new HookSpool(spoolDirectory());
+    spool.enqueue('observation', crashObservation);
+    ensureGeneratorRunning.mockImplementationOnce(async () => { throw new Error('generator start failed'); });
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
+    expect(await drainHookSpool(spool)).toEqual({ drained: 0, retained: 0, quarantined: 0, expired: 0 });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the hand-off after the enqueue and before ensureGeneratorRunning (observation and summarize)', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    const spool = new HookSpool(spoolDirectory());
+    spool.enqueue('observation', crashObservation);
+    spool.enqueue('summarize', { contentSessionId: 'crash-session', platformSource: 'claude', lastAssistantMessage: 'done' });
+    const summarizeKey = spoolFiles(spool).find(name => name.startsWith('summarize-'))!.replace(/\.json$/, '');
+
+    const markerAt: Record<string, boolean> = {};
+    sessionManager.queueObservation.mockImplementation(() => { markerAt.observationEnqueue = store.isHookSpoolEntryConsumed(ENTRY_KEY); });
+    sessionManager.queueSummarize.mockImplementation(() => { markerAt.summarizeEnqueue = store.isHookSpoolEntryConsumed(summarizeKey); });
+    ensureGeneratorRunning.mockImplementation(async (_sessionDbId: number, source: string) => {
+      markerAt[`${source}Kick`] = store.isHookSpoolEntryConsumed(source === 'observation' ? ENTRY_KEY : summarizeKey);
+    });
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 2, retained: 0, quarantined: 0, expired: 0 });
+    expect(markerAt).toEqual({
+      observationEnqueue: false, observationKick: true,
+      summarizeEnqueue: false, summarizeKick: true,
+    });
+  });
+
+  it('HTTP-route callers (no markHandedOff) ingest unchanged', async () => {
+    store.createSDKSession('crash-session', 'project', 'prompt', undefined, 'claude');
+    const result = await ingestShared.ingestObservation(crashObservation);
+    expect(result).toMatchObject({ ok: true });
+    expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
+    expect(ensureGeneratorRunning).toHaveBeenCalledTimes(1);
+    expect(store.db.prepare('SELECT COUNT(*) AS n FROM hook_spool_consumed').get()).toEqual({ n: 0 });
   });
 
   it('a declined entry keeps no marker, so the next drain retries it', async () => {

@@ -90,6 +90,18 @@ export function requireIngestContext(): IngestContext {
   return ctx;
 }
 
+/**
+ * Durable callers (the hook spool drain) pass `markHandedOff`: ingest calls it
+ * synchronously the moment the request is irrevocably accepted — enqueued in
+ * the SessionManager or recorded in the DB — and before any async
+ * provider-bound work (ensureGeneratorRunning). Never called when ingest
+ * declines, skips, or throws first, so the caller retries exactly those.
+ * HTTP routes omit it.
+ */
+export interface IngestHandoff {
+  markHandedOff?: () => void;
+}
+
 export type IngestResult =
   | { ok: true; sessionDbId: number; messageId?: number }
   | { ok: true; status: 'skipped'; reason: string }
@@ -121,7 +133,7 @@ export interface ObservationPayload {
   enqueuedAtEpochMs?: number;
 }
 
-export async function ingestObservation(payload: ObservationPayload): Promise<IngestResult> {
+export async function ingestObservation(payload: ObservationPayload, handoff: IngestHandoff = {}): Promise<IngestResult> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireIngestContext();
 
   const platformSource = normalizePlatformSource(payload.platformSource);
@@ -257,7 +269,7 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     }
   }
 
-  await sessionManager.queueObservation(sessionDbId, {
+  sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
     tool_input: cleanedToolInput,
     tool_response: cleanedToolResponse,
@@ -273,6 +285,8 @@ export async function ingestObservation(payload: ObservationPayload): Promise<In
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
   });
+  // Enqueued: the hand-off point. Synchronously, before the generator kick.
+  handoff.markHandedOff?.();
 
   await ensureGeneratorRunning?.(sessionDbId, 'observation');
   eventBroadcaster.broadcastObservationQueued(sessionDbId);
@@ -308,6 +322,7 @@ export interface SummarizePayload {
 export async function ingestSummarize(
   payload: SummarizePayload,
   deps: IngestContext = requireIngestContext(),
+  handoff: IngestHandoff = {},
 ): Promise<SessionIngestOutcome> {
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = deps;
   const { contentSessionId, platformSource, observedModel, observedBilling } = payload;
@@ -364,7 +379,9 @@ export async function ingestSummarize(
   const cleanedLastAssistantMessage = payload.lastAssistantMessage
     ? stripMemoryTags(String(payload.lastAssistantMessage))
     : payload.lastAssistantMessage;
-  await sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+  // Enqueued: the hand-off point. Synchronously, before the generator kick.
+  handoff.markHandedOff?.();
 
   await ensureGeneratorRunning?.(sessionDbId, 'summarize');
 
@@ -382,6 +399,7 @@ export interface SessionEndPayload {
 export async function ingestSessionEnd(
   payload: SessionEndPayload,
   deps: Pick<IngestContext, 'sessionManager' | 'dbManager'> = requireIngestContext(),
+  handoff: IngestHandoff = {},
 ): Promise<SessionIngestOutcome> {
   const store = deps.dbManager.getSessionStore();
   const sessionDbId = store.findSessionDbIdByContentSessionId(payload.contentSessionId, payload.platformSource);
@@ -390,6 +408,8 @@ export async function ingestSessionEnd(
   }
 
   await deps.sessionManager.requestSessionWrapup(sessionDbId);
+  // Wrap-up requested (no provider-bound work follows here).
+  handoff.markHandedOff?.();
   return { status: 'accepted' };
 }
 
@@ -416,6 +436,7 @@ export type AdvisorCallsIngestResult =
 export function ingestAdvisorCalls(
   payload: AdvisorCallsPayload,
   dbManager: DatabaseManager = requireIngestContext().dbManager,
+  handoff: IngestHandoff = {},
 ): AdvisorCallsIngestResult {
   const { contentSessionId, platformSource, cwd, transcriptPath, calls } = payload;
 
@@ -464,6 +485,8 @@ export function ingestAdvisorCalls(
     }
   }
 
+  // Every call is recorded (synchronous bun:sqlite writes): the hand-off point.
+  handoff.markHandedOff?.();
   logger.debug('WORKER', 'Advisor calls ingested', { contentSessionId, stored, duplicates, privateOnly });
   return { status: 'stored', stored, duplicates, privateOnly };
 }

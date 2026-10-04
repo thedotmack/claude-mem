@@ -464,7 +464,12 @@ export class SessionManager {
     this.deliverSessionWrapupInBackground(sessionDbId);
   }
 
-  async queueObservation(sessionDbId: number, data: ObservationData): Promise<void> {
+  /**
+   * Synchronous on purpose: when this returns the message is in the buffer,
+   * so ingest can record the hook-spool hand-off before any await (and before
+   * the generator kick) — see HookSpool.drain.
+   */
+  queueObservation(sessionDbId: number, data: ObservationData): void {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -496,7 +501,8 @@ export class SessionManager {
     }
   }
 
-  async queueSummarize(sessionDbId: number, lastAssistantMessage?: string): Promise<void> {
+  /** Synchronous on purpose — see queueObservation. */
+  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);

@@ -14,6 +14,10 @@ import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SyncApply } from '../../../src/services/sync/SyncApply.js';
 import { REALTIME_JOIN_REPLY_TIMEOUT_MS, SyncClient, type SyncClientOptions } from '../../../src/services/sync/SyncClient.js';
 import { observationChange, type TestHubChange } from './content-v2-helpers.js';
+import { buildContentOperation } from '../../../src/services/sync/CanonicalContent.js';
+import { ContextCacheService } from '../../../src/services/worker/ContextCacheService.js';
+import { contextCacheFilePath, contextCacheKeys, readContextCache } from '../../../src/shared/context-cache.js';
+import { existsSync, rmSync } from 'fs';
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -115,6 +119,10 @@ function makeHub(realtime: RealtimeServer, initial: { epoch: string; ops?: TestH
     tokenLifetimeSeconds: 900,
     /** Header stamped on every response (the Supabase server sends poll). */
     syncMode: 'poll' as string | null,
+    /** When set, every /changes request waits on it (a catch-up pull still in flight). */
+    changesGate: null as Promise<void> | null,
+    /** Non-200 ⇒ /changes fails with this status. */
+    changesStatus: 200,
   };
   const impl = (async (input: any, init?: any) => {
     const url = new URL(String(input));
@@ -135,6 +143,10 @@ function makeHub(realtime: RealtimeServer, initial: { epoch: string; ops?: TestH
       }), { status: 200, headers });
     }
     state.pulls++;
+    if (state.changesGate) await state.changesGate;
+    if (state.changesStatus !== 200) {
+      return new Response('hub down', { status: state.changesStatus, headers });
+    }
     const since = Number(url.searchParams.get('since') ?? '0');
     const page = state.ops.filter(op => Number(op.seq) > since).sort((a, b) => Number(a.seq) - Number(b.seq));
     const head = state.ops.reduce((m, op) => Math.max(m, Number(op.seq)), 0);
@@ -459,6 +471,137 @@ describe('SyncClient Supabase Realtime live updates', () => {
     const joinsAtStop = realtime.framesOf('phx_join').length;
     await sleep(100);
     expect(realtime.framesOf('phx_join')).toHaveLength(joinsAtStop);
+  });
+
+  describe('SessionStart context cache servability (worker wiring)', () => {
+    const cacheKeys = contextCacheKeys(['proj-remote'], 'claude', false);
+    let cache: ContextCacheService;
+    /** Every body the hook could have read from the cache file, sampled throughout. */
+    let published: string[];
+    let sampler: ReturnType<typeof setInterval> | null;
+    const publishedNow = () => readContextCache(cacheKeys, Date.now())?.body ?? null;
+
+    const tombstoneChange = (seq: number, originId: string): TestHubChange => ({
+      ...buildContentOperation({
+        kind: 'observation', originDeviceId: REMOTE, originLocalId: originId, entityRev: '2',
+        payload: null, deleted: true, deletedAt: new Date(1_751_328_100_000).toISOString(),
+      }),
+      seq: String(seq),
+      server_ts: String(1_751_328_100_000),
+    });
+    const liveTitles = () =>
+      (db.prepare('SELECT title FROM observations ORDER BY id').all() as Array<{ title: string }>).map(r => r.title);
+
+    beforeEach(async () => {
+      published = [];
+      cache = new ContextCacheService({
+        debounceMs: 5,
+        initiallyServable: false,
+        expandProjectReadKeys: projects => projects,
+        renderVariant: async () => ({ body: `titles: ${liveTitles().join('|')}`, cacheable: true }),
+      });
+      cache.start();
+      cache.recordLiveRender(cacheKeys, { body: 'live render', cacheable: true }, Date.now());
+      await cache.flushPendingRenders();
+      sampler = setInterval(() => {
+        const body = publishedNow();
+        if (body !== null) published.push(body);
+      }, 1);
+    });
+
+    afterEach(async () => {
+      if (sampler) clearInterval(sampler);
+      await cache.flushPendingRenders();
+      cache.stop();
+      rmSync(contextCacheFilePath(cacheKeys), { force: true });
+    });
+
+    /** Exactly the worker-service wiring: down ⇒ unservable now; servable only once caught up. */
+    function makeWiredClient(fetchImpl: typeof fetch, options: Partial<SyncClientOptions> = {}): SyncClient {
+      return makeClient(fetchImpl, {
+        onSocketLiveChange: live => { if (!live) cache.setServable(false); },
+        onRealtimeCaughtUp: () => cache.setServable(true),
+        ...options,
+      });
+    }
+
+    it('a join with a pending remote tombstone stays unservable until the catch-up pull applied it', async () => {
+      // The observation reached this device before; its deletion is still on the hub.
+      const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
+      await makeClient(impl, { wsEnabled: false }).pullOnce({ force: true });
+      expect(liveTitles()).toEqual(['obs 7']);
+      state.ops.push(tombstoneChange(2, '7'));
+      let releaseChanges!: () => void;
+      state.changesGate = new Promise<void>(resolve => { releaseChanges = resolve; });
+
+      const caughtUp: number[] = [];
+      const client = makeWiredClient(impl, { onRealtimeCaughtUp: () => { caughtUp.push(Date.now()); cache.setServable(true); } });
+      client.start();
+      await waitFor(() => client.isSocketLive(), 'channel joined');
+      await sleep(50); // ample time for a (wrong) servable flip to render
+
+      expect(liveTitles()).toEqual(['obs 7']); // the deletion is not applied yet
+      expect(client.isRealtimeCaughtUp()).toBe(false);
+      expect(caughtUp).toEqual([]);
+      await cache.flushPendingRenders();
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+      expect(published).toEqual([]);
+
+      state.changesGate = null;
+      releaseChanges();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after join');
+      await cache.flushPendingRenders();
+
+      expect(liveTitles()).toEqual([]);
+      expect(caughtUp).toHaveLength(1);
+      expect(publishedNow()).toBe('titles: ');
+      await sleep(5);
+      // No sample of the cache file, at any point, ever showed the deleted memory.
+      expect(published.length).toBeGreaterThan(0);
+      expect(published.every(body => !body.includes('obs 7'))).toBe(true);
+    });
+
+    it('a failed catch-up pull stays unservable; the next successful pull while live makes it servable', async () => {
+      const { state, impl } = makeHub(realtime, { epoch: '1', ops: [hubOp(1, '7')] });
+      state.changesStatus = 503;
+      // Short poll tiers: the loop's backoff retry is what eventually succeeds.
+      const client = makeWiredClient(impl, { activePollMs: 20, idlePollMs: 20, backoffInitialMs: 20, backoffMaxMs: 20 });
+      client.start();
+      await waitFor(() => client.isSocketLive(), 'channel joined');
+      await waitFor(() => state.pulls >= 3, 'catch-up pulls retried');
+      expect(client.isRealtimeCaughtUp()).toBe(false);
+      await cache.flushPendingRenders();
+      expect(published).toEqual([]);
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+
+      state.changesStatus = 200;
+      await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after recovery');
+      await cache.flushPendingRenders();
+      expect(publishedNow()).toBe('titles: obs 7');
+    });
+
+    it('a socket drop removes the files at once and the next join must catch up again', async () => {
+      const { state, impl } = makeHub(realtime, { epoch: '1' });
+      const client = makeWiredClient(impl, { wsBackoffBaseMs: 200, wsBackoffMaxMs: 200, random: () => 1 });
+      client.start();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'first catch-up');
+      await cache.flushPendingRenders();
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(true);
+
+      let releaseChanges!: () => void;
+      state.changesGate = new Promise<void>(resolve => { releaseChanges = resolve; });
+      realtime.dropAll();
+      await waitFor(() => !client.isSocketLive(), 'socket dropped');
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+
+      await waitFor(() => client.isSocketLive(), 'rejoined', 3_000);
+      await sleep(30);
+      expect(client.isRealtimeCaughtUp()).toBe(false);
+      expect(existsSync(contextCacheFilePath(cacheKeys))).toBe(false);
+      state.changesGate = null;
+      releaseChanges();
+      await waitFor(() => client.isRealtimeCaughtUp(), 'caught up after rejoin');
+    });
   });
 
   it('suspension tears the socket down; the session-start pull resumes it', async () => {

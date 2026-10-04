@@ -237,6 +237,16 @@ export interface SyncClientOptions {
    * a throwing listener is swallowed.
    */
   onSocketLiveChange?: (live: boolean) => void;
+  /**
+   * Fired once per join, after the first pull cycle that STARTED after the
+   * join completes successfully with the hub reporting no more pages. Until
+   * then, ops published while the socket was down (e.g. a remote deletion)
+   * may not be applied yet — so this, not onSocketLiveChange(true), is the
+   * point at which local state is current. A failed catch-up does not fire;
+   * the next successful pull while still live does. Never trusted: a throwing
+   * listener is swallowed.
+   */
+  onRealtimeCaughtUp?: () => void;
   /** Injectable RNG for the reconnect jitter (tests). */
   random?: () => number;
   /** After realtime-token answers 404 (no Realtime on the server), re-probe this often. Default 1h. */
@@ -281,6 +291,7 @@ export class SyncClient {
   private readonly wsBackoffBaseMs: number;
   private readonly wsBackoffMaxMs: number;
   private readonly onSocketLiveChange: ((live: boolean) => void) | null;
+  private readonly onRealtimeCaughtUp: (() => void) | null;
   private readonly random: () => number;
   private readonly realtimeUnavailableRetryMs: number;
 
@@ -301,6 +312,10 @@ export class SyncClient {
   private socket: SyncSocketLike | null = null;
   /** True once the channel join is acknowledged (status ok). */
   private socketLive = false;
+  /** Bumped by every join; a pull cycle counts as catch-up only if it began under the current one. */
+  private liveGeneration = 0;
+  /** A post-join pull completed for the current liveGeneration (onRealtimeCaughtUp fired). */
+  private caughtUpSinceLive = false;
   private wsAttempts = 0;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   /** Armed at socket creation; cleared by the join reply or teardown. */
@@ -367,6 +382,7 @@ export class SyncClient {
     this.wsBackoffBaseMs = options.wsBackoffBaseMs ?? 1_000;
     this.wsBackoffMaxMs = options.wsBackoffMaxMs ?? 60_000;
     this.onSocketLiveChange = options.onSocketLiveChange ?? null;
+    this.onRealtimeCaughtUp = options.onRealtimeCaughtUp ?? null;
     this.random = options.random ?? Math.random;
     this.realtimeUnavailableRetryMs = options.realtimeUnavailableRetryMs ?? 3_600_000;
   }
@@ -595,6 +611,12 @@ export class SyncClient {
     // session-start pulls — the same credentials cannot succeed sooner.
     if (this.authPausedUntil > this.now()) return;
     this.pulling = true;
+    // Catch-up accounting: only a cycle that began after the current join
+    // can prove the gap since the socket was down is closed.
+    const liveGenerationAtStart = this.socketLive ? this.liveGeneration : null;
+    let succeeded = false;
+    let reachedHead = false;
+    let hitPageCap = false;
     try {
       let pages = 0;
       for (;;) {
@@ -635,7 +657,11 @@ export class SyncClient {
         if (result.epochReset) {
           // applyOps discarded the page and reset the cursor to 0; loop to
           // re-pull from the start (apply is idempotent by design).
-          if (pages >= this.maxPagesPerCycle) return;
+          if (pages >= this.maxPagesPerCycle) {
+            succeeded = true;
+            hitPageCap = true;
+            return;
+          }
           continue;
         }
 
@@ -646,15 +672,53 @@ export class SyncClient {
         this.transientRetryAt = 0;
         this.clearAuthPause();
 
-        if (page.more !== true || decodedOps.length === 0) return;
-        if (pages >= this.maxPagesPerCycle) return;
+        succeeded = true;
+        if (page.more !== true) {
+          reachedHead = true;
+          return;
+        }
+        if (decodedOps.length === 0) return; // anomalous empty `more` page: next tick retries
+        if (pages >= this.maxPagesPerCycle) {
+          hitPageCap = true;
+          return;
+        }
       }
     } catch (error) {
       this.recordFailure(error);
     } finally {
       this.pulling = false;
       this.lastPullFinishedAt = this.now();
+      this.settleRealtimeCatchUp(liveGenerationAtStart, succeeded, reachedHead, hitPageCap);
     }
+  }
+
+  /**
+   * After a pull cycle: fire onRealtimeCaughtUp when it was the first cycle
+   * of the current join to reach the hub's head. A successful cycle that
+   * cannot count (it began before the join — the join's own catch-up pull
+   * was skipped as single-flight — or stopped at the page cap) pulls again
+   * right away. A failed cycle waits for the loop's normal backoff retry;
+   * until a later pull succeeds the join stays un-caught-up.
+   */
+  private settleRealtimeCatchUp(
+    liveGenerationAtStart: number | null, succeeded: boolean, reachedHead: boolean, hitPageCap: boolean,
+  ): void {
+    if (this.stopped || !this.socketLive || this.caughtUpSinceLive || !succeeded) return;
+    const startedUnderThisJoin = liveGenerationAtStart === this.liveGeneration;
+    if (reachedHead && startedUnderThisJoin) {
+      this.caughtUpSinceLive = true;
+      if (!this.onRealtimeCaughtUp) return;
+      try {
+        this.onRealtimeCaughtUp();
+      } catch (error) {
+        try {
+          logger.debug('SYNC_CLIENT', 'onRealtimeCaughtUp listener threw (ignored)', {},
+            error instanceof Error ? error : new Error(String(error)));
+        } catch { /* never propagate */ }
+      }
+      return;
+    }
+    if (!startedUnderThisJoin || hitPageCap) this.pullForSocket();
   }
 
   // -------------------------------------------------------------------------
@@ -668,6 +732,11 @@ export class SyncClient {
   /** True while the Realtime channel is joined (test/status introspection). */
   isSocketLive(): boolean {
     return this.socketLive;
+  }
+
+  /** True once a pull that began after the current join reached the hub's head. */
+  isRealtimeCaughtUp(): boolean {
+    return this.socketLive && this.caughtUpSinceLive;
   }
 
   private hubHeaders(): Record<string, string> {
@@ -859,7 +928,7 @@ export class SyncClient {
 
   /**
    * Phoenix frames. Our channel's join reply flips the socket live and runs
-   * one catch-up pull; `advance` broadcasts trigger the HTTP pull path; a
+   * one catch-up pull (its success fires onRealtimeCaughtUp); `advance` broadcasts trigger the HTTP pull path; a
    * join/channel error drops the socket and reconnects with backoff; an
    * epoch mismatch or a malformed frame additionally pulls once over HTTP.
    */
@@ -1090,6 +1159,8 @@ export class SyncClient {
   private setSocketLive(live: boolean): void {
     if (this.socketLive === live) return;
     this.socketLive = live;
+    this.caughtUpSinceLive = false;
+    if (live) this.liveGeneration++;
     if (this.onSocketLiveChange) {
       try {
         this.onSocketLiveChange(live);

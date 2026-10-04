@@ -19,8 +19,9 @@
  *
  * With cloud sync on, a cached block is only as fresh as the last op this
  * device applied, and the hook reading it never asks the hub. So the files are
- * servable only while sync is off or its Realtime channel is joined (ops arrive
- * as they happen). While sync is on and Realtime is down (or never joined),
+ * servable only while sync is off, or its Realtime channel is joined (ops arrive
+ * as they happen) AND the join's catch-up pull has applied the ops published
+ * while it was down. While sync is on and Realtime is down (or never joined),
  * setServable(false) removes every file and none is written: the hook takes the
  * live path, which pulls before rendering. setServable(true) re-renders all.
  */
@@ -56,7 +57,7 @@ export interface ContextCacheServiceOptions {
   expandProjectReadKeys: (projects: string[]) => string[];
   debounceMs?: number;
   maxVariants?: number;
-  /** False when cloud sync is on: files stay unservable until Realtime joins (setServable). Default true. */
+  /** False when cloud sync is on: files stay unservable until Realtime joins and catches up (setServable). Default true. */
   initiallyServable?: boolean;
   now?: () => number;
 }
@@ -171,8 +172,9 @@ export class ContextCacheService {
   }
 
   /**
-   * Cloud sync's Realtime channel joined (true) or dropped (false). Dropping
-   * removes every cached file now; joining re-renders every known variant.
+   * Cloud sync's Realtime channel joined and caught up (true — SyncClient's
+   * onRealtimeCaughtUp) or dropped (false). Dropping removes every cached file
+   * now; catching up re-renders every known variant.
    */
   setServable(servable: boolean): void {
     if (this.servable === servable) return;

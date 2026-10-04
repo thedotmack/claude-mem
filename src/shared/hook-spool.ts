@@ -92,9 +92,9 @@ export type HookSpoolEntry = {
 }[HookSpoolKind];
 
 /**
- * Durable record of the entries handed to ingest (the worker's
- * hook_spool_consumed table). Makes the hand-off at-most-once across restarts:
- * see HookSpool.drain.
+ * Durable record of the entries ingest irrevocably accepted (the worker's
+ * hook_spool_consumed table). Makes the hand-off exactly-once across
+ * restarts: see HookSpool.drain.
  */
 export interface HookSpoolConsumedMarkers {
   isConsumed(entryKey: string): boolean;
@@ -246,18 +246,24 @@ export class HookSpool {
   /**
    * Hands each entry to `accept` in order; an accepted entry is unlinked.
    *
-   * With `consumedMarkers`, the hand-off is AT-MOST-ONCE across restarts: the
-   * entry's key is marked consumed in the worker DB BEFORE `accept` runs, and
-   * the marker is cleared once the file is gone (or when `accept` declines, so
-   * it is retried). A worker that dies after the marker and before the unlink
-   * finds the marker on its next drain and removes the file without ingesting
-   * it again, so an observation already handed to provider-bound work is never
-   * sent (and billed) twice. The trade-off: a crash after the marker but before
-   * the entry reached the queue drops that one event — the same loss an
-   * in-memory queue has on a crash, chosen over double-billing.
+   * With `consumedMarkers`, the hand-off is EXACTLY-ONCE AT THE HANDOFF POINT
+   * across restarts. `accept` receives a synchronous `markHandedOff()` that
+   * ingest calls the instant the entry is irrevocably accepted (enqueued into
+   * the SessionManager / recorded in the DB) and before it kicks any async,
+   * provider-bound work (ensureGeneratorRunning). markHandedOff writes the
+   * entry's consumed marker to the worker DB synchronously (bun:sqlite), so no
+   * provider call can precede it.
+   * - Crash before markHandedOff (ingest declined, threw, or died first): no
+   *   marker, the file is still there ⇒ the next drain ingests it. No loss.
+   * - Crash after markHandedOff, before the unlink: the next drain finds the
+   *   marker and removes the file without ingesting it again. No double paid
+   *   send.
+   * Once markHandedOff has run, the entry counts as accepted even if `accept`
+   * later throws or returns false — retrying it would send it twice. The
+   * marker is cleared once the file is gone.
    */
   async drain(
-    accept: (entry: HookSpoolEntry) => boolean | Promise<boolean>,
+    accept: (entry: HookSpoolEntry, markHandedOff: () => void) => boolean | Promise<boolean>,
     consumedMarkers?: HookSpoolConsumedMarkers,
   ): Promise<HookSpoolDrainResult> {
     const { files, quarantined } = this.readEntries();
@@ -285,22 +291,40 @@ export class HookSpool {
         continue;
       }
 
-      consumedMarkers?.markConsumed(entryKey, Date.now());
+      let handedOff = false;
+      const markHandedOff = (): void => {
+        if (handedOff) return;
+        handedOff = true;
+        try {
+          consumedMarkers?.markConsumed(entryKey, Date.now());
+        } catch (error) {
+          // Never throw into ingest: the entry IS enqueued and its generator
+          // kick must still run. Without the marker a crash before the unlink
+          // below would ingest it again — say so loudly.
+          logger.error('HOOK', 'Could not record a hook spool hand-off marker; a crash before the file is removed would ingest it twice', {
+            kind: file.entry.kind,
+            contentSessionId: file.entry.payload.contentSessionId,
+            file: file.filename,
+          }, error instanceof Error ? error : new Error(String(error)));
+        }
+      };
       let accepted: boolean;
       try {
-        accepted = await accept(file.entry);
+        accepted = await accept(file.entry, markHandedOff);
       } catch (error) {
-        logger.warn('HOOK', 'Hook spool entry failed to ingest; keeping it for the next drain', {
+        logger.warn('HOOK', handedOff
+          ? 'Hook spool entry failed after ingest accepted it; removing it (a retry would send it twice)'
+          : 'Hook spool entry failed to ingest; keeping it for the next drain', {
           kind: file.entry.kind,
           contentSessionId: file.entry.payload.contentSessionId,
           file: file.filename,
         }, error instanceof Error ? error : new Error(String(error)));
         accepted = false;
       }
+      if (handedOff) accepted = true;
 
       if (!accepted) {
-        // Not handed off: the next drain must retry it.
-        consumedMarkers?.clearConsumed(entryKey);
+        // Never handed off (no marker was written): the next drain retries it.
         if (this.expireIfPastRetryWindow(file)) {
           expired++;
         } else {

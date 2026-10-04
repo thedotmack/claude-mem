@@ -1972,8 +1972,8 @@ export class SessionStore {
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
   }
 
-  // v62 — at-most-once hand-off marker for hook spool entries (HookSpool.drain):
-  // written before an entry is handed to ingest, cleared once its file is gone.
+  // v62 — exactly-once hand-off marker for hook spool entries (HookSpool.drain):
+  // written the moment ingest irrevocably accepts an entry, cleared once its file is gone.
   private ensureHookSpoolConsumedTable(): void {
     this.db.run(`
       CREATE TABLE IF NOT EXISTS hook_spool_consumed (
