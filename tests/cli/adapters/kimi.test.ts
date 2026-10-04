@@ -47,6 +47,18 @@ describe('kimiAdapter.normalizeInput', () => {
     expect(write.toolInput).toBe(rawInput);
   });
 
+  test('preserves a supplied canonical Read path and uses path for an absent or invalid canonical field', () => {
+    const base = { session_id: 'canonical-read', cwd: process.cwd(), tool_name: 'Read' };
+    const supplied = { file_path: 'src/canonical.ts', path: 'src/other.ts', line_offset: 2 };
+    expect(kimiAdapter.normalizeInput({ ...base, tool_input: supplied }).toolInput).toBe(supplied);
+    for (const file_path of [undefined, null, 17, '']) {
+      const input = { file_path, path: 'src/owned.ts', n_lines: 3 };
+      expect(kimiAdapter.normalizeInput({ ...base, tool_input: input }).toolInput)
+        .toEqual({ ...input, file_path: 'src/owned.ts' });
+      expect(input.file_path).toBe(file_path);
+    }
+  });
+
   test('maps SessionStart source startup|resume, drops unknown values', () => {
     const base = { hook_event_name: 'SessionStart', session_id: 's1', cwd: process.cwd() };
     expect(kimiAdapter.normalizeInput({ ...base, source: 'startup' }).sessionSource).toBe('startup');

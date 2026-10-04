@@ -26,7 +26,15 @@ try {
   const past = (Date.now() - 3600000) / 1000;
   utimesSync(absolutePath, past, past);
   const toolPath = kind.endsWith('absolute') ? absolutePath : relativePath;
-  const toolInput = kind === 'legacy-read' ? { file_path: toolPath } : { path: toolPath, line_offset: 2, n_lines: 3 };
+  const conflicting = kind.endsWith('conflicting');
+  const otherPath = 'src/other.ts';
+  if (conflicting) {
+    writeFileSync(join(cwd, otherPath), 'other contents\n'.repeat(160));
+    utimesSync(join(cwd, otherPath), past, past);
+  }
+  const toolInput = kind === 'legacy-read' ? { file_path: toolPath }
+    : conflicting ? { file_path: toolPath, path: otherPath, line_offset: 2, n_lines: 3 }
+    : { path: toolPath, line_offset: 2, n_lines: 3 };
   const originalInput = JSON.stringify(toolInput);
   const input = kimiAdapter.normalizeInput({ hook_event_name: contextCase ? 'PreToolUse' : 'PostToolUse',
     session_id: `owned-kimi-${kind}`, cwd, tool_name: writeControl ? 'Write' : 'Read', tool_input: toolInput,
@@ -70,6 +78,12 @@ try {
     store.updateMemorySessionId(sid, `memory-${kind}`);
     store.storeObservation(`memory-${kind}`, basename(cwd), { type: 'discovery', title: 'Owned prior decision', subtitle: null,
       facts: [], narrative: 'Prior inspected file', concepts: [], files_read: [toolPath], files_modified: [] }, 1);
+    if (conflicting) {
+      const otherSid = store.createSDKSession(`other-${kind}`, basename(cwd), 'Inspect other file');
+      store.updateMemorySessionId(otherSid, `other-memory-${kind}`);
+      store.storeObservation(`other-memory-${kind}`, basename(cwd), { type: 'discovery', title: 'Wrong file decision', subtitle: null,
+        facts: [], narrative: 'Other inspected file', concepts: [], files_read: [otherPath], files_modified: [] }, 1);
+    }
     // Keep transport owned while exercising the actual handler, SQLite lookup and dedupe gate.
     mock.module('../../../src/shared/worker-utils.js', () => ({ ...workerUtils,
       executeWithWorkerFallback: async (route: string) => (await realFetch(`http://127.0.0.1:${server.port}${route}`)).json(),
@@ -80,6 +94,7 @@ try {
     console.log(JSON.stringify({ kind, requests, output }));
     assert.equal(typeof output, 'string');
     assert.ok((output as string).includes('Owned prior decision'));
+    assert.ok(!(output as string).includes('Wrong file decision'));
     assert.equal(requests.filter(route => route === '/api/observations/by-file').length, 1);
   } else {
     setIngestContext({ dbManager: db, sessionManager: manager,

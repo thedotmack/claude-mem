@@ -2,7 +2,7 @@ import { expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-for (const kind of ['capture-relative', 'capture-absolute', 'context-relative', 'context-absolute', 'legacy-read', 'write-control']) {
+for (const kind of ['capture-relative', 'capture-absolute', 'context-relative', 'context-absolute', 'legacy-read', 'write-control', 'capture-conflicting', 'context-conflicting']) {
   it(`Kimi Read file path reaches ${kind}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'owned-kimi-read-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;

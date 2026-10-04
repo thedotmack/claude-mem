@@ -12,6 +12,7 @@ function stringOrUndefined(value: unknown): string | undefined {
 function normalizeToolInput(toolName: string | undefined, input: unknown): unknown {
   if (toolName !== 'Read' || !input || typeof input !== 'object' || Array.isArray(input)) return input;
   const readInput = input as Record<string, unknown>;
+  if (typeof readInput.file_path === 'string' && readInput.file_path.length > 0) return input;
   return typeof readInput.path === 'string' ? { ...readInput, file_path: readInput.path } : input;
 }
 
