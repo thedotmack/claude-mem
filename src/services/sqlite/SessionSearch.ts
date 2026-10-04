@@ -111,8 +111,13 @@ export class SessionSearch {
 
     try {
       this.db.transaction(() => {
-        this.createFTSTablesAndTriggers(!hasObservationsFTS, !hasSummariesFTS);
-      })();
+        // Another connection may have completed setup after the initial read.
+        // Hold the writer reservation while deciding which indexes we own.
+        const currentTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
+        const createObservations = !currentTables.some(t => t.name === 'observations_fts');
+        const createSummaries = !currentTables.some(t => t.name === 'session_summaries_fts');
+        this.createFTSTablesAndTriggers(createObservations, createSummaries);
+      }).immediate();
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
       this._fts5Available = false;

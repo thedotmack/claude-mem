@@ -1,15 +1,20 @@
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 
 const databases: Database[] = [];
+const directories: string[] = [];
 afterEach(() => {
   for (const db of databases.splice(0)) db.close();
+  for (const directory of directories.splice(0)) rmSync(directory, { recursive: true, force: true });
 });
 
-function seedDatabase(): Database {
-  const db = new Database(':memory:');
+function seedDatabase(path = ':memory:'): Database {
+  const db = new Database(path);
   databases.push(db);
   const store = new SessionStore(db);
   new SessionSearch(db);
@@ -73,5 +78,45 @@ describe('FTS initialization failure recovery', () => {
     new SessionSearch(db);
     expect(db.query("SELECT rowid FROM observations_fts WHERE observations_fts MATCH 'recoverable'").all()).toEqual([{ rowid: 1 }]);
     expect(db.query("SELECT name FROM sqlite_master WHERE name = 'session_summaries_fts'").get()).not.toBeNull();
+  });
+});
+
+
+describe('concurrent missing-index discovery', () => {
+  it('rechecks index ownership before backfill when another connection finishes first', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'claude-mem-fts-race-'));
+    directories.push(directory);
+    const path = join(directory, 'sessions.db');
+    const first = seedDatabase(path);
+    for (const suffix of ['ai', 'ad', 'au']) first.run(`DROP TRIGGER observations_${suffix}`);
+    first.run('DROP TABLE observations_fts');
+    const second = new Database(path);
+    databases.push(second);
+    let interleaved = false;
+    const prepare = first.prepare.bind(first);
+    // Retain the real first connection's discovery snapshot, then allow a real
+    // second connection to finish setup before the first decides to backfill.
+    (first as any).prepare = (sql: string, ...parameters: any[]) => {
+      const statement = (prepare as any)(sql, ...parameters);
+      if (!interleaved && sql.includes("name LIKE '%_fts'")) {
+        const all = statement.all.bind(statement);
+        statement.all = (...args: any[]) => {
+          const snapshot = all(...args);
+          interleaved = true;
+          new SessionSearch(second);
+          return snapshot;
+        };
+      }
+      return statement;
+    };
+    const search = new SessionSearch(first);
+    expect(interleaved).toBe(true);
+    expect(() => first.run("INSERT INTO observations_fts(observations_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
+    first.run("UPDATE observations SET title = 'concurrent updated marker'");
+    expect(search.searchObservations('distinct observation', { project: 'fts-recovery' })).toEqual([]);
+    expect(search.searchObservations('concurrent updated', { project: 'fts-recovery' })).toHaveLength(1);
+    first.run('DELETE FROM observations');
+    expect(search.searchObservations('concurrent updated', { project: 'fts-recovery' })).toEqual([]);
+    expect(() => first.run("INSERT INTO observations_fts(observations_fts, rank) VALUES('integrity-check', 1)")).not.toThrow();
   });
 });
