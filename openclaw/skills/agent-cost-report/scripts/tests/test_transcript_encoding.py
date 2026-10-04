@@ -14,7 +14,8 @@ class TranscriptEncoding(unittest.TestCase):
 import json, locale, pathlib, sys, tempfile
 sys.path.insert(0, sys.argv[1])
 from acr import transcripts, behavior, wins, rules
-assert locale.getencoding().lower() != "utf-8", locale.getencoding()
+encoding = locale.getpreferredencoding(False)
+assert encoding.lower() != "utf-8", encoding
 with tempfile.TemporaryDirectory() as folder:
     source = pathlib.Path(folder) / "session.jsonl"
     usage = {"input_tokens": 10, "output_tokens": 2}
@@ -25,7 +26,15 @@ with tempfile.TemporaryDirectory() as folder:
     u = {"type": "user", "timestamp": "2026-09-18T12:00:01Z", "sessionId": "session",
          "message": {"content": [{"type": "tool_result", "tool_use_id": "tool", "content": "合并完成"}]}}
     source.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in (a, u))+"\n", encoding="utf-8")
-    if sys.argv[2] == "usage":
+    if sys.argv[2] == "codex":
+        events = [{"type": "turn_context", "payload": {"model": "gpt-5-é"}},
+                  {"type": "event_msg", "timestamp": "2026-09-18T12:00:00Z",
+                   "payload": {"type": "token_count", "info": {"total_token_usage": usage}}}]
+        source.write_text("\n".join(json.dumps(x, ensure_ascii=False) for x in events)+"\n", encoding="utf-8")
+        rows, _ = transcripts.collect_codex(None, None, pattern=str(source))
+        assert len(rows) == 1 and rows[0]["input"] == 10 and rows[0]["output"] == 2, repr(rows)
+        assert rows[0]["model"] == "gpt-5-é", repr(rows[0]["model"])
+    elif sys.argv[2] == "usage":
         rows, _ = transcripts.collect_claude(None, None, session="session", pattern=str(source))
         assert len(rows) == 1 and rows[0]["input"] == 10
         assert rows[0]["cwd"] == "C:/workspace/中文", repr(rows[0]["cwd"])
@@ -61,3 +70,6 @@ with tempfile.TemporaryDirectory() as folder:
 
     def test_rule_names_retain_unicode(self):
         self.check_reader("rules")
+
+    def test_codex_retains_unicode_model(self):
+        self.check_reader("codex")
