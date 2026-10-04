@@ -399,5 +399,5 @@ export function getAuthMethodDescription(): string {
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
     return `Claude Code OAuth token (env, refreshed via keychain at spawn) profile=${profile}`;
   }
-  return `Claude Code OAuth token (read from system keychain at spawn) profile=${profile}`;
+  return `Claude Code OAuth token (read from the Claude Code credential store at spawn) profile=${profile}`;
 }

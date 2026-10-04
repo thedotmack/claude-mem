@@ -325,12 +325,23 @@ export function buildWindowsCredentialScript(username: string): string {
   `.trim();
 }
 
-async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
+/**
+ * #4246: Claude Code on Windows keeps its live login in
+ * `${configDir}/.credentials.json`, so readClaudeOAuthToken only reaches this
+ * when that file is absent. An entry here can belong to a previous account,
+ * and must never shadow the live login.
+ *
+ * `execImpl` is the same injectable seam readMacOsKeychain exposes, so tests
+ * can fake a Credential Manager response without a Windows host.
+ */
+async function readWindowsCredentialManager(
+  execImpl: typeof execFileAsync = execFileAsync,
+): Promise<OAuthTokenResult> {
   const psScript = buildWindowsCredentialScript(userInfo().username);
 
   let stdout: string;
   try {
-    ({ stdout } = await execFileAsync(
+    ({ stdout } = await execImpl(
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', psScript],
       { timeout: READ_TIMEOUT_MS, windowsHide: true },
@@ -364,20 +375,19 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
 }
 
 /**
- * Linux: libsecret via the `secret-tool` CLI. Claude Desktop on Linux stores
- * the credential under the same service name "Claude Code-credentials" with
- * the account attribute set to the OS username.
+ * Linux: libsecret via the `secret-tool` CLI, under the service name
+ * "Claude Code-credentials" with the account attribute set to the OS username.
+ *
+ * #4348: Claude Code on Linux keeps its login in
+ * `${configDir}/.credentials.json`, never in libsecret, so readClaudeOAuthToken
+ * only reaches this legacy store when that file is absent, and a miss here is
+ * the normal case: it is logged at DEBUG, without telling users to install a
+ * package that cannot help.
  *
  * #2753: same rationale as readWindowsCredentialManager above — left on the
  * bare KEYCHAIN_SERVICE_NAME. No verified evidence in this repo of Linux's
  * per-config-dir suffix scheme; do not guess-extend deriveMacKeychainServiceName's
  * logic here without separate verification on an actual Linux box.
- *
- * `credentialsFilePresent` is the #4348 seam: when the on-disk credentials
- * file (see readClaudeCredentialsFile) exists, a libsecret miss is expected
- * noise — log it at DEBUG instead of WARN and drop the "is secret-tool
- * installed?" hint, since the file fallback will supply the token. When the
- * file is absent the original WARN + hint behavior is kept.
  *
  * `execImpl` is the same injectable seam readMacOsKeychain exposes, exported
  * alongside it so tests can fake a libsecret response without a Linux host
@@ -385,7 +395,6 @@ async function readWindowsCredentialManager(): Promise<OAuthTokenResult> {
  */
 export async function readLinuxLibsecret(
   execImpl: typeof execFileAsync = execFileAsync,
-  credentialsFilePresent = false,
 ): Promise<OAuthTokenResult> {
   const account = userInfo().username;
   let stdout: string;
@@ -397,19 +406,10 @@ export async function readLinuxLibsecret(
     ));
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    if (credentialsFilePresent) {
-      // #4348 — the credentials file covers this miss; don't WARN on every
-      // spawn about a keychain source that was never authoritative here.
-      logger.debug('OAUTH', 'Linux libsecret lookup failed; credentials file will be tried', { service: KEYCHAIN_SERVICE_NAME, account }, err);
-      return {
-        kind: 'absent',
-        reason: `Linux libsecret lookup failed: ${err.message}`,
-      };
-    }
-    logger.warn('OAUTH', 'Linux libsecret lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
+    logger.debug('OAUTH', 'Linux libsecret lookup failed', { service: KEYCHAIN_SERVICE_NAME, account }, err);
     return {
       kind: 'absent',
-      reason: `Linux libsecret lookup failed (is secret-tool installed?): ${err.message}`,
+      reason: `Linux libsecret lookup failed: ${err.message}`,
     };
   }
   const raw = stdout.trim();
@@ -425,12 +425,12 @@ export async function readLinuxLibsecret(
  * same shape the keychain blobs carry:
  *   {"claudeAiOauth":{"accessToken":"...","refreshToken":"...","expiresAt":<ms>}}
  *
- * Consulted as a fallback AFTER a keychain/libsecret miss, on every platform —
- * the platform-native store stays the first source, and a keychain miss is
- * only downgraded in noisiness (see readLinuxLibsecret), never skipped.
- * Populates the same OAuth token record the libsecret path would produce
- * (token + expiresAt), so expiry/quota checks downstream see the real
- * credential. Exported so tests can drive it against fixture files.
+ * This is where Claude Code keeps the live login on every platform but macOS,
+ * so readClaudeOAuthToken reads it first there (#4348 Linux, #4246 Windows);
+ * on macOS it is the fallback after a keychain miss. Populates the same OAuth
+ * token record the keychain path produces (token + expiresAt), so expiry
+ * checks downstream see the real credential. Exported so tests can drive it
+ * against fixture files.
  *
  * Read/parse failures fall through to `absent` with a DEBUG note — never
  * thrown — so the env-fallback branch in readClaudeOAuthToken can still run.
@@ -450,7 +450,7 @@ export function readClaudeCredentialsFile(configDir: string): OAuthTokenResult {
   }
   const parsed = parseKeychainPayload(raw.trim());
   if (parsed.kind === 'present') {
-    logger.debug('OAUTH', 'OAuth token read from credentials file after keychain miss', { credentialsPath, expiresAt: parsed.expiresAt });
+    logger.debug('OAUTH', 'OAuth token read from credentials file', { credentialsPath, expiresAt: parsed.expiresAt });
     return { ...parsed, source: 'credentials-file' };
   }
   // File existed but carried no usable token (corrupt JSON, no
@@ -464,9 +464,9 @@ export function readClaudeCredentialsFile(configDir: string): OAuthTokenResult {
  * the access token, and classify based on `expiresAt`.
  */
 function parseKeychainPayload(raw: string): OAuthTokenResult {
-  let payload: ClaudeKeychainPayload;
+  let parsed: unknown;
   try {
-    payload = JSON.parse(raw);
+    parsed = JSON.parse(raw);
   } catch {
     // [ANTI-PATTERN IGNORED]: the keychain blob is JSON-parsed opportunistically —
     // some Claude Desktop versions store a bare token instead of JSON, so parse
@@ -484,6 +484,14 @@ function parseKeychainPayload(raw: string): OAuthTokenResult {
     }
     return { kind: 'absent', reason: 'Keychain payload is neither JSON nor a recognized token shape' };
   }
+
+  // JSON.parse also accepts `null`, numbers, strings and arrays. Only an
+  // object can carry claudeAiOauth, and `null.claudeAiOauth` would throw past
+  // every fallback, the env token included.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { kind: 'absent', reason: 'Credential payload is not a JSON object' };
+  }
+  const payload = parsed as ClaudeKeychainPayload;
 
   const accessToken = payload.claudeAiOauth?.accessToken;
   const expiresAt = payload.claudeAiOauth?.expiresAt;
@@ -529,11 +537,82 @@ function readSidecarExpiresAt(): number | undefined {
 }
 
 /**
- * Read Claude Desktop's OAuth token, preferring the platform-native credential
- * store. Falls back to the on-disk `${configDir}/.credentials.json` file
- * (#4348), then to the CLAUDE_CODE_OAUTH_TOKEN environment variable only
- * when neither the keychain nor the file has an entry — env-as-primary is
- * intended for CI/headless setups where no keychain exists.
+ * The CLAUDE_CODE_OAUTH_TOKEN environment variable, for CI/headless setups.
+ * Expired when the sidecar metadata or the token's own JWT `exp` says so.
+ */
+function readEnvOAuthToken(): OAuthTokenResult {
+  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  if (!envToken || envToken.trim().length === 0) {
+    return { kind: 'absent', reason: 'CLAUDE_CODE_OAUTH_TOKEN is not set' };
+  }
+  const sidecarExpiresAt = readSidecarExpiresAt();
+  const jwtExpiresAt = decodeJwtExpMs(envToken);
+  const effectiveExpiresAt = sidecarExpiresAt ?? jwtExpiresAt;
+
+  if (isExpired(effectiveExpiresAt)) {
+    return {
+      kind: 'expired',
+      reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT)',
+      expiresAt: effectiveExpiresAt,
+    };
+  }
+
+  return {
+    kind: 'present',
+    token: envToken,
+    source: 'env-fallback',
+    expiresAt: effectiveExpiresAt,
+  };
+}
+
+/**
+ * The login Claude Code itself keeps for this profile: the macOS keychain on
+ * darwin, and `${configDir}/.credentials.json` everywhere else (#4348 Linux,
+ * #4246 Windows). The other store is consulted only when the primary one has
+ * no entry at all — a present or expired primary result is authoritative, so
+ * a stale Windows Credential Manager entry from a previous account can no
+ * longer shadow the live login.
+ */
+async function readStoredClaudeCredential(
+  profile: ClaudeCredentialProfile,
+  execImpl: typeof execFileAsync,
+): Promise<OAuthTokenResult> {
+  if (process.platform === 'darwin') {
+    const keychainResult = await readMacOsKeychain(deriveMacKeychainServiceName(profile), execImpl);
+    if (keychainResult.kind !== 'absent') return keychainResult;
+    const fileResult = readClaudeCredentialsFile(profile.configDir);
+    if (fileResult.kind !== 'absent') return fileResult;
+    return { kind: 'absent', reason: `${keychainResult.reason}; ${fileResult.reason}` };
+  }
+
+  const fileResult = readClaudeCredentialsFile(profile.configDir);
+  if (fileResult.kind !== 'absent') return fileResult;
+
+  let legacyStoreResult: OAuthTokenResult;
+  switch (process.platform) {
+    case 'win32':
+      legacyStoreResult = await readWindowsCredentialManager(execImpl);
+      break;
+    case 'linux':
+      legacyStoreResult = await readLinuxLibsecret(execImpl);
+      break;
+    default:
+      return { kind: 'absent', reason: `Unsupported platform: ${process.platform} has no OS credential store; ${fileResult.reason}` };
+  }
+  if (legacyStoreResult.kind !== 'absent') return legacyStoreResult;
+  return { kind: 'absent', reason: `${fileResult.reason}; ${legacyStoreResult.reason}` };
+}
+
+/**
+ * Read the Claude Code OAuth token the SDK child should run with.
+ *
+ *   1. The login Claude Code keeps for this profile (readStoredClaudeCredential).
+ *      A present result wins.
+ *   2. CLAUDE_CODE_OAUTH_TOKEN, for CI/headless setups. A usable env token
+ *      beats an EXPIRED stored credential (plan-19 item 4, #3121), so an old
+ *      login left on disk or in the keychain cannot block a working token.
+ *   3. Nothing usable: the stored credential's expiry (it drives the
+ *      "run /login" marker), else the env token's, else the stored miss.
  *
  * `execImpl` is the same injectable seam `readMacOsKeychain` exposes (see its
  * doc comment) — threaded through here, not just down at readMacOsKeychain,
@@ -546,80 +625,21 @@ function readSidecarExpiresAt(): number | undefined {
 export async function readClaudeOAuthToken(
   execImpl: typeof execFileAsync = execFileAsync,
 ): Promise<OAuthTokenResult> {
-  let keychainResult: OAuthTokenResult;
-
   // #2753 / #4149 — resolve the credential profile (setting > env > default)
-  // once per call; only the macOS branch currently has a verified
-  // per-config-dir service-name suffix, so it's the only branch that consumes it.
+  // once per call. Its config dir locates `.credentials.json` on every
+  // platform; only the macOS keychain also derives a service name from it.
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const credentialProfile = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
 
-  switch (process.platform) {
-    case 'darwin':
-      keychainResult = await readMacOsKeychain(deriveMacKeychainServiceName(credentialProfile), execImpl);
-      break;
-    case 'win32':
-      keychainResult = await readWindowsCredentialManager();
-      break;
-    case 'linux':
-      // #4348 — pass credentials-file presence so a libsecret miss is logged
-      // at DEBUG (not WARN) when the on-disk file will cover it.
-      keychainResult = await readLinuxLibsecret(
-        execImpl,
-        existsSync(join(credentialProfile.configDir, '.credentials.json')),
-      );
-      break;
-    default:
-      keychainResult = {
-        kind: 'absent',
-        reason: `Unsupported platform: ${process.platform}`,
-      };
-  }
+  const storedResult = await readStoredClaudeCredential(credentialProfile, execImpl);
+  if (storedResult.kind === 'present') return storedResult;
 
-  // If keychain produced a present or expired result, that's authoritative.
-  // Expired wins over env-fallback: a known-stale keychain entry is a clearer
-  // signal than an env var of unknown freshness.
-  if (keychainResult.kind === 'present' || keychainResult.kind === 'expired') {
-    return keychainResult;
-  }
+  const envResult = readEnvOAuthToken();
+  if (envResult.kind === 'present') return envResult;
 
-  // #4348 — keychain missed on every platform: fall back to the on-disk
-  // credentials file before the env var. Claude Code keeps the current
-  // credential at `${configDir}/.credentials.json` even when libsecret (or a
-  // keychain entry) is missing or unused, so this is where the real token
-  // usually is. Present/expired from the file are authoritative the same way
-  // a keychain result is.
-  const credentialsFileResult = readClaudeCredentialsFile(credentialProfile.configDir);
-  if (credentialsFileResult.kind === 'present' || credentialsFileResult.kind === 'expired') {
-    return credentialsFileResult;
-  }
-
-  // Keychain and credentials file both absent: try env-fallback for
-  // CI/headless. Refuse if the sidecar metadata indicates the env-provided
-  // token is stale.
-  const envToken = process.env.CLAUDE_CODE_OAUTH_TOKEN;
-  if (envToken && envToken.trim().length > 0) {
-    const sidecarExpiresAt = readSidecarExpiresAt();
-    const jwtExpiresAt = decodeJwtExpMs(envToken);
-    const effectiveExpiresAt = sidecarExpiresAt ?? jwtExpiresAt;
-
-    if (isExpired(effectiveExpiresAt)) {
-      return {
-        kind: 'expired',
-        reason: 'CLAUDE_CODE_OAUTH_TOKEN env var expired (per sidecar/JWT)',
-        expiresAt: effectiveExpiresAt,
-      };
-    }
-
-    return {
-      kind: 'present',
-      token: envToken,
-      source: 'env-fallback',
-      expiresAt: effectiveExpiresAt,
-    };
-  }
-
-  return keychainResult;
+  if (storedResult.kind === 'expired') return storedResult;
+  if (envResult.kind === 'expired') return envResult;
+  return storedResult;
 }
 
 /**
