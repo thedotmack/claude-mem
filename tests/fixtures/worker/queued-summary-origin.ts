@@ -44,7 +44,7 @@ try {
           getChromaSync: () => null, getCloudSync: () => null } as unknown as DatabaseManager;
         const manager = new SessionManager(db);
         const contentId = `owned-summary-${kind}`;
-        const sid = store.createSDKSession(contentId, 'owned-project', 'First request');
+        const sid = store.createSDKSession(contentId, 'owned-project', 'First request', undefined, kind === 'cursor-prompt' ? 'cursor' : 'claude');
         store.saveUserPrompt(contentId, 1, 'First request', sid);
         const firstAt = (store.db.query('SELECT created_at_epoch FROM user_prompts WHERE session_db_id = ?').get(sid) as { created_at_epoch: number }).created_at_epoch;
         const session = manager.initializeSession(sid, 'First request', 1);
@@ -54,14 +54,46 @@ try {
           store.db.query('UPDATE user_prompts SET created_at_epoch = ? WHERE session_db_id = ? AND prompt_number = 2').run(firstAt + 100, sid);
           manager.initializeSession(sid, 'Second request', 2);
         };
-        if (kind === 'older-observation') {
+        if (kind === 'older-observation' || kind === 'cursor-prompt') {
           manager.queueObservation(sid, { tool_name: 'Read', tool_input: { file_path: 'owned.ts' }, tool_response: 'contents', prompt_number: 1 });
-          advance();
+          if (kind === 'cursor-prompt') {
+            const { default: express } = await import('express');
+            const { SessionRoutes } = await import('../../../src/services/worker/http/routes/SessionRoutes.js');
+            const routes = new SessionRoutes(manager, db, {} as any, {} as any, {} as any, {} as any, {} as any, {} as any);
+            let starts = 0;
+            (routes as any).ensureGeneratorRunning = async () => { starts++; };
+            const app = express();
+            app.use(express.json());
+            app.post('/api/sessions/init', (routes as any).handleSessionInitByClaudeId);
+            const server = app.listen(0, '127.0.0.1');
+            await new Promise<void>(resolve => server.once('listening', resolve));
+            cleanup.push(() => new Promise<void>(resolve => { server.close(() => resolve()); server.closeAllConnections(); }));
+            const port = (server.address() as { port: number }).port;
+            const init = async (sessionId: string, prompt: string) => {
+              const response = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ contentSessionId: sessionId, project: 'owned-project', prompt, platform_source: 'cursor' }),
+              });
+              assert.equal(response.status, 200);
+              return await response.json() as any;
+            };
+            const accepted = await init(contentId, 'Second request');
+            assert.equal(accepted.promptNumber, 2);
+            assert.equal(accepted.skipped, false);
+            assert.equal(store.getPromptNumberFromUserPrompts(contentId, sid), 2);
+            const duplicate = await init(contentId, 'Second request');
+            assert.equal(duplicate.reason, 'duplicate');
+            const privatePrompt = await init(contentId, '<private>Private request</private>');
+            assert.equal(privatePrompt.reason, 'private');
+            const cold = await init('owned-cold-cursor', 'Cold Cursor request');
+            assert.equal(manager.getSession(cold.sessionDbId), undefined);
+            assert.equal(starts, 0);
+          } else advance();
         }
         if (kind === 'spooled-stop') advance();
         const outcome = kind === 'legacy-queue'
           ? (manager.queueSummarize(sid, 'Completed the owned task'), { status: 'accepted' })
-          : await ingestSummarize({ contentSessionId: contentId, platformSource: 'claude',
+          : await ingestSummarize({ contentSessionId: contentId, platformSource: kind === 'cursor-prompt' ? 'cursor' : 'claude',
           lastAssistantMessage: 'Completed the owned task',
           ...(kind === 'spooled-stop' ? { enqueuedAtEpochMs: firstAt + 50 } : {}),
         }, { sessionManager: manager, dbManager: db,
@@ -70,7 +102,7 @@ try {
         });
         assert.equal(outcome.status, 'accepted');
         if (kind === 'next-prompt' || kind === 'summary-stall') advance();
-        const expected = kind === 'older-observation' ? 2 : 1;
+        const expected = kind === 'older-observation' || kind === 'cursor-prompt' ? 2 : 1;
 const provider = new ClaudeProvider(db, manager);
 let stalledPromptNumber: number | undefined;
 if (kind === 'summary-stall') {
@@ -99,7 +131,7 @@ const rows = store.db.query('SELECT request, prompt_number FROM session_summarie
 console.log(JSON.stringify({kind, expected, rows}));
 assert.deepEqual(rows, [{request: 'Owned summary', prompt_number: expected}]);
 assert.equal(manager.getTotalQueueDepth(), 0);
-if (kind === 'older-observation') {
+if (kind === 'older-observation' || kind === 'cursor-prompt') {
   const retainedPromptNumber = session.lastPromptNumber;
   const observations = store.db.query('SELECT title, prompt_number FROM observations').all();
   assert.deepEqual(observations, [{ title: 'Owned summary', prompt_number: 1 }]);
