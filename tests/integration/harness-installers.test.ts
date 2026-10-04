@@ -2,9 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { spawnSync } from 'node:child_process';
 import { canonicalIntegrationId } from '../../src/shared/integration-id.js';
 import { installPiExtension, piExtensionPath, uninstallPiExtension } from '../../src/services/integrations/PiInstaller.js';
-import { installDshTranscriptWatch, uninstallDshTranscriptWatch, dshWatchConfigPath, installDeepSeekHarness, uninstallDeepSeekHarness } from '../../src/services/integrations/DeepSeekHarnessInstaller.js';
+import { installDshTranscriptWatch, uninstallDshTranscriptWatch, dshWatchConfigPath } from '../../src/services/integrations/DeepSeekHarnessInstaller.js';
 
 let dir: string;
 let previous: Record<string, string | undefined>;
@@ -32,6 +33,30 @@ function fakeDsh(): void {
     'const fs=require("node:fs");fs.appendFileSync(process.env.DSH_TEST_LOG,JSON.stringify(process.argv.slice(2))+"\\n");process.exit(process.env.DSH_TEST_FAIL==="1"?1:0);\n', { mode: 0o755 });
   process.env.PATH = bin + ':' + process.env.PATH;
   process.env.DSH_TEST_LOG = join(dir, 'dsh-calls.jsonl');
+}
+function runIsolatedDsh(script: string): any {
+  // A fresh process resolves DATA_DIR before importing the installer. Neither
+  // test depends on a prior build or can touch the user's profile marker.
+  const checkout = join(dir, 'checkout');
+  const fixture = join(checkout, 'dsh');
+  mkdirSync(join(fixture, 'lib'), { recursive: true });
+  for (const file of ['package.json', 'transcript-schema.json']) {
+    writeFileSync(join(fixture, file), readFileSync(join(process.cwd(), 'dsh', file)));
+  }
+  writeFileSync(join(fixture, 'lib', 'index.js'), 'export function apply() {}');
+  const module = new URL('../../src/services/integrations/DeepSeekHarnessInstaller.ts', import.meta.url).href;
+  const result = spawnSync(process.execPath, ['--eval',
+    `const { installDeepSeekHarness, uninstallDeepSeekHarness } = await import(${JSON.stringify(module)});\n` +
+    'const { readFileSync } = await import("node:fs");\n' +
+    'const config = () => JSON.parse(readFileSync(process.env.CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH, "utf8"));\n' + script,
+  ], {
+    cwd: checkout, encoding: 'utf8', timeout: 15_000,
+    env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_MEM_TRANSCRIPTS_ENABLED: 'true' },
+  });
+  if (result.status !== 0) throw new Error(result.stderr || String(result.error));
+  const output = result.stdout.split('\n').find(line => line.startsWith('DSH_RESULT='));
+  if (!output) throw new Error('Isolated DSH test produced no result: ' + result.stdout);
+  return JSON.parse(output.slice('DSH_RESULT='.length));
 }
 
 describe('first-party harness installers', () => {
@@ -89,9 +114,15 @@ describe('first-party harness installers', () => {
     fakeDsh();
     const other = { name: 'other', path: '/other', schema: 'custom' };
     writeConfig({ version: 1, watches: [other], schemas: { custom: { name: 'custom', events: [] } } });
-    expect(await installDeepSeekHarness('review')).toBe(0);
-    expect(readConfig().watches).toHaveLength(2);
-    expect(await uninstallDeepSeekHarness()).toBe(0);
+    const result = runIsolatedDsh(`
+      const installed = await installDeepSeekHarness('review');
+      const watches = config().watches;
+      const removed = await uninstallDeepSeekHarness();
+      console.log('DSH_RESULT=' + JSON.stringify({ installed, watches, removed }));
+    `);
+    expect(result.installed).toBe(0);
+    expect(result.watches).toHaveLength(2);
+    expect(result.removed).toBe(0);
     expect(readConfig().watches).toEqual([other]);
     const calls = readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(calls[0].slice(0,4)).toEqual(['plugin','--profile','review','add']);
@@ -103,9 +134,14 @@ describe('first-party harness installers', () => {
     fakeDsh(); process.env.DSH_TEST_FAIL = '1';
     const original = { version: 1, watches: [] };
     writeConfig(original);
-    expect(await installDeepSeekHarness('review')).toBe(1);
+    const result = runIsolatedDsh(`
+      const installed = await installDeepSeekHarness('review');
+      const invalid = await installDeepSeekHarness('invalid;profile');
+      console.log('DSH_RESULT=' + JSON.stringify({ installed, invalid }));
+    `);
+    expect(result.installed).toBe(1);
     expect(readConfig()).toEqual(original);
-    expect(await installDeepSeekHarness('invalid;profile')).toBe(1);
+    expect(result.invalid).toBe(1);
     expect(readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 });
