@@ -105,7 +105,10 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       if (alignmentOnly) {
         return line.raw.includes('[ALIGNMENT]');
       }
-      if (!line.level || !line.component) return true;
+      if (!line.level || !line.component) {
+        return activeLevels.size === LOG_LEVELS.length
+          && activeComponents.size === LOG_COMPONENTS.length;
+      }
       return activeLevels.has(line.level) && activeComponents.has(line.component);
     });
   }, [parsedLines, activeLevels, activeComponents, alignmentOnly]);
