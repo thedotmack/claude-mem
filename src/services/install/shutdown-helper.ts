@@ -1,6 +1,6 @@
 import { createConnection } from 'node:net';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
-import { readOwnedWorkerPidInfo, verifyPidFileOwnership, type PidInfo } from '../../supervisor/process-registry.js';
+import { readOwnedWorkerPidInfo, verifyWorkerPidFileOwnership, type PidInfo } from '../../supervisor/process-registry.js';
 
 /**
  * Why a stop did not complete, so callers can name the fix:
@@ -77,7 +77,7 @@ export async function readAnsweringWorkerPid(port: number, timeoutMs: number): P
 
 const DEFAULT_PROBES: ShutdownProbes = {
   readOwnedWorker: () => readOwnedWorkerPidInfo(),
-  isOwnedWorkerAlive: (worker) => verifyPidFileOwnership(worker),
+  isOwnedWorkerAlive: (worker) => verifyWorkerPidFileOwnership(worker),
   probePort: probeLoopbackPort,
   readAnsweringWorkerPid,
 };

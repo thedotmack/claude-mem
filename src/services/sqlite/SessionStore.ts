@@ -3082,10 +3082,12 @@ export class SessionStore {
     if (files) {
       const filesList = Array.isArray(files) ? files : [files];
       const fileConditions = filesList.map(() => {
-        return '(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ?) OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ?))';
+        return "(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ? ESCAPE '\\'))";
       });
       filesList.forEach(file => {
-        params.push(`%${file}%`, `%${file}%`);
+        // The hydration filter receives literal file paths, like SQLite search.
+        const literal = file.replace(/[\\%_]/g, '\\$&');
+        params.push(`%${literal}%`, `%${literal}%`);
       });
       additionalConditions.push(`(${fileConditions.join(' OR ')})`);
     }
