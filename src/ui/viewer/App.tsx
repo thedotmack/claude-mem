@@ -65,6 +65,8 @@ export function App() {
   const [feedScope, setFeedScope] = useState<FeedScope>(
     () => scopeForRoute(route, currentFilter) ?? { project: currentFilter, session: null }
   );
+  const activeFeedScopeRef = useRef(feedScopeKey(feedScope));
+  activeFeedScopeRef.current = feedScopeKey(feedScope);
 
   const catalog = useSessionCatalog();
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
@@ -141,6 +143,7 @@ export function App() {
   }, []);
 
   const handleLoadMore = useCallback(async () => {
+    const requestFeedScope = feedScopeKey(feedScope);
     setFeedLoadError(null);
     try {
       // Each cursor advances independently; commit its rows before a sibling
@@ -158,9 +161,11 @@ export function App() {
       ]);
     } catch (error) {
       console.error('Failed to load more data:', error);
-      setFeedLoadError(error instanceof Error ? error.message : 'Failed to load more data');
+      if (activeFeedScopeRef.current === requestFeedScope) {
+        setFeedLoadError(error instanceof Error ? error.message : 'Failed to load more data');
+      }
     }
-  }, [pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [feedScope, pagination.observations, pagination.summaries, pagination.prompts]);
 
   // One removal path for a deleted row, whether this tab deleted it or another
   // tab did (item_deleted SSE, which also reaches this tab): drop it from the
