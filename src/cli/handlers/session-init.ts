@@ -99,6 +99,20 @@ export function recordSessionPrompt(input: NormalizedHookInput): Promise<HookRes
   return sessionInit.run(input, true);
 }
 
+/**
+ * Is this event from Qwen Code?
+ *
+ * Qwen runs the same `hook claude-code session-init` command as Claude Code, so
+ * `platform` cannot tell the two hosts apart. Its transcripts live under
+ * `~/.qwen/`, which is the one host-specific thing on the event. Matched as a
+ * whole path segment so a project directory like `~/.qwen-notes/` is not
+ * mistaken for the host.
+ */
+export const isQwenTranscriptPath = (transcriptPath: string | undefined): boolean => {
+  if (!transcriptPath) return false;
+  return transcriptPath.replace(/\\/g, '/').includes('/.qwen/');
+};
+
 const sessionInit = {
   async run(input: NormalizedHookInput, requireRecordedPrompt: boolean): Promise<HookResult> {
     const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
@@ -140,6 +154,24 @@ const sessionInit = {
     // WAS submitted.
     if (submittedPrompt === null) {
       logger.debug('HOOK', 'session-init: host reported no user-submitted text; not storing a prompt', {
+        sessionId,
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Qwen's continuation and ToolResult sends leave `submitted_prompt` out
+    // entirely rather than sending it empty, so the field arrives absent
+    // (`undefined`) and the fallback below stores `[media prompt]` once per
+    // tool round of an agent loop (#4215). The absence is only safe to read as
+    // "not a user turn" on Qwen, which is why this is host-scoped: Claude Code
+    // sends no field on the same command, and an empty prompt there is a real
+    // image-only submission (#928).
+    if (
+      submittedPrompt === undefined &&
+      !rawPrompt?.trim() &&
+      isQwenTranscriptPath(input.transcriptPath)
+    ) {
+      logger.debug('HOOK', 'session-init: Qwen send carried no submitted_prompt and no prompt text; not storing a prompt', {
         sessionId,
       });
       return { continue: true, suppressOutput: true };
