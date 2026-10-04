@@ -1,0 +1,42 @@
+name: Agent cost report (Windows)
+
+on:
+  pull_request:
+    paths:
+      - 'plugin/skills/agent-cost-report/**'
+      - 'claude-mem-cursor/skills/agent-cost-report/**'
+      - 'claude-mem-grok-bot/skills/agent-cost-report/**'
+      - 'cowork/skills/agent-cost-report/**'
+      - 'openclaw/skills/agent-cost-report/**'
+      - '.github/workflows/agent-cost-report-windows.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'plugin/skills/agent-cost-report/**'
+      - 'claude-mem-cursor/skills/agent-cost-report/**'
+      - 'claude-mem-grok-bot/skills/agent-cost-report/**'
+      - 'cowork/skills/agent-cost-report/**'
+      - 'openclaw/skills/agent-cost-report/**'
+      - '.github/workflows/agent-cost-report-windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  report-rendering:
+    name: native Windows report dates and UTF-8 export
+    runs-on: windows-2022
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      # Windows Python has no system IANA database; report fixtures use PT.
+      - name: Install the report timezone prerequisite
+        run: python -m pip install tzdata==2026.2
+      - name: Test rendering with the legacy Windows default encoding
+        env:
+          PYTHONUTF8: '0'
+        run: python -m unittest discover -s plugin/skills/agent-cost-report/scripts/tests -p 'test_render_encoding.py'
