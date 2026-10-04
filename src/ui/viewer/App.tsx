@@ -58,6 +58,7 @@ export function App() {
   const [paginatedObservations, setPaginatedObservations] = useState<Observation[]>([]);
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
+  const [feedLoadError, setFeedLoadError] = useState<string | null>(null);
   const [route, setRoute] = useState<ViewRoute>(() => parseViewRoute(window.location.hash));
   // The Sessions list keeps the last timeline/session scope, so switching back
   // does not reload pages that are still correct.
@@ -140,24 +141,24 @@ export function App() {
   }, []);
 
   const handleLoadMore = useCallback(async () => {
+    setFeedLoadError(null);
     try {
-      const [newObservations, newSummaries, newPrompts] = await Promise.all([
-        pagination.observations.loadMore(),
-        pagination.summaries.loadMore(),
-        pagination.prompts.loadMore()
+      // Each cursor advances independently; commit its rows before a sibling
+      // request can reject the group, or successful pages would be skipped.
+      await Promise.all([
+        pagination.observations.loadMore().then(rows => {
+          if (rows.length) setPaginatedObservations(prev => [...prev, ...rows]);
+        }),
+        pagination.summaries.loadMore().then(rows => {
+          if (rows.length) setPaginatedSummaries(prev => [...prev, ...rows]);
+        }),
+        pagination.prompts.loadMore().then(rows => {
+          if (rows.length) setPaginatedPrompts(prev => [...prev, ...rows]);
+        })
       ]);
-
-      if (newObservations.length > 0) {
-        setPaginatedObservations(prev => [...prev, ...newObservations]);
-      }
-      if (newSummaries.length > 0) {
-        setPaginatedSummaries(prev => [...prev, ...newSummaries]);
-      }
-      if (newPrompts.length > 0) {
-        setPaginatedPrompts(prev => [...prev, ...newPrompts]);
-      }
     } catch (error) {
       console.error('Failed to load more data:', error);
+      setFeedLoadError(error instanceof Error ? error.message : 'Failed to load more data');
     }
   }, [pagination.observations, pagination.summaries, pagination.prompts]);
 
@@ -261,6 +262,7 @@ export function App() {
         items={feedItems}
         isLoading={isLoading}
         hasMore={hasMore}
+        loadError={feedLoadError}
         onLoadMore={handleLoadMore}
         onDeleted={removeDeletedItem}
         onBack={() => navigate(sessionsHash())}
@@ -275,6 +277,7 @@ export function App() {
         onDeleted={removeDeletedItem}
         isLoading={isLoading}
         hasMore={hasMore}
+        loadError={feedLoadError}
       />
     );
   }
