@@ -10,6 +10,7 @@
 
 import { resolveTelemetryConsent, loadTelemetryConfig, getOrCreateInstallId } from './consent.js';
 import { scrubProperties } from './scrub.js';
+import { shouldSampleEvent } from './volume.js';
 import { getTelemetryApiKey, getTelemetryHost, buildBaseProperties, buildPersonSet } from './common.js';
 
 const CAPTURE_TIMEOUT_MS = 2000;
@@ -29,9 +30,15 @@ export async function captureCliEvent(
       return;
     }
 
+    const sample = shouldSampleEvent(event, props);
+    if (!sample.send) {
+      return;
+    }
+
     const properties: Record<string, unknown> = scrubProperties({
       ...buildBaseProperties(),
       ...(props ?? {}),
+      ...(sample.sampleRate < 1 ? { telemetry_sample_rate: sample.sampleRate } : {}),
     });
     // Lifecycle events (install_* / uninstall) build the anonymous person
     // profile that powers retention and cohort insights; see telemetry.ts.
