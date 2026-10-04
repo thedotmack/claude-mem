@@ -97,7 +97,7 @@ export abstract class BaseRouteHandler {
   }
 
   protected handleError(res: Response, error: Error, context?: string): void {
-    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    const statusCode = this.errorStatusCode(error);
     // Client errors (4xx AppErrors) are routine bad input, not server faults, so
     // they log at WARN and are NOT routed to the error sink — surfacing a
     // validation rejection like a bad corpus name as a captured $exception just
@@ -113,17 +113,26 @@ export abstract class BaseRouteHandler {
       logger.failure('WORKER', context || 'Request failed', undefined, error);
     }
     if (!res.headersSent) {
-      const response: Record<string, unknown> = { error: error.message };
-
-      if (error instanceof AppError && error.code) {
-        response.code = error.code;
-      }
-
-      if (error instanceof AppError && error.details !== undefined) {
-        response.details = error.details;
-      }
-
-      res.status(statusCode).json(response);
+      res.status(statusCode).json(this.errorResponseBody(error));
     }
+  }
+
+  /** The HTTP status and JSON body handleError sends for `error`. */
+  protected errorStatusCode(error: Error): number {
+    return error instanceof AppError ? error.statusCode : 500;
+  }
+
+  protected errorResponseBody(error: Error): Record<string, unknown> {
+    const response: Record<string, unknown> = { error: error.message };
+
+    if (error instanceof AppError && error.code) {
+      response.code = error.code;
+    }
+
+    if (error instanceof AppError && error.details !== undefined) {
+      response.details = error.details;
+    }
+
+    return response;
   }
 }

@@ -1,7 +1,7 @@
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { ingestObservation } from '../shared.js';
+import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
@@ -698,88 +698,45 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling } = req.body;
-    const platformSource = this.getPlatformSourceFromRequest(req);
+    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling, cwd } = req.body;
+    const outcome = await ingestSummarize({
+      contentSessionId,
+      platformSource: this.getPlatformSourceFromRequest(req),
+      lastAssistantMessage: last_assistant_message,
+      agentId,
+      observedModel,
+      observedBilling,
+      cwd,
+    }, this.ingestDeps());
 
-    if (agentId) {
-      res.json({ status: 'skipped', reason: 'subagent_context' });
-      return;
-    }
-
-    const store = this.dbManager.getSessionStore();
-
-    // Summarize only a session the worker knows. Creating a row here gave every
-    // idle turn of a session nothing else recorded (an excluded checkout, a
-    // skipped init) an empty-project row and a paid observer call (R5-1).
-    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
-    if (sessionDbId === null) {
+    if (outcome.status === 'unknown_session') {
       res.json({ status: 'skipped', reason: 'unknown_session' });
       return;
     }
-
-    // An excluded checkout is never summarized, even one excluded after its
-    // session began (R5-1). A host that cannot check the user's exclusions
-    // itself sends its checkout; without one, the checkout the session was
-    // recorded in is checked.
-    const requestCwd = typeof req.body.cwd === 'string' ? req.body.cwd.trim() : '';
-    const checkoutCwd = requestCwd || store.getSessionCwd(sessionDbId);
-    if (checkoutCwd) {
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
-        res.json({ status: 'skipped', reason: 'project_excluded' });
-        return;
-      }
-    }
-
-    if (observedModel || observedBilling) {
-      store.setSessionObservedMetadata(sessionDbId, observedModel, observedBilling);
-      const active = this.sessionManager.getSession(sessionDbId);
-      if (active) {
-        if (observedModel) active.observedModel = observedModel;
-        if (observedBilling) active.observedBilling = observedBilling;
-      }
-    }
-
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
-
-    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      contentSessionId,
-      promptNumber,
-      'summarize',
-      sessionDbId
-    );
-    if (!privacy.allow) {
-      res.json({ status: 'skipped', reason: 'private' });
+    if (outcome.status === 'skipped') {
+      res.json({ status: 'skipped', reason: outcome.reason });
       return;
     }
-
-    const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTags(String(last_assistant_message))
-      : last_assistant_message;
-    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
-
-    await this.ensureGeneratorRunning(sessionDbId, 'summarize');
-
-    this.eventBroadcaster.broadcastSummarizeQueued();
-
     res.json({ status: 'queued' });
   });
 
   private handleSessionEnd = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId } = req.body;
-    const platformSource = this.getPlatformSourceFromRequest(req);
-    const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
-
-    if (sessionDbId === null) {
-      res.json({ status: 'unknown_session' });
-      return;
-    }
-
-    await this.sessionManager.requestSessionWrapup(sessionDbId);
-    res.json({ status: 'accepted' });
+    const outcome = await ingestSessionEnd({
+      contentSessionId: req.body.contentSessionId,
+      platformSource: this.getPlatformSourceFromRequest(req),
+    }, this.ingestDeps());
+    res.json({ status: outcome.status });
   });
+
+  /** The route's own collaborators, so the shared ingest behaves exactly as the inline handler did. */
+  private ingestDeps(): IngestContext {
+    return {
+      sessionManager: this.sessionManager,
+      dbManager: this.dbManager,
+      eventBroadcaster: this.eventBroadcaster,
+      ensureGeneratorRunning: (sessionDbId, source) => this.ensureGeneratorRunning(sessionDbId, source),
+    };
+  }
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
