@@ -8,6 +8,10 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
   ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 
+if (process.env.CI && !chrome) {
+  throw new Error('CI requires Chrome or Chromium for the native settings-save regression tests.');
+}
+
 for (const succeeds of [true, false]) {
   (chrome ? it : it.skip)(`protects the settings draft while an actual ${succeeds ? 'successful' : 'failed'} save is pending`, async () => {
     let posted: any;
