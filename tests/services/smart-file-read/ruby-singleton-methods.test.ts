@@ -108,3 +108,17 @@ test('a class opened inside class << self keeps its own instance methods', async
     expect(unfoldSymbol(source, 'counter.rb', 'Counter.Builder#run')).toContain(':run');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('partial qualified Ruby queries retain their exact owner and method kind', async () => {
+  const source = 'class Counter\n  def reset\n    :instance\n  end\n  def self.reset\n    :singleton\n  end\nend\nclass Other\n  def reset\n    :other\n  end\nend';
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-qualified-prefix-'));
+  try {
+    writeFileSync(join(dir, 'owned.rb'), source);
+    for (const [query, expected] of [['Counter#res', 'Counter#reset'], ['Counter.res', 'Counter.reset']]) {
+      const result = await searchCodebase(dir, query);
+      expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual([expected]);
+      expect(unfoldSymbol(source, 'owned.rb', expected)).toContain(expected.includes('#') ? ':instance' : ':singleton');
+    }
+    expect((await searchCodebase(dir, 'Counter')).matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);

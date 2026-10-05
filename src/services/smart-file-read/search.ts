@@ -162,9 +162,23 @@ export async function searchCodebase(
         let reason = "";
 
         // Score the symbol's own name, so a class or module query does not match
-        // every method under it. The qualified identity counts only as the whole
-        // query: `Counter#reset` has no character that queryParts splits on.
-        const nameScore = matchScore(sym.name.toLowerCase(), queryParts)
+        // every method under it. Qualified Ruby queries retain their owner and
+        // method separator, including a partial method name.
+        const separator = qualifiedName.includes('#')
+          ? qualifiedName.lastIndexOf('#') : qualifiedName.lastIndexOf('.');
+        const ownerPrefix = qualifiedName.slice(0, separator + 1).toLowerCase();
+        // A partial Ruby method query must name its complete owner and method
+        // separator; a class-only query still must not pull in every method.
+        const qualifiedRubyScore = parsed.language === 'ruby' && sym.kind === 'method'
+          && separator >= 0 && queryLower.startsWith(ownerPrefix)
+          && queryLower.length > ownerPrefix.length
+          ? matchScore(qualifiedName.toLowerCase(), [queryLower]) : 0;
+        const rubyQualifiedQuery = parsed.language === 'ruby' && /[#.]/.test(queryLower);
+        const ownNameScore = rubyQualifiedQuery
+          ? (sym.kind === 'method' ? qualifiedRubyScore
+            : matchScore(qualifiedName.toLowerCase(), [queryLower]))
+          : matchScore(sym.name.toLowerCase(), queryParts);
+        const nameScore = ownNameScore
           || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
