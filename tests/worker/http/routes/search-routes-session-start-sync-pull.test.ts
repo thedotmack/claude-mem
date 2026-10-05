@@ -1,9 +1,7 @@
 /**
- * SessionStart freshness with cloud sync (Greptile PRRT_kwDOPng1J86osrIw):
- * when the sync client's Realtime channel is not live, the live context route
- * pulls once (bounded) before rendering, so another device's change that has
- * not arrived yet is in the block. With Realtime live, ops already arrive as
- * they happen and the route does not pull.
+ * SessionStart is local-first: the live context route renders from the local db
+ * at once and never waits on the sync hub. While Realtime is not live it only
+ * nudges a pull (fire-and-forget) so the sync loop catches up for next time.
  */
 import { describe, expect, it, mock } from 'bun:test';
 import type { Request, Response } from 'express';
@@ -25,8 +23,10 @@ async function runSessionStart(socketLive: boolean) {
   const events: string[] = [];
   const syncClient = {
     isSocketLive: () => socketLive,
-    pullOnce: mock(async (options?: { timeoutMs?: number }) => {
-      events.push(`pull:${options?.timeoutMs}`);
+    // A hub that never answers: SessionStart must not wait on it.
+    pullOnce: mock((_options?: { timeoutMs?: number }) => {
+      events.push('pull');
+      return new Promise<void>(() => {});
     }),
   };
   const sessionStore = {
@@ -49,10 +49,10 @@ async function runSessionStart(socketLive: boolean) {
 }
 
 describe('SessionStart sync pull', () => {
-  it('pulls once, bounded to 1.5s, before rendering while Realtime is not live', async () => {
+  it('renders without waiting on the pull while Realtime is not live, and nudges one pull', async () => {
     const { events, syncClient } = await runSessionStart(false);
     expect(syncClient.pullOnce).toHaveBeenCalledTimes(1);
-    expect(events).toEqual(['pull:1500', 'render']);
+    expect(events).toEqual(['pull', 'render']);
   });
 
   it('does not pull while Realtime is live', async () => {

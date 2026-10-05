@@ -220,7 +220,7 @@ function parseSummaryBlock(text: string, correlationId?: string | number): Parse
   const next_steps = extractField(summaryContent, 'next_steps');
   const notes = extractField(summaryContent, 'notes'); 
 
-  if (!request && !investigated && !learned && !completed && !next_steps) {
+  if (!request && !investigated && !learned && !completed && !next_steps && !notes) {
     logger.warn('PARSER', 'Summary block has no sub-tags — rejecting false positive', { correlationId });
     return null;
   }
@@ -295,7 +295,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
     const trimmed = decodeXmlReferences(elementMatch[1].trim());
-    if (trimmed) {
+    if (trimmed.trim()) {
       elements.push(trimmed);
     }
   }

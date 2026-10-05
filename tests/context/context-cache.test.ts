@@ -609,6 +609,25 @@ describe('context hook reads the precomputed block', () => {
     expect(result.systemMessage).not.toContain(PLACEHOLDER_MARKER);
   });
 
+  it('does not inject or display cached timelines on Claude resume', async () => {
+    showTerminalOutput = true;
+    writeContextCache(agentKeys, cachedBody, Date.now());
+    writeContextCache(colorKeys, 'COLORED TIMELINE', Date.now());
+    const { contextHandler } = await import('../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'cache-session',
+      cwd: '/tmp/cache-hook-repo',
+      platform: 'claude-code',
+      sessionSource: 'resume',
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe('');
+    expect(result.systemMessage).toBeUndefined();
+    expect(workerCalls).toEqual([]);
+    expect(readContextCache(agentKeys, Date.now())?.body).toBe(cachedBody);
+    expect(readContextCache(colorKeys, Date.now())?.body).toBe('COLORED TIMELINE');
+  });
+
   it('fetches only the colored render when only the model block is cached', async () => {
     showTerminalOutput = true;
     writeContextCache(agentKeys, cachedBody, Date.now());
