@@ -256,6 +256,19 @@ describe('OpenCode installer leaves the global AGENTS.md to the user', () => {
     expect(agentsMd).not.toContain('stale memory');
   });
 
+  it('strips only the old block when the user text mentions a closing tag before it', async () => {
+    writeFileSync(
+      getOpenCodeAgentsMdPath(),
+      '# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n<claude-mem-context>\nstale memory\n</claude-mem-context>\n',
+      'utf-8',
+    );
+
+    expect(await installOpenCodeIntegration()).toBe(0);
+
+    expect(readFileSync(getOpenCodeAgentsMdPath(), 'utf-8'))
+      .toBe('# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n');
+  });
+
   it('removes the file when the old block was all it held', async () => {
     writeFileSync(
       getOpenCodeAgentsMdPath(),

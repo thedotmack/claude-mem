@@ -228,7 +228,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const rawFilePath = query.filePath ?? query.files;
     const filePath = Array.isArray(rawFilePath)
       ? rawFilePath[0]
-      : (typeof rawFilePath === 'string' && rawFilePath.includes(','))
+      : (query.filePath === undefined && typeof rawFilePath === 'string' && rawFilePath.includes(','))
         ? rawFilePath.split(',')[0].trim()
         : rawFilePath;
 
