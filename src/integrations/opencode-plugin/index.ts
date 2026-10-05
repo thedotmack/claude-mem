@@ -113,6 +113,13 @@ const MAX_TOOL_RESPONSE_LENGTH = 1000;
 // viewer badges and source-scoped session lookups are wrong (#3678).
 const PLATFORM_SOURCE = "opencode";
 
+// Built-in OpenCode names differ from the shared file-evidence vocabulary.
+const CAPTURE_TOOL_NAMES = new Map([
+  ["read", "Read"],
+  ["write", "Write"],
+  ["edit", "Edit"],
+]);
+
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
 // Every worker request is bounded, so a hung worker can neither hold a hook
@@ -328,15 +335,23 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
       const contentSessionId = resolveContentSessionId(input.sessionID);
+      // apply_patch carries its patch as `patchText`, and the worker's file
+      // evidence reads `patch`. Renamed rather than copied, so the observer
+      // is not sent the whole patch twice.
+      let toolInput: Record<string, unknown> = input.args || {};
+      if (input.tool === "apply_patch" && typeof toolInput.patchText === "string") {
+        const { patchText, ...otherArgs } = toolInput;
+        toolInput = { ...otherArgs, patch: patchText };
+      }
       await workerPost("/api/sessions/observations", {
         contentSessionId,
-        tool_name: input.tool,
+        tool_name: CAPTURE_TOOL_NAMES.get(input.tool) ?? input.tool,
         // OpenCode passes the tool arguments on the hook input; the output
         // object only carries { title, output, metadata }. Reading output.args
         // instead shipped an empty tool_input for every observation, and the
         // compressor dismissed them all — the "loads but captures nothing"
         // symptom of #3678.
-        tool_input: input.args || {},
+        tool_input: toolInput,
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
