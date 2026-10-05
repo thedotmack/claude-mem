@@ -104,15 +104,17 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     if (event.prompt?.trim()) {
       await enqueue(session, ctx, async () => {
         session.anchored = false;
-        if (session.excluded) return;
+        session.needsSummary = false;
+        session.lastAssistant = '';
         const response = await worker.post('/api/sessions/init', {
           contentSessionId: session.id, cwd: session.cwd, prompt: event.prompt, platformSource: 'pi',
         });
-        const result = await response.json() as { skipped?: boolean; sessionDbId?: number };
-        session.excluded = result.skipped === true;
+        const result = await response.json() as { skipped?: boolean; reason?: string; sessionDbId?: number };
+        // A duplicate acknowledges an already-persisted prompt. Other skips
+        // suppress this turn only: a private prompt must not disable later ones.
+        session.excluded = result.skipped === true && result.reason !== 'duplicate';
         session.anchored = !session.excluded && typeof result.sessionDbId === 'number';
         session.needsSummary = session.anchored;
-        session.lastAssistant = '';
       });
     }
     if (session.excluded || !session.memory) return;

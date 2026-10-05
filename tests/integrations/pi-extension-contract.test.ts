@@ -89,6 +89,34 @@ describe('native Pi capture', () => {
     expect(calls.at(-1)?.route).toBe('/api/sessions/observations');
   });
 
+  it('captures tools after a duplicate acknowledgement without excluding the session', async () => {
+    await emit('session_start');
+    initResponse = async () => Response.json({ sessionDbId: 42, skipped: true, reason: 'duplicate' });
+    await emit('before_agent_start', { prompt: 'Already persisted' });
+    await emit('tool_result', { toolName: 'read', toolCallId: 'after-retry', content: 'result' });
+    await emit('agent_end');
+    expect(calls.filter(call => call.body).map(call => call.route)).toEqual([
+      '/api/sessions/init', '/api/sessions/observations', '/api/sessions/summarize',
+    ]);
+  });
+
+  it('suppresses a private turn while accepting the next real prompt in the same session', async () => {
+    await emit('session_start');
+    initResponse = async () => Response.json({ sessionDbId: 42, skipped: true, reason: 'private' });
+    await emit('before_agent_start', { prompt: '<private>secret</private>' });
+    await emit('tool_result', { toolName: 'read', content: 'private result' });
+    await emit('agent_end');
+    expect(calls.filter(call => call.body).map(call => call.route)).toEqual(['/api/sessions/init']);
+    initResponse = async () => Response.json({ sessionDbId: 42 });
+    await emit('before_agent_start', { prompt: 'Public prompt' });
+    await emit('tool_result', { toolName: 'read', content: 'public result' });
+    await emit('agent_end');
+    expect(calls.filter(call => call.body).map(call => call.route)).toEqual([
+      '/api/sessions/init', '/api/sessions/init', '/api/sessions/observations', '/api/sessions/summarize',
+    ]);
+    expect(calls.find(call => call.route === '/api/sessions/observations')?.body.tool_response).toBe('public result');
+  });
+
   it('offers progressive recall, validates timeline anchoring, and excludes image data', async () => {
     expect([...tools.keys()]).toEqual(['mem_search', 'mem_timeline', 'mem_get_observations']);
     const result = await tools.get('mem_search').execute('id', { query: 'test', limit: 3 });
