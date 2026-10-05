@@ -17,8 +17,9 @@ const fixture = String.raw`
   try {
     const listing = await (await fetch(url + '/api/tool-uses?project=myproject')).json();
     const batch = await (await fetch(url + '/api/tool-uses/batch', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: [id], project: 'MYPROJECT' }) })).json();
+    const plans = ['SELECT * FROM tool_uses WHERE project COLLATE NOCASE = ? ORDER BY created_at_epoch DESC, id DESC LIMIT 50', 'SELECT tool_name, COUNT(DISTINCT tool_use_id) FROM tool_uses WHERE project COLLATE NOCASE = ? GROUP BY tool_name'].map(sql => store.db.prepare('EXPLAIN QUERY PLAN ' + sql).all('myproject'));
     const unrelated = await (await fetch(url + '/api/tool-uses?project=other')).json();
-    console.log(JSON.stringify({ id, listing, batch, unrelated, counts: store.countToolUses({ project: 'mYpRoJeCt' }) }));
+    console.log(JSON.stringify({ id, listing, batch, unrelated, plans, counts: store.countToolUses({ project: 'mYpRoJeCt' }) }));
   } finally { await new Promise((resolve, reject) => server.close(error => error ? reject(error) : resolve())); store.close(); }
 `;
 
@@ -36,6 +37,8 @@ describe('raw tool reads share the case-insensitive project scope', () => {
       expect(result.batch.map((row: { id: number }) => row.id)).toEqual([result.id]);
       expect(result.counts).toEqual([{ tool_name: 'Read', uses: 1 }]);
       expect(result.unrelated.toolUses).toEqual([]);
+      for (const plan of result.plans) expect(plan.some((row: { detail: string }) => row.detail.includes('SEARCH tool_uses USING INDEX idx_tool_uses_project_nocase_created'))).toBe(true);
+      expect(result.plans[0].some((row: { detail: string }) => row.detail.includes('USE TEMP B-TREE'))).toBe(false);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
