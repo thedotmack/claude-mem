@@ -161,6 +161,7 @@ const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
 };
 
 let lastRequestTime = 0;
+let rateLimitQueue: Promise<void> = Promise.resolve();
 
 const GEMINI_EMPTY_HISTORY_FALLBACK = 'Continue the memory observation request.';
 
@@ -219,25 +220,45 @@ export function categorizeGeminiBadRequest(bodyText: string): GeminiBadRequestCa
   return 'unknown_bad_request';
 }
 
-async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled: boolean): Promise<void> {
-  if (!rateLimitingEnabled) {
-    return;
-  }
+async function enforceRateLimitForModel(
+  model: GeminiModel,
+  rateLimitingEnabled: boolean,
+  signal?: AbortSignal,
+): Promise<void> {
+  if (!rateLimitingEnabled) return;
 
   const rpm = GEMINI_RPM_LIMITS[model] || 5;
   const minimumDelayMs = Math.ceil(60000 / rpm) + 100;
-
-  const now = Date.now();
-  // Reserve the next admission before yielding. Concurrent worker sessions
-  // otherwise wait on the same prior request and send together when it ends.
-  const nextRequestTime = Math.max(now, lastRequestTime + minimumDelayMs);
-  lastRequestTime = nextRequestTime;
-  const waitTime = nextRequestTime - now;
-
-  if (waitTime > 0) {
-    logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
-    await new Promise(resolve => setTimeout(resolve, waitTime));
-  }
+  // Only the front waiter computes a delay, using the previous actual
+  // admission. Late timers cannot release several expired reservations.
+  const admission = rateLimitQueue.then(async () => {
+    signal?.throwIfAborted();
+    const waitTime = Math.max(0, lastRequestTime + minimumDelayMs - Date.now());
+    if (waitTime > 0) {
+      logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
+      await new Promise<void>((resolve, reject) => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const onAbort = () => {
+          if (timer !== undefined) clearTimeout(timer);
+          signal?.removeEventListener('abort', onAbort);
+          reject(signal?.reason ?? new Error('Aborted'));
+        };
+        const onTimeout = () => {
+          signal?.removeEventListener('abort', onAbort);
+          resolve();
+        };
+        signal?.addEventListener('abort', onAbort, { once: true });
+        timer = setTimeout(onTimeout, waitTime);
+        if (signal?.aborted) onAbort();
+      });
+    }
+    signal?.throwIfAborted();
+    lastRequestTime = Date.now();
+  });
+  // A cancelled compression pass never consumes an admission and must not
+  // reject the next healthy waiter's chain.
+  rateLimitQueue = admission.catch(() => {});
+  await admission;
 }
 
 interface GeminiResponse {
@@ -425,7 +446,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     const url = `${GEMINI_API_URL}/${model}:generateContent?key=${apiKey}`;
 
-    await enforceRateLimitForModel(model, rateLimitingEnabled);
+    await enforceRateLimitForModel(model, rateLimitingEnabled, signal);
 
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
     // The id of the response actually returned, for the cut-off warning.

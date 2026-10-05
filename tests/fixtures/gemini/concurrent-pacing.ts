@@ -6,6 +6,7 @@ import { GeminiProvider } from '../../../src/services/worker/GeminiProvider.ts';
 import { ModeManager } from '../../../src/services/domain/ModeManager.ts';
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.ts';
 
+const stall = process.argv[2] === 'stalled';
 const store = new SessionStore(':memory:');
 const db: any = { getSessionStore: () => store, getSessionById: (id: number) => store.getSessionById(id), getChromaSync: () => null, getCloudSync: () => null };
 const manager = new SessionManager(db);
@@ -24,6 +25,10 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) 
   const body: any = await request.json();
   assert.ok(body.contents.length > 0);
   arrivals.push(performance.now());
+  if (stall && arrivals.length === 1) timers.push(setTimeout(() => {
+    const until = performance.now() + 8600;
+    while (performance.now() < until) {} // Controlled worker suspension; no fake timers.
+  }, 10));
   const session = sessions[arrivals.length - 1];
   timers.push(setTimeout(() => session.abortController.abort(), 30));
   return Response.json({ candidates: [{ content: { parts: [] }, finishReason: 'SAFETY' }] });

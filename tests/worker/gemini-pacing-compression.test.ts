@@ -3,13 +3,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-for (const scenario of ['normal', 'stalled']) {
-it(`spaces concurrent Gemini sessions with ${scenario} timers`, async () => {
+for (const scenario of ['normal-control', 'expired-compression', 'active-compression-control']) {
+it(`preserves Gemini pacing through ${scenario}`, async () => {
   const dataDir = mkdtempSync(join(tmpdir(), 'owned-gemini-pacing-'));
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    child = Bun.spawn([process.execPath, 'tests/fixtures/gemini/concurrent-pacing.ts', scenario], {
+    child = Bun.spawn([process.execPath, 'tests/fixtures/gemini/pacing-compression.ts', scenario], {
       env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
     });
     const exit = await Promise.race([child.exited, new Promise<never>((_, reject) => {
