@@ -9,6 +9,7 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
+import { formatHostForUrl } from "./worker-url.js";
 import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
@@ -466,10 +467,9 @@ function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): numb
   return remainingMs === null ? stepTimeoutMs : Math.max(1, Math.min(stepTimeoutMs, remainingMs));
 }
 
-export function formatHostForUrl(host: string): string {
-  if (host.startsWith('[') && host.endsWith(']')) return host;
-  return host.includes(':') ? `[${host}]` : host;
-}
+// The bracket rule lives in the import-free worker-url.ts so the OpenCode
+// plugin bundle can share it; re-exported here for existing callers.
+export { formatHostForUrl } from "./worker-url.js";
 
 export function buildWorkerUrl(apiPath: string): string {
   return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
