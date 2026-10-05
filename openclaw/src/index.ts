@@ -41,13 +41,21 @@ interface BeforePromptBuildResult {
   appendSystemContext?: string;
 }
 
-interface ToolResultPersistEvent {
-  toolName?: string;
+// OpenClaw's PluginHookAfterToolCallEvent. A failed call reports its message in
+// `error`. `params` is required upstream, but a host build that omits it must
+// not throw here.
+interface AfterToolCallEvent {
+  toolName: string;
   params?: Record<string, unknown>;
-  message?: {
-    content?: Array<{ type: string; text?: string }>;
-  };
+  result?: unknown;
+  error?: string;
 }
+
+const CAPTURE_TOOL_NAMES = new Map([
+  ["read", "Read"],
+  ["write", "Write"],
+  ["edit", "Edit"],
+]);
 
 interface AgentEndEvent {
   messages?: Array<{
@@ -118,7 +126,7 @@ interface OpenClawPluginApi {
   }) => void;
   on: ((event: "before_prompt_build", callback: PromptBuildCallback) => void) &
       ((event: "before_agent_start", callback: EventCallback<BeforeAgentStartEvent>) => void) &
-      ((event: "tool_result_persist", callback: EventCallback<ToolResultPersistEvent>) => void) &
+      ((event: "after_tool_call", callback: EventCallback<AfterToolCallEvent>) => void) &
       ((event: "agent_end", callback: EventCallback<AgentEndEvent>) => void) &
       ((event: "session_start", callback: EventCallback<SessionStartEvent>) => void) &
       ((event: "session_end", callback: EventCallback<SessionEndEvent>) => void) &
@@ -796,8 +804,8 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     }
   });
 
-  api.on("tool_result_persist", (event, ctx) => {
-    api.logger.info(`[claude-mem] tool_result_persist fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
+  api.on("after_tool_call", (event, ctx) => {
+    api.logger.info(`[claude-mem] after_tool_call fired: tool=${event.toolName ?? "unknown"} agent=${ctx.agentId ?? "none"} session=${ctx.sessionKey ?? "none"}`);
     const toolName = event.toolName;
     if (!toolName) return;
 
@@ -805,13 +813,20 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
 
     const { canonicalKey, contentSessionId } = rememberSessionContext(ctx);
 
-    let toolResponseText = "";
-    const content = event.message?.content;
+    let toolResponseText = typeof event.result === "string" ? event.result : "";
+    const content = event.result && typeof event.result === "object"
+      ? (event.result as { content?: Array<{ type: string; text?: string }> }).content
+      : undefined;
     if (Array.isArray(content)) {
       toolResponseText = content
         .filter((block) => (block.type === "tool_result" || block.type === "text") && "text" in block)
         .map((block) => String(block.text))
         .join("\n");
+    }
+
+    // Ahead of any partial result, so the cap never cuts off why the call failed.
+    if (typeof event.error === "string" && event.error.length > 0) {
+      toolResponseText = [`Error: ${event.error}`, toolResponseText].filter(Boolean).join("\n");
     }
 
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
@@ -823,13 +838,18 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
     // missing ctx field never silently drops a captured observation.
     const workspaceDir = ctx.workspaceDir || process.cwd();
     if (!ctx.workspaceDir) {
-      api.logger.info(`[claude-mem] tool_result_persist missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
+      api.logger.info(`[claude-mem] after_tool_call missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
     }
 
+    const params = event.params ?? {};
+    const toolInput = toolName === "read" && typeof params.path === "string"
+      && !(typeof params.file_path === "string" && params.file_path.length > 0)
+      ? { ...params, file_path: params.path }
+      : params;
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {
       contentSessionId,
-      tool_name: toolName,
-      tool_input: event.params || {},
+      tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,
+      tool_input: toolInput,
       tool_response: toolResponseText,
       cwd: workspaceDir,
     }, api.logger);
