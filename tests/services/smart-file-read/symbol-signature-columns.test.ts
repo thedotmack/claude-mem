@@ -48,5 +48,21 @@ for (const filename of ['exports.js', 'exports.ts', 'exports.tsx']) {
 
 test('preserves multiline and commented export prefixes', () => {
  const file = parseFile('const café = 1; export default /* public entry */ function greet(\n value\n) { return value; }', 'multiline-export.js');
- expect(file.symbols[0].signature).toBe('export default /* public entry */ function greet( value )');
+ expect(file.symbols[0].signature).toBe('export default function greet( value )');
 }, 120000);
+
+for (const filename of ['comment-export.js', 'comment-export.ts', 'comment-export.tsx']) {
+ for (const [label, comment] of [['brace', '/* { */'], ['long', '/*\n' + 'prefix documentation\n'.repeat(12) + '*/']]) {
+ test(`export ${label} comments cannot hide declaration signatures in ${filename}`, () => {
+   const source = `const café = 1; export default ${comment} function greet() { return 'own-body'; }\nfunction after() { return 'other-body'; }`;
+   const file = parseFile(source, filename);
+   const symbol = file.symbols.find(s => s.name === 'greet')!;
+   expect(symbol.signature).toBe('export default function greet()');
+   expect(formatFoldedView(file)).toContain('export default function greet()');
+   expect(symbol.lineStart).toBe(source.slice(0, source.indexOf('function greet')).split('\n').length - 1);
+   const unfolded = unfoldSymbol(source, filename, 'greet')!;
+   expect(unfolded).toContain("return 'own-body'");
+   expect(unfolded).not.toContain('other-body');
+ }, 120000);
+ }
+}

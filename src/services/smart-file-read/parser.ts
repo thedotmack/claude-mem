@@ -788,14 +788,23 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     } else {
       // Export wrappers start before their direct declaration. Preserve only
       // that prefix; a containing exported class must not prefix its methods.
-      const exportCapture = exportRanges.find(capture => {
-        if (kind === "method" || !rangeContains(capture, kindCapture)) return false;
-        const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
-          .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ");
-        return /^export\s+(?:default\s+)?(?:declare\s+)?$/.test(prefix);
-      });
-      signature = extractSignatureFromLines(lines, exportCapture?.startRow ?? startRow, endRow,
-        200, exportCapture?.startCol ?? kindCapture.startCol);
+      let exportPrefix = "";
+      if (kind !== "method") {
+        for (const capture of exportRanges) {
+          if (!rangeContains(capture, kindCapture)) continue;
+          const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
+            .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ")
+            .replace(/\s+/g, " ").trim();
+          if (/^export(?: default)?(?: declare)?$/.test(prefix)) {
+            exportPrefix = `${prefix} `;
+            break;
+          }
+        }
+      }
+      // Extract the declaration independently: prefix comments may contain
+      // braces or span more rows than the declaration signature budget.
+      signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
+        200 - exportPrefix.length, kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
