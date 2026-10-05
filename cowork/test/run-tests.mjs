@@ -198,6 +198,27 @@ check('other input fields preserved', j.hookSpecificOutput?.updatedInput.descrip
 out = (await run('agent-context', { session_id: 's1', tool_name: 'Agent', tool_input: { prompt: '<claude-mem-context>already</claude-mem-context> do it' } })).out;
 check('no double-injection', out.trim() === '');
 
+// ---- 5b. the spawned agent's prompt is cleaned before it is sent as the context query ----
+console.log('\n[5b] agent context query: private tags + secrets');
+const agentPromptWithPrivateParts = 'Fix the login flow <private>customer SSN 123-45-6789</private> with key sk-ant-api03-Zx9AbCdEfGh12345678 today';
+const privatePartsSent = requests => requests.filter(r => {
+  const sentText = decodeURIComponent(r.url) + JSON.stringify(r.body ?? '');
+  return sentText.includes('123-45-6789') || sentText.includes('<private>') || sentText.includes('sk-ant-api03');
+});
+received = [];
+out = (await run('agent-context', { session_id: 's1', cwd: '/home/claude', tool_name: 'Agent', tool_input: { prompt: agentPromptWithPrivateParts } })).out;
+const contextQuery = new URL(received.find(r => r.url.startsWith('/api/hooks/context'))?.url || '/', 'http://x').searchParams.get('q') || '';
+check('context URL query has no private region or secret', privatePartsSent(received).length === 0, contextQuery);
+check('context URL query keeps the rest of the prompt', contextQuery.startsWith('Fix the login flow') && contextQuery.includes('[cmem-redacted]') && contextQuery.endsWith('today'), contextQuery);
+check('agent still gets its full original prompt', !!out.trim() && JSON.parse(out).hookSpecificOutput?.updatedInput?.prompt.endsWith(agentPromptWithPrivateParts), out.slice(0, 120));
+mode = 'no-hooks-endpoints';
+received = [];
+await run('agent-context', { session_id: 's1', cwd: '/home/claude', tool_name: 'Agent', tool_input: { prompt: agentPromptWithPrivateParts } });
+const fallbackQuery = String(received.find(r => r.body?.method === 'tools/call')?.body.params.arguments.query || '');
+check('memory_search fallback body has no private region or secret', privatePartsSent(received).length === 0, fallbackQuery);
+check('memory_search fallback keeps the rest of the prompt', fallbackQuery.startsWith('Fix the login flow') && fallbackQuery.includes('[cmem-redacted]'), fallbackQuery);
+mode = 'full';
+
 // ---- 6. MCP fallback when /api/hooks/* is 404 ----
 console.log('\n[6] MCP fallback (endpoints not deployed)');
 mode = 'no-hooks-endpoints';
