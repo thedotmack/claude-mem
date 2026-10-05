@@ -742,7 +742,7 @@ export class SessionSearch {
       SELECT s.*, s.discovery_tokens
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
-      ORDER BY s.created_at_epoch DESC
+      ORDER BY s.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}
       ${paginationSql}
     `;
 
