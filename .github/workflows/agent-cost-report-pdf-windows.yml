@@ -28,11 +28,14 @@ jobs:
     name: native Windows installed Chrome PDF export
     runs-on: windows-2022
     timeout-minutes: 8
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       - name: Exercise PDF discovery in every shipped distribution
         env:
           ACR_EXPECT_WINDOWS_CHROME: '1'
@@ -41,6 +44,6 @@ jobs:
           $distributions = @('plugin', 'claude-mem-cursor', 'claude-mem-grok-bot', 'cowork', 'openclaw')
           foreach ($distribution in $distributions) {
             $tests = "$distribution/skills/agent-cost-report/scripts/tests"
-            python -m unittest discover -s $tests -p 'test_pdf_windows.py'
+            python -m unittest discover -v -s $tests -p 'test_pdf_windows.py'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
