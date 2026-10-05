@@ -18,7 +18,7 @@
  *   CLI:    search "query" [--limit N] | status
  */
 
-import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -318,20 +318,35 @@ function viewerPort() {
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
 }
 
-// Local-first: on a machine with a local claude-mem install, the local hook
-// injects memory from the local db, which cloud sync keeps current. Reading
-// cmem.ai there only adds a network round trip and a second, overlapping block.
-// Cowork containers have no local install, so they keep reading the cloud.
-async function localClaudeMemAvailable() {
+// Local-first: an agent on a machine with a local claude-mem install never
+// reads cmem.ai context; the local hook injects from the local db, which cloud
+// sync keeps current. An agent with no local install (a Cowork container, a
+// remote machine) reads the cloud.
+// The install is what Claude Code loads: an enabled plugin registered in
+// installed_plugins.json with its hook and worker files. Worker health doesn't
+// decide it, so a cold start or a worker on ::1 or a LAN address still counts.
+// A disabled plugin or an orphaned cache copy doesn't, so those sessions get
+// cloud context instead of no memory.
+function localClaudeMemInstalled() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
+  let settings = null;
   try {
-    const versions = readdirSync(join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem'));
-    if (versions.some(v => /^\d/.test(v))) return true;
-  } catch { /* not installed through the plugin cache */ }
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
+  } catch { /* missing or unreadable settings: the local launcher treats the plugin as enabled too */ }
+  // The same opt-out the local launcher honors (plugin/scripts/bun-runner.js).
+  if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
   try {
-    const res = await fetch(`http://127.0.0.1:${viewerPort()}/api/health`, { signal: AbortSignal.timeout(300) });
-    return res.ok;
-  } catch { return false; }
+    const registryRaw = readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8');
+    const registry = JSON.parse(registryRaw.replace(/^\uFEFF/, ''));
+    const entries = registry?.plugins?.['claude-mem@thedotmack'];
+    return Array.isArray(entries) && entries.some(entry => {
+      if (typeof entry?.installPath !== 'string' || !entry.installPath) return false;
+      const root = existsSync(join(entry.installPath, 'hooks', 'hooks.json'))
+        ? entry.installPath : join(entry.installPath, 'plugin');
+      return existsSync(join(root, 'hooks', 'hooks.json'))
+        && existsSync(join(root, 'scripts', 'worker-service.cjs'));
+    });
+  } catch { return false; /* no readable registry: nothing is registered */ }
 }
 
 // project-scoped wrapper: parses memory_search rows and keeps only this project's.
@@ -373,6 +388,9 @@ async function mcpSearch(query, limit, project) {
 async function fetchContext(scope, query, cwd) {
   const project = resolveProject(cwd);
   if (!CFG.apiKey) return null;
+  // the query leaves the machine (URL and fallback body): strip <private> regions
+  // and redact secrets first, as every capture path does, then apply the caps below
+  query = clean(query, PROMPT_CAP);
   // 1) purpose-built endpoint (see PRO-ENDPOINT-SPEC) — best quality, Pro compiles the block
   try {
     const url = `${CFG.apiBase}/api/hooks/context?project=${encodeURIComponent(project)}&scope=${scope}` +
@@ -414,7 +432,7 @@ async function onSessionStart(input) {
   // …and inject context
   if (!CFG.inject.sessionStart) return;
   if (!CFG.apiKey) return;
-  if (await localClaudeMemAvailable()) return;
+  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('session-start', null, input.cwd);
   const project = resolveProject(input.cwd);
   const body = text || [
@@ -460,7 +478,7 @@ async function onAgentContext(input) {
   const prompt = typeof ti.prompt === 'string' ? ti.prompt : null;
   if (!prompt) return;
   if (prompt.includes('<claude-mem-context')) return;   // already injected upstream
-  if (await localClaudeMemAvailable()) return;
+  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('agent', prompt, input.cwd);
   if (!text) return;
   process.stdout.write(JSON.stringify({
