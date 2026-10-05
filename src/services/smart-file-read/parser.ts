@@ -688,6 +688,12 @@ function captureLines(lines: string[], capture: RawCapture): string[] {
   return captured;
 }
 
+// A capture as one line: each row loses its indentation and CRLF, while
+// whitespace inside a row stays exact, so `"a  b"` and `"a b"` stay distinct.
+function captureText(lines: string[], capture: RawCapture): string {
+  return captureLines(lines, capture).map(line => line.trim()).filter(Boolean).join(" ");
+}
+
 // Tree-sitter ranges include columns: row-only comparisons lose methods
 // on the opening line and cannot distinguish adjacent one-line declarations.
 function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
@@ -725,7 +731,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
         // is one capture that can span a whole file. Keep both ends, because an
         // import's module source comes last.
-        const importText = captureLines(lines, cap).map(line => line.trim()).filter(Boolean).join(" ");
+        const importText = captureText(lines, cap);
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
           : importText);
@@ -763,7 +769,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    let name = nameCapture ? captureLines(lines, nameCapture).join(" ").trim() : "anonymous";
+    // The CLI prints `text` only for one-row captures and cuts it at the first
+    // backtick, so names come from the source range. A zero-width MISSING node
+    // from error recovery leaves nothing to read and stays `anonymous`.
+    let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
