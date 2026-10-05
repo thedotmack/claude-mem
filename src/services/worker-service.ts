@@ -32,6 +32,7 @@ import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
+import { IdleExitMonitor, parseIdleExitMs } from './worker/idle-exit-monitor.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -275,6 +276,7 @@ export class WorkerService implements WorkerRef {
   private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
   private contextCacheService: ContextCacheService | null = null;
+  private idleExitMonitor: IdleExitMonitor | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -381,6 +383,42 @@ export class WorkerService implements WorkerRef {
     configureSupervisorSignalHandlers(async () => {
       await this.shutdown('signal');
     });
+  }
+
+  /**
+   * Opt-in idle exit (CLAUDE_MEM_IDLE_EXIT_SEC, default '0' = never): after
+   * the window elapses with no active sessions, no queued work, no client
+   * connections and no AI interaction, the worker shuts itself down through
+   * the same graceful sequence as `claude-mem stop` (reason 'idle').
+   */
+  private startIdleExitMonitor(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): void {
+    const idleExitMs = parseIdleExitMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
+    if (idleExitMs === null) {
+      logger.warn('SYSTEM', 'Ignoring invalid CLAUDE_MEM_IDLE_EXIT_SEC (expected a non-negative integer of seconds)', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (idleExitMs === 0) return;
+
+    this.idleExitMonitor = new IdleExitMonitor({
+      idleExitMs,
+      hasSessionActivitySince: (cutoffMs) => this.sessionManager.hasSessionActivitySince(cutoffMs),
+      getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
+      getLastRequestAt: () => this.server.getLastRequestAt(),
+      getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
+      onIdle: () => {
+        // The sequence never exits the process for non-restart reasons —
+        // the route path exits via flushResponseThen and the signal path via
+        // the supervisor's signal handler — so the idle path owns its exit.
+        void this.shutdown('idle').then(
+          () => process.exit(0),
+          () => process.exit(0),
+        );
+      },
+    });
+    this.idleExitMonitor.start();
+    logger.info('SYSTEM', 'Idle exit enabled', { idleExitSec: idleExitMs / 1000 });
   }
 
   /**
@@ -870,6 +908,12 @@ export class WorkerService implements WorkerRef {
         logger.debug('WORKER', 'MCP self-check failed (non-fatal)', { error: err.message });
       });
 
+      // Idle exit: arm only once the worker is fully up — the monitor's
+      // activity clock starts here, so boot can never race the window. Hooks
+      // and plugins lazy-spawn the worker on the next request, so an idle
+      // exit costs one boot, not availability.
+      this.startIdleExitMonitor(settings);
+
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
@@ -1006,6 +1050,12 @@ export class WorkerService implements WorkerRef {
       beforeGracefulShutdown: async () => {
         this.stopPendingSessionResume();
         this.hookSpoolDrainer.stop();
+        // Stop the idle monitor before the drain: its own trigger has
+        // already disarmed it, and a route- or signal-initiated drain must
+        // not let a late tick fire into the sequence (it would be a guarded
+        // no-op, but stopped-by-construction is better).
+        this.idleExitMonitor?.stop();
+        this.idleExitMonitor = null;
         // Before the DB closes: a pending re-render would read a closed connection.
         this.contextCacheService?.stop();
         this.contextCacheService = null;

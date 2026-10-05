@@ -180,6 +180,19 @@ export function applySecurityHeaders(res: Response): void {
 export class Server {
   readonly app: Application;
   private server: http.Server | null = null;
+  /**
+   * Timestamp (epoch ms) of the most recent inbound request; null before the
+   * first one. The idle-exit monitor's client-activity signal.
+   *
+   * Deliberately NOT an open-socket count. Socket lifecycle is not a reliable
+   * activity signal across runtimes: under Bun the server's 'connection'
+   * event yields wrapper objects with undefined addresses that never emit
+   * 'close', so a socket tally reads as permanently busy on a Bun install
+   * (the runtime claude-mem actually ships on) while the OS shows no
+   * connections at all. A request timestamp has neither problem — every
+   * request is a real event with a real time.
+   */
+  private lastRequestAt: number | null = null;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
 
@@ -201,6 +214,25 @@ export class Server {
 
   getHttpServer(): http.Server | null {
     return this.server;
+  }
+
+  /**
+   * When a host last talked to this worker (epoch ms), or null if never.
+   *
+   * The idle-exit monitor's client signal. A long-lived client — a viewer tab
+   * on the SSE stream, a plugin's readiness poll — keeps refreshing this and
+   * so keeps the worker alive, which is the intent: a viewer watching their
+   * memory is activity. A viewer that has been closed for longer than the
+   * idle window does not, and the worker may exit; the viewer reconnects and
+   * the next hook lazy-spawns it.
+   */
+  getLastRequestAt(): number | null {
+    return this.lastRequestAt;
+  }
+
+  /** Stamps every inbound request (see the idle-exit field's rationale). */
+  private touchRequest(): void {
+    this.lastRequestAt = Date.now();
   }
 
   async listen(port: number, host: string): Promise<void> {
@@ -260,6 +292,13 @@ export class Server {
   }
 
   private setupMiddleware(): void {
+    // Idle-exit's client-activity stamp, mounted before everything else so
+    // every request that reaches the worker counts — including the ones the
+    // guards and routers below may reject.
+    this.app.use((_req: Request, _res: Response, next: () => void) => {
+      this.touchRequest();
+      next();
+    });
     const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
   }
