@@ -24,7 +24,7 @@ PATTERN_MAP = {"invented_gates_asking": "P1_invented_gates", "broke_things": "P2
 
 
 def seed_rules():
-    with open(os.path.join(os.path.dirname(__file__), "rules.json")) as fh: return json.load(fh)["rules"]
+    with open(os.path.join(os.path.dirname(__file__), "rules.json"), encoding="utf-8") as fh: return json.load(fh)["rules"]
 
 
 def scan_rule_files(rules_dir):
@@ -32,7 +32,7 @@ def scan_rule_files(rules_dir):
     out = []
     for f in sorted(glob.glob(os.path.join(rules_dir, "**", "*.md"), recursive=True)):
         try:
-            with open(f, encoding="utf-8", errors="ignore") as fh: text = fh.read(200_000)
+            with open(f, encoding="utf-8-sig", errors="ignore") as fh: text = fh.read(200_000)   # a BOM would hide a HARD header on line 1
         except OSError: continue
         for m in HARD_HEADER.finditer(text):
             out.append(dict(rule_key=re.sub(r"\W+", "_", m.group("name").lower()).strip("_")[:60], name=m.group("name").strip(), landed_pt=m.group("date"), pattern=None, source=os.path.basename(f)))

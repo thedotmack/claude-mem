@@ -117,7 +117,7 @@ def parse_repo(url):
 def git_remote(cwd):
     """Read-only: `git -C cwd remote get-url origin`; None when cwd is gone or not a repo."""
     try:
-        r = subprocess.run(["git", "-C", cwd, "remote", "get-url", "origin"], capture_output=True, text=True, timeout=5)
+        r = subprocess.run(["git", "-C", cwd, "remote", "get-url", "origin"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=5)
         return parse_repo(r.stdout) if r.returncode == 0 else None
     except Exception: return None
 
@@ -126,7 +126,7 @@ def gh_pr_view(number, repo):
     """Read-only: gh pr view <n> --repo <repo> --json mergedAt,url,title,commits. Returns dict or None."""
     try:
         r = subprocess.run(["gh", "pr", "view", str(number), "--repo", repo, "--json", "mergedAt,url,title,commits"],
-                           capture_output=True, text=True, timeout=25)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=25)
         return json.loads(r.stdout) if r.returncode == 0 and r.stdout.strip() else None
     except Exception: return None
 
@@ -154,7 +154,7 @@ def gh_merged_prs(repo, s_ms, e_ms, run=subprocess.run):
     cmd = ["gh", "pr", "list", "--repo", repo, "--state", "merged", "--limit", str(GH_LIST_LIMIT), "--json", "number,title,mergedAt,url",
            "--search", f"merged:{a.isoformat()}..{b.isoformat()}"]
     try:
-        r = run(cmd, capture_output=True, text=True, timeout=40)
+        r = run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=40)   # gh prints UTF-8 titles
     except FileNotFoundError: return [], "gh missing"
     except (subprocess.TimeoutExpired, OSError) as ex: return [], f"gh error ({type(ex).__name__})"
     if r.returncode != 0: return [], _gh_status(r.returncode, r.stderr)
