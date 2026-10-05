@@ -87,7 +87,7 @@ async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20): As
       yield* walkDir(fullPath, rootDir, maxDepth - 1);
     } else if (entry.isFile()) {
       const ext = entry.name.slice(entry.name.lastIndexOf("."));
-      if (CODE_EXTENSIONS.has(ext)) {
+      if (CODE_EXTENSIONS.has(ext.toLowerCase())) {
         yield fullPath;
       }
     }

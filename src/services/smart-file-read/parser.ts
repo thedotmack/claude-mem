@@ -77,7 +77,7 @@ const LANG_MAP: Record<string, string> = {
 
 function detectLanguage(filePath: string): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
-  return LANG_MAP[ext] ?? "unknown";
+  return LANG_MAP[ext.toLowerCase()] ?? "unknown";
 }
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
