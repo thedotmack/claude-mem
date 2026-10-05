@@ -139,7 +139,7 @@
 // SessionSearch.ts:76-152; user_prompts: SessionStore.ts:867-895) index them
 // automatically. There is no FTS-external write path in this module.
 //
-// CHROMA: newly inserted rows are forwarded to Chroma AFTER commit,
+// CHROMA: inserted and revised rows are forwarded to Chroma AFTER commit,
 // fire-and-forget (.then().catch() — the ResponseProcessor.ts pattern).
 // The ChromaSyncLike instance is injected; Phase 3's SyncClient wires
 // DatabaseManager.getChromaSync() here. Omitting it skips Chroma (the boot
@@ -164,11 +164,13 @@ import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { parseFileList } from '../sqlite/observations/files.js';
 import {
   assertCanonicalDecimal,
   compareCanonicalDecimals,
   incrementCanonicalDecimal,
 } from './CanonicalContent.js';
+import { parseStringListField } from './string-list-field.js';
 
 /**
  * A hub change this client could not decode. It keeps its seq so the page
@@ -218,10 +220,13 @@ export interface ChromaSyncLike {
       concepts: string[];
       files_read: string[];
       files_modified: string[];
+      text?: string | null;
+      merged_into_project?: string | null;
     },
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting?: boolean
   ): Promise<void>;
   syncSummary(
     summaryId: number,
@@ -234,10 +239,12 @@ export interface ChromaSyncLike {
       completed: string | null;
       next_steps: string | null;
       notes: string | null;
+      merged_into_project?: string | null;
     },
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting?: boolean
   ): Promise<void>;
   syncUserPrompt(
     promptId: number,
@@ -342,22 +349,12 @@ function fieldNumber(op: SyncOp, obj: Record<string, unknown>, key: string): num
   throw invalidOp(op, `field ${key} must be a finite number, got ${typeof v}`);
 }
 
-/** Parse a JSON-string list column for Chroma; never throws. */
-function parseListColumn(v: unknown): string[] {
-  if (typeof v !== 'string') return [];
-  try {
-    const parsed = JSON.parse(v);
-    return Array.isArray(parsed) ? parsed.map(String) : [];
-  } catch {
-    return [];
-  }
-}
-
 export class SyncApply {
   private readonly db: Database;
   private readonly deviceId: string;
   private readonly chromaSync: ChromaSyncLike | null;
   private readonly now: () => number;
+  private readonly chromaWrites = new Map<string, Promise<void>>();
 
   constructor(db: Database, options: SyncApplyOptions) {
     if (!options.deviceId) {
@@ -604,6 +601,16 @@ export class SyncApply {
     }
 
     return result;
+  }
+
+  /** Preserve hub order per row while unrelated rows can still forward concurrently. */
+  private enqueueChromaWrite(key: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.chromaWrites.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(write);
+    this.chromaWrites.set(key, next);
+    const clear = () => { if (this.chromaWrites.get(key) === next) this.chromaWrites.delete(key); };
+    void next.then(clear, clear);
+    return next;
   }
 
   /**
@@ -940,6 +947,7 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      this.forwardObservation(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
 
@@ -974,10 +982,34 @@ export class SyncApply {
       return 'stale';
     }
 
+    this.forwardObservation(inserted.id, op, body, chromaJobs);
+    return 'applied';
+  }
+
+  /**
+   * The platform backfill attributes to rows of this memory session: it
+   * joins sdk_sessions on memory_session_id and defaults to claude. Forwards
+   * use the same value so a revision keeps the row's platform scope.
+   */
+  private sessionPlatformSource(memorySessionId: string): string | undefined {
+    const session = this.db.prepare(
+      'SELECT platform_source FROM sdk_sessions WHERE memory_session_id = ?'
+    ).get(memorySessionId) as { platform_source: string | null } | undefined;
+    return session?.platform_source ?? undefined;
+  }
+
+  // Forwards hand Chroma the committed row's stored values, parsed as backfill
+  // parses them. A revision deletes every fragment the new documents lack, so
+  // any difference from backfill's documents would delete indexed content.
+  private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
+    const memorySessionId = fieldString(op, body, 'memory_session_id')!;
+    const project = fieldString(op, body, 'project')!;
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
+    const type = fieldString(op, body, 'type')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      const id = inserted.id;
-      chromaJobs.push(() => chroma.syncObservation(
+      const platformSource = this.sessionPlatformSource(memorySessionId);
+      chromaJobs.push(() => this.enqueueChromaWrite(`observation:${id}`, () => chroma.syncObservation(
         id,
         memorySessionId,
         project,
@@ -985,17 +1017,20 @@ export class SyncApply {
           type,
           title: fieldString(op, body, 'title'),
           subtitle: fieldString(op, body, 'subtitle'),
-          facts: parseListColumn(body.facts),
+          text: fieldString(op, body, 'text'),
+          facts: parseStringListField(fieldString(op, body, 'facts'), 'facts', id),
           narrative: fieldString(op, body, 'narrative'),
-          concepts: parseListColumn(body.concepts),
-          files_read: parseListColumn(body.files_read),
-          files_modified: parseListColumn(body.files_modified),
+          concepts: parseStringListField(fieldString(op, body, 'concepts'), 'concepts', id),
+          files_read: parseFileList(fieldString(op, body, 'files_read')),
+          files_modified: parseFileList(fieldString(op, body, 'files_modified')),
+          merged_into_project: fieldString(op, body, 'merged_into_project'),
         },
         fieldNumber(op, body, 'prompt_number') ?? 0,
-        createdAtEpoch
-      ));
+        createdAtEpoch,
+        platformSource,
+        replaceExisting
+      )));
     }
-    return 'applied';
   }
 
   private applySummary(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
@@ -1025,6 +1060,7 @@ export class SyncApply {
         op.rev, this.now(),
         existing.id
       );
+      this.forwardSummary(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
 
@@ -1043,10 +1079,18 @@ export class SyncApply {
       createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev
     ) as { id: number };
 
+    this.forwardSummary(inserted.id, op, body, chromaJobs);
+    return 'applied';
+  }
+
+  private forwardSummary(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
+    const memorySessionId = fieldString(op, body, 'memory_session_id')!;
+    const project = fieldString(op, body, 'project')!;
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      const id = inserted.id;
-      chromaJobs.push(() => chroma.syncSummary(
+      const platformSource = this.sessionPlatformSource(memorySessionId);
+      chromaJobs.push(() => this.enqueueChromaWrite(`summary:${id}`, () => chroma.syncSummary(
         id,
         memorySessionId,
         project,
@@ -1057,12 +1101,14 @@ export class SyncApply {
           completed: fieldString(op, body, 'completed'),
           next_steps: fieldString(op, body, 'next_steps'),
           notes: fieldString(op, body, 'notes'),
+          merged_into_project: fieldString(op, body, 'merged_into_project'),
         },
         fieldNumber(op, body, 'prompt_number') ?? 0,
-        createdAtEpoch
-      ));
+        createdAtEpoch,
+        platformSource,
+        replaceExisting
+      )));
     }
-    return 'applied';
   }
 
   /** Resolve the local sdk_sessions id for a remote prompt, or NULL (orphan). */
@@ -1116,6 +1162,7 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      this.forwardPrompt(existing.id, op, body, chromaJobs);
       return 'applied';
     }
 
@@ -1131,10 +1178,18 @@ export class SyncApply {
       this.now(), op.origin_device, op.origin_id, op.rev
     ) as { id: number };
 
+    this.forwardPrompt(inserted.id, op, body, chromaJobs);
+    return 'applied';
+  }
+
+  private forwardPrompt(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
+    const contentSessionId = fieldString(op, body, 'content_session_id')!;
+    const promptText = fieldString(op, body, 'prompt_text')!;
+    const promptNumber = fieldNumber(op, body, 'prompt_number')!;
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      const id = inserted.id;
-      chromaJobs.push(() => chroma.syncUserPrompt(
+      chromaJobs.push(() => this.enqueueChromaWrite(`prompt:${id}`, () => chroma.syncUserPrompt(
         id,
         fieldString(op, body, 'memory_session_id') ?? contentSessionId,
         fieldString(op, body, 'project') ?? 'unknown',
@@ -1142,9 +1197,8 @@ export class SyncApply {
         promptNumber,
         createdAtEpoch,
         fieldString(op, body, 'platform_source') ?? undefined
-      ));
+      )));
     }
-    return 'applied';
   }
 
   // -------------------------------------------------------------------------

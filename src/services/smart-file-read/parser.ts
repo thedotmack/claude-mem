@@ -757,13 +757,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const receiver = match.captures.find(c => c.tag === "receiver");
-    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
-    let name = receiverText ? `${receiverText}.${nameCapture?.text || "anonymous"}` : nameCapture?.text || "anonymous";
+    let name = nameCapture?.text || "anonymous";
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
     }
+    const receiver = match.captures.find(c => c.tag === "receiver");
+    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
