@@ -680,7 +680,7 @@ export class SessionSearch {
       filterClause,
       SessionSearch.jsonArrayLikeClause(['o.files_read', 'o.files_modified'], pathPatterns.length),
     ].filter(Boolean).join(' AND ');
-    const orderClause = this.buildOrderClause(orderBy, false);
+    const orderClause = `${this.buildOrderClause(orderBy, false)}, o.id ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
 
     const observationsSql = `
       SELECT o.*, o.discovery_tokens

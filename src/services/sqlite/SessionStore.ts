@@ -3032,7 +3032,8 @@ export class SessionStore {
     const { orderBy = 'date_desc', limit, platformSource, type, concepts, files } = options;
     const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
-    const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
+    const direction = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${direction}, o.id ${direction}`;
     const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
 
     const placeholders = ids.map(() => '?').join(',');
