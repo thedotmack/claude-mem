@@ -8,12 +8,13 @@ import { join } from 'node:path';
 
 const coworkDir = join(import.meta.dir, '..', 'cowork');
 const manifest = JSON.parse(readFileSync(join(coworkDir, 'hooks', 'hooks.json'), 'utf8'));
-const hookTimeoutMs = manifest.hooks.UserPromptSubmit[0].hooks[0].timeout * 1000;
+const sessionInitHook = manifest.hooks.UserPromptSubmit[0].hooks[0];
+const subprocessGuardMs = 30_000;
 const node = Bun.which('node');
 const prompt = 'Keep this submitted prompt for the observer.';
 const input = { session_id: 'cowork-timeout-session', cwd: '/workspace/timeout-fixture', prompt };
 
-describe('Cowork session-init finishes within its registered hook timeout', () => {
+describe('Cowork session-init captures prompts asynchronously', () => {
   let home: string;
   let spool: string;
   let server: Server;
@@ -82,15 +83,24 @@ describe('Cowork session-init finishes within its registered hook timeout', () =
           CMEM_SYNC_HUB_URL: apiBase,
         },
         encoding: 'utf8',
-        // Use the host's shipped limit, so a request/host budget mismatch fails here.
-        timeout: hookTimeoutMs,
+        // Test-only guard against a hung subprocess; the hook has no registered timeout.
+        timeout: subprocessGuardMs,
         windowsHide: true,
       }, (error, stdout, stderr) => resolve({ error, stdout, stderr, elapsedMs: Date.now() - startedAt }));
       child.stdin!.end(JSON.stringify(input));
     });
   }
 
-  it('spools a stalled ingest before the host can kill the hook', async () => {
+  it('registers session-init as a background command without a hook timeout', () => {
+    expect(sessionInitHook).toMatchObject({
+      type: 'command',
+      command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/cmem-hook.mjs" session-init',
+      async: true,
+    });
+    expect(sessionInitHook).not.toHaveProperty('timeout');
+  });
+
+  it('spools a stalled background ingest when its HTTP request times out', async () => {
     const result = await runSessionInit();
 
     expect(result.error).toBeNull();
@@ -105,9 +115,9 @@ describe('Cowork session-init finishes within its registered hook timeout', () =
     const queued = readFileSync(spool, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({ event: 'session-init', project: 'cmem_work_timeout-fixture', payload: input });
-  }, hookTimeoutMs + 5000);
+  }, subprocessGuardMs + 5000);
 
-  it('completes a slow ingest and backlog replay that together exceed eight seconds', async () => {
+  it('completes a background ingest and backlog replay that together exceed eight seconds', async () => {
     responseDelayMs = 4500;
     const backlog = {
       v: 1, platform: 'cowork', event: 'session-init', project: 'cmem_work_timeout-fixture',
@@ -128,5 +138,5 @@ describe('Cowork session-init finishes within its registered hook timeout', () =
     expect(received[1]).toMatchObject({ method: 'POST', url: '/api/hooks/ingest', body: { v: 1, batch: [backlog] } });
     expect(existsSync(spool)).toBe(false);
     expect(readdirSync(join(home, '.claude-mem'))).toEqual([]); // No orphaned replay claim.
-  }, hookTimeoutMs + 5000);
+  }, subprocessGuardMs + 5000);
 });
