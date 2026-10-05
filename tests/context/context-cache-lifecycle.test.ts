@@ -10,18 +10,22 @@ const fixture = String.raw`
   const keys = contextCacheKeys(['lifecycle'], 'claude', false);
   const other = contextCacheKeys(['other'], 'claude', false);
   const outcome = {};
-  for (const action of ['stop', 'evict', 'replace']) {
+  for (const action of ['stop', 'evict', 'replace', 'replace-reject']) {
     let release; const gate = new Promise(resolve => release = resolve);
     let began; const started = new Promise(resolve => began = resolve);
     const service = new ContextCacheService({ debounceMs: 60000, maxVariants: 1, expandProjectReadKeys: projects => projects,
-      renderVariant: async () => { began(); await gate; return { body: 'OLD IN-FLIGHT', cacheable: true }; }
+      renderVariant: async () => {
+        began(); await gate;
+        if (action === 'replace-reject') throw new Error('old renderer rejected after replacement');
+        return { body: 'OLD IN-FLIGHT', cacheable: true };
+      }
     });
     service.start(); service.recordLiveRender(keys, { body: 'BEFORE WRITE', cacheable: true });
     emitContextInvalidation({ projects: ['lifecycle'] }, 'observation');
     const flushing = service.flushPendingRenders(); await started;
     if (action === 'stop') service.stop();
     else service.recordLiveRender(other, { body: 'OTHER', cacheable: true }, Date.now() + 1);
-    if (action === 'replace') service.recordLiveRender(keys, { body: 'NEW LIVE', cacheable: true }, Date.now() + 2);
+    if (action.startsWith('replace')) service.recordLiveRender(keys, { body: 'NEW LIVE', cacheable: true }, Date.now() + 2);
     outcome[action + 'BeforeRelease'] = readContextCache(keys)?.body ?? null;
     release(); await flushing;
     outcome[action] = readContextCache(keys)?.body ?? null;
@@ -31,7 +35,7 @@ const fixture = String.raw`
 `;
 
 describe('context cache in-flight lifecycle', () => {
-  it('does not resurrect stopped or evicted variants, or overwrite a replacement', () => {
+  it('does not resurrect stopped or evicted variants, or overwrite or delete a replacement', () => {
     const dir = mkdtempSync(join(tmpdir(), 'context-cache-lifecycle-'));
     try {
       const run = Bun.spawnSync([process.execPath, '-e', fixture], {
@@ -45,6 +49,8 @@ describe('context cache in-flight lifecycle', () => {
       expect(result.evict).toBeNull();
       expect(result.replaceBeforeRelease).toBe('NEW LIVE');
       expect(result.replace).toBe('NEW LIVE');
+      expect(result['replace-rejectBeforeRelease']).toBe('NEW LIVE');
+      expect(result['replace-reject']).toBe('NEW LIVE');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
