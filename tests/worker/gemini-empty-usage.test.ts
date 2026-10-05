@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-for (const scenario of ['safety', 'limit', 'thought-only', 'init']) {
+for (const scenario of ['safety', 'limit', 'thought-only', 'text-with-thoughts', 'limit-with-thoughts', 'init']) {
   it(`accounts for Gemini usage when ${scenario} has no answer`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'owned-gemini-usage-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;

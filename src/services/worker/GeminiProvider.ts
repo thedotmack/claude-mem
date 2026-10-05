@@ -250,6 +250,7 @@ interface GeminiResponse {
   usageMetadata?: {
     promptTokenCount?: number;
     candidatesTokenCount?: number;
+    thoughtsTokenCount?: number;
     totalTokenCount?: number;
   };
 }
@@ -490,24 +491,32 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       });
     }
 
+    const tokensUsed = data.usageMetadata?.totalTokenCount;
+    const inputTokens = data.usageMetadata?.promptTokenCount;
+    const candidateTokens = data.usageMetadata?.candidatesTokenCount;
+    const thoughtTokens = data.usageMetadata?.thoughtsTokenCount;
+    // Gemini reports reasoning separately from generated answer tokens. Both
+    // belong to output usage, including when the answer itself is empty.
+    const outputTokens = candidateTokens === undefined && thoughtTokens === undefined
+      ? undefined : (candidateTokens ?? 0) + (thoughtTokens ?? 0);
+
     if (!text) {
       logger.error('SDK', 'Empty response from Gemini');
       // Empty answers can still carry billed usage (safety refusal, thinking
       // only, or an output cap). The session accounts for every completed turn.
       return {
         content: '',
-        tokensUsed: data.usageMetadata?.totalTokenCount,
-        inputTokens: data.usageMetadata?.promptTokenCount,
-        outputTokens: data.usageMetadata?.candidatesTokenCount,
+        tokensUsed,
+        inputTokens,
+        outputTokens,
         ...(finishReason ? { finishReason } : {}),
       };
     }
 
-    const tokensUsed = data.usageMetadata?.totalTokenCount;
     logger.debug('SDK', 'Gemini API usage', {
       model,
-      inputTokens: data.usageMetadata?.promptTokenCount ?? 0,
-      outputTokens: data.usageMetadata?.candidatesTokenCount ?? 0,
+      inputTokens: inputTokens ?? 0,
+      outputTokens: outputTokens ?? 0,
       requestId: finalRequestId,
       clientAttemptId,
     });
@@ -515,8 +524,8 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     return {
       content: text,
       tokensUsed,
-      inputTokens: data.usageMetadata?.promptTokenCount,
-      outputTokens: data.usageMetadata?.candidatesTokenCount,
+      inputTokens,
+      outputTokens,
       ...(finishReason ? { finishReason } : {}),
     };
   }

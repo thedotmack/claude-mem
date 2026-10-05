@@ -16,6 +16,7 @@ const mode = ModeManager.getInstance() as any;
 const oldMode = mode.activeMode, oldModeId = mode.activeModeId;
 mode.loadMode('code');
 const barePrompt = scenario === 'init';
+const thinking = ['thought-only', 'text-with-thoughts', 'limit-with-thoughts'].includes(scenario);
 if (!barePrompt) manager.queueObservation(sessionId, { tool_name: 'Read', tool_input: JSON.stringify({file_path:'owned.ts'}), tool_response: 'owned text', prompt_number: 1, cwd: process.env.CLAUDE_MEM_DATA_DIR! });
 let requests = 0;
 let abortTimer: ReturnType<typeof setTimeout> | undefined;
@@ -25,8 +26,8 @@ const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) 
   requests++;
   abortTimer = setTimeout(() => session.abortController.abort(), 30);
   return Response.json({
-    candidates: [{ content: { parts: scenario === 'thought-only' ? [{thought:true,text:'owned reasoning'}] : [] }, finishReason: scenario === 'limit' ? 'MAX_TOKENS' : 'SAFETY' }],
-    usageMetadata: {promptTokenCount:120,candidatesTokenCount:15,totalTokenCount:135},
+    candidates: [{ content: { parts: scenario === 'thought-only' ? [{thought:true,text:'owned reasoning'}] : scenario === 'text-with-thoughts' ? [{text:'owned non-XML answer'}] : [] }, finishReason: scenario.startsWith('limit') ? 'MAX_TOKENS' : 'SAFETY' }],
+    usageMetadata: {promptTokenCount:120,candidatesTokenCount:scenario==='thought-only'?0:thinking?5:15,...(thinking?{thoughtsTokenCount:scenario==='thought-only'?15:10}:{}),totalTokenCount:135},
   });
 }});
 const settings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({...SettingsDefaultsManager.getAllDefaults(), CLAUDE_MEM_GEMINI_API_KEY:'owned-key', CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED:'false', CLAUDE_MEM_OBSERVE_BARE_PROMPTS:barePrompt?'true':'false', CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED:'false'}));
