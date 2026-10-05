@@ -602,6 +602,28 @@ copy_runtime_settings() {
   cp "${repo_root}/src/shared/runtime-settings.cjs" "${extension_dir}/plugin/scripts/runtime-settings.cjs"
 }
 
+# --upgrade intentionally skips cloning and reinstalling. Older standalone
+# bundles still need this canonical helper before any existing worker is stopped.
+ensure_runtime_settings() {
+  local install_dir="$1"
+  local module="${install_dir}/plugin/scripts/runtime-settings.cjs"
+  if [[ -f "$module" || -f "${install_dir}/src/shared/runtime-settings.cjs" ]]; then
+    return 0
+  fi
+  mkdir -p "${install_dir}/plugin/scripts"
+  local temporary_dir
+  temporary_dir="$(mktemp -d "${install_dir}/plugin/scripts/.runtime-settings.XXXXXX")"
+  local temporary="${temporary_dir}/runtime-settings.cjs"
+  local url="https://raw.githubusercontent.com/thedotmack/claude-mem/${CLAUDE_MEM_BRANCH}/src/shared/runtime-settings.cjs"
+  if ! curl -fsSL "$url" -o "$temporary" || ! node --check "$temporary"; then
+    INSTALLER_TEMP_DIR="$temporary_dir" node -e 'require("fs").rmSync(process.env.INSTALLER_TEMP_DIR, { recursive: true, force: true })'
+    error "Cannot deliver the data directory resolver — upgrade aborted before worker restart."
+    return 1
+  fi
+  mv "$temporary" "$module"
+  INSTALLER_TEMP_DIR="$temporary_dir" node -e 'require("fs").rmSync(process.env.INSTALLER_TEMP_DIR, { recursive: true, force: true })'
+}
+
 install_plugin() {
   check_git
 
@@ -1545,6 +1567,7 @@ main() {
   if [[ "$UPGRADE_MODE" == "true" ]] && is_claude_mem_installed; then
     success "claude-mem already installed at ${CLAUDE_MEM_INSTALL_DIR}"
     info "Upgrade mode: skipping clone/build/register, updating settings only"
+    ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR"
   else
     install_plugin
   fi
