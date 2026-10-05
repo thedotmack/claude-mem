@@ -122,3 +122,32 @@ test('partial qualified Ruby queries retain their exact owner and method kind', 
     expect((await searchCodebase(dir, 'Counter')).matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+
+test('qualified Ruby queries cannot be admitted by unrelated reference comments', async () => {
+  const source = `class Counter
+  # Reset the instance.
+  def reset
+    :instance
+  end
+  # Reset the singleton.
+  def self.reset
+    :singleton
+  end
+end
+class Other
+  # See Counter#res and Counter.res for related APIs.
+  def unrelated
+    :other
+  end
+end`;
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-comment-owner-'));
+  try {
+    writeFileSync(join(dir, 'owned.rb'), source);
+    for (const [query, expected] of [['Counter#res', 'Counter#reset'], ['Counter.res', 'Counter.reset']]) {
+      expect((await searchCodebase(dir, query)).matchingSymbols.map(symbol => symbol.symbolName)).toEqual([expected]);
+    }
+    // Ordinary text searches still discover the reference comment.
+    expect((await searchCodebase(dir, 'related APIs')).matchingSymbols.map(symbol => symbol.symbolName)).toContain('Other#unrelated');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);

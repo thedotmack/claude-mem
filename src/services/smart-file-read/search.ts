@@ -185,12 +185,16 @@ export async function searchCodebase(
           reason = "name match";
         }
 
-        if (sym.signature.toLowerCase().includes(queryLower)) {
+        // Explicit Ruby ownership is a constraint, including when a comment
+        // or signature mentions a different owner. Unqualified text searches
+        // continue to search both fields.
+        const eligibleForTextMatch = !rubyQualifiedQuery || ownNameScore > 0;
+        if (eligibleForTextMatch && sym.signature.toLowerCase().includes(queryLower)) {
           score += 2;
           reason = reason ? `${reason} + signature` : "signature match";
         }
 
-        if (sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
+        if (eligibleForTextMatch && sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
           score += 1;
           reason = reason ? `${reason} + jsdoc` : "jsdoc match";
         }
