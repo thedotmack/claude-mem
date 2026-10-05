@@ -18,7 +18,7 @@
  *   CLI:    search "query" [--limit N] | status
  */
 
-import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -306,14 +306,32 @@ async function mcpRpc(methodName, params, id) {
 }
 
 function viewerPort() {
-  // the worker port lives in claude-mem's own config; the uid formula is only
-  // the documented default for installs that never set one
+  // the worker port lives in claude-mem's own config (env wins, as in claude-mem);
+  // the uid formula is only the documented default for installs that never set one
+  const envPort = Number(process.env.CLAUDE_MEM_WORKER_PORT);
+  if (Number.isFinite(envPort) && envPort > 0) return envPort;
   try {
     const st = JSON.parse(readFileSync(join(process.env.HOME || '', '.claude-mem', 'settings.json'), 'utf8'));
     const p = Number(st.CLAUDE_MEM_WORKER_PORT ?? st.workerPort ?? st.worker_port ?? st.port ?? (st.worker && st.worker.port));
     if (Number.isFinite(p) && p > 0) return p;
   } catch { /* no local settings — use default formula */ }
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
+}
+
+// Local-first: on a machine with a local claude-mem install, the local hook
+// injects memory from the local db, which cloud sync keeps current. Reading
+// cmem.ai there only adds a network round trip and a second, overlapping block.
+// Cowork containers have no local install, so they keep reading the cloud.
+async function localClaudeMemAvailable() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
+  try {
+    const versions = readdirSync(join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem'));
+    if (versions.some(v => /^\d/.test(v))) return true;
+  } catch { /* not installed through the plugin cache */ }
+  try {
+    const res = await fetch(`http://127.0.0.1:${viewerPort()}/api/health`, { signal: AbortSignal.timeout(300) });
+    return res.ok;
+  } catch { return false; }
 }
 
 // project-scoped wrapper: parses memory_search rows and keeps only this project's.
@@ -396,6 +414,7 @@ async function onSessionStart(input) {
   // …and inject context
   if (!CFG.inject.sessionStart) return;
   if (!CFG.apiKey) return;
+  if (await localClaudeMemAvailable()) return;
   const text = await fetchContext('session-start', null, input.cwd);
   const project = resolveProject(input.cwd);
   const body = text || [
@@ -441,6 +460,7 @@ async function onAgentContext(input) {
   const prompt = typeof ti.prompt === 'string' ? ti.prompt : null;
   if (!prompt) return;
   if (prompt.includes('<claude-mem-context')) return;   // already injected upstream
+  if (await localClaudeMemAvailable()) return;
   const text = await fetchContext('agent', prompt, input.cwd);
   if (!text) return;
   process.stdout.write(JSON.stringify({
