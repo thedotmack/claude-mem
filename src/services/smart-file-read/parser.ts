@@ -196,6 +196,7 @@ const QUERIES: Record<string, string> = {
 
   java: `
 (method_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name) @method
 (class_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
 (enum_declaration name: (identifier) @name) @enm
