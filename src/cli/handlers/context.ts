@@ -65,6 +65,18 @@ async function renderSessionStartFromServer(
 
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const emptyResult: HookResult = {
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      exitCode: HOOK_EXIT_CODES.SUCCESS,
+    };
+
+    // --continue, --resume and /resume restore the existing conversation.
+    // A fresh timeline would change its prompt prefix and invalidate the cache.
+    // Also guard direct calls from older hook registrations that include resume.
+    if (input.platform === 'claude-code' && input.sessionSource === 'resume') {
+      return emptyResult;
+    }
+
     const cwd = input.cwd ?? process.cwd();
 
     // Honor CLAUDE_MEM_EXCLUDED_PROJECTS on the inject/read path too. The
@@ -72,10 +84,7 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
-      return {
-        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-        exitCode: HOOK_EXIT_CODES.SUCCESS,
-      };
+      return emptyResult;
     }
 
     const context = getProjectContext(cwd);
@@ -100,11 +109,6 @@ export const contextHandler: EventHandler = {
       : '';
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
-
-    const emptyResult: HookResult = {
-      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
-      exitCode: HOOK_EXIT_CODES.SUCCESS,
-    };
 
     // Server runtime reads the shared server (plan-24 step 4). When the server
     // settings are incomplete, resolveRuntimeContext() falls back to the worker,
