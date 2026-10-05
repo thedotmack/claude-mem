@@ -573,9 +573,9 @@ describe('context hook reads the precomputed block', () => {
     rmSync(contextCacheFilePath(colorKeys), { force: true });
   });
 
-  async function runHook() {
+  async function runHook(cwd = '/tmp/cache-hook-repo') {
     const { contextHandler } = await import('../../src/cli/handlers/context.js');
-    return contextHandler.execute({ sessionId: 'cache-session', cwd: '/tmp/cache-hook-repo', platform: 'claude-code' });
+    return contextHandler.execute({ sessionId: 'cache-session', cwd, platform: 'claude-code' });
   }
 
   it('serves a cached block without calling the worker', async () => {
@@ -637,6 +637,18 @@ describe('context hook reads the precomputed block', () => {
     expect(workerCalls).toEqual([]);
     expect(readContextCache(agentKeys, Date.now())?.body).toBe(cachedBody);
     expect(readContextCache(colorKeys, Date.now())?.body).toBe('COLORED TIMELINE');
+  });
+
+  it('serves the cached model block wherever in the checkout the session starts', async () => {
+    showTerminalOutput = true;
+    writeContextCache(agentKeys, cachedBody, Date.now());
+    writeContextCache(colorKeys, `COLORED ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, Date.now());
+    const result = await runHook('/tmp/cache-hook-repo/packages/app');
+    // The model's block does not depend on the directory. The colored one shows
+    // file headings relative to it, so that one is fetched for the new directory.
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo%2Fpackages%2Fapp&colors=true']);
+    expect(result.hookSpecificOutput?.additionalContext).toContain('- release: updated about 2 hours ago');
+    expect(result.systemMessage).toStartWith('LIVE COLORED');
   });
 
   it('fetches only the colored render when only the model block is cached', async () => {
