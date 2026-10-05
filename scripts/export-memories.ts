@@ -70,7 +70,7 @@ export async function exportMemories(query: string, outputFile: string, project?
 
   const observations: ObservationRecord[] = searchData.observations || [];
   const summaries: SessionSummaryRecord[] = searchData.sessions || [];
-  const prompts: UserPromptRecord[] = searchData.prompts || [];
+  const prompts: Array<UserPromptRecord & { memory_session_id?: string }> = searchData.prompts || [];
 
   console.log(`✅ Found ${observations.length} observations`);
   console.log(`✅ Found ${summaries.length} session summaries`);
@@ -82,6 +82,11 @@ export async function exportMemories(query: string, outputFile: string, project?
   });
   summaries.forEach((s) => {
     if (s.memory_session_id) memorySessionIds.add(s.memory_session_id);
+  });
+  // Prompt search rows carry their joined SDK session's memory identity too.
+  // A prompt-only export still needs that parent for project/platform ownership.
+  prompts.forEach((p) => {
+    if (p.memory_session_id) memorySessionIds.add(p.memory_session_id);
   });
 
   console.log('📡 Fetching SDK sessions metadata...');
