@@ -18,9 +18,11 @@
  *  - context handler MAY return { messages }, but that REPLACES the conversation
  *    (chained replacement). We spread the original messages back in and append
  *    one system message — never return only injected text (would wipe the chat).
- *  - contentSessionId is process-stable and regenerated only on session_compact
- *    (one claude-mem session per omp session, not per prompt — before_agent_start
- *    fires once per user prompt, so we never mint a new id there).
+ *  - contentSessionId is regenerated on session_compact, session_switch and
+ *    session_branch: one claude-mem session per omp session file (and a new one
+ *    after each compaction), never per prompt — before_agent_start fires once
+ *    per user prompt, so we never mint a new id there. A reload re-emits
+ *    session_switch for the file already open, and that keeps the id.
  *  - every user prompt posts init (the worker de-duplicates a repeated prompt),
  *    as the Claude Code hooks do, each after the previous one so prompts are
  *    recorded in order. Observations wait for the latest prompt's init and are
@@ -37,7 +39,7 @@
 import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 
 // ---------------------------------------------------------------------------
@@ -259,7 +261,21 @@ export default function claudeMemBridge(pi: HookAPI): void {
 
   // /new, /resume and branches switch sessions without firing session_start
   // again. Close the old prompt chain before rotating its bridge identity.
-  const switchSession = async () => {
+  const switchSession = async (
+    event?: { previousSessionFile?: string | undefined },
+    ctx?: { sessionManager?: { getSessionFile?(): string | undefined } },
+  ) => {
+    // OMP's reload() re-emits session_switch for the file that is already open
+    // (switchSession(this.sessionFile)). That is the same OMP session: keep its
+    // id, context cache and pending summary. A switch with no previous file
+    // (e.g. a non-persisted /new) still rotates.
+    const previousFile = event?.previousSessionFile;
+    const currentFile = ctx?.sessionManager?.getSessionFile?.();
+    if (
+      typeof previousFile === "string" && previousFile !== ""
+      && typeof currentFile === "string" && currentFile !== ""
+      && resolve(previousFile) === resolve(currentFile)
+    ) return;
     finalize(session, lastAssistant);
     newSession();
     workerBase = undefined;
