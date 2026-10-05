@@ -147,10 +147,13 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
   }
 
+  // Case-insensitive, because hosts spell the same tool differently and
+  // adapters rename some (OpenCode's `read` arrives as `Read`). A user's
+  // `read` or `Read` entry keeps matching either way.
   const skipTools = new Set(
-    settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim()).filter(Boolean)
+    settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
   );
-  if (skipTools.has(payload.toolName)) {
+  if (skipTools.has(payload.toolName.toLowerCase())) {
     if (payload.toolName === 'Skill') {
       const { skill_id, skill_source } = classifySkillId(
         skillNameFromToolInput(payload.toolName, payload.toolInput),
@@ -379,7 +382,7 @@ export async function ingestSummarize(
   const cleanedLastAssistantMessage = payload.lastAssistantMessage
     ? stripMemoryTags(String(payload.lastAssistantMessage))
     : payload.lastAssistantMessage;
-  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
+  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber);
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 

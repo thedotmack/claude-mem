@@ -241,7 +241,8 @@ export function ContextSettingsModal({
           </div>
 
           {/* Right column - Settings Panel */}
-          <div className="settings-column">
+          <fieldset className="settings-column" disabled={isSaving}
+            style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
             {/* Section 1: Loading */}
             <CollapsibleSection
               title="Loading"
@@ -640,7 +641,7 @@ export function ContextSettingsModal({
                 />
               </div>
             </CollapsibleSection>
-          </div>
+          </fieldset>
         </div>
 
         {/* Footer with Save button */}

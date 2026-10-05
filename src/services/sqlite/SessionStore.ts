@@ -2494,11 +2494,20 @@ export class SessionStore {
 
     if (!current || current.memory_session_id === memorySessionId) return;
 
-    this.db.prepare(`
-      UPDATE sdk_sessions
-      SET memory_session_id = ?
-      WHERE id = ?
-    `).run(memorySessionId, sessionDbId);
+    this.db.transaction(() => {
+      this.db.prepare(`
+        UPDATE sdk_sessions
+        SET memory_session_id = ?
+        WHERE id = ?
+      `).run(memorySessionId, sessionDbId);
+      // Observations cascade this deliberate identity change through their FK;
+      // receipts have no FK, so carry the same session identity explicitly.
+      this.db.prepare(`
+        UPDATE tool_uses
+        SET memory_session_id = ?
+        WHERE session_db_id = ?
+      `).run(memorySessionId, sessionDbId);
+    })();
     if (memorySessionId) this.requeuePromptSync(sessionDbId);
   }
 
