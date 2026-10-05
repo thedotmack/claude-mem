@@ -76,16 +76,19 @@ export class KnowledgeAgent {
     });
 
     let sessionId: string | undefined;
+    let successfulResult = false;
     try {
       for await (const msg of queryResult) {
         if (msg.session_id) sessionId = msg.session_id;
         if (msg.type === 'result') {
+          successfulResult = msg.is_error !== true && msg.subtype === 'success';
+          if (!successfulResult) throw new Error(`Knowledge prime failed: ${msg.subtype}`);
           logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
         }
       }
     } catch (error) {
       if (callOptions.abortController?.signal.aborted) throw error;
-      if (sessionId) {
+      if (sessionId && successfulResult) {
         if (error instanceof Error) {
           logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing`, {}, error);
         } else {
@@ -99,6 +102,9 @@ export class KnowledgeAgent {
     // Never persist a session whose prime the caller abandoned, even if the SDK ended quietly.
     callOptions.abortController?.signal.throwIfAborted();
 
+    if (!successfulResult) {
+      throw new Error(`Knowledge prime ended without a successful result for corpus "${corpus.name}"`);
+    }
     if (!sessionId) {
       throw new Error(`Failed to capture session_id while priming corpus "${corpus.name}"`);
     }
@@ -171,9 +177,14 @@ export class KnowledgeAgent {
 
     let answer = '';
     let newSessionId = corpus.session_id!;
+    let successfulResult = false;
     try {
       for await (const msg of queryResult) {
         if (msg.session_id) newSessionId = msg.session_id;
+        if (msg.type === 'result') {
+          successfulResult = msg.is_error !== true && msg.subtype === 'success';
+          if (!successfulResult) throw new Error(`Knowledge query failed: ${msg.subtype}`);
+        }
         if (msg.type === 'assistant') {
           const text = msg.message.content
             .filter((b: any) => b.type === 'text')
@@ -184,7 +195,7 @@ export class KnowledgeAgent {
       }
     } catch (error) {
       if (callOptions.abortController?.signal.aborted) throw error;
-      if (answer) {
+      if (answer && successfulResult) {
         if (error instanceof Error) {
           logger.debug('WORKER', `SDK process exited after query — answer captured, continuing`, {}, error);
         } else {
@@ -195,6 +206,9 @@ export class KnowledgeAgent {
       }
     }
 
+    if (!successfulResult) {
+      throw new Error(`Knowledge query ended without a successful result for corpus "${corpus.name}"`);
+    }
     return { answer, session_id: newSessionId };
   }
 
