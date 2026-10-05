@@ -88,7 +88,9 @@ export function useSettings() {
         } else {
           // This file-only value cannot be submitted by the form. Retain it
           // from the load while preserving every successfully saved field.
-          setSettings(current => ({ ...current, CLAUDE_CODE_PATH: data.CLAUDE_CODE_PATH }));
+          setSettings(current => current.CLAUDE_CODE_PATH === data.CLAUDE_CODE_PATH
+            ? current
+            : { ...current, CLAUDE_CODE_PATH: data.CLAUDE_CODE_PATH });
         }
       })
       .catch(error => {

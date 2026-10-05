@@ -12,8 +12,9 @@ if (process.env.CI && !chrome) {
   throw new Error('CI requires Chrome or Chromium for the native settings-save regression tests.');
 }
 
-for (const succeeds of [true]) {
-  (chrome ? it : it.skip)('retains a fresh unsaved modal edit after the late file-only path loads', async () => {
+for (const hasPath of [true, false]) {
+  (chrome ? it : it.skip)(`retains a fresh unsaved modal edit when the late load ${hasPath?'supplies':'omits'} a file-only path`, async () => {
+    const succeeds=true;
     let posted: any;
     let releaseLoad!:()=>void;
     const loadReady=new Promise<void>(resolve=>{releaseLoad=resolve});
@@ -27,6 +28,8 @@ for (const succeeds of [true]) {
         import { createRoot } from 'react-dom/client';
         import { ContextSettingsModal } from './src/ui/viewer/components/ContextSettingsModal';
         import { useSettings } from './src/ui/viewer/hooks/useSettings';
+        const nativeFetch=window.fetch.bind(window); window.loadConsumed=false;
+        window.fetch=async(...args)=>{ const response=await nativeFetch(...args); if(args[0]==='/api/settings'&&!args[1]?.method){ const json=response.json.bind(response); response.json=async()=>{const data=await json();window.loadConsumed=true;return data;}; } return response; };
         function Fixture() {
           const state = useSettings();
           return <ContextSettingsModal isOpen={true} onClose={() => {}} onSave={state.saveSettings}
@@ -43,7 +46,7 @@ for (const succeeds of [true]) {
         posted = await request.json(); await responseReady;
         return Response.json(succeeds ? { success: true } : { error: 'Owned rejection' }, { status: succeeds ? 200 : 400 });
       }
-      if (path === '/api/settings') {await loadReady; return Response.json({ CLAUDE_MEM_PROVIDER:'claude', CLAUDE_MEM_CODEX_MODEL:'loaded-old', CLAUDE_CODE_PATH:'/owned/claude' });}
+      if (path === '/api/settings') {await loadReady; return Response.json({ CLAUDE_MEM_PROVIDER:'claude', CLAUDE_MEM_CODEX_MODEL:'loaded-old', ...(hasPath?{CLAUDE_CODE_PATH:'/owned/claude'}:{}) });}
       if (path === '/api/projects') return Response.json({ projects: [], sources: [], projectsBySource: {} });
       return new Response('<style>' + styles + '</style><div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
     } });
@@ -120,9 +123,10 @@ for (const succeeds of [true]) {
       releaseLoad();
       const pathInput='[...document.querySelectorAll(".form-field")].find(x=>x.textContent.startsWith("Claude Code CLI path")).querySelector("input")';
       const loadDeadline=Date.now()+10000;
-      while(!await evaluate(`${pathInput}.value === '/owned/claude'`)) {
+      while(!await evaluate(hasPath?`${pathInput}.value === '/owned/claude'`:'window.loadConsumed')) {
         if(Date.now()>loadDeadline)throw Error('Late path did not render'); await Bun.sleep(10);
       }
+      await settle();
       expect(await evaluate(`${model}.value`)).toBe('unsaved-B');
       expect(posted.CLAUDE_MEM_CODEX_MODEL).toBe('owned-A');
       expect(posted.CLAUDE_CODE_PATH).toBeUndefined();
