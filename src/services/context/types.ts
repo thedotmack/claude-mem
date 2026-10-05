@@ -66,6 +66,8 @@ export interface Observation {
   // A numeric SQLite id, or the server's string id in server runtime.
   id: number | string;
   memory_session_id: string;
+  /** Observed host session identity, used to resolve its transcript. */
+  content_session_id?: string | null;
   platform_source?: string;
   type: string;
   title: string | null;

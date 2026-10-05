@@ -24,6 +24,7 @@ type DatabaseOwner = { db: Database };
 const OBSERVATION_SELECT = `
       o.id,
       o.memory_session_id,
+      s.content_session_id,
       COALESCE(s.platform_source, 'claude') as platform_source,
       o.type,
       o.title,
@@ -300,12 +301,13 @@ export function getPriorSessionMessages(
     return { assistantMessage: '' };
   }
 
-  const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
+  const priorSessionObs = observations.find(obs =>
+    obs.memory_session_id !== currentSessionId && obs.content_session_id !== currentSessionId);
   if (!priorSessionObs) {
     return { assistantMessage: '' };
   }
 
-  const priorSessionId = priorSessionObs.memory_session_id;
+  const priorSessionId = priorSessionObs.content_session_id ?? priorSessionObs.memory_session_id;
   const dashedCwd = cwdToDashed(cwd);
   const transcriptPath = path.join(CLAUDE_CONFIG_DIR, 'projects', dashedCwd, `${priorSessionId}.jsonl`);
   return extractPriorMessages(transcriptPath);

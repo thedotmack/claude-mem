@@ -28,7 +28,7 @@ const script = `
   if (Number(process.env.PREVIEW_MESSAGE_LENGTH) > 0) {
     const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', cwdToDashed('/preview-test'));
     mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, 'preview-memory.jsonl'), JSON.stringify({
+    writeFileSync(join(dir, 'preview-content.jsonl'), JSON.stringify({
       type: 'assistant', message: { content: [{ type: 'text', text: 'PRIOR_MESSAGE ' + 'm'.repeat(Number(process.env.PREVIEW_MESSAGE_LENGTH)) }] },
     }) + '\\n');
   }
