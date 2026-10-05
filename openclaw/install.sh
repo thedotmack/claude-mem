@@ -606,6 +606,13 @@ copy_runtime_settings() {
 # bundles still need this canonical helper before any existing worker is stopped.
 ensure_runtime_settings() {
   local install_dir="$1"
+  if [[ -z "$install_dir" ]]; then
+    if ! find_claude_mem_install_dir; then
+      error "Cannot find claude-mem installation before worker startup."
+      return 1
+    fi
+    install_dir="$CLAUDE_MEM_INSTALL_DIR"
+  fi
   local module="${install_dir}/plugin/scripts/runtime-settings.cjs"
   if [[ -f "$module" || -f "${install_dir}/src/shared/runtime-settings.cjs" ]]; then
     return 0
@@ -1567,7 +1574,6 @@ main() {
   if [[ "$UPGRADE_MODE" == "true" ]] && is_claude_mem_installed; then
     success "claude-mem already installed at ${CLAUDE_MEM_INSTALL_DIR}"
     info "Upgrade mode: skipping clone/build/register, updating settings only"
-    ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR"
   else
     install_plugin
   fi
@@ -1621,6 +1627,7 @@ main() {
       fi
 
       if [[ "$needs_restart" == "true" ]]; then
+        ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR" || return 1
         info "Stopping existing worker..."
         curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
         sleep 2
@@ -1678,6 +1685,7 @@ main() {
       warn "or change CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json"
     fi
   else
+    ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR" || return 1
     if start_worker; then
       verify_health || true
     else
