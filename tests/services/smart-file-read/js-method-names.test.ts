@@ -65,3 +65,14 @@ test('multiline computed string keys preserve literal whitespace in search and u
   }
  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('folded method headers escape newlines without changing lookup identities', () => {
+ const source = 'class Widget {\n [\n "a  b"\n ]() { return "double space"; }\n}';
+ const file = parseFile(source, 'header.js');
+ const symbol = file.symbols[0].children![0];
+ expect(symbol.name).toBe('[\n "a  b"\n ]');
+ const header = formatFoldedView(file).split('\n').find(line => line.includes('[\\n "a  b"\\n ]'));
+ expect(header).toBeDefined();
+ expect(header).toContain('(L2-4)');
+ expect(unfoldSymbol(source, 'header.js', `Widget.${symbol.name}`)).toContain('return "double space"');
+}, 120000);

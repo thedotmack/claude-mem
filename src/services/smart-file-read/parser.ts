@@ -1079,7 +1079,9 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
     ? `L${sym.lineStart + 1}`
     : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
 
-  parts.push(`${indent}${icon} ${sym.name}${exportTag} (${lineRange})`);
+  // Preserve the exact lookup identity while keeping its display on one line.
+  const displayName = sym.name.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+  parts.push(`${indent}${icon} ${displayName}${exportTag} (${lineRange})`);
   parts.push(`${indent}  ${sym.signature}`);
 
   if (sym.jsdoc) {
