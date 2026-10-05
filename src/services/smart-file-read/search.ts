@@ -230,7 +230,10 @@ export async function searchCodebase(
     }
   }
 
-  matchingSymbols.sort((a, b) => symbolScores.get(b)! - symbolScores.get(a)!);
+  // Computed relevance first. Equal relevance falls back to the qualified
+  // identity, so `Beta.run` keeps Beta's method ahead of `Alpha.run`.
+  const qualifiedRank = (symbol: SymbolMatch): number => matchScore(symbol.symbolName.toLowerCase(), queryParts);
+  matchingSymbols.sort((a, b) => (symbolScores.get(b)! - symbolScores.get(a)!) || (qualifiedRank(b) - qualifiedRank(a)));
 
   const trimmedSymbols = matchingSymbols.slice(0, maxResults);
   const relevantFiles = new Set(trimmedSymbols.map(s => s.filePath));

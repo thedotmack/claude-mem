@@ -34,3 +34,14 @@ test('ranks exact names above text-only matches under a one-result budget', asyn
   expect(result.matchingSymbols.map(s => s.symbolName)).toEqual(['target']);
  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('breaks equal relevance by qualified identity so the named owner keeps its slot', async () => {
+ const dir = mkdtempSync(join(tmpdir(), 'cm-score-owner-'));
+ try {
+  // Alpha.run, Beta and Beta.run all score the same on their own names, so
+  // only the qualified name tells the requested owner apart.
+  writeFileSync(join(dir, 'owners.js'), 'class Alpha {\n  run() { return 1; }\n}\nclass Beta {\n  run() { return 2; }\n}\n');
+  const result = await searchCodebase(dir, 'Beta.run', { maxResults: 2 });
+  expect(result.matchingSymbols.map(s => s.symbolName)).toEqual(['Beta', 'Beta.run']);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
