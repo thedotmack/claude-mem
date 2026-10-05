@@ -189,6 +189,12 @@ export function App() {
     if (handledDeletionsRef.current.has(key)) return;
     handledDeletionsRef.current.add(key);
 
+    const liveRows = { observation: observations, summary: summaries, prompt: prompts };
+    const deletedRow = liveRows[itemType].find(row => row.id === id)
+      ?? loadedRowsRef.current[itemType].find(row => row.id === id);
+    const deletedSession = deletedRow ? sessionRefOf(deletedRow) : null;
+    if (deletedSession) catalog.noteItemRemoved(deletedSession);
+
     removeLiveItem(itemType, id);
     if (itemType === 'observation') {
       if (removeLoadedRow(loadedRowsRef.current.observation, id).wasLoaded) pagination.observations.noteRemoved();
