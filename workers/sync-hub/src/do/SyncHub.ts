@@ -36,11 +36,11 @@ export const PROJECTION_LEASE_MS = 90_000;
  */
 export const PROJECTION_LEASE_MIN_REMAINING_MS = PROJECTION_LEASE_MS - 5_000;
 /**
- * How stale devices.last_seen may get before a pull refreshes it. Every SQL
- * row write is billed, and an idle client polls /v1/sync/changes all day, so
- * a pull writes only when something changed or last_seen is this old.
- * Readers of devices.last_seen (getMetadata) can therefore see a value up to
- * this much older than the device's most recent pull.
+ * How stale devices.last_seen may get before a pull, push, status call or
+ * WebSocket connect refreshes it. Every SQL row write is billed, and clients
+ * call these all day, so a device row is written only when something changed
+ * or last_seen is this old. Readers of devices.last_seen (getMetadata) can
+ * therefore see a value up to this much older than the device's last request.
  */
 export const LAST_SEEN_REFRESH_MS = 5 * 60_000;
 const encoder = new TextEncoder();
@@ -902,6 +902,7 @@ export class SyncHub extends DurableObject<Env> {
 
 	private touchDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);
+		if (this.deviceTouchIsRedundant(normalizedId, name, now)) return;
 		const result = this.ctx.storage.sql.exec(
 			`INSERT INTO devices (device_id, name, last_seen)
 			 SELECT ?, ?, ?
@@ -938,8 +939,7 @@ export class SyncHub extends DurableObject<Env> {
 		}
 		const nextName = row.name ?? name;
 		const nextAck = compareCanonicalDecimals(acknowledged, row.last_ack_seq) > 0 ? acknowledged : row.last_ack_seq;
-		const lastSeenStale = row.last_seen === null || now - row.last_seen >= LAST_SEEN_REFRESH_MS;
-		if (nextName === row.name && nextAck === row.last_ack_seq && !lastSeenStale) return;
+		if (nextName === row.name && nextAck === row.last_ack_seq && !lastSeenStale(row.last_seen, now)) return;
 		sql.exec(
 			"UPDATE devices SET name = ?, last_ack_seq = ?, last_seen = ? WHERE device_id = ?",
 			nextName,
@@ -949,8 +949,23 @@ export class SyncHub extends DurableObject<Env> {
 		);
 	}
 
+	/**
+	 * True when a touch would change nothing worth a billed write: the device
+	 * exists, its name needs no fill, and last_seen is still fresh.
+	 */
+	private deviceTouchIsRedundant(normalizedId: string, name: string | null, now: number): boolean {
+		const row = this.ctx.storage.sql.exec<{ name: string | null; last_seen: number | null }>(
+			"SELECT name, last_seen FROM devices WHERE device_id = ?",
+			normalizedId,
+		).toArray()[0];
+		if (!row) return false;
+		const needsNameFill = row.name === null && name !== null;
+		return !needsNameFill && !lastSeenStale(row.last_seen, now);
+	}
+
 	private touchExistingDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);
+		if (this.deviceTouchIsRedundant(normalizedId, name, now)) return;
 		this.ctx.storage.sql.exec(
 			`UPDATE devices
 			 SET name = COALESCE(name, ?), last_seen = ?
@@ -986,6 +1001,10 @@ export class SyncHub extends DurableObject<Env> {
 			value,
 		);
 	}
+}
+
+function lastSeenStale(lastSeen: number | null, now: number): boolean {
+	return lastSeen === null || now - lastSeen >= LAST_SEEN_REFRESH_MS;
 }
 
 function normalizeDeviceName(value: string | null): string | null {

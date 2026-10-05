@@ -1694,6 +1694,47 @@ describe("pull bookkeeping writes", () => {
 	});
 });
 
+describe("device touch writes", () => {
+	it("push and status skip the devices write while last_seen is fresh and the name is set", async () => {
+		const stub = hub("device-touch-throttle");
+		ok(await stub.pushOps("dev-a", [await observationOp("1")], "Laptop"));
+
+		await runInDurableObject(stub, async (instance: SyncHub, state) => {
+			const rowsWritten = rowsWrittenCounter(state);
+			const lastSeen = () => state.storage.sql.exec<{ last_seen: number }>(
+				"SELECT last_seen FROM devices WHERE device_id = 'dev-a'",
+			).one().last_seen;
+			const ageLastSeen = () => state.storage.sql.exec(
+				"UPDATE devices SET last_seen = last_seen - ? WHERE device_id = 'dev-a'",
+				LAST_SEEN_REFRESH_MS,
+			);
+
+			instance.getStatus("dev-a", "Laptop");
+			expect(rowsWritten()).toBe(0);
+
+			ageLastSeen();
+			rowsWritten();
+			instance.getStatus("dev-a", "Laptop");
+			expect(rowsWritten()).toBe(1);
+
+			// A fresh push writes its op rows but not the devices row.
+			const before = lastSeen();
+			ok(await instance.pushOps("dev-a", [await observationOp("2")], "Laptop"));
+			expect(lastSeen()).toBe(before);
+		});
+	});
+
+	it("status still fills a missing name and never admits an unknown device", async () => {
+		const stub = hub("device-touch-name-fill");
+		ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		await stub.getStatus("dev-a", "Desk");
+		await stub.getStatus("dev-unknown", "Ghost");
+		const devices = (await stub.getMetadata("device-touch-name-fill")).devices;
+		expect(devices.find((d) => d.device_id === "dev-a")?.name).toBe("Desk");
+		expect(devices.some((d) => d.device_id === "dev-unknown")).toBe(false);
+	});
+});
+
 describe("projection lease write budget", () => {
 	const leaseExpiry = (state: DurableObjectState) =>
 		state.storage.sql.exec<{ v: string }>(
