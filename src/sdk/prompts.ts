@@ -62,20 +62,17 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}`;
 }
 
-export function buildInitPrompt(
-  project: string,
-  sessionId: string,
-  userPrompt: string,
-  mode: ModeConfig,
-  priorContext: string = '',
-): string {
+/**
+ * The observer instructions every init and continuation prompt opens with.
+ *
+ * A provider prompt cache (OpenRouter, the cmem.ai gateway) hits only on a
+ * byte-identical prefix. This block depends on the mode alone, so it goes
+ * first and everything per-session (prior context, the user's request, the
+ * continuation greeting, dates, project names) follows it: every generation,
+ * session and user then shares one cacheable start.
+ */
+function observerInstructions(mode: ModeConfig): string {
   return `${mode.prompts.system_identity}
-${wrapPriorContext(priorContext)}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
 
 ${mode.prompts.observer_role}
 
@@ -85,7 +82,23 @@ ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
 
-${observationSkeleton(mode)}
+${observationSkeleton(mode)}`;
+}
+
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
+  return `${observerInstructions(mode)}
+${wrapPriorContext(priorContext)}
+
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 ${mode.prompts.header_memory_start}`;
 }
@@ -466,7 +479,9 @@ export function buildContinuationPrompt(
   mode: ModeConfig,
   priorContext: string = '',
 ): string {
-  return `${mode.prompts.continuation_greeting}
+  return `${observerInstructions(mode)}
+
+${mode.prompts.continuation_greeting}
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
@@ -474,19 +489,7 @@ ${wrapPriorContext(priorContext)}
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-${mode.prompts.system_identity}
-
-${mode.prompts.observer_role}
-
-${mode.prompts.spatial_awareness}
-
-${mode.prompts.recording_focus}
-
-${mode.prompts.skip_guidance}
-
 ${mode.prompts.continuation_instruction}
-
-${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_continued}`;
 }
