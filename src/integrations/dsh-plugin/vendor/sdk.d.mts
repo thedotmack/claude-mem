@@ -9,7 +9,7 @@ export class Schema<T = unknown> {
   default(value: unknown): this;
 }
 export function createUserMessage(input: {
-  content: ContentBlock[]; source: { kind: string; plugin: string };
+  content: ContentBlock[]; source: { kind: string; plugin?: string };
 }): UserMessage;
 export function defineTool<T>(options: {
   name: string; description: string; parameters: Record<string, unknown>;

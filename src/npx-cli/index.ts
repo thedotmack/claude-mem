@@ -24,7 +24,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
-  ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: tui)
+  ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
   ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end

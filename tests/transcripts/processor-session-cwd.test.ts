@@ -24,9 +24,14 @@ const inits: Array<{ prompt?: string; cwd?: string }> = [];
 const observations: Array<{ toolName: string; cwd?: string }> = [];
 const fileEdits: Array<{ cwd?: string }> = [];
 const summarizeBodies: Array<Record<string, unknown>> = [];
+const capturedSessionIds: Array<string | undefined> = [];
+const ingested: Array<Record<string, unknown>> = [];
+const captureOrder: string[] = [];
 
 const fakeSessionInit = async (input: NormalizedHookInput) => {
   inits.push({ prompt: input.prompt, cwd: input.cwd });
+  capturedSessionIds.push(input.sessionId);
+  captureOrder.push('prompt');
   return { continue: true, suppressOutput: true };
 };
 mock.module('../../src/cli/handlers/session-init.js', () => ({
@@ -47,6 +52,8 @@ mock.module('../../src/services/worker/http/shared.js', () => ({
   ...realIngestSnapshot,
   ingestObservation: async (payload: { toolName: string; cwd?: string }) => {
     observations.push({ toolName: payload.toolName, cwd: payload.cwd });
+    ingested.push({ ...payload });
+    captureOrder.push('observation');
     return { ok: true };
   },
 }));
@@ -100,6 +107,9 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     observations.length = 0;
     fileEdits.length = 0;
     summarizeBodies.length = 0;
+    capturedSessionIds.length = 0;
+    ingested.length = 0;
+    captureOrder.length = 0;
     tmpRoot = join(tmpdir(), `claude-mem-session-cwd-${Date.now()}-${Math.random().toString(16).slice(2)}`);
     mkdirSync(tmpRoot, { recursive: true });
     loggerSpies = [
@@ -195,4 +205,57 @@ describe('transcript turns need a known working directory (R5-3)', () => {
       { prompt: 'after the restart', cwd: PROJECT_DIR },
     ]);
   });
+
+  for (const format of ['jsonl', 'jsonl.zstd'] as const) {
+    it(`captures current and legacy DSH results under the header identity across restart (${format})`, async () => {
+      const nativeSchema = JSON.parse(readFileSync(join(__dirname, '../../dsh/transcript-schema.json'), 'utf8')) as TranscriptSchema;
+      // Current DSH names the file v4, and headless sessions need not be UUIDs.
+      const sessionId = 'session-42';
+      const filePath = join(tmpRoot, `v4.${format}`);
+      const statePath = join(tmpRoot, 'native-state.json');
+      const watch: WatchTarget = { name: 'dsh', path: filePath, schema: nativeSchema };
+      const encode = (entries: unknown[]): Buffer => {
+        const text = entries.map(entry => JSON.stringify(entry) + '\n').join('');
+        return format === 'jsonl' ? Buffer.from(text) : zstdCompressSync(Buffer.from(text));
+      };
+      const turn = (callId: string, legacy: boolean) => [
+        { type: 'user/message', data: { source: { kind: 'plugin:claude-mem' }, content: [{ type: 'text', text: 'Injected memory' }] } },
+        { type: 'user/message', data: { source: { kind: 'runtime-context' }, content: [{ type: 'text', text: 'Host policy' }] } },
+        { type: 'user/message', data: { source: { kind: 'skill-catalog' }, content: [{ type: 'text', text: 'Available skills' }] } },
+        { type: 'user/message', data: { content: [{ type: 'text', text: 'Read the file' }, { type: 'text', text: 'and report it' }] } },
+        { type: 'tool/call', data: { callId, name: 'read_file', arguments: { path: 'probe.txt' } } },
+        { type: 'tool/result', data: { message: legacy
+          ? { content: [{ type: 'tool_result', toolCallId: callId, content: [{ type: 'text', text: 'legacy result' }] }] }
+          : { toolCallId: callId, content: [{ type: 'text', text: 'current result' }] } } },
+        { type: 'tool/call', data: { callId: 'memory-' + callId, name: 'mem_search', arguments: { query: 'recall' } } },
+        { type: 'tool/result', data: { message: { toolCallId: 'memory-' + callId, content: [{ type: 'text', text: 'Recalled memory' }] } } },
+        { type: 'assistant/message', data: { message: { content: [{ type: 'text', text: 'Done' }] } } },
+        { type: 'turn/end', data: { turn: legacy ? 2 : 1, reason: 'completed' } },
+      ];
+      writeFileSync(filePath, encode([{ type: 'session', id: sessionId, cwd: PROJECT_DIR }, ...turn('call-current', false)]));
+      const first = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+      watchers.push(first);
+      await (first as any).addTailer(filePath, watch, nativeSchema);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      first.stop();
+      expect(JSON.parse(readFileSync(statePath, 'utf8')).cwds[filePath]).toBe(PROJECT_DIR);
+
+      appendFileSync(filePath, encode(turn('call-legacy', true)));
+      const restarted = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+      watchers.push(restarted);
+      await (restarted as any).addTailer(filePath, watch, nativeSchema);
+      await new Promise(resolve => setTimeout(resolve, 100));
+
+      expect(capturedSessionIds).toEqual([sessionId, sessionId]);
+      expect(inits.map(input => input.prompt)).toEqual(['Read the file\nand report it', 'Read the file\nand report it']);
+      expect(captureOrder).toEqual(['prompt', 'observation', 'prompt', 'observation']);
+      expect(ingested.map(payload => [payload.contentSessionId, payload.toolUseId, payload.toolResponse])).toEqual([
+        [sessionId, 'call-current', [{ type: 'text', text: 'current result' }]],
+        [sessionId, 'call-legacy', [{ type: 'text', text: 'legacy result' }]],
+      ]);
+      expect(summarizeBodies.map(body => [body.contentSessionId, body.cwd, body.last_assistant_message])).toEqual([
+        [sessionId, PROJECT_DIR, 'Done'], [sessionId, PROJECT_DIR, 'Done'],
+      ]);
+    });
+  }
 });

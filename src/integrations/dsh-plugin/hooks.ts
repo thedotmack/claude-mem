@@ -56,7 +56,7 @@ async function seedSessionContext(worker: WorkerClient, agent: Agent, config: Ho
     if (text.length === 0) return
     const message: UserMessage = createUserMessage({
       content: [{ type: 'text', text }],
-      source: { kind: 'plugin', plugin: 'claude-mem' },
+      source: { kind: 'plugin:claude-mem' },
     })
     agent.inject(message)
   } catch {

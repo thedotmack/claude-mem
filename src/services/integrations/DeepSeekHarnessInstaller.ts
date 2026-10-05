@@ -66,7 +66,7 @@ export function uninstallDshTranscriptWatch(): void {
 
 async function runDsh(profile: string, operation: 'add' | 'remove', target: string): Promise<number> {
   const command = process.platform === 'win32' ? lookupWindowsCommand('dsh') ?? 'dsh.cmd' : 'dsh';
-  const invocation = buildSpawnSyncInvocation(command, ['plugin', '--profile', profile, operation, target], {
+  const invocation = buildSpawnSyncInvocation(command, ['plugin', '--profile', profile, operation, '--workspace-root', target], {
     encoding: 'utf8', timeout: 120_000,
   });
   return new Promise(resolve => {
@@ -86,7 +86,7 @@ async function runDsh(profile: string, operation: 'add' | 'remove', target: stri
   });
 }
 
-export async function installDeepSeekHarness(profile = 'tui'): Promise<number> {
+export async function installDeepSeekHarness(profile = 'web'): Promise<number> {
   if (!PROFILE_NAME.test(profile)) {
     console.error('Invalid DSH profile name.');
     return 1;

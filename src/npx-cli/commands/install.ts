@@ -465,7 +465,7 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             installerError(ErrorSeverity.WARN_CONTINUE, {
               component: 'dsh', phase: 'ide-install',
               cause: new Error('DeepSeek Harness plugin installed, but transcript capture is incomplete.'),
-              remediation: 'Check the transcript config and CLAUDE_MEM_TRANSCRIPTS_ENABLED, then re-run npx claude-mem install --ide dsh --dsh-profile ' + (dshProfile ?? 'tui') + '.',
+              remediation: 'Check the transcript config and CLAUDE_MEM_TRANSCRIPTS_ENABLED, then re-run npx claude-mem install --ide dsh --dsh-profile ' + (dshProfile ?? 'web') + '.',
               details: output,
             }, summary);
             return 'DeepSeek Harness: plugin installed; transcript setup incomplete';

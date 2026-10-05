@@ -24,12 +24,12 @@ The recall design and text extraction build on [husniadil/pi-mem](https://github
 Install DSH and its package manager (`pnpm`) first, then:
 
 ```sh
-npx claude-mem install --ide dsh --dsh-profile tui
+npx claude-mem install --ide dsh --dsh-profile web
 ```
 
-`tui` is the default profile; choose another profile with `--dsh-profile`. The installer uses DSH's own `plugin --profile <name> add` command to install the bundled `@claude-mem/dsh` package. Restart DSH and start or restart the Claude-Mem worker. The plugin awaits DSH's `agent/created` event to inject checkout context before the first turn. It offers `mem_search`, `mem_timeline`, `mem_get_observations`, `mem_save`, and `mem_context`.
+`web` is the default profile for DSH 0.2; start it with `dsh web`. Choose another profile with `--dsh-profile`, including an existing `tui` profile on an older host. The installer uses DSH's own `plugin --profile <name> add --workspace-root` command to install the bundled `@claude-mem/dsh` package in that profile's pnpm workspace. Restart DSH and start or restart the Claude-Mem worker. The plugin awaits DSH's `agent/created` event to inject checkout context before the first turn. It offers `mem_search`, `mem_timeline`, `mem_get_observations`, `mem_save`, and `mem_context`.
 
-Automatic capture belongs to the worker's existing DSH transcript watcher. The installer adds one managed watch under `~/.dsh/sessions` (`DSH_HOME` overrides the directory), using the configured `CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH`. New installations start at the end of existing transcripts, avoiding an unexpected historical import. Existing user-managed DSH watches remain authoritative and are preserved during uninstall. Plugin ingestion and plugin summarization are off, so live capture has one writer.
+Automatic capture belongs to the worker's existing DSH transcript watcher. The installer adds one managed watch under `~/.dsh/sessions` (`DSH_HOME` overrides the directory), using the configured `CLAUDE_MEM_TRANSCRIPTS_CONFIG_PATH`. New installations start at the end of existing transcripts, avoiding an unexpected historical import. Current and legacy tool results use the real session-header ID, which survives a watcher restart, and `turn/end` summarizes once per turn. Existing user-managed DSH watches remain authoritative and are preserved during uninstall. Plugin ingestion and plugin summarization are off, so live capture has one writer.
 
 The plugin uses the worker's configured address and timeout. `DSH_MEM_BASE_URL` or the plugin's `baseUrl` configuration can point recall at another worker; a remote address does not auto-start a local worker. Remote recall does not change the local transcript watch.
 

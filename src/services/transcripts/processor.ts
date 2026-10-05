@@ -49,14 +49,14 @@ interface SessionState {
 }
 
 /**
- * What the watcher keeps per transcript file across restarts: the working
- * directory its session last reported. Some hosts write it once, on the
- * session's first line (DeepSeek Harness), so a watcher that resumes mid-file
- * would otherwise never learn it. The processor reads it as a fallback and
- * updates it whenever the session reports one.
+ * Context scoped to one transcript file. The working directory is checkpointed;
+ * header-based session identity is re-read when resuming. Hosts such as DSH
+ * report both only on the first line, rather than on every event.
  */
 export interface TranscriptFileContext {
   cwd?: string;
+  /** Real host identity from the header, including non-UUID session IDs. */
+  sessionId?: string;
 }
 
 /** How many subagent rollouts the processor remembers past their last turn. */
@@ -185,11 +185,12 @@ export class TranscriptEventProcessor {
     sessionIdOverride?: string,
     file?: TranscriptFileContext
   ): Promise<void> {
-    const sessionId = this.resolveSessionId(entry, watch, schema, event, sessionIdOverride);
+    const sessionId = this.resolveSessionId(entry, watch, schema, event, file?.sessionId ?? sessionIdOverride);
     if (!sessionId) {
       logger.debug('TRANSCRIPT', 'Skipping event without sessionId', { event: event.name, watch: watch.name });
       return;
     }
+    if (file) file.sessionId = sessionId;
 
     const session = this.getOrCreateSession(watch, sessionId);
     // After a restart the watcher resumes mid-file, past the line that carried

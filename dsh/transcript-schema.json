@@ -1,6 +1,7 @@
 {
   "name": "dsh",
-  "version": "0.1",
+  "version": "0.2",
+  "sessionIdPath": "id",
   "description": "Schema for DeepSeek Harness (DSH) session logs under ~/.dsh/sessions.",
   "events": [
     {
@@ -17,12 +18,17 @@
     {
       "name": "user-message",
       "match": {
-        "path": "type",
-        "equals": "user/message"
+        "all": [
+          { "path": "type", "equals": "user/message" },
+          { "any": [
+            { "path": "data.source.kind", "exists": false },
+            { "path": "data.source.kind", "equals": "user" }
+          ] }
+        ]
       },
       "action": "user_message",
       "fields": {
-        "message": "data.content[0].text"
+        "message": "data.content"
       }
     },
     {
@@ -39,8 +45,10 @@
     {
       "name": "tool-use",
       "match": {
-        "path": "type",
-        "equals": "tool/call"
+        "all": [
+          { "path": "type", "equals": "tool/call" },
+          { "path": "data.name", "not_starts_with": "mem_" }
+        ]
       },
       "action": "tool_use",
       "fields": {
@@ -57,9 +65,14 @@
       },
       "action": "tool_result",
       "fields": {
-        "toolId": "data.message.content[0].toolCallId",
-        "toolResponse": "data.message.content[0].content[0].text"
+        "toolId": { "coalesce": ["data.message.toolCallId", "data.message.content[0].toolCallId"] },
+        "toolResponse": { "coalesce": ["data.message.content[0].content", "data.message.content"] }
       }
+    },
+    {
+      "name": "turn-end",
+      "match": { "path": "type", "equals": "turn/end" },
+      "action": "session_end"
     }
   ]
 }

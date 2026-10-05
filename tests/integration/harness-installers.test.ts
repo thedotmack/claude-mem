@@ -126,8 +126,9 @@ describe('first-party harness installers', () => {
     expect(readConfig().watches).toEqual([other]);
     const calls = readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n').map(line => JSON.parse(line));
     expect(calls[0].slice(0,4)).toEqual(['plugin','--profile','review','add']);
-    expect(calls[0][4]).toContain('dsh');
-    expect(calls[1]).toEqual(['plugin','--profile','review','remove','@claude-mem/dsh']);
+    expect(calls[0][4]).toBe('--workspace-root');
+    expect(calls[0][5]).toContain('dsh');
+    expect(calls[1]).toEqual(['plugin','--profile','review','remove','--workspace-root','@claude-mem/dsh']);
   });
 
   it.skipIf(process.platform === 'win32')('does not add a watch on CLI failure or run invalid profiles', async () => {
