@@ -162,7 +162,10 @@ export function mergeCatalogPage(
     // survives for a session the page does not have yet.
     const pageKeys = new Set(page.map(keyOf));
     combined = [
-      ...journal.added.filter(entry => !pageKeys.has(keyOf(entry))).map(preserveLiveCount),
+      // An introduced session outside a full page keeps its latest live
+      // entry. If the page includes it, its fresh server row wins below.
+      ...journal.added.filter(entry => !pageKeys.has(keyOf(entry)))
+        .map(entry => currentByKey.get(keyOf(entry)) ?? entry).map(preserveLiveCount),
       ...page.map(preserveLiveCount),
     ];
   } else {

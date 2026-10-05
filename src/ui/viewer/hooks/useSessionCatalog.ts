@@ -71,7 +71,13 @@ export function useSessionCatalog() {
         // A count alone cannot say whether it includes the deletion. Confirm
         // once after all overlapping deletions, keeping this request loading.
         // Only another deletion during confirmation requires another fetch.
-        journalRef.current = emptyCatalogJournal();
+        journalRef.current = {
+          ...emptyCatalogJournal(),
+          // Keep introduced sessions visible if the confirming page is full.
+          // Their current entries supply counts; old count mutations reset.
+          added: journal.added.filter(entry => !journal.removed.has(sessionKey(catalogEntryRef(entry)))),
+          removed: new Set(journal.removed),
+        };
       }
     } catch (error) {
       if (requestSeq === requestSeqRef.current) {
@@ -79,6 +85,7 @@ export function useSessionCatalog() {
       }
     } finally {
       if (requestSeq === requestSeqRef.current) {
+        journalRef.current = emptyCatalogJournal();
         inFlightRef.current = false;
         setIsLoading(false);
       }

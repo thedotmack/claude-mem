@@ -9,9 +9,11 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for live catalog request-order tests');
 
-for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation'] as const) {
+for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation', 'item-deleted-outside-page', 'item-deleted-outside-removed'] as const) {
   const independent = scenario === 'item-deleted-independent' || scenario === 'item-deleted-confirmation';
   const again = scenario === 'item-deleted-confirmation';
+  const outside = scenario.startsWith('item-deleted-outside');
+  const removeOutside = scenario === 'item-deleted-outside-removed';
   (chrome ? it : it.skip)(`catalog refresh preserves live changes: ${scenario}`, async () => {
     let release!: () => void;
     const ready = new Promise<void>(resolve => { release = resolve; });
@@ -33,6 +35,8 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
             <output id="loading">{String(state.isLoading)}</output>
             <button id="refresh" onClick={()=>state.refresh('owned-project')}>Refresh</button>
             <button id="touch" onClick={()=>state.touch({session:ref,project:'owned-project',createdAtEpoch:1})}>Touch</button>
+            <button id="touch-outside" onClick={()=>state.touch({session:{platformSource:'claude',contentSessionId:'outside-session'},project:'owned-project',createdAtEpoch:0})}>Touch outside</button>
+            <button id="remove-outside" onClick={()=>state.remove({platformSource:'claude',contentSessionId:'outside-session'})}>Remove outside</button>
             <button id="remove" onClick={()=>state.remove(ref)}>Remove</button>
             <button id="delete-item" onClick={()=>state.noteItemRemoved(ref)}>Delete item</button></>;
         }
@@ -43,7 +47,10 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           await wait(()=>document.getElementById('loading')?.textContent==='false' && ${scenario === 'placeholder' ? 'true' : "document.getElementById('rows').textContent.includes('owned-session')"});
           document.getElementById('refresh').click();
           await wait(()=>document.getElementById('loading').textContent==='true');
-          if(!${independent}){
+          if(${outside}){
+            await fetch('/snapshot-ready');
+            for(let i=0;i<2;i++){document.getElementById('touch-outside').click();await new Promise(requestAnimationFrame);}
+          }else if(!${independent}){
             for(let i=0;i<2;i++){document.getElementById('touch').click();await new Promise(requestAnimationFrame);}
           }else await fetch('/snapshot-ready');
           if(${JSON.stringify(scenario)}==='overlap'){
@@ -59,6 +66,8 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
               document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);
             }else await fetch('/deleted');
           }
+          if(${outside}){await fetch('/outside-ready');}
+          if(${removeOutside}){document.getElementById('remove-outside').click();await new Promise(requestAnimationFrame);await fetch('/outside-removed');}
           if(${JSON.stringify(scenario)}==='removed')document.getElementById('remove').click();
           await fetch('/release');
           let confirming=false;
@@ -90,12 +99,20 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     let latestStarted!:()=>void;
     const latestRequested=new Promise<void>(resolve=>{latestStarted=resolve});
     const entry={content_session_id:'owned-session',platform_source:'claude',project:'owned-project',custom_title:'Server title',started_at_epoch:1,item_count:5};
+    const outsideCatalog = [{...entry,started_at_epoch:101}, ...Array.from({length:99},(_,i)=>({...entry,content_session_id:`seed-${i}`,started_at_epoch:100-i}))];
     const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
       const path=new URL(request.url).pathname;
       if(path==='/fixture.js')return new Response(bundle.outputFiles[0].text,{headers:{'Content-Type':'application/javascript'}});
       if(path==='/api/sessions'){
         const page=++requests;
         requestScopes.push(new URL(request.url).search);
+        if(outside){
+          if(page===2)snapshotReady();
+          const snapshot=outsideCatalog.slice(0,100).map(row=>({...row}));
+          const hasMore=outsideCatalog.length>100;
+          if(page>1)await ready;
+          return Response.json({sessions:snapshot,hasMore});
+        }
         if(independent){
           if(page===2){serverCount++;snapshotReady();}
           const snapshot=serverCount;
@@ -108,6 +125,8 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         else if(page>1)await ready;
         return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page===2&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
       }
+      if(path==='/outside-ready'){outsideCatalog.push({...entry,content_session_id:'outside-session',started_at_epoch:0,item_count:2});outsideCatalog[0].item_count=3;return new Response('ok');}
+      if(path==='/outside-removed'){outsideCatalog.splice(outsideCatalog.findIndex(row=>row.content_session_id==='outside-session'),1);return new Response('ok');}
       if(path==='/snapshot-ready'){await snapshotStarted;return new Response('ok');}
       if(path==='/deleted'){serverCount--;return new Response('ok');}
       if(path==='/confirmation-status')return Response.json({started:confirming});
@@ -124,7 +143,14 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     let timer:ReturnType<typeof setTimeout>|undefined;
     try{
       const actual:any=await Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser result timed out')),25000);})]);
-      if(independent){
+      if(outside){
+        expect(actual).toHaveLength(removeOutside?100:101);
+        expect(outsideCatalog).toHaveLength(removeOutside?100:101);
+        expect(actual.find(row=>row.content_session_id==='owned-session').item_count).toBe(3);
+        if(removeOutside)expect(actual.some(row=>row.content_session_id==='outside-session')).toBe(false);
+        else expect(actual.find(row=>row.content_session_id==='outside-session')).toMatchObject({item_count:2,custom_title:null,started_at_epoch:0});
+        expect(requests).toBe(3);
+      }else if(independent){
         expect(actual.rows[0].item_count).toBe(again?4:5);
         expect(serverCount).toBe(again?4:5);
         expect(requests).toBe(again?4:3);
