@@ -654,10 +654,14 @@ function applyClaudeCodePathSetupIfNeeded(): void {
   process.env.PATH = `${claudeBinDir}:${currentPath}`;
 }
 
-async function installClaudeCode(): Promise<boolean> {
-  const command = IS_WINDOWS
+export function claudeCodeInstallCommand(windows = IS_WINDOWS): string {
+  return windows
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
-    : 'curl -fsSL https://claude.ai/install.sh | bash';
+    : 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash';
+}
+
+async function installClaudeCode(): Promise<boolean> {
+  const command = claudeCodeInstallCommand();
   const installShell = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash';
 
   const spinner = isInteractive ? p.spinner() : null;
@@ -705,7 +709,7 @@ async function installClaudeCode(): Promise<boolean> {
 }
 
 async function promptForIDESelection(): Promise<string[]> {
-  let detectedIDEs = detectInstalledIDEs();
+  const detectedIDEs = detectInstalledIDEs();
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
@@ -740,7 +744,10 @@ async function promptForIDESelection(): Promise<string[]> {
   if (selected.includes('claude-code') && !detectedIDEs.find(ide => ide.id === 'claude-code')?.detected) {
     const installHost = await p.confirm({ message: 'Install Claude Code now?', initialValue: true });
     if (p.isCancel(installHost)) { p.cancel('Installation cancelled.'); process.exit(0); }
-    if (installHost) await installClaudeCode();
+    if (installHost && !await installClaudeCode()) {
+      log.warn('Claude Code installation failed. Choose an agent again, or decline the host installation to set it up later.');
+      return promptForIDESelection();
+    }
   }
   return selected;
 }
