@@ -76,6 +76,16 @@ class Files(unittest.TestCase):
         q = render.render_file(FIXTURES[0], self.tmp, print_mode=True)
         self.assertTrue(q.endswith("report.print.html")); self.assertIn('<details id="details" open>', open(q).read())
 
+    def test_failed_render_keeps_the_previous_report(self):
+        p = render.render_file(FIXTURES[0], self.tmp)
+        with open(p, "rb") as fh: before = fh.read()
+        self.assertIn(b"<!doctype html>", before)
+        d = load(FIXTURES[0]); del d["line_items"]                          # malformed report.json: page() raises KeyError
+        bad = os.path.join(self.tmp, "broken.json")
+        with open(bad, "w", encoding="utf-8") as fh: json.dump(d, fh)
+        with self.assertRaises(KeyError): render.render_file(bad, self.tmp)
+        with open(p, "rb") as fh: self.assertEqual(fh.read(), before)       # not truncated to 0 bytes (#4250)
+
     def test_pdf_skipped_without_chrome(self):
         render.render_file(FIXTURES[0], self.tmp, print_mode=True)
         path, msg = render.pdf(self.tmp, chrome="no-such-browser-xyz")

@@ -495,7 +495,8 @@ def render_file(inp, outdir, print_mode=False):
     os.makedirs(outdir, exist_ok=True)
     name = "report.print.html" if print_mode else "report.html"
     path = os.path.join(outdir, name)
-    with open(path, "w", encoding="utf-8") as fh: fh.write(page(d, print_mode))
+    html_bytes = page(d, print_mode).encode("utf-8")      # build before opening: a failed render must not truncate the last good report
+    with open(path, "wb") as fh: fh.write(html_bytes)
     return path
 
 
