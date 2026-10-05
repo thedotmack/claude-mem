@@ -242,6 +242,8 @@ export class SessionStore {
     this.requeuePromptsDeadLetteredForSize();
     this.ensureWorkStateTable();
     this.ensureHookSpoolConsumedTable();
+    this.ensureProjectRecencyIndexes();
+    this.ensureMergedIntoProjectCoveringIndexes();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -1936,6 +1938,29 @@ export class SessionStore {
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
+  }
+
+  // v63 — SessionStart reads the newest N rows per project key. Ordered
+  // (key COLLATE NOCASE, created_at_epoch DESC) indexes let each key's scan stop
+  // after N rows; the single-column v55 indexes made SQLite fetch every row of
+  // the project and sort them (~21k rows / 63 MB per SessionStart on a large db).
+  private ensureProjectRecencyIndexes(): void {
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_project_nocase_recent ON observations(project COLLATE NOCASE, created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_merged_into_nocase_recent ON observations(merged_into_project COLLATE NOCASE, created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_project_nocase_recent ON session_summaries(project COLLATE NOCASE, created_at_epoch DESC)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase_recent ON session_summaries(merged_into_project COLLATE NOCASE, created_at_epoch DESC)');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(63, new Date().toISOString());
+  }
+
+  // v64 — projectReadKeys (context cache, every SessionStart render) reads
+  // `project` for rows whose merged_into_project matches. With only the
+  // single-column v55 index SQLite loaded every merged row from the table to
+  // read one column (~9k rows / 7.5k pages per call on a large db); these
+  // covering indexes answer it from the index alone.
+  private ensureMergedIntoProjectCoveringIndexes(): void {
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_merged_into_nocase_project ON observations(merged_into_project COLLATE NOCASE, project)');
+    this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase_project ON session_summaries(merged_into_project COLLATE NOCASE, project)');
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(64, new Date().toISOString());
   }
 
   // v62 — exactly-once hand-off marker for hook spool entries (HookSpool.drain):

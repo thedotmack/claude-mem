@@ -1,10 +1,10 @@
 import { afterEach, describe, expect, it, spyOn } from 'bun:test';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
-import { OpenAICompatProvider } from '../../src/services/worker/OpenAICompatProvider.js';
+import { OpenAICompatProvider, classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
 import type { ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { isClassified, paidSendOutcomeOf } from '../../src/services/worker/provider-errors.js';
 import { PaidSendBudget } from '../../src/services/worker/paid-send-budget.js';
-import { STREAM_INTERRUPTED_CODE, resetStreamingEndpointMemoryForTests } from '../../src/services/worker/streamed-chat-completion.js';
+import { STREAM_INTERRUPTED_CODE, resetStreamingEndpointMemoryForTests, sendChatCompletion } from '../../src/services/worker/streamed-chat-completion.js';
 import { logger } from '../../src/utils/logger.js';
 import type { ConversationMessage } from '../../src/services/worker-types.js';
 import {
@@ -345,5 +345,36 @@ describe('openai-compatible secret stream', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+describe('non-streamed sends (liveness null: the cmem gateway, endpoints that refused streaming)', () => {
+  it('releases the response body when a JSON reply breaks off mid-read', async () => {
+    const mock = createStreamFetchMock({
+      headers: { 'content-type': 'application/json' },
+      body: [{ chunk: '{"choices":[' }, { fail: new TypeError('connection reset') }],
+    });
+    const responses: Response[] = [];
+    spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const response = await mock.fetch(input, init);
+      responses.push(response);
+      return response;
+    });
+    const label = COMPAT_CONFIG.preset.label;
+    const error = await sendChatCompletion({
+      url: COMPAT_CONFIG.apiUrl,
+      headers: { 'Content-Type': 'application/json' },
+      body: { model: COMPAT_CONFIG.model, messages: [] },
+      maxOutputTokens: 64,
+      signal: new AbortController().signal,
+      liveness: null,
+      label,
+      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: COMPAT_CONFIG.apiUrl }),
+    }).catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(paidSendOutcomeOf(error)).toBe('output_failure');
+    expect(String((error as Error).message)).toContain('connection reset');
+    // Cancelling an errored body rejects with its error; the reader lock is released anyway.
+    expect(responses[0].body?.locked).toBe(false);
   });
 });
