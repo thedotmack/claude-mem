@@ -14,7 +14,7 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "section" | "code" | "metadata" | "reference";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference";
   signature: string;
   jsdoc?: string;
   lineStart: number;
@@ -223,6 +223,7 @@ const QUERIES: Record<string, string> = {
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(namespace_definition name: (_) @name) @namespace_def
 (preproc_include) @imp
 `,
 
@@ -594,6 +595,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   struct_def: "struct",
   trait_def: "trait",
   impl_def: "impl",
+  namespace_def: "namespace",
   mixin_def: "mixin",
   heading: "section",
   code_block: "code",
@@ -601,7 +603,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   ref: "reference",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "namespace"]);
 
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
   const firstLine = lines[startRow] || "";
@@ -885,7 +887,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       sym.kind = "method";
     }
     if (owner) {
-      if (sym.kind === "function") sym.kind = "method";
+      if (sym.kind === "function" && owner.sym.kind !== "namespace") sym.kind = "method";
       owner.sym.children!.push(sym);
       nested.add(sym);
     }
@@ -1104,7 +1106,7 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
 function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   const icons: Record<string, string> = {
     function: "ƒ", method: "ƒ", class: "◆", interface: "◇",
-    type: "◇", const: "●", variable: "○", export: "→",
+    namespace: "◈", type: "◇", const: "●", variable: "○", export: "→",
     struct: "◆", enum: "▣", trait: "◇", impl: "◈",
     property: "○", getter: "⇢", setter: "⇠", mixin: "◈",
     section: "§", code: "⌘", metadata: "◊", reference: "↗",
