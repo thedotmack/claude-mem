@@ -48,6 +48,32 @@ class Review(unittest.TestCase):
         self.assertEqual((n, li[0]["label_source"], li[0]["reviewed_by"]), (1, "human", "Alex"))
         self.assertEqual(labels.apply_review(li, dict(items=[dict(work_item_id="WI-2", category="Feature")]), "t"), 0)
 
+    def test_generated_review_template_inherits_file_level_reviewer(self):
+        li = self.items()
+        draft = labels.classify(dict(prompts=["build the feature"], text=[]), dict(project="p", user_prompt=None))
+        template = labels.review_entry(dict(li[0], session_ids=["session-1"], title="Feature work"), draft)
+        self.assertIsNone(template["reviewed_by"])
+        template["category"] = "Feature"
+        reviewed = dict(reviewed_by="Alex", items=[template])
+        self.assertEqual(labels.apply_review(li, reviewed, "t"), 1)
+        self.assertEqual((li[0]["reviewed_by"], li[0]["label_source"]), ("Alex", "human"))
+        self.assertIsNone(template["reviewed_by"])
+
+    def test_explicit_entry_reviewer_overrides_file_default(self):
+        li = self.items()
+        reviewed = dict(reviewed_by="Alex", items=[dict(work_item_id="WI-1", category="Feature", reviewed_by="model-x")])
+        self.assertEqual(labels.apply_review(li, reviewed, "t"), 1)
+        self.assertEqual((li[0]["reviewed_by"], li[0]["label_source"]), ("model-x", "llm"))
+
+    def test_empty_entry_reviewer_and_unconfirmed_category_remain_unreviewed(self):
+        li = self.items()
+        reviewed = dict(reviewed_by="Alex", items=[
+            dict(work_item_id="WI-1", category="Feature", reviewed_by=""),
+            dict(work_item_id="WI-2", category=None, reviewed_by=None),
+        ])
+        self.assertEqual(labels.apply_review(li, reviewed, "t"), 0)
+        self.assertEqual([item["label_source"] for item in li], ["keyword", "keyword"])
+
     def test_confirming_a_category_keeps_the_draft_failure_signals(self):
         li = self.items(); li[0]["failure_signals"] = ["Recovery after miss"]; li[0]["failure_type"] = "Recovery after miss"
         labels.apply_review(li, [dict(work_item_id="WI-1", category="Investigation", reviewed_by="Alex", failure_type=None, failure_signals=None)], "t")
