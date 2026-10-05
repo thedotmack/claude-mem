@@ -660,7 +660,22 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
       }
       if (cap.tag === "imp") {
-        imports.push(cap.text || lines[cap.startRow]?.trim() || "");
+        const capturedLines = lines.slice(cap.startRow, cap.endRow + 1);
+        // Tree-sitter columns are UTF-8 byte offsets, not JS string indices.
+        // A multiline capture is not repeated as `text` in CLI query output.
+        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(cap.startCol).toString();
+        const last = capturedLines.length - 1;
+        const endCol = cap.endCol - (last === 0 ? cap.startCol : 0);
+        capturedLines[last] = Buffer.from(capturedLines[last]).subarray(0, endCol).toString();
+        // Outlines go straight into an agent's context, so each entry is one
+        // line capped at the 200-char signature budget: a Go `import ( … )`
+        // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
+        // is one capture that can span a whole file. Keep both ends, because an
+        // import's module source comes last.
+        const importText = capturedLines.map(line => line.trim()).filter(Boolean).join(" ");
+        imports.push(importText.length > 200
+          ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
+          : importText);
       }
     }
   }
