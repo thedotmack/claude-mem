@@ -77,3 +77,12 @@ test('search identities round trip same-named instance and explicit singleton me
     expect((await searchCodebase(dir, 'Counter#reset')).matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter#reset']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('a class name query matches the class, not every method under it', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-class-query-'));
+  try {
+    writeFileSync(join(dir, 'counter.rb'), SOURCE);
+    const result = await searchCodebase(dir, 'Counter');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);

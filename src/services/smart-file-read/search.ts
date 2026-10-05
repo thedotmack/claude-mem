@@ -161,7 +161,11 @@ export async function searchCodebase(
         let score = 0;
         let reason = "";
 
-        const nameScore = matchScore((parsed.language === "ruby" ? qualifiedName : sym.name).toLowerCase(), queryParts);
+        // Score the symbol's own name, so a class or module query does not match
+        // every method under it. The qualified identity counts only as the whole
+        // query: `Counter#reset` has no character that queryParts splits on.
+        const nameScore = matchScore(sym.name.toLowerCase(), queryParts)
+          || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
