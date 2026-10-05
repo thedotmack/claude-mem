@@ -4,6 +4,67 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.30.1] - 2026-10-05
+
+## Continue and resume preserve the restored conversation
+
+Claude Code `--continue`, `--resume`, and `/resume` no longer print or inject a fresh claude-mem timeline into a conversation that is being restored. Reinjecting newly rendered startup context changed the conversation's prompt prefix and disrupted prompt-cache reuse. This patch keeps the existing conversation context intact while retaining worker startup and memory capture. (#4423)
+
+### Fixes
+
+- **Skip timeline injection on resume.** Worker startup and context injection now have separate SessionStart matchers. Resume still starts the worker asynchronously, while only startup, clear, and compact run the synchronous timeline hook.
+- **Honor the session source throughout the hook.** The Claude Code adapter preserves the SessionStart source, and the context handler returns an empty context block for resume before accessing project settings, cached timelines, the local worker, or the shared server. This also covers older hook registrations that still invoke the context handler on resume.
+- **Suppress both copies of the timeline.** Resumed conversations receive neither fresh timeline context nor a terminal timeline, including when cached model and colored timelines already exist or terminal output is enabled.
+- **Keep context injection where it is needed.** New sessions, clear, and compact retain model and terminal context. The resume guard applies to Claude Code; Codex context behavior is unchanged.
+
+### Validation
+
+- 266 focused tests passed across SessionStart adapters and matchers, context handlers, cached timelines, server runtime, distribution, hook lifecycle, and related context handling.
+- All eight CI checks passed on the fix, including Linux and Windows builds, Chroma lifecycle checks, sync services, clean-room dependency checks, and server runtime integration tests.
+- Build, TypeScript, and hook I/O checks passed. The rebuilt worker bundle was checked directly: a Claude Code resume returns empty SessionStart context with no timeline.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.30.0...v13.30.1
+
+## [13.30.0] - 2026-10-04
+
+## Hooks stop waiting on the worker, and the observer costs less
+
+Claude Code no longer waits on the claude-mem worker in the middle of a session: hooks save each event to disk and return at once, and SessionStart reads context the worker prepared ahead of time. The observer that writes your memories also costs less. A user prompt no longer gets a model call of its own, the observer's prompts now start with the same fixed instructions so provider prompt caches can reuse them, OpenRouter requests carry session and trace labels that keep a session on the provider holding its cache, observer thinking on the Claude path is really off, and a slow reply is waited for instead of being paid for twice. The release also fixes search, file context, hooks, the CLI, very large transcripts, and sign-in on Linux and Windows.
+
+### Features
+
+- **Hooks save and return.** The observation, file-edit, Stop and SessionEnd hooks write each event to a file under `~/.claude-mem/state/hook-spool/` and exit, without waiting on the worker or starting it. The worker picks the files up within moments, and an event delivered twice replaces its file instead of being stored twice. Files still unprocessed after 7 days move to `hook-spool/expired/` and are logged. This replaces the SessionEnd replay queue. (#4368)
+- **SessionStart context is ready before you start.** The worker prepares SessionStart context in `~/.claude-mem/state/context-cache/`, refreshing it about 2 seconds after anything that could change it, so a new session reads a file instead of waiting on the worker or on a cloud pull of up to 1.5 seconds. A missing or stale (over 24 hours old) file, or a context showing an observer or sync health notice, falls back to the live path. With cloud sync on, the file is used only while live updates are connected and caught up, so a memory deleted on another device is never served from it. (#4368, #4370)
+- **Observer prompts that providers can cache.** A provider's prompt cache (OpenRouter's, or the cmem.ai gateway's) can only reuse the part of a prompt that starts exactly as before. The observer's first and follow-up prompts now both open with the same block of fixed instructions, which depends only on the mode, followed by the session's context, the user's request and the follow-up text. In the code mode, two sessions' prompts now share their first ~7,260 characters, up from 422 (and from none between a first and a follow-up prompt). Only the order changed, plus one word ("below" became "above") in 33 modes, and the Claude SDK and Codex paths open the same way. (#4415)
+- **Session and trace labels on OpenRouter requests.** Observer requests that reach OpenRouter, directly or through the cmem.ai gateway, now include a `session_id` (a one-way SHA-256 hash of the Claude Code session id) and a `trace` with a random `trace_id` per observer conversation, `trace_name` `claude-mem observer`, a `generation_name` naming the request (`init`, `observation`, `summary`, `field_compression` or `telegram_wrapup`) and `claude_mem_version`. OpenRouter uses the session id to keep a session on the provider that holds its prompt cache, and OpenRouter Broadcast maps the labels to PostHog's `$ai_session_id`, `$ai_trace_id` and `$ai_span_name`. No path, project name or text you wrote is included, and custom base URLs and `openai-compatible` endpoints get neither field. (#4418)
+- **One fewer observer call per prompt.** A user prompt used to get an observer request of its own, which nearly always came back as "nothing to record": a full prompt for a nine-token reply. The prompt now goes out with the next observation or summary, in that event's single request, for the HTTP providers and the Claude SDK alike. Set `CLAUDE_MEM_OBSERVE_BARE_PROMPTS=true` (default `false`) to bring back the separate request. (#4336)
+- **Slow replies are waited for, not paid for twice.** OpenRouter and OpenAI-compatible observer requests now stream behind the scenes, so a slow but working reply is kept alive by its progress (a 90-second idle limit and a 300-second cap) instead of being cut off at a fixed deadline and billed again. `CLAUDE_MEM_LLM_TIMEOUT_MS` now applies only to requests that do not stream: Gemini, Codex, the cmem.ai gateway, and an endpoint that rejects streaming, which is detected once and remembered. A paid request is resent only when the provider provably did no work (a 429 or a refusal before sending); each batch gets at most two paid sends, and a batch that uses them up is parked and logged, never silently dropped. (#4368)
+- **Worker startup is reported, not guessed.** The worker streams its startup phases (`starting`, `db_ready`, `routes_ready`, then `ready` or `failed`) at `GET /api/ready`. Hooks read that once instead of polling and assuming a worker is stuck once it has been up 300 seconds, and restarts are limited so a failure that repeats on every start cannot cause a restart loop. `CLAUDE_MEM_WEDGED_WORKER_UPTIME_S` now applies only to the launcher's port reclaim. (#4368)
+- **Long knowledge-base calls stay alive.** When the MCP client asks for it, corpus `prime` and `query` answer as a stream with a heartbeat every 10 seconds, so a long prime can run for up to 15 minutes instead of hitting a 30-second deadline, and the work stops if the client disconnects. (#4368)
+- **Cloud sync live updates over Supabase Realtime.** For cmem.ai Pro cloud sync, the worker gets live updates from a private Supabase Realtime channel instead of the sync hub's WebSocket and pulls whenever another device announces changes. A server without Realtime leaves the client polling, and `CLAUDE_MEM_CLOUD_SYNC_WS=false` still turns live updates off. (#4368)
+
+### Fixes
+
+- **Observer thinking is really off on the Claude path.** #3245 meant to turn it off but used an option name the Agent SDK ignores, so roughly 70% of the observer's output tokens on Claude Sonnet 4.5 went to thinking. The observer now passes the SDK's actual `thinking` option. (#4335)
+- **Very large transcripts.** The Stop hook reads a transcript backwards from the end in bounded chunks instead of loading the whole file. A transcript over 2 GB no longer fails with `ENOMEM` and loses the session summary, and a large one no longer costs hundreds of milliseconds and gigabytes of memory on every Stop: a 2.16 GB transcript now takes about 1 ms and 27 MB. (#4338)
+- **Sign-in on Linux and Windows.** claude-mem now reads `~/.claude/.credentials.json` (or the one under `CLAUDE_CONFIG_DIR`), where Claude Code keeps its login, before libsecret or Windows Credential Manager. A leftover Credential Manager entry from another account no longer hides the current login, libsecret is not queried on every observer start, and a libsecret miss no longer logs a misleading warning. A working `CLAUDE_CODE_OAUTH_TOKEN` now wins over an expired stored login. macOS still checks the keychain first. (#4369)
+- **"Invalid API key" false alarms.** Only the Claude CLI's own invalid-key status line counts as a bad key, so an observer reply that quotes the phrase is no longer treated as an authentication failure. (#4337)
+- **Worker start on Linux after an unclean shutdown.** An older PID file without a start token is trusted only if that process really is the worker, so a PID reused by another program no longer blocks the worker from starting. (#4349)
+- **Search.** Underscores and percent signs in file names now match literally instead of acting as wildcards (#4354). Folder search and folder `CLAUDE.md` generation filter to a folder's direct children before paging, so files deeper down no longer crowd out the folder's own files, and the next page no longer repeats ones already shown (#4361). `/api/search/observations` now respects `projects` for Chroma results too, instead of returning observations from every project (#4367).
+- **File context.** Observations from a worktree that was merged into its parent project now appear in file context (#4351). XML character references in observer output are decoded, so a file written as `src/A&amp;B.ts` is stored and found as `src/A&B.ts`, and titles, facts and summaries no longer keep escape codes (#4360). A shell read that uses `--`, such as `cat -- -notes.md`, is now recognized (#4357).
+- **Hook input.** Hooks decode their input as UTF-8 across reads, so a character split between two reads (Japanese text, emoji) is no longer stored as replacement characters. (#4356)
+- **CLI.** `claude-mem search` uses the configured worker address, including a host or port saved in `settings.json` and IPv6 hosts such as `::1` (#4362). Folder `CLAUDE.md` generation handles tracked folders with non-ASCII names and file names that contain newlines (#4355).
+- **Transcript watcher.** A `transcript-watch.json` config or state file saved with a UTF-8 byte-order mark, as some Windows editors and PowerShell do, now loads in the watcher and in the Codex and Grok Bot installers, instead of failing or silently resetting read positions and replaying transcripts. (#4352)
+- **Memory edits through the API.** `PATCH /v1/memories/:id` keeps the fields you leave out and clears a field you set to `null`, instead of resetting omitted fields to their defaults. An edit that would leave a memory with no searchable text is rejected with a 400. (#4353)
+
+### Internal changes
+
+- **Cloud sync server.** The sync server no longer scans a user's whole change history on every pull, pulls and status checks no longer take a per-user lock, `/health` no longer touches the database, and database sessions get statement, lock and idle-transaction timeouts, passed in a form Neon honors. Together these stop the lock pile-ups that took the only sync machine out of service. A new `FORWARD_ORIGIN` mode forwards sync traffic to the Supabase `cmem-sync` function for the move to Supabase. (#4347, #4368)
+- **Request ids and error bodies.** HTTP observer requests carry a per-batch `x-client-request-id` in place of the unused `x-claude-mem-prior-request-id`, and error bodies are read up to 64 KiB. (#4368)
+- **Tests and docs.** A two-device cloud sync end-to-end matrix against Supabase, coverage for the v21 schema repair alongside the v41 origin index, and fixes for leaks and races in the full test suite (#4350, #4368). The cloud sync, configuration and OpenAI-compatible provider docs are updated.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.29.0...v13.30.0
+
 ## [13.29.0] - 2026-10-03
 
 ## The agent keeps its to-do list in claude-mem
