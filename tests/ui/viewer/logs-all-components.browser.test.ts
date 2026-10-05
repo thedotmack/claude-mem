@@ -8,7 +8,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
   ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 
-(chrome ? it : it.skip)('shows ordinary producer logs with all components and preserves narrower filters', async () => {
+(chrome ? it : it.skip)('shows producer logs without a chip of their own under Other, through narrower filters', async () => {
   const owned = mkdtempSync(join(tmpdir(), 'claude-mem-log-filter-'));
   const profile = join(owned, 'browser');
   let child: ReturnType<typeof Bun.spawn> | undefined;
@@ -41,7 +41,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
         function section(label) { return [...document.querySelectorAll('.console-filter-section')].find(x => x.textContent.startsWith(label)); }
         (async () => {
           try {
-            const deadline = Date.now() + 6000;
+            const deadline = Date.now() + 10000;
             while (!document.querySelector('.log-message')) {
               if (Date.now() > deadline) throw new Error('Logs did not load');
               await new Promise(resolve => setTimeout(resolve, 10));
@@ -54,8 +54,14 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
             components.querySelector('[title="Worker"]').click(); await settle();
             report.worker = messages();
             components.querySelector('[title="Worker"]').click(); await settle();
+            components.querySelector('[title="Other"]').click(); await settle();
+            report.other = messages();
+            components.querySelector('[title="Other"]').click(); await settle();
             components.querySelector('.console-filter-action').click(); await settle();
             report.all = messages();
+            components.querySelector('[title="Hook"]').click(); await settle();
+            report.withoutHook = messages();
+            components.querySelector('[title="Hook"]').click(); await settle();
             section('Levels:').querySelector('[title="Info"]').click(); await settle();
             report.error = messages();
             section('Quick:').querySelector('button').click(); await settle();
@@ -79,12 +85,14 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
       '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href],
       { stdout: 'ignore', stderr: 'ignore' });
     const received = await Promise.race([result, new Promise(resolve => {
-      timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 9000);
+      timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 20000);
     })]);
     const all = ['OWNED_SEARCH', 'OWNED_QUEUE', 'OWNED_INGEST', 'OWNED_WORKER', 'OWNED_ALIGNMENT'];
     expect(received).toEqual({
       initial: all, none: [], worker: ['OWNED_WORKER', 'OWNED_ALIGNMENT'],
-      all, error: ['OWNED_INGEST'], alignment: ['OWNED_ALIGNMENT'],
+      // Components without a chip of their own sit under Other, and stay visible while another chip is off.
+      other: ['OWNED_SEARCH', 'OWNED_QUEUE', 'OWNED_INGEST'],
+      all, withoutHook: all, error: ['OWNED_INGEST'], alignment: ['OWNED_ALIGNMENT'],
     });
   } finally {
     clearTimeout(timeout);
@@ -92,4 +100,4 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     server?.stop(true);
     rmSync(owned, { recursive: true, force: true });
   }
-}, 15000);
+}, 30000);
