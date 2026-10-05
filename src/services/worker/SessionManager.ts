@@ -502,7 +502,7 @@ export class SessionManager {
   }
 
   /** Synchronous on purpose — see queueObservation. */
-  queueSummarize(sessionDbId: number, lastAssistantMessage?: string): void {
+  queueSummarize(sessionDbId: number, lastAssistantMessage?: string, promptNumber?: number): void {
     let session = this.sessions.get(sessionDbId);
     if (!session) {
       session = this.initializeSession(sessionDbId);
@@ -510,6 +510,7 @@ export class SessionManager {
 
     const message: PendingMessage = {
       type: 'summarize',
+      prompt_number: promptNumber ?? session.lastPromptNumber,
       last_assistant_message: lastAssistantMessage
     };
 

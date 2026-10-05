@@ -15,6 +15,7 @@ import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
+import { replaceTaggedContent } from '../utils/claude-md-utils.js';
 import { paths } from '../shared/paths.js';
 import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
 
@@ -257,24 +258,7 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
-
-  let finalContent: string;
-  if (!existingContent) {
-    finalContent = `${startTag}\n${newContent}\n${endTag}`;
-  } else {
-    const startIdx = existingContent.indexOf(startTag);
-    const endIdx = existingContent.indexOf(endTag);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      finalContent = existingContent.substring(0, startIdx) +
-        `${startTag}\n${newContent}\n${endTag}` +
-        existingContent.substring(endIdx + endTag.length);
-    } else {
-      finalContent = existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
-    }
-  }
+  const finalContent = replaceTaggedContent(existingContent, newContent);
 
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, claudeMdPath);

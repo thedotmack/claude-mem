@@ -88,7 +88,9 @@ def apply_review(line_items, reviewed, reviewed_at_pt):
     default_by = reviewed.get("reviewed_by") if isinstance(reviewed, dict) else None   # file-level default
     by_id = {li["work_item_id"]: li for li in line_items}; n = 0
     for en in entries:
-        en = dict(en); en.setdefault("reviewed_by", default_by)
+        en = dict(en)
+        if en.get("reviewed_by") is None:
+            en["reviewed_by"] = default_by
         li = by_id.get(en.get("work_item_id"))
         if li is None or not en.get("category") or not en.get("reviewed_by"): continue
         if en["category"] not in CATEGORIES: raise ReviewError(f"{en['work_item_id']}: unknown category {en['category']!r}")

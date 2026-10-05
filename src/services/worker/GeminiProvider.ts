@@ -240,6 +240,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 }
 
 interface GeminiResponse {
+  modelVersion?: string;
   candidates?: Array<{
     content?: {
       parts?: GeminiPart[];
@@ -509,6 +510,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       tokensUsed,
       inputTokens: data.usageMetadata?.promptTokenCount,
       outputTokens: data.usageMetadata?.candidatesTokenCount,
+      ...(typeof data.modelVersion === 'string' && data.modelVersion ? { servedModel: data.modelVersion } : {}),
       ...(finishReason ? { finishReason } : {}),
     };
   }
