@@ -20,7 +20,7 @@ describe("zig-test-names", () => {
    const result = await searchCodebase(dir, "second");
    const match = result.matchingSymbols.find(s => s.symbolName === "\"second case\"");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("const second = 2;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
