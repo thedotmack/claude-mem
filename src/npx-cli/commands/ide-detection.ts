@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 
 export interface IDEInfo {
   id: string;
@@ -75,6 +76,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Codex CLI',
       detected: existsSync(join(home, '.codex')),
       hint: 'native hooks integration',
+    },
+    {
+      id: 't3code',
+      label: 'T3 Code',
+      detected: existsSync(t3CodeSettingsPath()),
+      hint: 'Codex + Claude native hooks and MCP',
     },
     {
       id: 'kimi',
