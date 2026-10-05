@@ -20,7 +20,7 @@ describe("php-enums", () => {
    const result = await searchCodebase(dir, "label");
    const match = result.matchingSymbols.find(s => s.symbolName === "Status.label");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return $this->value;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
