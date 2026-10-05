@@ -175,7 +175,7 @@ const QUERIES: Record<string, string> = {
 
   go: `
 (function_declaration name: (identifier) @name) @func
-(method_declaration name: (field_identifier) @name) @method
+(method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
 (import_declaration) @imp
 `,
@@ -763,7 +763,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
-    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    let receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*/, "");
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
