@@ -68,32 +68,41 @@ function usePaginationFor<TItem extends DataItem>(
     const requestSelectionKey = selectionKey;
     const isStale = () => lastSelectionKeyRef.current !== requestSelectionKey;
 
-    const response = await fetch(`${endpoint}?${params}`);
-    if (isStale()) return [];
+    try {
+      const response = await fetch(`${endpoint}?${params}`);
+      if (isStale()) return [];
 
-    if (!response.ok) {
-      throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
+      }
+
+      const data = await response.json() as { items: TItem[], hasMore: boolean };
+      if (isStale()) return [];
+
+      const nextState = {
+        ...stateRef.current,
+        isLoading: false,
+        hasMore: data.hasMore
+      };
+      stateRef.current = nextState;
+
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        hasMore: data.hasMore
+      }));
+
+      offsetRef.current += UI.PAGINATION_PAGE_SIZE;
+
+      return data.items;
+    } finally {
+      // The loading flag belongs to this request, even when fetch/JSON fails.
+      // Do not release loading for a different current selection.
+      if (!isStale() && stateRef.current.isLoading) {
+        stateRef.current = { ...stateRef.current, isLoading: false };
+        setState(prev => ({ ...prev, isLoading: false }));
+      }
     }
-
-    const data = await response.json() as { items: TItem[], hasMore: boolean };
-    if (isStale()) return [];
-
-    const nextState = {
-      ...stateRef.current,
-      isLoading: false,
-      hasMore: data.hasMore
-    };
-    stateRef.current = nextState;
-
-    setState(prev => ({
-      ...prev,
-      isLoading: false,
-      hasMore: data.hasMore
-    }));
-
-    offsetRef.current += UI.PAGINATION_PAGE_SIZE;
-
-    return data.items;
     // selectionKey covers currentFilter and currentSession.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectionKey, endpoint, dataType]);

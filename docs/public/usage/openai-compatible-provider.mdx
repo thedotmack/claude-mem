@@ -102,6 +102,7 @@ endpoint or model you pinned yourself.
 | `together` | `https://api.together.xyz/v1` | yes |
 | `minimax` | `https://api.minimax.io/v1` | yes |
 | `minimax-cn` | `https://api.minimaxi.com/v1` | yes |
+| `iflytek` | `https://maas-api.cn-huabei-1.xf-yun.com/v2` | yes |
 | `ollama` | `http://localhost:11434/v1` | no |
 | `lmstudio` | `http://localhost:1234/v1` | no |
 | `vllm` | `http://localhost:8000/v1` | no |
@@ -168,6 +169,26 @@ Reasoning models such as the M2 family can open their reply with a
 `<think>…</think>` block. claude-mem removes a leading block like that on every
 preset (it also covers DeepSeek R1 or Qwen3 on Ollama and vLLM), so the reasoning
 is never stored or re-sent with the next request.
+
+## iFlytek Spark
+
+`iflytek` points at iFlytek's Astron MaaS platform and defaults to `spark-x2.5`.
+Keys come from the [MaaS console](https://maas.xfyun.cn). The preset's base URL
+is the pay-as-you-go endpoint; a Token Plan key is only accepted on the Token
+Plan endpoint, so set the base URL as well:
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "iflytek",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your MaaS key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_BASE_URL": "https://maas-token-api.cn-huabei-1.xf-yun.com/v2"
+}
+```
+
+A key used on the other endpoint is rejected with a 403 (`11200`). `spark-x2.5`
+returns its reasoning in a separate `reasoning_content` field, which claude-mem
+ignores, so only the answer is stored.
 
 ## Any other endpoint
 
