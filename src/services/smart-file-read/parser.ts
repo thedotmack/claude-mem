@@ -664,7 +664,15 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         const last = capturedLines.length - 1;
         const endCol = cap.endCol - (last === 0 ? cap.startCol : 0);
         capturedLines[last] = Buffer.from(capturedLines[last]).subarray(0, endCol).toString();
-        imports.push(capturedLines.join("\n"));
+        // Outlines go straight into an agent's context, so each entry is one
+        // line capped at the 200-char signature budget: a Go `import ( … )`
+        // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
+        // is one capture that can span a whole file. Keep both ends, because an
+        // import's module source comes last.
+        const importText = capturedLines.map(line => line.trim()).filter(Boolean).join(" ");
+        imports.push(importText.length > 200
+          ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
+          : importText);
       }
     }
   }
