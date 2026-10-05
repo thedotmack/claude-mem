@@ -22,6 +22,7 @@ import {
   recordDependencyStatus,
   resetDependencyStatusesForTesting,
 } from '../../src/shared/dependency-health.js';
+import { listenOnEphemeralPort } from '../helpers/ephemeral-port.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 const serialIt = it.serial;
@@ -30,15 +31,6 @@ describe('Worker API Endpoints Integration', () => {
   let server: Server;
   let testPort: number;
   let mockOptions: ServerOptions;
-
-  // Let the OS reserve an available port atomically. Picking a random port
-  // can collide with another test worker or an unrelated local process.
-  async function listen(instance: Server): Promise<void> {
-    await instance.listen(0, '127.0.0.1');
-    const address = instance.getHttpServer()!.address();
-    if (!address || typeof address === 'string') throw new Error('Expected a TCP listener');
-    testPort = address.port;
-  }
 
   beforeEach(() => {
     resetDependencyStatusesForTesting();
@@ -94,7 +86,7 @@ describe('Worker API Endpoints Integration', () => {
     describe('GET /api/health', () => {
       serialIt('should return status, initialized, mcpReady, platform, pid', async () => {
         server = new Server(mockOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
         expect(response.status).toBe(200);
@@ -120,7 +112,7 @@ describe('Worker API Endpoints Integration', () => {
         };
 
         server = new Server(uninitOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
         const body = await response.json();
@@ -139,7 +131,7 @@ describe('Worker API Endpoints Integration', () => {
         );
 
         server = new Server(mockOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
         expect(response.status).toBe(200);
@@ -163,7 +155,7 @@ describe('Worker API Endpoints Integration', () => {
     describe('GET /api/readiness', () => {
       serialIt('should return 200 with status ready when initialized', async () => {
         server = new Server(mockOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
         expect(response.status).toBe(200);
@@ -184,7 +176,7 @@ describe('Worker API Endpoints Integration', () => {
         };
 
         server = new Server(uninitOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
         expect(response.status).toBe(503);
@@ -198,7 +190,7 @@ describe('Worker API Endpoints Integration', () => {
     describe('GET /api/version', () => {
       serialIt('should return version string', async () => {
         server = new Server(mockOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/version`);
         expect(response.status).toBe(200);
@@ -221,7 +213,7 @@ describe('Worker API Endpoints Integration', () => {
         const worker = new WorkerService();
         expect((worker as any).initializationCompleteFlag).toBe(false);
         server = (worker as unknown as { server: Server }).server;
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const guardedResponse = await fetch(`http://127.0.0.1:${testPort}/api/settings`);
         expect(guardedResponse.status).toBe(503);
@@ -255,7 +247,7 @@ describe('Worker API Endpoints Integration', () => {
       );
 
       server = new Server(mockOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       const response = await fetch(`http://127.0.0.1:${testPort}/api/admin/doctor`);
       expect(response.status).toBe(200);
@@ -285,7 +277,7 @@ describe('Worker API Endpoints Integration', () => {
       serialIt('should return 404 for unknown GET routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/unknown-endpoint`);
         expect(response.status).toBe(404);
@@ -297,7 +289,7 @@ describe('Worker API Endpoints Integration', () => {
       serialIt('should return 404 for unknown POST routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/unknown-endpoint`, {
           method: 'POST',
@@ -310,7 +302,7 @@ describe('Worker API Endpoints Integration', () => {
       serialIt('should return 404 for nested unknown routes', async () => {
         server = new Server(mockOptions);
         server.finalizeRoutes();
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/search/nonexistent/nested`);
         expect(response.status).toBe(404);
@@ -320,7 +312,7 @@ describe('Worker API Endpoints Integration', () => {
     describe('Method handling', () => {
       serialIt('should handle OPTIONS requests', async () => {
         server = new Server(mockOptions);
-        await listen(server);
+        testPort = await listenOnEphemeralPort(server);
 
         const response = await fetch(`http://127.0.0.1:${testPort}/api/health`, {
           method: 'OPTIONS'
@@ -334,7 +326,7 @@ describe('Worker API Endpoints Integration', () => {
     serialIt('should accept application/json content type', async () => {
       server = new Server(mockOptions);
       server.finalizeRoutes();
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       const response = await fetch(`http://127.0.0.1:${testPort}/api/nonexistent`, {
         method: 'POST',
@@ -347,7 +339,7 @@ describe('Worker API Endpoints Integration', () => {
 
     serialIt('should return JSON responses with correct content type', async () => {
       server = new Server(mockOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       const contentType = response.headers.get('content-type');
@@ -369,7 +361,7 @@ describe('Worker API Endpoints Integration', () => {
       };
 
       server = new Server(dynamicOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       let response = await fetch(`http://127.0.0.1:${testPort}/api/readiness`);
       expect(response.status).toBe(503);
@@ -392,7 +384,7 @@ describe('Worker API Endpoints Integration', () => {
       };
 
       server = new Server(dynamicOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       let response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       let body = await response.json();
@@ -409,7 +401,7 @@ describe('Worker API Endpoints Integration', () => {
   describe('Server Lifecycle', () => {
     serialIt('should start listening on specified port', async () => {
       server = new Server(mockOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       const httpServer = server.getHttpServer();
       expect(httpServer).not.toBeNull();
@@ -418,7 +410,7 @@ describe('Worker API Endpoints Integration', () => {
 
     serialIt('should close gracefully', async () => {
       server = new Server(mockOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
       expect(response.status).toBe(200);
@@ -439,7 +431,7 @@ describe('Worker API Endpoints Integration', () => {
       server = new Server(mockOptions);
       const server2 = new Server(mockOptions);
 
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       await expect(server2.listen(testPort, '127.0.0.1')).rejects.toThrow();
 
@@ -451,7 +443,7 @@ describe('Worker API Endpoints Integration', () => {
 
     serialIt('should allow restart on same port after close', async () => {
       server = new Server(mockOptions);
-      await listen(server);
+      testPort = await listenOnEphemeralPort(server);
 
       try {
         await server.close();
