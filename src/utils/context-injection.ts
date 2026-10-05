@@ -22,7 +22,9 @@ export function injectContextIntoMarkdownFile(
     let existingContent = readFileSync(filePath, 'utf-8');
 
     const tagStartIndex = existingContent.indexOf(CONTEXT_TAG_OPEN);
-    const tagEndIndex = existingContent.indexOf(CONTEXT_TAG_CLOSE);
+    const tagEndIndex = tagStartIndex === -1
+      ? -1
+      : existingContent.indexOf(CONTEXT_TAG_CLOSE, tagStartIndex + CONTEXT_TAG_OPEN.length);
 
     if (tagStartIndex !== -1 && tagEndIndex !== -1) {
       existingContent =

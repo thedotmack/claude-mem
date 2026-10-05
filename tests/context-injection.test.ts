@@ -101,6 +101,19 @@ describe('Context Injection', () => {
   });
 
   describe('replace existing context section', () => {
+    it('ignores a closing tag before the context section', () => {
+      const filePath = join(tempDir, 'GEMINI.md');
+      const before = `# Tag example\n${CONTEXT_TAG_CLOSE}\nKeep this line.\n`;
+      const after = '\n## Other instructions\n';
+      writeFileSync(filePath, `${before}${CONTEXT_TAG_OPEN}\nold\n${CONTEXT_TAG_CLOSE}${after}`);
+
+      injectContextIntoMarkdownFile(filePath, 'new');
+
+      expect(readFileSync(filePath, 'utf-8')).toBe(
+        `${before}${CONTEXT_TAG_OPEN}\nnew\n${CONTEXT_TAG_CLOSE}${after}`,
+      );
+    });
+
     it('replaces content between existing context tags', () => {
       const filePath = join(tempDir, 'CLAUDE.md');
       const initialContent = [
