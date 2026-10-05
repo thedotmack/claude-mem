@@ -205,7 +205,7 @@ const QUERIES: Record<string, string> = {
   c: `
 (function_definition) @func
 (function_declarator declarator: (identifier) @function_name)
-(type_definition declarator: (type_identifier) @name) @tdef
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
 (preproc_include) @imp
@@ -214,7 +214,7 @@ const QUERIES: Record<string, string> = {
   cpp: `
 (function_definition) @func
 (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
-(type_definition declarator: (type_identifier) @name) @tdef
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
@@ -673,6 +673,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
+  const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
@@ -769,6 +770,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     ranges.set(sym, kindCapture);
+    const aliasedType = match.captures.find(c => c.tag === "aliased_type");
+    if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
   }
 
@@ -809,9 +812,13 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
     for (const alias of symbols.filter(symbol => symbol.kind === "type")) {
       const range = ranges.get(alias)!;
+      const aliasedType = aliasedTypes.get(alias);
+      if (!aliasedType) continue;
+      // Only the direct type expression denotes the typedef's underlying type.
+      // A nested struct may share the alias name while denoting a distinct type.
       const structure = structures.get(alias.name)?.find(({ range: inner }) =>
-        (inner.startRow > range.startRow || (inner.startRow === range.startRow && inner.startCol >= range.startCol))
-        && (inner.endRow < range.endRow || (inner.endRow === range.endRow && inner.endCol <= range.endCol)));
+        inner.startRow === aliasedType.startRow && inner.startCol === aliasedType.startCol
+        && inner.endRow === aliasedType.endRow && inner.endCol === aliasedType.endCol);
       if (!structure) continue;
       structure.sym.lineStart = alias.lineStart;
       structure.sym.lineEnd = alias.lineEnd;

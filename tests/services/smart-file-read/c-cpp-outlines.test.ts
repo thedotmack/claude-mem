@@ -89,3 +89,18 @@ test('native large function batch associates names after callback declarations',
   expect(parsed.symbols).toHaveLength(800);
   expect(parsed.symbols[799].name).toBe('fn799');
 }, 120000);
+
+test('typedef deduplication retains a distinct nested same-named struct', async () => {
+  const source = 'typedef struct Outer {\n  struct Alias { int x; } member;\n} Alias;';
+  const parsed = parseFile(source, 'owned.c');
+  const outer = parsed.symbols.find(symbol => symbol.name === 'Outer')!;
+  expect(outer.children?.map(symbol => symbol.name)).toEqual(['Alias']);
+  expect(outer.children?.[0].lineStart).toBe(1);
+  expect(parsed.symbols.find(symbol => symbol.name === 'Alias')?.kind).toBe('type');
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-typedef-direct-type-'));
+  try {
+    writeFileSync(join(dir, 'owned.c'), source);
+    const result = await searchCodebase(dir, 'Alias');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName).sort()).toEqual(['Alias', 'Outer.Alias']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
