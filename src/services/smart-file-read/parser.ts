@@ -758,6 +758,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
     let name = nameCapture?.text || "anonymous";
+    if (kind === "method" && nameCapture && !nameCapture.text
+      && ["javascript", "typescript", "tsx"].includes(language)) {
+      name = captureLines(lines, nameCapture).join(" ").replace(/\s+/g, " ").trim();
+    }
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();

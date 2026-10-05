@@ -29,3 +29,21 @@ describe("js-method-names", () => {
 test('retains the same legal method names under the TypeScript grammar', () => {
  expect(parseFile(source, 'names.ts').symbols[0].children?.map(s => s.name)).toEqual(['"quoted"', '["computed"]', '#private', 'regular']);
 }, 120000);
+
+for (const filename of ['multiline.js', 'multiline.ts', 'multiline.tsx']) {
+ test(`multiline computed method names retain unique search and unfold identities in ${filename}`, async () => {
+  const source = 'class Widget {\n [\n "first"\n ]() { return "first body"; }\n [\n "second"\n ]() { return "second body"; }\n}';
+  const file = parseFile(source, filename);
+  expect(file.symbols[0].children?.map(symbol => symbol.name)).toEqual(['[ "first" ]', '[ "second" ]']);
+  const dir = mkdtempSync(join(tmpdir(), 'cm-computed-multiline-'));
+  try {
+   writeFileSync(join(dir, filename), source);
+   const result = await searchCodebase(dir, 'second');
+   const match = result.matchingSymbols.find(symbol => symbol.symbolName === 'Widget.[ "second" ]');
+   expect(match).toBeDefined();
+   const unfolded = unfoldSymbol(source, filename, match!.symbolName)!;
+   expect(unfolded).toContain('return "second body";');
+   expect(unfolded).not.toContain('return "first body";');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+ }, 120000);
+}
