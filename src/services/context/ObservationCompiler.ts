@@ -266,7 +266,7 @@ export function cwdToDashed(cwd: string): string {
 }
 
 function parseAssistantTextFromLine(line: string): string | null {
-  if (!line.includes('"type":"assistant"')) return null;
+  if (!/"type"\s*:\s*"assistant"/.test(line)) return null;
 
   const entry = JSON.parse(line);
   if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
