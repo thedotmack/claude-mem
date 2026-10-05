@@ -66,4 +66,20 @@ describe('worker and server agree on provider refusals', () => {
       expect(server.message).toBe(worker.message);
     });
   }
+
+  it('Gemini 400 refusing the key is a refused credential on both', () => {
+    const bodyText = JSON.stringify({
+      error: {
+        code: 400,
+        message: 'API key not valid. Please pass a valid API key.',
+        status: 'INVALID_ARGUMENT',
+        details: [{ '@type': 'type.googleapis.com/google.rpc.ErrorInfo', reason: 'API_KEY_INVALID', domain: 'googleapis.com' }],
+      },
+    });
+    const worker = classifyGeminiError({ status: 400, bodyText, cause: new Error('400') });
+    const server = classifyGeminiServerError({ status: 400, bodyText, cause: new Error('400') });
+    expect(worker.kind).toBe('auth_invalid');
+    expect(server.kind).toBe(worker.kind);
+    expect(server.message).toBe(worker.message);
+  });
 });

@@ -196,6 +196,7 @@ export function createToolUsesSchema(db: Database): void {
   `);
 
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_project ON tool_uses(project)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_project_nocase_created ON tool_uses(project COLLATE NOCASE, created_at_epoch DESC, id DESC)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_memory_session ON tool_uses(memory_session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_content_session ON tool_uses(content_session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_session_db_id ON tool_uses(session_db_id)');
@@ -365,7 +366,7 @@ export function getToolUsesByIds(
   const conditions = [`(${idClauses.join(' OR ')})`];
 
   if (options.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(options.project);
   }
   if (options.contentSessionId) {
@@ -398,7 +399,7 @@ export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): 
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
@@ -464,7 +465,7 @@ export function countToolUses(
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
