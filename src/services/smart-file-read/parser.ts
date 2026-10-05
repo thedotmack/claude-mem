@@ -674,6 +674,19 @@ function isExported(
   }
 }
 
+// Tree-sitter columns are UTF-8 byte offsets, not JS string indices, and the
+// CLI prints no `text` for a capture that spans rows. Cutting the last row at
+// its end column before the first row at its start column keeps a one-row
+// capture free of offset arithmetic.
+function captureLines(lines: string[], capture: RawCapture): string[] {
+  const captured = lines.slice(capture.startRow, capture.endRow + 1);
+  if (captured.length === 0) return [];
+  const last = captured.length - 1;
+  captured[last] = Buffer.from(captured[last] ?? "").subarray(0, capture.endCol).toString();
+  captured[0] = Buffer.from(captured[0] ?? "").subarray(capture.startCol).toString();
+  return captured;
+}
+
 // Tree-sitter ranges include columns: row-only comparisons lose methods
 // on the opening line and cannot distinguish adjacent one-line declarations.
 function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
@@ -701,19 +714,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         singletonScopes.push(cap);
       }
       if (cap.tag === "imp") {
-        const capturedLines = lines.slice(cap.startRow, cap.endRow + 1);
-        // Tree-sitter columns are UTF-8 byte offsets, not JS string indices.
-        // A multiline capture is not repeated as `text` in CLI query output.
-        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(cap.startCol).toString();
-        const last = capturedLines.length - 1;
-        const endCol = cap.endCol - (last === 0 ? cap.startCol : 0);
-        capturedLines[last] = Buffer.from(capturedLines[last]).subarray(0, endCol).toString();
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
         // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
         // is one capture that can span a whole file. Keep both ends, because an
         // import's module source comes last.
-        const importText = capturedLines.map(line => line.trim()).filter(Boolean).join(" ");
+        const importText = captureLines(lines, cap).map(line => line.trim()).filter(Boolean).join(" ");
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
           : importText);
@@ -752,23 +758,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
     const receiver = match.captures.find(c => c.tag === "receiver");
-    const receiverText = receiver && lines.slice(receiver.startRow, receiver.endRow + 1)
-      .map((line, index) => {
-        const bytes = Buffer.from(line);
-        return bytes.subarray(index === 0 ? receiver.startCol : 0,
-          index === receiver.endRow - receiver.startRow ? receiver.endCol : undefined).toString();
-      }).join(" ").trim();
+    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
     let name = receiverText ? `${receiverText}.${nameCapture?.text || "anonymous"}` : nameCapture?.text || "anonymous";
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
-      if (parameters) {
-        const parameterLines = lines.slice(parameters.startRow, parameters.endRow + 1);
-        parameterLines[0] = Buffer.from(parameterLines[0] ?? "").subarray(parameters.startCol).toString();
-        const last = parameterLines.length - 1;
-        parameterLines[last] = Buffer.from(parameterLines[last]).subarray(0,
-          parameters.endCol - (last === 0 ? parameters.startCol : 0)).toString();
-        name += parameterLines.join(" ").replace(/\s+/g, " ").trim();
-      }
+      if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
     }
 
     let signature: string;
@@ -776,12 +770,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       // Setext heading paragraphs include a trailing newline (and can span
       // lines), so the CLI prints only their range, without a `text` value.
       if (nameCapture && !nameCapture.text) {
-        const capturedLines = lines.slice(nameCapture.startRow, nameCapture.endRow + 1);
-        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(nameCapture.startCol).toString();
-        const last = capturedLines.length - 1;
-        capturedLines[last] = Buffer.from(capturedLines[last] ?? "")
-          .subarray(0, nameCapture.endCol - (last === 0 ? nameCapture.startCol : 0)).toString();
-        name = capturedLines.join(" ").trim().replace(/\s+/g, " ");
+        name = captureLines(lines, nameCapture).join(" ").trim().replace(/\s+/g, " ");
       }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
