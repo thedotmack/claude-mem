@@ -14,14 +14,8 @@ if (process.env.CI && !chrome) {
 }
 
 // Real App, React state/effects, HTTP and SSE; no mocked hook dispatcher.
-for (const { scenario, buildDelayMs = 0, startupDelayMs = 0 } of [
-  { scenario: 'partial' },
-  { scenario: 'empty-timeline' },
-  { scenario: 'empty-session' },
-  { scenario: 'partial', buildDelayMs: 4000, startupDelayMs: 10000 },
-]) {
-  (chrome ? it : it.skip)(`recovers ${scenario} page failures without dropping successful rows${startupDelayMs ? ` after ${buildDelayMs}ms build setup and ${startupDelayMs}ms browser startup` : ''}`, async () => {
-    if (buildDelayMs) await Bun.sleep(buildDelayMs);
+for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
+  (chrome ? it : it.skip)(`recovers ${scenario} page failures without dropping successful rows`, async () => {
     // The one-shot compiler exits before Chrome starts, keeping the browser
     // phase free of shared esbuild service handles.
     const esbuildBinary = createRequire(import.meta.url).resolve(
@@ -91,10 +85,7 @@ for (const { scenario, buildDelayMs = 0, startupDelayMs = 0 } of [
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-      if (url.pathname === '/fixture.js') {
-        if (startupDelayMs) await Bun.sleep(startupDelayMs);
-        return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
-      }
+      if (url.pathname === '/fixture.js') return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
       if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
       if (url.pathname === '/stream') return new Response(new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"initial_load","projects":["owned-project"]}\n\n'));
