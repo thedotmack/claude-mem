@@ -180,6 +180,7 @@ export function toLocalSummaryShape(
     learned: asText(pick(row, 'learned')),
     completed: asText(pick(row, 'completed')),
     next_steps: asText(pick(row, 'next_steps', 'nextSteps')),
+    notes: asText(pick(row, 'notes')),
     created_at: new Date(epoch).toISOString(),
     created_at_epoch: epoch,
     project: asText(pick(row, 'project')) ?? project,
