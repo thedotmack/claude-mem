@@ -9,13 +9,8 @@ const POLL_INTERVAL_MS = 250;
 const CHUNK_SIZE = 64 * 1024;
 
 function todaysLogPath() {
-  const now = new Date();
-  const stamp = [
-    now.getFullYear(),
-    String(now.getMonth() + 1).padStart(2, '0'),
-    String(now.getDate()).padStart(2, '0'),
-  ].join('-');
-  return path.join(os.homedir(), '.claude-mem', 'logs', `worker-${stamp}.log`);
+  const stamp = new Date().toISOString().slice(0, 10);
+  return path.join(os.homedir(), '.claude-mem', 'logs', `claude-mem-${stamp}.log`);
 }
 
 function readAt(fd, position, length) {
