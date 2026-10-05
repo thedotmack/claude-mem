@@ -301,8 +301,10 @@ const QUERIES: Record<string, string> = {
   toml: `
 (table (bare_key) @name) @cls
 (table (dotted_key) @name) @cls
+(table (quoted_key) @name) @cls
 (table_array_element (bare_key) @name) @cls
 (table_array_element (dotted_key) @name) @cls
+(table_array_element (quoted_key) @name) @cls
 `,
 
   yaml: `
