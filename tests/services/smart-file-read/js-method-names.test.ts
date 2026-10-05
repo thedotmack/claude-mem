@@ -20,7 +20,7 @@ describe("js-method-names", () => {
    const result = await searchCodebase(dir, "private");
    const match = result.matchingSymbols.find(s => s.symbolName === "Widget.#private");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return 3;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
