@@ -23,7 +23,7 @@
  * per-attempt deadline.
  */
 
-import { readSseEvents } from '../../shared/sse-reader.js';
+import { iterateByteStream, readSseEvents } from '../../shared/sse-reader.js';
 import { fetchStreamWithIdleTimeout } from '../../shared/worker-utils.js';
 import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
@@ -195,18 +195,7 @@ function outputFailure(message: string, cause: unknown, code?: string): Classifi
 
 async function* responseChunks(response: Response): AsyncGenerator<Uint8Array> {
   if (!response.body) return;
-  const reader = response.body.getReader();
-  let finished = false;
-  try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) { finished = true; return; }
-      yield value;
-    }
-  } finally {
-    if (!finished) await reader.cancel();
-    reader.releaseLock();
-  }
+  yield* iterateByteStream(response.body);
 }
 
 /**
