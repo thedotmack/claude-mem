@@ -998,21 +998,30 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
+// CSS selectors can contain literal dots, so escape those dots before adding
+// ownership separators. Search results remain unambiguous when copied to unfold.
+export function qualifySymbolName(name: string, parent: string | undefined, language: string): string {
+  const segment = language === "css" || language === "scss"
+    ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
+  return parent ? `${parent}.${segment}` : segment;
+}
+
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[]): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string): CodeSymbol | null => {
     for (const sym of symbols) {
-      if (sym.name === symbolName) return sym;
+      const qualifiedName = qualifySymbolName(sym.name, parent, file.language);
+      if ((qualified ? qualifiedName : sym.name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children);
+        const found = findSymbol(sym.children, qualified, qualifiedName);
         if (found) return found;
       }
     }
     return null;
   };
 
-  const symbol = findSymbol(file.symbols);
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
   if (!symbol) return null;
 
   const lines = content.split("\n");
