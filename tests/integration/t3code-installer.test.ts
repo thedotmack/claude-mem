@@ -44,6 +44,26 @@ if (args[1] === 'marketplace' && args[2] === 'add') {
   fs.mkdirSync(path.join(home, 'plugins'), {recursive: true});
   fs.writeFileSync(path.join(home, 'plugins', 'known_marketplaces.json'), JSON.stringify({[manifest.name]: {installLocation: root}}));
 }
+if (args[1] === 'add' || args[1] === 'install') {
+  const known = JSON.parse(fs.readFileSync(path.join(home, 'plugins', 'known_marketplaces.json')));
+  const root = known.thedotmack.installLocation;
+  const version = JSON.parse(fs.readFileSync(path.join(root, 'plugin', '.claude-plugin', 'plugin.json'))).version;
+  const marketplace = args[1] === 'add' ? 'claude-mem-local' : 'thedotmack';
+  const cache = path.join(home, 'plugins', 'cache', marketplace, 'claude-mem', version);
+  for (const file of ['.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.mcp.json', 'scripts/worker-service.cjs', 'scripts/mcp-server.cjs', 'hooks/hooks.json', 'hooks/codex-hooks.json']) {
+    const target = path.join(cache, file);
+    fs.mkdirSync(path.dirname(target), {recursive: true});
+    fs.copyFileSync(path.join(root, 'plugin', file), target);
+  }
+  if (args[1] === 'add') fs.writeFileSync(path.join(home, 'plugins', 'fixture-codex.json'), JSON.stringify({installed: [{pluginId: args[2], installed: true, version, marketplaceSource: {source: root}}]}));
+  else fs.writeFileSync(path.join(home, 'plugins', 'installed_plugins.json'), JSON.stringify({version: 2, plugins: {[args[2]]: [{scope: 'user', installPath: cache, version}]}}));
+}
+if (args[1] === 'list') {
+  if (process.env.T3_TEST_DRIVER === 'claude') {
+    const installed = JSON.parse(fs.readFileSync(path.join(home, 'plugins', 'installed_plugins.json'))).plugins;
+    console.log(JSON.stringify(Object.entries(installed).flatMap(([id, entries]) => entries.map(entry => ({id, ...entry})))));
+  } else console.log(fs.readFileSync(path.join(home, 'plugins', 'fixture-codex.json'), 'utf-8'));
+}
 if (args[1] === 'install' || args[1] === 'enable') {
   const file = path.join(home, 'settings.json');
   const settings = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : {};
@@ -149,6 +169,8 @@ describe('T3 Code native plugin installation', () => {
       expect(await installT3Code(repository, { settingsPath })).toBe(0);
       expect(await installT3Code(repository, { settingsPath })).toBe(0);
       expect(t3CodeStatus({ settingsPath })).toBe(0);
+      rmSync(join(codexHome, 'plugins', 'cache'), { recursive: true });
+      expect(t3CodeStatus({ settingsPath })).toBe(1);
       expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
       expect(process.env.CODEX_HOME).toBe(ambientHome);
       expect(existsSync(join(directory, 'never-write-shadow'))).toBe(false);
@@ -196,6 +218,69 @@ describe('T3 Code native plugin installation', () => {
       expect(calls).toContain('claudeAgent');
       expect(existsSync(join(directory, 'statev2.sqlite'))).toBe(false);
     } finally { errorSpy.mockRestore(); logSpy.mockRestore(); }
+  });
+
+  it.each(['missing version', 'invalid version', 'missing executable'])('still installs Claude when managed Codex has a %s', async problem => {
+    const { directory, settingsPath } = fixture({});
+    writeFileSync(settingsPath, JSON.stringify({ providers: {
+      codex: { homePath: join(directory, 'codex'), setupMode: 'managed' },
+      claudeAgent: { homePath: join(directory, 'claude') },
+    } }));
+    if (problem !== 'missing version') {
+      const managed = join(directory, 'tools', 'codex');
+      mkdirSync(managed, { recursive: true });
+      writeFileSync(join(managed, 'active.json'), JSON.stringify({ version: problem === 'invalid version' ? '../invalid' : '0.156.1' }));
+    }
+    const calls: string[] = [];
+    const spawn = (provider: T3CodeProvider) => {
+      calls.push(provider.id);
+      return { status: 0, stdout: '', stderr: '', pid: 0, output: [], signal: null };
+    };
+    const errorSpy = spyOn(console, 'error').mockImplementation(() => {});
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await installT3Code(repository, { settingsPath, spawn })).toBe(1);
+      expect(calls).toEqual(['claudeAgent', 'claudeAgent', 'claudeAgent']);
+      expect(errorSpy.mock.calls.some(([message]) => message.startsWith('T3 Code codex:'))).toBe(true);
+    } finally { errorSpy.mockRestore(); logSpy.mockRestore(); }
+  });
+
+  it.skipIf(process.platform === 'win32')('refreshes a stale official marketplace without disturbing other registrations', async () => {
+    const { directory, settingsPath } = fixture({});
+    const { command } = nativeCli(directory);
+    const homePath = join(directory, 'claude');
+    const plugins = join(homePath, 'plugins');
+    mkdirSync(plugins, { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { binaryPath: command, homePath } } }));
+    writeFileSync(join(plugins, 'known_marketplaces.json'), JSON.stringify({
+      thedotmack: { source: { source: 'github', repo: 'thedotmack/claude-mem' }, installLocation: join(directory, 'old-bundle') },
+      other: { installLocation: '/keep-other-marketplace' },
+    }));
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      expect(await installT3Code(repository, { settingsPath, environment: { ...process.env, T3_TEST_DRIVER: 'claude' } })).toBe(0);
+      const known = JSON.parse(readFileSync(join(plugins, 'known_marketplaces.json'), 'utf-8'));
+      expect(known.thedotmack.installLocation).toBe(repository);
+      expect(known.thedotmack.source).toEqual({ source: 'directory', path: repository });
+      expect(known.other).toEqual({ installLocation: '/keep-other-marketplace' });
+      const environment = { ...process.env, T3_TEST_DRIVER: 'claude' };
+      expect(t3CodeStatus({ settingsPath, environment })).toBe(0);
+      rmSync(join(plugins, 'known_marketplaces.json'));
+      expect(t3CodeStatus({ settingsPath, environment })).toBe(1);
+    } finally { logSpy.mockRestore(); }
+  });
+
+  it('checks the effective live Claude folder when a historical cache path no longer exists', () => {
+    const { directory, settingsPath } = fixture({});
+    const homePath = join(directory, 'claude');
+    mkdirSync(join(homePath, 'plugins'), { recursive: true });
+    writeFileSync(settingsPath, JSON.stringify({ providers: { claudeAgent: { homePath } } }));
+    writeFileSync(join(homePath, 'settings.json'), '{"enabledPlugins":{"claude-mem@thedotmack":true}}');
+    writeFileSync(join(homePath, 'plugins', 'known_marketplaces.json'), JSON.stringify({ thedotmack: { installLocation: repository } }));
+    const spawn = () => ({ status: 0, stdout: JSON.stringify([{ id: 'claude-mem@thedotmack', scope: 'user', installPath: join(directory, 'deleted-cache'), readFromFolder: join(repository, 'plugin') }]), stderr: '', pid: 0, output: [], signal: null });
+    const logSpy = spyOn(console, 'log').mockImplementation(() => {});
+    try { expect(t3CodeStatus({ settingsPath, spawn })).toBe(0); }
+    finally { logSpy.mockRestore(); }
   });
 
   it('removes disabled providers even after a managed executable was deleted', () => {

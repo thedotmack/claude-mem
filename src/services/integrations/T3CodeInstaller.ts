@@ -24,6 +24,7 @@ export interface T3CodeProvider {
   homePath: string;
   environment: NodeJS.ProcessEnv;
   launchArgs: string;
+  setupError?: string;
 }
 
 export interface T3CodeOptions {
@@ -121,9 +122,14 @@ export function discoverT3CodeProviders(settingsPath: string, baseEnv: NodeJS.Pr
     // Install into the source, never create a shadow config that blocks T3's links.
     const homePath = resolve(expandPath(homeValue));
     environment[homeVariable] = homePath;
-    let command = managed && !forRemoval ? managedCodexCommand(settingsPath) : expandPath(stringSetting(config, 'binaryPath').trim() || (driver === 'codex' ? 'codex' : 'claude'));
+    let command = expandPath(stringSetting(config, 'binaryPath').trim() || (driver === 'codex' ? 'codex' : 'claude'));
+    let setupError: string | undefined;
+    if (managed && !forRemoval) {
+      try { command = managedCodexCommand(settingsPath); }
+      catch (error) { setupError = error instanceof Error ? error.message : String(error); }
+    }
     if (process.platform === 'win32' && !/[\/\\]/.test(command)) command = lookupWindowsCommand(command) ?? (/\.(?:cmd|bat|exe|com)$/i.test(command) ? command : `${command}.cmd`);
-    providers.push({ id, driver, command, homePath, environment, launchArgs: stringSetting(config, 'launchArgs') });
+    providers.push({ id, driver, command, homePath, environment, launchArgs: stringSetting(config, 'launchArgs'), setupError });
   }
   return providers;
 }
@@ -157,12 +163,13 @@ function spawnProvider(provider: T3CodeProvider, args: string[]): SpawnSyncRetur
   return spawnSync(invocation.command, invocation.args, invocation.options);
 }
 
-function runProvider(provider: T3CodeProvider, args: string[], spawn: NonNullable<T3CodeOptions['spawn']>): void {
+function runProvider(provider: T3CodeProvider, args: string[], spawn: NonNullable<T3CodeOptions['spawn']>): string {
   const result = spawn(provider, args);
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(`${provider.command} ${args.slice(0, 3).join(' ')} failed: ${(result.stderr || result.stdout || `exit ${result.status}`).trim().slice(0, 2000)}`);
   }
+  return result.stdout || '';
 }
 
 function pluginEnabled(provider: T3CodeProvider, requireHooks = true): boolean {
@@ -189,6 +196,36 @@ function pluginEnabled(provider: T3CodeProvider, requireHooks = true): boolean {
     && (!requireHooks || enabledInTable('[features]', 'hooks'));
 }
 
+function pluginAssetsPresent(provider: T3CodeProvider, spawn: NonNullable<T3CodeOptions['spawn']>): boolean {
+  let pluginPath: string | undefined;
+  if (provider.driver === 'codex') {
+    const plugins = JSON.parse(runProvider(provider, ['plugin', 'list', '--marketplace', 'claude-mem-local', '--json'], spawn));
+    if (!isRecord(plugins) || !Array.isArray(plugins.installed)) return false;
+    const plugin = plugins.installed.find(value => isRecord(value) && value.pluginId === CODEX_PLUGIN && value.installed === true);
+    if (!isRecord(plugin) || typeof plugin.version !== 'string' || !isRecord(plugin.marketplaceSource) || typeof plugin.marketplaceSource.source !== 'string') return false;
+    if (!existsSync(join(plugin.marketplaceSource.source, '.agents', 'plugins', 'marketplace.json'))) return false;
+    pluginPath = join(provider.homePath, 'plugins', 'cache', 'claude-mem-local', 'claude-mem', plugin.version);
+  } else {
+    const marketplaces = join(provider.homePath, 'plugins', 'known_marketplaces.json');
+    if (!existsSync(marketplaces)) return false;
+    const known = readDocument(marketplaces).thedotmack;
+    if (!isRecord(known) || typeof known.installLocation !== 'string' || !existsSync(join(known.installLocation, '.claude-plugin', 'marketplace.json'))) return false;
+    const entries = JSON.parse(runProvider(provider, ['plugin', 'list', '--json'], spawn));
+    if (!Array.isArray(entries)) return false;
+    const plugin = entries.find(value => isRecord(value) && value.id === CLAUDE_PLUGIN && value.scope === 'user');
+    if (isRecord(plugin)) {
+      // Directory marketplaces load their live folder, even when the registry
+      // retains a historical cache path. Ask the CLI for the effective root.
+      if (typeof plugin.readFromFolder === 'string') pluginPath = plugin.readFromFolder;
+      else if (typeof plugin.installPath === 'string') pluginPath = plugin.installPath;
+    }
+  }
+  if (!pluginPath) return false;
+  const files = ['.mcp.json', 'scripts/worker-service.cjs', 'scripts/mcp-server.cjs'];
+  files.push(...(provider.driver === 'codex' ? ['.codex-plugin/plugin.json', 'hooks/codex-hooks.json'] : ['.claude-plugin/plugin.json', 'hooks/hooks.json']));
+  return files.every(file => existsSync(join(pluginPath, file)));
+}
+
 export async function installT3Code(marketplaceRoot: string, options: T3CodeOptions = {}): Promise<number> {
   try {
     const root = resolve(marketplaceRoot);
@@ -206,6 +243,7 @@ export async function installT3Code(marketplaceRoot: string, options: T3CodeOpti
       const key = `${provider.driver}:${provider.homePath}`;
       if (installed.has(key)) continue;
       try {
+        if (provider.setupError) throw new Error(provider.setupError);
         if (provider.driver === 'codex') {
           installCodexPluginForHome({ marketplaceRoot: root, homePath: provider.homePath, spawn: args => spawn(provider, args) });
         } else {
@@ -218,6 +256,11 @@ export async function installT3Code(marketplaceRoot: string, options: T3CodeOpti
           } else if (marketplace.installLocation !== root
             && (!isRecord(marketplace.source) || (marketplace.source.repo !== 'thedotmack/claude-mem' && marketplace.source.path !== root))) {
             throw new Error('The thedotmack marketplace points to another source. Repair its registration with the main Claude-Mem installer.');
+          } else if (marketplace.installLocation !== root) {
+            // Keep other marketplace entries and installed plugins intact while
+            // redirecting this provider to the bundle validated above.
+            known.thedotmack = { ...marketplace, source: { source: 'directory', path: root }, installLocation: root, lastUpdated: new Date().toISOString() };
+            writeJsonFileAtomic(knownPath, known);
           }
           runProvider(provider, ['plugin', 'install', CLAUDE_PLUGIN, '--scope', 'user'], spawn);
           // Claude returns a failure for `plugin enable` when already enabled.
@@ -267,10 +310,16 @@ export function t3CodeStatus(options: T3CodeOptions = {}): number {
     const providers = discoverT3CodeProviders(t3CodeSettingsPath(options), options.environment);
     let complete = providers.length > 0;
     for (const provider of providers) {
-      assertT3CodePluginLoading(provider);
-      const enabled = pluginEnabled(provider);
-      complete &&= enabled;
-      console.log(`T3 Code ${provider.id}: ${enabled ? 'plugin enabled' : 'not installed'} (${provider.homePath})`);
+      try {
+        if (provider.setupError) throw new Error(provider.setupError);
+        assertT3CodePluginLoading(provider);
+        const enabled = pluginEnabled(provider) && pluginAssetsPresent(provider, options.spawn ?? spawnProvider);
+        complete &&= enabled;
+        console.log(`T3 Code ${provider.id}: ${enabled ? 'plugin enabled' : 'not installed or missing assets'} (${provider.homePath})`);
+      } catch (error) {
+        complete = false;
+        console.error(`T3 Code ${provider.id}: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
     console.log('Hook approval is managed by the native provider; start a new thread to verify capture.');
     return complete ? 0 : 1;

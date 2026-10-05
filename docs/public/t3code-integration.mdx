@@ -50,13 +50,13 @@ npx claude-mem t3code status --settings /path/to/settings.json
 npx claude-mem t3code uninstall
 ```
 
-Status checks provider configuration and plugin enablement. It does not claim hook approval or successful capture: verify a new thread produces observations in the Claude-Mem viewer at `http://localhost:37777` on the server machine.
+Status checks provider configuration, plugin enablement, marketplace registration, and runtime assets. It does not claim hook approval or successful capture: verify a new thread produces observations in the Claude-Mem viewer at `http://localhost:37777` on the server machine.
 
 Removal disables only Claude-Mem in the configured native homes, preserving other plugins and provider settings. This also disables Claude-Mem for standalone CLIs that share those homes. Restart T3 Code after removal. The main `npx claude-mem uninstall` command also performs this cleanup; memory data is preserved.
 
 ## Troubleshooting
 
 - **No settings file:** open T3 Code and complete provider setup, or point the installer at the actual server's settings file.
-- **Managed Codex missing:** finish Codex setup inside T3 Code before installing Claude-Mem. The connector does not download or replace T3's provider runtime.
+- **Managed Codex missing:** finish Codex setup inside T3 Code, then rerun the installer. Other usable providers are still configured, but the installer returns a nonzero exit code for the missing provider. The connector does not download or replace T3's provider runtime.
 - **Launch overrides block capture:** remove Codex overrides that disable `features.hooks` or Claude-Mem. Claude's `--setting-sources`, when explicitly set, must include `user`; `--strict-mcp-config` and `--disable-all-hooks` block the plugin's normal operation. The installer reports these conflicts instead of rewriting your T3 launch arguments.
 - **Provider install fails:** the installer reports each failed provider and returns a nonzero exit code. Repair that provider's binary or permissions, then rerun the installer; providers already installed remain usable.
