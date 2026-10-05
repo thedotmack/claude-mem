@@ -6,6 +6,7 @@ import path from 'path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
+import { ESM_REQUIRE_BANNER } from './esm-require-banner.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -312,6 +313,7 @@ async function buildHooks() {
     if (!fs.existsSync(uiDir)) {
       fs.mkdirSync(uiDir, { recursive: true });
     }
+    fs.copyFileSync('src/shared/runtime-settings.cjs', `${hooksDir}/runtime-settings.cjs`);
     console.log('✓ Output directories ready');
 
     console.log('\n📦 Generating plugin package.json...');
@@ -692,7 +694,7 @@ async function buildHooks() {
       target: 'node18',
       format: 'esm',
       outfile: `${npxCliOutDir}/index.js`,
-      banner: { js: '#!/usr/bin/env node' },
+      banner: { js: `#!/usr/bin/env node\n${ESM_REQUIRE_BANNER}` },
       minify: true,
       logLevel: 'error',
       external: [
@@ -722,6 +724,7 @@ async function buildHooks() {
       target: 'node20',
       format: 'esm',
       outfile: `${bugReportOutDir}/index.js`,
+      banner: { js: ESM_REQUIRE_BANNER },
       minify: true,
       logLevel: 'error',
       external: [
@@ -749,6 +752,7 @@ async function buildHooks() {
         target: 'node18',
         format: 'esm',
         outfile: `${openclawOutDir}/index.js`,
+        banner: { js: ESM_REQUIRE_BANNER },
         minify: true,
         logLevel: 'error',
         external: [

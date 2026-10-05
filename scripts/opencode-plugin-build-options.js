@@ -1,3 +1,5 @@
+import { ESM_REQUIRE_BANNER } from './esm-require-banner.js';
+
 /**
  * esbuild options for the OpenCode plugin bundle (dist/opencode-plugin/index.js).
  *
@@ -13,6 +15,7 @@ export const OPENCODE_PLUGIN_BUILD_OPTIONS = {
   platform: 'node',
   target: 'node18',
   format: 'esm',
+  banner: { js: ESM_REQUIRE_BANNER },
   minify: true,
   logLevel: 'error',
   external: [

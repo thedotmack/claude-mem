@@ -593,6 +593,15 @@ resolve_extension_dir() {
 
 CLAUDE_MEM_EXTENSION_DIR=""
 
+# Standalone OpenClaw installs copy the bundled plugin tree, not src/. Keep
+# this Node-readable resolver identical to the worker and CLI source module.
+copy_runtime_settings() {
+  local repo_root="$1"
+  local extension_dir="$2"
+  mkdir -p "${extension_dir}/plugin/scripts"
+  cp "${repo_root}/src/shared/runtime-settings.cjs" "${extension_dir}/plugin/scripts/runtime-settings.cjs"
+}
+
 install_plugin() {
   check_git
 
@@ -744,6 +753,7 @@ install_plugin() {
     info "Copying core plugin files to ${extension_dir}..."
 
     cp -R "${repo_root}/plugin" "${extension_dir}/"
+    copy_runtime_settings "$repo_root" "$extension_dir"
 
     local root_version
     root_version="$(node -e "console.log(require('${repo_root}/package.json').version)")"
@@ -1105,7 +1115,20 @@ start_worker() {
   fi
 
   local worker_script="${CLAUDE_MEM_INSTALL_DIR}/plugin/scripts/worker-service.cjs"
-  local log_dir="${HOME}/.claude-mem/logs"
+  local settings_module="${CLAUDE_MEM_INSTALL_DIR}/plugin/scripts/runtime-settings.cjs"
+  if [[ ! -f "$settings_module" ]]; then
+    settings_module="${CLAUDE_MEM_INSTALL_DIR}/src/shared/runtime-settings.cjs"
+  fi
+  if [[ ! -f "$settings_module" ]]; then
+    error "Data directory resolver missing — reinstall or update the claude-mem plugin."
+    return 1
+  fi
+  local data_dir
+  if ! data_dir="$(INSTALLER_SETTINGS_MODULE="$settings_module" node -e 'process.stdout.write(require(process.env.INSTALLER_SETTINGS_MODULE).resolveDataDir())')"; then
+    error "Cannot resolve the claude-mem data directory"
+    return 1
+  fi
+  local log_dir="${data_dir}/logs"
   local log_date
   log_date="$(date +%Y-%m-%d)"
   local log_file="${log_dir}/worker-${log_date}.log"
