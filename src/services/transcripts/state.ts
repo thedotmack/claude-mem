@@ -45,8 +45,13 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
     const text = (value: unknown): value is string => typeof value === 'string';
     const state: TranscriptWatchState = { offsets: normalizeMap(parsed.offsets, integer) };
-    if (parsed.partials !== undefined) state.partials = normalizeMap(parsed.partials, text);
-    if (parsed.frameLines !== undefined) state.frameLines = normalizeMap(parsed.frameLines, integer);
+    // Frame continuation is meaningful only at its matching durable offset.
+    // Keeping it after a corrupt offset is dropped skips or prefixes fresh records.
+    const continuation = <T>(map: Record<string, T>): Record<string, T> => Object.fromEntries(
+      Object.entries(map).filter(([file]) => Object.hasOwn(state.offsets, file))
+    );
+    if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
+    if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
     if (parsed.cwds !== undefined) state.cwds = normalizeMap(parsed.cwds, text);
     return state;
   } catch (error) {
