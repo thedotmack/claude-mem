@@ -489,8 +489,7 @@ export class SessionSearch {
       return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
     }
 
-    logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
-    return [];
+    return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
   }
 
   searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
@@ -564,8 +563,7 @@ export class SessionSearch {
       return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
     }
 
-    logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
-    return [];
+    return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
   }
 
   findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
