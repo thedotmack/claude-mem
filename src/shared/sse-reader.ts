@@ -46,7 +46,11 @@ const CR = 13;
 const LF = 10;
 const COLON = 58;
 
-async function* iterateByteStream(
+/**
+ * Yields a byte stream's chunks. On an early stop or a read error it cancels the
+ * stream, and it always releases the reader lock, even when that cancel rejects.
+ */
+export async function* iterateByteStream(
   source: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>
 ): AsyncGenerator<Uint8Array> {
   if (!(source instanceof ReadableStream)) {
