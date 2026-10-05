@@ -41,33 +41,51 @@ export function useSessionCatalog() {
   const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append') => {
     const requestSeq = ++requestSeqRef.current;
     const offset = mode === 'replace' ? 0 : offsetRef.current;
+    // A superseded request may already have live events in its journal.
+    // Keep those until the newest request for this same scope settles.
+    if (!inFlightRef.current || projectRef.current !== project) {
+      journalRef.current = emptyCatalogJournal();
+    }
     projectRef.current = project;
-    journalRef.current = emptyCatalogJournal();
     inFlightRef.current = true;
     setIsLoading(true);
     setLoadError(null);
     const params = new URLSearchParams({ offset: String(offset), limit: String(SESSION_CATALOG_PAGE_SIZE) });
     if (project) params.append('project', project);
     try {
-      const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
-      if (requestSeq !== requestSeqRef.current) return;
-      const journal = journalRef.current;
-      // A session deleted mid-request that the page still contains moved the
-      // server's list up by one more. Deletes of already-loaded sessions made
-      // mid-request have moved offsetRef back themselves, so append adds to it.
-      const deletedFromPage = data.sessions.filter(entry => journal.removed.has(sessionKey(catalogEntryRef(entry)))).length;
-      const pageAdvance = data.sessions.length - deletedFromPage;
-      offsetRef.current = mode === 'replace' ? pageAdvance : offsetRef.current + pageAdvance;
-      setHasMore(data.hasMore === true);
-      setSessions(prev => mergeCatalogPage(prev, data.sessions, journal, mode));
+      for (;;) {
+        const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
+        if (requestSeq !== requestSeqRef.current) return;
+        const journal = journalRef.current;
+        // A session deleted mid-request that the page still contains moved the
+        // server's list up by one more. Deletes of already-loaded sessions made
+        // mid-request have moved offsetRef back themselves, so append adds to it.
+        const deletedFromPage = data.sessions.filter(entry => journal.removed.has(sessionKey(catalogEntryRef(entry)))).length;
+        const pageAdvance = data.sessions.length - deletedFromPage;
+        offsetRef.current = mode === 'replace' ? pageAdvance : offsetRef.current + pageAdvance;
+        setHasMore(data.hasMore === true);
+        setSessions(prev => mergeCatalogPage(prev, data.sessions, journal, mode));
+        if (mode !== 'replace' || (journal.decreased.size === 0 && journal.recreated.size === 0)) break;
+        // Counts cannot identify deletion or recreation freshness. Confirm
+        // once after all overlapping deletions, keeping this request loading.
+        // Another deletion or recreation during confirmation needs a new fetch.
+        journalRef.current = {
+          ...emptyCatalogJournal(),
+          // Keep introduced sessions visible if the confirming page is full.
+          // Their current entries supply counts; old count mutations reset.
+          added: journal.added.filter(entry => !journal.removed.has(sessionKey(catalogEntryRef(entry)))),
+          removed: new Set(journal.removed),
+        };
+      }
     } catch (error) {
       if (requestSeq === requestSeqRef.current) {
         setLoadError(`Could not load sessions: ${error instanceof Error ? error.message : String(error)}`);
       }
     } finally {
       if (requestSeq === requestSeqRef.current) {
+        journalRef.current = emptyCatalogJournal();
         inFlightRef.current = false;
         setIsLoading(false);
       }
@@ -84,6 +102,13 @@ export function useSessionCatalog() {
 
   /** A live row arrived: bump its session's count, or add a session seen for the first time. */
   const touch = useCallback((item: LiveSessionItem) => {
+    const key = sessionKey(item.session);
+    // A live row after a whole-session deletion recreates this identity.
+    // Earlier tombstones must not hide its new catalog entry.
+    if (journalRef.current.removed.delete(key)) {
+      journalRef.current.recreated.add(key);
+    }
+    journalRef.current.touched.add(key);
     setSessions(prev => {
       const index = prev.findIndex(entry => sameSession(catalogEntryRef(entry), item.session));
       if (index === -1) {
@@ -106,8 +131,19 @@ export function useSessionCatalog() {
     });
   }, []);
 
+  const noteItemRemoved = useCallback((session: SessionRef) => {
+    const key = sessionKey(session);
+    journalRef.current.touched.add(key);
+    journalRef.current.decreased.add(key);
+    setSessions(prev => prev.map(entry => sameSession(catalogEntryRef(entry), session)
+      ? { ...entry, item_count: Math.max(0, entry.item_count - 1) }
+      : entry));
+  }, []);
+
   const remove = useCallback((session: SessionRef) => {
-    journalRef.current.removed.add(sessionKey(session));
+    const key = sessionKey(session);
+    journalRef.current.removed.add(key);
+    journalRef.current.recreated.delete(key);
     // A loaded session is gone from the server's list too: the next page starts one earlier.
     if (sessionsRef.current.some(entry => sameSession(catalogEntryRef(entry), session))) {
       offsetRef.current = Math.max(0, offsetRef.current - 1);
@@ -115,5 +151,5 @@ export function useSessionCatalog() {
     setSessions(prev => prev.filter(entry => !sameSession(catalogEntryRef(entry), session)));
   }, []);
 
-  return { sessions, isLoading, hasMore, loadError, refresh, loadMore, touch, remove };
+  return { sessions, isLoading, hasMore, loadError, refresh, loadMore, touch, noteItemRemoved, remove };
 }
