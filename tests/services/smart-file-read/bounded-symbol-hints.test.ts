@@ -7,6 +7,9 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { parseFile, formatAvailableSymbols } from '../../../src/services/smart-file-read/parser.js';
 
+const crowded = 'class C0 {\n' + Array.from({ length: 50 }, (_, i) => ` m${i}() { return ${i}; }\n`).join('')
+ + '}\n' + Array.from({ length: 199 }, (_, i) => `class C${i + 1} {}\n`).join('');
+
 const source = Array.from({ length: 100 }, (_, owner) => `class Owner${owner} {\n`
  + Array.from({ length: 25 }, (_, method) => ` method${method}() { return ${method}; }\n`).join('') + '}\n').join('')
  + 'function finalEntryPoint() { return 42; }\n';
@@ -42,10 +45,16 @@ test('real MCP failed lookups return bounded useful hints and retain qualified u
   const found = await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Hints.ts', symbol_name: 'Owner1.method0' } });
   const body = (found.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
   expect(body).toContain('method0() { return 0; }');
+  writeFileSync(join(dir, 'Crowded.ts'), crowded);
+  const crowdedMiss = await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Crowded.ts', symbol_name: 'missing' } });
+  const crowdedText = (crowdedMiss.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
+  expect(Buffer.byteLength(crowdedText)).toBeLessThan(4300);
+  expect(crowdedText).toContain('C199 (class)');
+  expect(crowdedText).toContain('C0.m0 (method)');
  } finally { await client.close(); await transport.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
 
-test('native hints reserve qualified methods when roots exceed the visit limit', () => {
+test('native hints retain qualified methods alongside 200 or more roots', () => {
  for (const count of [200, 205]) {
   const source = 'class C0 { run() { return 0; } }\n'
    + Array.from({ length: count - 1 }, (_, i) => `class C${i + 1} {}\n`).join('');
@@ -53,7 +62,14 @@ test('native hints reserve qualified methods when roots exceed the visit limit',
   expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(4096);
   expect(hint).toContain('C0.run (method)');
   expect(hint).toContain('C198 (class)');
-  expect(hint.split('\n').filter(line => line.startsWith('  - ')).length).toBeLessThanOrEqual(200);
-  expect(hint).toContain('more symbols omitted');
+  expect(hint.split('\n').filter(line => line.startsWith('  - ')).length).toBeLessThanOrEqual(512);
+  expect(hint).toContain(`C${count - 1} (class)`);
  }
 }, 120000);
+
+ test('native hints retain later roots alongside methods when bytes remain', () => {
+  const hint = formatAvailableSymbols(parseFile(crowded, 'Crowded.ts'));
+  expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(4096);
+  expect(hint).toContain('C199 (class)');
+  expect(hint).toContain('C0.m0 (method)');
+ }, 120000);
