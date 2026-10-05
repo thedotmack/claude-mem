@@ -307,7 +307,7 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 describe('Plugin Distribution - Startup Root Resolution', () => {
   it('MCP startup command resolves the plugin root cross-platform (#2792)', () => {
     // The launcher is now a cross-platform `node -e` payload (no `sh`), so it
-    // spawns on Windows without Git Bash. It must still resolve the plugin root
+    // runs on Windows without Git Bash. It must still resolve the plugin root
     // with config-dir + env fallbacks and try cache roots before marketplaces.
     const command = mcpStartupCommandFrom('plugin/.mcp.json');
 
@@ -318,6 +318,9 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
     expect(command).toContain('mcp-server.cjs');
+    expect(command).toMatch(/require\(p\.join\(R,'scripts',["']mcp-server\.cjs["']\)\)/);
+    expect(command).not.toContain('child_process');
+    expect(command).not.toContain('.spawn(');
     // No bare absolute "/scripts/..." path leaks through.
     expect(command).not.toContain('"/scripts/mcp-server.cjs"');
     expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
@@ -565,7 +568,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
 };
 
 const MCP_EXPECTED = buildShellCommand({
-  // The mcp Node launcher derives its spawn target from requireFile; it ignores
+  // The mcp Node launcher derives its module target from requireFile; it ignores
   // trailingCommand, so none is passed (see buildMcpNodeLauncher).
   host: 'mcp', requireFile: 'mcp-server.cjs',
   notFoundMessage: 'claude-mem: mcp server not found',
