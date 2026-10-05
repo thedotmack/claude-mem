@@ -20,7 +20,7 @@ describe("swift-initializers", () => {
    const result = await searchCodebase(dir, "init(label");
    const match = result.matchingSymbols.find(s => s.symbolName === "Widget.init(label: String)");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("print(label)");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
