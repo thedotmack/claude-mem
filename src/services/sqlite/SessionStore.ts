@@ -3306,7 +3306,7 @@ export class SessionStore {
     `).run(observedModel || null, observedBilling || null, sessionDbId);
   }
 
-  getSdkSessionsBySessionIds(memorySessionIds: string[]): {
+  getSdkSessionsBySessionIds(memorySessionIds: string[], promptIds: number[] = []): {
     id: number;
     content_session_id: string;
     memory_session_id: string;
@@ -3320,20 +3320,22 @@ export class SessionStore {
     completed_at_epoch: number | null;
     status: string;
   }[] {
-    if (memorySessionIds.length === 0) return [];
+    if (memorySessionIds.length === 0 && promptIds.length === 0) return [];
 
-    const placeholders = memorySessionIds.map(() => '?').join(',');
+    const conditions: string[] = [];
+    if (memorySessionIds.length) conditions.push(`memory_session_id IN (${memorySessionIds.map(() => '?').join(',')})`);
+    if (promptIds.length) conditions.push(`id IN (SELECT session_db_id FROM user_prompts WHERE id IN (${promptIds.map(() => '?').join(',')}))`);
     const stmt = this.db.prepare(`
       SELECT id, content_session_id, memory_session_id, project,
              COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
              user_prompt, custom_title,
              started_at, started_at_epoch, completed_at, completed_at_epoch, status
       FROM sdk_sessions
-      WHERE memory_session_id IN (${placeholders})
+      WHERE ${conditions.join(' OR ')}
       ORDER BY started_at_epoch DESC
     `);
 
-    return stmt.all(...memorySessionIds) as any[];
+    return stmt.all(...memorySessionIds, ...promptIds) as any[];
   }
 
   /**
