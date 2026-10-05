@@ -760,7 +760,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     let name = nameCapture?.text || "anonymous";
     if (kind === "method" && nameCapture && !nameCapture.text
       && ["javascript", "typescript", "tsx"].includes(language)) {
-      name = captureLines(lines, nameCapture).join(" ").replace(/\s+/g, " ").trim();
+      name = captureLines(lines, nameCapture).join("\n").trim();
     }
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
