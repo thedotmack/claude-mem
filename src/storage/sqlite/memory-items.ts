@@ -91,11 +91,16 @@ function buildFtsQuery(query: string): string {
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
-  // unicode61 keeps compatibility characters in stored documents. Search
-  // both forms so exact fullwidth/ligature text and existing normalized
-  // queries against ordinary ASCII text remain reachable.
-  const queries = [...new Set([query, query.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
-  return queries.length > 1 ? queries.map(text => `(${text})`).join(' OR ') : queries[0] ?? '';
+  // unicode61 keeps compatibility characters in stored documents. Each
+  // query word can match its original or normalized form independently;
+  // whole-query alternatives miss documents mixing those token forms.
+  const tokens = query.match(/[\p{L}\p{N}_][\p{L}\p{N}\p{M}_]*/gu) ?? [];
+  return tokens.map(token => {
+    const alternatives = [...new Set([token, token.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
+    return alternatives.length > 1
+      ? `(${alternatives.map(text => `(${text})`).join(' OR ')})`
+      : alternatives[0] ?? '';
+  }).filter(Boolean).join(' AND ');
 }
 
 export class MemoryItemsRepository {
