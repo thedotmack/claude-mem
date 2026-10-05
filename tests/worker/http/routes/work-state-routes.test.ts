@@ -12,7 +12,7 @@ import {
   MAX_WORK_STATE_FIELDS_JSON_CHARS,
   WorkStateRoutes,
 } from '../../../../src/services/worker/http/routes/WorkStateRoutes.js';
-import { WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
+import { buildWorkStateContextSection, WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { logger } from '../../../../src/utils/logger.js';
@@ -176,6 +176,30 @@ describe('WorkStateRoutes', () => {
       '- release: version=13.25.3, updated 1 minute ago',
       '  - [dropped] publish (reason=superseded), updated 1 minute ago',
     ].join('\n'));
+  });
+
+  it('keeps same-name tasks and list state distinct across adopted projects', async () => {
+    const oldProject = 'adopted-project';
+    const sessionId = store.createSDKSession('adopted-host', oldProject, 'prompt');
+    store.updateMemorySessionId(sessionId, 'adopted-observer');
+    const observation = store.storeObservation('adopted-observer', oldProject, { type: 'discovery', title: 'Adopted worktree', subtitle: null, narrative: 'Fact', facts: [], concepts: [], files_read: [], files_modified: [] });
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE id = ?').run(project, observation.id);
+    store.appendWorkStateEntry({ project, listName: 'release', fields: { task: 'ship', status: 'todo', owner: 'active' } });
+    store.appendWorkStateEntry({ project: oldProject, listName: 'release', fields: { task: 'ship', status: 'done', owner: 'adopted' } });
+    store.appendWorkStateEntry({ project: oldProject, listName: 'release', fields: { task: 'pack', status: 'doing' } });
+    const entries = store.getWorkStateEntries([project]);
+    const context = buildWorkStateContextSection(entries, Date.now());
+    const response = await (await read({ cwd: checkout, list: 'release' })).text();
+    for (const text of [context, response]) {
+      expect(text).toContain('[todo] ship (owner=active)');
+      expect(text).toContain('[doing] pack');
+      expect(text).not.toContain('[done] ship');
+      expect(text).toContain(`release [${project}]`);
+      expect(text).toContain(`release [${oldProject}]`);
+    }
+    const closed = await (await read({ cwd: checkout, list: 'release', includeClosed: 'true' })).text();
+    expect(closed).toContain('[todo] ship (owner=active)');
+    expect(closed).toContain('[done] ship (owner=adopted)');
   });
 
   it('says when nothing is open, and requires a cwd', async () => {

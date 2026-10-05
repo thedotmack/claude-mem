@@ -100,15 +100,29 @@ export function renderWorkStateList(
 /** Lines for every list in `entries`, the most recently written list first. */
 export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkStateClock, includeClosed: boolean = false): string[] {
   const entriesByList = new Map<string, WorkStateEntry[]>();
+  const listProjectCounts = new Map<string, number>();
   for (const entry of entries) {
-    const listEntries = entriesByList.get(entry.list_name) ?? [];
+    // A task belongs to its source project's list. Reading adopted projects
+    // must not let their same-name tasks or list state overwrite local work.
+    const projectKey = entry.project.replace(/[A-Z]/g, character => character.toLowerCase());
+    const key = JSON.stringify([projectKey, entry.list_name]);
+    let listEntries = entriesByList.get(key);
+    if (!listEntries) {
+      listEntries = [];
+      entriesByList.set(key, listEntries);
+      listProjectCounts.set(entry.list_name, (listProjectCounts.get(entry.list_name) ?? 0) + 1);
+    }
     listEntries.push(entry);
-    entriesByList.set(entry.list_name, listEntries);
   }
-  return [...entriesByList.entries()]
-    .sort(([, a], [, b]) => b[b.length - 1].id - a[a.length - 1].id)
-    .flatMap(([listName, listEntries]) =>
-      renderWorkStateList(listName, foldWorkStateList(listEntries), nowEpoch, includeClosed));
+  return [...entriesByList.values()]
+    .sort((a, b) => b[b.length - 1].id - a[a.length - 1].id)
+    .flatMap(listEntries => {
+      const first = listEntries[0];
+      const label = (listProjectCounts.get(first.list_name) ?? 0) > 1
+        ? `${first.list_name} [${first.project}]`
+        : first.list_name;
+      return renderWorkStateList(label, foldWorkStateList(listEntries), nowEpoch, includeClosed);
+    });
 }
 
 /** The SessionStart section: the rule, then what is still open, cut to `characterLimit`. */
