@@ -275,7 +275,7 @@ export async function collectDiagnostics(
 
   if (options.includeLogs !== false) {
     const today = new Date().toISOString().split("T")[0];
-    const workerLogPath = path.join(dataDir, "logs", `worker-${today}.log`);
+    const workerLogPath = path.join(dataDir, "logs", `claude-mem-${today}.log`);
     const silentLogPath = path.join(dataDir, "silent.log");
 
     [workerLog, silentLog] = await Promise.all([

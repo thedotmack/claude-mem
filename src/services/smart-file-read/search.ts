@@ -5,7 +5,7 @@ import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile }
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
-  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
   ".py", ".pyw",
   ".go",
   ".rs",
@@ -87,7 +87,7 @@ async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20): As
       yield* walkDir(fullPath, rootDir, maxDepth - 1);
     } else if (entry.isFile()) {
       const ext = entry.name.slice(entry.name.lastIndexOf("."));
-      if (CODE_EXTENSIONS.has(ext)) {
+      if (CODE_EXTENSIONS.has(ext.toLowerCase())) {
         yield fullPath;
       }
     }
