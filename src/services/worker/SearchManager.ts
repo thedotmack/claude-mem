@@ -1,7 +1,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
+import { ChromaSync, type ChromaQueryProgress } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -68,12 +68,15 @@ export class SearchManager {
   private async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    progress?: ChromaQueryProgress
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (!this.chromaSync) {
       return { ids: [], distances: [], metadatas: [] };
     }
-    return await this.chromaSync.queryChroma(query, limit, whereFilter);
+    return progress
+      ? await this.chromaSync.queryChroma(query, limit, whereFilter, progress)
+      : await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
   /**
@@ -106,32 +109,41 @@ export class SearchManager {
     platformSource: string | undefined,
     hydrate: (ids: number[], readKeys: string[]) => T[],
     projects?: string[],
-    dateRange?: DateRange
+    dateRange?: DateRange,
+    requiredResults?: number
   ): Promise<T[]> {
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
-    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
-    logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
+    const startEpoch = dateRange
+      ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
+      : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
+    let candidateLimit: number = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
 
-    if (chromaResults?.ids && chromaResults.ids.length > 0) {
-      const startEpoch = dateRange
-        ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
-        : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
-      const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
+    while (true) {
+      const progress: ChromaQueryProgress = {};
+      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined);
       const recentIds = chromaResults.ids.filter((_id, idx) => {
         const meta = chromaResults.metadatas[idx];
         return meta && meta.created_at_epoch != null
           && (startEpoch === undefined || meta.created_at_epoch >= startEpoch)
           && (endEpoch === undefined || meta.created_at_epoch <= endEpoch);
       });
-
-      logger.debug('SEARCH', dateRange ? 'Results within user date range' : 'Results within 90-day window', { count: recentIds.length });
-
-      if (recentIds.length > 0) {
-        return hydrate(recentIds, readKeys);
+      const rows: T[] = [];
+      // Keep each SQLite IN-list small as the semantic window grows. Hydration
+      // retains candidate order and applies row filters before its result limit.
+      for (let offset = 0; offset < recentIds.length; offset += 500) {
+        rows.push(...hydrate(recentIds.slice(offset, offset + 500), readKeys));
+        if (requiredResults && rows.length >= requiredResults) return rows.slice(0, requiredResults);
       }
+      if (!requiredResults || progress.exhausted
+        || (progress.exhausted === undefined && chromaResults.ids.length < candidateLimit)) return rows;
+
+      // Chroma has no offset query. Widen its ranked prefix until enough rows
+      // survive the native filters or the raw document response is exhausted.
+      candidateLimit *= 2;
+      if (!Number.isSafeInteger(candidateLimit)) throw new Error('Semantic candidate window exceeded the safe integer range');
     }
-    return [];
   }
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
@@ -1014,7 +1026,8 @@ export class SearchManager {
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids, readKeys) =>
           this.sessionStore.getObservationsByIds(ids, { ...options, orderBy: 'relevance', limit, projects: readKeys }),
           options.projects,
-          options.dateRange
+          options.dateRange,
+          options.type || options.concepts || options.files || options.dateRange ? limit : undefined
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
