@@ -1125,17 +1125,37 @@ export function qualifySymbolName(name: string, parent: string | undefined, lang
   return parent ? `${parent}.${segment}` : segment;
 }
 
-/** Qualified lookup hints include descendants that can be unfolded by owner. */
+/** Bounded lookup hints prioritize roots, then offer qualified children fairly. */
 export function formatAvailableSymbols(file: FoldedFile): string {
+  const marker = "  ... more symbols omitted; use smart_search to narrow the lookup.";
+  const byteBudget = 4096 - Buffer.byteLength(marker) - 1;
   const available: string[] = [];
-  const visit = (symbols: CodeSymbol[], parent?: string): void => {
-    for (const symbol of symbols) {
-      const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
-      available.push(`  - ${name} (${symbol.kind})`);
-      if (symbol.children) visit(symbol.children, name);
-    }
+  const groups: Array<{ symbols: CodeSymbol[]; parent: string; index: number }> = [];
+  let bytes = 0;
+  let visited = 0;
+  let omitted = false;
+  const offer = (symbol: CodeSymbol, parent?: string): void => {
+    visited++;
+    const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
+    const line = `  - ${name} (${symbol.kind})`;
+    const size = Buffer.byteLength(line) + (available.length ? 1 : 0);
+    if (bytes + size <= byteBudget) { available.push(line); bytes += size; }
+    else omitted = true;
+    if (symbol.children?.length) groups.push({ symbols: symbol.children, parent: name, index: 0 });
   };
-  visit(file.symbols);
+  // A large early class must not bury a later top-level entry point.
+  for (const symbol of file.symbols) {
+    if (visited >= 200) { omitted = true; break; }
+    offer(symbol);
+  }
+  // Round-robin owner groups keeps qualified suggestions from multiple roots.
+  while (groups.length && visited < 200) {
+    const group = groups.shift()!;
+    offer(group.symbols[group.index++], group.parent);
+    if (group.index < group.symbols.length) groups.push(group);
+  }
+  if (groups.length) omitted = true;
+  if (omitted) available.push(marker);
   return available.join("\n");
 }
 
