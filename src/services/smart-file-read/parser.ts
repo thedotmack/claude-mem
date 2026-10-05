@@ -603,12 +603,12 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
 
-function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
-  const firstLine = lines[startRow] || "";
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
+  const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
 
   if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
-    const chunk = lines.slice(startRow, Math.min(startRow + 10, endRow + 1)).join("\n");
+    const chunk = [firstLine, ...lines.slice(startRow + 1, Math.min(startRow + 10, endRow + 1))].join("\n");
     const braceIdx = chunk.indexOf("{");
     if (braceIdx !== -1 && braceIdx < 500) {
       sig = chunk.slice(0, braceIdx).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
@@ -786,7 +786,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
     } else {
-      signature = extractSignatureFromLines(lines, startRow, endRow);
+      signature = extractSignatureFromLines(lines, startRow, endRow, 200, kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
