@@ -35,7 +35,11 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore,
     const observer = new IntersectionObserver(
       (entries) => {
         const first = entries[0];
-        if (first.isIntersecting && hasMore && !isLoading && !loadError) {
+        // A notification can arrive after React removed this sentinel but before
+        // this effect's cleanup ran, e.g. once the first page of an empty feed
+        // started loading and failed. hasMore/isLoading/loadError are stale then,
+        // so only a sentinel that is still rendered may load.
+        if (first.isIntersecting && first.target.isConnected && hasMore && !isLoading && !loadError) {
           onLoadMoreRef.current?.();
         }
       },
