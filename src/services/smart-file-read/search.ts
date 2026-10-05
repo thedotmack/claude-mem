@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -157,10 +157,15 @@ export async function searchCodebase(
 
     const checkSymbols = (symbols: typeof parsed.symbols, parent?: string) => {
       for (const sym of symbols) {
+        const qualifiedName = qualifySymbolName(sym.name, parent, parsed.language, sym.kind);
         let score = 0;
         let reason = "";
 
-        const nameScore = matchScore(sym.name.toLowerCase(), queryParts);
+        // Score the symbol's own name, so a class or module query does not match
+        // every method under it. The qualified identity counts only as the whole
+        // query: `Counter#reset` has no character that queryParts splits on.
+        const nameScore = matchScore(sym.name.toLowerCase(), queryParts)
+          || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
@@ -180,7 +185,7 @@ export async function searchCodebase(
           fileHasMatch = true;
           fileSymbolMatches.push({
             filePath: relPath,
-            symbolName: parent ? `${parent}.${sym.name}` : sym.name,
+            symbolName: qualifiedName,
             kind: sym.kind,
             signature: sym.signature,
             jsdoc: sym.jsdoc,
@@ -191,7 +196,7 @@ export async function searchCodebase(
         }
 
         if (sym.children) {
-          checkSymbols(sym.children, sym.name);
+          checkSymbols(sym.children, qualifiedName);
         }
       }
     };

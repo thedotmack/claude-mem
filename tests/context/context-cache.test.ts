@@ -514,12 +514,14 @@ describe('ContextCacheService with cloud sync (servable only while Realtime is l
 const HOOK_PROJECTS = ['cache-hook-parent', 'cache-hook-repo'];
 const workerCalls: string[] = [];
 let showTerminalOutput = false;
+let showLastMessage = false;
 
 mock.module('../../src/shared/hook-settings.js', () => ({
   ...realHookSettingsSnapshot,
   loadFromFileOnce: () => ({
     ...realHookSettingsSnapshot.loadFromFileOnce(),
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
+    CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: String(showLastMessage),
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_PROVIDER: 'codex',
     CLAUDE_MEM_PRO_FALLBACK_AT: '',
@@ -556,23 +558,24 @@ afterAll(() => {
 });
 
 describe('context hook reads the precomputed block', () => {
-  const agentKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', false);
-  const colorKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', true);
+  const agentKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', false, '/tmp/cache-hook-repo');
+  const colorKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', true, '/tmp/cache-hook-repo');
   const cachedBody = `# [cache-hook-repo] recent context, ${CONTEXT_HEADER_TIME_PLACEHOLDER}\n`
     + `- release: updated ${relativeTimePlaceholder(Date.now() - 2 * 3_600_000)} ago\n`;
 
   beforeEach(() => {
     workerCalls.length = 0;
     showTerminalOutput = false;
+    showLastMessage = false;
   });
   afterEach(() => {
     rmSync(contextCacheFilePath(agentKeys), { force: true });
     rmSync(contextCacheFilePath(colorKeys), { force: true });
   });
 
-  async function runHook() {
+  async function runHook(cwd = '/tmp/cache-hook-repo') {
     const { contextHandler } = await import('../../src/cli/handlers/context.js');
-    return contextHandler.execute({ sessionId: 'cache-session', cwd: '/tmp/cache-hook-repo', platform: 'claude-code' });
+    return contextHandler.execute({ sessionId: 'cache-session', cwd, platform: 'claude-code' });
   }
 
   it('serves a cached block without calling the worker', async () => {
@@ -585,9 +588,17 @@ describe('context hook reads the precomputed block', () => {
     expect(additionalContext).not.toContain(PLACEHOLDER_MARKER);
   });
 
-  it('takes the live path on a miss, with the same URL as before', async () => {
+  it('passes the host session and answers live when prior messages are enabled', async () => {
+    showLastMessage = true;
+    writeContextCache(agentKeys, 'A block without the prior reply', Date.now());
     const result = await runHook();
-    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude']);
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&sessionId=cache-session']);
+    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
+  });
+
+  it('takes the live path on a miss, including the observed checkout cwd', async () => {
+    const result = await runHook();
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo']);
     expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
   });
 
@@ -628,11 +639,23 @@ describe('context hook reads the precomputed block', () => {
     expect(readContextCache(colorKeys, Date.now())?.body).toBe('COLORED TIMELINE');
   });
 
+  it('serves the cached model block wherever in the checkout the session starts', async () => {
+    showTerminalOutput = true;
+    writeContextCache(agentKeys, cachedBody, Date.now());
+    writeContextCache(colorKeys, `COLORED ${CONTEXT_HEADER_TIME_PLACEHOLDER}`, Date.now());
+    const result = await runHook('/tmp/cache-hook-repo/packages/app');
+    // The model's block does not depend on the directory. The colored one shows
+    // file headings relative to it, so that one is fetched for the new directory.
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo%2Fpackages%2Fapp&colors=true']);
+    expect(result.hookSpecificOutput?.additionalContext).toContain('- release: updated about 2 hours ago');
+    expect(result.systemMessage).toStartWith('LIVE COLORED');
+  });
+
   it('fetches only the colored render when only the model block is cached', async () => {
     showTerminalOutput = true;
     writeContextCache(agentKeys, cachedBody, Date.now());
     const result = await runHook();
-    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&colors=true']);
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&colors=true']);
     expect(result.systemMessage).toStartWith('LIVE COLORED');
   });
 });
@@ -684,10 +707,10 @@ const childScript = `
     });
   }
   const projectsParam = projects.join(',');
-  const liveAgent = await live({ projects: projectsParam, platformSource: 'claude' });
-  const liveColors = await live({ projects: projectsParam, platformSource: 'claude', colors: 'true' });
-  const agentFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false), FIXED_NOW);
-  const colorFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', true), FIXED_NOW);
+  const liveAgent = await live({ projects: projectsParam, platformSource: 'claude', cwd });
+  const liveColors = await live({ projects: projectsParam, platformSource: 'claude', colors: 'true', cwd });
+  const agentFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false, cwd), FIXED_NOW);
+  const colorFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', true, cwd), FIXED_NOW);
 
   let fetchCalls = 0;
   globalThis.fetch = async () => { fetchCalls++; throw new Error('no worker in this test'); };
@@ -701,7 +724,7 @@ const childScript = `
   }], null, 2, 0, FIXED_NOW - 60_000);
   await new Promise((resolve) => setTimeout(resolve, 200));
   await service.flushPendingRenders();
-  const agentAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false), FIXED_NOW);
+  const agentAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false, cwd), FIXED_NOW);
   service.stop();
   store.close();
 

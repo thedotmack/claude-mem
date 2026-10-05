@@ -13,6 +13,8 @@ export interface ProjectWatermarks {
   summaries: number;
   prompts: number;
   pending?: PendingIdsByKind;
+  /** Rows whose remote revision must remove obsolete document fragments. */
+  fragmentReconciliation?: PendingIdsByKind;
   /**
    * Set once this project's title-only observations, which older versions
    * skipped while advancing the watermark, have been requeued (#4069).
@@ -62,6 +64,13 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
 
   if (pending && (pending.observations.length > 0 || pending.summaries.length > 0 || pending.prompts.length > 0)) {
     normalized.pending = pending;
+  }
+
+  if (marks?.fragmentReconciliation) {
+    normalized.fragmentReconciliation = {
+      observations: normalizePendingIds(marks.fragmentReconciliation.observations),
+      summaries: normalizePendingIds(marks.fragmentReconciliation.summaries),
+    };
   }
 
   if (marks?.titleOnlyRequeued === true) {
@@ -223,6 +232,30 @@ export const ChromaSyncState = {
 
     current.pending = current.pending ?? {};
     current.pending[kind] = merged;
+    all[project] = current;
+    persist();
+  },
+
+  markFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    current.pending = current.pending ?? {};
+    current.pending[kind] = normalizePendingIds([...(current.pending[kind] ?? []), id]);
+    current.fragmentReconciliation = current.fragmentReconciliation ?? {};
+    current.fragmentReconciliation[kind] = normalizePendingIds([...(current.fragmentReconciliation[kind] ?? []), id]);
+    all[project] = current;
+    persist();
+  },
+
+  needsFragmentReconciliation(project: string, kind: DocKind, id: number): boolean {
+    return this.get(project).fragmentReconciliation?.[kind]?.includes(id) ?? false;
+  },
+
+  clearFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (!current.fragmentReconciliation?.[kind]?.includes(id)) return;
+    current.fragmentReconciliation[kind] = current.fragmentReconciliation[kind]!.filter(value => value !== id);
     all[project] = current;
     persist();
   },

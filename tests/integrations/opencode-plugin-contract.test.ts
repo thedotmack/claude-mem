@@ -129,7 +129,8 @@ describe("OpenCode plugin event contract", () => {
     );
 
     expect(source).not.toContain('from "../../shared/worker-utils.js"');
-    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT');
+    expect(source).toContain('SettingsDefaultsManager.loadFromFile(settingsPath)');
+    expect(source).toContain('settings.CLAUDE_MEM_WORKER_PORT');
   });
 
   it("uses the persisted worker port in OpenCode worker requests", async () => {

@@ -245,7 +245,9 @@ function buildGetSourceLabel(
 let _workerHost = DEFAULT_WORKER_HOST;
 
 function workerBaseUrl(port: number): string {
-  return `http://${_workerHost}:${port}`;
+  const host = _workerHost.includes(":") && !_workerHost.startsWith("[")
+    ? `[${_workerHost}]` : _workerHost;
+  return `http://${host}:${port}`;
 }
 
 const CIRCUIT_BREAKER_THRESHOLD = 3;
