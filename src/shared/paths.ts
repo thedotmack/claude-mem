@@ -1,10 +1,10 @@
 import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { mkdirSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { readJsonFileWithBom } from './atomic-json.js';
-import { settingsTarget } from './settings-document.js';
+import { resolveDataDir } from './runtime-settings.cjs';
+export { resolveDataDir } from './runtime-settings.cjs';
 import { expandHome } from './expand-home.js';
 
 export { expandHome } from './expand-home.js';
@@ -17,29 +17,6 @@ function getDirname(): string {
 }
 
 const _dirname = getDirname();
-
-export function resolveDataDir(): string {
-  if (process.env.CLAUDE_MEM_DATA_DIR) {
-    return expandHome(process.env.CLAUDE_MEM_DATA_DIR);
-  }
-
-  const defaultDataDir = join(homedir(), '.claude-mem');
-  const settingsPath = join(defaultDataDir, 'settings.json');
-  try {
-    if (existsSync(settingsPath)) {
-      const raw = readJsonFileWithBom<unknown>(settingsPath);
-      if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return defaultDataDir;
-      const settings = settingsTarget(raw as Record<string, unknown>);
-      if (typeof settings.CLAUDE_MEM_DATA_DIR === 'string' && settings.CLAUDE_MEM_DATA_DIR) {
-        return expandHome(settings.CLAUDE_MEM_DATA_DIR);
-      }
-    }
-  } catch {
-    // settings file missing or corrupt — fall through to default
-  }
-
-  return defaultDataDir;
-}
 
 export const DATA_DIR = resolveDataDir();
 // #2753 — the literal default config dir, independent of process.env state.

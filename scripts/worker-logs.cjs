@@ -2,7 +2,7 @@
 
 const { closeSync, fstatSync, openSync, readSync, watchFile } = require('fs');
 const path = require('path');
-const os = require('os');
+const { resolveDataDir } = require('../src/shared/runtime-settings.cjs');
 
 const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;
@@ -15,7 +15,7 @@ function todaysLogPath() {
     String(now.getMonth() + 1).padStart(2, '0'),
     String(now.getDate()).padStart(2, '0'),
   ].join('-');
-  return path.join(os.homedir(), '.claude-mem', 'logs', `worker-${stamp}.log`);
+  return path.join(resolveDataDir(), 'logs', `worker-${stamp}.log`);
 }
 
 function readAt(fd, position, length) {

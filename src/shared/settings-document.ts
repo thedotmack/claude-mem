@@ -1,4 +1,5 @@
 import { existsSync, renameSync } from 'fs';
+import { classifySettingsDocument, settingsTarget } from './runtime-settings.cjs';
 import { readJsonFileWithBom, writeJsonFileAtomic } from './atomic-json.js';
 
 export type SettingsDocument = Record<string, unknown>;
@@ -32,14 +33,7 @@ const SETTINGS_FILE_MODE = 0o600;
  *    them (with no `CLAUDE_MEM_*` keys) is Claude Code's own.
  * A wrapped document keeps its wrapper and root peers.
  */
-export function classifySettingsDocument(document: SettingsDocument): 'flat' | 'nested' {
-  const env = document.env;
-  return isRecord(env) && Object.keys(env).some(key => key.startsWith('CLAUDE_MEM_')) ? 'nested' : 'flat';
-}
-
-export function settingsTarget(document: SettingsDocument): SettingsDocument {
-  return classifySettingsDocument(document) === 'nested' ? document.env as SettingsDocument : document;
-}
+export { classifySettingsDocument, settingsTarget } from './runtime-settings.cjs';
 
 /**
  * The document as it is written back: in a nested document, the stale root

@@ -43,11 +43,11 @@ describe('worker-logs', () => {
   // Deliberately `node`, not process.execPath: under `bun test` execPath is
   // bun, which ignores --max-old-space-size, so the heap-constrained case below
   // would silently prove nothing. `npm run worker:logs` shells out to node too.
-  function run(nodeArgs: string[] = []) {
+  function run(nodeArgs: string[] = [], overrides: Record<string, string> = {}) {
     return spawnSync('node', [...nodeArgs, SCRIPT], {
       encoding: 'utf-8',
       // os.homedir() reads HOME on POSIX and USERPROFILE on Windows.
-      env: { ...process.env, HOME: home, USERPROFILE: home, TZ: 'UTC' },
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: '', HOME: home, USERPROFILE: home, TZ: 'UTC', ...overrides },
     });
   }
 
@@ -115,6 +115,61 @@ describe('worker-logs', () => {
     expect(lines[0].startsWith(`line ${line - 49} `)).toBe(true);
   }, 60000);
 
+  function customLog(dataDir: string): void {
+    mkdirSync(join(dataDir, 'logs'), { recursive: true });
+    writeFileSync(join(dataDir, 'logs', `worker-${logStamp()}.log`), 'custom worker log\n');
+    writeFileSync(logPath, 'stale default log\n');
+  }
+
+  it('reads the effective environment data directory', () => {
+    const custom = join(home, 'custom-data');
+    customLog(custom);
+    const result = run([], { CLAUDE_MEM_DATA_DIR: custom });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('custom worker log\n');
+  });
+
+  it('expands a home-relative environment data directory', () => {
+    customLog(join(home, 'custom-data'));
+    const result = run([], { CLAUDE_MEM_DATA_DIR: '~/custom-data' });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('custom worker log\n');
+  });
+
+  it('reads a BOM-prefixed flat settings data directory', () => {
+    const custom = join(home, 'custom-data');
+    customLog(custom);
+    writeFileSync(join(home, '.claude-mem', 'settings.json'), '\uFEFF' + JSON.stringify({ CLAUDE_MEM_DATA_DIR: custom }));
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('custom worker log\n');
+  });
+
+  it('uses the nested settings target over stale root copies', () => {
+    customLog(join(home, 'custom-data'));
+    writeFileSync(join(home, '.claude-mem', 'settings.json'), JSON.stringify({ CLAUDE_MEM_DATA_DIR: join(home, 'stale-data'), env: { CLAUDE_MEM_DATA_DIR: '~/custom-data' } }));
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('custom worker log\n');
+  });
+
+  it('preserves environment precedence over settings', () => {
+    const custom = join(home, 'custom-data');
+    customLog(custom);
+    writeFileSync(join(home, '.claude-mem', 'settings.json'), JSON.stringify({ env: { CLAUDE_MEM_DATA_DIR: join(home, 'stale-data') } }));
+    const result = run([], { CLAUDE_MEM_DATA_DIR: custom });
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('custom worker log\n');
+  });
+
+  it('retains the default directory for invalid settings documents', () => {
+    writeFileSync(logPath, 'default worker log\n');
+    writeFileSync(join(home, '.claude-mem', 'settings.json'), '[]');
+    const result = run();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('default worker log\n');
+  });
+
   // Worker restarts rotate the log by rename-and-recreate. When the
   // replacement lands at exactly the followed offset's byte size, a
   // size-only follower skips it forever — file identity must be tracked too.
@@ -122,7 +177,7 @@ describe('worker-logs', () => {
     writeFileSync(logPath, 'old line 1\n');
 
     const child = spawn('node', [SCRIPT, '--follow'], {
-      env: { ...process.env, HOME: home, USERPROFILE: home, TZ: 'UTC' },
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: '', HOME: home, USERPROFILE: home, TZ: 'UTC' },
     });
     let output = '';
     child.stdout.on('data', (chunk) => { output += chunk; });
