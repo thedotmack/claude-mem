@@ -203,16 +203,18 @@ const QUERIES: Record<string, string> = {
 `,
 
   c: `
-(function_definition declarator: (function_declarator declarator: (identifier) @name)) @func
-(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @func
+(function_definition) @func
+(function_declarator declarator: (identifier) @function_name)
+(type_definition declarator: (type_identifier) @name) @tdef
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
 (preproc_include) @imp
 `,
 
   cpp: `
-(function_definition declarator: (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier)] @name)) @func
-(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier)] @name))) @func
+(function_definition) @func
+(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
+(type_definition declarator: (type_identifier) @name) @tdef
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
@@ -699,9 +701,20 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // Names are captured independently of the surrounding pointer/reference
+  // wrappers. The first native function declarator inside a definition names
+  // that function, before any callback parameters or nested definitions.
+  const functionNames = matches.flatMap(match => match.captures.filter(c => c.tag === "function_name"))
+    .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
-    const nameCapture = match.captures.find(c => c.tag === "name");
+    const nameCapture = match.captures.find(c => c.tag === "name")
+      ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
+        ? functionNames.find(c => (c.startRow > kindCapture.startRow
+            || (c.startRow === kindCapture.startRow && c.startCol >= kindCapture.startCol))
+          && (c.endRow < kindCapture.endRow
+            || (c.endRow === kindCapture.endRow && c.endCol <= kindCapture.endCol)))
+        : undefined);
     if (!kindCapture) continue;
 
     const startRow = kindCapture.startRow;

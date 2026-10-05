@@ -35,3 +35,37 @@ describe('built-in C and C++ native outlines', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 120000);
 });
+
+test('native C and C++ outlines retain deeply nested pointer declarators', () => {
+  for (const extension of ['c', 'cpp']) {
+    const source = 'char ****message(void) { return 0; }\nint ordinary(void) { return 1; }';
+    expect(parseFile(source, `owned.${extension}`).symbols.map(symbol => symbol.name)).toEqual(['message', 'ordinary']);
+    expect(unfoldSymbol(source, `owned.${extension}`, 'message')).toContain('return 0');
+  }
+}, 120000);
+
+test('native C++ outlines, unfold and batch search retain reference returns and special members', async () => {
+  const source = 'struct Widget {};\nWidget& getWidget() { static Widget result; return result; }\nclass Counter {\n ~Counter() { cleanup(); }\n bool operator==(const Counter& other) { return true; }\n int increment() { return 1; }\n};';
+  const parsed = parseFile(source, 'owned.cpp');
+  expect(parsed.symbols.map(symbol => symbol.name)).toEqual(['Widget', 'getWidget', 'Counter']);
+  expect(parsed.symbols[2].children?.map(symbol => symbol.name)).toEqual(['~Counter', 'operator==', 'increment']);
+  expect(unfoldSymbol(source, 'owned.cpp', 'getWidget')).toContain('return result');
+  expect(unfoldSymbol(source, 'owned.cpp', '~Counter')).toContain('cleanup()');
+  expect(unfoldSymbol(source, 'owned.cpp', 'operator==')).toContain('return true');
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-cpp-declarators-'));
+  try {
+    writeFileSync(join(dir, 'owned.cpp'), source);
+    expect((await searchCodebase(dir, 'getWidget')).matchingSymbols.map(symbol => symbol.symbolName)).toContain('getWidget');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('native anonymous typedef struct is accessible by its declared type name', () => {
+  const source = 'typedef struct { int x; } Point;\n';
+  expect(parseFile(source, 'owned.c').symbols.map(symbol => symbol.name)).toEqual(['Point']);
+  expect(unfoldSymbol(source, 'owned.c', 'Point')).toContain(source.trim());
+}, 120000);
+
+test('uses the enclosing function name before callback parameters', () => {
+  const source = 'int apply(int (*callback)(int)) { return callback(1); }\nint (*factory(void))(int) { return 0; }';
+  expect(parseFile(source, 'owned.c').symbols.map(symbol => symbol.name)).toEqual(['apply', 'factory']);
+}, 120000);
