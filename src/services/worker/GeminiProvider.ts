@@ -492,7 +492,15 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
 
     if (!text) {
       logger.error('SDK', 'Empty response from Gemini');
-      return { content: '', ...(finishReason ? { finishReason } : {}) };
+      // Empty answers can still carry billed usage (safety refusal, thinking
+      // only, or an output cap). The session accounts for every completed turn.
+      return {
+        content: '',
+        tokensUsed: data.usageMetadata?.totalTokenCount,
+        inputTokens: data.usageMetadata?.promptTokenCount,
+        outputTokens: data.usageMetadata?.candidatesTokenCount,
+        ...(finishReason ? { finishReason } : {}),
+      };
     }
 
     const tokensUsed = data.usageMetadata?.totalTokenCount;
