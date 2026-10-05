@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -157,21 +157,44 @@ export async function searchCodebase(
 
     const checkSymbols = (symbols: typeof parsed.symbols, parent?: string) => {
       for (const sym of symbols) {
+        const qualifiedName = qualifySymbolName(sym.name, parent, parsed.language, sym.kind);
         let score = 0;
         let reason = "";
 
-        const nameScore = matchScore(sym.name.toLowerCase(), queryParts);
+        // Score the symbol's own name, so a class or module query does not match
+        // every method under it. Qualified Ruby queries retain their owner and
+        // method separator, including a partial method name.
+        const separator = qualifiedName.includes('#')
+          ? qualifiedName.lastIndexOf('#') : qualifiedName.lastIndexOf('.');
+        const ownerPrefix = qualifiedName.slice(0, separator + 1).toLowerCase();
+        // A partial Ruby method query must name its complete owner and method
+        // separator; a class-only query still must not pull in every method.
+        const qualifiedRubyScore = parsed.language === 'ruby' && sym.kind === 'method'
+          && separator >= 0 && queryLower.startsWith(ownerPrefix)
+          && queryLower.length > ownerPrefix.length
+          ? matchScore(qualifiedName.toLowerCase(), [queryLower]) : 0;
+        const rubyQualifiedQuery = parsed.language === 'ruby' && /[#.]/.test(queryLower);
+        const ownNameScore = rubyQualifiedQuery
+          ? (sym.kind === 'method' ? qualifiedRubyScore
+            : matchScore(qualifiedName.toLowerCase(), [queryLower]))
+          : matchScore(sym.name.toLowerCase(), queryParts);
+        const nameScore = ownNameScore
+          || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
         }
 
-        if (sym.signature.toLowerCase().includes(queryLower)) {
+        // Explicit Ruby ownership is a constraint, including when a comment
+        // or signature mentions a different owner. Unqualified text searches
+        // continue to search both fields.
+        const eligibleForTextMatch = !rubyQualifiedQuery || ownNameScore > 0;
+        if (eligibleForTextMatch && sym.signature.toLowerCase().includes(queryLower)) {
           score += 2;
           reason = reason ? `${reason} + signature` : "signature match";
         }
 
-        if (sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
+        if (eligibleForTextMatch && sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
           score += 1;
           reason = reason ? `${reason} + jsdoc` : "jsdoc match";
         }
@@ -180,7 +203,7 @@ export async function searchCodebase(
           fileHasMatch = true;
           fileSymbolMatches.push({
             filePath: relPath,
-            symbolName: parent ? `${parent}.${sym.name}` : sym.name,
+            symbolName: qualifiedName,
             kind: sym.kind,
             signature: sym.signature,
             jsdoc: sym.jsdoc,
@@ -191,7 +214,7 @@ export async function searchCodebase(
         }
 
         if (sym.children) {
-          checkSymbols(sym.children, sym.name);
+          checkSymbols(sym.children, qualifiedName);
         }
       }
     };

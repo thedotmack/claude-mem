@@ -141,6 +141,7 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (generator_function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (interface_declaration name: (type_identifier) @name) @iface
@@ -158,6 +159,7 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (generator_function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
@@ -189,6 +191,8 @@ const QUERIES: Record<string, string> = {
 
   ruby: `
 (method name: (identifier) @name) @func
+(singleton_method object: (_) @receiver name: (identifier) @name) @method
+(singleton_class value: (self)) @singleton_scope
 (class name: (constant) @name) @cls
 (module name: (constant) @name) @cls
 (call method: (identifier) @name) @imp
@@ -196,10 +200,30 @@ const QUERIES: Record<string, string> = {
 
   java: `
 (method_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @ctor
 (class_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
 (enum_declaration name: (identifier) @name) @enm
 (import_declaration) @imp
+`,
+
+  c: `
+(function_definition) @func
+(function_declarator declarator: (identifier) @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
+  cpp: `
+(function_definition) @func
+(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
 `,
 
   kotlin: `
@@ -322,6 +346,8 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "c": return "c";
+    case "cpp": return "cpp";
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
@@ -561,6 +587,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   const_func: "function",
   cls: "class",
   method: "method",
+  ctor: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -647,11 +674,35 @@ function isExported(
   }
 }
 
+// Tree-sitter columns are UTF-8 byte offsets, not JS string indices, and the
+// CLI prints no `text` for a capture that spans rows. Cutting the last row at
+// its end column before the first row at its start column keeps a one-row
+// capture free of offset arithmetic.
+function captureLines(lines: string[], capture: RawCapture): string[] {
+  const captured = lines.slice(capture.startRow, capture.endRow + 1);
+  if (captured.length === 0) return [];
+  const last = captured.length - 1;
+  captured[last] = Buffer.from(captured[last] ?? "").subarray(0, capture.endCol).toString();
+  captured[0] = Buffer.from(captured[0] ?? "").subarray(capture.startCol).toString();
+  return captured;
+}
+
+// Tree-sitter ranges include columns: row-only comparisons lose methods
+// on the opening line and cannot distinguish adjacent one-line declarations.
+function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
+  return (inner.startRow > outer.startRow
+      || (inner.startRow === outer.startRow && inner.startCol >= outer.startCol))
+    && (inner.endRow < outer.endRow
+      || (inner.endRow === outer.endRow && inner.endCol <= outer.endCol));
+}
+
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const singletonScopes: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
+  const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
@@ -659,20 +710,16 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "exp") {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
       }
+      if (cap.tag === "singleton_scope") {
+        singletonScopes.push(cap);
+      }
       if (cap.tag === "imp") {
-        const capturedLines = lines.slice(cap.startRow, cap.endRow + 1);
-        // Tree-sitter columns are UTF-8 byte offsets, not JS string indices.
-        // A multiline capture is not repeated as `text` in CLI query output.
-        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(cap.startCol).toString();
-        const last = capturedLines.length - 1;
-        const endCol = cap.endCol - (last === 0 ? cap.startCol : 0);
-        capturedLines[last] = Buffer.from(capturedLines[last]).subarray(0, endCol).toString();
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
         // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
         // is one capture that can span a whole file. Keep both ends, because an
         // import's module source comes last.
-        const importText = capturedLines.map(line => line.trim()).filter(Boolean).join(" ");
+        const importText = captureLines(lines, cap).map(line => line.trim()).filter(Boolean).join(" ");
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
           : importText);
@@ -680,21 +727,56 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // Names are captured independently of the surrounding pointer/reference
+  // wrappers. The first native function declarator inside a definition names
+  // that function, before any callback parameters or nested definitions.
+  const functionNames = matches.flatMap(match => match.captures.filter(c => c.tag === "function_name"))
+    .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
+  const findFunctionName = (definition: RawCapture): RawCapture | undefined => {
+    let low = 0;
+    let high = functionNames.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const capture = functionNames[mid];
+      if (capture.startRow < definition.startRow
+        || (capture.startRow === definition.startRow && capture.startCol < definition.startCol)) low = mid + 1;
+      else high = mid;
+    }
+    const capture = functionNames[low];
+    return capture && (capture.endRow < definition.endRow
+      || (capture.endRow === definition.endRow && capture.endCol <= definition.endCol)) ? capture : undefined;
+  };
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
-    const nameCapture = match.captures.find(c => c.tag === "name");
+    const nameCapture = match.captures.find(c => c.tag === "name")
+      ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
+        ? findFunctionName(kindCapture)
+        : undefined);
     if (!kindCapture) continue;
 
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const name = nameCapture?.text || "anonymous";
+    let name = nameCapture?.text || "anonymous";
+    if (kindCapture.tag === "ctor") {
+      const parameters = match.captures.find(c => c.tag === "parameters");
+      if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
+    }
+    const receiver = match.captures.find(c => c.tag === "receiver");
+    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
+      // Setext heading paragraphs include a trailing newline (and can span
+      // lines), so the CLI prints only their range, without a `text` value.
+      if (nameCapture && !nameCapture.text) {
+        name = captureLines(lines, nameCapture).join(" ").trim().replace(/\s+/g, " ");
+      }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const level = hashMatch ? hashMatch[1].length : 1;
+      const underline = lines[endRow - (kindCapture.endCol === 0 ? 1 : 0)] || "";
+      const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {
       const langTag = name !== "anonymous" ? name : "";
@@ -726,6 +808,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     ranges.set(sym, kindCapture);
+    const aliasedType = match.captures.find(c => c.tag === "aliased_type");
+    if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
   }
 
@@ -754,20 +838,52 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  // Tree-sitter ranges include columns: row-only comparisons lose methods
-  // on the opening line and cannot distinguish adjacent one-line declarations.
+  // A named typedef can capture both the alias and its same-named struct.
+  // Retain one structural symbol, with the enclosing typedef source range.
+  const duplicateAliases = new Set<CodeSymbol>();
+  if (language === "c" || language === "cpp") {
+    const structures = new Map<string, typeof containers>();
+    for (const container of containers) {
+      const entries = structures.get(container.sym.name) ?? [];
+      entries.push(container);
+      structures.set(container.sym.name, entries);
+    }
+    for (const alias of symbols.filter(symbol => symbol.kind === "type")) {
+      const range = ranges.get(alias)!;
+      const aliasedType = aliasedTypes.get(alias);
+      if (!aliasedType) continue;
+      // Only the direct type expression denotes the typedef's underlying type.
+      // A nested struct may share the alias name while denoting a distinct type.
+      const structure = structures.get(alias.name)?.find(({ range: inner }) =>
+        inner.startRow === aliasedType.startRow && inner.startCol === aliasedType.startCol
+        && inner.endRow === aliasedType.endRow && inner.endCol === aliasedType.endCol);
+      if (!structure) continue;
+      structure.sym.lineStart = alias.lineStart;
+      structure.sym.lineEnd = alias.lineEnd;
+      structure.sym.signature = alias.signature;
+      structure.range = range;
+      ranges.set(structure.sym, range);
+      duplicateAliases.add(alias);
+    }
+  }
+
   // The latest containing start is the nearest lexical container, so a nested
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
-  const nested = new Set<CodeSymbol>();
+  const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
+    if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
     const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
-      && (range.startRow > parent.startRow
-        || (range.startRow === parent.startRow && range.startCol >= parent.startCol))
-      && (range.endRow < parent.endRow
-        || (range.endRow === parent.endRow && range.endCol <= parent.endCol)));
+      && rangeContains(parent, range));
+    // A Ruby `def` inside `class << self` defines a class method, so it is named
+    // like `def self.x` — unless a class or module opened in that block is nearer.
+    if (sym.kind === "function" && singletonScopes.some(scope => rangeContains(scope, range)
+      && (!owner || rangeContains(owner.range, scope)))) {
+      sym.name = `self.${sym.name}`;
+      sym.kind = "method";
+    }
     if (owner) {
       if (sym.kind === "function") sym.kind = "method";
       owner.sym.children!.push(sym);
@@ -996,21 +1112,35 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
+// Ruby distinguishes instance methods with # and singleton methods with .
+// CSS selectors escape literal dots before adding ownership separators.
+export function qualifySymbolName(name: string, parent: string | undefined, language: string, kind?: CodeSymbol["kind"]): string {
+  if (language === "ruby" && kind === "method") {
+    if (name.startsWith("self.")) return parent ? `${parent}.${name.slice(5)}` : name;
+    if (name.includes(".")) return name;
+    return parent ? `${parent}#${name}` : name;
+  }
+  const segment = language === "css" || language === "scss"
+    ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
+  return parent ? `${parent}.${segment}` : segment;
+}
+
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[]): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string): CodeSymbol | null => {
     for (const sym of symbols) {
-      if (sym.name === symbolName) return sym;
+      const qualifiedName = qualifySymbolName(sym.name, parent, file.language, sym.kind);
+      if ((qualified ? qualifiedName : sym.name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children);
+        const found = findSymbol(sym.children, qualified, qualifiedName);
         if (found) return found;
       }
     }
     return null;
   };
 
-  const symbol = findSymbol(file.symbols);
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
   if (!symbol) return null;
 
   const lines = content.split("\n");

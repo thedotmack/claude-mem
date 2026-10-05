@@ -205,18 +205,11 @@ export class ChromaSearchStrategy {
       startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
     }
 
-    const metadataByIdMap = new Map<number, ChromaMetadata>();
-    for (const meta of chromaResults.metadatas) {
-      if (meta?.sqlite_id !== undefined && !metadataByIdMap.has(meta.sqlite_id)) {
-        metadataByIdMap.set(meta.sqlite_id, meta);
-      }
-    }
-
+    // ChromaSync deduplicates by (document type, SQLite id) and returns
+    // aligned arrays. IDs are table-local: an observation and a prompt can
+    // both be id 1, so keying metadata by the numeric id loses one category.
     return chromaResults.ids
-      .map(id => ({
-        id,
-        meta: metadataByIdMap.get(id) as ChromaMetadata
-      }))
+      .map((id, index) => ({ id, meta: chromaResults.metadatas[index] }))
       .filter(item => item.meta && item.meta.created_at_epoch != null
         && (!startEpoch || item.meta.created_at_epoch >= startEpoch)
         && (!endEpoch || item.meta.created_at_epoch <= endEpoch));
