@@ -84,7 +84,7 @@ class Bucket(unittest.TestCase):
         b = measure.bucket_rule(self.measured(dt.datetime(2026, 9, 27, 12, 0, tzinfo=UTC)), w)
         self.assertEqual((b["bucket"], b["usd"], b["covers_window"]), ("usage_monthly", 99.0, True))
         self.assertEqual(b["label"], "OpenRouter measured, current UTC month Tue 1 Sep – now")   # unpadded day, no "%-d" (Windows rejects it)
-        w2 = self.window("2026-08-28", "2026-09-02")                      # crosses the month boundary: reference only
+        w2 = self.window("2026-08-28", "2026-09-02")                        # crosses the month boundary: reference only
         b2 = measure.bucket_rule(self.measured(dt.datetime(2026, 9, 27, 12, 0, tzinfo=UTC)), w2)
         self.assertFalse(b2["covers_window"])
 
