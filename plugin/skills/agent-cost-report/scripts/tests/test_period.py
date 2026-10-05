@@ -25,15 +25,16 @@ class MissingTimezoneData(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("America/Los_Angeles", result.stderr)
-        prefix = "& " if os.name == "nt" else ""
-        command = re.search(
-            r'^' + re.escape(prefix) + r'"(.+)" -m pip install tzdata$',
-            result.stderr, re.MULTILINE,
-        )
+        self.assertNotIn("Traceback", result.stderr)
+        # The plain quoted line runs in cmd, Git Bash (Claude Code's Bash tool on Windows) and POSIX shells.
+        command = re.search(r'^"(.+)" -m pip install tzdata$', result.stderr, re.MULTILINE)
         self.assertIsNotNone(command)
         self.assertTrue(os.path.samefile(command.group(1), sys.executable))
-        self.assertNotIn("Traceback", result.stderr)
-
+        # PowerShell needs the call operator, so Windows gets a second line for it.
+        powershell_line = f'PowerShell: & "{command.group(1)}" -m pip install tzdata'
+        self.assertEqual(powershell_line in result.stderr.splitlines(), os.name == "nt")
+        # The zero-install route the #4250 reporter used.
+        self.assertIn("PYTHONTZPATH", result.stderr)
 
     def test_windows_install_command_handles_spaces_in_interpreter_path(self):
         with open(_paths.ACR_PY, encoding="utf-8") as script:
@@ -51,10 +52,13 @@ class MissingTimezoneData(unittest.TestCase):
                 patch("os.name", "nt"), patch("sys.executable", interpreter):
             with self.assertRaises(SystemExit) as error:
                 exec(code, {"__file__": _paths.ACR_PY, "__name__": "__main__"})
-        self.assertEqual(
-            str(error.exception).splitlines()[-1],
-            '& "C:\\Program Files\\Python\\python.exe" -m pip install tzdata',
-        )
+        lines = str(error.exception).splitlines()
+        plain_line = '"C:\\Program Files\\Python\\python.exe" -m pip install tzdata'
+        # cmd and Git Bash (Claude Code's Bash tool on Windows) run the plain quoted line;
+        # PowerShell needs the & call operator, so it gets a line of its own.
+        self.assertIn(plain_line, lines)
+        self.assertIn("PowerShell: & " + plain_line, lines)
+        self.assertIn("PYTHONTZPATH", lines[-1])
 
 
 class DefaultWindow(unittest.TestCase):

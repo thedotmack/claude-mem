@@ -16,13 +16,16 @@ try:
     from acr import devices, measure, period, render, rollup, sample, sync, transcripts  # noqa: E402
     from acr import prices as prices_mod  # noqa: E402
 except ZoneInfoNotFoundError:
+    # The plain quoted line runs in cmd, Git Bash (Claude Code's Bash tool on Windows) and POSIX
+    # shells. PowerShell reads a leading quoted string as a value, so it needs the & call operator.
     install_command = f'"{sys.executable}" -m pip install tzdata'
-    if os.name == "nt":
-        install_command = "& " + install_command
+    powershell_line = f"\nPowerShell: & {install_command}" if os.name == "nt" else ""
     sys.exit(
         "acr.py: IANA timezone data for America/Los_Angeles is unavailable. "
         "Install tzdata for this Python interpreter, then rerun the command:\n"
-        + install_command
+        f"{install_command}{powershell_line}\n"
+        "Or, without installing anything, set PYTHONTZPATH to an existing zoneinfo directory "
+        "(Git for Windows ships one) and rerun."
     )
 
 USAGE_FILE = "usage.json"
