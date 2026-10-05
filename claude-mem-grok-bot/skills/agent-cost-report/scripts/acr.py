@@ -43,7 +43,7 @@ def cmd_collect(args):
         doc["project_filter"] = args.project  # applied when rows are joined to sdk_sessions (rollup)
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, USAGE_FILE)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh)
     c = doc["collector"]
     tokens = sum(r["input"] + r["output"] + r["cache_write"] + r["cache_read"] for r in doc["rows"])

@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
+import { CONTEXT_TAG_OPEN, findContextBlockRange } from '../../utils/context-injection.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 
 const OPENCODE_PLUGIN_CONFIG_PATH = './plugins/claude-mem.js';
@@ -335,14 +335,13 @@ export function removeContextBlockFromAgentsMd(): boolean {
     return false;
   }
 
-  const tagStartIndex = content.indexOf(CONTEXT_TAG_OPEN);
-  const tagEndIndex = content.indexOf(CONTEXT_TAG_CLOSE);
-  if (tagStartIndex === -1 || tagEndIndex === -1) return true;
+  const block = findContextBlockRange(content);
+  if (!block) return true;
 
   const trimmedContent = (
-    content.slice(0, tagStartIndex).trimEnd() +
+    content.slice(0, block.start).trimEnd() +
     '\n' +
-    content.slice(tagEndIndex + CONTEXT_TAG_CLOSE.length).trimStart()
+    content.slice(block.end).trimStart()
   ).trim();
   try {
     writeOrRemoveCleanedAgentsMd(agentsMdPath, trimmedContent);

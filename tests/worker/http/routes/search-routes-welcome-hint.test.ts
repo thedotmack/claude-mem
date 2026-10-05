@@ -366,7 +366,11 @@ describe('SearchRoutes Welcome Hint', () => {
       countQueryStub = mock(() => ({ count: 7 }));
       prepareStub = mock(() => ({ get: countQueryStub }));
       mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
-      workStateEntriesStub.mockImplementation(releaseEntries);
+      // Both request keys are checkout aliases. Match the scope annotation
+      // supplied by SessionStore.getWorkStateEntries for those explicit keys.
+      workStateEntriesStub.mockImplementation(() => releaseEntries().map(entry => ({
+        ...entry, scope_project: '/path/worktree',
+      })));
       const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
       const res = createMockRes();
 
