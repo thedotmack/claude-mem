@@ -49,6 +49,7 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
         async function settle() { for (let i = 0; i < 4; i++) await new Promise(requestAnimationFrame); }
         (async () => {
           try {
+            await fetch('/ready');
             const deadline = Date.now() + 6000;
             while (!document.querySelector('[title="Filter to Bugfix"]')) {
               if (Date.now() > deadline) throw new Error('Session did not render');
@@ -71,6 +72,8 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
         })();
       ` },
     });
+    let markReady!: () => void;
+    const ready = new Promise<void>(resolve => { markReady = resolve; });
     let resolveReport!: (report: unknown) => void;
     const result = new Promise(resolve => { resolveReport = resolve; });
     let deletes = 0; let pages = 0;
@@ -78,6 +81,7 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
       const path = new URL(request.url).pathname;
       if (path === '/') return new Response('<style>.card{min-height:2000px}</style><div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
       if (path === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+      if (path === '/ready') { markReady(); return new Response('ready'); }
       if (path === '/api/observation/1' && request.method === 'DELETE') { deletes++; return Response.json({ success: true }); }
       if (path === '/older-page') { pages++; return Response.json({ items: [older], hasMore: false }); }
       if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
@@ -89,6 +93,12 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
       { stdout: 'ignore', stderr: 'ignore' });
     let timeout: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Chrome's first launch in a CI job can take 8-11 s, so startup gets its own
+      // budget and the scenario keeps its 9 s.
+      await Promise.race([ready, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Browser page did not become ready')), 30000);
+      })]);
+      clearTimeout(timeout);
       const report = await Promise.race([result, new Promise(resolve => {
         timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 9000);
       })]);
@@ -99,7 +109,7 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
       clearTimeout(timeout); child.kill(); await child.exited; server.stop(true);
       rmSync(profile, { recursive: true, force: true });
     }
-  }, 15000);
+  }, 45000);
 
 }
 
@@ -150,6 +160,7 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
       }
       (async () => {
         try {
+          await fetch('/ready');
           await until(() => observers.length === 1 && observers[0].targets.length === 1);
           const mountSentinel = observers[0].targets[0];
           setStep('loading');
@@ -168,12 +179,15 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
       })();
     ` },
   });
+  let markReady!: () => void;
+  const ready = new Promise<void>(resolve => { markReady = resolve; });
   let resolveReport!: (report: unknown) => void;
   const result = new Promise(resolve => { resolveReport = resolve; });
   const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
     const path = new URL(request.url).pathname;
     if (path === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
     if (path === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+    if (path === '/ready') { markReady(); return new Response('ready'); }
     if (path === '/result') { resolveReport(await request.json()); return new Response('received'); }
     return new Response('not found', { status: 404 });
   } });
@@ -183,6 +197,10 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
     { stdout: 'ignore', stderr: 'ignore' });
   let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
+    await Promise.race([ready, new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error('Browser page did not become ready')), 30000);
+    })]);
+    clearTimeout(timeout);
     const report = await Promise.race([result, new Promise(resolve => {
       timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 9000);
     })]);
@@ -191,4 +209,4 @@ for (const mode of ['more', 'exhausted', 'loading'] as const) {
     clearTimeout(timeout); child.kill(); await child.exited; server.stop(true);
     rmSync(profile, { recursive: true, force: true });
   }
-}, 15000);
+}, 45000);
