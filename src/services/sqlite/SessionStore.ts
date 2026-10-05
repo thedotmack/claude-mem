@@ -4063,26 +4063,29 @@ export class SessionStore {
     let endEpoch: number;
 
     if (anchorObservationId !== null) {
+      // These probes consume only the boundary epoch. Row-value comparisons
+      // retain the ID tie boundary; ordering IDs within one epoch cannot change
+      // the time window and would force a sort beyond the existing epoch index.
       const beforeQuery = `
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.id <= ? ${observationScope.clause}
-        ORDER BY o.id DESC
+        WHERE (o.created_at_epoch, o.id) <= (?, ?) ${observationScope.clause}
+        ORDER BY o.created_at_epoch DESC
         LIMIT ?
       `;
       const afterQuery = `
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE o.id >= ? ${observationScope.clause}
-        ORDER BY o.id ASC
+        WHERE (o.created_at_epoch, o.id) >= (?, ?) ${observationScope.clause}
+        ORDER BY o.created_at_epoch ASC
         LIMIT ?
       `;
 
       try {
-        const beforeRecords = this.db.prepare(beforeQuery).all(anchorObservationId, ...observationScope.params, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
-        const afterRecords = this.db.prepare(afterQuery).all(anchorObservationId, ...observationScope.params, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
+        const beforeRecords = this.db.prepare(beforeQuery).all(anchorEpoch, anchorObservationId, ...observationScope.params, depthBefore + 1) as Array<{id: number; created_at_epoch: number}>;
+        const afterRecords = this.db.prepare(afterQuery).all(anchorEpoch, anchorObservationId, ...observationScope.params, depthAfter + 1) as Array<{id: number; created_at_epoch: number}>;
 
         if (beforeRecords.length === 0 && afterRecords.length === 0) {
           return { observations: [], sessions: [], prompts: [] };
