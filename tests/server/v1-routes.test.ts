@@ -92,6 +92,15 @@ describe('server REST API v1 routes', () => {
     expect(unrelated).toEqual([]);
   });
 
+  it.each([['TM', '™'], ['ＡＢＣ TM files', 'ＡＢＣ ™ ﬁles'], ['a c', '℀']])('normalizes compatibility symbols in %s using %s', async (title, query) => {
+    const { project } = await (await post('/v1/projects', { name: 'Symbol compatibility search' })).json();
+    const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual([memory.id]);
+    const { memories: unrelated } = await (await post('/v1/search', { projectId: project.id, query: query + ' absent' })).json();
+    expect(unrelated).toEqual([]);
+  });
+
   it('creates projects, sessions, events, memories, and searchable context', async () => {
     const projectResponse = await post('/v1/projects', {
       name: 'Claude Mem',

@@ -94,7 +94,8 @@ function buildFtsQuery(query: string): string {
   // unicode61 keeps compatibility characters in stored documents. Each
   // query word can match its original or normalized form independently;
   // whole-query alternatives miss documents mixing those token forms.
-  const tokens = query.match(/[\p{L}\p{N}_][\p{L}\p{N}\p{M}_]*/gu) ?? [];
+  // Keep symbols until normalization: ™ becomes TM and ℀ becomes a/c.
+  const tokens = query.match(/[\p{L}\p{N}\p{S}_][\p{L}\p{N}\p{M}\p{S}_]*/gu) ?? [];
   return tokens.map(token => {
     const alternatives = [...new Set([token, token.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
     return alternatives.length > 1
