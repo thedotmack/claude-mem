@@ -365,7 +365,7 @@ export function getToolUsesByIds(
   const conditions = [`(${idClauses.join(' OR ')})`];
 
   if (options.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(options.project);
   }
   if (options.contentSessionId) {
@@ -398,7 +398,7 @@ export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): 
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
@@ -464,7 +464,7 @@ export function countToolUses(
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
