@@ -268,6 +268,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   haskell: `
+(class_declarations (signature name: (variable) @name) @haskell_signature)
 (function name: (variable) @name) @func
 (type_synomym name: (name) @name) @tdef
 (newtype name: (name) @name) @tdef
@@ -588,6 +589,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   cls: "class",
   method: "method",
   ctor: "method",
+  haskell_signature: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -701,6 +703,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const singletonScopes: RawCapture[] = [];
+  const haskellSignatures = new Set<CodeSymbol>();
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -807,6 +810,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       containers.push({ sym, range: kindCapture });
     }
 
+    if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
     ranges.set(sym, kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
@@ -871,6 +875,23 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
+  // A typeclass signature and its default implementation describe one method.
+  // Keep the type annotation in the outline and both lines when unfolding.
+  for (const signature of haskellSignatures) {
+    const signatureRange = ranges.get(signature)!;
+    const owner = containers.find(container => rangeContains(container.range, signatureRange));
+    const implementation = symbols.find(candidate => candidate.kind === "function"
+      && candidate.name === signature.name
+      && containers.find(container => rangeContains(container.range, ranges.get(candidate)!)) === owner);
+    if (implementation) {
+      const implementationRange = ranges.get(implementation)!;
+      implementation.signature = signature.signature;
+      implementation.jsdoc = signature.jsdoc ?? implementation.jsdoc;
+      implementation.lineStart = signature.lineStart;
+      ranges.set(implementation, { ...implementationRange, startRow: signatureRange.startRow, startCol: signatureRange.startCol });
+      duplicateAliases.add(signature);
+    }
+  }
   const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
     if (duplicateAliases.has(sym)) continue;
