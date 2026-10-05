@@ -167,6 +167,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   python: `
+(decorated_definition definition: (_) @decorated_inner) @decorated_outer
 (function_definition name: (identifier) @name) @func
 (class_definition name: (identifier) @name) @cls
 (import_statement) @imp
@@ -701,6 +702,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const singletonScopes: RawCapture[] = [];
+  const decoratedRanges = new Map<string, RawCapture>();
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -709,6 +711,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+      }
+      if (cap.tag === "decorated_outer") {
+        const inner = match.captures.find(capture => capture.tag === "decorated_inner");
+        if (inner) decoratedRanges.set(`${inner.startRow}:${inner.startCol}`, cap);
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -797,7 +803,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       kind,
       signature,
       jsdoc: comment || docstring,
-      lineStart: startRow,
+      lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
       exported: isExported(name, startRow, endRow, exportRanges, lines, language),
     };
@@ -807,7 +813,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       containers.push({ sym, range: kindCapture });
     }
 
-    ranges.set(sym, kindCapture);
+    ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
