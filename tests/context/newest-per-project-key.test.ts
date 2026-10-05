@@ -85,6 +85,33 @@ describe('SessionStart newest rows per project key (v63)', () => {
     expect(titles).toEqual(['merged-new', 'app-mid', 'app-old']);
   });
 
+  it('keeps newest rows and indexed seeks when adoption expands beyond 250 keys', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      for (let index = 0; index < 251; index++) seed(store, `app/wt-${index}`, `row-${index}`, (index * 37) % 251 + 1);
+      store.db.run("UPDATE observations SET merged_into_project = 'app'");
+      store.db.run("UPDATE session_summaries SET merged_into_project = 'app'");
+      const adoptedKeys = store.getProjectReadKeys(['app']);
+      // Interleave timestamps across batches and repeat a matching key with
+      // different casing in the last batch: overlap must not consume the cap.
+      const keys = [...adoptedKeys.filter((_, i) => i % 2 === 0), ...adoptedKeys.filter((_, i) => i % 2 === 1), 'APP'];
+      const newest = Array.from({ length: 251 }, (_, index) => index).sort((a, b) => (b * 37) % 251 - (a * 37) % 251).map(index => `row-${index}`);
+      expect(keys.length).toBeGreaterThan(250);
+      const captured = capturePrepared(store.db);
+      const observations = queryObservationsMulti(store, keys, config);
+      expect(observations.map(row => row.title)).toEqual(newest.slice(0, 3));
+      expect(new Set(observations.map(row => row.id)).size).toBe(observations.length);
+      const summaries = querySummariesMulti(store, keys, config);
+      expect(summaries.map(row => row.request)).toEqual(newest.slice(0, 2));
+      expect(new Set(summaries.map(row => row.id)).size).toBe(summaries.length);
+      for (const { sql, params } of captured) {
+        expect((sql.match(/ UNION /g) ?? []).length).toBeLessThan(500);
+        const plan = (store.db.query(`EXPLAIN QUERY PLAN ${sql}`).all(...(params as [])) as Array<{ detail: string }>).map(row => row.detail).join('\n');
+        expect(plan).toContain(sql.includes('FROM observations o') ? 'idx_observations_project_nocase_recent' : 'idx_summaries_project_nocase_recent');
+      }
+    } finally { store.close(); }
+  });
+
   it('seeks the recency indexes instead of sorting every matching row', () => {
     const store = setup();
     const captured = capturePrepared(store.db);

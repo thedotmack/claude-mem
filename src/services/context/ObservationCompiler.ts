@@ -47,6 +47,16 @@ const OBSERVATION_SELECT = `
 // indexes, and keep the newest `limit` ids of the union.
 const PROJECT_KEY_COLUMNS = ['project', 'merged_into_project'] as const;
 
+// SQLite accepts at most 500 terms in a compound SELECT. Each key contributes
+// one term per project column, so bound batches before applying the global cap.
+const PROJECT_KEYS_PER_QUERY = 250;
+
+function newestUniqueRows<T extends { id: number; created_at_epoch: number }>(batches: T[][], limit: number): T[] {
+  const rows = new Map<number, T>();
+  for (const batch of batches) for (const row of batch) rows.set(row.id, row);
+  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch).slice(0, limit);
+}
+
 function newestIdsPerProjectKeySql(
   alias: string,
   projectCount: number,
@@ -116,6 +126,13 @@ export function queryObservationsNewest(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
   const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  if (projects.length > PROJECT_KEYS_PER_QUERY) {
+    const batches: LocalObservation[][] = [];
+    for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {
+      batches.push(queryObservationsNewest(db, config, { ...options, projects: projects.slice(offset, offset + PROJECT_KEYS_PER_QUERY) }));
+    }
+    return newestUniqueRows(batches, options.limit);
+  }
 
   const manualClause = options.includeManualSaves
     ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
@@ -199,6 +216,13 @@ export function querySummariesMulti(
 ): LocalSessionSummary[] {
   if (projects.length === 0) return [];
   const limit = config.sessionCount + SUMMARY_LOOKAHEAD;
+  if (projects.length > PROJECT_KEYS_PER_QUERY) {
+    const batches: LocalSessionSummary[][] = [];
+    for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {
+      batches.push(querySummariesMulti(db, projects.slice(offset, offset + PROJECT_KEYS_PER_QUERY), config, platformSource));
+    }
+    return newestUniqueRows(batches, limit);
+  }
   const platformParams = [platformSource ?? null, platformSource ?? null];
 
   const winnersSql = newestIdsPerProjectKeySql('ss', projects.length, keyPredicate => `
