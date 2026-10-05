@@ -98,6 +98,7 @@
           "branches",
           "troubleshooting",
           "platform-integration",
+          "opencode-integration",
           "openclaw-integration",
           "kimi-integration"
         ]

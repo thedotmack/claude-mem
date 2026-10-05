@@ -1,0 +1,30 @@
+---
+title: "OpenCode"
+description: "Install Claude-Mem context, capture and recall for OpenCode 1 or 2."
+---
+
+Install Claude-Mem for the OpenCode version on your command path:
+
+```sh
+npx claude-mem install --ide opencode
+```
+
+The installer detects `opencode` or `opencode2`, installs one memory plugin, and registers the local MCP server for recall. OpenCode 1 keeps its factory plugin and `plugin` configuration. OpenCode 2 uses its native plugin definition, `plugins` configuration and `mcp.servers` configuration. The worker resolves memory from the session's checkout.
+
+If both executables are installed, `opencode` takes precedence. Select the version explicitly when needed:
+
+```sh
+CLAUDE_MEM_OPENCODE_API=v2 npx claude-mem install --ide opencode
+```
+
+Use `v1` for OpenCode 1. Windows PowerShell users can set `$env:CLAUDE_MEM_OPENCODE_API = 'v2'` before running the installer. Reinstall after changing host versions. The same installed plugin file is replaced, so Claude-Mem has one automatic capture path.
+
+Configuration lives in `OPENCODE_CONFIG_DIR`, or `~/.config/opencode` by default. Existing `opencode.jsonc` is edited in place; unrelated plugins, MCP servers, options and comments are retained. The installer moves its own entries between version layouts. Other v1 plugins and MCP servers must be migrated with the [OpenCode migration guide](https://opencode.ai/v2/docs/migrate-v1) before enabling v2. Their configuration is preserved when that prerequisite is missing.
+
+Disable an existing `@ephemushroom/opencode-claude-mem` connector before installing first-party capture. The installer reports that conflict instead of enabling a second capture plugin.
+
+Restart OpenCode after installation. Memory context is added to model requests. Real consumed prompts anchor capture before native tool results; queued, synthetic and private activity is excluded. Host session IDs and tool-call IDs remain intact. A turn is summarized once when execution or compaction completes. Recall tools are supplied through the `claude-mem` MCP server.
+
+If memory is unavailable, run `npx claude-mem doctor` and check that the worker is running. The plugin leaves the model request usable and retries a failed anchor on the next context request. Uninstall removes Claude-Mem's plugin, license and MCP entries while keeping unrelated configuration.
+
+The v2 hook mapping and consumed-turn selection build on [Bryan's community connector](https://github.com/Ephemushroom/opencode-claude-mem) (@Ephemushroom). Its MIT license and pinned source attribution ship with the plugin. The v1 connector already included in Claude-Mem remains supported.

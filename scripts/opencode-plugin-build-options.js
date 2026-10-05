@@ -20,3 +20,9 @@ export const OPENCODE_PLUGIN_BUILD_OPTIONS = {
     'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
   ],
 };
+
+// Separate object definition: a v2 export cannot be loaded by the v1 factory loader.
+export const OPENCODE_V2_PLUGIN_BUILD_OPTIONS = {
+  ...OPENCODE_PLUGIN_BUILD_OPTIONS,
+  entryPoints: ['src/integrations/opencode-plugin/v2.ts'],
+};
