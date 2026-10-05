@@ -148,6 +148,12 @@ export const contextHandler: EventHandler = {
       });
       return fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
     };
+    const readPlainFallback = (colors: boolean): string | null => {
+      if (serverRuntime || settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE !== 'true') return null;
+      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd, undefined, true);
+      const cached = readContextCache(keys, cacheNowEpochMs);
+      return cached ? fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce) : null;
+    };
     const cachedModelContext = readCachedRender(false);
 
     // ponytail: Codex's MCP normally starts the worker; this one bounded
@@ -155,9 +161,17 @@ export const contextHandler: EventHandler = {
     const workerOptions = input.platform === 'codex'
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
-    const contextResult = serverRender
+    let workerOutageNotice: string | null = null;
+    let contextResult = serverRender
       ? serverRender.model
       : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    if (isWorkerFallback(contextResult)) {
+      const plainFallback = readPlainFallback(false);
+      if (plainFallback !== null) {
+        contextResult = plainFallback;
+        workerOutageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      }
+    }
     if (isWorkerFallback(contextResult)) {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
@@ -230,6 +244,8 @@ export const contextHandler: EventHandler = {
           ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
+      } else if (isWorkerFallback(colorResult)) {
+        coloredTimeline = readPlainFallback(input.platform === 'claude-code')?.trim() ?? '';
       }
     }
 
@@ -263,7 +279,9 @@ export const contextHandler: EventHandler = {
         hookEventName: 'SessionStart',
         additionalContext
       },
-      systemMessage
+      systemMessage: workerOutageNotice
+        ? [workerOutageNotice, systemMessage].filter(Boolean).join('\n\n')
+        : systemMessage
     };
   }
 };

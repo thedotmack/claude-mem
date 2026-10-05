@@ -16,6 +16,8 @@ export interface ContextInput {
    * itself must opt out (#4221).
    */
   includeHealthWarning?: boolean;
+  /** Explicitly omit prior transcript text when building a shared cached fallback. */
+  includePriorMessage?: boolean;
   /**
    * Characters delivered beside this block (the work-state section), taken off
    * the 10K delivery limit so the combined output still fits it.

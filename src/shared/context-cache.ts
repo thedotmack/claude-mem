@@ -105,6 +105,8 @@ export interface ContextCacheKeys {
   cwd?: string;
   /** Current host session excluded from optional prior-transcript context. */
   sessionId?: string;
+  /** Producer explicitly omitted prior transcripts; safe for worker-outage fallback. */
+  omitPriorMessage?: true;
 }
 
 export const ALL_PLATFORM_SOURCES_CACHE_KEY = 'all';
@@ -120,6 +122,7 @@ export function contextCacheKeys(
   colors: boolean,
   cwd?: string,
   sessionId?: string,
+  omitPriorMessage = false,
 ): ContextCacheKeys {
   return {
     projects: projects.map(project => project.trim()).filter(Boolean),
@@ -127,6 +130,7 @@ export function contextCacheKeys(
     colors,
     ...(cwd ? { cwd } : {}),
     ...(sessionId ? { sessionId } : {}),
+    ...(omitPriorMessage ? { omitPriorMessage: true as const } : {}),
   };
 }
 
@@ -136,7 +140,7 @@ export function contextCacheDir(): string {
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
   return createHash('sha256')
-    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : []), ...(keys.sessionId ? [{ sessionId: keys.sessionId }] : [])]))
+    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : []), ...(keys.sessionId ? [{ sessionId: keys.sessionId }] : []), ...(keys.omitPriorMessage === true ? [{ omitPriorMessage: true }] : [])]))
     .digest('hex');
 }
 

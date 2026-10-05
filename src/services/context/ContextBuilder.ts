@@ -426,6 +426,7 @@ interface ContextScope {
 
 function resolveContextScope(input: ContextInput | undefined): ContextScope {
   const config = loadContextConfig();
+  if (input?.includePriorMessage === false) config.showLastMessage = false;
   const cwd = input?.cwd ?? process.cwd();
   const context = getProjectContext(cwd);
 

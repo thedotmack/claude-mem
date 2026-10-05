@@ -116,7 +116,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow'> | null = null,
+    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> | null = null,
     // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
     private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
   ) {
@@ -403,6 +403,9 @@ export class SearchRoutes extends BaseRouteHandler {
     // from here on. `full` is a one-off human request and is never cached.
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
+      if (hostSessionId) {
+        this.contextCache.warmVariant(contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined, undefined, true));
+      }
       this.contextCache.recordLiveRender(
         contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined, hostSessionId),
         { body: rendered.body, cacheable: rendered.cacheable },
@@ -424,6 +427,7 @@ export class SearchRoutes extends BaseRouteHandler {
       projects: keys.projects,
       cwd: keys.cwd,
       sessionId: keys.sessionId,
+      omitPriorMessage: keys.omitPriorMessage,
       platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
       forHuman: keys.colors,
       full: false,
@@ -443,6 +447,7 @@ export class SearchRoutes extends BaseRouteHandler {
     full: boolean;
     cwd?: string;
     sessionId?: string;
+    omitPriorMessage?: boolean;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
     // Health banners change with time; prior transcripts depend on the current
@@ -499,6 +504,7 @@ export class SearchRoutes extends BaseRouteHandler {
       full,
       reserveChars: workStateSection ? workStateSection.length + 2 : 0,
       timePlaceholders: true,
+      ...(request.omitPriorMessage ? { includePriorMessage: false } : {}),
     }, forHuman);
     return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable };
   }

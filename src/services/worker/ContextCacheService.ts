@@ -27,6 +27,7 @@ import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import {
   contextCacheDir,
+  readContextCache,
   contextCacheVariantId,
   listContextCacheFiles,
   removeContextCache,
@@ -162,6 +163,18 @@ export class ContextCacheService {
       return;
     }
     this.persistRender(keys, render, renderedAtEpochMs);
+  }
+
+  /** Warm a shared variant through the existing render queue, once its file is missing. */
+  warmVariant(keys: ContextCacheKeys): void {
+    if (keys.sessionId) return;
+    const variantId = contextCacheVariantId(keys);
+    if (!this.variants.has(variantId)) {
+      this.recordLiveRender(keys, { body: '', cacheable: false }, this.now());
+    }
+    if (readContextCache(keys, this.now())) return;
+    this.pendingVariantIds.add(variantId);
+    this.scheduleRender();
   }
 
   /** Pass to recordLiveRender to discard a render that a removal overtook. */
@@ -355,7 +368,8 @@ export class ContextCacheService {
           entry && Array.isArray(entry.keys?.projects) && typeof entry.keys.platformSource === 'string'
           && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'
           && (entry.keys.cwd === undefined || typeof entry.keys.cwd === 'string')
-          && (entry.keys.sessionId === undefined || typeof entry.keys.sessionId === 'string')),
+          && (entry.keys.sessionId === undefined || typeof entry.keys.sessionId === 'string')
+          && (entry.keys.omitPriorMessage === undefined || entry.keys.omitPriorMessage === true)),
       };
     } catch (error) {
       // Variants are re-learned from the next live requests; orphaned files are removed in start().
