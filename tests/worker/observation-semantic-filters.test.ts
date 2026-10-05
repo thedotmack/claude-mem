@@ -33,6 +33,9 @@ const fixture = String.raw`
   for (const row of wanted) make(...row);
   const matches = (where, meta) => !where || (where.$and ? where.$and.every(w => matches(w, meta)) : where.$or ? where.$or.some(w => matches(w, meta)) : Object.entries(where).every(([key, value]) => typeof value === 'object' && value.$in ? value.$in.includes(meta[key]) : meta[key] === value));
   const calls = [];
+  const hydratedIds = [];
+  const nativeHydrate = store.getObservationsByIds.bind(store);
+  store.getObservationsByIds = (ids, options) => { hydratedIds.push(...ids); return nativeHydrate(ids, options); };
   ChromaMcpManager.getInstance().callTool = async (tool, args) => {
     if (tool === 'chroma_create_collection') return {};
     if (tool !== 'chroma_query_documents') throw new Error('unexpected tool ' + tool);
@@ -42,6 +45,17 @@ const fixture = String.raw`
   };
   try {
     const results = [];
+    if (process.env.BUDGET_SCENARIO === '1') {
+      const manager = new SearchManager(new SessionSearch(store.db), store, new ChromaSync('obs-filters'), new FormattingService(), new TimelineService());
+      const handlers = new Map();
+      new SearchRoutes(manager).setupRoutes({ use() {}, get(path, handler) { handlers.set(path, handler); }, post() {} });
+      const body = await new Promise((resolve, reject) => {
+        const res = { headersSent: false, locals: {}, status() { return res; }, json(body) { resolve(body); return res; } };
+        handlers.get('/api/search/observations')({ path: '/api/search/observations', query: { query: 'nativefilterneedle', project: 'obs-filters', limit: '1', concepts: 'target-concept' }, body: {}, get() {} }, res, reject);
+      });
+      console.log(JSON.stringify({ text: body.content[0].text, calls, hydratedIds }));
+      process.exit(0);
+    }
     for (const chroma of [null, new ChromaSync('obs-filters')]) {
       const manager = new SearchManager(new SessionSearch(store.db), store, chroma, new FormattingService(), new TimelineService());
       const handlers = new Map();
@@ -89,6 +103,17 @@ function expectFilteredResults(results: any[]) {
 }
 
 describe('observation endpoint semantic row filters', () => {
+  it('bounds raw semantic work, hydrates each ID once and uses filtered keyword fallback', () => {
+    for (const fragments of ['1', '5']) {
+      const result = runFixture({ BUDGET_SCENARIO: '1', UNRELATED_COUNT: '8192', FRAGMENT_COUNT: fragments });
+      expect(result.text).toContain('WANTED_CURRENT');
+      expect(result.text).not.toContain('UNRELATED_CURRENT');
+      expect(result.calls.length).toBeLessThanOrEqual(10);
+      expect(result.calls.reduce((total: number, call: any) => total + call.n_results, 0)).toBeLessThanOrEqual(13100);
+      expect(result.hydratedIds.length).toBeLessThanOrEqual(1600);
+      expect(new Set(result.hydratedIds).size).toBe(result.hydratedIds.length);
+    }
+  });
   it('applies filters on both production paths without depending on a tied FTS winner', () => {
     for (const reversed of ['0', '1']) expectFilteredResults(runFixture({ REVERSE_WANTED_INSERTS: reversed }).results);
   });

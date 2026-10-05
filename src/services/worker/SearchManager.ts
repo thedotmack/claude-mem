@@ -102,7 +102,7 @@ export class SearchManager {
    * (empty when Chroma yields nothing recent); callers own their own FTS
    * fallback and formatting so per-caller behavior is preserved exactly.
    */
-  private async hybridSemanticHydrate<T>(
+  private async hybridSemanticHydrate<T extends { id: number }>(
     query: string,
     docType: string,
     project: string | undefined,
@@ -110,7 +110,8 @@ export class SearchManager {
     hydrate: (ids: number[], readKeys: string[]) => T[],
     projects?: string[],
     dateRange?: DateRange,
-    requiredResults?: number
+    requiredResults?: number,
+    work?: { budgetReached: boolean }
   ): Promise<T[]> {
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
@@ -119,6 +120,12 @@ export class SearchManager {
       : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
     const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
     let candidateLimit: number = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+    // Five ranked windows (100..1600), at most ten Chroma transport calls.
+    // queryChroma caps raw fragment overfetch at 2000 documents per window;
+    // filtered retries add at most 3100, bounding requested raw docs at 13100.
+    const maxCandidates = 1600;
+    const visited = new Set<number>();
+    const hydrated = new Map<number, T>();
 
     while (true) {
       const progress: ChromaQueryProgress = {};
@@ -129,20 +136,28 @@ export class SearchManager {
           && (startEpoch === undefined || meta.created_at_epoch >= startEpoch)
           && (endEpoch === undefined || meta.created_at_epoch <= endEpoch);
       });
-      const rows: T[] = [];
-      // Keep each SQLite IN-list small as the semantic window grows. Hydration
-      // retains candidate order and applies row filters before its result limit.
-      for (let offset = 0; offset < recentIds.length; offset += 500) {
-        rows.push(...hydrate(recentIds.slice(offset, offset + 500), readKeys));
-        if (requiredResults && rows.length >= requiredResults) return rows.slice(0, requiredResults);
+      // Repeated ranked prefixes reuse successful and rejected native lookups.
+      // Build results in the current Chroma order, including cached matches.
+      const newIds = recentIds.filter(id => !visited.has(id));
+      for (let offset = 0; offset < newIds.length; offset += 500) {
+        const batch = newIds.slice(offset, offset + 500);
+        for (const id of batch) visited.add(id);
+        for (const row of hydrate(batch, readKeys)) hydrated.set(row.id, row);
       }
+      const rows = recentIds.flatMap(id => {
+        const row = hydrated.get(id);
+        return row ? [row] : [];
+      });
+      if (requiredResults && rows.length >= requiredResults) return rows.slice(0, requiredResults);
       if (!requiredResults || progress.exhausted
         || (progress.exhausted === undefined && chromaResults.ids.length < candidateLimit)) return rows;
-
-      // Chroma has no offset query. Widen its ranked prefix until enough rows
-      // survive the native filters or the raw document response is exhausted.
-      candidateLimit *= 2;
-      if (!Number.isSafeInteger(candidateLimit)) throw new Error('Semantic candidate window exceeded the safe integer range');
+      if (candidateLimit >= maxCandidates) {
+        if (work) work.budgetReached = true;
+        return rows;
+      }
+      // Chroma has no offset. Widen only within the work budget; the caller
+      // tries its filtered keyword fallback if this prefix is insufficient.
+      candidateLimit = Math.min(candidateLimit * 2, maxCandidates);
     }
   }
 
@@ -1016,6 +1031,7 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
     let results: ObservationSearchResult[] = [];
+    const semanticWork = { budgetReached: false };
 
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
@@ -1027,7 +1043,8 @@ export class SearchManager {
           this.sessionStore.getObservationsByIds(ids, { ...options, orderBy: 'relevance', limit, projects: readKeys }),
           options.projects,
           options.dateRange,
-          options.type || options.concepts || options.files || options.dateRange ? limit : undefined
+          options.type || options.concepts || options.files || options.dateRange ? limit : undefined,
+          semanticWork
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1035,7 +1052,7 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (results.length === 0 || semanticWork.budgetReached) {
       try {
         const ftsResults = this.sessionSearch.searchObservations(query, options);
         if (ftsResults.length > 0) {
