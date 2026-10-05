@@ -1,9 +1,12 @@
+import builtins
 import datetime as dt
 import os
 import re
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
+from zoneinfo import ZoneInfoNotFoundError
 
 import _paths  # noqa: F401
 from acr import period
@@ -22,10 +25,36 @@ class MissingTimezoneData(unittest.TestCase):
         )
         self.assertEqual(result.returncode, 1)
         self.assertIn("America/Los_Angeles", result.stderr)
-        command = re.search(r'^(?:& )?"(.+)" -m pip install tzdata$', result.stderr, re.MULTILINE)
+        prefix = "& " if os.name == "nt" else ""
+        command = re.search(
+            r'^' + re.escape(prefix) + r'"(.+)" -m pip install tzdata$',
+            result.stderr, re.MULTILINE,
+        )
         self.assertIsNotNone(command)
         self.assertTrue(os.path.samefile(command.group(1), sys.executable))
         self.assertNotIn("Traceback", result.stderr)
+
+
+    def test_windows_install_command_handles_spaces_in_interpreter_path(self):
+        with open(_paths.ACR_PY, encoding="utf-8") as script:
+            code = compile(script.read(), _paths.ACR_PY, "exec")
+        real_import = builtins.__import__
+
+        def missing_timezone_import(name, *args, **kwargs):
+            if name == "acr":
+                raise ZoneInfoNotFoundError("America/Los_Angeles")
+            return real_import(name, *args, **kwargs)
+
+        interpreter = r"C:\Program Files\Python\python.exe"
+        # Exercise the CLI's error handler on every host, including its Windows branch.
+        with patch("builtins.__import__", side_effect=missing_timezone_import), \
+                patch("os.name", "nt"), patch("sys.executable", interpreter):
+            with self.assertRaises(SystemExit) as error:
+                exec(code, {"__file__": _paths.ACR_PY, "__name__": "__main__"})
+        self.assertEqual(
+            str(error.exception).splitlines()[-1],
+            '& "C:\\Program Files\\Python\\python.exe" -m pip install tzdata',
+        )
 
 
 class DefaultWindow(unittest.TestCase):
