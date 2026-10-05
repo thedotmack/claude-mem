@@ -296,11 +296,9 @@ function matchScore(text: string, queryParts: string[]): number {
 }
 
 function countSymbols(file: FoldedFile): number {
-  let count = file.symbols.length;
-  for (const sym of file.symbols) {
-    if (sym.children) count += sym.children.length;
-  }
-  return count;
+  const count = (symbols: FoldedFile["symbols"]): number => symbols.reduce(
+    (total, symbol) => total + 1 + (symbol.children ? count(symbol.children) : 0), 0);
+  return count(file.symbols);
 }
 
 export function formatSearchResults(result: SearchResult, query: string): string {
