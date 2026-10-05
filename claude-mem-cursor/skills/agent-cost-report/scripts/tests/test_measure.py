@@ -83,7 +83,8 @@ class Bucket(unittest.TestCase):
         w = self.window("2026-09-18", "2026-09-26")                         # starts before Mon 21 Sep UTC; month bucket (Sep 1) covers it once now >= end
         b = measure.bucket_rule(self.measured(dt.datetime(2026, 9, 27, 12, 0, tzinfo=UTC)), w)
         self.assertEqual((b["bucket"], b["usd"], b["covers_window"]), ("usage_monthly", 99.0, True))
-        w2 = self.window("2026-08-28", "2026-09-02")                        # crosses the month boundary: reference only
+        self.assertEqual(b["label"], "OpenRouter measured, current UTC month Tue 1 Sep – now")   # unpadded day, no "%-d" (Windows rejects it)
+        w2 = self.window("2026-08-28", "2026-09-02")                      # crosses the month boundary: reference only
         b2 = measure.bucket_rule(self.measured(dt.datetime(2026, 9, 27, 12, 0, tzinfo=UTC)), w2)
         self.assertFalse(b2["covers_window"])
 
@@ -109,6 +110,7 @@ class SessionScope(unittest.TestCase):
         ok = dict(status="ok", fetched_at_utc="2026-09-25T19:00:00+00:00", usage_weekly=12.5, usage_monthly=40.0)
         b = measure.bucket_rule(ok, period.session_block("cs1"))
         self.assertEqual((b["covers_window"], b["usd"], b["bucket"]), (False, 12.5, "usage_weekly")); self.assertIn("reference only", b["note"])
+        self.assertEqual(b["label"], "OpenRouter measured, current UTC week Mon 21 Sep – now")
         report = dict(window=period.session_block("cs1"), spend=dict(agent_estimated_usd=1.0))
         s = measure.apply(report, ok)
         self.assertIsNone(s["agent_measured_usd"]); self.assertTrue(s["measured_status"].startswith("reference only"))
