@@ -119,8 +119,8 @@ export class SessionSearch {
 
   private isFts5Available(): boolean {
     try {
-      this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
-      this.db.run('DROP TABLE _fts5_probe');
+      this.db.run('CREATE VIRTUAL TABLE temp._fts5_probe USING fts5(test_column)');
+      this.db.run('DROP TABLE temp._fts5_probe');
       return true;
     } catch (error) {
       logger.debug('DB', 'FTS5 probe failed — FTS5 unavailable on this platform', undefined, error instanceof Error ? error : new Error(String(error)));

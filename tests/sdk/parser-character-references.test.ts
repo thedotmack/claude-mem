@@ -69,6 +69,22 @@ describe('XML character references at the observer boundary', () => {
       }
     }
   });
+  it('omits decoded whitespace-only array entries before native storage', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const sid = store.createSDKSession('blank-array-content', 'project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sid, 'blank-array-memory');
+      const parsed = observation(`<observation><type>discovery</type><title>Recorded a finding</title>
+        <facts><fact>  </fact><fact>&#32;&#9;&#10;</fact><fact>Useful fact</fact></facts>
+        <files_read><file>&#32;</file><file>src/edge.ts&#32;</file></files_read>
+      </observation>`);
+      store.storeObservation('blank-array-memory', 'project', parsed, 1);
+      const row = store.db.query('SELECT facts, files_read FROM observations').get() as { facts: string; files_read: string };
+      expect(JSON.parse(row.facts)).toEqual(['Useful fact']);
+      expect(JSON.parse(row.files_read)).toEqual(['src/edge.ts ']);
+    } finally { store.close(); }
+  });
+
   it('preserves encoded whitespace around meaningful summary content', () => {
     const result = parseAgentXml('<summary><request>&#32;Fix the bug&#32;</request><learned>&#9;&#10;</learned></summary>');
     expect(result.valid).toBe(true);
