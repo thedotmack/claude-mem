@@ -342,6 +342,31 @@ describe('OpenCode v2 consumed-turn capture', () => {
     expect(observations[0].body).toMatchObject({ tool_use_id: 'call_host-7', tool_input: { path: 'parser.ts' } });
   });
 
+  it('summarizes the turn a late completion event belongs to, not the prompt admitted behind it', async () => {
+    let finish!: (response: Response) => void;
+    let inits = 0;
+    init = () => ++inits === 1
+      ? new Promise<Response>(resolve => { finish = resolve; })
+      : Response.json({ sessionDbId: 43 });
+    const first = emit('context', context());
+    await until(() => !!finish);
+    send('session.text.ended', { text: 'Answer A', assistantMessageID: 'msg_answer', ordinal: 0 });
+    messages.push(user('msg_real-2', 'Second prompt'));
+    const second = emit('context', context());
+    // compaction.ended carries a location, so it reaches the queue even where
+    // the location-less execution event is dropped; the turn capture is what
+    // keeps it summarizing the turn it belongs to.
+    send('session.compaction.ended');
+    finish(Response.json({ sessionDbId: 42 }));
+    await Promise.all([first, second]);
+    await new Promise(resolve => setTimeout(resolve, 10));
+    // One summarize for the first turn. Without the enqueue-time capture, the
+    // late completion event reads the second turn and summarizes that prompt
+    // with the first turn's answer, producing a second summarize POST.
+    const summaries = calls.filter(call => call.route === '/api/sessions/summarize');
+    expect(summaries).toHaveLength(1);
+  });
+
   it('keeps duplicate acknowledgements anchored and suppresses excluded turns', async () => {
     init = async () => Response.json({ sessionDbId: 42, skipped: true, reason: 'duplicate' });
     await emit('context', context()); await read();
