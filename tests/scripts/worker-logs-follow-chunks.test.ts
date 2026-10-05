@@ -4,7 +4,7 @@ import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-it('follows a burst with bounded native reads and byte-exact UTF-8 output', async () => {
+for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads and byte-exact UTF-8 output (poll delay ${pollDelay}ms)`, async () => {
   const home=mkdtempSync(join(tmpdir(),'claude-mem-follow-chunks-'));
   const stamp=new Date().toISOString().slice(0,10);
   const log=join(home,'.claude-mem','logs',`worker-${stamp}.log`);
@@ -15,13 +15,14 @@ it('follows a burst with bounded native reads and byte-exact UTF-8 output', asyn
   // implementation against the owned log. No synthetic read result is used.
   writeFileSync(preload, `
     const fs=require('fs');const owned=new Set();
-    const open=fs.openSync,read=fs.readSync,close=fs.closeSync;
+    const open=fs.openSync,read=fs.readSync,close=fs.closeSync,watch=fs.watchFile;
+    fs.watchFile=function(path,options,listener){return watch.call(this,path,options,(...args)=>setTimeout(()=>{listener(...args);process.stderr.write('POLL_DELIVERED\\n');},Number(process.env.OWNED_POLL_DELAY_MS)));};
     fs.openSync=function(path,...args){const fd=open.call(this,path,...args);if(String(path)===process.env.OWNED_LOG_PATH)owned.add(fd);return fd;};
     fs.readSync=function(fd,buffer,offset,length,position){if(owned.has(fd))process.stderr.write('READ_LENGTH:'+length+'\\n');return read.call(this,fd,buffer,offset,length,position);};
     fs.closeSync=function(fd){owned.delete(fd);return close.call(this,fd);};
   `);
   const child=spawn('node',['--require',preload,join(import.meta.dir,'../../scripts/worker-logs.cjs'),'--follow'],{
-    env:{...process.env,HOME:home,USERPROFILE:home,CLAUDE_MEM_DATA_DIR:'',TZ:'UTC',OWNED_LOG_PATH:log},
+    env:{...process.env,HOME:home,USERPROFILE:home,CLAUDE_MEM_DATA_DIR:'',TZ:'UTC',OWNED_LOG_PATH:log,OWNED_POLL_DELAY_MS:String(pollDelay)},
   });
   child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');
   let output='',trace='';child.stdout.on('data',chunk=>{output+=chunk});child.stderr.on('data',chunk=>{trace+=chunk});
@@ -32,13 +33,18 @@ it('follows a burst with bounded native reads and byte-exact UTF-8 output', asyn
     const burst='€ captured\n'.repeat(200000);
     child.stdout.pause();
     appendFileSync(log,burst);
+    // Observe the native follow read before testing backpressure. Poll
+    // delivery can be delayed by host scheduling without a reader defect.
+    await wait(()=>[...trace.matchAll(/READ_LENGTH:(\d+)/g)].length>1);
     await Bun.sleep(350);
     const pausedReadLengths=[...trace.matchAll(/READ_LENGTH:(\d+)/g)].map(match=>Number(match[1]));
     expect(pausedReadLengths.length).toBeGreaterThan(1);
     const bytesReadWhilePaused=pausedReadLengths.reduce((total,length)=>total+length,0);
     expect(bytesReadWhilePaused).toBeLessThan(Buffer.byteLength(burst));
     const duringBackpressure='second burst €\n'.repeat(5000);
+    const pollsBefore=[...trace.matchAll(/POLL_DELIVERED/g)].length;
     appendFileSync(log,duringBackpressure);
+    await wait(()=>[...trace.matchAll(/POLL_DELIVERED/g)].length>pollsBefore);
     await Bun.sleep(350);
     // The second poll must stay behind the blocked write, not read ahead
     // into another in-memory queue while the consumer remains paused.
