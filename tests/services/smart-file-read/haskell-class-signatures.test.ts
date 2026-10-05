@@ -20,7 +20,7 @@ describe("haskell-class-signatures", () => {
    const result = await searchCodebase(dir, "render");
    const match = result.matchingSymbols.find(s => s.symbolName === "Render.render");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("render :: a -> String");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
