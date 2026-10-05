@@ -869,9 +869,17 @@ export class ChromaSync {
       collection_name: this.collectionName,
       where: { $and: [{ doc_type: docType }, { sqlite_id: sqliteId }] },
       include: [],
-    }) as { ids?: string[] };
+    });
+    // MCP transport success can still decode to null (empty/non-JSON content).
+    // Only a valid ID list proves which fragments exist; failures must leave
+    // the durable reconciliation flag set for the next backfill.
+    if (!existing || typeof existing !== 'object' || !('ids' in existing)
+      || !Array.isArray(existing.ids)
+      || !existing.ids.every(id => typeof id === 'string' && id.length > 0)) {
+      throw new Error('Chroma fragment lookup did not return a valid document ID list');
+    }
     const currentIds = new Set(documents.map(doc => doc.id));
-    const obsolete = (existing?.ids ?? []).filter(id => !currentIds.has(id));
+    const obsolete = (existing.ids as string[]).filter(id => !currentIds.has(id));
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
     }
