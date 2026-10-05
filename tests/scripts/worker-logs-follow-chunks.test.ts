@@ -33,9 +33,17 @@ it('follows a burst with bounded native reads and byte-exact UTF-8 output', asyn
     child.stdout.pause();
     appendFileSync(log,burst);
     await Bun.sleep(350);
+    const pausedReadLengths=[...trace.matchAll(/READ_LENGTH:(\d+)/g)].map(match=>Number(match[1]));
+    expect(pausedReadLengths.length).toBeGreaterThan(1);
+    const bytesReadWhilePaused=pausedReadLengths.reduce((total,length)=>total+length,0);
+    expect(bytesReadWhilePaused).toBeLessThan(Buffer.byteLength(burst));
     const duringBackpressure='second burst €\n'.repeat(5000);
     appendFileSync(log,duringBackpressure);
     await Bun.sleep(350);
+    // The second poll must stay behind the blocked write, not read ahead
+    // into another in-memory queue while the consumer remains paused.
+    const laterReadLengths=[...trace.matchAll(/READ_LENGTH:(\d+)/g)].map(match=>Number(match[1]));
+    expect(laterReadLengths).toEqual(pausedReadLengths);
     child.stdout.resume();
     await wait(()=>output.length==='before\n'.length+burst.length+duringBackpressure.length);
     expect(output).toBe('before\n'+burst+duringBackpressure);
