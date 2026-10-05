@@ -189,6 +189,7 @@ const QUERIES: Record<string, string> = {
 
   ruby: `
 (method name: (identifier) @name) @func
+(singleton_method name: (identifier) @name) @method
 (class name: (constant) @name) @cls
 (module name: (constant) @name) @cls
 (call method: (identifier) @name) @imp
