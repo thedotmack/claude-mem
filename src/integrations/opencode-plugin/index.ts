@@ -6,8 +6,9 @@ import {
   type RealOpenCodeEventType,
 } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
-// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+// Dependency-free, so they stay bundle-safe for the plugin (no worker-only imports).
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
+import { formatHostForUrl } from "../../shared/worker-url.js";
 import { retryWhileRefused } from "./worker-retry.js";
 
 /**
@@ -99,10 +100,7 @@ function resolveWorkerBaseUrl(): string {
     "settings.json",
   );
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  const host = settings.CLAUDE_MEM_WORKER_HOST;
-  // An IPv6 address must be bracketed in a URL authority.
-  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
-  return `http://${urlHost}:${settings.CLAUDE_MEM_WORKER_PORT}`;
+  return `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${settings.CLAUDE_MEM_WORKER_PORT}`;
 }
 
 const WORKER_BASE_URL = resolveWorkerBaseUrl();
