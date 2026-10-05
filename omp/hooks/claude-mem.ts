@@ -35,6 +35,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
@@ -143,7 +144,7 @@ let ctxCache: { at: number; cwd: string; md: string } | null = null;
 let lastAssistant = ""; // captured on agent_end, sent at summarize
 
 function newSession(): OmpSession {
-  session = { id: `omp-${process.pid}-${Date.now().toString(36)}`, anchored: false, excluded: false };
+  session = { id: `omp-${process.pid}-${randomUUID()}`, anchored: false, excluded: false };
   return session;
 }
 
@@ -253,6 +254,18 @@ export default function claudeMemBridge(pi: HookAPI): void {
     workerBase = undefined;
     newSession();
   });
+
+  // /new, /resume and branches switch sessions without firing session_start
+  // again. Close the old prompt chain before rotating its bridge identity.
+  const switchSession = async () => {
+    finalize(session, lastAssistant);
+    newSession();
+    workerBase = undefined;
+    ctxCache = null;
+    lastAssistant = "";
+  };
+  pi.on("session_switch", switchSession);
+  pi.on("session_branch", switchSession);
 
   // Compaction starts a new logical session in claude-mem too (matches Claude
   // Code's SessionStart clear/compact path): finalize the session that is
