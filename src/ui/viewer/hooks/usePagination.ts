@@ -25,22 +25,28 @@ function usePaginationFor<TItem extends DataItem>(
 
   const selectionKey = `${currentFilter}|${currentSession ? sessionKey(currentSession) : ''}`;
   const offsetRef = useRef(0);
-  const lastSelectionKeyRef = useRef(selectionKey);
+  const selectionRef = useRef({ key: selectionKey, version: 0 });
+  if (selectionRef.current.key !== selectionKey) {
+    selectionRef.current = { key: selectionKey, version: selectionRef.current.version + 1 };
+  }
+  const selectionVersion = selectionRef.current.version;
+  const lastLoadedVersionRef = useRef(selectionVersion);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const filterChanged = lastSelectionKeyRef.current !== selectionKey;
+    if (selectionRef.current.version !== selectionVersion) return [];
+    const selectionChanged = lastLoadedVersionRef.current !== selectionVersion;
 
-    if (filterChanged) {
+    if (selectionChanged) {
       offsetRef.current = 0;
-      lastSelectionKeyRef.current = selectionKey;
+      lastLoadedVersionRef.current = selectionVersion;
 
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
       stateRef.current = newState;
     }
 
-    if (!filterChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
+    if (!selectionChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
       return [];
     }
 
@@ -62,11 +68,9 @@ function usePaginationFor<TItem extends DataItem>(
       params.append('platformSource', currentSession.platformSource);
     }
 
-    // A response that lands after the selection changed (another session or
-    // project opened mid-request) belongs to the old selection: the cursor and
-    // state now serve the new one, so drop it instead of advancing them.
-    const requestSelectionKey = selectionKey;
-    const isStale = () => lastSelectionKeyRef.current !== requestSelectionKey;
+    // Each visit owns its cursor and loading state. Returning to the same
+    // project or session must not revive requests from its previous visit.
+    const isStale = () => selectionRef.current.version !== selectionVersion;
 
     try {
       const response = await fetch(`${endpoint}?${params}`);
@@ -105,7 +109,7 @@ function usePaginationFor<TItem extends DataItem>(
     }
     // selectionKey covers currentFilter and currentSession.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectionKey, endpoint, dataType]);
+  }, [selectionKey, selectionVersion, endpoint, dataType]);
 
   // Rows from a loaded page were deleted: the server's list moved up by that
   // many, so the next page starts that much earlier or it would skip rows.
