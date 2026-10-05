@@ -16,7 +16,7 @@ describe("smart-search-relevance", () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-smart-search-relevance-'));
   try {
    writeFileSync(join(dir, filename), source);
-   
+
    const result = await searchCodebase(dir, "target", { maxResults: 1 });
    const match = result.matchingSymbols.find(s => s.symbolName === "handle");
    expect(match).toBeDefined();
