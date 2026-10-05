@@ -445,9 +445,9 @@ export class SearchRoutes extends BaseRouteHandler {
     sessionId?: string;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
-    // The health banner is time-dependent (its durations, its expiry), so a
-    // block that carries one is served live only.
-    const cacheable = observerHealthWarning(false) === '';
+    // Health banners change with time; prior transcripts depend on the current
+    // host session. Both are served live without learning persistent variants.
+    const cacheable = !request.sessionId && observerHealthWarning(false) === '';
 
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to

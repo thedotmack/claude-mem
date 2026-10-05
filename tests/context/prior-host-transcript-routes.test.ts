@@ -95,15 +95,15 @@ function run(kind: string, active = false): any {
 }
 
 describe('prior host transcript in production context routes', () => {
-  it('uses the host cwd for live worker rendering and cache refreshes', () => {
+  it('uses the host cwd for live worker rendering without persisting a session variant', () => {
     const result = run('worker');
     expect(result.text).toContain('The prior host response.');
-    expect(result.cached).toContain('The prior host response.');
+    expect(result.cached).toBeUndefined();
   });
-  it('excludes an active host transcript in clear or compact context and cache refreshes', () => {
+  it('excludes an active host transcript in live clear or compact context', () => {
     const result = run('worker', true);
     expect(result.text).not.toContain('The active host response.');
-    expect(result.cached).not.toContain('The active host response.');
+    expect(result.cached).toBeUndefined();
     expect(result.other).toContain('The active host response.');
   });
   (process.env.CLAUDE_MEM_TEST_POSTGRES_URL ? it : it.skip)('carries the host identity through real Postgres, HTTP, and the server renderer', () => {

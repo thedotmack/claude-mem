@@ -137,7 +137,8 @@ export const contextHandler: EventHandler = {
     // the URLs above. A hit needs no worker at all; a miss takes the live path.
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
-      if (serverRuntime) return null;
+      // Optional prior transcripts depend on the current host session; serve live.
+      if (serverRuntime || settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true') return null;
       const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd, transcriptSessionId);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;

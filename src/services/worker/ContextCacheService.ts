@@ -45,7 +45,7 @@ const CONTEXT_CACHE_INDEX_FILENAME = 'variants.json';
 export interface ContextVariantRender {
   /** The block with its time placeholders, exactly as the live route fills and sends it. */
   body: string;
-  /** False when the block must not be served from disk (health banner showing). */
+  /** False when the block must stay live (health banner or host-specific transcript). */
   cacheable: boolean;
 }
 
@@ -94,7 +94,11 @@ export class ContextCacheService {
 
   /** Load the known variants, drop orphaned files, listen for writes, and re-render everything once. */
   start(): void {
-    for (const entry of this.readIndex().variants) {
+    const persisted = this.readIndex();
+    for (const entry of persisted.variants) {
+      // A host-specific prior transcript is useful only to that live request.
+      // Drop variants left by the earlier implementation on worker startup.
+      if (entry.keys.sessionId) continue;
       this.variants.set(contextCacheVariantId(entry.keys), {
         keys: entry.keys,
         learnedAtEpochMs: entry.learnedAtEpochMs,
@@ -102,6 +106,7 @@ export class ContextCacheService {
       });
     }
     this.removeOrphanedFiles();
+    if (persisted.variants.some(entry => entry.keys.sessionId)) this.writeIndex();
     // Sync on but Realtime not joined yet: a previous worker's files may predate remote ops.
     if (!this.servable) for (const variant of this.variants.values()) this.removeFile(variant.keys);
     this.unsubscribe = onContextInvalidation(invalidation => this.handleInvalidation(invalidation));
@@ -138,6 +143,11 @@ export class ContextCacheService {
     /** removalGenerationNow() taken before the render began; omitted = no removal check. */
     removalGenerationAtRenderStart?: number,
   ): void {
+    // Closed host sessions must not consume the bounded shared variant cache.
+    if (keys.sessionId) {
+      this.removeFile(keys);
+      return;
+    }
     const variantId = contextCacheVariantId(keys);
     if (!this.variants.has(variantId)) {
       this.variants.set(variantId, { keys, learnedAtEpochMs: this.now(), readKeys: new Set() });
