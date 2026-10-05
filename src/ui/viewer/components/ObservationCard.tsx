@@ -9,6 +9,16 @@ interface ObservationCardProps {
   onDeleted: (itemType: DeletableItemType, id: number) => void;
 }
 
+function parseStoredStringArray(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
 function stripProjectRoot(filePath: string): string {
   const markers = ['/Scripts/', '/src/', '/plugin/', '/docs/'];
 
@@ -33,10 +43,10 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
-  const facts = observation.facts ? JSON.parse(observation.facts) : [];
-  const concepts = observation.concepts ? JSON.parse(observation.concepts) : [];
-  const filesRead = observation.files_read ? JSON.parse(observation.files_read).map(stripProjectRoot) : [];
-  const filesModified = observation.files_modified ? JSON.parse(observation.files_modified).map(stripProjectRoot) : [];
+  const facts = parseStoredStringArray(observation.facts);
+  const concepts = parseStoredStringArray(observation.concepts);
+  const filesRead = parseStoredStringArray(observation.files_read).map(stripProjectRoot);
+  const filesModified = parseStoredStringArray(observation.files_modified).map(stripProjectRoot);
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 
