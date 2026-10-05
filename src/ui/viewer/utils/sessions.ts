@@ -121,14 +121,14 @@ export interface CatalogJournal {
   added: SessionCatalogEntry[];
   /** Sessions whose item count changed live during the request. */
   touched: Set<string>;
-  /** Highest count observed before a live item deletion during the request. */
-  decreased: Map<string, number>;
+  /** Sessions with a live item deletion during the request. */
+  decreased: Set<string>;
   /** sessionKey of every session deleted during the request. */
   removed: Set<string>;
 }
 
 export function emptyCatalogJournal(): CatalogJournal {
-  return { added: [], touched: new Set(), decreased: new Map(), removed: new Set() };
+  return { added: [], touched: new Set(), decreased: new Set(), removed: new Set() };
 }
 
 /**
@@ -150,10 +150,9 @@ export function mergeCatalogPage(
     const live = journal.touched.has(key) ? currentByKey.get(key) : undefined;
     // A page may already include the live rows: use the larger count rather
     // than adding a delta twice. Keep authoritative page metadata (titles).
-    // A count above the pre-deletion watermark contains newer additions;
-    // accept it instead of pinning the catalog to the local decremented count.
-    const beforeDeletion = journal.decreased.get(key);
-    return live && ((beforeDeletion !== undefined && entry.item_count <= beforeDeletion) || live.item_count > entry.item_count)
+    // Counts have no revision: keep a deletion provisional until the hook
+    // confirms it with a request started after that deletion.
+    return live && (journal.decreased.has(key) || live.item_count > entry.item_count)
       ? { ...entry, item_count: live.item_count }
       : entry;
   };

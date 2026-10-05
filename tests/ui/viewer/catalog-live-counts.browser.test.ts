@@ -9,7 +9,9 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for live catalog request-order tests');
 
-for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale'] as const) {
+for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation'] as const) {
+  const independent = scenario === 'item-deleted-independent' || scenario === 'item-deleted-confirmation';
+  const again = scenario === 'item-deleted-confirmation';
   (chrome ? it : it.skip)(`catalog refresh preserves live changes: ${scenario}`, async () => {
     let release!: () => void;
     const ready = new Promise<void>(resolve => { release = resolve; });
@@ -36,12 +38,14 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         }
         createRoot(document.getElementById('root')).render(<Fixture/>);
         async function run() {
-          const wait=async(predicate)=>{const deadline=Date.now()+12000;while(!predicate()){
+          const wait=async(predicate)=>{const deadline=Date.now()+12000;while(!await predicate()){
             if(Date.now()>deadline)throw Error('Fixture timed out');await new Promise(resolve=>setTimeout(resolve,10));}};
           await wait(()=>document.getElementById('loading')?.textContent==='false' && ${scenario === 'placeholder' ? 'true' : "document.getElementById('rows').textContent.includes('owned-session')"});
           document.getElementById('refresh').click();
           await wait(()=>document.getElementById('loading').textContent==='true');
-          for(let i=0;i<2;i++){document.getElementById('touch').click();await new Promise(requestAnimationFrame);}
+          if(!${independent}){
+            for(let i=0;i<2;i++){document.getElementById('touch').click();await new Promise(requestAnimationFrame);}
+          }else await fetch('/snapshot-ready');
           if(${JSON.stringify(scenario)}==='overlap'){
             document.getElementById('refresh').click();
             // Browsers may serialize identical concurrent GETs. Let the
@@ -51,16 +55,38 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           }
           if(${JSON.stringify(scenario)}.startsWith('item-deleted')){
             document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);
-            document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);
+            if(!${independent}){
+              document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);
+            }else await fetch('/deleted');
           }
           if(${JSON.stringify(scenario)}==='removed')document.getElementById('remove').click();
           await fetch('/release');
+          let confirming=false;
+          let provisional;
+          if(${independent}){
+            await wait(async()=>document.getElementById('loading').textContent==='false' || (await (await fetch('/confirmation-status')).json()).started);
+            confirming=document.getElementById('loading').textContent==='true';
+            provisional=JSON.parse(document.getElementById('rows').textContent)[0].item_count;
+            if(${again}){document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);await fetch('/deleted');}
+            await fetch('/confirm-release');
+          }
           await wait(()=>document.getElementById('loading').textContent==='false');
+          if(${independent}){
+            await fetch('/result',{method:'POST',body:JSON.stringify({rows:JSON.parse(document.getElementById('rows').textContent),confirming,provisional})});
+            return;
+          }
           await fetch('/result',{method:'POST',body:document.getElementById('rows').textContent});
         }
         run().catch(error=>fetch('/result',{method:'POST',body:JSON.stringify({error:String(error)})}));
       ` } });
     let requests=0;
+    let serverCount=5;
+    let snapshotReady!:()=>void;
+    const snapshotStarted=new Promise<void>(resolve=>{snapshotReady=resolve});
+    let confirmRelease!:()=>void;
+    const confirmationReady=new Promise<void>(resolve=>{confirmRelease=resolve});
+    let confirming=false;
+    const requestScopes:string[]=[];
     let latestStarted!:()=>void;
     const latestRequested=new Promise<void>(resolve=>{latestStarted=resolve});
     const entry={content_session_id:'owned-session',platform_source:'claude',project:'owned-project',custom_title:'Server title',started_at_epoch:1,item_count:5};
@@ -69,11 +95,23 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
       if(path==='/fixture.js')return new Response(bundle.outputFiles[0].text,{headers:{'Content-Type':'application/javascript'}});
       if(path==='/api/sessions'){
         const page=++requests;
+        requestScopes.push(new URL(request.url).search);
+        if(independent){
+          if(page===2){serverCount++;snapshotReady();}
+          const snapshot=serverCount;
+          if(page===2)await ready;
+          if(page===3){confirming=true;await confirmationReady;}
+          return Response.json({sessions:[{...entry,item_count:snapshot}],hasMore:false});
+        }
         if(page===3)latestStarted();
         if(page===2 && scenario==='overlap')await firstReady;
         else if(page>1)await ready;
-        return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page>1&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
+        return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page===2&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
       }
+      if(path==='/snapshot-ready'){await snapshotStarted;return new Response('ok');}
+      if(path==='/deleted'){serverCount--;return new Response('ok');}
+      if(path==='/confirmation-status')return Response.json({started:confirming});
+      if(path==='/confirm-release'){confirmRelease();return new Response('ok');}
       if(path==='/release-first'){releaseFirst();return new Response('ok');}
       if(path==='/latest-requested'){await latestRequested;return new Response('ok');}
       if(path==='/release'){release();return new Response('ok');}
@@ -86,14 +124,21 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     let timer:ReturnType<typeof setTimeout>|undefined;
     try{
       const actual:any=await Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser result timed out')),25000);})]);
-      if(scenario==='removed')expect(actual).toEqual([]);
+      if(independent){
+        expect(actual.rows[0].item_count).toBe(again?4:5);
+        expect(serverCount).toBe(again?4:5);
+        expect(requests).toBe(again?4:3);
+        expect(actual.confirming).toBe(true);
+        expect(actual.provisional).toBe(4);
+        expect(new Set(requestScopes).size).toBe(1);
+      }else if(scenario==='removed')expect(actual).toEqual([]);
       else{
         expect(actual).toHaveLength(1);
         expect(actual[0].item_count).toBe(scenario==='placeholder'?2:(scenario==='fresh'||scenario==='item-deleted-newer')?8:scenario.startsWith('item-deleted')?5:7);
         expect(actual[0].custom_title).toBe(scenario==='placeholder'?null:'Server title');
       }
     }finally{
-      clearTimeout(timer);releaseFirst();release();child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});
+      clearTimeout(timer);releaseFirst();release();confirmRelease();child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});
     }
   },30000);
 }
