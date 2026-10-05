@@ -62,6 +62,8 @@ try {
  assert.equal(rows.length,1);assert.deepEqual(JSON.parse(rows[0].files_read),readExpected);assert.deepEqual(JSON.parse(rows[0].files_modified),writeExpected);
  assert.deepEqual(lookup.map(row=>row.id),kind==='custom-control'?[]:[rows[0].id]);
  const live=broadcasts.find(event=>event.type==='new_observation').observation;assert.deepEqual(JSON.parse(live.files_read),readExpected);assert.deepEqual(JSON.parse(live.files_modified),writeExpected);
- for (const [key,value] of Object.entries(args)) assert.deepEqual(captured.tool_input[key],value);
+ // apply_patch's patchText is renamed to the `patch` the worker reads, not copied, so the observer never gets it twice.
+ const expectedInput = tool === 'apply_patch' ? { patch: (args as { patchText: string }).patchText } : args;
+ assert.deepEqual(captured.tool_input, expectedInput);
  assert.equal(JSON.stringify(args),originalArgs);
 }finally{for(const release of cleanup.reverse())await release()}

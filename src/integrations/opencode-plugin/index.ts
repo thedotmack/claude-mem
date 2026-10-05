@@ -335,9 +335,14 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
       const contentSessionId = resolveContentSessionId(input.sessionID);
-      const toolInput = input.tool === "apply_patch" && typeof input.args?.patchText === "string"
-        ? { ...input.args, patch: input.args.patchText }
-        : input.args || {};
+      // apply_patch carries its patch as `patchText`, and the worker's file
+      // evidence reads `patch`. Renamed rather than copied, so the observer
+      // is not sent the whole patch twice.
+      let toolInput: Record<string, unknown> = input.args || {};
+      if (input.tool === "apply_patch" && typeof toolInput.patchText === "string") {
+        const { patchText, ...otherArgs } = toolInput;
+        toolInput = { ...otherArgs, patch: patchText };
+      }
       await workerPost("/api/sessions/observations", {
         contentSessionId,
         tool_name: CAPTURE_TOOL_NAMES.get(input.tool) ?? input.tool,
