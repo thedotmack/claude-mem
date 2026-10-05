@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, it } from 'bun:test';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DEFAULT_STATE_PATH, loadTranscriptWatchConfig } from '../../src/services/transcripts/config.js';
@@ -60,5 +60,23 @@ describe('transcript config errors name what to fix', () => {
   it('treats a null stateFile as absent', () => {
     writeFileSync(configPath, JSON.stringify({ version: 1, watches: [], stateFile: null }));
     expect(loadTranscriptWatchConfig(configPath).stateFile).toBe(DEFAULT_STATE_PATH);
+  });
+});
+
+describe('transcript CLI sample config', () => {
+  it('never replaces an existing invalid config with the sample, even when its error mentions "not found"', async () => {
+    const directory = join(root, 'not found');
+    mkdirSync(directory, { recursive: true });
+    const path = join(directory, 'watch.json');
+    const document = JSON.stringify({ version: 1, watches: {} });
+    writeFileSync(path, document);
+    await expect(runTranscriptCommand('validate', ['--config', path])).rejects.toThrow('watches must be an array');
+    expect(readFileSync(path, 'utf8')).toBe(document);
+  });
+
+  it('still writes the sample when the config is missing', async () => {
+    const path = join(root, 'missing', 'watch.json');
+    expect(await runTranscriptCommand('validate', ['--config', path])).toBe(0);
+    expect(loadTranscriptWatchConfig(path).watches).toEqual([]);
   });
 });
