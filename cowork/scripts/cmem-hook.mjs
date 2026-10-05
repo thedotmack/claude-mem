@@ -373,6 +373,9 @@ async function mcpSearch(query, limit, project) {
 async function fetchContext(scope, query, cwd) {
   const project = resolveProject(cwd);
   if (!CFG.apiKey) return null;
+  // the query leaves the machine (URL and fallback body): strip <private> regions
+  // and redact secrets first, as every capture path does, then apply the caps below
+  query = clean(query, PROMPT_CAP);
   // 1) purpose-built endpoint (see PRO-ENDPOINT-SPEC) — best quality, Pro compiles the block
   try {
     const url = `${CFG.apiBase}/api/hooks/context?project=${encodeURIComponent(project)}&scope=${scope}` +
