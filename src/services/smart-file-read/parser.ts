@@ -39,6 +39,8 @@ const LANG_MAP: Record<string, string> = {
   ".cjs": "javascript",
   ".jsx": "tsx",
   ".ts": "typescript",
+  ".mts": "typescript",
+  ".cts": "typescript",
   ".tsx": "tsx",
   ".py": "python",
   ".pyw": "python",
