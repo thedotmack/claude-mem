@@ -146,6 +146,7 @@ export function toLocalObservationShape(
   return {
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
+    content_session_id: asText(pick(row, 'contentSessionId', 'content_session_id')) ?? undefined,
     platform_source: platformSource ?? '',
     type: asText(pick(row, 'kind', 'type')) ?? 'discovery',
     title: asText(pick(row, 'title')) ?? firstLine,
