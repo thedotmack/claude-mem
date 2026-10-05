@@ -73,7 +73,7 @@ test('folded method headers escape newlines without changing lookup identities',
  const file = parseFile(source, 'header.js');
  const symbol = file.symbols[0].children![0];
  expect(symbol.name).toBe('[\n "a  b"\n ]');
- const header = formatFoldedView(file).split('\n').find(line => line.includes(JSON.stringify(symbol.name)));
+ const header = formatFoldedView(file).split('\n').find(line => line.includes(JSON.stringify(`Widget.${symbol.name}`)));
  expect(header).toBeDefined();
  expect(header).toContain('(L2-4)');
  expect(unfoldSymbol(source, 'header.js', `Widget.${symbol.name}`)).toContain('return "double space"');
@@ -120,13 +120,18 @@ test('copied native outline aliases unfold through MCP without changing raw iden
   writeFileSync(join(dir, collisionFile), collision);
   const collisionParsed = parseFile(collision, collisionFile);
   const copied = formatFoldedView(collisionParsed).split('\n').filter(line => /^\s*ƒ /.test(line))[0].match(/^\s*ƒ (.*?) \(L/)![1];
-  expect(collisionParsed.symbols[0].children![1].name).toBe(copied);
-  const missed = await client.callTool({ name: 'smart_unfold', arguments: { file_path: collisionFile, symbol_name: copied } });
+  const copiedResult = await client.callTool({ name: 'smart_unfold', arguments: { file_path: collisionFile, symbol_name: copied } });
+  const copiedText = (copiedResult.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
+  expect(copiedText).toContain('return "real body"');
+  expect(copiedText).not.toContain('return "decoy body"');
+  const ambiguous = JSON.stringify(computed);
+  expect(collisionParsed.symbols[0].children![1].name).toBe(ambiguous);
+  const missed = await client.callTool({ name: 'smart_unfold', arguments: { file_path: collisionFile, symbol_name: ambiguous } });
   const missText = (missed.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
   expect(missText).toContain('not found');
   expect(missText).toContain('Available symbols');
   expect(missText).not.toContain('return "decoy body"');
-  expect(unfoldSymbol(collision, collisionFile, copied)).toBeNull();
+  expect(unfoldSymbol(collision, collisionFile, ambiguous)).toBeNull();
   expect(unfoldSymbol(collision, collisionFile, `Trap.${computed}`)).toContain('return "real body"');
   expect(unfoldSymbol(collision, collisionFile, `Trap.${collisionParsed.symbols[0].children![1].name}`)).toContain('return "decoy body"');
 

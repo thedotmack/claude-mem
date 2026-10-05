@@ -1013,7 +1013,7 @@ export function formatFoldedView(file: FoldedFile): string {
   }
 
   for (const sym of file.symbols) {
-    parts.push(formatSymbol(sym, "  "));
+    parts.push(formatSymbol(sym, "  ", file.language));
   }
 
   return parts.join("\n");
@@ -1076,7 +1076,7 @@ function displaySymbolName(name: string): string {
   return /[\r\n\\]/.test(name) ? JSON.stringify(name) : name;
 }
 
-function formatSymbol(sym: CodeSymbol, indent: string): string {
+function formatSymbol(sym: CodeSymbol, indent: string, language: string, parent?: string): string {
   const parts: string[] = [];
 
   const icon = getSymbolIcon(sym.kind);
@@ -1086,7 +1086,11 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
     : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
 
   // Preserve the exact lookup identity while keeping its display on one line.
-  const displayName = displaySymbolName(sym.name);
+  const qualifiedName = qualifySymbolName(sym.name, parent, language, sym.kind);
+  // Escaped names need a copyable owner path when a short display alias
+  // collides with another symbol's raw name. Raw identities stay unchanged.
+  const displayName = displaySymbolName(sym.name) === sym.name
+    ? sym.name : displaySymbolName(qualifiedName);
   parts.push(`${indent}${icon} ${displayName}${exportTag} (${lineRange})`);
   parts.push(`${indent}  ${sym.signature}`);
 
@@ -1106,7 +1110,7 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
 
   if (sym.children && sym.children.length > 0) {
     for (const child of sym.children) {
-      parts.push(formatSymbol(child, indent + "  "));
+      parts.push(formatSymbol(child, indent + "  ", language, qualifiedName));
     }
   }
 
