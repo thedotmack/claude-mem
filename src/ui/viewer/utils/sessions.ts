@@ -121,12 +121,14 @@ export interface CatalogJournal {
   added: SessionCatalogEntry[];
   /** Sessions whose item count changed live during the request. */
   touched: Set<string>;
+  /** Live item deletions invalidate the page's possibly older higher count. */
+  decreased: Set<string>;
   /** sessionKey of every session deleted during the request. */
   removed: Set<string>;
 }
 
 export function emptyCatalogJournal(): CatalogJournal {
-  return { added: [], touched: new Set(), removed: new Set() };
+  return { added: [], touched: new Set(), decreased: new Set(), removed: new Set() };
 }
 
 /**
@@ -148,7 +150,7 @@ export function mergeCatalogPage(
     const live = journal.touched.has(key) ? currentByKey.get(key) : undefined;
     // A page may already include the live rows: use the larger count rather
     // than adding a delta twice. Keep authoritative page metadata (titles).
-    return live && live.item_count > entry.item_count
+    return live && (journal.decreased.has(key) || live.item_count > entry.item_count)
       ? { ...entry, item_count: live.item_count }
       : entry;
   };

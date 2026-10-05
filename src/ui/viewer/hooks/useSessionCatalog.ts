@@ -41,8 +41,12 @@ export function useSessionCatalog() {
   const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append') => {
     const requestSeq = ++requestSeqRef.current;
     const offset = mode === 'replace' ? 0 : offsetRef.current;
+    // A superseded request may already have live events in its journal.
+    // Keep those until the newest request for this same scope settles.
+    if (!inFlightRef.current || projectRef.current !== project) {
+      journalRef.current = emptyCatalogJournal();
+    }
     projectRef.current = project;
-    journalRef.current = emptyCatalogJournal();
     inFlightRef.current = true;
     setIsLoading(true);
     setLoadError(null);
@@ -106,6 +110,14 @@ export function useSessionCatalog() {
     });
   }, []);
 
+  const noteItemRemoved = useCallback((session: SessionRef) => {
+    const key = sessionKey(session);
+    journalRef.current.touched.add(key);
+    journalRef.current.decreased.add(key);
+    setSessions(prev => prev.map(entry => sameSession(catalogEntryRef(entry), session)
+      ? { ...entry, item_count: Math.max(0, entry.item_count - 1) } : entry));
+  }, []);
+
   const remove = useCallback((session: SessionRef) => {
     journalRef.current.removed.add(sessionKey(session));
     // A loaded session is gone from the server's list too: the next page starts one earlier.
@@ -115,5 +127,5 @@ export function useSessionCatalog() {
     setSessions(prev => prev.filter(entry => !sameSession(catalogEntryRef(entry), session)));
   }, []);
 
-  return { sessions, isLoading, hasMore, loadError, refresh, loadMore, touch, remove };
+  return { sessions, isLoading, hasMore, loadError, refresh, loadMore, touch, noteItemRemoved, remove };
 }
