@@ -17,13 +17,11 @@
  * render that was already in flight when a removal landed is discarded (and
  * re-queued) instead of writing pre-removal content back.
  *
- * With cloud sync on, a cached block is only as fresh as the last op this
- * device applied, and the hook reading it never asks the hub. So the files are
- * servable only while sync is off, or its Realtime channel is joined (ops arrive
- * as they happen) AND the join's catch-up pull has applied the ops published
- * while it was down. While sync is on and Realtime is down (or never joined),
- * setServable(false) removes every file and none is written: the hook takes the
- * live path, which pulls before rendering. setServable(true) re-renders all.
+ * Local-first: the files are servable with or without cloud sync. The local db
+ * is the source of truth; sync applies other devices' ops in the background and
+ * every applied op invalidates the files. setServable(false) removes every file
+ * and none is written (the hook takes the live path); setServable(true)
+ * re-renders all.
  */
 import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
@@ -57,7 +55,7 @@ export interface ContextCacheServiceOptions {
   expandProjectReadKeys: (projects: string[]) => string[];
   debounceMs?: number;
   maxVariants?: number;
-  /** False when cloud sync is on: files stay unservable until Realtime joins and catches up (setServable). Default true. */
+  /** False keeps the files unservable until setServable(true). Default true. */
   initiallyServable?: boolean;
   now?: () => number;
 }
