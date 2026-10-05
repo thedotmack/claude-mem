@@ -318,17 +318,27 @@ function viewerPort() {
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
 }
 
-// Local-first when the local hook can inject: its plugin must not be disabled
-// and its worker must be reachable. Cached versions alone prove neither.
+// Local-first when enabled, registered local injection hooks are available
+// and their worker is reachable. A healthy server or cached version is not enough.
 // Otherwise Cowork keeps reading the cloud so memory remains available.
 async function localClaudeMemAvailable() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
   try {
     const raw = readFileSync(join(configDir, 'settings.json'), 'utf8');
     const settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
-    // Match the local worker's explicit-disable policy (plugin-state.ts).
-    if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
-  } catch { /* no usable plugin settings — check the worker itself */ }
+    // A healthy server alone does not register any local injection hooks.
+    if (settings?.enabledPlugins?.['claude-mem@thedotmack'] !== true) return false;
+    const registryRaw = readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8');
+    const registry = JSON.parse(registryRaw.replace(/^\uFEFF/, ''));
+    const entries = registry?.plugins?.['claude-mem@thedotmack'];
+    if (!Array.isArray(entries) || !entries.some(entry => {
+      if (typeof entry?.installPath !== 'string' || !entry.installPath) return false;
+      const root = existsSync(join(entry.installPath, 'hooks', 'hooks.json'))
+        ? entry.installPath : join(entry.installPath, 'plugin');
+      return existsSync(join(root, 'hooks', 'hooks.json'))
+        && existsSync(join(root, 'scripts', 'worker-service.cjs'));
+    })) return false;
+  } catch { return false; /* no enabled, registered injector */ }
   try {
     const res = await fetch(`http://127.0.0.1:${viewerPort()}/api/health`, { signal: AbortSignal.timeout(300) });
     return res.ok;

@@ -26,8 +26,10 @@ const cases = [
   { name: 'enabled cached plugin with unavailable worker', enabled: true, cache: true, worker: 'down', cloud: true },
   { name: 'cached plugin with no settings and unavailable worker', cache: true, worker: 'down', cloud: true },
   { name: 'disabled cached plugin with healthy stale worker', enabled: false, cache: true, worker: 'healthy', cloud: true },
-  { name: 'enabled cached plugin with healthy worker', enabled: true, cache: true, worker: 'healthy', cloud: false },
-  { name: 'healthy manual worker without plugin cache', worker: 'healthy', cloud: false },
+  { name: 'enabled registered plugin with healthy worker', enabled: true, cache: true, registered: true, worker: 'healthy', cloud: false },
+  { name: 'healthy worker without a local injector', worker: 'healthy', cloud: true },
+  { name: 'enabled cached but unregistered plugin with healthy worker', enabled: true, cache: true, worker: 'healthy', cloud: true },
+  { name: 'registered plugin without enabled settings and healthy worker', cache: true, registered: true, worker: 'healthy', cloud: true },
   { name: 'cached plugin with unhealthy worker', enabled: true, cache: true, worker: 'unhealthy', cloud: true },
   { name: 'disabled plugin in BOM-prefixed settings', enabled: false, bom: true, cache: true, worker: 'healthy', cloud: true },
   { name: 'no local install or worker', worker: 'down', cloud: true },
@@ -39,6 +41,14 @@ for (const scenario of cases) {
     const configDir = join(home, 'claude-config');
     mkdirSync(configDir);
     if (scenario.cache) mkdirSync(join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0'), { recursive: true });
+    if (scenario.registered) {
+      const plugin = join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0');
+      mkdirSync(join(plugin, 'hooks'), { recursive: true });
+      mkdirSync(join(plugin, 'scripts'), { recursive: true });
+      writeFileSync(join(plugin, 'hooks/hooks.json'), '{}');
+      writeFileSync(join(plugin, 'scripts/worker-service.cjs'), '// owned injector fixture');
+      writeFileSync(join(configDir, 'plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0') }] } }));
+    }
     if (scenario.enabled !== undefined) {
       writeFileSync(join(configDir, 'settings.json'), (scenario.bom ? '\uFEFF' : '') + JSON.stringify({
         enabledPlugins: { 'claude-mem@thedotmack': scenario.enabled },
@@ -89,7 +99,7 @@ for (const scenario of cases) {
       } else {
         assert.equal(start, '');
         assert.equal(agent, '');
-        if (!scenario.cache) assert.deepEqual(healthRequests, ['/api/health', '/api/health']);
+        assert.deepEqual(healthRequests, ['/api/health', '/api/health']);
       }
     } finally {
       await close(cloud);

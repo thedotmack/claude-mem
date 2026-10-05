@@ -12,7 +12,7 @@ are injected back into every new session and every spawned agent.
 
 | Hook | Event sent / behavior |
 |---|---|
-| `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it — skipped when the local plugin is not disabled and its worker is reachable; cached plugin versions alone do not suppress cloud context |
+| `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it — skipped when the local injector is enabled, registered with existing hook/worker files, and its worker is reachable; cached versions or a healthy server alone do not suppress cloud context |
 | `UserPromptSubmit` | `session-init` — registers the turn + prompt with the observer pipeline |
 | `PostToolUse` (all tools) | `observation` — streams the raw tool-use fragment (truncated) for server-side synthesis |
 | `PreToolUse` on `Task`/`Agent` | Fetches observations relevant to the agent's prompt and prepends them to it (skipped under the same local-worker conditions as `SessionStart`) |

@@ -322,10 +322,15 @@ received = [];
 await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_23' }, { CMEM_PROJECT: 'my-explicit' });
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
 
-// ---- 9c. local-first: a reachable local worker means no cloud context read ----
+// ---- 9c. local-first: an enabled registered injector and healthy worker ----
 console.log('\n[9c] local-first context');
 const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
-mkdirSync(LOCAL_PLUGIN, { recursive: true });
+mkdirSync(LOCAL_PLUGIN + '/hooks', { recursive: true });
+mkdirSync(LOCAL_PLUGIN + '/scripts', { recursive: true });
+writeFileSync(LOCAL_PLUGIN + '/hooks/hooks.json', '{}');
+writeFileSync(LOCAL_PLUGIN + '/scripts/worker-service.cjs', '// owned injector fixture');
+writeFileSync(TESTHOME + '/.claude/settings.json', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }));
+writeFileSync(TESTHOME + '/.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: LOCAL_PLUGIN }] } }));
 received = [];
 const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' }, { CLAUDE_MEM_WORKER_PORT: String(PORT) });
 check('no /api/hooks/context request when the local worker is reachable', !received.some(r => r.url.startsWith('/api/hooks/context')));
