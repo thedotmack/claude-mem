@@ -20,7 +20,7 @@ describe("multiline-symbol-names", () => {
    const result = await searchCodebase(dir, "second");
    const match = result.matchingSymbols.find(s => s.symbolName === "\\.first, \\.second");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("color: red;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
