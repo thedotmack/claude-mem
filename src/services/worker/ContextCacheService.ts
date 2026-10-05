@@ -11,6 +11,12 @@
  * banner's own durations and expiry are time-dependent, so its file is removed
  * and the hook takes the live path until the banner clears.
  *
+ * No cached block carries the prior session's reply ("Include last message"):
+ * that reply is chosen by excluding the session that asks, and any session may
+ * read a cached block. With the setting on, the live route answers with the
+ * reply and only warms the variant (warmVariant); the hook falls back on the
+ * cached block, rendered without it, while the worker is down.
+ *
  * A 'removal' invalidation (delete, merge, import, pulled tombstone or remap)
  * removes the matched files synchronously, before the writer's emit returns,
  * so the hook never serves deleted memory while the re-render is pending. A
@@ -27,6 +33,7 @@ import { existsSync, readFileSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import {
   contextCacheDir,
+  readContextCache,
   contextCacheVariantId,
   listContextCacheFiles,
   removeContextCache,
@@ -45,7 +52,7 @@ const CONTEXT_CACHE_INDEX_FILENAME = 'variants.json';
 export interface ContextVariantRender {
   /** The block with its time placeholders, exactly as the live route fills and sends it. */
   body: string;
-  /** False when the block must not be served from disk (health banner showing). */
+  /** False when the block must stay live (health banner, or a reply chosen for the asking session). */
   cacheable: boolean;
 }
 
@@ -152,6 +159,22 @@ export class ContextCacheService {
       return;
     }
     this.persistRender(keys, render, renderedAtEpochMs);
+  }
+
+  /**
+   * The live route answered `keys` with a block it must not persist (it carries
+   * the asking session's prior reply). Learn the variant anyway and, when no
+   * fresh file is on disk, render its cached block (which has no reply) through
+   * the render queue, so the hook has it to fall back on while the worker is down.
+   */
+  warmVariant(keys: ContextCacheKeys): void {
+    const variantId = contextCacheVariantId(keys);
+    if (!this.variants.has(variantId)) {
+      this.recordLiveRender(keys, { body: '', cacheable: false }, this.now());
+    }
+    if (readContextCache(keys, this.now())) return;
+    this.pendingVariantIds.add(variantId);
+    this.scheduleRender();
   }
 
   /** Pass to recordLiveRender to discard a render that a removal overtook. */
@@ -343,7 +366,8 @@ export class ContextCacheService {
       return {
         variants: variants.filter(entry =>
           entry && Array.isArray(entry.keys?.projects) && typeof entry.keys.platformSource === 'string'
-          && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'),
+          && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'
+          && (entry.keys.cwd === undefined || typeof entry.keys.cwd === 'string')),
       };
     } catch (error) {
       // Variants are re-learned from the next live requests; orphaned files are removed in start().

@@ -116,7 +116,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow'> | null = null,
+    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> | null = null,
     // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
     private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
   ) {
@@ -136,6 +136,16 @@ export class SearchRoutes extends BaseRouteHandler {
     this.cachedSettingsAt = now;
     this.cachedSettingsSaveCount = saveCount;
     return this.cachedSettings;
+  }
+
+  /**
+   * "Include last message", env first like every setting (applyEnvOverrides):
+   * the hook and the renderer both read it that way, so a file-only read here
+   * missed an env-only setting and the asking session was not excluded.
+   */
+  private showLastMessageEnabled(): boolean {
+    return (process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE
+      ?? this.getCachedSettings().CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE) === 'true';
   }
 
   private projectsHaveObservations(
@@ -329,6 +339,10 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     let projectsParam = (req.query.projects as string) || (req.query.project as string);
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    // "Include last message" picks the prior session's reply by excluding the
+    // session that asks, so only then is its id used, and that answer stays live.
+    const showLastMessage = this.showLastMessageEnabled();
+    const hostSessionId = showLastMessage && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
     // A host that cannot run the project resolver itself (the OMP hook) sends
     // its cwd instead: read the keys the CLI context hook sends for that checkout.
     if (!projectsParam && hostCwd.trim()) {
@@ -368,7 +382,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
     let rendered: ContextInjectRender;
     try {
-      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full });
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
@@ -398,15 +412,22 @@ export class SearchRoutes extends BaseRouteHandler {
 
     // Precomputed SessionStart context (liveness plan, Phase 6): this render is
     // what the hook reads from disk next time, and the variant is kept fresh
-    // from here on. `full` is a one-off human request and is never cached.
+    // from here on. `full` is a one-off human request and is never cached. An
+    // answer with the prior reply is not persisted either, since the reply was
+    // chosen for this session: its variant is warmed instead, without a reply.
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
-      this.contextCache.recordLiveRender(
-        contextCacheKeys(projects, platformSource, forHuman),
-        { body: rendered.body, cacheable: rendered.cacheable },
-        respondedAtEpochMs,
-        removalGenerationAtRenderStart,
-      );
+      const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
+      if (showLastMessage) {
+        this.contextCache.warmVariant(keys);
+      } else {
+        this.contextCache.recordLiveRender(
+          keys,
+          { body: rendered.body, cacheable: rendered.cacheable },
+          respondedAtEpochMs,
+          removalGenerationAtRenderStart,
+        );
+      }
     }
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -415,14 +436,17 @@ export class SearchRoutes extends BaseRouteHandler {
 
   /**
    * Re-render one cached variant (ContextCacheService). Same body the live
-   * route sends, before its placeholders are filled.
+   * route sends with "Include last message" off, before its placeholders are
+   * filled: any session may read it, so it never carries a prior reply.
    */
   async renderContextVariant(keys: ContextCacheKeys): Promise<ContextVariantRender> {
     const rendered = await this.renderContextInjectBody({
       projects: keys.projects,
+      cwd: keys.cwd,
       platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
       forHuman: keys.colors,
       full: false,
+      includePriorMessage: false,
     });
     return { body: rendered.body, cacheable: rendered.cacheable };
   }
@@ -437,11 +461,16 @@ export class SearchRoutes extends BaseRouteHandler {
     platformSource: string | undefined;
     forHuman: boolean;
     full: boolean;
+    cwd?: string;
+    /** The asking host session, excluded when the prior reply is chosen. */
+    sessionId?: string;
+    /** "Include last message" for this render; false for any block that may be cached. */
+    includePriorMessage: boolean;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
-    // The health banner is time-dependent (its durations, its expiry), so a
-    // block that carries one is served live only.
-    const cacheable = observerHealthWarning(false) === '';
+    // Health banners change with time, and a prior reply is chosen for the
+    // session that asked: a block that may carry either is served live only.
+    const cacheable = !request.includePriorMessage && observerHealthWarning(false) === '';
 
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to
@@ -483,16 +512,17 @@ export class SearchRoutes extends BaseRouteHandler {
     // path); a cached re-render needs none: ContextCacheService only keeps
     // files servable while Realtime delivers ops as they happen.
     const primaryProject = projects[projects.length - 1];
-    const cwd = `/context/${primaryProject}`;
+    const cwd = request.cwd ?? `/context/${primaryProject}`;
 
     const contextResult = await generateContextWithStats({
-      session_id: 'context-inject-' + Date.now(),
+      session_id: request.sessionId ?? 'context-inject-' + Date.now(),
       cwd: cwd,
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
       reserveChars: workStateSection ? workStateSection.length + 2 : 0,
       timePlaceholders: true,
+      includePriorMessage: request.includePriorMessage,
     }, forHuman);
     return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable };
   }
