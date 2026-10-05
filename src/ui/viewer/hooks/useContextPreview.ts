@@ -88,9 +88,11 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     setSelectedProject(prev => (prev && sourceProjects.includes(prev) ? prev : sourceProjects[0] || null));
   }, [catalog, selectedSource]);
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (isCurrent: () => boolean) => {
     if (!selectedProject) {
       setPreview('No project selected');
+      setIsLoading(false);
+      setError(null);
       return;
     }
 
@@ -108,6 +110,7 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
     try {
       const response = await fetch(`/api/context/preview?${params}`);
       const text = await response.text();
+      if (!isCurrent()) return;
 
       if (response.ok) {
         setPreview(text);
@@ -116,17 +119,21 @@ export function useContextPreview(settings: Settings): UseContextPreviewResult {
       }
     } catch (error: unknown) {
       console.error('Failed to load context preview:', error instanceof Error ? error.message : String(error));
-      setError('Failed to load preview');
+      if (isCurrent()) setError('Failed to load preview');
     }
 
-    setIsLoading(false);
+    if (isCurrent()) setIsLoading(false);
   }, [selectedProject, selectedSource]);
 
   useEffect(() => {
+    let current = true;
     const timeout = setTimeout(() => {
-      refresh();
+      refresh(() => current);
     }, 300);
-    return () => clearTimeout(timeout);
+    return () => {
+      current = false;
+      clearTimeout(timeout);
+    };
   }, [settings, refresh]);
 
   return {

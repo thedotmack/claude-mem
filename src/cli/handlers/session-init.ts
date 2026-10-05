@@ -46,6 +46,7 @@ const defaultDependencies = {
   resolveRuntimeContext: defaultResolveRuntimeContext,
   logServerFallback: defaultLogServerFallback,
   shouldTrackProject: defaultShouldTrackProject,
+  readHookEnvironment: (): NodeJS.ProcessEnv => process.env,
 };
 
 let dependencies = defaultDependencies;
@@ -99,6 +100,40 @@ export function recordSessionPrompt(input: NormalizedHookInput): Promise<HookRes
   return sessionInit.run(input, true);
 }
 
+/**
+ * Is this transcript under Qwen Code's default home, `~/.qwen/`?
+ *
+ * Matched as a whole path segment so a project directory like `~/.qwen-notes/`
+ * is not mistaken for the host.
+ */
+export const isQwenTranscriptPath = (transcriptPath: string | undefined): boolean => {
+  if (!transcriptPath) return false;
+  return transcriptPath.replace(/\\/g, '/').includes('/.qwen/');
+};
+
+/**
+ * Is this hook event from Qwen Code?
+ *
+ * Qwen runs the same `hook claude-code session-init` command as Claude Code, so
+ * `platform` cannot tell the two hosts apart. Qwen sets QWEN_PROJECT_DIR in the
+ * environment of every command hook, wherever its transcripts live: they move
+ * with QWEN_RUNTIME_DIR, `advanced.runtimeOutputDir` or QWEN_HOME. A transcript
+ * under `~/.qwen/` is the fallback signal.
+ *
+ * Only a host hook's stdin carries `transcript_path`, so an event without one
+ * is never Qwen's. That keeps the transcript watcher out: it records prompts
+ * without a transcript path, from a worker that may have inherited
+ * QWEN_PROJECT_DIR from the Qwen hook that spawned it.
+ */
+export const isQwenCodeHookEvent = (
+  transcriptPath: string | undefined,
+  environment: NodeJS.ProcessEnv = process.env,
+): boolean => {
+  if (!transcriptPath) return false;
+  if (environment.QWEN_PROJECT_DIR) return true;
+  return isQwenTranscriptPath(transcriptPath);
+};
+
 const sessionInit = {
   async run(input: NormalizedHookInput, requireRecordedPrompt: boolean): Promise<HookResult> {
     const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
@@ -140,6 +175,26 @@ const sessionInit = {
     // WAS submitted.
     if (submittedPrompt === null) {
       logger.debug('HOOK', 'session-init: host reported no user-submitted text; not storing a prompt', {
+        sessionId,
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Qwen's continuation and ToolResult sends leave `submitted_prompt` out
+    // entirely rather than sending it empty, so the field arrives absent
+    // (`undefined`) and the fallback below stores `[media prompt]` once per
+    // tool round of an agent loop (#4215). The absence is only safe to read as
+    // "not a user turn" on Qwen, which is why this is host-scoped: Claude Code
+    // sends no field on the same command, and an empty prompt there is a real
+    // image-only submission (#928). A send that carries prompt text still
+    // records, so a session whose first turn arrives without the field (Qwen
+    // only sets it at supported submission boundaries) is still created here.
+    if (
+      submittedPrompt === undefined &&
+      !rawPrompt?.trim() &&
+      isQwenCodeHookEvent(input.transcriptPath, dependencies.readHookEnvironment())
+    ) {
+      logger.debug('HOOK', 'session-init: Qwen send carried no submitted_prompt and no prompt text; not storing a prompt', {
         sessionId,
       });
       return { continue: true, suppressOutput: true };
