@@ -6,11 +6,13 @@ const actualFind = { ...(await import('../../../src/shared/find-claude-executabl
 const actualRegistry = { ...(await import('../../../src/supervisor/process-registry.js')) };
 const actualEnv = { ...(await import('../../../src/shared/EnvManager.js')) };
 const cli = fileURLToPath(new URL('./claude-served-model-cli.cjs', import.meta.url));
+const kind = process.argv[2] ?? 'observation';
 mock.module('../../../src/shared/find-claude-executable.js', () => ({ ...actualFind, findClaudeExecutable: () => cli }));
 mock.module('../../../src/supervisor/process-registry.js', () => ({ ...actualRegistry,
   createSdkSpawnFactory: (...args: Parameters<typeof actualRegistry.createSdkSpawnFactory>) => {
     const spawn = actualRegistry.createSdkSpawnFactory(...args);
-    return (options: Parameters<typeof spawn>[0]) => spawn({ ...options, command: process.execPath, args: [cli, ...options.args] });
+    return (options: Parameters<typeof spawn>[0]) => spawn({ ...options, command: process.execPath,
+      args: [cli, ...(kind === 'absent' ? ['--omit-model'] : []), ...options.args] });
   },
 }));
 mock.module('../../../src/shared/EnvManager.js', () => ({ ...actualEnv,
@@ -22,7 +24,6 @@ const { SessionStore } = await import('../../../src/services/sqlite/SessionStore
 const { SessionManager } = await import('../../../src/services/worker/SessionManager.js');
 const { SettingsDefaultsManager } = await import('../../../src/shared/SettingsDefaultsManager.js');
 const { ModeManager } = await import('../../../src/services/domain/ModeManager.js');
-const kind = process.argv[2] ?? 'observation';
 const requestedModel = kind === 'control' ? 'claude-haiku-4-5-20251001' : 'haiku';
 const cleanup: Array<() => void | Promise<unknown>> = [];
 try {
@@ -52,8 +53,10 @@ try {
   console.log(JSON.stringify({ kind, requestedModel, rows }));
   assert.equal(manager.getTotalQueueDepth(), 0);
   assert.equal(session.lastModelId, requestedModel);
+  // A frame without a model keeps the requested one rather than storing NULL.
+  const servedModel = kind === 'absent' ? requestedModel : 'claude-haiku-4-5-20251001';
   assert.deepEqual(rows, [{ title: 'Owned SDK model attribution',
-    ...(kind === 'summary' ? {} : { generated_by_model: 'claude-haiku-4-5-20251001' }) }]);
+    ...(kind === 'summary' ? {} : { generated_by_model: servedModel }) }]);
 } finally {
   for (const release of cleanup.reverse()) await release();
 }

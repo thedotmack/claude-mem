@@ -621,6 +621,13 @@ export class ClaudeProvider {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
+          // The frame names the model that served the turn (an alias such as
+          // `haiku` arrives as its dated id). It is read off the CLI's stdout,
+          // so a frame without one keeps the requested model, as the other
+          // providers do.
+          const reportedModel = message.message.model;
+          const servedModel = typeof reportedModel === 'string' && reportedModel ? reportedModel : modelId;
+
           pacer.processingStarted();
           try {
             const stored = await processAgentResponse(
@@ -633,7 +640,7 @@ export class ClaudeProvider {
               originalTimestamp,
               'SDK',
               cwdTracker.lastCwd,
-              message.message.model,
+              servedModel,
               activeResponseContext.current,
               emptyOutputReason
             );

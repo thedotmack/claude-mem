@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-for (const kind of ['observation', 'override', 'summary', 'control']) {
+for (const kind of ['observation', 'override', 'summary', 'control', 'absent']) {
   it(`SDK served-model attribution preserves ${kind}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-served-model-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;
