@@ -112,20 +112,53 @@ export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): Transcrip
     throw new Error(`Transcript watch config not found: ${resolvedPath}`);
   }
   const parsed = readJsonFileWithBom<TranscriptWatchConfig>(resolvedPath);
-  const validSchema = (schema: unknown): schema is TranscriptSchema => {
-    if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return false;
-    const value = schema as Partial<TranscriptSchema>;
-    return typeof value.name === 'string' && value.name.trim().length > 0 && Array.isArray(value.events)
-      && value.events.every(event => typeof event === 'object' && event !== null
-        && typeof event.name === 'string' && typeof event.action === 'string');
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+    typeof value === 'object' && value !== null && !Array.isArray(value);
+  const optionalText = (value: unknown): boolean => value === undefined || typeof value === 'string';
+  const validField = (value: unknown): boolean => {
+    if (typeof value === 'string') return true;
+    return isRecord(value) && optionalText(value.path)
+      && (value.coalesce === undefined || Array.isArray(value.coalesce) && value.coalesce.every(validField));
   };
+  const validMatch = (value: unknown): boolean => {
+    if (!isRecord(value)) return false;
+    return ['path', 'regex', 'contains', 'not_contains', 'starts_with', 'not_starts_with'].every(key => optionalText(value[key]))
+      && (value.exists === undefined || typeof value.exists === 'boolean')
+      && ['in', 'not_in'].every(key => value[key] === undefined || Array.isArray(value[key]))
+      && ['all', 'any'].every(key => value[key] === undefined
+        || Array.isArray(value[key]) && value[key].every(validMatch));
+  };
+  const actions = new Set(['session_init', 'session_context', 'user_message', 'assistant_message',
+    'tool_use', 'tool_result', 'observation', 'file_edit', 'session_end']);
+  const validSchema = (schema: unknown): schema is TranscriptSchema => {
+    if (!isRecord(schema)) return false;
+    return typeof schema.name === 'string' && schema.name.trim().length > 0
+      && ['eventTypePath', 'sessionIdPath', 'cwdPath', 'projectPath'].every(key => optionalText(schema[key]))
+      && Array.isArray(schema.events) && schema.events.every(event => isRecord(event)
+        && typeof event.name === 'string' && typeof event.action === 'string' && actions.has(event.action)
+        && (event.match === undefined || validMatch(event.match))
+        && (event.fields === undefined || isRecord(event.fields) && Object.values(event.fields).every(validField)));
+  };
+  const validSchemas = parsed?.schemas === undefined
+    || isRecord(parsed.schemas) && Object.values(parsed.schemas).every(validSchema);
   const validWatches = Array.isArray(parsed?.watches) && parsed.watches.every(watch =>
-    typeof watch === 'object' && watch !== null
+    isRecord(watch)
       && typeof watch.name === 'string' && watch.name.trim().length > 0
       && typeof watch.path === 'string' && watch.path.trim().length > 0
-      && (typeof watch.schema === 'string' && watch.schema.trim().length > 0 || validSchema(watch.schema))
+      && ['workspace', 'project', 'agentId'].every(key => optionalText(watch[key]))
+      && ['startAtEnd', 'subagentOnly'].every(key => watch[key] === undefined || typeof watch[key] === 'boolean')
+      && (watch.subagentSource === undefined || isRecord(watch.subagentSource)
+        && typeof watch.subagentSource.path === 'string')
+      && (watch.context === undefined || isRecord(watch.context) && watch.context.mode === 'agents'
+        && optionalText(watch.context.path) && (watch.context.updateOn === undefined
+          || Array.isArray(watch.context.updateOn)
+            && watch.context.updateOn.every(value => value === 'session_start' || value === 'session_end')))
+      && (typeof watch.schema === 'string'
+        ? watch.schema.trim().length > 0 && validSchemas
+          && (parsed.schemas?.[watch.schema] === undefined || validSchema(parsed.schemas[watch.schema]))
+        : validSchema(watch.schema))
   );
-  if (parsed?.version !== 1 || !validWatches) {
+  if (parsed?.version !== 1 || !optionalText(parsed.stateFile) || !validSchemas || !validWatches) {
     throw new Error(`Invalid transcript watch config: ${resolvedPath}`);
   }
   if (!parsed.stateFile) {

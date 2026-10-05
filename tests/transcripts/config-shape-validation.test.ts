@@ -22,3 +22,18 @@ describe('transcript config validation', () => {
     await expect(runTranscriptCommand('validate', ['--config', configPath])).rejects.toThrow('Invalid transcript watch config');
   });
 });
+
+it('validates referenced schema events before claiming Config OK', async () => {
+  writeFileSync(configPath, JSON.stringify({ version: 1, schemas: { owned: { name: 'owned', events: {} } },
+    watches: [{ name: 'owned', path: 'owned.jsonl', schema: 'owned' }] }));
+  await expect(runTranscriptCommand('validate', ['--config', configPath])).rejects.toThrow('Invalid transcript watch config');
+});
+for (const invalidEvent of [{ name: 'owned', action: 'user_message', match: { path: 42 } },
+  { name: 'owned', action: 'user_message', fields: { prompt: { path: 42 } } },
+  { name: 'owned', action: 'user_message', match: { all: [{ path: 42 }] } }]) {
+  it(`rejects an invalid runtime event ${JSON.stringify(invalidEvent)}`, () => {
+    writeFileSync(configPath, JSON.stringify({ version: 1, watches: [
+      { name: 'owned', path: 'owned.jsonl', schema: { name: 'owned', events: [invalidEvent] } } ] }));
+    expect(() => loadTranscriptWatchConfig(configPath)).toThrow('Invalid transcript watch config');
+  });
+}
