@@ -962,6 +962,11 @@ export class SessionRoutes extends BaseRouteHandler {
 
       this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
     } else {
+      // Cursor creates its observer lazily, but accepted prompts still update an existing session.
+      if (this.sessionManager.getSession(sessionDbId)) {
+        const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
+        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
+      }
       logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
 

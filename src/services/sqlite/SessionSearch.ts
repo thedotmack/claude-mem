@@ -95,9 +95,10 @@ export class SessionSearch {
 
   private ensureFTSTables(): void {
     const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
-    const hasFTS = tables.some(t => t.name === 'observations_fts' || t.name === 'session_summaries_fts');
+    const hasObservationsFTS = tables.some(t => t.name === 'observations_fts');
+    const hasSummariesFTS = tables.some(t => t.name === 'session_summaries_fts');
 
-    if (hasFTS) {
+    if (hasObservationsFTS && hasSummariesFTS) {
       return;
     }
 
@@ -109,7 +110,14 @@ export class SessionSearch {
     logger.info('DB', 'Creating FTS5 tables');
 
     try {
-      this.createFTSTablesAndTriggers();
+      this.db.transaction(() => {
+        // Another connection may have completed setup after the initial read.
+        // Hold the writer reservation while deciding which indexes we own.
+        const currentTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
+        const createObservations = !currentTables.some(t => t.name === 'observations_fts');
+        const createSummaries = !currentTables.some(t => t.name === 'session_summaries_fts');
+        this.createFTSTablesAndTriggers(createObservations, createSummaries);
+      }).immediate();
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
       this._fts5Available = false;
@@ -119,8 +127,8 @@ export class SessionSearch {
 
   private isFts5Available(): boolean {
     try {
-      this.db.run('CREATE VIRTUAL TABLE _fts5_probe USING fts5(test_column)');
-      this.db.run('DROP TABLE _fts5_probe');
+      this.db.run('CREATE VIRTUAL TABLE temp._fts5_probe USING fts5(test_column)');
+      this.db.run('DROP TABLE temp._fts5_probe');
       return true;
     } catch (error) {
       logger.debug('DB', 'FTS5 probe failed — FTS5 unavailable on this platform', undefined, error instanceof Error ? error : new Error(String(error)));
@@ -128,48 +136,54 @@ export class SessionSearch {
     }
   }
 
-  private createFTSTablesAndTriggers(): void {
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
-        title,
-        subtitle,
-        narrative,
-        text,
-        facts,
-        concepts,
-        content='observations',
-        content_rowid='id'
-      );
-    `);
+  private createFTSTablesAndTriggers(createObservations: boolean, createSummaries: boolean): void {
+    // Backfill only newly created indexes: reinserting into an existing FTS5
+    // external-content index can corrupt its delete/update bookkeeping.
+    if (createObservations) {
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS observations_fts USING fts5(
+          title,
+          subtitle,
+          narrative,
+          text,
+          facts,
+          concepts,
+          content='observations',
+          content_rowid='id'
+        );
+      `);
 
-    this.db.run(`
-      INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
-      SELECT id, title, subtitle, narrative, text, facts, concepts
-      FROM observations;
-    `);
+      this.db.run(`
+        INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
+        SELECT id, title, subtitle, narrative, text, facts, concepts
+        FROM observations;
+      `);
 
-    this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
+      this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
+    }
 
-    this.db.run(`
-      CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
-        request,
-        investigated,
-        learned,
-        completed,
-        next_steps,
-        notes,
-        content='session_summaries',
-        content_rowid='id'
-      );
-    `);
+    if (createSummaries) {
+      this.db.run(`
+        CREATE VIRTUAL TABLE IF NOT EXISTS session_summaries_fts USING fts5(
+          request,
+          investigated,
+          learned,
+          completed,
+          next_steps,
+          notes,
+          content='session_summaries',
+          content_rowid='id'
+        );
+      `);
 
-    this.db.run(`
-      INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
-      SELECT id, request, investigated, learned, completed, next_steps, notes
-      FROM session_summaries;
-    `);
+      this.db.run(`
+        INSERT INTO session_summaries_fts(rowid, request, investigated, learned, completed, next_steps, notes)
+        SELECT id, request, investigated, learned, completed, next_steps, notes
+        FROM session_summaries;
+      `);
 
-    this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
+      this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
+    }
   }
 
   private buildFilterClause(
@@ -666,7 +680,7 @@ export class SessionSearch {
       filterClause,
       SessionSearch.jsonArrayLikeClause(['o.files_read', 'o.files_modified'], pathPatterns.length),
     ].filter(Boolean).join(' AND ');
-    const orderClause = this.buildOrderClause(orderBy, false);
+    const orderClause = `${this.buildOrderClause(orderBy, false)}, o.id ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
 
     const observationsSql = `
       SELECT o.*, o.discovery_tokens
@@ -728,7 +742,7 @@ export class SessionSearch {
       SELECT s.*, s.discovery_tokens
       FROM session_summaries s
       WHERE ${baseConditions.join(' AND ')}
-      ORDER BY s.created_at_epoch DESC
+      ORDER BY s.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}
       ${paginationSql}
     `;
 

@@ -112,6 +112,14 @@ export function classifyGeminiError(input: {
 
   if (status === 400) {
     const category = categorizeGeminiBadRequest(body);
+    if (category === 'api_key') {
+      // Google also reports invalid credentials as HTTP 400. The key pool
+      // must retire this key and try its next credential, as for 401/403.
+      return new ClassifiedProviderError(
+        'Gemini auth invalid (status 400)',
+        { kind: 'auth_invalid', cause },
+      );
+    }
     // A request too large for the window is fixed by retiring the
     // conversation, not by the user (#3625).
     return new ClassifiedProviderError(
@@ -240,6 +248,7 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
 }
 
 interface GeminiResponse {
+  modelVersion?: string;
   candidates?: Array<{
     content?: {
       parts?: GeminiPart[];
@@ -509,6 +518,7 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
       tokensUsed,
       inputTokens: data.usageMetadata?.promptTokenCount,
       outputTokens: data.usageMetadata?.candidatesTokenCount,
+      ...(typeof data.modelVersion === 'string' && data.modelVersion ? { servedModel: data.modelVersion } : {}),
       ...(finishReason ? { finishReason } : {}),
     };
   }

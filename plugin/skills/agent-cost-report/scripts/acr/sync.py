@@ -44,7 +44,7 @@ def sha256(path):
 def write_checksums(root=SKILL_DIR):
     """sha256sum-compatible CHECKSUMS.txt next to SKILL.md so drift shows in git diffs."""
     lines = [f"{sha256(os.path.join(root, rel))}  {rel}" for rel in shipped_files(root)]
-    with open(os.path.join(root, CHECKSUMS), "w") as fh: fh.write("\n".join(lines) + "\n")
+    with open(os.path.join(root, CHECKSUMS), "w", encoding="utf-8", newline="\n") as fh: fh.write("\n".join(lines) + "\n")   # LF on every OS
     return lines
 
 
