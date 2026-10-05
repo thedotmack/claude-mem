@@ -1,6 +1,7 @@
 """Native file rendering under a legacy Windows code page."""
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,7 +30,8 @@ class NativeEncoding(unittest.TestCase):
 import locale, pathlib, sys
 sys.path.insert(0, sys.argv[1])
 from acr import render
-assert locale.getencoding().lower() != "utf-8", locale.getencoding()
+encoding = locale.getpreferredencoding(False)   # locale.getencoding() is Python 3.11+; the skill supports 3.9+
+assert encoding.lower() != "utf-8", encoding
 for print_mode in (False, True):
     path = render.render_file(sys.argv[2], sys.argv[3], print_mode=print_mode)
     text = pathlib.Path(path).read_text(encoding="utf-8")
@@ -61,3 +63,12 @@ class DateFormatting(unittest.TestCase):
         for start, end, expected in cases:
             with self.subTest(start=start, end=end):
                 self.assertEqual(render.date_pill({"start_pt": start, "end_exclusive_pt": end}, scope), expected)
+
+    def test_sources_use_no_platform_specific_strftime_flags(self):
+        # "%-d" (no zero padding) is a glibc/BSD extension: Windows strftime raises
+        # "ValueError: Invalid format string". Compose the day as f"{d:%b} {d.day}" instead.
+        sources = [Path(_paths.ACR_PY), *sorted(Path(_paths.SCRIPTS, "acr").glob("*.py"))]
+        hits = [f"{source.name}:{number}" for source in sources
+                for number, line in enumerate(source.read_text(encoding="utf-8").splitlines(), 1)
+                if re.search(r"%-[A-Za-z]", line)]
+        self.assertEqual(hits, [])
