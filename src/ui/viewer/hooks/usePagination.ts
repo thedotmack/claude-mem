@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useLayoutEffect } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
@@ -26,10 +26,13 @@ function usePaginationFor<TItem extends DataItem>(
   const selectionKey = `${currentFilter}|${currentSession ? sessionKey(currentSession) : ''}`;
   const offsetRef = useRef(0);
   const selectionRef = useRef({ key: selectionKey, version: 0 });
-  if (selectionRef.current.key !== selectionKey) {
-    selectionRef.current = { key: selectionKey, version: selectionRef.current.version + 1 };
-  }
-  const selectionVersion = selectionRef.current.version;
+  // Concurrent renders may be abandoned. Derive their prospective visit
+  // without retiring the committed visit's callbacks or pending requests.
+  const selection = selectionRef.current.key === selectionKey
+    ? selectionRef.current
+    : { key: selectionKey, version: selectionRef.current.version + 1 };
+  useLayoutEffect(() => { selectionRef.current = selection; }, [selection]);
+  const selectionVersion = selection.version;
   const lastLoadedVersionRef = useRef(selectionVersion);
   const stateRef = useRef(state);
 

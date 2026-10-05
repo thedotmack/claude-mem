@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ViewTabs, type ViewTab } from './components/ViewTabs';
@@ -67,11 +67,12 @@ export function App() {
   );
   const scopeKey = feedScopeKey(feedScope);
   const activeFeedScopeRef = useRef({ key: scopeKey, version: 0 });
-  if (activeFeedScopeRef.current.key !== scopeKey) {
-    activeFeedScopeRef.current = { key: scopeKey, version: activeFeedScopeRef.current.version + 1 };
-  }
-
-  const feedVersion = activeFeedScopeRef.current.version;
+  const feedVisit = activeFeedScopeRef.current.key === scopeKey
+    ? activeFeedScopeRef.current
+    : { key: scopeKey, version: activeFeedScopeRef.current.version + 1 };
+  // Only a committed scope retires the previous visit's rows and errors.
+  useLayoutEffect(() => { activeFeedScopeRef.current = feedVisit; }, [feedVisit]);
+  const feedVersion = feedVisit.version;
 
   const catalog = useSessionCatalog();
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
