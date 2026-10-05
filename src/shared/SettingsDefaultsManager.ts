@@ -182,6 +182,12 @@ export interface SettingsDefaults {
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
+  // Quota guard: per-window utilization (0–1) at which a subscription observer stops (#4230).
+  CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR: string;
+  CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY: string;
+  CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: string;
+  CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: string;
+  CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -404,6 +410,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: '',  // '' = off | 'claude' | 'gemini' | 'openrouter' | 'openai-compatible': where observer work goes while the selected provider's quota breaker holds (a spent allowance, or rate limits that outlast their retries)
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
+    CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR: '0.95',          // Quota guard (#4230): subscription observer stops at this utilization of the window. A provider rejection always stops it
+    CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY: '0.93',
+    CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: '0.93',
+    CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: '0.92',
+    CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: '0.95',
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
