@@ -4,10 +4,11 @@ import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const hook = fileURLToPath(new URL('../scripts/cmem-hook.mjs', import.meta.url));
+const launcher = fileURLToPath(new URL('../../plugin/scripts/bun-runner.js', import.meta.url));
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 const close = server => new Promise(resolve => server.close(resolve));
 
@@ -29,7 +30,9 @@ const cases = [
   { name: 'enabled registered plugin with healthy worker', enabled: true, cache: true, registered: true, worker: 'healthy', cloud: false },
   { name: 'healthy worker without a local injector', worker: 'healthy', cloud: true },
   { name: 'enabled cached but unregistered plugin with healthy worker', enabled: true, cache: true, worker: 'healthy', cloud: true },
-  { name: 'registered plugin without enabled settings and healthy worker', cache: true, registered: true, worker: 'healthy', cloud: true },
+  { name: 'registered plugin without settings file and healthy worker', cache: true, registered: true, worker: 'healthy', cloud: false },
+  { name: 'registered plugin with empty settings and healthy worker', settings: {}, cache: true, registered: true, worker: 'healthy', cloud: false },
+  { name: 'registered plugin with no plugin entry and healthy worker', settings: {enabledPlugins: {}}, cache: true, registered: true, worker: 'healthy', cloud: false },
   { name: 'cached plugin with unhealthy worker', enabled: true, cache: true, worker: 'unhealthy', cloud: true },
   { name: 'disabled plugin in BOM-prefixed settings', enabled: false, bom: true, cache: true, worker: 'healthy', cloud: true },
   { name: 'no local install or worker', worker: 'down', cloud: true },
@@ -49,6 +52,7 @@ for (const scenario of cases) {
       writeFileSync(join(plugin, 'scripts/worker-service.cjs'), '// owned injector fixture');
       writeFileSync(join(configDir, 'plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0') }] } }));
     }
+    if (scenario.settings) writeFileSync(join(configDir, 'settings.json'), JSON.stringify(scenario.settings));
     if (scenario.enabled !== undefined) {
       writeFileSync(join(configDir, 'settings.json'), (scenario.bom ? '\uFEFF' : '') + JSON.stringify({
         enabledPlugins: { 'claude-mem@thedotmack': scenario.enabled },
@@ -82,6 +86,19 @@ for (const scenario of cases) {
         CMEM_API_BASE: `http://127.0.0.1:${cloudPort}`, CMEM_API_KEY: 'owned-fixture-key',
         CMEM_USER_ID: 'owned-fixture-user', CMEM_SYNC_HUB_URL: `http://127.0.0.1:${cloudPort}`,
       };
+      if (scenario.registered) {
+        // Drive the real local launcher. Node is the explicit runtime boundary
+        // for this tiny owned script; no installed plugin or worker is started.
+        const fixture = join(home, 'owned-injector.cjs');
+        writeFileSync(fixture, 'process.stdout.write("owned injector launched")');
+        const launched = await new Promise((resolve, reject) => {
+          const child = execFile(process.execPath, [launcher, fixture], {
+            env: { ...env, BUN: process.execPath, PATH: dirname(process.execPath) }, timeout: 15000,
+          }, (error, stdout, stderr) => error ? reject(Object.assign(error, {stderr})) : resolve(stdout));
+          child.stdin.end('{}');
+        });
+        assert.equal(launched, scenario.enabled === false ? '' : 'owned injector launched');
+      }
       const input = { session_id: 'owned-session', cwd: '/owned/owned-project' };
       const start = await runHook('context', input, env);
       const agent = await runHook('agent-context', {

@@ -324,10 +324,16 @@ function viewerPort() {
 async function localClaudeMemAvailable() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
   try {
-    const raw = readFileSync(join(configDir, 'settings.json'), 'utf8');
-    const settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
-    // A healthy server alone does not register any local injection hooks.
-    if (settings?.enabledPlugins?.['claude-mem@thedotmack'] !== true) return false;
+    let settings = {};
+    try {
+      const raw = readFileSync(join(configDir, 'settings.json'), 'utf8');
+      settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    } catch (error) {
+      if (error.code !== 'ENOENT') return false;
+    }
+    // Match the local launcher's opt-out setting. Registration below still
+    // prevents a cached version or unrelated healthy server suppressing cloud.
+    if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
     const registryRaw = readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8');
     const registry = JSON.parse(registryRaw.replace(/^\uFEFF/, ''));
     const entries = registry?.plugins?.['claude-mem@thedotmack'];
