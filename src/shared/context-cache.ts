@@ -103,6 +103,8 @@ export interface ContextCacheKeys {
   colors: boolean;
   /** Observed checkout directory used for local transcript lookup. */
   cwd?: string;
+  /** Current host session excluded from optional prior-transcript context. */
+  sessionId?: string;
 }
 
 export const ALL_PLATFORM_SOURCES_CACHE_KEY = 'all';
@@ -117,12 +119,14 @@ export function contextCacheKeys(
   platformSource: string | undefined,
   colors: boolean,
   cwd?: string,
+  sessionId?: string,
 ): ContextCacheKeys {
   return {
     projects: projects.map(project => project.trim()).filter(Boolean),
     platformSource: platformSource || ALL_PLATFORM_SOURCES_CACHE_KEY,
     colors,
     ...(cwd ? { cwd } : {}),
+    ...(sessionId ? { sessionId } : {}),
   };
 }
 
@@ -132,7 +136,7 @@ export function contextCacheDir(): string {
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
   return createHash('sha256')
-    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : [])]))
+    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : []), ...(keys.sessionId ? [{ sessionId: keys.sessionId }] : [])]))
     .digest('hex');
 }
 

@@ -329,6 +329,8 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     let projectsParam = (req.query.projects as string) || (req.query.project as string);
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
+    const hostSessionId = this.getCachedSettings().CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'
+      && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
     // A host that cannot run the project resolver itself (the OMP hook) sends
     // its cwd instead: read the keys the CLI context hook sends for that checkout.
     if (!projectsParam && hostCwd.trim()) {
@@ -368,7 +370,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
     let rendered: ContextInjectRender;
     try {
-      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined });
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
@@ -402,7 +404,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
       this.contextCache.recordLiveRender(
-        contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined),
+        contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined, hostSessionId),
         { body: rendered.body, cacheable: rendered.cacheable },
         respondedAtEpochMs,
         removalGenerationAtRenderStart,
@@ -421,6 +423,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const rendered = await this.renderContextInjectBody({
       projects: keys.projects,
       cwd: keys.cwd,
+      sessionId: keys.sessionId,
       platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
       forHuman: keys.colors,
       full: false,
@@ -439,6 +442,7 @@ export class SearchRoutes extends BaseRouteHandler {
     forHuman: boolean;
     full: boolean;
     cwd?: string;
+    sessionId?: string;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
     // The health banner is time-dependent (its durations, its expiry), so a
@@ -488,7 +492,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const cwd = request.cwd ?? `/context/${primaryProject}`;
 
     const contextResult = await generateContextWithStats({
-      session_id: 'context-inject-' + Date.now(),
+      session_id: request.sessionId ?? 'context-inject-' + Date.now(),
       cwd: cwd,
       projects: projects,
       ...(platformSource ? { platformSource } : {}),

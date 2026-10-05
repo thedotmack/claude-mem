@@ -107,7 +107,9 @@ export const contextHandler: EventHandler = {
     const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}`;
+    const transcriptSessionId = settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true' ? input.sessionId : undefined;
+    const sessionParam = transcriptSessionId ? `&sessionId=${encodeURIComponent(transcriptSessionId)}` : '';
+    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     // Server runtime reads the shared server (plan-24 step 4). When the server
@@ -136,7 +138,7 @@ export const contextHandler: EventHandler = {
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
       if (serverRuntime) return null;
-      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
+      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd, transcriptSessionId);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;
       logger.debug('HOOK', 'SessionStart context served from the context cache', {

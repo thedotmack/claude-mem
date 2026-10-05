@@ -514,12 +514,14 @@ describe('ContextCacheService with cloud sync (servable only while Realtime is l
 const HOOK_PROJECTS = ['cache-hook-parent', 'cache-hook-repo'];
 const workerCalls: string[] = [];
 let showTerminalOutput = false;
+let showLastMessage = false;
 
 mock.module('../../src/shared/hook-settings.js', () => ({
   ...realHookSettingsSnapshot,
   loadFromFileOnce: () => ({
     ...realHookSettingsSnapshot.loadFromFileOnce(),
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
+    CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: String(showLastMessage),
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_PROVIDER: 'codex',
     CLAUDE_MEM_PRO_FALLBACK_AT: '',
@@ -564,6 +566,7 @@ describe('context hook reads the precomputed block', () => {
   beforeEach(() => {
     workerCalls.length = 0;
     showTerminalOutput = false;
+    showLastMessage = false;
   });
   afterEach(() => {
     rmSync(contextCacheFilePath(agentKeys), { force: true });
@@ -583,6 +586,14 @@ describe('context hook reads the precomputed block', () => {
     expect(additionalContext).toStartWith('# [cache-hook-repo] recent context, ');
     expect(additionalContext).toContain('- release: updated about 2 hours ago');
     expect(additionalContext).not.toContain(PLACEHOLDER_MARKER);
+  });
+
+  it('passes the host session and avoids another session cache when prior messages are enabled', async () => {
+    showLastMessage = true;
+    writeContextCache(agentKeys, 'A block without current-session exclusion', Date.now());
+    const result = await runHook();
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&sessionId=cache-session']);
+    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
   });
 
   it('takes the live path on a miss, including the observed checkout cwd', async () => {

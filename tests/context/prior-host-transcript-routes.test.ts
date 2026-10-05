@@ -14,6 +14,7 @@ const fixture = String.raw`
   const dir = join(process.env.CLAUDE_CONFIG_DIR, 'projects', cwdToDashed(cwd));
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, 'prior-host.jsonl'), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'The prior host response.' }] } }) + '\n');
+  if (process.env.TRANSCRIPT_ACTIVE === 'true') writeFileSync(join(dir, 'current-host.jsonl'), JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: 'The active host response.' }] } }) + '\n');
   const app = express(); app.use(express.json());
   let cleanup = async () => {};
   let cache, store, runtime;
@@ -44,6 +45,11 @@ const fixture = String.raw`
     const session = store.createSDKSession('prior-host', 'project', 'prompt');
     store.updateMemorySessionId(session, 'prior-observer');
     store.storeObservation('prior-observer', 'project', { type: 'discovery', title: 'Observed fact', subtitle: null, narrative: 'An observed fact', facts: [], concepts: ['how-it-works'], files_read: [], files_modified: [] }, 1);
+    if (process.env.TRANSCRIPT_ACTIVE === 'true') {
+      const active = store.createSDKSession('current-host', 'project', 'prompt');
+      store.updateMemorySessionId(active, 'current-observer');
+      store.storeObservation('current-observer', 'project', { type: 'discovery', title: 'Active fact', subtitle: null, narrative: 'A current fact', facts: [], concepts: ['how-it-works'], files_read: [], files_modified: [] }, 1, 0, Date.now() + 1000);
+    }
     let routes;
     cache = new ContextCacheService({ renderVariant: keys => routes.renderContextVariant(keys), expandProjectReadKeys: keys => store.getProjectReadKeys(keys) });
     routes = new SearchRoutes({ getSessionStore: () => store }, cache);
@@ -62,23 +68,27 @@ const fixture = String.raw`
       const result = await generateServerContextWithStats({ runtime: 'server', projectId: runtime.projectId, serverBaseUrl: baseUrl, client }, { projects: ['project'], cwd, session_id: 'current-host' });
       console.log(JSON.stringify({ text: result.text, host: rows.observations[0].contentSessionId, distinct: runtime.serverSessionId !== 'prior-host' }));
     } else {
-      const text = await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: 'project', cwd }))).text();
+      const text = await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: 'project', cwd, sessionId: 'current-host' }))).text();
       const { emitContextInvalidation } = await import('./src/shared/context-invalidation.ts');
       const { contextCacheKeys, readContextCache } = await import('./src/shared/context-cache.ts');
       emitContextInvalidation({ projects: ['project'] }, 'owned-fixture');
       await cache.flushPendingRenders();
-      const cached = readContextCache(contextCacheKeys(['project'], undefined, false, cwd), Date.now());
-      console.log(JSON.stringify({ text, cached: cached?.body }));
+      const cached = readContextCache(contextCacheKeys(['project'], undefined, false, cwd, 'current-host'), Date.now());
+      let other;
+      if (process.env.TRANSCRIPT_ACTIVE === 'true') {
+        other = await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: 'project', cwd, sessionId: 'other-host' }))).text();
+      }
+      console.log(JSON.stringify({ text, cached: cached?.body, other }));
     }
   } finally { await new Promise(resolve => server.close(resolve)); await cleanup(); }
 `;
 
-function run(kind: string): any {
+function run(kind: string, active = false): any {
   const dir = mkdtempSync(join(tmpdir(), 'prior-transcript-route-'));
   try {
     mkdirSync(join(dir, 'data'));
     writeFileSync(join(dir, 'data', 'settings.json'), JSON.stringify({ CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'true', CLAUDE_MEM_WELCOME_HINT_ENABLED: 'false' }));
-    const result = Bun.spawnSync([process.execPath, '-e', fixture], { cwd: join(import.meta.dir, '../..'), env: { ...process.env, TRANSCRIPT_ROUTE_KIND: kind, CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_CONFIG_DIR: join(dir, 'config') }, stdout: 'pipe', stderr: 'pipe' });
+    const result = Bun.spawnSync([process.execPath, '-e', fixture], { cwd: join(import.meta.dir, '../..'), env: { ...process.env, TRANSCRIPT_ROUTE_KIND: kind, TRANSCRIPT_ACTIVE: String(active), CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_CONFIG_DIR: join(dir, 'config') }, stdout: 'pipe', stderr: 'pipe' });
     if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
     return JSON.parse(new TextDecoder().decode(result.stdout).trim().split('\n').at(-1)!);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -89,6 +99,12 @@ describe('prior host transcript in production context routes', () => {
     const result = run('worker');
     expect(result.text).toContain('The prior host response.');
     expect(result.cached).toContain('The prior host response.');
+  });
+  it('excludes an active host transcript in clear or compact context and cache refreshes', () => {
+    const result = run('worker', true);
+    expect(result.text).not.toContain('The active host response.');
+    expect(result.cached).not.toContain('The active host response.');
+    expect(result.other).toContain('The active host response.');
   });
   (process.env.CLAUDE_MEM_TEST_POSTGRES_URL ? it : it.skip)('carries the host identity through real Postgres, HTTP, and the server renderer', () => {
     const result = run('server');
