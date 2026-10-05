@@ -20,10 +20,12 @@ if (process.env.CI && !chrome) throw new Error('CI requires Chrome for native vi
       (async()=>{try{await settle(); await catalog.refresh('alpha'); await settle();
         catalog.touch({session:{platformSource:'claude',contentSessionId:'foreign'}, project:'beta',createdAtEpoch:1});
         catalog.touch({session:{platformSource:'claude',contentSessionId:'local'}, project:'alpha',createdAtEpoch:2});
-        await settle(); const filtered=catalog.sessions.map(s=>s.project);
+        await settle();
+        catalog.touch({session:{platformSource:'claude',contentSessionId:'local'}, project:'beta',createdAtEpoch:3});
+        await settle(); const filtered=catalog.sessions.map(s=>s.project); const itemCount=catalog.sessions[0].item_count;
         await catalog.refresh(''); await settle();
         catalog.touch({session:{platformSource:'claude',contentSessionId:'all-projects'},project:'beta',createdAtEpoch:3});
-        await settle(); await fetch('/result',{method:'POST',body:JSON.stringify({filtered,all:catalog.sessions.map(s=>s.project)})});
+        await settle(); await fetch('/result',{method:'POST',body:JSON.stringify({filtered,itemCount,all:catalog.sessions.map(s=>s.project)})});
       }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})});}})();`,
   });
   let report!: (value: unknown) => void;
@@ -39,6 +41,6 @@ if (process.env.CI && !chrome) throw new Error('CI requires Chrome for native vi
   const child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--disable-background-timer-throttling','--disable-renderer-backgrounding','--no-first-run',`--user-data-dir=${profile}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
   let timeout: ReturnType<typeof setTimeout>;
   try { const reported=await Promise.race([result,new Promise(resolve=>{timeout=setTimeout(()=>resolve({failure:'Browser timed out'}),45000);})]);
-    expect(reported).toEqual({filtered:['alpha'],all:['beta']});
+    expect(reported).toEqual({filtered:['alpha'],itemCount:2,all:['beta']});
   } finally {clearTimeout(timeout!);child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});}
 },80000);
