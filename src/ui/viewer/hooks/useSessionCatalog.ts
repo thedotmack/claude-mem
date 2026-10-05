@@ -113,9 +113,13 @@ export function useSessionCatalog() {
   const noteItemRemoved = useCallback((session: SessionRef) => {
     const key = sessionKey(session);
     journalRef.current.touched.add(key);
-    journalRef.current.decreased.add(key);
-    setSessions(prev => prev.map(entry => sameSession(catalogEntryRef(entry), session)
-      ? { ...entry, item_count: Math.max(0, entry.item_count - 1) } : entry));
+    setSessions(prev => prev.map(entry => {
+      if (!sameSession(catalogEntryRef(entry), session)) return entry;
+      journalRef.current.decreased.set(key, Math.max(
+        journalRef.current.decreased.get(key) ?? 0, entry.item_count,
+      ));
+      return { ...entry, item_count: Math.max(0, entry.item_count - 1) };
+    }));
   }, []);
 
   const remove = useCallback((session: SessionRef) => {

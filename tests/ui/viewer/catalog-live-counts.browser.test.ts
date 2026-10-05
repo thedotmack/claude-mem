@@ -9,7 +9,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for live catalog request-order tests');
 
-for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted'] as const) {
+for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale'] as const) {
   (chrome ? it : it.skip)(`catalog refresh preserves live changes: ${scenario}`, async () => {
     let release!: () => void;
     const ready = new Promise<void>(resolve => { release = resolve; });
@@ -49,7 +49,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
             await fetch('/release-first');
             await fetch('/latest-requested');
           }
-          if(${JSON.stringify(scenario)}==='item-deleted'){
+          if(${JSON.stringify(scenario)}.startsWith('item-deleted')){
             document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);
             document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);
           }
@@ -72,7 +72,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         if(page===3)latestStarted();
         if(page===2 && scenario==='overlap')await firstReady;
         else if(page>1)await ready;
-        return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && scenario==='fresh'?8:5}],hasMore:false});
+        return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page>1&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
       }
       if(path==='/release-first'){releaseFirst();return new Response('ok');}
       if(path==='/latest-requested'){await latestRequested;return new Response('ok');}
@@ -89,7 +89,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
       if(scenario==='removed')expect(actual).toEqual([]);
       else{
         expect(actual).toHaveLength(1);
-        expect(actual[0].item_count).toBe(scenario==='placeholder'?2:scenario==='fresh'?8:scenario==='item-deleted'?5:7);
+        expect(actual[0].item_count).toBe(scenario==='placeholder'?2:(scenario==='fresh'||scenario==='item-deleted-newer')?8:scenario.startsWith('item-deleted')?5:7);
         expect(actual[0].custom_title).toBe(scenario==='placeholder'?null:'Server title');
       }
     }finally{
