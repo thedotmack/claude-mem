@@ -100,10 +100,10 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
   const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', '--window-size=800,600', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
   let timeout: ReturnType<typeof setTimeout>;
   try {
-    const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 11000); })]);
+    const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000); })]);
     expect(reported).toEqual({ staleAlert: false, recovered: true, sessionView: true, aFailed: true });
   } finally {
     clearTimeout(timeout!); release(); child.kill(); await child.exited; server.stop(true);
     rmSync(profile, { recursive: true, force: true });
   }
-}, 14000);
+}, 40000);

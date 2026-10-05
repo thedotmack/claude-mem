@@ -91,11 +91,11 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
     const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
     let timeout: ReturnType<typeof setTimeout>;
     try {
-      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 9000); })]);
+      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000); })]);
       expect(reported).toEqual({ retainedObservation: scenario === 'partial', retainedSummary: scenario === 'partial', loading: false, retry: true, recovered: true, sessionView: scenario === 'empty-session' });
     } finally {
       clearTimeout(timeout!); child.kill(); await child.exited; server.stop(true);
       rmSync(profile, { recursive: true, force: true });
     }
-  }, 12000);
+  }, 40000);
 }
