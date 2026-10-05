@@ -44,3 +44,16 @@ test('real MCP failed lookups return bounded useful hints and retain qualified u
   expect(body).toContain('method0() { return 0; }');
  } finally { await client.close(); await transport.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('native hints reserve qualified methods when roots exceed the visit limit', () => {
+ for (const count of [200, 205]) {
+  const source = 'class C0 { run() { return 0; } }\n'
+   + Array.from({ length: count - 1 }, (_, i) => `class C${i + 1} {}\n`).join('');
+  const hint = formatAvailableSymbols(parseFile(source, 'Crowded.ts'));
+  expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(4096);
+  expect(hint).toContain('C0.run (method)');
+  expect(hint).toContain('C198 (class)');
+  expect(hint.split('\n').filter(line => line.startsWith('  - ')).length).toBeLessThanOrEqual(200);
+  expect(hint).toContain('more symbols omitted');
+ }
+}, 120000);

@@ -1143,9 +1143,12 @@ export function formatAvailableSymbols(file: FoldedFile): string {
     else omitted = true;
     if (symbol.children?.length) groups.push({ symbols: symbol.children, parent: name, index: 0 });
   };
+  // Reserve some visits for qualified children even when roots fill the cap.
+  const reservedChildVisits = Math.min(50, file.symbols.slice(0, 200)
+    .reduce((count, symbol) => count + (symbol.children?.length ?? 0), 0));
   // A large early class must not bury a later top-level entry point.
   for (const symbol of file.symbols) {
-    if (visited >= 200) { omitted = true; break; }
+    if (visited >= 200 - reservedChildVisits) { omitted = true; break; }
     offer(symbol);
   }
   // Round-robin owner groups keeps qualified suggestions from multiple roots.
