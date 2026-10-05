@@ -651,7 +651,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
-  const containers: Array<{ sym: CodeSymbol; startRow: number; endRow: number }> = [];
+  const ranges = new Map<CodeSymbol, RawCapture>();
+  const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
     for (const cap of match.captures) {
@@ -706,9 +707,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
 
     if (CONTAINER_KINDS.has(kind)) {
       sym.children = [];
-      containers.push({ sym, startRow, endRow });
+      containers.push({ sym, range: kindCapture });
     }
 
+    ranges.set(sym, kindCapture);
     symbols.push(sym);
   }
 
@@ -737,15 +739,24 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // Tree-sitter ranges include columns: row-only comparisons lose methods
+  // on the opening line and cannot distinguish adjacent one-line declarations.
+  // The latest containing start is the nearest lexical container, so a nested
+  // class's method is attached once instead of also appearing on every ancestor.
+  containers.sort((a, b) => b.range.startRow - a.range.startRow
+    || b.range.startCol - a.range.startCol);
   const nested = new Set<CodeSymbol>();
-  for (const container of containers) {
-    for (const sym of symbols) {
-      if (sym === container.sym) continue;
-      if (sym.lineStart > container.startRow && sym.lineEnd <= container.endRow) {
-        if (sym.kind === "function") sym.kind = "method";
-        container.sym.children!.push(sym);
-        nested.add(sym);
-      }
+  for (const sym of symbols) {
+    const range = ranges.get(sym)!;
+    const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
+      && (range.startRow > parent.startRow
+        || (range.startRow === parent.startRow && range.startCol >= parent.startCol))
+      && (range.endRow < parent.endRow
+        || (range.endRow === parent.endRow && range.endCol <= parent.endCol)));
+    if (owner) {
+      if (sym.kind === "function") sym.kind = "method";
+      owner.sym.children!.push(sym);
+      nested.add(sym);
     }
   }
 
