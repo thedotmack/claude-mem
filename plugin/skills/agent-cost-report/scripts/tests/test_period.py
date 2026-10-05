@@ -1,4 +1,8 @@
 import datetime as dt
+import os
+import re
+import subprocess
+import sys
 import unittest
 
 import _paths  # noqa: F401
@@ -6,6 +10,22 @@ from acr import period
 from acr.period import PT
 
 H = 3600 * 1000
+
+
+class MissingTimezoneData(unittest.TestCase):
+    def test_cli_explains_how_to_install_timezone_data(self):
+        # -S hides site-packages; an empty TZPATH hides OS data, as on stock Windows.
+        env = dict(os.environ, PYTHONTZPATH="")
+        result = subprocess.run(
+            [sys.executable, "-S", _paths.ACR_PY, "--help"],
+            env=env, capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("America/Los_Angeles", result.stderr)
+        command = re.search(r'^(?:& )?"(.+)" -m pip install tzdata$', result.stderr, re.MULTILINE)
+        self.assertIsNotNone(command)
+        self.assertTrue(os.path.samefile(command.group(1), sys.executable))
+        self.assertNotIn("Traceback", result.stderr)
 
 
 class DefaultWindow(unittest.TestCase):

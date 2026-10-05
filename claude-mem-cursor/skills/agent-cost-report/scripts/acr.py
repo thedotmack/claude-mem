@@ -9,10 +9,21 @@ import argparse
 import json
 import os
 import sys
+from zoneinfo import ZoneInfoNotFoundError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import devices, measure, period, render, rollup, sample, sync, transcripts  # noqa: E402
-from acr import prices as prices_mod  # noqa: E402
+try:
+    from acr import devices, measure, period, render, rollup, sample, sync, transcripts  # noqa: E402
+    from acr import prices as prices_mod  # noqa: E402
+except ZoneInfoNotFoundError:
+    install_command = f'"{sys.executable}" -m pip install tzdata'
+    if os.name == "nt":
+        install_command = "& " + install_command
+    sys.exit(
+        "acr.py: IANA timezone data for America/Los_Angeles is unavailable. "
+        "Install tzdata for this Python interpreter, then rerun the command:\n"
+        + install_command
+    )
 
 USAGE_FILE = "usage.json"
 NOT_YET = ()

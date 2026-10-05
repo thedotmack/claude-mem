@@ -19,7 +19,7 @@ allowed-tools:
 
 **Claude-Mem / Claude Code skill.** Runtime is the `scripts/` pipeline (transcripts → tokens → dollars → Timing-style report) plus a progressive Mem Search review pass that confirms the drafted labels. The Notion draft is SPEC history only — never the product, never the runtime, never the ship vehicle.
 
-Resolve the absolute directory containing this `SKILL.md`; all helper paths are relative to that directory. `${CLAUDE_SKILL_DIR}` is the shortcut: `python3 "${CLAUDE_SKILL_DIR}/scripts/acr.py" …`. Python 3.9+ standard library only; no pip installs. The look lives in `scripts/acr/render.py`, never here.
+Resolve the absolute directory containing this `SKILL.md`; all helper paths are relative to that directory. `${CLAUDE_SKILL_DIR}` is the shortcut: `python3 "${CLAUDE_SKILL_DIR}/scripts/acr.py" …`. Python 3.9+ standard library only, with IANA timezone data for `America/Los_Angeles`. On Windows, or if the interpreter has no system timezone database, install `tzdata` into the same Python interpreter used for the helpers (`python3 -m pip install tzdata`). This timezone-data package is the only exception to the no-pip-installs rule. If the CLI reports missing timezone data, use the interpreter-specific command it prints, then rerun the failed command. The look lives in `scripts/acr/render.py`, never here.
 
 ## Purpose
 
