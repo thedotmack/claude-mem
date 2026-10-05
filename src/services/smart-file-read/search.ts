@@ -164,10 +164,10 @@ export async function searchCodebase(
         // Score the symbol's own name, so a class or module query does not match
         // every method under it. The qualified identity counts only as the whole
         // query: `Counter#reset` has no character that queryParts splits on.
-        const ownName = parsed.language === "go" && sym.kind === "method"
-          ? sym.name.slice(sym.name.lastIndexOf(".") + 1) : sym.name;
-        const nameScore = matchScore(ownName.toLowerCase(), queryParts)
-          || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
+        const nameScore = parsed.language === "go" && sym.kind === "method"
+          ? scoreGoMethodName(qualifiedName.toLowerCase(), queryLower, queryParts)
+          : matchScore(sym.name.toLowerCase(), queryParts)
+            || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
@@ -211,15 +211,11 @@ export async function searchCodebase(
     }
   }
 
-  const rankName = (symbol: SymbolMatch): string =>
+  const rankScore = (symbol: SymbolMatch): number =>
     parsedFiles.get(symbol.filePath)?.language === "go" && symbol.kind === "method"
-      && symbol.symbolName.toLowerCase() !== queryLower
-      ? symbol.symbolName.slice(symbol.symbolName.lastIndexOf(".") + 1) : symbol.symbolName;
-  matchingSymbols.sort((a, b) => {
-    const aScore = matchScore(rankName(a).toLowerCase(), queryParts);
-    const bScore = matchScore(rankName(b).toLowerCase(), queryParts);
-    return bScore - aScore;
-  });
+      ? scoreGoMethodName(symbol.symbolName.toLowerCase(), queryLower, queryParts)
+      : matchScore(symbol.symbolName.toLowerCase(), queryParts);
+  matchingSymbols.sort((a, b) => rankScore(b) - rankScore(a));
 
   const trimmedSymbols = matchingSymbols.slice(0, maxResults);
   const relevantFiles = new Set(trimmedSymbols.map(s => s.filePath));
@@ -281,6 +277,14 @@ function matchScore(text: string, queryParts: string[]): number {
     }
   }
   return score;
+}
+
+/** Receiver identity matters when explicitly queried; plain type queries use the leaf method name. */
+function scoreGoMethodName(name: string, query: string, parts: string[]): number {
+  if (!query.includes(".")) return matchScore(name.slice(name.lastIndexOf(".") + 1), parts);
+  const score = matchScore(name, parts);
+  if (name === query) return score + 20;
+  return score + (name.startsWith(query) ? 10 : 0);
 }
 
 function countSymbols(file: FoldedFile): number {
