@@ -84,6 +84,7 @@ export function useSessionCatalog() {
 
   /** A live row arrived: bump its session's count, or add a session seen for the first time. */
   const touch = useCallback((item: LiveSessionItem) => {
+    if (projectRef.current && item.project !== projectRef.current) return;
     setSessions(prev => {
       const index = prev.findIndex(entry => sameSession(catalogEntryRef(entry), item.session));
       if (index === -1) {
