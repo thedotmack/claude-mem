@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -180,7 +180,7 @@ export async function searchCodebase(
           fileHasMatch = true;
           fileSymbolMatches.push({
             filePath: relPath,
-            symbolName: parent ? `${parent}.${sym.name}` : sym.name,
+            symbolName: qualifySymbolName(sym.name, parent, parsed.language),
             kind: sym.kind,
             signature: sym.signature,
             jsdoc: sym.jsdoc,
@@ -191,7 +191,7 @@ export async function searchCodebase(
         }
 
         if (sym.children) {
-          checkSymbols(sym.children, sym.name);
+          checkSymbols(sym.children, qualifySymbolName(sym.name, parent, parsed.language));
         }
       }
     };

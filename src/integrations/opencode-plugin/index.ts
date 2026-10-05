@@ -6,8 +6,9 @@ import {
   type RealOpenCodeEventType,
 } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
-// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+// Dependency-free, so they stay bundle-safe for the plugin (no worker-only imports).
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
+import { formatHostForUrl } from "../../shared/worker-url.js";
 import { retryWhileRefused } from "./worker-retry.js";
 
 /**
@@ -93,19 +94,16 @@ interface BusEvent {
   };
 }
 
-function resolveWorkerPort(): string {
+function resolveWorkerBaseUrl(): string {
   const settingsPath = join(
     SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
     "settings.json",
   );
-  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${settings.CLAUDE_MEM_WORKER_PORT}`;
 }
 
-function resolveWorkerHost(): string {
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
-}
-
-const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
+const WORKER_BASE_URL = resolveWorkerBaseUrl();
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 // Identifies these POSTs as coming from OpenCode. Without it the worker

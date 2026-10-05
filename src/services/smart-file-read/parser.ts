@@ -141,6 +141,7 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (generator_function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (interface_declaration name: (type_identifier) @name) @iface
@@ -158,6 +159,7 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (generator_function_declaration name: (identifier) @name) @func
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
@@ -196,10 +198,30 @@ const QUERIES: Record<string, string> = {
 
   java: `
 (method_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @ctor
 (class_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
 (enum_declaration name: (identifier) @name) @enm
 (import_declaration) @imp
+`,
+
+  c: `
+(function_definition) @func
+(function_declarator declarator: (identifier) @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
+  cpp: `
+(function_definition) @func
+(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
 `,
 
   kotlin: `
@@ -322,6 +344,8 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "c": return "c";
+    case "cpp": return "cpp";
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
@@ -561,6 +585,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   const_func: "function",
   cls: "class",
   method: "method",
+  ctor: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -652,6 +677,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
+  const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
@@ -680,21 +706,65 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // Names are captured independently of the surrounding pointer/reference
+  // wrappers. The first native function declarator inside a definition names
+  // that function, before any callback parameters or nested definitions.
+  const functionNames = matches.flatMap(match => match.captures.filter(c => c.tag === "function_name"))
+    .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
+  const findFunctionName = (definition: RawCapture): RawCapture | undefined => {
+    let low = 0;
+    let high = functionNames.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const capture = functionNames[mid];
+      if (capture.startRow < definition.startRow
+        || (capture.startRow === definition.startRow && capture.startCol < definition.startCol)) low = mid + 1;
+      else high = mid;
+    }
+    const capture = functionNames[low];
+    return capture && (capture.endRow < definition.endRow
+      || (capture.endRow === definition.endRow && capture.endCol <= definition.endCol)) ? capture : undefined;
+  };
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
-    const nameCapture = match.captures.find(c => c.tag === "name");
+    const nameCapture = match.captures.find(c => c.tag === "name")
+      ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
+        ? findFunctionName(kindCapture)
+        : undefined);
     if (!kindCapture) continue;
 
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const name = nameCapture?.text || "anonymous";
+    let name = nameCapture?.text || "anonymous";
+    if (kindCapture.tag === "ctor") {
+      const parameters = match.captures.find(c => c.tag === "parameters");
+      if (parameters) {
+        const parameterLines = lines.slice(parameters.startRow, parameters.endRow + 1);
+        parameterLines[0] = Buffer.from(parameterLines[0] ?? "").subarray(parameters.startCol).toString();
+        const last = parameterLines.length - 1;
+        parameterLines[last] = Buffer.from(parameterLines[last]).subarray(0,
+          parameters.endCol - (last === 0 ? parameters.startCol : 0)).toString();
+        name += parameterLines.join(" ").replace(/\s+/g, " ").trim();
+      }
+    }
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
+      // Setext heading paragraphs include a trailing newline (and can span
+      // lines), so the CLI prints only their range, without a `text` value.
+      if (nameCapture && !nameCapture.text) {
+        const capturedLines = lines.slice(nameCapture.startRow, nameCapture.endRow + 1);
+        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(nameCapture.startCol).toString();
+        const last = capturedLines.length - 1;
+        capturedLines[last] = Buffer.from(capturedLines[last] ?? "")
+          .subarray(0, nameCapture.endCol - (last === 0 ? nameCapture.startCol : 0)).toString();
+        name = capturedLines.join(" ").trim().replace(/\s+/g, " ");
+      }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const level = hashMatch ? hashMatch[1].length : 1;
+      const underline = lines[endRow - (kindCapture.endCol === 0 ? 1 : 0)] || "";
+      const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {
       const langTag = name !== "anonymous" ? name : "";
@@ -726,6 +796,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     ranges.set(sym, kindCapture);
+    const aliasedType = match.captures.find(c => c.tag === "aliased_type");
+    if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
   }
 
@@ -754,14 +826,44 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // A named typedef can capture both the alias and its same-named struct.
+  // Retain one structural symbol, with the enclosing typedef source range.
+  const duplicateAliases = new Set<CodeSymbol>();
+  if (language === "c" || language === "cpp") {
+    const structures = new Map<string, typeof containers>();
+    for (const container of containers) {
+      const entries = structures.get(container.sym.name) ?? [];
+      entries.push(container);
+      structures.set(container.sym.name, entries);
+    }
+    for (const alias of symbols.filter(symbol => symbol.kind === "type")) {
+      const range = ranges.get(alias)!;
+      const aliasedType = aliasedTypes.get(alias);
+      if (!aliasedType) continue;
+      // Only the direct type expression denotes the typedef's underlying type.
+      // A nested struct may share the alias name while denoting a distinct type.
+      const structure = structures.get(alias.name)?.find(({ range: inner }) =>
+        inner.startRow === aliasedType.startRow && inner.startCol === aliasedType.startCol
+        && inner.endRow === aliasedType.endRow && inner.endCol === aliasedType.endCol);
+      if (!structure) continue;
+      structure.sym.lineStart = alias.lineStart;
+      structure.sym.lineEnd = alias.lineEnd;
+      structure.sym.signature = alias.signature;
+      structure.range = range;
+      ranges.set(structure.sym, range);
+      duplicateAliases.add(alias);
+    }
+  }
+
   // Tree-sitter ranges include columns: row-only comparisons lose methods
   // on the opening line and cannot distinguish adjacent one-line declarations.
   // The latest containing start is the nearest lexical container, so a nested
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
-  const nested = new Set<CodeSymbol>();
+  const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
+    if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
     const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
       && (range.startRow > parent.startRow
@@ -996,21 +1098,30 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
+// CSS selectors can contain literal dots, so escape those dots before adding
+// ownership separators. Search results remain unambiguous when copied to unfold.
+export function qualifySymbolName(name: string, parent: string | undefined, language: string): string {
+  const segment = language === "css" || language === "scss"
+    ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
+  return parent ? `${parent}.${segment}` : segment;
+}
+
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[]): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string): CodeSymbol | null => {
     for (const sym of symbols) {
-      if (sym.name === symbolName) return sym;
+      const qualifiedName = qualifySymbolName(sym.name, parent, file.language);
+      if ((qualified ? qualifiedName : sym.name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children);
+        const found = findSymbol(sym.children, qualified, qualifiedName);
         if (found) return found;
       }
     }
     return null;
   };
 
-  const symbol = findSymbol(file.symbols);
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
   if (!symbol) return null;
 
   const lines = content.split("\n");

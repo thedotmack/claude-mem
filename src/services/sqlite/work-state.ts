@@ -19,6 +19,8 @@ export type WorkStateFields = Record<string, WorkStateValue>;
 export interface WorkStateEntry {
   id: number;
   project: string;
+  /** Logical checkout key shared by its configured, legacy and parent read aliases. */
+  scope_project?: string;
   list_name: string;
   fields: WorkStateFields;
   created_at_epoch: number;
