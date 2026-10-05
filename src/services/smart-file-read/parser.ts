@@ -268,7 +268,9 @@ const QUERIES: Record<string, string> = {
 `,
 
   haskell: `
-(class_declarations (signature name: (variable) @name) @haskell_signature)
+(class_declarations (signature name: [(variable) (prefix_id)] @name) @haskell_signature)
+(class_declarations (signature names: (binding_list [(variable) (prefix_id)] @name)) @haskell_signature)
+(class_declarations (function) @haskell_default)
 (function name: (variable) @name) @func
 (type_synomym name: (name) @name) @tdef
 (newtype name: (name) @name) @tdef
@@ -704,12 +706,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const singletonScopes: RawCapture[] = [];
   const haskellSignatures = new Set<CodeSymbol>();
+  const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
     for (const cap of match.captures) {
+      if (cap.tag === "haskell_default") haskellDefaults.push(cap);
       if (cap.tag === "exp") {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
       }
@@ -805,7 +809,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       exported: isExported(name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind)) {
+    if (CONTAINER_KINDS.has(kind) || (language === "haskell" && kind === "function")) {
       sym.children = [];
       containers.push({ sym, range: kindCapture });
     }
@@ -882,13 +886,26 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const owner = containers.find(container => rangeContains(container.range, signatureRange));
     const implementation = symbols.find(candidate => candidate.kind === "function"
       && candidate.name === signature.name
-      && containers.find(container => rangeContains(container.range, ranges.get(candidate)!)) === owner);
+      && haskellDefaults.some(capture => {
+        const range = ranges.get(candidate)!;
+        return capture.startRow === range.startRow && capture.startCol === range.startCol
+          && capture.endRow === range.endRow && capture.endCol === range.endCol;
+      })
+      && containers.find(container => container.sym !== candidate && rangeContains(container.range, ranges.get(candidate)!)) === owner);
     if (implementation) {
       const implementationRange = ranges.get(implementation)!;
       implementation.signature = signature.signature;
       implementation.jsdoc = signature.jsdoc ?? implementation.jsdoc;
-      implementation.lineStart = signature.lineStart;
-      ranges.set(implementation, { ...implementationRange, startRow: signatureRange.startRow, startCol: signatureRange.startCol });
+      const start = implementationRange.startRow < signatureRange.startRow
+        || (implementationRange.startRow === signatureRange.startRow && implementationRange.startCol <= signatureRange.startCol)
+        ? implementationRange : signatureRange;
+      const end = implementationRange.endRow > signatureRange.endRow
+        || (implementationRange.endRow === signatureRange.endRow && implementationRange.endCol >= signatureRange.endCol)
+        ? implementationRange : signatureRange;
+      implementation.lineStart = start.startRow;
+      implementation.lineEnd = end.endRow;
+      ranges.set(implementation, { ...implementationRange, startRow: start.startRow, startCol: start.startCol,
+        endRow: end.endRow, endCol: end.endCol });
       duplicateAliases.add(signature);
     }
   }
@@ -906,7 +923,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       sym.kind = "method";
     }
     if (owner) {
-      if (sym.kind === "function") sym.kind = "method";
+      if (sym.kind === "function" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
       owner.sym.children!.push(sym);
       nested.add(sym);
     }

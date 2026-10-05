@@ -33,3 +33,51 @@ test('retains default method implementations beside their declared signatures', 
  expect(methods?.[0].signature).toBe('render :: a -> String');
  expect(unfoldSymbol(source, 'defaults.hs', 'Render.render')).toContain('render _ = "default"');
 }, 120000);
+
+test('a local where binding does not implement the class signature', async () => {
+ const source = 'class C a where\n f :: a -> Int\n g x = f x\n   where\n    f _ = 42\n';
+ const filename = 'local.hs';
+ const methods = parseFile(source, filename).symbols[0].children!;
+ expect(methods.filter(symbol => symbol.name === 'f')).toHaveLength(1);
+ expect(unfoldSymbol(source, filename, 'C.f')).toContain('f :: a -> Int');
+ expect(unfoldSymbol(source, filename, 'C.f')).not.toContain('g x =');
+ expect(unfoldSymbol(source, filename, 'C.g.f')).toContain('f _ = 42');
+ const dir = mkdtempSync(join(tmpdir(), 'cm-haskell-local-'));
+ try {
+  writeFileSync(join(dir, filename), source);
+  const result = await searchCodebase(dir, 'C.f');
+  expect(result.matchingSymbols.filter(symbol => symbol.symbolName === 'C.f')).toHaveLength(1);
+  expect(result.matchingSymbols.find(symbol => symbol.symbolName === 'C.f')!.lineStart).toBe(1);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('a later class signature expands rather than reverses default implementation bounds', async () => {
+ const source = 'class C a where\n f _ = 42\n f :: a -> Int\n';
+ const filename = 'later.hs';
+ const method = parseFile(source, filename).symbols[0].children![0];
+ expect([method.lineStart, method.lineEnd]).toEqual([1, 2]);
+ const unfolded = unfoldSymbol(source, filename, 'C.f');
+ expect(unfolded).toContain('f _ = 42');
+ expect(unfolded).toContain('f :: a -> Int');
+ const dir = mkdtempSync(join(tmpdir(), 'cm-haskell-later-'));
+ try {
+  writeFileSync(join(dir, filename), source);
+  const match = (await searchCodebase(dir, 'C.f')).matchingSymbols.find(symbol => symbol.symbolName === 'C.f')!;
+  expect(match.lineStart).toBeLessThanOrEqual(match.lineEnd);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('grouped and operator class signatures have independent search and unfold identities', async () => {
+ const source = 'class Render a where\n render, display :: a -> String\n (<>) :: a -> a -> a\n plain :: a -> Int\n';
+ const filename = 'grouped.hs';
+ expect(parseFile(source, filename).symbols[0].children!.map(symbol => symbol.name)).toEqual(['render', 'display', '(<>)', 'plain']);
+ const dir = mkdtempSync(join(tmpdir(), 'cm-haskell-grouped-'));
+ try {
+  writeFileSync(join(dir, filename), source);
+  for (const [name, declaration] of [['render', 'render, display ::'], ['display', 'render, display ::'], ['(<>)', '(<>) ::']]) {
+   const match = (await searchCodebase(dir, name)).matchingSymbols.find(symbol => symbol.symbolName === `Render.${name}`);
+   expect(match).toBeDefined();
+   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain(declaration);
+  }
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
