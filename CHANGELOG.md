@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.30.1] - 2026-10-05
+
+## Continue and resume preserve the restored conversation
+
+Claude Code `--continue`, `--resume`, and `/resume` no longer print or inject a fresh claude-mem timeline into a conversation that is being restored. Reinjecting newly rendered startup context changed the conversation's prompt prefix and disrupted prompt-cache reuse. This patch keeps the existing conversation context intact while retaining worker startup and memory capture. (#4423)
+
+### Fixes
+
+- **Skip timeline injection on resume.** Worker startup and context injection now have separate SessionStart matchers. Resume still starts the worker asynchronously, while only startup, clear, and compact run the synchronous timeline hook.
+- **Honor the session source throughout the hook.** The Claude Code adapter preserves the SessionStart source, and the context handler returns an empty context block for resume before accessing project settings, cached timelines, the local worker, or the shared server. This also covers older hook registrations that still invoke the context handler on resume.
+- **Suppress both copies of the timeline.** Resumed conversations receive neither fresh timeline context nor a terminal timeline, including when cached model and colored timelines already exist or terminal output is enabled.
+- **Keep context injection where it is needed.** New sessions, clear, and compact retain model and terminal context. The resume guard applies to Claude Code; Codex context behavior is unchanged.
+
+### Validation
+
+- 266 focused tests passed across SessionStart adapters and matchers, context handlers, cached timelines, server runtime, distribution, hook lifecycle, and related context handling.
+- All eight CI checks passed on the fix, including Linux and Windows builds, Chroma lifecycle checks, sync services, clean-room dependency checks, and server runtime integration tests.
+- Build, TypeScript, and hook I/O checks passed. The rebuilt worker bundle was checked directly: a Claude Code resume returns empty SessionStart context with no timeline.
+
+**Full Changelog**: https://github.com/thedotmack/claude-mem/compare/v13.30.0...v13.30.1
+
 ## [13.30.0] - 2026-10-04
 
 ## Hooks stop waiting on the worker, and the observer costs less
