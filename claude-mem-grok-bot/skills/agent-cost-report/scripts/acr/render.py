@@ -499,32 +499,43 @@ def render_file(inp, outdir, print_mode=False):
     return path
 
 
+def _default_chrome():
+    """The browser behind the default `google-chrome`: that name on PATH, else Chrome where it is normally
+    installed off PATH. Windows: `chrome` on PATH, then Program Files and LocalAppData; macOS: the app
+    bundle in /Applications or ~/Applications. None when there is none."""
+    import os, shutil, sys
+    exe = shutil.which("google-chrome")
+    if exe: return exe
+    if sys.platform == "win32":
+        exe = shutil.which("chrome")
+        if exe: return exe
+        candidates = [os.path.join(os.environ[k], "Google", "Chrome", "Application", "chrome.exe")
+                      for k in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA") if os.environ.get(k)]
+    elif sys.platform == "darwin":
+        app = os.path.join("Google Chrome.app", "Contents", "MacOS", "Google Chrome")
+        candidates = [os.path.join("/Applications", app), os.path.join(os.path.expanduser("~"), "Applications", app)]
+    else:
+        candidates = []
+    return next((c for c in candidates if os.path.isfile(c)), None)
+
+
 def pdf(outdir, chrome="google-chrome"):
-    """google-chrome --headless=new ... --print-to-pdf; if Chrome is missing: 'PDF skipped, HTML is canonical' (SKILL.md:165)."""
-    import os, shutil, subprocess, sys
+    """google-chrome --headless=new ... --print-to-pdf; if Chrome is missing: 'PDF skipped, HTML is canonical' (SKILL.md:165).
+    An explicit `chrome` is used as given; only the default also looks where Chrome is installed (_default_chrome)."""
+    import os, shutil, subprocess
     from pathlib import Path
     src = os.path.join(outdir, "report.print.html")
     if not os.path.exists(src):
         rp = os.path.join(outdir, "report.json")
         if not os.path.exists(rp): raise FileNotFoundError(f"{src} not found and no report.json to render it from")
         render_file(rp, outdir, print_mode=True)
-    exe = shutil.which(chrome)
-    if not exe and sys.platform == "win32" and chrome == "google-chrome":
-        exe = shutil.which("chrome")
-        if not exe:
-            for key in ("PROGRAMFILES", "PROGRAMFILES(X86)", "LOCALAPPDATA"):
-                root = os.environ.get(key)
-                if root:
-                    candidate = Path(root) / "Google/Chrome/Application/chrome.exe"
-                    if candidate.is_file():
-                        exe = str(candidate)
-                        break
+    exe = _default_chrome() if chrome == "google-chrome" else shutil.which(chrome)
     if not exe: return None, "PDF skipped, HTML is canonical (google-chrome not found)"
     out = os.path.join(outdir, "report.pdf")
     profile = os.path.join(os.path.abspath(outdir), ".chrome-profile")   # a private profile; the box has no D-Bus session
     cmd = [exe, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", f"--user-data-dir={profile}", "--timeout=60000",
-           f"--print-to-pdf={out}", "--no-pdf-header-footer", "file://" + os.path.abspath(src)]
-    try: r = subprocess.run(cmd, capture_output=True, text=True, timeout=150)
+           f"--print-to-pdf={out}", "--no-pdf-header-footer", Path(src).resolve().as_uri()]   # file:///C:/... on Windows; spaces and '#' escaped
+    try: r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=150)   # a locale-codec decode error would leave r.stderr None
     except subprocess.TimeoutExpired: return None, "PDF skipped, HTML is canonical (chrome timed out)"
     finally: shutil.rmtree(profile, ignore_errors=True)
     if r.returncode != 0 or not os.path.exists(out): return None, f"PDF skipped, HTML is canonical (chrome exit {r.returncode}: {r.stderr.strip()[-200:]})"

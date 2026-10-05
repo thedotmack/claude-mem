@@ -4,8 +4,11 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 import _paths  # noqa: F401
 from acr import render
@@ -84,6 +87,63 @@ class Files(unittest.TestCase):
     def test_usd2_is_the_only_formatter(self):
         src = open(os.path.join(_paths.SCRIPTS, "acr", "render.py")).read()
         self.assertNotIn("def " + "cen" + "ts", src); self.assertNotIn(chr(0xA2), src); self.assertEqual(render.usd2(1234.5), "$1,234.50")
+
+
+def posix(path):
+    return os.fspath(path).replace("\\", "/")
+
+
+MAC_APP = "Google Chrome.app/Contents/MacOS/Google Chrome"
+
+
+class ChromeLookup(unittest.TestCase):
+    """pdf()'s default browser lookup, one platform per case, on every OS: sys.platform, PATH, the install
+    check and the Chrome process are patched, so no browser runs."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="acr pdf #")          # a space and a '#' must survive into the file URL
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        with open(os.path.join(self.tmp, "report.print.html"), "w", encoding="utf-8") as fh: fh.write("<p>report</p>")
+
+    def pdf(self, platform, on_path=(), installed=(), env=None, chrome="google-chrome"):
+        calls = []
+        def chrome_run(cmd, **kw):
+            calls.append((cmd, kw))
+            out = next(a for a in cmd if a.startswith("--print-to-pdf="))[len("--print-to-pdf="):]
+            with open(out, "wb") as fh: fh.write(b"%PDF-1.4")
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+        with patch("sys.platform", platform), patch("shutil.which", lambda name: "/usr/bin/" + name if name in on_path else None), \
+                patch("os.path.isfile", lambda p: posix(p) in installed), patch.dict(os.environ, env or {}), patch("subprocess.run", chrome_run):
+            path, msg = render.pdf(self.tmp, chrome=chrome)
+        return path, msg, [posix(cmd[0]) for cmd, _ in calls], calls
+
+    def test_linux_default_is_google_chrome_on_path(self):
+        self.assertEqual(self.pdf("linux", on_path=("google-chrome",))[2], ["/usr/bin/google-chrome"])
+        path, msg, exes, _ = self.pdf("linux", installed=("/Applications/" + MAC_APP,))
+        self.assertEqual((path, exes), (None, [])); self.assertIn("PDF skipped, HTML is canonical", msg)
+
+    def test_macos_default_finds_the_app_bundle_off_path(self):
+        self.assertEqual(self.pdf("darwin", installed=("/Applications/" + MAC_APP,))[2], ["/Applications/" + MAC_APP])
+        user_app = posix(os.path.join(os.path.expanduser("~"), "Applications", *MAC_APP.split("/")))
+        self.assertEqual(self.pdf("darwin", installed=(user_app,))[2], [user_app])
+        self.assertEqual(self.pdf("darwin", on_path=("google-chrome",), installed=("/Applications/" + MAC_APP,))[2], ["/usr/bin/google-chrome"])
+
+    def test_windows_default_finds_installed_chrome_off_path(self):
+        env = {"PROGRAMFILES": r"C:\Program Files", "PROGRAMFILES(X86)": r"C:\Program Files (x86)", "LOCALAPPDATA": r"C:\Users\u\AppData\Local"}
+        local = "C:/Users/u/AppData/Local/Google/Chrome/Application/chrome.exe"
+        self.assertEqual(self.pdf("win32", installed=(local,), env=env)[2], [local])
+        self.assertEqual(self.pdf("win32", on_path=("chrome",), installed=(local,), env=env)[2], ["/usr/bin/chrome"])
+
+    def test_explicit_chrome_is_never_substituted(self):
+        path, msg, exes, _ = self.pdf("darwin", installed=("/Applications/" + MAC_APP,), chrome="no-such-browser-xyz")
+        self.assertEqual((path, exes), (None, [])); self.assertIn("PDF skipped", msg)
+
+    def test_chrome_gets_a_file_uri_and_decodes_stderr_as_utf8(self):
+        path, msg, _, calls = self.pdf("darwin", installed=("/Applications/" + MAC_APP,))
+        self.assertEqual(msg, f"pdf: {path}")
+        (cmd, kw), = calls
+        self.assertEqual(cmd[-1], Path(self.tmp, "report.print.html").resolve().as_uri())
+        self.assertIn("%23", cmd[-1]); self.assertNotIn(" ", cmd[-1])      # '#' would start a URL fragment
+        self.assertEqual((kw.get("encoding"), kw.get("errors")), ("utf-8", "replace"))
 
 
 class Excerpts(unittest.TestCase):
