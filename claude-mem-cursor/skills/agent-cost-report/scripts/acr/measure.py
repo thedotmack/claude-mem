@@ -42,7 +42,7 @@ def measure(outdir, env=None, opener=urllib.request.urlopen, now=None, url=URL):
         except (urllib.error.URLError, OSError, ValueError) as ex: out = dict(status="error", http_status=None, reason=type(ex).__name__)
     del key
     os.makedirs(outdir, exist_ok=True)
-    with open(os.path.join(outdir, "measured.json"), "w") as fh: json.dump(out, fh, indent=1)
+    with open(os.path.join(outdir, "measured.json"), "w", encoding="utf-8") as fh: json.dump(out, fh, indent=1)
     return out
 
 
@@ -58,7 +58,7 @@ def bucket_rule(measured, window_block, now=None):
     if window_block.get("start_epoch_ms") is None or window_block.get("end_epoch_ms") is None:      # --session run: no period window
         week0 = _week_start(fetched)
         return dict(bucket="usage_weekly", bucket_start_utc=week0.isoformat(timespec="seconds"), usd=measured.get("usage_weekly"),
-                    label=f"OpenRouter measured, current UTC week {week0.strftime('%a %-d %b')} – now", covers_window=False, window_inside_bucket=False,
+                    label=f"OpenRouter measured, current UTC week {week0:%a} {week0.day} {week0:%b} – now", covers_window=False, window_inside_bucket=False,
                     note="a session run has no period window; the measured bucket is shown for reference only", note_taker=NOTE_TAKER)
     ws = dt.datetime.fromtimestamp(window_block["start_epoch_ms"] / 1000, dt.timezone.utc); we = dt.datetime.fromtimestamp(window_block["end_epoch_ms"] / 1000, dt.timezone.utc)
     week0 = _week_start(fetched); month0 = fetched.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
@@ -66,7 +66,7 @@ def bucket_rule(measured, window_block, now=None):
     else: name, start, usd = "usage_monthly", month0, measured.get("usage_monthly")
     covers = usd is not None and start <= ws and now >= we
     inside = start <= ws and we <= now + dt.timedelta(seconds=1)
-    label = f"OpenRouter measured, current UTC {'week' if name == 'usage_weekly' else 'month'} {start.strftime('%a %-d %b')} – now"
+    label = f"OpenRouter measured, current UTC {'week' if name == 'usage_weekly' else 'month'} {start:%a} {start.day} {start:%b} – now"
     note = None if covers else "measured bucket does not match the report window; shown for reference"
     return dict(bucket=name, bucket_start_utc=start.isoformat(timespec="seconds"), usd=usd, label=label, covers_window=bool(covers), window_inside_bucket=bool(inside), note=note, note_taker=NOTE_TAKER)
 
