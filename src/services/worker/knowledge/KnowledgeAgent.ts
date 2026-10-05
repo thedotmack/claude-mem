@@ -15,11 +15,13 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../../sdk/hardened-options.js';
 
 /**
- * The exact stderr line the Claude Code CLI prints when `--resume <id>` names a
- * session it has no transcript for. The Agent SDK surfaces it inside
- * `Claude Code process exited with code N. stderr: <tail>` (sdk.mjs
- * `formatStderrTail`); the line itself lives in the CLI binary
- * (@anthropic-ai/claude-agent-sdk-darwin-arm64/claude, SDK 0.3.288).
+ * The exact line the Claude Code CLI prints when `--resume <id>` names a
+ * session it has no transcript for. In stream-json mode it arrives first as the
+ * `errors` entry of an `error_during_execution` result, which
+ * `errorFromUnsuccessfulResult` keeps in its message; the Agent SDK can also
+ * repeat it inside `Claude Code process exited with code N. stderr: <tail>`
+ * (sdk.mjs `formatStderrTail`). The line itself lives in the CLI binary
+ * (@anthropic-ai/claude-agent-sdk-darwin-arm64/claude, SDK 0.3.289).
  */
 const SDK_SESSION_RESUME_FAILURE_PATTERN = /No conversation found with session ID/;
 
@@ -31,6 +33,25 @@ const SDK_SESSION_RESUME_FAILURE_PATTERN = /No conversation found with session I
 export function isSessionResumeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return SDK_SESSION_RESUME_FAILURE_PATTERN.test(message);
+}
+
+/**
+ * The error for a terminal SDK result that did not succeed, carrying the
+ * result's own text: `errors` on the error subtypes, `result` on an `is_error`
+ * success (an API error). The SDK builds its "Claude Code returned an error
+ * result" error the same way (sdk.mjs). Keeping that text is what lets
+ * `isSessionResumeError` see an expired session, so `query` still reprimes.
+ */
+function errorFromUnsuccessfulResult(
+  action: 'prime' | 'query',
+  resultMessage: { subtype?: string; result?: unknown; errors?: unknown }
+): Error {
+  const details = resultMessage.subtype === 'success'
+    ? (typeof resultMessage.result === 'string' ? resultMessage.result.trim() : '')
+    : (Array.isArray(resultMessage.errors)
+      ? resultMessage.errors.map((entry) => String(entry).trim()).filter(Boolean).join('; ')
+      : '');
+  return new Error(`Knowledge ${action} failed (${resultMessage.subtype})${details ? `: ${details}` : ''}`);
 }
 
 /** Per-call options. `abortController` is passed to the Agent SDK's `Options.abortController` (sdk.d.ts). */
@@ -82,7 +103,7 @@ export class KnowledgeAgent {
         if (msg.session_id) sessionId = msg.session_id;
         if (msg.type === 'result') {
           successfulResult = msg.is_error !== true && msg.subtype === 'success';
-          if (!successfulResult) throw new Error(`Knowledge prime failed: ${msg.subtype}`);
+          if (!successfulResult) throw errorFromUnsuccessfulResult('prime', msg);
           logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
         }
       }
@@ -183,7 +204,7 @@ export class KnowledgeAgent {
         if (msg.session_id) newSessionId = msg.session_id;
         if (msg.type === 'result') {
           successfulResult = msg.is_error !== true && msg.subtype === 'success';
-          if (!successfulResult) throw new Error(`Knowledge query failed: ${msg.subtype}`);
+          if (!successfulResult) throw errorFromUnsuccessfulResult('query', msg);
         }
         if (msg.type === 'assistant') {
           const text = msg.message.content
