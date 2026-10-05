@@ -40,5 +40,10 @@ describe('numeric detail route identities', () => {
     expect(hit.status).toBe(200);
     expect(await hit.json()).toEqual({ id: 1, advice: 'owned-row' });
     expect((await fetch(`${endpoint}/api/advisor-call/2`)).status).toBe(404);
+    const zeroPadded = await fetch(`${endpoint}/api/advisor-call/0001`);
+    expect(zeroPadded.status).toBe(200);
+    expect(await zeroPadded.json()).toEqual({ id: 1, advice: 'owned-row' });
+    expect((await fetch(`${endpoint}/api/advisor-call/0002`)).status).toBe(404);
+    expect((await fetch(`${endpoint}/api/advisor-call/0`)).status).toBe(404);
   });
 });
