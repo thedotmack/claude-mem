@@ -15,6 +15,7 @@ import {
 } from 'fs';
 import { fileURLToPath } from 'url';
 import { logger } from '../../utils/logger.js';
+import { findContextBlockRange } from '../../utils/context-injection.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { paths } from '../../shared/paths.js';
 import { buildSpawnSyncInvocation, type SpawnSyncInvocation } from '../../shared/spawn.js';
@@ -380,11 +381,8 @@ function assertCodexMarketplaceSupported(): void {
 function removeCodexAgentsMdContext(): boolean {
   if (!existsSync(CODEX_AGENTS_MD_PATH)) return true;
 
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
-
   try {
-    readAndStripContextTags(startTag, endTag);
+    readAndStripContextTags();
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -393,25 +391,23 @@ function removeCodexAgentsMdContext(): boolean {
   }
 }
 
-function readAndStripContextTags(startTag: string, endTag: string): void {
-  const content = readFileSync(CODEX_AGENTS_MD_PATH, 'utf-8');
+export function readAndStripContextTags(agentsMdPath = CODEX_AGENTS_MD_PATH): void {
+  const content = readFileSync(agentsMdPath, 'utf-8');
 
-  const startIdx = content.indexOf(startTag);
-  const endIdx = content.indexOf(endTag);
+  const block = findContextBlockRange(content);
+  if (!block) return;
 
-  if (startIdx === -1 || endIdx === -1) return;
-
-  const before = content.substring(0, startIdx).replace(/\n+$/, '');
-  const after = content.substring(endIdx + endTag.length).replace(/^\n+/, '');
+  const before = content.substring(0, block.start).replace(/\n+$/, '');
+  const after = content.substring(block.end).replace(/^\n+/, '');
   const finalContent = (before + (after ? '\n\n' + after : '')).trim();
 
   if (finalContent) {
-    writeFileSync(CODEX_AGENTS_MD_PATH, finalContent + '\n');
+    writeFileSync(agentsMdPath, finalContent + '\n');
   } else {
-    writeFileSync(CODEX_AGENTS_MD_PATH, '');
+    writeFileSync(agentsMdPath, '');
   }
 
-  console.log(`  Removed legacy global context from ${CODEX_AGENTS_MD_PATH}`);
+  console.log(`  Removed legacy global context from ${agentsMdPath}`);
 }
 
 const cleanupLegacyCodexAgentsMdContext = removeCodexAgentsMdContext;
