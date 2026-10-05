@@ -41,10 +41,14 @@ interface BeforePromptBuildResult {
   appendSystemContext?: string;
 }
 
+// OpenClaw's PluginHookAfterToolCallEvent. A failed call reports its message in
+// `error`. `params` is required upstream, but a host build that omits it must
+// not throw here.
 interface AfterToolCallEvent {
   toolName: string;
-  params: Record<string, unknown>;
+  params?: Record<string, unknown>;
   result?: unknown;
+  error?: string;
 }
 
 const CAPTURE_TOOL_NAMES = new Map([
@@ -818,6 +822,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
         .join("\n");
     }
 
+    // Ahead of any partial result, so the cap never cuts off why the call failed.
+    if (typeof event.error === "string" && event.error.length > 0) {
+      toolResponseText = [`Error: ${event.error}`, toolResponseText].filter(Boolean).join("\n");
+    }
+
     const MAX_TOOL_RESPONSE_LENGTH = 1000;
     if (toolResponseText.length > MAX_TOOL_RESPONSE_LENGTH) {
       toolResponseText = toolResponseText.slice(0, MAX_TOOL_RESPONSE_LENGTH);
@@ -830,10 +839,11 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       api.logger.info(`[claude-mem] after_tool_call missing workspaceDir; using process.cwd(): session=${canonicalKey} tool=${toolName}`);
     }
 
-    const toolInput = toolName === "read" && typeof event.params.path === "string"
-      && !(typeof event.params.file_path === "string" && event.params.file_path.length > 0)
-      ? { ...event.params, file_path: event.params.path }
-      : event.params;
+    const params = event.params ?? {};
+    const toolInput = toolName === "read" && typeof params.path === "string"
+      && !(typeof params.file_path === "string" && params.file_path.length > 0)
+      ? { ...params, file_path: params.path }
+      : params;
     workerPostFireAndForget(workerPort, "/api/sessions/observations", {
       contentSessionId,
       tool_name: CAPTURE_TOOL_NAMES.get(toolName) ?? toolName,

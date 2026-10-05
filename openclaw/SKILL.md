@@ -377,7 +377,7 @@ OpenClaw Gateway
   │
   ├── before_agent_start ───→ Init session
   ├── before_prompt_build ──→ Inject context into system prompt
-  ├── after_tool_call ──→ Record observation
+  ├── after_tool_call ──────→ Record observation
   ├── agent_end ────────────→ Summarize + Complete session
   └── gateway_start ────────→ Reset session tracking + context cache
                     │
@@ -405,7 +405,7 @@ Every tool use (Read, Write, Bash, etc.) is sent to the claude-mem worker as an 
 
 - **`before_agent_start`** — Creates a session in the worker.
 - **`before_prompt_build`** — Fetches the observation timeline and returns it as `appendSystemContext`. Cached for 60s.
-- **`after_tool_call`** — Records observation (fire-and-forget). Tool responses are truncated to 1000 characters.
+- **`after_tool_call`** — Records observation (fire-and-forget) from the call's params and result; a failed call's response starts with its error text. Tool responses are truncated to 1000 characters.
 - **`agent_end`** — Sends the last assistant message for summarization, then completes the session. Both fire-and-forget.
 - **`gateway_start`** — Clears all session tracking (session IDs, context cache) so agents start fresh.
 

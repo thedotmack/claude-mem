@@ -427,6 +427,30 @@ describe("Observation I/O event handlers", () => {
     assert.deepEqual(request.body.tool_input, { owned: true });
   });
 
+  it("after_tool_call keeps a failed call's error text", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+    await fireEvent("after_tool_call", {
+      toolName: "read", params: { path: "/x" }, error: "ENOENT: no such file",
+    }, { sessionKey: "failed-read" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const request = receivedRequests.find((r) => r.url === "/api/sessions/observations");
+    assert.ok(request);
+    assert.equal(request.body.tool_name, "Read");
+    assert.match(request.body.tool_response, /ENOENT: no such file/);
+  });
+
+  it("after_tool_call records a call from a host build that omits params", async () => {
+    const { api, fireEvent } = createMockApi({ workerPort });
+    claudeMemPlugin(api);
+    await fireEvent("after_tool_call", { toolName: "read", result: "contents" }, { sessionKey: "no-params" });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const request = receivedRequests.find((r) => r.url === "/api/sessions/observations");
+    assert.ok(request);
+    assert.deepEqual(request.body.tool_input, {});
+    assert.equal(request.body.tool_response, "contents");
+  });
+
   it("agent_end sends summarize and complete to worker", async () => {
     const { api, fireEvent } = createMockApi({ workerPort });
     claudeMemPlugin(api);

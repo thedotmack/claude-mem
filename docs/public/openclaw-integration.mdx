@@ -23,7 +23,7 @@ OpenClaw Gateway
   │
   ├── before_agent_start ───→ Init session
   ├── before_prompt_build ──→ Inject context into system prompt
-  ├── after_tool_call ──→ Record observation
+  ├── after_tool_call ──────→ Record observation
   ├── agent_end ────────────→ Summarize + Complete session
   └── gateway_start ────────→ Reset session tracking + context cache
                     │
@@ -49,7 +49,7 @@ OpenClaw Gateway
     The context is cached for 60 seconds to avoid re-fetching on every LLM turn within a session.
   </Step>
   <Step title="Tool use recorded (after_tool_call)">
-    Every time the agent uses a tool (Read, Write, Bash, etc.), the plugin sends the observation to `POST /api/sessions/observations` with the tool name, input, and truncated response (max 1000 chars). This is fire-and-forget — it doesn't block the agent from continuing work.
+    Every time the agent uses a tool (Read, Write, Bash, etc.), the plugin sends the observation to `POST /api/sessions/observations` with the tool name, input, and truncated response (max 1000 chars). For a failed call, the response starts with its error text. This is fire-and-forget — it doesn't block the agent from continuing work.
 
     Tools prefixed with `memory_` are skipped to avoid recursive recording.
   </Step>

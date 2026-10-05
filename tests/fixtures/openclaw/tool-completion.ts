@@ -33,12 +33,14 @@ try {
  const db:any={getSessionStore:()=>store,getSessionById:(id:number)=>store.getSessionById(id),getChromaSync:()=>null,getCloudSync:()=>null};
  const manager = new SessionManager(db);setIngestContext({dbManager:db,sessionManager:manager,eventBroadcaster:{broadcastObservationQueued(){}} as any,ensureGeneratorRunning:async()=>{}});
  let captured:any;
+ // Resolves once the worker has ingested the fire-and-forget POST, so the checks below wait for ingestion itself rather than a guessed delay.
+ let markIngested=()=>{};const ingested=new Promise<void>(resolve=>{markIngested=resolve;});
  const realFetch=globalThis.fetch;
  const server = Bun.serve({hostname:'127.0.0.1',port:0,async fetch(req){
   const url=new URL(req.url);const body:any=await req.json();
   if(url.pathname==='/api/sessions/observations'){
    captured=body;const result=await ingestObservation({contentSessionId:body.contentSessionId,cwd:body.cwd,platformSource:body.platform_source,
-    toolName:body.tool_name,toolInput:body.tool_input,toolResponse:body.tool_response});return Response.json(result);
+    toolName:body.tool_name,toolInput:body.tool_input,toolResponse:body.tool_response});markIngested();return Response.json(result);
   }
   return Response.json({candidates:[{content:{parts:[{text:'<observation><type>discovery</type><title>Owned OpenClaw tool</title></observation>'}]}}],usageMetadata:{promptTokenCount:100,candidatesTokenCount:20,totalTokenCount:120}});
  }});port=server.port;cleanup.push(()=>server.stop(true));
@@ -57,9 +59,8 @@ try {
   assert.equal((store.db.query('SELECT COUNT(*) AS count FROM observations').get() as any).count,0);
   console.log(JSON.stringify({kind,observations:0}));
  } else {
-  const arrivalDeadline = Date.now() + 5000;
-  while (!captured && Date.now() < arrivalDeadline) await Bun.sleep(5);
-  assert.ok(captured,'completion hook must reach actual worker ingestion');
+  const ingestedInTime=await Promise.race([ingested.then(()=>true),Bun.sleep(5000).then(()=>false)]);
+  assert.ok(ingestedInTime && captured,'completion hook must reach actual worker ingestion');
   assert.equal(captured.tool_name,operation[0].toUpperCase()+operation.slice(1));
   for(const [key,value] of Object.entries(params)) assert.deepEqual(captured.tool_input[key],value);
   if(operation === 'read') assert.equal(captured.tool_input.file_path,filePath);
