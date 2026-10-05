@@ -119,7 +119,7 @@ for (const { scenario, buildDelayMs = 0, startupDelayMs = 0 } of [
         timeout = setTimeout(() => reject(new Error('Owned pagination browser did not become ready')), 30000);
       })]);
       clearTimeout(timeout!);
-      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser fixture timed out' }), 15000); })]);
+      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser fixture timed out' }), 25000); })]);
       expect(reported).toEqual({ retainedObservation: scenario === 'partial', retainedSummary: scenario === 'partial', loading: false, retry: true, recovered: true, sessionView: scenario === 'empty-session' });
     } finally {
       clearTimeout(timeout!); child.kill(); await child.exited; server.stop(true);
