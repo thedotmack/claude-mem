@@ -529,6 +529,11 @@ export function ContextSettingsModal({
                       ))}
                     </select>
                   </FormField>
+                  {openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).note && (
+                    <span className="toggle-description">
+                      {openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).note}
+                    </span>
+                  )}
                   <FormField
                     label="Base URL"
                     tooltip="Leave blank to use the preset's endpoint"
