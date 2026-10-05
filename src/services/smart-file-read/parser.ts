@@ -204,6 +204,25 @@ const QUERIES: Record<string, string> = {
 (import_declaration) @imp
 `,
 
+  c: `
+(function_definition) @func
+(function_declarator declarator: (identifier) @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
+  cpp: `
+(function_definition) @func
+(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
   kotlin: `
 (function_declaration (simple_identifier) @name) @func
 (class_declaration (type_identifier) @name) @cls
@@ -324,6 +343,8 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "c": return "c";
+    case "cpp": return "cpp";
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
@@ -654,6 +675,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
+  const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
@@ -682,9 +704,31 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // Names are captured independently of the surrounding pointer/reference
+  // wrappers. The first native function declarator inside a definition names
+  // that function, before any callback parameters or nested definitions.
+  const functionNames = matches.flatMap(match => match.captures.filter(c => c.tag === "function_name"))
+    .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
+  const findFunctionName = (definition: RawCapture): RawCapture | undefined => {
+    let low = 0;
+    let high = functionNames.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const capture = functionNames[mid];
+      if (capture.startRow < definition.startRow
+        || (capture.startRow === definition.startRow && capture.startCol < definition.startCol)) low = mid + 1;
+      else high = mid;
+    }
+    const capture = functionNames[low];
+    return capture && (capture.endRow < definition.endRow
+      || (capture.endRow === definition.endRow && capture.endCol <= definition.endCol)) ? capture : undefined;
+  };
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
-    const nameCapture = match.captures.find(c => c.tag === "name");
+    const nameCapture = match.captures.find(c => c.tag === "name")
+      ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
+        ? findFunctionName(kindCapture)
+        : undefined);
     if (!kindCapture) continue;
 
     const startRow = kindCapture.startRow;
@@ -728,6 +772,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     ranges.set(sym, kindCapture);
+    const aliasedType = match.captures.find(c => c.tag === "aliased_type");
+    if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
   }
 
@@ -756,14 +802,44 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // A named typedef can capture both the alias and its same-named struct.
+  // Retain one structural symbol, with the enclosing typedef source range.
+  const duplicateAliases = new Set<CodeSymbol>();
+  if (language === "c" || language === "cpp") {
+    const structures = new Map<string, typeof containers>();
+    for (const container of containers) {
+      const entries = structures.get(container.sym.name) ?? [];
+      entries.push(container);
+      structures.set(container.sym.name, entries);
+    }
+    for (const alias of symbols.filter(symbol => symbol.kind === "type")) {
+      const range = ranges.get(alias)!;
+      const aliasedType = aliasedTypes.get(alias);
+      if (!aliasedType) continue;
+      // Only the direct type expression denotes the typedef's underlying type.
+      // A nested struct may share the alias name while denoting a distinct type.
+      const structure = structures.get(alias.name)?.find(({ range: inner }) =>
+        inner.startRow === aliasedType.startRow && inner.startCol === aliasedType.startCol
+        && inner.endRow === aliasedType.endRow && inner.endCol === aliasedType.endCol);
+      if (!structure) continue;
+      structure.sym.lineStart = alias.lineStart;
+      structure.sym.lineEnd = alias.lineEnd;
+      structure.sym.signature = alias.signature;
+      structure.range = range;
+      ranges.set(structure.sym, range);
+      duplicateAliases.add(alias);
+    }
+  }
+
   // Tree-sitter ranges include columns: row-only comparisons lose methods
   // on the opening line and cannot distinguish adjacent one-line declarations.
   // The latest containing start is the nearest lexical container, so a nested
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
-  const nested = new Set<CodeSymbol>();
+  const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
+    if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
     const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
       && (range.startRow > parent.startRow
