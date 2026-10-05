@@ -28,5 +28,30 @@ describe("swift-initializers", () => {
 
 test('initializer identities use native parameters despite modifiers and default closures', () => {
  const source = 'class Widget {\n public convenience init<T>(value: T, other: Int = 3) { self.init(size: other) }\n init?(size: Int) { print(size) }\n init(callback: () -> Int = { return 1 }) { print(callback()) }\n init() { print("empty") }\n}';
- expect(parseFile(source, 'parameters.swift').symbols[0].children?.map(s => s.name)).toEqual(['init(value: T, other: Int)', 'init(size: Int)', 'init(callback: () -> Int)', 'init()']);
+ expect(parseFile(source, 'parameters.swift').symbols[0].children?.map(s => s.name)).toEqual(['init<T>(value: T, other: Int)', 'init(size: Int)', 'init(callback: () -> Int)', 'init()']);
+}, 120000);
+
+test('constraint-specific initializer search results unfold their own bodies', async () => {
+ const source = 'struct Generic {\n init<T>(value: T) where T: BinaryInteger { print("integer body") }\n init<T>(value: T) where T: StringProtocol { print("string body") }\n init<T: Equatable>(value: T) { print("equatable body") }\n init<T: Hashable>(value: T) { print("hashable body") }\n}';
+ const filename = 'generic.swift';
+ const names = parseFile(source, filename).symbols[0].children!.map(symbol => symbol.name);
+ expect(new Set(names).size).toBe(4);
+ const dir = mkdtempSync(join(tmpdir(), 'cm-swift-constraints-'));
+ try {
+  writeFileSync(join(dir, filename), source);
+  const result = await searchCodebase(dir, 'init');
+  for (const [constraint, body] of [['BinaryInteger', 'integer'], ['StringProtocol', 'string'], ['Equatable', 'equatable'], ['Hashable', 'hashable']]) {
+   const match = result.matchingSymbols.find(symbol => symbol.symbolName.includes(constraint));
+   expect(match).toBeDefined();
+   const unfolded = unfoldSymbol(source, filename, match!.symbolName)!;
+   expect(unfolded).toContain(`print("${body} body")`);
+   for (const other of ['integer', 'string', 'equatable', 'hashable'].filter(value => value !== body)) expect(unfolded).not.toContain(`print("${other} body")`);
+  }
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('unfolds the complete native deinitializer body', () => {
+ const unfolded = unfoldSymbol(source, filename, 'Service.deinit');
+ expect(unfolded).toContain('print("done")');
+ expect(unfolded).not.toContain('func render()');
 }, 120000);
