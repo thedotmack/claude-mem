@@ -278,11 +278,10 @@ function matchScore(text: string, queryParts: string[]): number {
 }
 
 function countSymbols(file: FoldedFile): number {
-  let count = file.symbols.length;
-  for (const sym of file.symbols) {
-    if (sym.children) count += sym.children.length;
-  }
-  return count;
+  const descendants = (symbols: FoldedFile["symbols"]): number => symbols.reduce(
+    (count, symbol) => count + 1 + (symbol.children ? descendants(symbol.children) : 0), 0
+  );
+  return descendants(file.symbols);
 }
 
 export function formatSearchResults(result: SearchResult, query: string): string {
