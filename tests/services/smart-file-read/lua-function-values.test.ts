@@ -20,7 +20,7 @@ describe("lua-function-values", () => {
    const result = await searchCodebase(dir, "render");
    const match = result.matchingSymbols.find(s => s.symbolName === "Service.render");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return \"ok\"");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
