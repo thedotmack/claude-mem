@@ -166,8 +166,10 @@ describe('terminal preview shares the model selection (#4252)', () => {
   }, 15_000);
 
   it('gives newest observations space before a long prior message', () => {
-    const { model, preview, fullPreview } = generate(10, { messageLength: 8_500, titleLength: 180 });
-    expect(model.stats.observation_count).toBeGreaterThan(1);
+    // Long enough to overflow the colored preview, short enough for the model's block.
+    const { model, preview, fullPreview } = generate(10, { messageLength: 7_000, titleLength: 180 });
+    expect(model.stats.observation_count).toBe(10);
+    expect(model.text).toContain('PRIOR_MESSAGE');
     expect(fullPreview.text).toContain('PRIOR_MESSAGE');
     expect(fullPreview.text.length).toBeGreaterThan(10_000);
     expect(preview.text).toContain('Terminal preview truncated');
@@ -177,8 +179,23 @@ describe('terminal preview shares the model selection (#4252)', () => {
     expect(records(preview.text)).toEqual(records(model.text).slice(-records(preview.text).length));
     expect(preview.text).toContain('Previously');
     expect(preview.text).toContain('PRIOR_MESSAGE');
-    expect(preview.text).not.toContain('m'.repeat(8_500));
+    expect(preview.text).not.toContain('m'.repeat(7_000));
     expect(preview.text).toContain('Access ');
+  }, 15_000);
+
+  it('drops a prior message too long for the delivery limit and keeps every observation', () => {
+    // Kept to the end, this reply left the model's block over 10,000 characters
+    // with one observation, and Claude Code delivered its preview stub (#3802).
+    const { model, preview, fullPreview } = generate(10, { messageLength: 12_000, titleLength: 180 });
+    expect(model.text.length).toBeLessThanOrEqual(10_000);
+    expect(model.stats.observation_count).toBe(10);
+    expect(records(model.text)).toHaveLength(10);
+    expect(model.text).not.toContain('PRIOR_MESSAGE');
+    // The preview shows the model's selection, so the reply is gone there too;
+    // only the unfitted --full render still has it.
+    expect(preview.text.length).toBeLessThanOrEqual(10_000);
+    expect(preview.text).not.toContain('PRIOR_MESSAGE');
+    expect(fullPreview.text).toContain('PRIOR_MESSAGE');
   }, 15_000);
 
   it('reports presentation-only truncation when every selected observation remains visible', () => {
