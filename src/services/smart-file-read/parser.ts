@@ -250,6 +250,9 @@ const QUERIES: Record<string, string> = {
 `,
 
   lua: `
+(assignment_statement
+  (variable_list . name: [(identifier) (dot_index_expression) (bracket_index_expression)] @name .)
+  (expression_list . value: (function_definition) .)) @const_func
 (function_declaration name: (identifier) @name) @func
 (function_declaration name: (dot_index_expression) @name) @func
 (function_declaration name: (method_index_expression) @name) @func
