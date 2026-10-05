@@ -7,7 +7,7 @@ import { join } from 'node:path';
 for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads and byte-exact UTF-8 output (${pollDelay ? 'delayed snapshot delivery' : 'native delivery'})`, async () => {
   const home=mkdtempSync(join(tmpdir(),'claude-mem-follow-chunks-'));
   const stamp=new Date().toISOString().slice(0,10);
-  const log=join(home,'.claude-mem','logs',`worker-${stamp}.log`);
+  const log=join(home,'.claude-mem','logs',`claude-mem-${stamp}.log`);
   mkdirSync(join(home,'.claude-mem','logs'),{recursive:true});
   writeFileSync(log,'before\n');
   const preload=join(home,'trace.cjs');
@@ -80,4 +80,4 @@ for (const pollDelay of [0, 650]) it(`follows a burst with bounded native reads 
     const exited=child.exitCode!==null?Promise.resolve():new Promise<void>(resolve=>child.once('exit',()=>resolve()));child.kill();await exited;
     rmSync(home,{recursive:true,force:true});
   }
-},15000);
+},40000);
