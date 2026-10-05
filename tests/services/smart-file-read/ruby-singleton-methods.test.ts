@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect } from 'bun:test';
+import { nativeTest as test } from './native-prerequisite.js';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -11,15 +12,15 @@ describe('Ruby singleton method outlines', () => {
   test('captures class methods beside ordinary instance methods', () => {
     const parsed = parseFile(SOURCE, 'counter.rb');
     expect(parsed.symbols.map(symbol => symbol.name)).toEqual(['Counter']);
-    expect(parsed.symbols[0].children?.map(symbol => symbol.name)).toEqual(['reset', 'increment']);
+    expect(parsed.symbols[0].children?.map(symbol => symbol.name)).toEqual(['self.reset', 'increment']);
     expect(parsed.symbols[0].children?.map(symbol => symbol.kind)).toEqual(['method', 'method']);
-    expect(unfoldSymbol(SOURCE, 'counter.rb', 'reset')).toContain('def self.reset\n    :reset\n  end');
+    expect(unfoldSymbol(SOURCE, 'counter.rb', 'self.reset')).toContain('def self.reset\n    :reset\n  end');
   }, 120000);
 
   test('captures a method defined on an explicit receiver outside a class', () => {
     const source = 'def Counter.reset\n  :reset\nend';
-    expect(parseFile(source, 'receiver.rb').symbols.map(symbol => symbol.name)).toEqual(['reset']);
-    expect(unfoldSymbol(source, 'receiver.rb', 'reset')).toContain(source);
+    expect(parseFile(source, 'receiver.rb').symbols.map(symbol => symbol.name)).toEqual(['Counter.reset']);
+    expect(unfoldSymbol(source, 'receiver.rb', 'Counter.reset')).toContain(source);
   }, 120000);
 
   test('native batched search discovers the class method', async () => {
@@ -27,7 +28,22 @@ describe('Ruby singleton method outlines', () => {
     try {
       writeFileSync(join(dir, 'counter.rb'), SOURCE);
       const result = await searchCodebase(dir, 'reset');
-      expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toContain('Counter.reset');
+      expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toContain('Counter.self.reset');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 120000);
 });
+
+test('distinguishes the same-named instance and singleton method', async () => {
+  const source = 'class Counter\n  def reset\n    :instance\n  end\n  def self.reset\n    :singleton\n  end\nend';
+  const parsed = parseFile(source, 'owned.rb');
+  expect(parsed.symbols[0].children?.map(symbol => symbol.name)).toEqual(['reset', 'self.reset']);
+  expect(unfoldSymbol(source, 'owned.rb', 'reset')).toContain(':instance');
+  expect(unfoldSymbol(source, 'owned.rb', 'self.reset')).toContain(':singleton');
+  expect(unfoldSymbol(source, 'owned.rb', 'self.reset')).not.toContain(':instance');
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-identities-'));
+  try {
+    writeFileSync(join(dir, 'owned.rb'), source);
+    const result = await searchCodebase(dir, 'reset');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter.reset', 'Counter.self.reset']);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);

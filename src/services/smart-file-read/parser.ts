@@ -189,7 +189,7 @@ const QUERIES: Record<string, string> = {
 
   ruby: `
 (method name: (identifier) @name) @func
-(singleton_method name: (identifier) @name) @method
+(singleton_method object: (_) @receiver name: (identifier) @name) @method
 (class name: (constant) @name) @cls
 (module name: (constant) @name) @cls
 (call method: (identifier) @name) @imp
@@ -689,7 +689,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const name = nameCapture?.text || "anonymous";
+    const receiver = match.captures.find(c => c.tag === "receiver");
+    const receiverText = receiver && lines.slice(receiver.startRow, receiver.endRow + 1)
+      .map((line, index) => {
+        const bytes = Buffer.from(line);
+        return bytes.subarray(index === 0 ? receiver.startCol : 0,
+          index === receiver.endRow - receiver.startRow ? receiver.endCol : undefined).toString();
+      }).join(" ").trim();
+    const name = receiverText ? `${receiverText}.${nameCapture?.text || "anonymous"}` : nameCapture?.text || "anonymous";
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
