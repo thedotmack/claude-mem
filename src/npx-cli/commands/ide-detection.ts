@@ -56,7 +56,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'opencode',
       label: 'OpenCode',
       detected:
-        existsSync(join(home, '.config', 'opencode')) || isCommandInPath('opencode'),
+        existsSync(join(home, '.config', 'opencode')) || isCommandInPath('opencode') || isCommandInPath('opencode2'),
       hint: 'plugin-based integration',
     },
     {

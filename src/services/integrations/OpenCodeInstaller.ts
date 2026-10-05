@@ -3,6 +3,10 @@ import path from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, copyFileSync, unlinkSync } from 'fs';
+import { spawnSync } from 'node:child_process';
+import { applyEdits, modify, parse, type ParseError } from 'jsonc-parser';
+import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
+import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { CONTEXT_TAG_OPEN, CONTEXT_TAG_CLOSE } from '../../utils/context-injection.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
@@ -30,14 +34,99 @@ export const OPENCODE_OLD_CONTEXT_BLOCK_LEFT = 3;
 type OpenCodeConfig = {
   $schema?: string;
   plugin?: unknown;
+  plugins?: unknown;
   [key: string]: unknown;
 };
+type PluginAPI = 1 | 2;
+
+export function resolveOpenCodePluginAPI(): PluginAPI {
+  const override = process.env.CLAUDE_MEM_OPENCODE_API;
+  if (override !== undefined) {
+    if (override === 'v1' || override === '1') return 1;
+    if (override === 'v2' || override === '2') return 2;
+    throw new Error('CLAUDE_MEM_OPENCODE_API must be v1 or v2.');
+  }
+  for (const name of ['opencode', 'opencode2']) {
+    const command = process.platform === 'win32' ? lookupWindowsCommand(name) : name;
+    if (!command) continue;
+    const invocation = buildSpawnSyncInvocation(command, ['--version'], {
+      encoding: 'utf8', timeout: 3_000, env: sanitizeEnv(process.env),
+    });
+    const result = spawnSync(invocation.command, invocation.args, invocation.options);
+    if (result.status !== 0) continue;
+    const major = result.stdout?.trim().match(/^(?:opencode2?\s+)?([12])\./)?.[1];
+    if (major) return Number(major) as PluginAPI;
+  }
+  // Existing config-only installs keep v1; v2 users without a CLI can override.
+  return 1;
+}
+
+function pluginTarget(entry: unknown): unknown {
+  if (Array.isArray(entry)) return entry[0];
+  if (entry && typeof entry === 'object') return (entry as { package?: unknown }).package;
+  return entry;
+}
+function isManagedReference(entry: unknown): boolean {
+  const target = pluginTarget(entry);
+  return target === OPENCODE_PLUGIN_CONFIG_PATH || target === getInstalledPluginPath();
+}
+function readConfig(): { config: OpenCodeConfig; raw: string } {
+  const raw = existsSync(getOpenCodeConfigPath()) ? readFileSync(getOpenCodeConfigPath(), 'utf8') : '{}\n';
+  const errors: ParseError[] = [];
+  const config = parse(raw.replace(/^\uFEFF/, ''), errors, { allowTrailingComma: true }) as OpenCodeConfig;
+  if (errors.length || !config || typeof config !== 'object' || Array.isArray(config)) {
+    throw new Error('Invalid OpenCode config: ' + getOpenCodeConfigPath());
+  }
+  if (config.mcp !== undefined && (!config.mcp || typeof config.mcp !== 'object' || Array.isArray(config.mcp))) {
+    throw new Error('Invalid OpenCode mcp configuration; expected an object.');
+  }
+  return { config, raw };
+}
+/** Change our entries only, retaining comments and unrelated plugin/MCP values. */
+function writeConfig(original: OpenCodeConfig, next: OpenCodeConfig, source: string): void {
+  const bom = source.startsWith('\uFEFF') ? '\uFEFF' : '';
+  let raw = source.replace(/^\uFEFF/, '');
+  const edit = (keys: (string | number)[], value: unknown): void => {
+    raw = applyEdits(raw, modify(raw, keys, value, { formattingOptions: { insertSpaces: true, tabSize: 2, eol: '\n' } }));
+  };
+  if (original.$schema !== next.$schema) edit(['$schema'], next.$schema);
+  for (const key of ['plugin', 'plugins'] as const) {
+    if (JSON.stringify(original[key]) === JSON.stringify(next[key])) continue;
+    if (Array.isArray(original[key]) && Array.isArray(next[key])) {
+      const entries = original[key];
+      for (let index = entries.length - 1; index >= 0; index--) if (isManagedReference(entries[index])) edit([key, index], undefined);
+      for (const entry of next[key].filter(isManagedReference)) edit([key, -1], entry);
+    } else edit([key], next[key]);
+  }
+  const before = getOpenCodeMcpEntry(original);
+  const after = getOpenCodeMcpEntry(next);
+  if (JSON.stringify(before) !== JSON.stringify(after)) {
+    if (next.mcp === undefined) edit(['mcp'], undefined);
+    else if (original.mcp === undefined) edit(['mcp'], next.mcp);
+    else {
+      if (JSON.stringify(before[OPENCODE_MCP_SERVER_KEY]) !== JSON.stringify(after[OPENCODE_MCP_SERVER_KEY])) {
+        edit(['mcp', OPENCODE_MCP_SERVER_KEY], after[OPENCODE_MCP_SERVER_KEY]);
+      }
+      const oldServers = objectEntry(before.servers);
+      const newServers = objectEntry(after.servers);
+      if (after.servers === undefined && before.servers !== undefined) edit(['mcp', 'servers'], undefined);
+      else if (JSON.stringify(oldServers[OPENCODE_MCP_SERVER_KEY]) !== JSON.stringify(newServers[OPENCODE_MCP_SERVER_KEY])) {
+        edit(['mcp', 'servers', OPENCODE_MCP_SERVER_KEY], newServers[OPENCODE_MCP_SERVER_KEY]);
+      }
+    }
+  }
+  mkdirSync(getOpenCodeConfigDirectory(), { recursive: true });
+  writeFileSync(getOpenCodeConfigPath(), bom + raw, 'utf8');
+}
+function objectEntry(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
 
 export function getOpenCodeConfigDirectory(): string {
   if (process.env.OPENCODE_CONFIG_DIR) {
     return process.env.OPENCODE_CONFIG_DIR;
   }
-  return path.join(homedir(), '.config', 'opencode');
+  return path.join(process.env.XDG_CONFIG_HOME || path.join(homedir(), '.config'), 'opencode');
 }
 
 export function getOpenCodePluginsDirectory(): string {
@@ -45,6 +134,8 @@ export function getOpenCodePluginsDirectory(): string {
 }
 
 export function getOpenCodeConfigPath(): string {
+  const jsonc = path.join(getOpenCodeConfigDirectory(), 'opencode.jsonc');
+  if (existsSync(jsonc)) return jsonc;
   return path.join(getOpenCodeConfigDirectory(), 'opencode.json');
 }
 
@@ -56,32 +147,38 @@ export function getInstalledPluginPath(): string {
   return path.join(getOpenCodePluginsDirectory(), 'claude-mem.js');
 }
 
-function getOpenCodePluginEntries(config: OpenCodeConfig): unknown[] {
-  if (Array.isArray(config.plugin)) {
-    return config.plugin;
+function getOpenCodePluginEntries(config: OpenCodeConfig, key: 'plugin' | 'plugins' = 'plugin'): unknown[] {
+  if (Array.isArray(config[key])) {
+    return config[key];
   }
-  return config.plugin === undefined ? [] : [config.plugin];
+  return config[key] === undefined ? [] : [config[key]];
 }
 
-export function addOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
-  const existingPlugins = getOpenCodePluginEntries(config);
-  if (existingPlugins.includes(OPENCODE_PLUGIN_CONFIG_PATH)) {
-    return config;
+export function addOpenCodePluginReference(config: OpenCodeConfig, api: PluginAPI = 1): OpenCodeConfig {
+  const key = api === 2 ? 'plugins' : 'plugin';
+  const otherKey = api === 2 ? 'plugin' : 'plugins';
+  const existing = getOpenCodePluginEntries(config, key);
+  let found = false;
+  const plugins = existing.filter(entry => {
+    if (!isManagedReference(entry)) return true;
+    if (found) return false;
+    found = true; return true;
+  });
+  if (!found) plugins.push(OPENCODE_PLUGIN_CONFIG_PATH);
+  const next = { ...config, [key]: plugins };
+  if (config[otherKey] !== undefined) {
+    next[otherKey] = getOpenCodePluginEntries(config, otherKey).filter(entry => !isManagedReference(entry));
+    if (!(next[otherKey] as unknown[]).length) delete next[otherKey];
   }
-
-  return {
-    ...config,
-    plugin: [...existingPlugins, OPENCODE_PLUGIN_CONFIG_PATH],
-  };
+  return next;
 }
 
 export function removeOpenCodePluginReference(config: OpenCodeConfig): OpenCodeConfig {
-  return {
-    ...config,
-    plugin: getOpenCodePluginEntries(config).filter(
-      (plugin) => plugin !== OPENCODE_PLUGIN_CONFIG_PATH,
-    ),
-  };
+  const next = { ...config };
+  for (const key of ['plugin', 'plugins'] as const) if (config[key] !== undefined) {
+    next[key] = getOpenCodePluginEntries(config, key).filter(entry => !isManagedReference(entry));
+  }
+  return next;
 }
 
 function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
@@ -98,8 +195,8 @@ function getOpenCodeMcpEntry(config: OpenCodeConfig): Record<string, unknown> {
  * Returns the config unchanged (no mcp entry) when the server script cannot be
  * resolved, so a broken build never corrupts the user's opencode.json.
  */
-export function addOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
-  return addOpenCodeMcpReferenceWithStatus(config).config;
+export function addOpenCodeMcpReference(config: OpenCodeConfig, api: PluginAPI = 1): OpenCodeConfig {
+  return addOpenCodeMcpReferenceWithStatus(config, api).config;
 }
 
 /**
@@ -111,30 +208,48 @@ export function addOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig 
  */
 function addOpenCodeMcpReferenceWithStatus(
   config: OpenCodeConfig,
+  api: PluginAPI = 1,
 ): { config: OpenCodeConfig; mcpServerResolved: boolean } {
   const mcpServerPath = getMcpServerAbsolutePath();
   if (!mcpServerPath) return { config, mcpServerResolved: false };
 
   const command = [getNodeAbsolutePath(), mcpServerPath];
   const existingMcp = getOpenCodeMcpEntry(config);
-  const current = existingMcp[OPENCODE_MCP_SERVER_KEY];
+  const servers = api === 2 ? objectEntry(existingMcp.servers) : existingMcp;
+  const selected = servers[OPENCODE_MCP_SERVER_KEY];
+  const other = api === 2 ? existingMcp[OPENCODE_MCP_SERVER_KEY] : objectEntry(existingMcp.servers)[OPENCODE_MCP_SERVER_KEY];
+  const current = selected ?? other;
   if (
     current
     && typeof current === 'object'
     && (current as { type?: unknown }).type === 'local'
     && Array.isArray((current as { command?: unknown }).command)
     && JSON.stringify((current as { command: unknown[] }).command) === JSON.stringify(command)
+    && selected !== undefined && other === undefined
   ) {
     return { config, mcpServerResolved: true };
   }
 
+  const entry = { ...objectEntry(current), type: 'local', command, ...(api === 2 ? { codemode: objectEntry(current).codemode ?? false } : {}) };
+  if (api === 2 && 'enabled' in entry) {
+    if (entry.enabled === false) (entry as Record<string, unknown>).disabled = true;
+    delete (entry as Record<string, unknown>).enabled;
+  }
+  const nextMcp = { ...existingMcp };
+  if (api === 2) {
+    delete nextMcp[OPENCODE_MCP_SERVER_KEY];
+    nextMcp.servers = { ...servers, [OPENCODE_MCP_SERVER_KEY]: entry };
+  } else {
+    nextMcp[OPENCODE_MCP_SERVER_KEY] = entry;
+    if (nextMcp.servers && OPENCODE_MCP_SERVER_KEY in objectEntry(nextMcp.servers)) {
+      const remaining = { ...objectEntry(nextMcp.servers) }; delete remaining[OPENCODE_MCP_SERVER_KEY];
+      if (Object.keys(remaining).length) nextMcp.servers = remaining; else delete nextMcp.servers;
+    }
+  }
   return {
     config: {
       ...config,
-      mcp: {
-        ...existingMcp,
-        [OPENCODE_MCP_SERVER_KEY]: { type: 'local', command },
-      },
+      mcp: nextMcp,
     },
     mcpServerResolved: true,
   };
@@ -146,11 +261,15 @@ function addOpenCodeMcpReferenceWithStatus(
  */
 export function removeOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConfig {
   const existingMcp = getOpenCodeMcpEntry(config);
-  if (!(OPENCODE_MCP_SERVER_KEY in existingMcp)) {
+  if (!(OPENCODE_MCP_SERVER_KEY in existingMcp) && !(OPENCODE_MCP_SERVER_KEY in objectEntry(existingMcp.servers))) {
     return config;
   }
 
   const { [OPENCODE_MCP_SERVER_KEY]: _removed, ...remainingMcp } = existingMcp;
+  if (remainingMcp.servers) {
+    const servers = { ...objectEntry(remainingMcp.servers) }; delete servers[OPENCODE_MCP_SERVER_KEY];
+    if (Object.keys(servers).length) remainingMcp.servers = servers; else delete remainingMcp.servers;
+  }
   const next: OpenCodeConfig = { ...config, mcp: remainingMcp };
   if (Object.keys(remainingMcp).length === 0) {
     delete next.mcp;
@@ -158,20 +277,19 @@ export function removeOpenCodeMcpReference(config: OpenCodeConfig): OpenCodeConf
   return next;
 }
 
-export function registerOpenCodePluginInConfig(): number {
+export function registerOpenCodePluginInConfig(api: PluginAPI = 1): number {
   const configPath = getOpenCodeConfigPath();
   const defaultConfig: OpenCodeConfig = {
     $schema: 'https://opencode.ai/config.json',
   };
 
   try {
-    const config = existsSync(configPath)
-      ? JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig
-      : defaultConfig;
-    const withPlugin = addOpenCodePluginReference(config);
-    const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin);
+    const document = readConfig();
+    const config = existsSync(configPath) ? document.config : defaultConfig;
+    const withPlugin = addOpenCodePluginReference(config, api);
+    const { config: updatedConfig, mcpServerResolved } = addOpenCodeMcpReferenceWithStatus(withPlugin, api);
 
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    writeConfig(document.config, updatedConfig, document.raw);
 
     // Warn conservatively whenever this run could not resolve its own MCP
     // server script. The final config is deliberately NOT consulted: a retained
@@ -206,10 +324,10 @@ export function deregisterOpenCodePluginFromConfig(): number {
   }
 
   try {
-    const config = JSON.parse(readFileSync(configPath, 'utf-8')) as OpenCodeConfig;
+    const { config, raw } = readConfig();
     const updatedConfig = removeOpenCodeMcpReference(removeOpenCodePluginReference(config));
 
-    writeFileSync(configPath, `${JSON.stringify(updatedConfig, null, 2)}\n`, 'utf-8');
+    writeConfig(config, updatedConfig, raw);
     console.log(`  Plugin deregistered from: ${configPath}`);
     logger.info('OPENCODE', 'Plugin deregistered from config', { path: configPath });
 
@@ -221,14 +339,15 @@ export function deregisterOpenCodePluginFromConfig(): number {
   }
 }
 
-export function findBuiltPluginPath(): string | null {
+export function findBuiltPluginPath(api: PluginAPI = 1): string | null {
+  const entry = api === 2 ? 'v2.js' : 'index.js';
   const possiblePaths = [
     path.join(
       process.env.CLAUDE_CONFIG_DIR || path.join(homedir(), '.claude'),
       'plugins', 'marketplaces', 'thedotmack',
-      'dist', 'opencode-plugin', 'index.js',
+      'dist', 'opencode-plugin', entry,
     ),
-    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'opencode-plugin', 'index.js'),
+    path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'dist', 'opencode-plugin', entry),
   ];
 
   for (const candidatePath of possiblePaths) {
@@ -241,26 +360,50 @@ export function findBuiltPluginPath(): string | null {
 }
 
 export function installOpenCodePlugin(): number {
-  const builtPluginPath = findBuiltPluginPath();
+  let api: PluginAPI;
+  try {
+    api = resolveOpenCodePluginAPI();
+    const { config } = readConfig();
+    if (api === 2 && getOpenCodePluginEntries(config).some(entry => !isManagedReference(entry))) {
+      throw new Error('Other OpenCode v1 plugin entries remain. Migrate those plugins to v2 before installing; your configuration was preserved. See https://opencode.ai/v2/docs/migrate-v1');
+    }
+    if (api === 2 && Object.keys(getOpenCodeMcpEntry(config)).some(key =>
+      !['servers', 'timeout', OPENCODE_MCP_SERVER_KEY].includes(key),
+    )) {
+      throw new Error('Other OpenCode v1 MCP entries remain. Move them to mcp.servers before installing v2; your configuration was preserved. See https://opencode.ai/v2/docs/mcp-servers');
+    }
+    if (['plugin', 'plugins'].some(key => getOpenCodePluginEntries(config, key as 'plugin' | 'plugins').some(entry =>
+      typeof pluginTarget(entry) === 'string' && String(pluginTarget(entry)).startsWith('@ephemushroom/opencode-claude-mem'),
+    ))) {
+      throw new Error('Disable @ephemushroom/opencode-claude-mem before installing first-party capture; the existing connector configuration was preserved.');
+    }
+  } catch (error) { console.error(String(error)); return 1; }
+  const builtPluginPath = findBuiltPluginPath(api);
   if (!builtPluginPath) {
     console.error('Could not find built OpenCode plugin bundle.');
-    console.error('  Expected at: dist/opencode-plugin/index.js');
+    console.error(`  Expected at: dist/opencode-plugin/${api === 2 ? 'v2.js' : 'index.js'}`);
     console.error('  Run the build first: npm run build');
     return 1;
   }
 
   const pluginsDirectory = getOpenCodePluginsDirectory();
   const destinationPath = getInstalledPluginPath();
+  const license = path.join(path.dirname(builtPluginPath), 'THIRD-PARTY-LICENSE.txt');
+  if (api === 2 && !existsSync(license)) {
+    console.error('OpenCode v2 contributor license is missing; rebuild the package.');
+    return 1;
+  }
 
   try {
     mkdirSync(pluginsDirectory, { recursive: true });
 
     copyFileSync(builtPluginPath, destinationPath);
+    if (existsSync(license)) copyFileSync(license, path.join(pluginsDirectory, 'claude-mem.LICENSE.txt'));
 
     console.log(`  Plugin installed to: ${destinationPath}`);
     logger.info('OPENCODE', 'Plugin installed', { destination: destinationPath });
 
-    const registerResult = registerOpenCodePluginInConfig();
+    const registerResult = registerOpenCodePluginInConfig(api);
     if (registerResult !== 0) {
       return registerResult;
     }
@@ -299,6 +442,10 @@ export function uninstallOpenCodePlugin(): number {
       console.error(`  Failed to remove plugin: ${message}`);
       hasErrors = true;
     }
+  }
+  const license = path.join(getOpenCodePluginsDirectory(), 'claude-mem.LICENSE.txt');
+  if (existsSync(license)) {
+    try { unlinkSync(license); } catch (error) { console.error(String(error)); hasErrors = true; }
   }
 
   if (deregisterOpenCodePluginFromConfig() !== 0) {
@@ -379,8 +526,9 @@ export function checkOpenCodeStatus(): number {
   console.log(`MCP server (opencode.json):`);
   try {
     if (existsSync(getOpenCodeConfigPath())) {
-      const config = JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8')) as OpenCodeConfig;
-      const mcpEntry = getOpenCodeMcpEntry(config)[OPENCODE_MCP_SERVER_KEY];
+      const { config } = readConfig();
+      const mcp = getOpenCodeMcpEntry(config);
+      const mcpEntry = objectEntry(mcp.servers)[OPENCODE_MCP_SERVER_KEY] ?? mcp[OPENCODE_MCP_SERVER_KEY];
       if (mcpEntry && typeof mcpEntry === 'object') {
         const command = (mcpEntry as { command?: unknown }).command;
         console.log(`  Registered: yes`);

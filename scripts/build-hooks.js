@@ -6,7 +6,7 @@ import path from 'path';
 import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
-import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
+import { OPENCODE_PLUGIN_BUILD_OPTIONS, OPENCODE_V2_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
 import { PI_EXTENSION_BUILD_OPTIONS, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -775,6 +775,10 @@ async function buildHooks() {
 
       const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
+      await build({ ...OPENCODE_V2_PLUGIN_BUILD_OPTIONS, outfile: `${opencodeOutDir}/v2.js` });
+      fs.copyFileSync('src/integrations/opencode-plugin/THIRD-PARTY-LICENSE.txt', `${opencodeOutDir}/THIRD-PARTY-LICENSE.txt`);
+      console.log('✓ OpenCode v2 plugin and contributor license built');
+      fs.copyFileSync('src/npx-cli/jsonc-parser.LICENSE.txt', 'dist/npx-cli/jsonc-parser.LICENSE.txt');
     }
 
     fs.mkdirSync('dist/pi-extension', { recursive: true });
