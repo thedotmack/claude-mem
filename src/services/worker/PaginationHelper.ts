@@ -129,6 +129,7 @@ export class PaginationHelper {
         ss.learned,
         ss.completed,
         ss.next_steps,
+        ss.notes,
         ss.project,
         ss.created_at,
         ss.created_at_epoch
