@@ -8,6 +8,7 @@ import type { Session } from '@opencode/schema/session';
 import type { Registration } from '@opencode/plugin/promise/registration';
 import { createHarnessWorkerClient } from '../harness-worker.js';
 import { isInternalProtocolPayload, stripMemoryTags } from '../../utils/tag-stripping.js';
+import { logger } from '../../utils/logger.js';
 
 type Messages = Awaited<ReturnType<Context['session']['context']>>;
 interface Turn {
@@ -20,8 +21,8 @@ interface Turn {
 }
 interface State {
   id: Session.ID;
-  alive: boolean;
-  ownership: Promise<boolean>;
+  lifetime: AbortController;
+  signal: AbortSignal;
   queue: Promise<void>;
   turn?: Turn;
   memory: string;
@@ -30,6 +31,12 @@ interface State {
 }
 const MAX_SESSIONS = 1_000;
 const MAX_TEXT = 100_000;
+// Match the shared file-evidence vocabulary used by the first-party v1 adapter (#3678).
+const CAPTURE_TOOL_NAMES = new Map([
+  ['read', 'Read'],
+  ['write', 'Write'],
+  ['edit', 'Edit'],
+]);
 
 /** Admission can be queued or steered. Only delivered context owns capture. */
 function consumedTurn(messages: Messages): Turn | undefined {
@@ -80,71 +87,84 @@ export default {
     const states = new Map<string, State>();
     const registrations: Registration[] = [];
     const directory = ctx.location.directory;
+    const active = (state: State): boolean => !state.signal.aborted;
     let warned = false;
     const warn = (error: unknown): void => {
       if (!warned && !controller.signal.aborted) {
-        console.warn('[claude-mem] OpenCode memory unavailable. Run npx claude-mem doctor. ' + String(error));
+        logger.warn('OPENCODE', 'Memory unavailable. Run npx claude-mem doctor.', undefined, error);
         warned = true;
       }
     };
     function enqueue(state: State, operation: () => Promise<void>): Promise<void> {
       state.queue = state.queue.then(async () => {
-        if (state.alive && !controller.signal.aborted) await operation();
-      }).catch(warn);
+        if (active(state)) await operation();
+      }).catch(error => { if (active(state)) warn(error); });
       return state.queue;
     }
-    async function own(id: Session.ID): Promise<State | undefined> {
+    function stateFor(id: Session.ID): State | undefined {
       if (!id || controller.signal.aborted) return;
       let state = states.get(id);
       if (!state) {
         // Bound a long-lived server without evicting a turn still being captured.
         if (states.size >= MAX_SESSIONS) {
-          const idle = [...states.values()].find(item => !item.turn?.needsSummary);
+          const idle = [...states.values()].find(item => !active(item) || !item.turn?.needsSummary);
           if (!idle) return;
-          idle.alive = false;
+          idle.lifetime.abort();
           states.delete(idle.id);
         }
+        const lifetime = new AbortController();
         state = {
-          id, alive: true, ownership: Promise.resolve(false), queue: Promise.resolve(),
+          id, lifetime, signal: AbortSignal.any([controller.signal, lifetime.signal]),
+          queue: Promise.resolve(),
           memory: '', memoryLoaded: false, retryContextAt: 0,
         };
         states.set(id, state);
       }
-      if (!state.alive) return;
-      const target = state;
+      if (active(state)) return state;
+    }
+    async function owns(state: State): Promise<boolean> {
+      if (!active(state)) return false;
       // Sessions can move locations while the server remains alive.
-      state.ownership = ctx.session.get({ sessionID: id }).then(session =>
-        target.alive && !controller.signal.aborted && session.location.directory === directory,
-      ).catch(() => false);
-      if (await state.ownership && state.alive && !controller.signal.aborted) return state;
+      // Public requestOptions.signal: https://opencode.ai/v2/docs/build/plugins/#sessions
+      // Also verified against @opencode/client 2.0.22's published RequestOptions.
+      try {
+        const session = await ctx.session.get({ sessionID: state.id }, { signal: state.signal });
+        return active(state) && session.location.directory === directory;
+      } catch { return false; }
     }
     async function summarize(state: State, turn = state.turn): Promise<void> {
-      if (!turn?.anchored || !turn.needsSummary) return;
+      if (!active(state) || !turn?.anchored || !turn.needsSummary) return;
       await worker.post('/api/sessions/summarize', {
         contentSessionId: state.id, cwd: directory, platformSource: 'opencode',
         last_assistant_message: turn.assistant,
-      });
-      turn.needsSummary = false;
+      }, state.signal);
+      if (active(state)) turn.needsSummary = false;
     }
 
     registrations.push(await ctx.session.hook('context', async event => {
-      const state = await own(event.sessionID);
+      const state = stateFor(event.sessionID);
       if (!state) return;
       await enqueue(state, async () => {
-        const next = consumedTurn(await ctx.session.context({ sessionID: event.sessionID }));
-        if (!state.alive || controller.signal.aborted) return;
+        if (!await owns(state)) return;
+        const messages = await ctx.session.context({ sessionID: event.sessionID }, { signal: state.signal });
+        if (!active(state)) return;
+        const next = consumedTurn(messages);
         if (next && state.turn?.id !== next.id) {
           const previous = state.turn;
           state.turn = next;
-          await summarize(state, previous).catch(warn);
+          await summarize(state, previous).catch(error => { if (active(state)) warn(error); });
         }
+        if (!active(state)) return;
         const turn = state.turn;
         if (turn?.capture && !turn.anchored) {
-          await worker.ready();
+          await worker.ready(state.signal);
+          if (!active(state)) return;
           const response = await worker.post('/api/sessions/init', {
             contentSessionId: state.id, cwd: directory, prompt: turn.prompt, platformSource: 'opencode',
-          });
+          }, state.signal);
+          if (!active(state)) return;
           const result = await response.json() as { skipped?: boolean; reason?: string; sessionDbId?: number };
+          if (!active(state)) return;
           // Duplicate means persisted, unlike a private/excluded prompt.
           turn.anchored = typeof result.sessionDbId === 'number' && (!result.skipped || result.reason === 'duplicate');
           turn.capture = !result.skipped || result.reason === 'duplicate';
@@ -154,11 +174,17 @@ export default {
         if (turn && !turn.capture) return;
         if (!state.memoryLoaded && Date.now() >= state.retryContextAt) {
           state.retryContextAt = Date.now() + 60_000;
-          await worker.ready();
+          await worker.ready(state.signal);
+          if (!active(state)) return;
           const query = new URLSearchParams({ cwd: directory, platform_source: 'opencode' });
-          state.memory = (await (await worker.request('/api/context/inject?' + query)).text()).trim();
+          const response = await worker.request('/api/context/inject?' + query, { signal: state.signal });
+          if (!active(state)) return;
+          const memory = (await response.text()).trim();
+          if (!active(state)) return;
+          state.memory = memory;
           state.memoryLoaded = true;
         }
+        if (!active(state)) return;
         event.system = event.system.filter(part => part.type !== 'text' || !part.text.startsWith('<claude-mem-context>'));
         if (state.memory) event.system.push({ type: 'text', text: '<claude-mem-context>\n' + state.memory + '\n</claude-mem-context>' });
       });
@@ -166,21 +192,29 @@ export default {
     registrations.push(await ctx.session.hook('model.request', event => {
       if (event.kind === 'compaction') {
         const state = states.get(event.sessionID);
-        if (state) state.memoryLoaded = false;
+        if (state && active(state)) state.memoryLoaded = false;
       }
     }));
     registrations.push(await ctx.tool.hook('execute.after', async event => {
       if (/^(?:mem[_-]|.*claude[-_]mem(?:__|_))/i.test(event.tool)) return;
-      const state = await own(event.sessionID);
+      const state = stateFor(event.sessionID);
       if (!state) return;
-      const turn = state.turn;
       await enqueue(state, async () => {
-        if (!turn?.anchored) return;
+        if (!await owns(state)) return;
+        const turn = state.turn;
+        if (!active(state) || !turn?.anchored) return;
+        let toolInput = sanitize(event.input);
+        // The v2 SDK supplies readonly input, not v1 args. Rename the native patch
+        // key on the sanitized copy so the observer receives the patch only once.
+        if (event.tool === 'apply_patch' && toolInput && typeof toolInput === 'object' && !Array.isArray(toolInput)) {
+          const { patchText, ...otherArgs } = toolInput as Record<string, unknown>;
+          if (typeof patchText === 'string') toolInput = { ...otherArgs, patch: patchText };
+        }
         await worker.post('/api/sessions/observations', {
           contentSessionId: state.id, cwd: directory, platformSource: 'opencode',
-          tool_name: event.tool, tool_input: sanitize(event.input), tool_use_id: event.id,
+          tool_name: CAPTURE_TOOL_NAMES.get(event.tool) ?? event.tool, tool_input: toolInput, tool_use_id: event.id,
           tool_response: event.status === 'error' ? toolText(event.error.message) : toolText(event.result),
-        });
+        }, state.signal);
       });
     }));
 
@@ -194,20 +228,25 @@ export default {
             const id = event.data.sessionID as Session.ID;
             if (event.type === 'session.deleted') {
               const state = states.get(id);
-              if (state) state.alive = false;
+              state?.lifetime.abort();
               // Retain a tombstone until cleanup/eviction; late callbacks cannot reopen it.
               continue;
             }
-            const state = await own(id);
+            if (event.type !== 'session.text.ended' && event.type !== 'session.execution.succeeded' && event.type !== 'session.compaction.ended') continue;
+            const state = stateFor(id);
             if (!state) continue;
-            const turn = state.turn;
-            if (event.type === 'session.text.ended' && turn?.anchored) {
-              const text = toolText(event.data.text);
-              await enqueue(state, async () => { turn.assistant = text; });
-            } else if (event.type === 'session.execution.succeeded' || event.type === 'session.compaction.ended') {
-              state.memoryLoaded = false;
-              await enqueue(state, () => summarize(state, turn));
-            }
+            // Queue ownership with capture so the reader can immediately abort a
+            // deleted session, even while its SDK ownership request is pending.
+            void enqueue(state, async () => {
+              if (!await owns(state)) return;
+              const turn = state.turn;
+              if (event.type === 'session.text.ended' && turn?.anchored) {
+                turn.assistant = toolText(event.data.text);
+              } else if (event.type === 'session.execution.succeeded' || event.type === 'session.compaction.ended') {
+                state.memoryLoaded = false;
+                await summarize(state, turn);
+              }
+            });
           }
         } catch (error) { warn(error); }
         if (!controller.signal.aborted) {
@@ -222,7 +261,6 @@ export default {
     })();
     return async () => {
       controller.abort();
-      for (const state of states.values()) state.alive = false;
       await Promise.allSettled(registrations.map(registration => registration.dispose()));
       states.clear();
     };

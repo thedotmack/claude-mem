@@ -49,33 +49,42 @@ export function startHarnessWorker(): Promise<void> {
   return starting;
 }
 
-/** A bounded client shared by the native Pi extension and DSH plugin. */
+/** A bounded client shared by the native Pi, DSH and OpenCode adapters. */
 export function createHarnessWorkerClient() {
   let baseUrl = resolveHarnessWorkerUrl();
   return {
     reset(): void { baseUrl = resolveHarnessWorkerUrl(); },
-    async ready(): Promise<void> {
+    async ready(signal?: AbortSignal): Promise<void> {
+      signal?.throwIfAborted();
       try {
-        const response = await fetch(baseUrl + '/api/health', { signal: AbortSignal.timeout(TIMEOUT_MS) });
+        const response = await fetch(baseUrl + '/api/health', {
+          signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(TIMEOUT_MS)]) : AbortSignal.timeout(TIMEOUT_MS),
+        });
+        signal?.throwIfAborted();
         if (response.ok) return;
         throw new Error('claude-mem health check returned ' + response.status);
       } catch (error) {
+        // A canceled adapter must not start a worker after a late transport failure.
+        signal?.throwIfAborted();
         // An HTTP failure belongs to the running server. Only a transport failure starts a worker.
         if (!isConnectionRefusedError(error)) throw error;
         await startHarnessWorker();
+        signal?.throwIfAborted();
       }
     },
     async request(route: string, init: RequestInit = {}): Promise<Response> {
+      init.signal?.throwIfAborted();
       const response = await fetch(baseUrl + route, {
         ...init, signal: init.signal
           ? AbortSignal.any([init.signal, AbortSignal.timeout(TIMEOUT_MS)])
           : AbortSignal.timeout(TIMEOUT_MS),
       });
+      init.signal?.throwIfAborted();
       if (!response.ok) throw new Error('claude-mem ' + route + ' returned ' + response.status);
       return response;
     },
-    async post(route: string, body: unknown): Promise<Response> {
-      return this.request(route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    async post(route: string, body: unknown, signal?: AbortSignal): Promise<Response> {
+      return this.request(route, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal });
     },
   };
 }
