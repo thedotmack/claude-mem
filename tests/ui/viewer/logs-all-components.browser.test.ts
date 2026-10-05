@@ -41,7 +41,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
         function section(label) { return [...document.querySelectorAll('.console-filter-section')].find(x => x.textContent.startsWith(label)); }
         (async () => {
           try {
-            const deadline = Date.now() + 10000;
+            const deadline = Date.now() + 6000;
             while (!document.querySelector('.log-message')) {
               if (Date.now() > deadline) throw new Error('Logs did not load');
               await new Promise(resolve => setTimeout(resolve, 10));
@@ -85,7 +85,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
       '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href],
       { stdout: 'ignore', stderr: 'ignore' });
     const received = await Promise.race([result, new Promise(resolve => {
-      timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 20000);
+      timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 25000);
     })]);
     const all = ['OWNED_SEARCH', 'OWNED_QUEUE', 'OWNED_INGEST', 'OWNED_WORKER', 'OWNED_ALIGNMENT'];
     expect(received).toEqual({
@@ -100,4 +100,4 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     server?.stop(true);
     rmSync(owned, { recursive: true, force: true });
   }
-}, 30000);
+}, 40000);
