@@ -196,7 +196,7 @@ const QUERIES: Record<string, string> = {
 
   java: `
 (method_declaration name: (identifier) @name) @method
-(constructor_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @constructor
 (class_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
 (enum_declaration name: (identifier) @name) @enm
@@ -562,6 +562,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   const_func: "function",
   cls: "class",
   method: "method",
+  constructor: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -689,7 +690,18 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const name = nameCapture?.text || "anonymous";
+    let name = nameCapture?.text || "anonymous";
+    if (kindCapture.tag === "constructor") {
+      const parameters = match.captures.find(c => c.tag === "parameters");
+      if (parameters) {
+        const parameterLines = lines.slice(parameters.startRow, parameters.endRow + 1);
+        parameterLines[0] = Buffer.from(parameterLines[0] ?? "").subarray(parameters.startCol).toString();
+        const last = parameterLines.length - 1;
+        parameterLines[last] = Buffer.from(parameterLines[last]).subarray(0,
+          parameters.endCol - (last === 0 ? parameters.startCol : 0)).toString();
+        name += parameterLines.join(" ").replace(/\s+/g, " ").trim();
+      }
+    }
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
