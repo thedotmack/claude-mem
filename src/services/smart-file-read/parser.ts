@@ -601,7 +601,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   ref: "reference",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface"]);
 
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
   const firstLine = lines[startRow] || "";
