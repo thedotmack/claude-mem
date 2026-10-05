@@ -234,6 +234,9 @@ const QUERIES: Record<string, string> = {
 `,
 
   swift: `
+(init_declaration name: "init" @name) @swift_init
+(init_declaration (parameter) @swift_parameter) @swift_parameters
+(deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -588,6 +591,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   cls: "class",
   method: "method",
   ctor: "method",
+  swift_init: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -701,6 +705,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
   const singletonScopes: RawCapture[] = [];
+  const swiftParameters = new Map<string, string[]>();
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -709,6 +714,15 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+      }
+      if (cap.tag === "swift_parameters") {
+        const parameter = match.captures.find(capture => capture.tag === "swift_parameter");
+        if (parameter) {
+          const key = `${cap.startRow}:${cap.startCol}`;
+          const parameters = swiftParameters.get(key) ?? [];
+          parameters.push(captureLines(lines, parameter).join(" ").replace(/\s+/g, " ").trim());
+          swiftParameters.set(key, parameters);
+        }
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -761,6 +775,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
+    }
+    if (kindCapture.tag === "swift_init") {
+      name = `init(${(swiftParameters.get(`${startRow}:${kindCapture.startCol}`) ?? []).join(", ")})`;
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
     const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
