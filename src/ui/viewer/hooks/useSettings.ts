@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
@@ -67,8 +67,11 @@ export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
+  const savedRevision = useRef(0);
 
   useEffect(() => {
+    const revisionAtLoad = savedRevision.current;
+    let active = true;
     fetch(API_ENDPOINTS.SETTINGS)
       .then(async res => {
         if (!res.ok) {
@@ -77,18 +80,26 @@ export function useSettings() {
         return res.json();
       })
       .then(data => {
-        setSettings({ ...DEFAULT_SETTINGS, ...data });
+        // An initial GET can finish after the user has already saved. Its
+        // older snapshot must not replace that successfully committed state.
+        if (active && savedRevision.current === revisionAtLoad) {
+          setSettings({ ...DEFAULT_SETTINGS, ...data });
+        }
       })
       .catch(error => {
         console.error('Failed to load settings:', error);
       });
+    return () => { active = false; };
   }, []);
 
   return {
     settings,
     saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
       fetchImpl: fetch.bind(globalThis) as typeof fetch,
-      setSettings,
+      setSettings: nextSettings => {
+        savedRevision.current++;
+        setSettings(nextSettings);
+      },
       setSaveStatus,
       setIsSaving,
     }),
