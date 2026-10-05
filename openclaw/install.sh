@@ -1587,8 +1587,7 @@ main() {
   setup_ai_provider
 
   echo ""
-  info "${COLOR_BOLD}[6/8]${COLOR_RESET} Writing settings..."
-  write_settings
+  info "${COLOR_BOLD}[6/8]${COLOR_RESET} Preparing settings..."
 
   echo ""
   info "${COLOR_BOLD}[7/8]${COLOR_RESET} Starting worker service..."
@@ -1628,6 +1627,7 @@ main() {
 
       if [[ "$needs_restart" == "true" ]]; then
         ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR" || return 1
+        write_settings
         info "Stopping existing worker..."
         curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
         sleep 2
@@ -1657,6 +1657,7 @@ main() {
           warn "Worker restart failed — you can start it manually later"
         fi
       else
+        write_settings
         local uptime_display=""
         if [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ && "$WORKER_UPTIME" != "0" ]]; then
           uptime_display="$(format_uptime_ms "$WORKER_UPTIME")"
@@ -1680,12 +1681,14 @@ main() {
         fi
       fi
     else
+      write_settings
       warn "Port 37777 is occupied but not responding to health checks"
       warn "Another process may be using this port. Stop it and re-run the installer,"
       warn "or change CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json"
     fi
   else
     ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR" || return 1
+    write_settings
     if start_worker; then
       verify_health || true
     else
