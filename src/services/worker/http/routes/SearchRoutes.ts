@@ -77,7 +77,6 @@ function getOnboardingExplainer(): string | null {
 const SETTINGS_CACHE_TTL_MS = 5000;
 
 /** Bound on the session-start pull when sync's Realtime channel is not live. */
-const SESSION_START_SYNC_PULL_TIMEOUT_MS = 1500;
 
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
@@ -359,12 +358,11 @@ export class SearchRoutes extends BaseRouteHandler {
     }
 
     const injectStartedAt = Date.now();
-    // Session-start freshness: with Realtime joined, other devices' ops are
-    // already applied as they happen. Without it (dropped, never joined,
-    // disabled), pull once, bounded — pullOnce never throws, so a dead network
-    // costs at most this wait and the render proceeds on local memory.
+    // Local-first: render from the local db now, never wait on the network.
+    // The pull is only a nudge (wakes a suspended sync loop, catches up for the
+    // next session); ops it applies invalidate the cached files as usual.
     if (this.syncClient && !this.syncClient.isSocketLive()) {
-      await this.syncClient.pullOnce({ timeoutMs: SESSION_START_SYNC_PULL_TIMEOUT_MS });
+      void this.syncClient.pullOnce();
     }
     // A delete that lands while this renders must not see its row written back to the cache.
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();

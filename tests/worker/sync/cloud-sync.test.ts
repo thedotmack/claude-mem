@@ -6,7 +6,7 @@
 // in-temp-dir SessionStore over an in-memory DB, injected fetchImpl, fast
 // debounce/backoff.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -1845,6 +1845,29 @@ describe('CloudSync', () => {
     await sleep(80);
     expect(calls.length).toBe(afterFlush);
     sync.stop();
+  });
+
+  it.each([
+    ['rate limited', 1000],
+    ['<!DOCTYPE html><html>rate limited</html>', 600_000],
+  ])('does not shorten the retry floor for %s with negative jitter', async (body, minimumMs) => {
+    seedObservation();
+    const impl = (async () => new Response(body, {
+      status: 429,
+      headers: { 'Retry-After': '1' },
+    })) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 20 });
+    const random = spyOn(Math, 'random').mockReturnValue(0);
+    const timers = spyOn(globalThis, 'setTimeout');
+    try {
+      await sync.flush();
+      // The final native timer is the retry scheduled after the failed push.
+      expect(timers.mock.calls.at(-1)?.[1]).toBeGreaterThanOrEqual(minimumMs);
+    } finally {
+      sync.stop();
+      timers.mockRestore();
+      random.mockRestore();
+    }
   });
 
   it('honors Retry-After on 429 before the next push', async () => {

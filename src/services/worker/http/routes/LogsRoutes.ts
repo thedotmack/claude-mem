@@ -35,7 +35,7 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
         if (content[i] === '\n') newlineCount++;
       }
 
-      if (newlineCount >= lineCount || startPosition === 0) {
+      if (newlineCount >= lineCount || startPosition === 0 || readSize === MAX_READ_SIZE) {
         break;
       }
 
