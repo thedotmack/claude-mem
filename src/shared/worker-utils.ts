@@ -9,7 +9,8 @@ import { MARKETPLACE_ROOT, DATA_DIR, resolveDataDir } from "./paths.js";
 import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
-import { validateWorkerPidFile, readOwnedWorkerPidInfo } from "../supervisor/index.js";
+import { formatHostForUrl } from "./worker-url.js";
+import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
 import { checkVersionMatch, isPortInUse } from "../services/infrastructure/index.js";
@@ -466,10 +467,9 @@ function boundedByBudget(stepTimeoutMs: number, deadlineAt: number | null): numb
   return remainingMs === null ? stepTimeoutMs : Math.max(1, Math.min(stepTimeoutMs, remainingMs));
 }
 
-export function formatHostForUrl(host: string): string {
-  if (host.startsWith('[') && host.endsWith(']')) return host;
-  return host.includes(':') ? `[${host}]` : host;
-}
+// The bracket rule lives in the import-free worker-url.ts so the OpenCode
+// plugin bundle can share it; re-exported here for existing callers.
+export { formatHostForUrl } from "./worker-url.js";
 
 export function buildWorkerUrl(apiPath: string): string {
   return `http://${formatHostForUrl(getWorkerHost())}:${getWorkerPort()}${apiPath}`;
@@ -1158,20 +1158,7 @@ async function isWorkerPortAlive(deadline: number = Number.POSITIVE_INFINITY): P
     });
     return false;
   }
-  if (!healthy) return false;
-
-  // I-4 (bwrap --unshare-pid): health was already proven above, so a
-  // 'stale' verdict here means the pid is invisible from this namespace,
-  // not that the worker is dead. removeStale:false keeps this call from
-  // deleting the host worker's pid file out from under it.
-  const pidStatus = validateWorkerPidFile({ logAlive: false, removeStale: false });
-  if (pidStatus === 'missing') return true;
-  if (pidStatus === 'alive') return true;
-  if (pidStatus === 'stale') {
-    logger.debug('SYSTEM', 'pid not visible (likely pid namespace); keeping pid file');
-    return true;
-  }
-  return false;
+  return healthy;
 }
 
 /**

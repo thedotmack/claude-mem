@@ -6,8 +6,9 @@ import {
   type RealOpenCodeEventType,
 } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
-// Dependency-free, so it stays bundle-safe for the plugin (no worker-only imports).
+// Dependency-free, so they stay bundle-safe for the plugin (no worker-only imports).
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
+import { formatHostForUrl } from "../../shared/worker-url.js";
 import { retryWhileRefused } from "./worker-retry.js";
 
 /**
@@ -93,25 +94,29 @@ interface BusEvent {
   };
 }
 
-function resolveWorkerPort(): string {
+function resolveWorkerBaseUrl(): string {
   const settingsPath = join(
     SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
     "settings.json",
   );
-  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  return `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${settings.CLAUDE_MEM_WORKER_PORT}`;
 }
 
-function resolveWorkerHost(): string {
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
-}
-
-const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
+const WORKER_BASE_URL = resolveWorkerBaseUrl();
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 // Identifies these POSTs as coming from OpenCode. Without it the worker
 // attributes OpenCode sessions to its default platform source ("claude"), so
 // viewer badges and source-scoped session lookups are wrong (#3678).
 const PLATFORM_SOURCE = "opencode";
+
+// Built-in OpenCode names differ from the shared file-evidence vocabulary.
+const CAPTURE_TOOL_NAMES = new Map([
+  ["read", "Read"],
+  ["write", "Write"],
+  ["edit", "Edit"],
+]);
 
 const JSON_HEADERS: Record<string, string> = { "Content-Type": "application/json" };
 
@@ -328,15 +333,23 @@ const ClaudeMemPlugin = async (ctx: OpenCodePluginContext) => {
       output: ToolExecuteAfterOutput,
     ): Promise<void> => {
       const contentSessionId = resolveContentSessionId(input.sessionID);
+      // apply_patch carries its patch as `patchText`, and the worker's file
+      // evidence reads `patch`. Renamed rather than copied, so the observer
+      // is not sent the whole patch twice.
+      let toolInput: Record<string, unknown> = input.args || {};
+      if (input.tool === "apply_patch" && typeof toolInput.patchText === "string") {
+        const { patchText, ...otherArgs } = toolInput;
+        toolInput = { ...otherArgs, patch: patchText };
+      }
       await workerPost("/api/sessions/observations", {
         contentSessionId,
-        tool_name: input.tool,
+        tool_name: CAPTURE_TOOL_NAMES.get(input.tool) ?? input.tool,
         // OpenCode passes the tool arguments on the hook input; the output
         // object only carries { title, output, metadata }. Reading output.args
         // instead shipped an empty tool_input for every observation, and the
         // compressor dismissed them all — the "loads but captures nothing"
         // symptom of #3678.
-        tool_input: input.args || {},
+        tool_input: toolInput,
         tool_response: truncate(output.output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
