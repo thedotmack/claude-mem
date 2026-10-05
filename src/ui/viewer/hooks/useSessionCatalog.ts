@@ -67,10 +67,10 @@ export function useSessionCatalog() {
         offsetRef.current = mode === 'replace' ? pageAdvance : offsetRef.current + pageAdvance;
         setHasMore(data.hasMore === true);
         setSessions(prev => mergeCatalogPage(prev, data.sessions, journal, mode));
-        if (mode !== 'replace' || journal.decreased.size === 0) break;
-        // A count alone cannot say whether it includes the deletion. Confirm
+        if (mode !== 'replace' || (journal.decreased.size === 0 && journal.recreated.size === 0)) break;
+        // Counts cannot identify deletion or recreation freshness. Confirm
         // once after all overlapping deletions, keeping this request loading.
-        // Only another deletion during confirmation requires another fetch.
+        // Another deletion or recreation during confirmation needs a new fetch.
         journalRef.current = {
           ...emptyCatalogJournal(),
           // Keep introduced sessions visible if the confirming page is full.
@@ -105,7 +105,9 @@ export function useSessionCatalog() {
     const key = sessionKey(item.session);
     // A live row after a whole-session deletion recreates this identity.
     // Earlier tombstones must not hide its new catalog entry.
-    journalRef.current.removed.delete(key);
+    if (journalRef.current.removed.delete(key)) {
+      journalRef.current.recreated.add(key);
+    }
     journalRef.current.touched.add(key);
     setSessions(prev => {
       const index = prev.findIndex(entry => sameSession(catalogEntryRef(entry), item.session));
@@ -138,7 +140,9 @@ export function useSessionCatalog() {
   }, []);
 
   const remove = useCallback((session: SessionRef) => {
-    journalRef.current.removed.add(sessionKey(session));
+    const key = sessionKey(session);
+    journalRef.current.removed.add(key);
+    journalRef.current.recreated.delete(key);
     // A loaded session is gone from the server's list too: the next page starts one earlier.
     if (sessionsRef.current.some(entry => sameSession(catalogEntryRef(entry), session))) {
       offsetRef.current = Math.max(0, offsetRef.current - 1);

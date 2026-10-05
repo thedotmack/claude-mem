@@ -123,12 +123,14 @@ export interface CatalogJournal {
   touched: Set<string>;
   /** Sessions with a live item deletion during the request. */
   decreased: Set<string>;
+  /** Sessions deleted and then recreated while this page was in flight. */
+  recreated: Set<string>;
   /** sessionKey of every session deleted during the request. */
   removed: Set<string>;
 }
 
 export function emptyCatalogJournal(): CatalogJournal {
-  return { added: [], touched: new Set(), decreased: new Set(), removed: new Set() };
+  return { added: [], touched: new Set(), decreased: new Set(), recreated: new Set(), removed: new Set() };
 }
 
 /**
@@ -148,6 +150,9 @@ export function mergeCatalogPage(
   const preserveLiveCount = (entry: SessionCatalogEntry): SessionCatalogEntry => {
     const key = keyOf(entry);
     const live = journal.touched.has(key) ? currentByKey.get(key) : undefined;
+    // This page may describe the deleted incarnation, including its title.
+    // Keep the recreated row provisional until the hook confirms it.
+    if (live && journal.recreated.has(key)) return live;
     // A page may already include the live rows: use the larger count rather
     // than adding a delta twice. Keep authoritative page metadata (titles).
     // Counts have no revision: keep a deletion provisional until the hook

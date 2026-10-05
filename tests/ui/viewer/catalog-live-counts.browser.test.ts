@@ -9,7 +9,8 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for live catalog request-order tests');
 
-for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation', 'item-deleted-outside-page', 'item-deleted-outside-removed', 'item-deleted-recreated', 'item-deleted-recreated-removed'] as const) {
+for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation', 'item-deleted-outside-page', 'item-deleted-outside-removed', 'item-deleted-recreated', 'item-deleted-recreated-removed', 'item-deleted-recreated-stale'] as const) {
+  const staleRecreated = scenario === 'item-deleted-recreated-stale';
   const recreated = scenario.startsWith('item-deleted-recreated');
   const removeRecreated = scenario === 'item-deleted-recreated-removed';
   const independent = recreated || scenario === 'item-deleted-independent' || scenario === 'item-deleted-confirmation';
@@ -126,9 +127,10 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         if(independent){
           if(page===2){serverCount++;snapshotReady();}
           const snapshot=serverCount;
+          const recreationSnapshot={...entry,content_session_id:'outside-session',custom_title:staleRecreated&&page===3?'Old deleted title':'Recreated server title',item_count:page===1?2:staleRecreated&&page===3?4:1};
           if(page===2)await ready;
           if(page===3){confirming=true;await confirmationReady;}
-          return Response.json({sessions:[{...entry,item_count:snapshot}, ...(recreated && recreatedExists ? [{...entry,content_session_id:'outside-session',custom_title:'Recreated server title',item_count:page===1?2:1}] : [])],hasMore:false});
+          return Response.json({sessions:[{...entry,item_count:snapshot}, ...(recreated && recreatedExists ? [recreationSnapshot] : [])],hasMore:false});
         }
         if(page===3)latestStarted();
         if(page===2 && scenario==='overlap')await firstReady;
@@ -170,7 +172,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         }
         expect(actual.rows[0].item_count).toBe(again?4:5);
         expect(serverCount).toBe(again?4:5);
-        expect(requests).toBe(again?4:3);
+        expect(requests).toBe(again || recreated && !removeRecreated ? 4 : 3);
         expect(actual.confirming).toBe(true);
         expect(actual.provisional).toBe(4);
         expect(new Set(requestScopes).size).toBe(1);
