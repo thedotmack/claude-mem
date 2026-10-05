@@ -3016,7 +3016,7 @@ export class SessionStore {
   }
 
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
-    return getWorkStateEntriesRows(this.db, projects, listName);
+    return getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName);
   }
 
   countToolUses(filters: ToolUseQueryFilters = {}): Array<{ tool_name: string; uses: number }> {

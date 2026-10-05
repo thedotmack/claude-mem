@@ -79,6 +79,24 @@ function read(query: Record<string, string>): Promise<Response> {
 }
 
 describe('WorkStateRoutes', () => {
+  it('reads open work state from a project adopted into the checkout', async () => {
+    const adoptedProject = `${project}-merged-worktree`;
+    const session = store.createSDKSession('adopted-host', adoptedProject, 'prompt');
+    store.updateMemorySessionId(session, 'adopted-observer');
+    store.storeObservation('adopted-observer', adoptedProject, {
+      type: 'discovery', title: 'Adopted finding', subtitle: null, narrative: null,
+      facts: [], concepts: [], files_read: [], files_modified: [],
+    });
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE project = ?').run(project, adoptedProject);
+    store.appendWorkStateEntry({ project: adoptedProject, listName: 'release', fields: { task: 'finish migration', status: 'doing' } });
+
+    const response = await read({ cwd: checkout });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('[doing] finish migration');
+    expect(store.getWorkStateEntries([project]).map(entry => entry.project)).toEqual([adoptedProject]);
+    expect(store.getWorkStateEntries(['unrelated-project'])).toEqual([]);
+  });
+
   it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
     await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });
