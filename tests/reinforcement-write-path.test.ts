@@ -3,6 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../src/services/sqlite/SessionStore.js';
 import { reinforceObservation } from '../src/services/reinforcement/persist.js';
+import { parseReinforcementDates, parseReinforcementHistory } from '../src/services/reinforcement/strength.js';
 import { blendedScore } from '../src/services/reinforcement/rank.js';
 
 // The standalone storeObservation() helper is gone — SessionStore owns every
@@ -42,7 +43,7 @@ function datesOf(store: SessionStore, id: number): string[] {
   const row = store.db
     .prepare('SELECT reinforcement_dates FROM observations WHERE id = ?')
     .get(id) as { reinforcement_dates: string | null };
-  return JSON.parse(row.reinforcement_dates ?? '[]');
+  return parseReinforcementDates(row.reinforcement_dates);
 }
 
 describe('reinforcement on the write path', () => {
@@ -96,6 +97,24 @@ describe('reinforcement on the write path', () => {
     expect(datesOf(store, id)).toEqual(['2026-06-10', '2026-06-12']);
     // missing row → false
     expect(reinforceObservation(store.db, 9999, new Date(day2))).toBe(false);
+  });
+
+  it('records seed identity and upgrades legacy arrays on a later confirmation', () => {
+    const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
+    const raw = () => (store.db.prepare('SELECT reinforcement_dates FROM observations WHERE id = ?').get(id) as { reinforcement_dates: string }).reinforcement_dates;
+    expect(parseReinforcementHistory(raw()).seedIndex).toBe(0);
+    store.db.prepare('UPDATE observations SET reinforcement_dates = ? WHERE id = ?').run(JSON.stringify(['2026-06-10', '2026-06-11']), id);
+    expect(reinforceObservation(store.db, id, new Date(day2))).toBe(true);
+    expect(parseReinforcementHistory(raw())).toEqual({ dates: ['2026-06-10', '2026-06-11', '2026-06-12'], seedIndex: 0 });
+    expect(JSON.parse(raw()).version).toBe(1);
+  });
+
+  it('preserves a legacy history whose creation seed is already absent', () => {
+    const { id } = store.storeObservation('s1', 'proj', obs(), 1, 0, day1);
+    store.db.prepare('UPDATE observations SET reinforcement_dates = ? WHERE id = ?').run(JSON.stringify(['2026-06-11']), id);
+    reinforceObservation(store.db, id, new Date(day2));
+    const row = store.db.prepare('SELECT reinforcement_dates FROM observations WHERE id = ?').get(id) as { reinforcement_dates: string };
+    expect(parseReinforcementHistory(row.reinforcement_dates)).toEqual({ dates: ['2026-06-11', '2026-06-12'], seedIndex: null });
   });
 
   // Regression: the worker writes observer output through the batch method,

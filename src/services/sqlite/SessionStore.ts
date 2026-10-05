@@ -2020,7 +2020,7 @@ export class SessionStore {
   /**
    * ACT-R reinforcement history for observations (opt-in ranking, see
    * src/services/reinforcement):
-   *   - reinforcement_dates: JSON array of ISO `YYYY-MM-DD` days the
+   *   - reinforcement_dates: versioned JSON history (legacy day arrays readable) of days the
    *     observation was (re-)confirmed, seeded with its creation day
    *   - last_reinforced: the most recent of those days
    * Device-local, like relevance_count. No backfill: a NULL history ranks on
