@@ -249,6 +249,7 @@ const QUERIES: Record<string, string> = {
 (class_declaration name: (name) @name) @cls
 (interface_declaration name: (name) @name) @iface
 (trait_declaration name: (name) @name) @trait_def
+(enum_declaration name: (name) @name) @enm
 (method_declaration name: (name) @name) @method
 (namespace_use_declaration) @imp
 `,
@@ -837,7 +838,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       exported: isExported(name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind)) {
+    if (CONTAINER_KINDS.has(kind) || (language === "php" && kind === "enum")) {
       sym.children = [];
       containers.push({ sym, range: kindCapture });
     }
