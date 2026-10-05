@@ -20,7 +20,7 @@ describe("kotlin-constructors", () => {
    const result = await searchCodebase(dir, "constructor(label");
    const match = result.matchingSymbols.find(s => s.symbolName === "Widget.constructor(label: String)");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("println(label)");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
