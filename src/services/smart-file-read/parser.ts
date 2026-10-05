@@ -800,7 +800,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       jsdoc: comment || docstring,
       lineStart: startRow,
       lineEnd: endRow,
-      exported: isExported(name, startRow, endRow, exportRanges, lines, language),
+      exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
     };
 
     if (CONTAINER_KINDS.has(kind)) {

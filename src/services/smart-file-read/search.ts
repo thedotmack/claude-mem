@@ -164,7 +164,9 @@ export async function searchCodebase(
         // Score the symbol's own name, so a class or module query does not match
         // every method under it. The qualified identity counts only as the whole
         // query: `Counter#reset` has no character that queryParts splits on.
-        const nameScore = matchScore(sym.name.toLowerCase(), queryParts)
+        const ownName = parsed.language === "go" && sym.kind === "method"
+          ? sym.name.slice(sym.name.lastIndexOf(".") + 1) : sym.name;
+        const nameScore = matchScore(ownName.toLowerCase(), queryParts)
           || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
@@ -209,9 +211,13 @@ export async function searchCodebase(
     }
   }
 
+  const rankName = (symbol: SymbolMatch): string =>
+    parsedFiles.get(symbol.filePath)?.language === "go" && symbol.kind === "method"
+      && symbol.symbolName.toLowerCase() !== queryLower
+      ? symbol.symbolName.slice(symbol.symbolName.lastIndexOf(".") + 1) : symbol.symbolName;
   matchingSymbols.sort((a, b) => {
-    const aScore = matchScore(a.symbolName.toLowerCase(), queryParts);
-    const bScore = matchScore(b.symbolName.toLowerCase(), queryParts);
+    const aScore = matchScore(rankName(a).toLowerCase(), queryParts);
+    const bScore = matchScore(rankName(b).toLowerCase(), queryParts);
     return bScore - aScore;
   });
 

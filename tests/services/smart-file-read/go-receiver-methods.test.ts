@@ -31,3 +31,13 @@ describe('Go method receiver identity', () => {
   expect(methods.map(s => s.name)).toEqual(['Store[T].Fetch', 'Store[T].Save', 'Store[T].Clear']);
   expect(unfoldSymbol(source, 'generic.go', 'Store[T].Save')).toContain('generic_pointer');
  }, 120000);
+
+test('derives Go method visibility from the method identifier, not its receiver', () => {
+  const symbols=parseFile(`package owned
+type local struct {}
+type Local struct {}
+func (l local) Reset() {}
+func (l Local) reset() {}`, 'visibility.go').symbols;
+  expect(symbols.find(s=>s.name==='local.Reset')?.exported).toBe(true);
+  expect(symbols.find(s=>s.name==='Local.reset')?.exported).toBe(false);
+},120000);
