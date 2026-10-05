@@ -101,6 +101,8 @@ export interface ContextCacheKeys {
   platformSource: string;
   /** The colored terminal render (colors=true) rather than the model's block. */
   colors: boolean;
+  /** Observed checkout directory used for local transcript lookup. */
+  cwd?: string;
 }
 
 export const ALL_PLATFORM_SOURCES_CACHE_KEY = 'all';
@@ -114,11 +116,13 @@ export function contextCacheKeys(
   projects: string[],
   platformSource: string | undefined,
   colors: boolean,
+  cwd?: string,
 ): ContextCacheKeys {
   return {
     projects: projects.map(project => project.trim()).filter(Boolean),
     platformSource: platformSource || ALL_PLATFORM_SOURCES_CACHE_KEY,
     colors,
+    ...(cwd ? { cwd } : {}),
   };
 }
 
@@ -128,7 +132,7 @@ export function contextCacheDir(): string {
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
   return createHash('sha256')
-    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors]))
+    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : [])]))
     .digest('hex');
 }
 

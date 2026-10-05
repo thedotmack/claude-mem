@@ -121,8 +121,8 @@ describe('contextHandler SessionStart path', () => {
         expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
         expect(result.systemMessage).toContain('context from worker');
         expect(calls.map(call => call[0])).toEqual([
-          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude',
-          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&colors=true',
+          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&cwd=%2Ftmp%2Frepo',
+          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&cwd=%2Ftmp%2Frepo&colors=true',
         ]);
       } finally {
         showTerminalOutput = false;
@@ -212,7 +212,7 @@ describe('contextHandler SessionStart path', () => {
 
     expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
     expect(calls).toEqual([[
-      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex',
+      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex&cwd=%2Ftmp%2Frepo',
       'GET',
       undefined,
       { workerStartupTimeoutMs: 15_000, timeoutMs: 2_000 },
@@ -230,7 +230,7 @@ describe('contextHandler SessionStart path', () => {
     });
 
     expect(calls).toEqual([[
-      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude',
+      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&cwd=%2Ftmp%2Frepo',
       'GET',
       undefined,
       undefined,
@@ -252,8 +252,8 @@ describe('contextHandler SessionStart path', () => {
       expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
       expect(result.systemMessage).toContain('context from worker');
       expect(calls.map(call => call[0])).toEqual([
-        '/api/context/inject?projects=parent-project%2Crepo-project',
-        '/api/context/inject?projects=parent-project%2Crepo-project&colors=true',
+        '/api/context/inject?projects=parent-project%2Crepo-project&cwd=%2Ftmp%2Frepo',
+        '/api/context/inject?projects=parent-project%2Crepo-project&cwd=%2Ftmp%2Frepo&colors=true',
       ]);
     } finally {
       includeAllSources = false;
@@ -293,7 +293,7 @@ describe('contextHandler SessionStart path', () => {
       });
 
       expect(calls.map(call => call[0])).toEqual([
-        '/api/context/inject?projects=parent-project%2Crepo-project',
+        '/api/context/inject?projects=parent-project%2Crepo-project&cwd=%2Ftmp%2Frepo',
       ]);
     } finally {
       includeAllSources = false;

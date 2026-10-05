@@ -368,7 +368,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
     let rendered: ContextInjectRender;
     try {
-      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full });
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined });
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       // context_injected is HOOK-level (no sessionDbId in scope) → null key,
@@ -402,7 +402,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
       this.contextCache.recordLiveRender(
-        contextCacheKeys(projects, platformSource, forHuman),
+        contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined),
         { body: rendered.body, cacheable: rendered.cacheable },
         respondedAtEpochMs,
         removalGenerationAtRenderStart,
@@ -420,6 +420,7 @@ export class SearchRoutes extends BaseRouteHandler {
   async renderContextVariant(keys: ContextCacheKeys): Promise<ContextVariantRender> {
     const rendered = await this.renderContextInjectBody({
       projects: keys.projects,
+      cwd: keys.cwd,
       platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
       forHuman: keys.colors,
       full: false,
@@ -437,6 +438,7 @@ export class SearchRoutes extends BaseRouteHandler {
     platformSource: string | undefined;
     forHuman: boolean;
     full: boolean;
+    cwd?: string;
   }): Promise<ContextInjectRender> {
     const { projects, platformSource, forHuman, full } = request;
     // The health banner is time-dependent (its durations, its expiry), so a
@@ -483,7 +485,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // path); a cached re-render needs none: ContextCacheService only keeps
     // files servable while Realtime delivers ops as they happen.
     const primaryProject = projects[projects.length - 1];
-    const cwd = `/context/${primaryProject}`;
+    const cwd = request.cwd ?? `/context/${primaryProject}`;
 
     const contextResult = await generateContextWithStats({
       session_id: 'context-inject-' + Date.now(),

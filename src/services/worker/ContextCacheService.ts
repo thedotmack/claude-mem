@@ -343,7 +343,8 @@ export class ContextCacheService {
       return {
         variants: variants.filter(entry =>
           entry && Array.isArray(entry.keys?.projects) && typeof entry.keys.platformSource === 'string'
-          && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'),
+          && typeof entry.keys.colors === 'boolean' && typeof entry.learnedAtEpochMs === 'number'
+          && (entry.keys.cwd === undefined || typeof entry.keys.cwd === 'string')),
       };
     } catch (error) {
       // Variants are re-learned from the next live requests; orphaned files are removed in start().

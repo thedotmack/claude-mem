@@ -556,8 +556,8 @@ afterAll(() => {
 });
 
 describe('context hook reads the precomputed block', () => {
-  const agentKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', false);
-  const colorKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', true);
+  const agentKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', false, '/tmp/cache-hook-repo');
+  const colorKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', true, '/tmp/cache-hook-repo');
   const cachedBody = `# [cache-hook-repo] recent context, ${CONTEXT_HEADER_TIME_PLACEHOLDER}\n`
     + `- release: updated ${relativeTimePlaceholder(Date.now() - 2 * 3_600_000)} ago\n`;
 
@@ -585,9 +585,9 @@ describe('context hook reads the precomputed block', () => {
     expect(additionalContext).not.toContain(PLACEHOLDER_MARKER);
   });
 
-  it('takes the live path on a miss, with the same URL as before', async () => {
+  it('takes the live path on a miss, including the observed checkout cwd', async () => {
     const result = await runHook();
-    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude']);
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo']);
     expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
   });
 
@@ -632,7 +632,7 @@ describe('context hook reads the precomputed block', () => {
     showTerminalOutput = true;
     writeContextCache(agentKeys, cachedBody, Date.now());
     const result = await runHook();
-    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&colors=true']);
+    expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&colors=true']);
     expect(result.systemMessage).toStartWith('LIVE COLORED');
   });
 });
@@ -684,10 +684,10 @@ const childScript = `
     });
   }
   const projectsParam = projects.join(',');
-  const liveAgent = await live({ projects: projectsParam, platformSource: 'claude' });
-  const liveColors = await live({ projects: projectsParam, platformSource: 'claude', colors: 'true' });
-  const agentFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false), FIXED_NOW);
-  const colorFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', true), FIXED_NOW);
+  const liveAgent = await live({ projects: projectsParam, platformSource: 'claude', cwd });
+  const liveColors = await live({ projects: projectsParam, platformSource: 'claude', colors: 'true', cwd });
+  const agentFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false, cwd), FIXED_NOW);
+  const colorFile = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', true, cwd), FIXED_NOW);
 
   let fetchCalls = 0;
   globalThis.fetch = async () => { fetchCalls++; throw new Error('no worker in this test'); };
@@ -701,7 +701,7 @@ const childScript = `
   }], null, 2, 0, FIXED_NOW - 60_000);
   await new Promise((resolve) => setTimeout(resolve, 200));
   await service.flushPendingRenders();
-  const agentAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false), FIXED_NOW);
+  const agentAfterWrite = cache.readContextCache(cache.contextCacheKeys(projects, 'claude', false, cwd), FIXED_NOW);
   service.stop();
   store.close();
 

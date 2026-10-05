@@ -2038,6 +2038,7 @@ function serializeObservation(observation: {
   projectId: string;
   teamId: string;
   serverSessionId: string | null;
+  contentSessionId?: string | null;
   kind: string;
   content: string;
   metadata: Record<string, unknown>;
@@ -2049,6 +2050,7 @@ function serializeObservation(observation: {
     projectId: observation.projectId,
     teamId: observation.teamId,
     serverSessionId: observation.serverSessionId,
+    ...(observation.contentSessionId !== undefined ? { contentSessionId: observation.contentSessionId } : {}),
     kind: observation.kind,
     content: observation.content,
     metadata: observation.metadata,
