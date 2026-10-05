@@ -29,3 +29,20 @@ describe("zig-test-names", () => {
 test('retains anonymous Zig test blocks and ordinary functions once', () => {
  expect(parseFile('test { const owned = 1; }\nfn ordinary() void {}\n', 'anonymous.zig').symbols.map(s => s.name)).toEqual(['anonymous', 'ordinary']);
 }, 120000);
+
+test('retains identifier-named Zig tests across outline, search and unfold', async () => {
+ const source = 'test sample_identifier {\n const identified = 42;\n}\ntest { const anonymous_control = 1; }\nfn ordinary() void {}\n';
+ const filename = 'identifier.zig';
+ const file = parseFile(source, filename);
+ expect(file.symbols.map(symbol => symbol.name)).toEqual(['sample_identifier', 'anonymous', 'ordinary']);
+ expect(formatFoldedView(file)).toContain('sample_identifier');
+ const dir = mkdtempSync(join(tmpdir(), 'cm-zig-identifier-'));
+ try {
+  writeFileSync(join(dir, filename), source);
+  const result = await searchCodebase(dir, 'sample_identifier');
+  const match = result.matchingSymbols.find(symbol => symbol.symbolName === 'sample_identifier');
+  expect(match).toBeDefined();
+  expect(unfoldSymbol(source, filename, match!.symbolName)).toContain('const identified = 42;');
+  expect(unfoldSymbol(source, filename, match!.symbolName)).not.toContain('anonymous_control');
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
