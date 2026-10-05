@@ -20,7 +20,7 @@ describe("toml-quoted-tables", () => {
    const result = await searchCodebase(dir, "quoted");
    const match = result.matchingSymbols.find(s => s.symbolName === "\"quoted.name\"");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("enabled=true");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
