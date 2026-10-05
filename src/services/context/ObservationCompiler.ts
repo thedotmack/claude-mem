@@ -220,7 +220,6 @@ export function querySummariesMulti(
       ss.learned,
       ss.completed,
       ss.next_steps,
-      ss.notes,
       ss.created_at,
       ss.created_at_epoch,
       ss.project

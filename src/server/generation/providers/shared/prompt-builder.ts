@@ -93,7 +93,7 @@ export function buildServerGenerationPrompt(
     'privacy filters or the activity was trivial), return a single self-closing',
     '<skip_summary /> tag and nothing else. Do not include any prose outside the XML.',
     '',
-    'Schema for the <summary> block (at least one field must contain content):',
+    'Schema for the <summary> block (at least one of the first five is required):',
     '<summary>',
     '  <request>what the user asked for</request>',
     '  <investigated>what was explored, and how</investigated>',
