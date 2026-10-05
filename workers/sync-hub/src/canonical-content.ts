@@ -82,7 +82,7 @@ function normalizeJson(value: unknown, seen: Set<object>): unknown {
 		const prototype = Object.getPrototypeOf(value);
 		if (prototype !== Object.prototype && prototype !== null) invalid("objects must be plain objects");
 		const input = value as Record<string, unknown>;
-		const output: Record<string, unknown> = {};
+		const output: Record<string, unknown> = Object.create(null);
 		for (const key of Object.keys(input).sort()) {
 			const item = input[key];
 			if (item === undefined) invalid(`undefined is not allowed at ${key}`);
