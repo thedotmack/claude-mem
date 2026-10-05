@@ -5,6 +5,14 @@ import { join } from 'node:path';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 import { zstdCompressSync } from 'node:zlib';
 import { loadWatchState } from '../../src/services/transcripts/state.js';
+async function bounded(task: Promise<void>, label: string): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([task, new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`${label} did not finish within 2 seconds`)), 2000);
+    })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
 const root = mkdtempSync(join(tmpdir(), 'cm-stop-drain-'));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 for (const compressed of [false, true]) it(`stops ${compressed ? 'zstd' : 'JSONL'} backlog dispatch and preserves its resume checkpoint`, async () => {
@@ -22,13 +30,21 @@ for (const compressed of [false, true]) it(`stops ${compressed ? 'zstd' : 'JSONL
   (watcher as any).handleLine = async (line:string) => {
     dispatched.push(line); if(dispatched.length===1){entered();await gate;}
   };
+  let readTask: Promise<void> | undefined;
   try {
-    await (watcher as any).addTailer(path, watch, schema); await first;
+    await (watcher as any).addTailer(path, watch, schema);
+    await bounded(first, 'first callback');
+    readTask = (watcher as any).tailers.get(path).readTask;
+    expect(readTask).toBeInstanceOf(Promise);
     watcher.stop(); release();
-    await new Promise(resolve => setTimeout(resolve,30));
+    await bounded(readTask!, 'buffered read');
     expect(dispatched).toEqual([lines[0]]);
     const state = loadWatchState(statePath);
     expect(state.offsets[path]).toBe(compressed ? 0 : Buffer.byteLength(lines[0]+'\n'));
     if (compressed) expect(state.frameLines?.[path]).toBe(1);
-  } finally {release();watcher.stop();}
+  } finally {
+    readTask ??= (watcher as any).tailers.get(path)?.readTask;
+    release(); watcher.stop();
+    if (readTask) await bounded(readTask, 'cleanup drain');
+  }
 });
