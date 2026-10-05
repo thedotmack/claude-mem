@@ -8,14 +8,15 @@ import { LogsRoutes } from '../../../../src/services/worker/http/routes/LogsRout
 
 const root = mkdtempSync(join(tmpdir(), 'cm-log-lines-'));
 const file = join(root, 'owned.log');
-writeFileSync(file, Array.from({ length: 1500 }, (_, i) => `owned-${i}`).join('\n') + '\n');
+writeFileSync(file, Array.from({ length: 12000 }, (_, i) => `owned-${i}`).join('\n') + '\n');
+let currentFile = file;
 let server: Server;
 let endpoint: string;
 beforeAll(async () => {
   const app = express();
   const routes = new LogsRoutes();
   // Exercise the real route and HTTP query parser, pointing solely at our log.
-  Object.assign(routes, { getLogFilePath: () => file });
+  Object.assign(routes, { getLogFilePath: () => currentFile });
   routes.setupRoutes(app);
   server = await new Promise<Server>(resolve => {
     const listener = app.listen(0, '127.0.0.1', () => resolve(listener));
@@ -37,10 +38,24 @@ describe('GET /api/logs line-count validation', () => {
     });
   }
   it('preserves the default, explicit zero, and an exact tail request', async () => {
-    for (const [query, count] of [['', 1000], ['?lines=0', 0], ['?lines=2', 2], ['?lines=10001', 1500]]) {
+    for (const [query, count] of [['', 1000], ['?lines=0', 0], ['?lines=2', 2], ['?lines=10001', 10000]]) {
       const response = await fetch(`${endpoint}/api/logs${query}`);
       expect(response.status).toBe(200);
       expect((await response.json() as { returnedLines: number }).returnedLines).toBe(count);
     }
   });
+  it('validates malformed queries even when today has no log file', async () => {
+    currentFile = join(root, 'missing.log');
+    try {
+      const invalid = await fetch(`${endpoint}/api/logs?lines=nope`);
+      expect(invalid.status).toBe(400);
+      expect(await invalid.json()).toEqual({ error: 'lines must be a nonnegative safe integer' });
+      const valid = await fetch(`${endpoint}/api/logs?lines=2`);
+      expect(valid.status).toBe(200);
+      expect(await valid.json()).toMatchObject({ logs: '', exists: false });
+    } finally {
+      currentFile = file;
+    }
+  });
+
 });
