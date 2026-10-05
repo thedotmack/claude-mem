@@ -1167,17 +1167,17 @@ ${f.stack??""}
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE (o.created_at_epoch, o.id) <= (?, ?) ${E.clause}
-        ORDER BY o.created_at_epoch DESC
+        WHERE o.id <= ? ${E.clause}
+        ORDER BY o.id DESC
         LIMIT ?
       `,L=`
         SELECT o.id, o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
-        WHERE (o.created_at_epoch, o.id) >= (?, ?) ${E.clause}
-        ORDER BY o.created_at_epoch ASC
+        WHERE o.id >= ? ${E.clause}
+        ORDER BY o.id ASC
         LIMIT ?
-      `;try{let I=this.db.prepare(T).all(t,e,...E.params,s+1),S=this.db.prepare(L).all(t,e,...E.params,n+1);if(I.length===0&&S.length===0)return{observations:[],sessions:[],prompts:[]};l=I.length>0?I[I.length-1].created_at_epoch:t,g=S.length>0?S[S.length-1].created_at_epoch:t}catch(I){return I instanceof Error?u.error("DB","Error getting boundary observations",{project:i},I):u.error("DB","Error getting boundary observations with non-Error",{},new Error(String(I))),{observations:[],sessions:[],prompts:[]}}}else{let T=`
+      `;try{let I=this.db.prepare(T).all(e,...E.params,s+1),S=this.db.prepare(L).all(e,...E.params,n+1);if(I.length===0&&S.length===0)return{observations:[],sessions:[],prompts:[]};l=I.length>0?I[I.length-1].created_at_epoch:t,g=S.length>0?S[S.length-1].created_at_epoch:t}catch(I){return I instanceof Error?u.error("DB","Error getting boundary observations",{project:i},I):u.error("DB","Error getting boundary observations with non-Error",{},new Error(String(I))),{observations:[],sessions:[],prompts:[]}}}else{let T=`
         SELECT o.created_at_epoch
         FROM observations o
         LEFT JOIN sdk_sessions src ON src.memory_session_id = o.memory_session_id
