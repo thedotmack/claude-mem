@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
-import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -8,12 +9,31 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
   ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 
+if (process.env.CI && !chrome) {
+  throw new Error('CI requires Chrome or Chromium for the pagination browser regressions.');
+}
+
+const esbuildBinary = createRequire(import.meta.url).resolve(
+  `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`
+);
+
 // Real App, React state/effects, HTTP and SSE; no mocked hook dispatcher.
-for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
-  (chrome ? it : it.skip)(`recovers ${scenario} page failures without dropping successful rows`, async () => {
-    const bundle = await build({ write: false, bundle: true, platform: 'browser', format: 'iife',
-      define: { 'process.env.NODE_ENV': '"production"' },
-      stdin: { resolveDir: resolve(import.meta.dir, '../../..'), loader: 'tsx', contents: `
+for (const { scenario, buildDelayMs = 0, startupDelayMs = 0 } of [
+  { scenario: 'partial' },
+  { scenario: 'empty-timeline' },
+  { scenario: 'empty-session' },
+  { scenario: 'partial', buildDelayMs: 4000, startupDelayMs: 10000 },
+]) {
+  (chrome ? it : it.skip)(`recovers ${scenario} page failures without dropping successful rows${startupDelayMs ? ` after ${buildDelayMs}ms build setup and ${startupDelayMs}ms browser startup` : ''}`, async () => {
+    if (buildDelayMs) await Bun.sleep(buildDelayMs);
+    // The one-shot compiler exits before Chrome starts, keeping the browser
+    // phase free of shared esbuild service handles.
+    const bundle = execFileSync(esbuildBinary, [
+      '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
+      '--define:process.env.NODE_ENV="production"', '--log-level=error',
+    ], {
+      cwd: resolve(import.meta.dir, '../../..'),
+      input: `
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { App } from './src/ui/viewer/App';
@@ -43,6 +63,7 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
         async function renderSettled() { for (let i=0; i<6; i++) await new Promise(requestAnimationFrame); }
         (async () => {
           try {
+            await fetch('/ready');
             await until(() => settled >= 3); await renderSettled();
             const initial = document.body.textContent;
             const button = [...document.querySelectorAll('button')].find(b => b.textContent === 'Retry');
@@ -58,8 +79,11 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
             await fetch('/result', { method: 'POST', body: JSON.stringify(report) });
           } catch (error) { await fetch('/result', { method: 'POST', body: JSON.stringify({ failure: String(error) }) }); }
         })();
-      ` },
+      `,
+      encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024,
     });
+    let markReady!: () => void;
+    const ready = new Promise<void>(resolve => { markReady = resolve; });
     const attempts = new Map<string, number>();
     let report!: (value: unknown) => void;
     const result = new Promise<unknown>(resolve => { report = resolve; });
@@ -68,7 +92,11 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const url = new URL(request.url);
       if (url.pathname === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
-      if (url.pathname === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+      if (url.pathname === '/fixture.js') {
+        if (startupDelayMs) await Bun.sleep(startupDelayMs);
+        return new Response(bundle, { headers: { 'Content-Type': 'application/javascript' } });
+      }
+      if (url.pathname === '/ready') { markReady(); return new Response('ready'); }
       if (url.pathname === '/stream') return new Response(new ReadableStream({ start(controller) {
         controller.enqueue(new TextEncoder().encode('data: {"type":"initial_load","projects":["owned-project"]}\n\n'));
       } }), { headers: { 'Content-Type': 'text/event-stream' } });
@@ -84,14 +112,19 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
       return Response.json({});
     } });
     const profile = mkdtempSync(join(tmpdir(), 'claude-mem-pagination-browser-'));
-    const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--no-first-run', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
+    const child = Bun.spawn([chrome!, '--headless', '--no-sandbox', '--disable-gpu', '--disable-background-networking', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--no-first-run', `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
     let timeout: ReturnType<typeof setTimeout>;
     try {
-      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser timed out' }), 9000); })]);
+      // Separate Chrome startup from the two rendered-page settlement phases.
+      await Promise.race([ready, new Promise<never>((_, reject) => {
+        timeout = setTimeout(() => reject(new Error('Owned pagination browser did not become ready')), 30000);
+      })]);
+      clearTimeout(timeout!);
+      const reported = await Promise.race([result, new Promise(resolve => { timeout = setTimeout(() => resolve({ failure: 'Browser fixture timed out' }), 15000); })]);
       expect(reported).toEqual({ retainedObservation: scenario === 'partial', retainedSummary: scenario === 'partial', loading: false, retry: true, recovered: true, sessionView: scenario === 'empty-session' });
     } finally {
       clearTimeout(timeout!); child.kill(); await child.exited; server.stop(true);
       rmSync(profile, { recursive: true, force: true });
     }
-  }, 12000);
+  }, 80000);
 }
