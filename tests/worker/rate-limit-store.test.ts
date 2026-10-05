@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import {
   RateLimitStore,
   shouldAbortForQuota,
@@ -10,6 +11,8 @@ import {
   type RateLimitInfo,
   type RateLimitWindow,
 } from '../../src/services/worker/RateLimitStore.js';
+import { USER_SETTINGS_PATH } from '../../src/shared/paths.js';
+import { logger } from '../../src/utils/logger.js';
 
 // Quota-aware wall-clock guard (#2234).
 //
@@ -493,7 +496,8 @@ describe('shouldAbortForQuota — per-account profile scoping', () => {
 });
 
 // Configurable thresholds (#4230). Settings are read through the env override
-// here; the data dir is pinned to a temp dir by tests/preload.ts.
+// here, except for the settings.json case; the data dir is pinned to a temp
+// dir by tests/preload.ts.
 describe('shouldAbortForQuota — configurable thresholds', () => {
   const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn)';
   const THRESHOLD_KEYS = [
@@ -555,12 +559,74 @@ describe('shouldAbortForQuota — configurable thresholds', () => {
     expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.93), FIXED_NOW).abort).toBe(true);
   });
 
+  it("keeps the bounds: '0' stops at any reported utilization, '1' only at full", () => {
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '0';
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0), FIXED_NOW)).toEqual({
+      abort: true,
+      window: 'seven_day',
+      reason: 'quota:seven_day utilization 0.0% >= 0%',
+    });
+
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '1';
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.99), FIXED_NOW).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 1), FIXED_NOW).abort).toBe(true);
+  });
+
+  // A percent such as '93' or a value above 1 would switch the guard off, and
+  // a negative one would stop the observer at once. `Number('')` is 0, so a
+  // blank value must not be read as a threshold of 0 either.
+  it.each(['93', '1.5', '-0.1', '0.9x', ''])('%p falls back to the default', (value) => {
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = value;
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.92), FIXED_NOW).abort).toBe(false);
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.93), FIXED_NOW).abort).toBe(true);
+  });
+
+  it('warns once per key about an out-of-range value, naming the key and the 0 to 1 range', () => {
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET = '92';
+      shouldAbortForQuota(cliAuth, storeAt('seven_day_sonnet', 0.5), FIXED_NOW);
+      shouldAbortForQuota(cliAuth, storeAt('seven_day_sonnet', 0.5), FIXED_NOW);
+
+      const sonnetWarnings = warn.mock.calls.filter(([, message]) =>
+        String(message).includes('CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET'));
+      expect(sonnetWarnings).toHaveLength(1);
+      expect(String(sonnetWarnings[0][1])).toContain('from 0 to 1');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   it('a provider rejection still stops the observer whatever the threshold', () => {
-    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '2';
+    process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '1';
     expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.5, 'rejected'), FIXED_NOW)).toEqual({
       abort: true,
       window: 'seven_day',
       reason: 'quota:seven_day rejected by provider',
+    });
+  });
+
+  describe('saved in settings.json', () => {
+    // The data dir is shared by the whole run, so leave the file as it was.
+    let savedSettings: string | null = null;
+    beforeEach(() => {
+      savedSettings = existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf-8') : null;
+    });
+    afterEach(() => {
+      if (savedSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
+      else writeFileSync(USER_SETTINGS_PATH, savedSettings, 'utf-8');
+    });
+
+    it('reads the thresholds with no env override, including a hand-written JSON number', () => {
+      writeFileSync(USER_SETTINGS_PATH, JSON.stringify({
+        CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY: '0.99',
+        CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR: 0.5,
+      }), 'utf-8');
+
+      expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.95), FIXED_NOW).abort).toBe(false);
+      expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.99), FIXED_NOW).abort).toBe(true);
+      expect(shouldAbortForQuota(cliAuth, storeAt('five_hour', 0.49), FIXED_NOW).abort).toBe(false);
+      expect(shouldAbortForQuota(cliAuth, storeAt('five_hour', 0.5), FIXED_NOW).abort).toBe(true);
     });
   });
 });

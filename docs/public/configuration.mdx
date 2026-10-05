@@ -144,7 +144,9 @@ See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
 
 ### Quota Guard Settings
 
-With subscription auth, the observer stops once a usage window reaches its threshold (utilization from 0 to 1). A window the provider has already rejected always stops it, whatever the threshold. API-key auth never stops.
+With subscription auth, the observer stops once a usage window reaches its threshold. A window the provider has already rejected always stops it, whatever the threshold. The five-hour window also stops it at 85% or more within 15 minutes of its reset, even below its threshold. API-key auth never stops.
+
+Thresholds are fractions from 0 to 1 (`0.93` = 93%). A value outside that range, such as `93`, falls back to the default, with a warning in the worker log. A blank value uses the default.
 
 | Setting | Default | Description |
 |---------|---------|-------------|

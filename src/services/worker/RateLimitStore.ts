@@ -39,6 +39,7 @@
 
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { logger } from '../../utils/logger.js';
 
 export type RateLimitWindow =
   | 'five_hour'
@@ -347,11 +348,35 @@ const UTILIZATION_THRESHOLD_SETTINGS: Partial<Record<RateLimitWindow, keyof Sett
   overage: 'CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE',
 };
 
-/** A missing or unparseable setting falls back to the shipped default. */
+/** Threshold settings already warned about: once per key per process, not per rate_limit_event. */
+const warnedInvalidThresholdKeys = new Set<keyof SettingsDefaults>();
+
+/**
+ * The window's threshold: a fraction from 0 to 1 (0.93 = 93%), where 0 stops
+ * at any utilization and 1 only at full. A blank value gives the shipped
+ * default. So does any other value, such as `93` meant as a percent, which
+ * would otherwise turn the window's guard off silently; that is logged once
+ * per key.
+ */
 function utilizationThreshold(window: RateLimitWindow, settings: SettingsDefaults): number | undefined {
   const key = UTILIZATION_THRESHOLD_SETTINGS[window];
   if (!key) return undefined;
-  return parseFloat(settings[key]) || parseFloat(SettingsDefaultsManager.getAllDefaults()[key]);
+  const fallback = Number(SettingsDefaultsManager.getAllDefaults()[key]);
+  // settings.json is hand-editable, so the value can arrive as a JSON number.
+  const configured: unknown = settings[key];
+  const raw = configured == null ? '' : String(configured).trim();
+  if (raw === '') return fallback;
+  const threshold = Number(raw);
+  // NaN fails both comparisons, so `0.9x` or `abc` falls through as well.
+  if (threshold >= 0 && threshold <= 1) return threshold;
+  if (!warnedInvalidThresholdKeys.has(key)) {
+    warnedInvalidThresholdKeys.add(key);
+    logger.warn('CONFIG', `${key} must be a fraction from 0 to 1 (0.93 = 93%); using the default instead`, {
+      value: raw,
+      default: fallback,
+    });
+  }
+  return fallback;
 }
 
 /** Reset-window grace: bail early if a window resets within this many ms. */
