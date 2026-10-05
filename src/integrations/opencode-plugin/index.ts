@@ -93,19 +93,19 @@ interface BusEvent {
   };
 }
 
-function resolveWorkerPort(): string {
+function resolveWorkerBaseUrl(): string {
   const settingsPath = join(
     SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
     "settings.json",
   );
-  return SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_WORKER_PORT;
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  const host = settings.CLAUDE_MEM_WORKER_HOST;
+  // An IPv6 address must be bracketed in a URL authority.
+  const urlHost = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `http://${urlHost}:${settings.CLAUDE_MEM_WORKER_PORT}`;
 }
 
-function resolveWorkerHost(): string {
-  return SettingsDefaultsManager.get("CLAUDE_MEM_WORKER_HOST");
-}
-
-const WORKER_BASE_URL = `http://${resolveWorkerHost()}:${resolveWorkerPort()}`;
+const WORKER_BASE_URL = resolveWorkerBaseUrl();
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
 
 // Identifies these POSTs as coming from OpenCode. Without it the worker
