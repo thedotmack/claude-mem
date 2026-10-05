@@ -101,6 +101,15 @@ describe('server REST API v1 routes', () => {
     expect(unrelated).toEqual([]);
   });
 
+  it.each(['Acme ™ launch', 'Acme ℀ launch', 'Acme ™ ﬁles'])('retains literal symbol separators in stored %s', async title => {
+    const { project } = await (await post('/v1/projects', { name: 'Literal symbol search' })).json();
+    const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query: title })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual([memory.id]);
+    const { memories: unrelated } = await (await post('/v1/search', { projectId: project.id, query: title + ' absent' })).json();
+    expect(unrelated).toEqual([]);
+  });
+
   it('creates projects, sessions, events, memories, and searchable context', async () => {
     const projectResponse = await post('/v1/projects', {
       name: 'Claude Mem',

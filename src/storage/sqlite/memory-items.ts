@@ -96,7 +96,13 @@ function buildFtsQuery(query: string): string {
   // whole-query alternatives miss documents mixing those token forms.
   // Keep symbols until normalization: ™ becomes TM and ℀ becomes a/c.
   const tokens = query.match(/[\p{L}\p{N}\p{S}_][\p{L}\p{N}\p{M}\p{S}_]*/gu) ?? [];
+  // Symbol-only terms are separators in the stored unicode61 index. When
+  // words are present, requiring their normalized expansion (e.g. TM) would
+  // make a literal title such as "Acme ™ launch" impossible to find. A query
+  // made only of compatibility symbols can still search their expanded form.
+  const hasIndexedWords = tokens.some(token => tokenQuery(token));
   return tokens.map(token => {
+    if (hasIndexedWords && !tokenQuery(token)) return '';
     const alternatives = [...new Set([token, token.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
     return alternatives.length > 1
       ? `(${alternatives.map(text => `(${text})`).join(' OR ')})`
