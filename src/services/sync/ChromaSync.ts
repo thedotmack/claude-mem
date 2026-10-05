@@ -1,6 +1,7 @@
 
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
+import { parseStringListField } from './string-list-field.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
 // Both come from the SQLite layer (`bun:sqlite`). The SDK never calls the
@@ -129,39 +130,6 @@ interface StoredUserPrompt {
   memory_session_id: string;
   project: string;
   platform_source: string;
-}
-
-function parseStringListField(
-  rawValue: string | null | undefined,
-  fieldName: 'facts' | 'concepts',
-  rowId: number,
-): string[] {
-  if (!rawValue) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue);
-    if (!Array.isArray(parsed)) {
-      logger.warn('CHROMA_SYNC', 'Expected JSON array in observation list field, using plain string fallback', {
-        fieldName,
-        rowId,
-        parsedType: typeof parsed,
-      });
-      if (typeof parsed === 'string') {
-        return parsed.trim() ? [parsed] : [];
-      }
-      return rawValue.trim() ? [rawValue] : [];
-    }
-    return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  } catch (error) {
-    logger.warn('CHROMA_SYNC', 'Malformed observation list field, using plain string fallback', {
-      fieldName,
-      rowId,
-      errorName: error instanceof Error ? error.name : 'NonError',
-    });
-    return rawValue.trim() ? [rawValue] : [];
-  }
 }
 
 /**
@@ -889,7 +857,7 @@ export class ChromaSync {
     observationId: number,
     memorySessionId: string,
     project: string,
-    obs: ParsedObservation,
+    obs: ParsedObservation & { text?: string | null; merged_into_project?: string | null },
     promptNumber: number,
     createdAtEpoch: number,
     platformSource?: string,
@@ -899,9 +867,11 @@ export class ChromaSync {
       id: observationId,
       memory_session_id: memorySessionId,
       project: project,
-      merged_into_project: null,
+      // New local observations have neither; a replicated row passes its
+      // stored values so these documents match what backfill writes.
+      merged_into_project: obs.merged_into_project ?? null,
       platform_source: platformSource ? normalizePlatformSource(platformSource) : normalizePlatformSource(undefined),
-      text: null, // Legacy field, not used
+      text: obs.text ?? null,
       type: obs.type,
       title: obs.title,
       subtitle: obs.subtitle,
@@ -954,7 +924,7 @@ export class ChromaSync {
     summaryId: number,
     memorySessionId: string,
     project: string,
-    summary: ParsedSummary,
+    summary: ParsedSummary & { merged_into_project?: string | null },
     promptNumber: number,
     createdAtEpoch: number,
     platformSource?: string,
@@ -964,7 +934,7 @@ export class ChromaSync {
       id: summaryId,
       memory_session_id: memorySessionId,
       project: project,
-      merged_into_project: null,
+      merged_into_project: summary.merged_into_project ?? null,
       platform_source: platformSource ? normalizePlatformSource(platformSource) : normalizePlatformSource(undefined),
       request: summary.request,
       investigated: summary.investigated,

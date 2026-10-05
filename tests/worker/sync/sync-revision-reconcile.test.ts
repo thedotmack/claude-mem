@@ -42,19 +42,37 @@ const fixture = String.raw`
   const apply = new SyncApply(store.db, { deviceId: 'owned-local', chromaSync: chroma });
   const now = Date.now();
   const common = { memory_session_id: 'remote-memory', project: 'project', prompt_number: 1, created_at_epoch: now };
-  const body = kind === 'observation' ? { ...common, type: 'discovery', title: 'Old title', narrative: 'Old body', facts: '["Old fact one","Old fact two"]', concepts: '[]', files_read: '[]', files_modified: '[]' }
+  let body = kind === 'observation' ? { ...common, type: 'discovery', title: 'Old title', narrative: 'Old body', facts: '["Old fact one","Old fact two"]', concepts: '[]', files_read: '[]', files_modified: '[]' }
     : kind === 'summary' ? { ...common, request: 'Old body', completed: 'Old completion' }
     : { ...common, content_session_id: 'remote-host', prompt_text: 'Old body', platform_source: 'claude' };
   const op = (rev, body) => ({ seq: String(rev), rev: String(rev), kind, origin_device: 'owned-remote', origin_id: '10', body: JSON.stringify(body), server_ts: now });
   const tick = () => new Promise(resolve => setImmediate(resolve));
   const wait = async predicate => { for (let i = 0; i < 100; i++) { if (predicate()) return; await tick(); } throw new Error('Fixture did not settle'); };
-  apply.applyOps([op(1, body)]);
-  if (mode === 'order') await wait(() => started); else await wait(() => docs.size > 0);
+  let backfilled, indexedBefore, platformsBefore;
+  if (mode === 'backfilled') {
+    // Backfill, not the live forward, indexed this replica row (a pending
+    // retry or a rebuild). Its session is not claude's, and it carries stored
+    // columns the forward used to drop: legacy text, a merge target and
+    // plain-string list columns (#3423).
+    store.db.prepare("INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, platform_source, started_at, started_at_epoch, status) VALUES ('remote-host', 'remote-memory', 'project', 'codex', ?, ?, 'completed')").run(new Date(now).toISOString(), now);
+    body = kind === 'observation'
+      ? { ...body, text: 'Old legacy text', facts: '旧事实', concepts: 'plain concept', files_read: 'src/plain.ts', merged_into_project: 'merged-project' }
+      : { ...body, merged_into_project: 'merged-project' };
+    new SyncApply(store.db, { deviceId: 'owned-local' }).applyOps([op(1, body)]);
+    backfilled = await chroma.ensureBackfilled('project', store);
+    indexedBefore = [...docs.keys()].sort();
+    platformsBefore = [...new Set([...docs.values()].map(doc => doc.metadata.platform_source))];
+  } else {
+    apply.applyOps([op(1, body)]);
+    if (mode === 'order') await wait(() => started); else await wait(() => docs.size > 0);
+  }
   const revised = mode === 'order' ? { ...body, title: 'New title', narrative: 'New body', facts: '[]', request: 'New body', completed: null, prompt_text: 'New body' }
     : mode === 'partial' ? { ...body, title: 'New title', narrative: null, facts: '["New fact"]', request: 'New body', completed: null }
+    : mode === 'backfilled' ? { ...body, title: 'New title', narrative: 'New body', text: 'New legacy text', facts: '新事实', request: 'New body', completed: 'New completion' }
     : { ...body, title: null, narrative: null, facts: '[]', request: null, completed: null };
   if (mode === 'retry') failDelete = true;
   apply.applyOps([op(2, revised)]);
+  if (mode === 'backfilled') await wait(() => [...docs.values()].some(doc => doc.document === 'New body'));
   await tick(); await tick();
   const overlapping = [...docs.values()].some(doc => doc.document.includes('New body'));
   if (mode === 'order') { release(); await wait(() => [...docs.values()].some(doc => doc.document.includes('New body'))); }
@@ -67,7 +85,7 @@ const fixture = String.raw`
   }
   const table = kind === 'observation' ? 'observations' : kind === 'summary' ? 'session_summaries' : 'user_prompts';
   const row = store.db.prepare('SELECT * FROM ' + table).get();
-  console.log(JSON.stringify({ docs: [...docs], deleted, overlapping, row, pendingBefore, outcome, state: ChromaSyncState.get('project'), calls }));
+  console.log(JSON.stringify({ docs: [...docs], deleted, overlapping, row, pendingBefore, outcome, backfilled, indexedBefore, platformsBefore, state: ChromaSyncState.get('project'), calls }));
   store.close();
 `;
 
@@ -101,6 +119,27 @@ describe('remote revisions reconcile the production Chroma writer', () => {
       expect(result.outcome).toBe('completed');
       expect(result.docs).toEqual([]);
       expect(result.state.pending?.[kind === 'observation' ? 'observations' : 'summaries'] ?? []).toEqual([]);
+    });
+    it(`revises a backfilled ${kind} into the fragments and metadata backfill wrote`, () => {
+      const result = run(kind, 'backfilled');
+      const id = result.row.id;
+      const expected = kind === 'observation'
+        ? { [`obs_${id}_narrative`]: 'New body', [`obs_${id}_text`]: 'New legacy text', [`obs_${id}_fact_0`]: '新事实' }
+        : { [`summary_${id}_request`]: 'New body', [`summary_${id}_completed`]: 'New completion' };
+      expect(result.backfilled).toBe('completed');
+      expect(result.indexedBefore).toEqual(Object.keys(expected).sort());
+      expect(result.platformsBefore).toEqual(['codex']);
+      expect(result.row.sync_rev).toBe('2');
+      expect(result.deleted).toEqual([]);
+      expect(Object.fromEntries(result.docs.map(([docId, doc]: any) => [docId, doc.document]))).toEqual(expected);
+      for (const [, doc] of result.docs) {
+        expect(doc.metadata.platform_source).toBe('codex');
+        expect(doc.metadata.merged_into_project).toBe('merged-project');
+        if (kind === 'observation') {
+          expect(doc.metadata.concepts).toBe('plain concept');
+          expect(doc.metadata.files_read).toBe('src/plain.ts');
+        }
+      }
     });
   }
   for (const kind of ['observation', 'summary', 'prompt']) {
