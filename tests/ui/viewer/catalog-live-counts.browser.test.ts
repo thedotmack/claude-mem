@@ -1,5 +1,6 @@
 import { expect, it } from 'bun:test';
-import { build } from 'esbuild';
+import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -24,9 +25,11 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     const firstReady = new Promise<void>(resolve=>{releaseFirst=resolve});
     let finish!: (result: any) => void;
     const result = new Promise<any>(resolve => { finish = resolve; });
-    const bundle = await build({ write: false, bundle: true, platform: 'browser', format: 'iife',
-      define: { 'process.env.NODE_ENV': '"production"' },
-      stdin: { resolveDir: resolve(import.meta.dir, '../../..'), loader: 'tsx', contents: `
+    // The one-shot compiler exits before Chrome starts, keeping the browser
+    // phase free of shared esbuild service handles.
+    const esbuild = createRequire(import.meta.url).resolve(`@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`);
+    const bundle = execFileSync(esbuild, ['--bundle', '--loader=tsx', '--platform=browser', '--format=iife', '--define:process.env.NODE_ENV="production"', '--log-level=error'], {
+      cwd: resolve(import.meta.dir, '../../..'), encoding: 'utf8', timeout: 20000, maxBuffer: 8 * 1024 * 1024, input: `
         import React, {useEffect} from 'react';
         import {createRoot} from 'react-dom/client';
         import {useSessionCatalog} from './src/ui/viewer/hooks/useSessionCatalog';
@@ -47,6 +50,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         async function run() {
           const wait=async(predicate)=>{const deadline=Date.now()+12000;while(!await predicate()){
             if(Date.now()>deadline)throw Error('Fixture timed out');await new Promise(resolve=>setTimeout(resolve,10));}};
+          await fetch('/ready');
           await wait(()=>document.getElementById('loading')?.textContent==='false' && ${scenario === 'placeholder' ? 'true' : "document.getElementById('rows').textContent.includes('owned-session')"});
           document.getElementById('refresh').click();
           await wait(()=>document.getElementById('loading').textContent==='true');
@@ -74,7 +78,6 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           if(${JSON.stringify(scenario)}==='removed')document.getElementById('remove').click();
           await fetch('/release');
           let confirming=false;
-    let recreatedExists=true;
           let provisional;
           if(${independent}){
             await wait(async()=>document.getElementById('loading').textContent==='false' || (await (await fetch('/confirmation-status')).json()).started);
@@ -97,7 +100,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           await fetch('/result',{method:'POST',body:document.getElementById('rows').textContent});
         }
         run().catch(error=>fetch('/result',{method:'POST',body:JSON.stringify({error:String(error)})}));
-      ` } });
+      ` });
     let requests=0;
     let serverCount=5;
     let snapshotReady!:()=>void;
@@ -107,13 +110,16 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     let confirming=false;
     let recreatedExists=true;
     const requestScopes:string[]=[];
+    let markBrowserReady!:()=>void;
+    const browserReady=new Promise<void>(resolve=>{markBrowserReady=resolve});
     let latestStarted!:()=>void;
     const latestRequested=new Promise<void>(resolve=>{latestStarted=resolve});
     const entry={content_session_id:'owned-session',platform_source:'claude',project:'owned-project',custom_title:'Server title',started_at_epoch:1,item_count:5};
     const outsideCatalog = [{...entry,started_at_epoch:101}, ...Array.from({length:99},(_,i)=>({...entry,content_session_id:`seed-${i}`,started_at_epoch:100-i}))];
     const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
       const path=new URL(request.url).pathname;
-      if(path==='/fixture.js')return new Response(bundle.outputFiles[0].text,{headers:{'Content-Type':'application/javascript'}});
+      if(path==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+      if(path==='/ready'){markBrowserReady();return new Response('ready');}
       if(path==='/api/sessions'){
         const page=++requests;
         requestScopes.push(new URL(request.url).search);
@@ -153,9 +159,13 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     }});
     const profile=mkdtempSync(join(tmpdir(),'claude-mem-catalog-count-'));
     const child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
+      '--disable-background-timer-throttling','--disable-renderer-backgrounding',
       '--no-first-run',`--user-data-dir=${profile}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
     let timer:ReturnType<typeof setTimeout>|undefined;
     try{
+      // Separate Chrome's cold start from the fixture's request choreography.
+      await Promise.race([browserReady,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Catalog browser did not become ready')),30000);})]);
+      clearTimeout(timer);
       const actual:any=await Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser result timed out')),25000);})]);
       if(outside){
         expect(actual).toHaveLength(removeOutside?100:101);
@@ -185,5 +195,5 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     }finally{
       clearTimeout(timer);releaseFirst();release();confirmRelease();child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});
     }
-  },30000);
+  },80000);
 }
