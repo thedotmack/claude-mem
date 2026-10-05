@@ -228,15 +228,16 @@ async function enforceRateLimitForModel(model: GeminiModel, rateLimitingEnabled:
   const minimumDelayMs = Math.ceil(60000 / rpm) + 100;
 
   const now = Date.now();
-  const timeSinceLastRequest = now - lastRequestTime;
+  // Reserve the next admission before yielding. Concurrent worker sessions
+  // otherwise wait on the same prior request and send together when it ends.
+  const nextRequestTime = Math.max(now, lastRequestTime + minimumDelayMs);
+  lastRequestTime = nextRequestTime;
+  const waitTime = nextRequestTime - now;
 
-  if (timeSinceLastRequest < minimumDelayMs) {
-    const waitTime = minimumDelayMs - timeSinceLastRequest;
+  if (waitTime > 0) {
     logger.debug('SDK', `Rate limiting: waiting ${waitTime}ms before Gemini request`, { model, rpm });
     await new Promise(resolve => setTimeout(resolve, waitTime));
   }
-
-  lastRequestTime = Date.now();
 }
 
 interface GeminiResponse {
