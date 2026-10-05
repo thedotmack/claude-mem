@@ -1070,6 +1070,12 @@ function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): n
   return bestLevel;
 }
 
+// Quote escaped names consistently so literal backslashes stay distinct from
+// newline characters. Lookup compares these aliases without decoding them.
+function displaySymbolName(name: string): string {
+  return /[\r\n\\]/.test(name) ? JSON.stringify(name) : name;
+}
+
 function formatSymbol(sym: CodeSymbol, indent: string): string {
   const parts: string[] = [];
 
@@ -1080,7 +1086,7 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
     : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
 
   // Preserve the exact lookup identity while keeping its display on one line.
-  const displayName = sym.name.replace(/\r/g, "\\r").replace(/\n/g, "\\n");
+  const displayName = displaySymbolName(sym.name);
   parts.push(`${indent}${icon} ${displayName}${exportTag} (${lineRange})`);
   parts.push(`${indent}  ${sym.signature}`);
 
@@ -1146,7 +1152,22 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return null;
   };
 
-  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
+  // Raw identities always win, including names with literal backslash-n.
+  let symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
+  if (!symbol) {
+    const aliases = new Set<CodeSymbol>();
+    const findAliases = (symbols: CodeSymbol[], parent?: string): void => {
+      for (const candidate of symbols) {
+        const qualifiedName = qualifySymbolName(candidate.name, parent, file.language, candidate.kind);
+        if (displaySymbolName(candidate.name) === symbolName
+          || displaySymbolName(qualifiedName) === symbolName) aliases.add(candidate);
+        if (candidate.children) findAliases(candidate.children, qualifiedName);
+      }
+    };
+    findAliases(file.symbols);
+    // A copied unqualified alias must not silently select another owner.
+    if (aliases.size === 1) symbol = aliases.values().next().value ?? null;
+  }
   if (!symbol) return null;
 
   const lines = content.split("\n");
