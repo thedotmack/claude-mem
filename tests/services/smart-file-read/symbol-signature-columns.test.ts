@@ -20,7 +20,7 @@ describe("symbol-signature-columns", () => {
    const result = await searchCodebase(dir, "second");
    const match = result.matchingSymbols.find(s => s.symbolName === "Widget.second");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return 2;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
