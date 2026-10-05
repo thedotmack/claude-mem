@@ -54,7 +54,9 @@ export function resolveOpenCodePluginAPI(): PluginAPI {
     });
     const result = spawnSync(invocation.command, invocation.args, invocation.options);
     if (result.status !== 0) continue;
-    const major = result.stdout?.trim().match(/^(?:opencode2?\s+)?([12])\./)?.[1];
+    // OpenCode 2.0.23 prints "opencode v2.0.23" — the optional v prefix is the
+    // real CLI output (verified live against 2.0.23; 2.0.22 prints it bare).
+    const major = result.stdout?.trim().match(/^(?:opencode2?\s+)?v?([12])\./i)?.[1];
     if (major) return Number(major) as PluginAPI;
   }
   // Existing config-only installs keep v1; v2 users without a CLI can override.

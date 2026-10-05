@@ -199,10 +199,15 @@ export default {
       if (/^(?:mem[_-]|.*claude[-_]mem(?:__|_))/i.test(event.tool)) return;
       const state = stateFor(event.sessionID);
       if (!state) return;
+      // The turn this tool ran in when one is already current: a later prompt
+      // can swap state.turn while this callback waits behind that prompt's
+      // anchor acknowledgement. Tools can also run before the first anchor
+      // completes; those fall back to the turn that materializes by drain.
+      const turn = state.turn;
       await enqueue(state, async () => {
         if (!await owns(state)) return;
-        const turn = state.turn;
-        if (!active(state) || !turn?.anchored) return;
+        const target = turn ?? state.turn;
+        if (!active(state) || !target?.anchored) return;
         let toolInput = sanitize(event.input);
         // The v2 SDK supplies readonly input, not v1 args. Rename the native patch
         // key on the sanitized copy so the observer receives the patch only once.
@@ -224,7 +229,10 @@ export default {
         try {
           for await (const event of ctx.event.subscribe({ signal: controller.signal })) {
             if (controller.signal.aborted) break;
-            if (!('sessionID' in event.data) || event.location?.directory !== directory) continue;
+            // Execution and deletion events arrive without a location on the
+            // real 2.0.23 host; owns() guards their session location. Only
+            // events that carry a location are filtered here.
+            if (!('sessionID' in event.data) || (event.location && event.location.directory !== directory)) continue;
             const id = event.data.sessionID as Session.ID;
             if (event.type === 'session.deleted') {
               const state = states.get(id);
@@ -235,16 +243,21 @@ export default {
             if (event.type !== 'session.text.ended' && event.type !== 'session.execution.succeeded' && event.type !== 'session.compaction.ended') continue;
             const state = stateFor(id);
             if (!state) continue;
+            // The turn this event belongs to when one is already current: a
+            // later prompt can swap state.turn while this callback waits in
+            // the queue. Events can also arrive before the first anchor
+            // completes; those fall back to the turn that materializes by drain.
+            const turn = state.turn;
             // Queue ownership with capture so the reader can immediately abort a
             // deleted session, even while its SDK ownership request is pending.
             void enqueue(state, async () => {
               if (!await owns(state)) return;
-              const turn = state.turn;
-              if (event.type === 'session.text.ended' && turn?.anchored) {
-                turn.assistant = toolText(event.data.text);
+              const target = turn ?? state.turn;
+              if (event.type === 'session.text.ended' && target?.anchored) {
+                target.assistant = toolText(event.data.text);
               } else if (event.type === 'session.execution.succeeded' || event.type === 'session.compaction.ended') {
                 state.memoryLoaded = false;
-                await summarize(state, turn);
+                await summarize(state, target);
               }
             });
           }
