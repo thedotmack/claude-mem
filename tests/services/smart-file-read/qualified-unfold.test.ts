@@ -45,3 +45,19 @@ describe('smart search to unfold symbol identity', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 120000);
 });
+
+test('round trips nested CSS rules and literal dotted selectors independently', async () => {
+  const source = 'anonymous.anonymous.foo { color: red; }\n@media screen {\n  @media print {\n    foo { color: blue; }\n  }\n}';
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-css-qualified-'));
+  try {
+    writeFileSync(join(dir, 'owned.css'), source);
+    const result = await searchCodebase(dir, 'foo');
+    const literal = result.matchingSymbols.find(symbol => symbol.lineStart === 0)!;
+    const nested = result.matchingSymbols.find(symbol => symbol.lineStart === 3)!;
+    expect(literal.symbolName).not.toBe(nested.symbolName);
+    expect(unfoldSymbol(source, 'owned.css', literal.symbolName)).toContain('color: red');
+    expect(unfoldSymbol(source, 'owned.css', literal.symbolName)).not.toContain('color: blue');
+    expect(unfoldSymbol(source, 'owned.css', nested.symbolName)).toContain('color: blue');
+    expect(unfoldSymbol(source, 'owned.css', nested.symbolName)).not.toContain('color: red');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
