@@ -1,5 +1,11 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { paths } from '../../../src/shared/paths.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { recordObserverFailure, readObserverHealth } from '../../../src/shared/observer-health.js';
+import { recordQuotaExhausted, getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../../src/shared/quota-cooldown.js';
 import { logger } from '../../../src/utils/logger.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
@@ -138,7 +144,14 @@ describe('ResponseProcessor', () => {
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
 
+  let ownedHealthDirectory: string;
+  let dataDirSpy: { mockRestore(): void };
+
   beforeEach(() => {
+    ownedHealthDirectory = mkdtempSync(join(tmpdir(), 'claude-mem-response-health-'));
+    dataDirSpy = spyOn(paths, 'dataDir').mockReturnValue(ownedHealthDirectory);
+    resetQuotaCooldownsForTesting();
+    expect(readObserverHealth()).toBeNull();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -202,6 +215,10 @@ describe('ResponseProcessor', () => {
   });
 
   afterEach(() => {
+    // Reset while the resolver still points into this test's owned directory.
+    resetQuotaCooldownsForTesting();
+    dataDirSpy.mockRestore();
+    rmSync(ownedHealthDirectory, { recursive: true, force: true });
     loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
   });
@@ -230,6 +247,62 @@ describe('ResponseProcessor', () => {
       ...overrides,
     } as ActiveSession;
   }
+
+  it('does not report a successful observer store when no memory rows were written', async () => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('empty-store-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'empty-store-memory');
+    mockDbManager = {
+      ...mockDbManager,
+      getSessionStore: () => store,
+    } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'empty-store-session', memorySessionId: 'empty-store-memory',
+    });
+    recordObserverFailure('claude', 'provider outage');
+    const cooldown = recordQuotaExhausted('claude', 'spent allowance');
+    const prior = readObserverHealth();
+    try {
+      const result = await processAgentResponse(
+        '<observation><type>discovery</type><title> </title><narrative>No storable title</narrative></observation>',
+        session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result?.observationIds).toEqual([]);
+      expect(result?.summaryId).toBeNull();
+      expect(readObserverHealth()?.consecutiveFailures).toBe(prior?.consecutiveFailures);
+      expect(readObserverHealth()?.lastSuccessAt).toBe(prior?.lastSuccessAt);
+      expect(getQuotaCooldown('claude')).toEqual(cooldown);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    '<observation><type>discovery</type><title>Useful result</title><narrative>Real finding</narrative></observation>',
+    '<summary><request>Real session summary</request><investigated>Code</investigated><learned>Finding</learned><completed>Work</completed><next_steps>Review</next_steps></summary>',
+  ])('still clears observer failure evidence after storing real memory: %s', async (text) => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('successful-store-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'successful-store-memory');
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'successful-store-session', memorySessionId: 'successful-store-memory',
+    });
+    recordObserverFailure('claude', 'provider outage');
+    recordQuotaExhausted('claude', 'spent allowance');
+    try {
+      const result = await processAgentResponse(
+        text, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result).not.toBeNull();
+      expect((result?.observationIds.length ?? 0) + (result?.summaryId ? 1 : 0)).toBeGreaterThan(0);
+      expect(readObserverHealth()?.consecutiveFailures).toBe(0);
+      expect(readObserverHealth()?.lastSuccessAt).not.toBeNull();
+      expect(getQuotaCooldown('claude')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
 
   describe('parsing observations from XML response', () => {
     it('should parse single observation from response', async () => {
