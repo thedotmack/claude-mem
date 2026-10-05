@@ -101,6 +101,73 @@ describe('server REST API v1 routes', () => {
     expect(unrelated).toEqual([]);
   });
 
+  it.each([['™', 'TM'], ['℀', 'a c']])('filters %s alternatives before a one-result limit', async (symbol, expansion) => {
+    const { project } = await (await post('/v1/projects', { name: 'Symbol precision' })).json();
+    const ids: string[] = [];
+    for (const [index, title] of [`Acme ${symbol} launch`, `Acme ${expansion} launch`, 'Acme launch'].entries()) {
+      const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
+      db.prepare('UPDATE memory_items SET updated_at_epoch = ? WHERE id = ?').run(index + 1, memory.id);
+      ids.push(memory.id);
+    }
+    const { project: foreign } = await (await post('/v1/projects', { name: 'Other symbol project' })).json();
+    await post('/v1/memories', { projectId: foreign.id, kind: 'manual', type: 'note', title: `Acme ${symbol} launch` });
+    const query = `Acme ${symbol} launch`;
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual([ids[1], ids[0]]);
+    const { memories: limited } = await (await post('/v1/search', { projectId: project.id, query, limit: 1 })).json();
+    expect(limited.map((row: { id: string }) => row.id)).toEqual([ids[1]]);
+    const { memories: unrelated } = await (await post('/v1/search', { projectId: project.id, query: query + ' absent' })).json();
+    expect(unrelated).toEqual([]);
+  });
+
+  it.each([['™', 'TM'], ['℀', 'a c']])('pure %s queries retain raw and expanded memories', async (symbol, expansion) => {
+    const { project } = await (await post('/v1/projects', { name: 'Pure symbol precision' })).json();
+    const ids: string[] = [];
+    for (const [index, title] of [symbol, expansion, 'unrelated plain title'].entries()) {
+      const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
+      db.prepare('UPDATE memory_items SET updated_at_epoch = ? WHERE id = ?').run(index + 1, memory.id);
+      ids.push(memory.id);
+    }
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query: symbol })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual([ids[1], ids[0]]);
+    db.prepare('UPDATE memory_items SET updated_at_epoch = 4 WHERE id = ?').run(ids[0]);
+    const { memories: limited } = await (await post('/v1/search', { projectId: project.id, query: symbol, limit: 1 })).json();
+    expect(limited.map((row: { id: string }) => row.id)).toEqual([ids[0]]);
+  });
+
+  it('requires each symbol alternative in mixed raw and expanded documents', async () => {
+    const { project } = await (await post('/v1/projects', { name: 'Multiple symbol constraints' })).json();
+    const ids: string[] = [];
+    const titles = ['Acme ™ ℀ launch', 'Acme TM ℀ launch', 'Acme ™ a c launch', 'Acme TM a c launch',
+      'Acme ™ launch', 'Acme ℀ launch', 'Acme launch', 'Acme TM launch', 'Acme a c launch', 'Other ™ ℀ launch'];
+    for (const [index, title] of titles.entries()) {
+      const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
+      db.prepare('UPDATE memory_items SET updated_at_epoch = ? WHERE id = ?').run(index + 1, memory.id);
+      ids.push(memory.id);
+    }
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query: 'Acme ™ ℀ launch' })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual(ids.slice(0, 4).reverse());
+    const { memories: limited } = await (await post('/v1/search', { projectId: project.id, query: 'Acme ™ ℀ launch', limit: 1 })).json();
+    expect(limited.map((row: { id: string }) => row.id)).toEqual([ids[3]]);
+  });
+
+  it('checks literal symbols only in the fields indexed by FTS', async () => {
+    const { project } = await (await post('/v1/projects', { name: 'Indexed symbol fields' })).json();
+    const ids: string[] = [];
+    for (const [index, field] of ['title', 'subtitle', 'text', 'narrative', 'facts', 'concepts', 'metadata', 'filesRead', 'filesModified'].entries()) {
+      const value = field === 'metadata' ? { symbol: '™' }
+        : ['facts', 'concepts', 'filesRead', 'filesModified'].includes(field) ? ['™'] : '™';
+      const { memory } = await (await post('/v1/memories', {
+        projectId: project.id, kind: 'manual', type: 'note', title: 'Acme launch',
+        [field]: field === 'title' ? 'Acme ™ launch' : value,
+      })).json();
+      db.prepare('UPDATE memory_items SET updated_at_epoch = ? WHERE id = ?').run(index + 1, memory.id);
+      ids.push(memory.id);
+    }
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query: 'Acme ™ launch' })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual(ids.slice(0, 6).reverse());
+  });
+
   it.each(['Acme ™ launch', 'Acme ℀ launch', 'Acme ™ ﬁles'])('retains literal symbol separators in stored %s', async title => {
     const { project } = await (await post('/v1/projects', { name: 'Literal symbol search' })).json();
     const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
