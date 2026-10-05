@@ -446,17 +446,19 @@ describe('OMP Claude Mem hook', () => {
     await handlers.session_shutdown?.();
     await drainMicrotasks();
 
+    // Request order, not sort order: session ids are random, so only the order
+    // the inits were sent in says which session came before the compaction.
     const initSessions = requests
       .filter(request => request.path === '/api/sessions/init')
-      .map(request => String(request.body.contentSessionId))
-      .sort();
+      .map(request => String(request.body.contentSessionId));
     const summaries = requests.filter(request => request.path === '/api/sessions/summarize');
     const summarySessions = summaries
       .map(request => String(request.body.contentSessionId))
       .sort();
 
     expect(initSessions).toHaveLength(2);
-    expect(summarySessions).toEqual(initSessions);
+    expect(new Set(initSessions).size).toBe(2);
+    expect(summarySessions).toEqual([...initSessions].sort());
     expect(summaries.find(request => request.body.contentSessionId === initSessions[0])?.body).toMatchObject({
       last_assistant_message: 'precompact answer',
       platformSource: 'omp',
@@ -489,6 +491,64 @@ describe('OMP Claude Mem hook', () => {
     expect(summaries[0]?.body).toMatchObject({
       contentSessionId: initSession,
       last_assistant_message: 'precompact answer',
+      platformSource: 'omp',
+    });
+  });
+
+  it('keeps the session when OMP reloads the session file that is already open', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+    const cwd = '/owned/omp-reload';
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.({ prompt: 'first' }, { cwd });
+    await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'first answer' }] });
+    await handlers.context?.({ messages: [] }, { cwd });
+    // OMP's reload() calls switchSession(this.sessionFile): session_switch fires
+    // with the open file as previousSessionFile, after the session manager
+    // already points at that same file.
+    await handlers.session_switch?.(
+      { reason: 'resume', previousSessionFile: '/owned/s.jsonl' },
+      { cwd, sessionManager: { getSessionFile: () => '/owned/s.jsonl' } },
+    );
+    await handlers.before_agent_start?.({ prompt: 'second' }, { cwd });
+    await handlers.context?.({ messages: [] }, { cwd });
+    await drainMicrotasks();
+
+    const inits = requests.filter(request => request.path === '/api/sessions/init');
+    expect(inits.map(request => request.body.prompt)).toEqual(['first', 'second']);
+    expect(new Set(inits.map(request => request.body.contentSessionId)).size).toBe(1);
+    expect(requests.filter(request => request.path === '/api/sessions/summarize')).toEqual([]);
+    // Same session, same cwd: the cached context is still valid.
+    expect(requests.filter(request => request.path === '/api/context/inject')).toHaveLength(1);
+  });
+
+  it('rotates the session when OMP switches to another session file', async () => {
+    const requests: CapturedRequest[] = [];
+    installFetchCapture(requests);
+    const handlers = registerHook();
+    const cwd = '/owned/omp-switch';
+
+    await handlers.session_start?.();
+    await handlers.before_agent_start?.({ prompt: 'first' }, { cwd });
+    await handlers.agent_end?.({ messages: [{ role: 'assistant', content: 'first answer' }] });
+    await handlers.session_switch?.(
+      { reason: 'resume', previousSessionFile: '/owned/s.jsonl' },
+      { cwd, sessionManager: { getSessionFile: () => '/owned/other.jsonl' } },
+    );
+    await handlers.before_agent_start?.({ prompt: 'second' }, { cwd });
+    await drainMicrotasks();
+
+    const inits = requests.filter(request => request.path === '/api/sessions/init');
+    const [firstId, secondId] = inits.map(request => request.body.contentSessionId);
+    expect(inits.map(request => request.body.prompt)).toEqual(['first', 'second']);
+    expect(firstId).not.toBe(secondId);
+    const summaries = requests.filter(request => request.path === '/api/sessions/summarize');
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0]?.body).toMatchObject({
+      contentSessionId: firstId,
+      last_assistant_message: 'first answer',
       platformSource: 'omp',
     });
   });
