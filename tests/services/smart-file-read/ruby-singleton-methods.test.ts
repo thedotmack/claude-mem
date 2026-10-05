@@ -86,3 +86,25 @@ test('a class name query matches the class, not every method under it', async ()
     expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('methods defined inside class << self are class methods', async () => {
+  const source = 'class Counter\n  class << self\n    def build\n      :built\n    end\n  end\nend';
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-singleton-class-'));
+  try {
+    writeFileSync(join(dir, 'counter.rb'), source);
+    const result = await searchCodebase(dir, 'build');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter.build']);
+    expect(unfoldSymbol(source, 'counter.rb', 'Counter.build')).toContain(':built');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('a class opened inside class << self keeps its own instance methods', async () => {
+  const source = 'class Counter\n  class << self\n    class Builder\n      def run\n        :run\n      end\n    end\n  end\nend';
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-singleton-nested-'));
+  try {
+    writeFileSync(join(dir, 'counter.rb'), source);
+    const result = await searchCodebase(dir, 'run');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter.Builder#run']);
+    expect(unfoldSymbol(source, 'counter.rb', 'Counter.Builder#run')).toContain(':run');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);

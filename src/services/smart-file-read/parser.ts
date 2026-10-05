@@ -192,6 +192,7 @@ const QUERIES: Record<string, string> = {
   ruby: `
 (method name: (identifier) @name) @func
 (singleton_method object: (_) @receiver name: (identifier) @name) @method
+(singleton_class value: (self)) @singleton_scope
 (class name: (constant) @name) @cls
 (module name: (constant) @name) @cls
 (call method: (identifier) @name) @imp
@@ -673,10 +674,20 @@ function isExported(
   }
 }
 
+// Tree-sitter ranges include columns: row-only comparisons lose methods
+// on the opening line and cannot distinguish adjacent one-line declarations.
+function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
+  return (inner.startRow > outer.startRow
+      || (inner.startRow === outer.startRow && inner.startCol >= outer.startCol))
+    && (inner.endRow < outer.endRow
+      || (inner.endRow === outer.endRow && inner.endCol <= outer.endCol));
+}
+
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const singletonScopes: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -685,6 +696,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+      }
+      if (cap.tag === "singleton_scope") {
+        singletonScopes.push(cap);
       }
       if (cap.tag === "imp") {
         const capturedLines = lines.slice(cap.startRow, cap.endRow + 1);
@@ -863,8 +877,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  // Tree-sitter ranges include columns: row-only comparisons lose methods
-  // on the opening line and cannot distinguish adjacent one-line declarations.
   // The latest containing start is the nearest lexical container, so a nested
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
@@ -874,10 +886,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
     const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
-      && (range.startRow > parent.startRow
-        || (range.startRow === parent.startRow && range.startCol >= parent.startCol))
-      && (range.endRow < parent.endRow
-        || (range.endRow === parent.endRow && range.endCol <= parent.endCol)));
+      && rangeContains(parent, range));
+    // A Ruby `def` inside `class << self` defines a class method, so it is named
+    // like `def self.x` — unless a class or module opened in that block is nearer.
+    if (sym.kind === "function" && singletonScopes.some(scope => rangeContains(scope, range)
+      && (!owner || rangeContains(owner.range, scope)))) {
+      sym.name = `self.${sym.name}`;
+      sym.kind = "method";
+    }
     if (owner) {
       if (sym.kind === "function") sym.kind = "method";
       owner.sym.children!.push(sym);
