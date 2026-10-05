@@ -278,7 +278,8 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
-(test_declaration) @func
+(test_declaration [(string) (identifier)] @name) @func
+(test_declaration . (block)) @func
 `,
 
   css: `
