@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
-import { writeFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
+import { writeJsonFileAtomic } from '../src/shared/atomic-json.js';
 import type {
   ObservationRecord,
   SdkSessionRecord,
@@ -116,7 +116,7 @@ export async function exportMemories(query: string, outputFile: string, project?
     prompts
   };
 
-  writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
+  writeJsonFileAtomic(outputFile, exportData);
 
   console.log(`\n📦 Export complete!`);
   console.log(`📄 Output: ${outputFile}`);
