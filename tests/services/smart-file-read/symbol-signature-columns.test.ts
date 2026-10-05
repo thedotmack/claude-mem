@@ -32,3 +32,21 @@ test('keeps multiline and ordinary declaration signatures intact', () => {
  expect(file.symbols[0].signature).toBe('function multiline( value )');
  expect(file.symbols[1].children?.[0].signature).toBe('run()');
 }, 120000);
+
+for (const filename of ['exports.js', 'exports.ts', 'exports.tsx']) {
+ test(`preserves native export prefixes without unrelated same-line code in ${filename}`, () => {
+  const fn = parseFile('const café = 1; export default function greet() { return 1; }', filename);
+  expect(fn.symbols[0].signature).toBe('export default function greet()');
+  expect(formatFoldedView(fn)).toContain('export default function greet()');
+  const cls = parseFile('const café = 1; export default class Widget { run() { return 2; } }', filename);
+  expect(cls.symbols[0].signature).toBe('export default class Widget');
+  expect(cls.symbols[0].children?.[0].signature).toBe('run()');
+  const named = parseFile('const café = 1; export function named() { return 3; }', filename);
+  expect(named.symbols[0].signature).toBe('export function named()');
+ }, 120000);
+}
+
+test('preserves multiline and commented export prefixes', () => {
+ const file = parseFile('const café = 1; export default /* public entry */ function greet(\n value\n) { return value; }', 'multiline-export.js');
+ expect(file.symbols[0].signature).toBe('export default /* public entry */ function greet( value )');
+}, 120000);

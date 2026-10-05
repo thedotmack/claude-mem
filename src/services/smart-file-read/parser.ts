@@ -699,7 +699,7 @@ function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
-  const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
@@ -708,7 +708,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
-        exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+        exportRanges.push(cap);
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -786,7 +786,16 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
     } else {
-      signature = extractSignatureFromLines(lines, startRow, endRow, 200, kindCapture.startCol);
+      // Export wrappers start before their direct declaration. Preserve only
+      // that prefix; a containing exported class must not prefix its methods.
+      const exportCapture = exportRanges.find(capture => {
+        if (kind === "method" || !rangeContains(capture, kindCapture)) return false;
+        const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
+          .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ");
+        return /^export\s+(?:default\s+)?(?:declare\s+)?$/.test(prefix);
+      });
+      signature = extractSignatureFromLines(lines, exportCapture?.startRow ?? startRow, endRow,
+        200, exportCapture?.startCol ?? kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
