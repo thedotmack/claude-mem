@@ -47,3 +47,15 @@ test('distinguishes the same-named instance and singleton method', async () => {
     expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter.reset', 'Counter.self.reset']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('explicit receivers inside a class retain their actual receiver identity', async () => {
+  const source = 'class Counter\n  def Counter.reset\n    :explicit\n  end\n  def Other.reset\n    :other\n  end\nend';
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-explicit-owner-'));
+  try {
+    writeFileSync(join(dir, 'owned.rb'), source);
+    const result = await searchCodebase(dir, 'reset');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName).sort()).toEqual(['Counter.reset', 'Other.reset']);
+    expect(unfoldSymbol(source, 'owned.rb', 'Counter.reset')).toContain(':explicit');
+    expect(unfoldSymbol(source, 'owned.rb', 'Other.reset')).toContain(':other');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
