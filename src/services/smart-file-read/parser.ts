@@ -694,7 +694,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span
       // lines), so the CLI prints only their range, without a `text` value.
-      if (nameCapture) {
+      if (nameCapture && !nameCapture.text) {
         const capturedLines = lines.slice(nameCapture.startRow, nameCapture.endRow + 1);
         capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(nameCapture.startCol).toString();
         const last = capturedLines.length - 1;

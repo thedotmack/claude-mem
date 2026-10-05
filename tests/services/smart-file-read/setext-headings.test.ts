@@ -39,3 +39,9 @@ describe('native Markdown setext heading sections', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 120000);
 });
+
+test('preserves captured ATX whitespace for exact-name unfolding', () => {
+  const source = '# Multiple   Spaces\n\nowned ATX body';
+  expect(parseFile(source, 'owned.md').symbols[0].name).toBe('Multiple   Spaces');
+  expect(unfoldSymbol(source, 'owned.md', 'Multiple   Spaces')).toContain('owned ATX body');
+}, 120000);
