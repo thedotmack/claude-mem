@@ -2,8 +2,21 @@ import { expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+// Probe the fixture's Bun listener. The three IPv4 controls still run when
+// this host cannot bind IPv6 loopback.
+const ipv6Available = (() => {
+  try {
+    const server = Bun.serve({ hostname: '::1', port: 0, fetch: () => new Response('owned probe') });
+    server.stop(true);
+    return true;
+  } catch (error) {
+    if (['EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+    throw error;
+  }
+})();
+
 for(const scenario of ['file-host','ipv6-file','ipv6-env','env-over-file','default']){
- it(`uses the configured OpenCode worker endpoint for ${scenario}`,async()=>{
+ it.skipIf(scenario.startsWith('ipv6') && !ipv6Available)(`uses the configured OpenCode worker endpoint for ${scenario}`,async()=>{
   const dataDir=mkdtempSync(join(tmpdir(),'owned-opencode-endpoint-'));
   let child:ReturnType<typeof Bun.spawn>|undefined;let timer:ReturnType<typeof setTimeout>|undefined;
   try{
