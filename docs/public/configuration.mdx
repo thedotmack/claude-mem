@@ -142,6 +142,20 @@ See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets a
 
 See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
 
+### Quota Guard Settings
+
+With subscription auth, the observer stops once a usage window reaches its threshold. A window the provider has already rejected always stops it, whatever the threshold. The five-hour window also stops it at 85% or more within 15 minutes of its reset, even below its threshold. API-key auth never stops.
+
+Thresholds are fractions from 0 to 1 (`0.93` = 93%). A value outside that range, such as `93`, falls back to the default, with a warning in the worker log. A blank value uses the default.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR` | `0.95` | Five-hour window |
+| `CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY` | `0.93` | Weekly window |
+| `CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS` | `0.93` | Weekly Opus window |
+| `CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET` | `0.92` | Weekly Sonnet window |
+| `CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE` | `0.95` | Overage, while it is in use |
+
 ### Observer Budget Settings
 
 These apply to every observer provider. The observer's conversation runs in generations. When one fills its budget, claude-mem retires it and starts a fresh one, briefed with the session's own observations. The budget is the smaller of `CLAUDE_MEM_OBSERVER_MAX_CONVERSATION_CHARS` and half the observer model's context window (about 4 characters per token). Each tool call's parameters and outcome are capped at a tenth of the window, 16,000 characters at most.
