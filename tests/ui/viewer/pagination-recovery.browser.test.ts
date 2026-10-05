@@ -13,10 +13,6 @@ if (process.env.CI && !chrome) {
   throw new Error('CI requires Chrome or Chromium for the pagination browser regressions.');
 }
 
-const esbuildBinary = createRequire(import.meta.url).resolve(
-  `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`
-);
-
 // Real App, React state/effects, HTTP and SSE; no mocked hook dispatcher.
 for (const { scenario, buildDelayMs = 0, startupDelayMs = 0 } of [
   { scenario: 'partial' },
@@ -28,6 +24,9 @@ for (const { scenario, buildDelayMs = 0, startupDelayMs = 0 } of [
     if (buildDelayMs) await Bun.sleep(buildDelayMs);
     // The one-shot compiler exits before Chrome starts, keeping the browser
     // phase free of shared esbuild service handles.
+    const esbuildBinary = createRequire(import.meta.url).resolve(
+      `@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`
+    );
     const bundle = execFileSync(esbuildBinary, [
       '--bundle', '--loader=tsx', '--platform=browser', '--format=iife',
       '--define:process.env.NODE_ENV="production"', '--log-level=error',
