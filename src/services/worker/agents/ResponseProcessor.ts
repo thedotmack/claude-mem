@@ -182,9 +182,12 @@ function extractPatchPaths(toolInput: unknown): string[] {
   }
 
   const patches: string[] = [];
-  const patch = normalizePathValue(input.patch);
-  if (patch) {
-    patches.push(patch);
+  // Codex's apply_patch hook carries the raw patch in tool_input.command.
+  for (const field of ['patch', 'command']) {
+    const patch = normalizePathValue(input[field]);
+    if (patch) {
+      patches.push(patch);
+    }
   }
 
   const edits = input.edits;
