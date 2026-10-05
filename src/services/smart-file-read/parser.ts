@@ -1115,6 +1115,7 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
 // Ruby distinguishes instance methods with # and singleton methods with .
 // CSS selectors escape literal dots before adding ownership separators.
 export function qualifySymbolName(name: string, parent: string | undefined, language: string, kind?: CodeSymbol["kind"]): string {
+  if (language === "ruby" && name.startsWith("::")) return name;
   if (language === "ruby" && kind === "method") {
     if (name.startsWith("self.")) return parent ? `${parent}.${name.slice(5)}` : name;
     if (name.includes(".")) return name;

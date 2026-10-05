@@ -22,3 +22,21 @@ describe('Ruby qualified container declarations',()=>{
     expect(unfoldSymbol(source,'cache.rb','App::Helpers.find')).toContain('helpers_body');
   },120000);
 });
+
+test('keeps absolute Ruby class and module identities outside lexical ownership',()=>{
+  const source=`class Outer
+  class ::App::Cache
+    def reset
+      absolute_cache_body
+    end
+  end
+  module ::App::Helpers
+    def self.find
+      absolute_helpers_body
+    end
+  end
+end`;
+  expect(unfoldSymbol(source,'absolute.rb','::App::Cache#reset')).toContain('absolute_cache_body');
+  expect(unfoldSymbol(source,'absolute.rb','::App::Helpers.find')).toContain('absolute_helpers_body');
+  expect(unfoldSymbol(source,'absolute.rb','Outer.::App::Cache#reset')).toBeNull();
+},120000);
