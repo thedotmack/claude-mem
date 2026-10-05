@@ -3,8 +3,21 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// The fixture binds the same Bun listener as this probe. IPv4 still runs on
+// hosts without IPv6 loopback support.
+const ipv6Available = (() => {
+  try {
+    const server = Bun.serve({ hostname: '::1', port: 0, fetch: () => new Response('owned probe') });
+    server.stop(true);
+    return true;
+  } catch (error) {
+    if (['EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT'].includes((error as NodeJS.ErrnoException).code ?? '')) return false;
+    throw error;
+  }
+})();
+
 for (const scenario of ['ipv6', 'ipv6-bracketed-control', 'ipv4-control']) {
-  it(`connects OpenClaw worker hooks over ${scenario}`, async () => {
+  it.skipIf(scenario !== 'ipv4-control' && !ipv6Available)(`connects OpenClaw worker hooks over ${scenario}`, async () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'owned-openclaw-ipv6-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;
     let timer: ReturnType<typeof setTimeout> | undefined;
