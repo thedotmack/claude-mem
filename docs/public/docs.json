@@ -35,6 +35,7 @@
         "pages": [
           "introduction",
           "installation",
+          "t3code-integration",
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
