@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import type { Settings } from '../types';
 import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
@@ -133,12 +133,23 @@ export function ContextSettingsModal({
   saveStatus
 }: ContextSettingsModalProps) {
   const [formState, setFormState] = useState<Settings>(settings);
+  const previousSettings = useRef(settings);
   // From the saved settings, not the form: the field stays editable while a
   // user types any other URL, and read-only for the observer's own endpoint.
   const observerManagesBaseUrl = isClaudeMemObserverBaseUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL);
 
   useEffect(() => {
-    setFormState(settings);
+    const previous = previousSettings.current;
+    const writableKeys = new Set([...Object.keys(previous), ...Object.keys(settings)]);
+    writableKeys.delete('CLAUDE_CODE_PATH');
+    const onlyPathChanged = previous.CLAUDE_CODE_PATH !== settings.CLAUDE_CODE_PATH
+      && [...writableKeys].every(key => previous[key as keyof Settings] === settings[key as keyof Settings]);
+    // The file-only path may arrive after a successful save and a new edit.
+    // Refresh that read-only field without resetting the user's next draft.
+    setFormState(current => onlyPathChanged
+      ? { ...current, CLAUDE_CODE_PATH: settings.CLAUDE_CODE_PATH }
+      : settings);
+    previousSettings.current = settings;
   }, [settings]);
 
   const {
