@@ -1152,22 +1152,25 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return null;
   };
 
-  // Raw identities always win, including names with literal backslash-n.
-  let symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
-  if (!symbol) {
-    const aliases = new Set<CodeSymbol>();
-    const findAliases = (symbols: CodeSymbol[], parent?: string): void => {
-      for (const candidate of symbols) {
-        const qualifiedName = qualifySymbolName(candidate.name, parent, file.language, candidate.kind);
-        if (displaySymbolName(candidate.name) === symbolName
-          || displaySymbolName(qualifiedName) === symbolName) aliases.add(candidate);
-        if (candidate.children) findAliases(candidate.children, qualifiedName);
-      }
-    };
-    findAliases(file.symbols);
-    // A copied unqualified alias must not silently select another owner.
-    if (aliases.size === 1) symbol = aliases.values().next().value ?? null;
-  }
+  const rawSymbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
+  const aliases = new Set<CodeSymbol>();
+  const findAliases = (symbols: CodeSymbol[], parent?: string): void => {
+    for (const candidate of symbols) {
+      const qualifiedName = qualifySymbolName(candidate.name, parent, file.language, candidate.kind);
+      const displayedName = displaySymbolName(candidate.name);
+      const displayedQualifiedName = displaySymbolName(qualifiedName);
+      // Plain names add no alias: keep legacy raw duplicate-name lookup.
+      if ((displayedName !== candidate.name && displayedName === symbolName)
+        || (displayedQualifiedName !== qualifiedName && displayedQualifiedName === symbolName)) aliases.add(candidate);
+      if (candidate.children) findAliases(candidate.children, qualifiedName);
+    }
+  };
+  findAliases(file.symbols);
+  // A copied display alias can equal a different quoted method's raw name.
+  // Refuse that collision instead of silently selecting either body.
+  if (rawSymbol && [...aliases].some(candidate => candidate !== rawSymbol)) return null;
+  let symbol = rawSymbol;
+  if (!symbol && aliases.size === 1) symbol = aliases.values().next().value ?? null;
   if (!symbol) return null;
 
   const lines = content.split("\n");

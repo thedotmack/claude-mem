@@ -112,6 +112,26 @@ test('copied native outline aliases unfold through MCP without changing raw iden
    expect(search.matchingSymbols.some(match => match.symbolName === `Widget.${symbol.name}`)).toBe(true);
 
   }
+
+  const computed = '[\n key\n ]';
+  const decoy = JSON.stringify(computed);
+  const collision = `class Trap {\n ${computed}() { return "real body"; }\n ${decoy}() { return "decoy body"; }\n}`;
+  const collisionFile = 'collision.js';
+  writeFileSync(join(dir, collisionFile), collision);
+  const collisionParsed = parseFile(collision, collisionFile);
+  const copied = formatFoldedView(collisionParsed).split('\n').filter(line => /^\s*ƒ /.test(line))[0].match(/^\s*ƒ (.*?) \(L/)![1];
+  expect(collisionParsed.symbols[0].children![1].name).toBe(copied);
+  const missed = await client.callTool({ name: 'smart_unfold', arguments: { file_path: collisionFile, symbol_name: copied } });
+  const missText = (missed.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
+  expect(missText).toContain('not found');
+  expect(missText).toContain('Available symbols');
+  expect(missText).not.toContain('return "decoy body"');
+  expect(unfoldSymbol(collision, collisionFile, copied)).toBeNull();
+  expect(unfoldSymbol(collision, collisionFile, `Trap.${computed}`)).toContain('return "real body"');
+  expect(unfoldSymbol(collision, collisionFile, `Trap.${collisionParsed.symbols[0].children![1].name}`)).toContain('return "decoy body"');
+
+  const plain = 'class First { regular() { return "first plain"; } }\nclass Second { regular() { return "second plain"; } }';
+  expect(unfoldSymbol(plain, filename, 'regular')).toContain('return "first plain"');
   const name = file.symbols[0].children![0].name;
   const duplicate = `class First { ${name}() { return "first"; } }\nclass Second { ${name}() { return "second"; } }`;
   expect(unfoldSymbol(duplicate, filename, JSON.stringify(name))).toBeNull();
