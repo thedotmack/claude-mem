@@ -16,11 +16,11 @@ describe("case-insensitive-extensions", () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-case-insensitive-extensions-'));
   try {
    writeFileSync(join(dir, filename), source);
-   
+
    const result = await searchCodebase(dir, "answer", { maxResults: 1 });
    const match = result.matchingSymbols.find(s => s.symbolName === "answer");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return 42;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
