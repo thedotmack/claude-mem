@@ -34,15 +34,27 @@ test('retains identifier-named Zig tests across outline, search and unfold', asy
  const source = 'test sample_identifier {\n const identified = 42;\n}\ntest { const anonymous_control = 1; }\nfn ordinary() void {}\n';
  const filename = 'identifier.zig';
  const file = parseFile(source, filename);
- expect(file.symbols.map(symbol => symbol.name)).toEqual(['sample_identifier', 'anonymous', 'ordinary']);
- expect(formatFoldedView(file)).toContain('sample_identifier');
+ expect(file.symbols.map(symbol => symbol.name)).toEqual(['test sample_identifier', 'anonymous', 'ordinary']);
+ expect(formatFoldedView(file)).toContain('test sample_identifier');
  const dir = mkdtempSync(join(tmpdir(), 'cm-zig-identifier-'));
  try {
   writeFileSync(join(dir, filename), source);
   const result = await searchCodebase(dir, 'sample_identifier');
-  const match = result.matchingSymbols.find(symbol => symbol.symbolName === 'sample_identifier');
+  const match = result.matchingSymbols.find(symbol => symbol.symbolName === 'test sample_identifier');
   expect(match).toBeDefined();
   expect(unfoldSymbol(source, filename, match!.symbolName)).toContain('const identified = 42;');
   expect(unfoldSymbol(source, filename, match!.symbolName)).not.toContain('anonymous_control');
  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+// A doctest is named by the declaration it documents, so the two must keep
+// separate identities: unfolding `add` returns the function, not its test.
+test('keeps a Zig doctest apart from the declaration it documents', () => {
+ const source = 'test add {\n    try expect(add(1, 2) == 3);\n}\npub fn add(a: i32, b: i32) i32 {\n    return a + b;\n}\n';
+ const filename = 'math.zig';
+ expect(parseFile(source, filename).symbols.map(symbol => symbol.name)).toEqual(['test add', 'add']);
+ const declaration = unfoldSymbol(source, filename, 'add');
+ expect(declaration).toContain('return a + b;');
+ expect(declaration).not.toContain('expect(');
+ expect(unfoldSymbol(source, filename, 'test add')).toContain('expect(add(1, 2) == 3)');
 }, 120000);

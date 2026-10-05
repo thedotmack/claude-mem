@@ -278,7 +278,8 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
-(test_declaration [(string) (identifier)] @name) @func
+(test_declaration (string) @name) @func
+(test_declaration (identifier) @name) @doctest
 (test_declaration . (block)) @func
 `,
 
@@ -600,6 +601,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   code_block: "code",
   frontmatter: "metadata",
   ref: "reference",
+  doctest: "function",
 };
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
@@ -837,6 +839,13 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       symbols.length = 0;
       symbols.push(...filtered);
     }
+  }
+
+  // A Zig doctest is named by the declaration it documents (`test add`
+  // documents `fn add`), so its identity keeps the keyword and both stay
+  // unfoldable.
+  if (language === "zig") {
+    for (const sym of symbols) if (ranges.get(sym)?.tag === "doctest") sym.name = `test ${sym.name}`;
   }
 
   // A named typedef can capture both the alias and its same-named struct.
