@@ -428,10 +428,10 @@ function resolveContextScope(input: ContextInput | undefined): ContextScope {
   const config = loadContextConfig();
   if (input?.includePriorMessage === false) config.showLastMessage = false;
   const cwd = input?.cwd ?? process.cwd();
-  const context = getProjectContext(cwd);
-
-  const projects = input?.projects?.length ? input.projects : context.allProjects;
-  const project = projects[projects.length - 1] ?? context.primary;
+  // Callers that name the projects (the worker route, the server-runtime hook)
+  // need no lookup, and resolving a real cwd runs git on every render.
+  const projects = input?.projects?.length ? input.projects : getProjectContext(cwd).allProjects;
+  const project = projects[projects.length - 1];
 
   if (input?.full) {
     config.totalObservationCount = 999999;
