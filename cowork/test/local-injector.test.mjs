@@ -22,20 +22,30 @@ function runHook(event, input, env) {
   });
 }
 
+// The rule: an agent on a machine with a local claude-mem install never reads
+// cmem.ai context, and an agent with no local install reads the cloud. The
+// install is an enabled plugin registered in installed_plugins.json with its
+// hook and worker files. The worker's health never decides it.
 const cases = [
-  { name: 'disabled cached plugin with unavailable worker', enabled: false, cache: true, worker: 'down', cloud: true },
+  // No local install: cloud context.
+  { name: 'no local install or worker', worker: 'down', cloud: true },
+  { name: 'healthy worker without a local install', worker: 'healthy', cloud: true },
   { name: 'enabled cached plugin with unavailable worker', enabled: true, cache: true, worker: 'down', cloud: true },
   { name: 'cached plugin with no settings and unavailable worker', cache: true, worker: 'down', cloud: true },
-  { name: 'disabled cached plugin with healthy stale worker', enabled: false, cache: true, worker: 'healthy', cloud: true },
-  { name: 'enabled registered plugin with healthy worker', enabled: true, cache: true, registered: true, worker: 'healthy', cloud: false },
-  { name: 'healthy worker without a local injector', worker: 'healthy', cloud: true },
   { name: 'enabled cached but unregistered plugin with healthy worker', enabled: true, cache: true, worker: 'healthy', cloud: true },
-  { name: 'registered plugin without settings file and healthy worker', cache: true, registered: true, worker: 'healthy', cloud: false },
+  { name: 'cached plugin with unhealthy worker', enabled: true, cache: true, worker: 'unhealthy', cloud: true },
+  { name: 'orphaned cached plugin left by an uninstall', enabled: true, cache: true, files: true, orphaned: true, worker: 'healthy', cloud: true },
+  { name: 'registered plugin disabled in settings with unavailable worker', enabled: false, cache: true, registered: true, worker: 'down', cloud: true },
+  { name: 'registered plugin disabled in settings with healthy stale worker', enabled: false, cache: true, registered: true, worker: 'healthy', cloud: true },
+  { name: 'registered plugin disabled in BOM-prefixed settings', enabled: false, bom: true, cache: true, registered: true, worker: 'healthy', cloud: true },
+  // A local install: no cloud context, whatever the worker's state.
+  { name: 'enabled registered plugin with healthy worker', enabled: true, cache: true, registered: true, worker: 'healthy', cloud: false },
+  { name: 'enabled registered plugin with unavailable worker (cold start)', enabled: true, cache: true, registered: true, worker: 'down', cloud: false },
+  { name: 'enabled registered plugin with unhealthy worker', enabled: true, cache: true, registered: true, worker: 'unhealthy', cloud: false },
+  { name: 'registered plugin without settings file and unavailable worker', cache: true, registered: true, worker: 'down', cloud: false },
   { name: 'registered plugin with empty settings and healthy worker', settings: {}, cache: true, registered: true, worker: 'healthy', cloud: false },
   { name: 'registered plugin with no plugin entry and healthy worker', settings: {enabledPlugins: {}}, cache: true, registered: true, worker: 'healthy', cloud: false },
-  { name: 'cached plugin with unhealthy worker', enabled: true, cache: true, worker: 'unhealthy', cloud: true },
-  { name: 'disabled plugin in BOM-prefixed settings', enabled: false, bom: true, cache: true, worker: 'healthy', cloud: true },
-  { name: 'no local install or worker', worker: 'down', cloud: true },
+  { name: 'registered plugin with malformed settings and unavailable worker', malformedSettings: true, cache: true, registered: true, worker: 'down', cloud: false },
 ];
 
 for (const scenario of cases) {
@@ -43,16 +53,21 @@ for (const scenario of cases) {
     const home = mkdtempSync(join(tmpdir(), 'owned-cowork-injector-'));
     const configDir = join(home, 'claude-config');
     mkdirSync(configDir);
-    if (scenario.cache) mkdirSync(join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0'), { recursive: true });
-    if (scenario.registered) {
-      const plugin = join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0');
+    const plugin = join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0');
+    if (scenario.cache) mkdirSync(plugin, { recursive: true });
+    if (scenario.files || scenario.registered) {
       mkdirSync(join(plugin, 'hooks'), { recursive: true });
       mkdirSync(join(plugin, 'scripts'), { recursive: true });
       writeFileSync(join(plugin, 'hooks/hooks.json'), '{}');
       writeFileSync(join(plugin, 'scripts/worker-service.cjs'), '// owned injector fixture');
-      writeFileSync(join(configDir, 'plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: join(configDir, 'plugins/cache/thedotmack/claude-mem/13.30.0') }] } }));
+    }
+    // An uninstall drops the registry entry, and Claude Code stamps the cache copy it no longer loads.
+    if (scenario.orphaned) writeFileSync(join(plugin, '.orphaned_at'), String(Date.now()));
+    if (scenario.registered) {
+      writeFileSync(join(configDir, 'plugins/installed_plugins.json'), JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: plugin }] } }));
     }
     if (scenario.settings) writeFileSync(join(configDir, 'settings.json'), JSON.stringify(scenario.settings));
+    if (scenario.malformedSettings) writeFileSync(join(configDir, 'settings.json'), '{"enabledPlugins": ');
     if (scenario.enabled !== undefined) {
       writeFileSync(join(configDir, 'settings.json'), (scenario.bom ? '\uFEFF' : '') + JSON.stringify({
         enabledPlugins: { 'claude-mem@thedotmack': scenario.enabled },
@@ -86,7 +101,9 @@ for (const scenario of cases) {
         CMEM_API_BASE: `http://127.0.0.1:${cloudPort}`, CMEM_API_KEY: 'owned-fixture-key',
         CMEM_USER_ID: 'owned-fixture-user', CMEM_SYNC_HUB_URL: `http://127.0.0.1:${cloudPort}`,
       };
-      if (scenario.registered) {
+      // bun-runner.js parses settings without stripping a BOM, so it can't see
+      // that opt-out; the hook follows src/shared/plugin-state.ts, which can.
+      if (scenario.registered && !scenario.bom) {
         // Drive the real local launcher. Node is the explicit runtime boundary
         // for this tiny owned script; no installed plugin or worker is started.
         const fixture = join(home, 'owned-injector.cjs');
@@ -105,6 +122,7 @@ for (const scenario of cases) {
         ...input, tool_input: { prompt: 'owned agent task', subagent_type: 'general-purpose' },
       }, env);
       assert.equal(cloudRequests.length, scenario.cloud ? 2 : 0);
+      assert.deepEqual(healthRequests, [], 'worker health must not decide local-first');
       if (scenario.cloud) {
         assert.deepEqual(cloudRequests.map(url => url.searchParams.get('scope')), ['session-start', 'agent']);
         assert.ok(cloudRequests.every(url => url.searchParams.get('project') === 'cmem_work_owned-project'));
@@ -116,7 +134,6 @@ for (const scenario of cases) {
       } else {
         assert.equal(start, '');
         assert.equal(agent, '');
-        assert.deepEqual(healthRequests, ['/api/health', '/api/health']);
       }
     } finally {
       await close(cloud);

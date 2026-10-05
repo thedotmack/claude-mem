@@ -318,37 +318,35 @@ function viewerPort() {
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
 }
 
-// Local-first when enabled, registered local injection hooks are available
-// and their worker is reachable. A healthy server or cached version is not enough.
-// Otherwise Cowork keeps reading the cloud so memory remains available.
-async function localClaudeMemAvailable() {
+// Local-first: an agent on a machine with a local claude-mem install never
+// reads cmem.ai context; the local hook injects from the local db, which cloud
+// sync keeps current. An agent with no local install (a Cowork container, a
+// remote machine) reads the cloud.
+// The install is what Claude Code loads: an enabled plugin registered in
+// installed_plugins.json with its hook and worker files. Worker health doesn't
+// decide it, so a cold start or a worker on ::1 or a LAN address still counts.
+// A disabled plugin or an orphaned cache copy doesn't, so those sessions get
+// cloud context instead of no memory.
+function localClaudeMemInstalled() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
+  let settings = null;
   try {
-    let settings = {};
-    try {
-      const raw = readFileSync(join(configDir, 'settings.json'), 'utf8');
-      settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
-    } catch (error) {
-      if (error.code !== 'ENOENT') return false;
-    }
-    // Match the local launcher's opt-out setting. Registration below still
-    // prevents a cached version or unrelated healthy server suppressing cloud.
-    if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
+  } catch { /* missing or unreadable settings: the local launcher treats the plugin as enabled too */ }
+  // The same opt-out the local launcher honors (plugin/scripts/bun-runner.js).
+  if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
+  try {
     const registryRaw = readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8');
     const registry = JSON.parse(registryRaw.replace(/^\uFEFF/, ''));
     const entries = registry?.plugins?.['claude-mem@thedotmack'];
-    if (!Array.isArray(entries) || !entries.some(entry => {
+    return Array.isArray(entries) && entries.some(entry => {
       if (typeof entry?.installPath !== 'string' || !entry.installPath) return false;
       const root = existsSync(join(entry.installPath, 'hooks', 'hooks.json'))
         ? entry.installPath : join(entry.installPath, 'plugin');
       return existsSync(join(root, 'hooks', 'hooks.json'))
         && existsSync(join(root, 'scripts', 'worker-service.cjs'));
-    })) return false;
-  } catch { return false; /* no enabled, registered injector */ }
-  try {
-    const res = await fetch(`http://127.0.0.1:${viewerPort()}/api/health`, { signal: AbortSignal.timeout(300) });
-    return res.ok;
-  } catch { return false; }
+    });
+  } catch { return false; /* no readable registry: nothing is registered */ }
 }
 
 // project-scoped wrapper: parses memory_search rows and keeps only this project's.
@@ -431,7 +429,7 @@ async function onSessionStart(input) {
   // …and inject context
   if (!CFG.inject.sessionStart) return;
   if (!CFG.apiKey) return;
-  if (await localClaudeMemAvailable()) return;
+  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('session-start', null, input.cwd);
   const project = resolveProject(input.cwd);
   const body = text || [
@@ -477,7 +475,7 @@ async function onAgentContext(input) {
   const prompt = typeof ti.prompt === 'string' ? ti.prompt : null;
   if (!prompt) return;
   if (prompt.includes('<claude-mem-context')) return;   // already injected upstream
-  if (await localClaudeMemAvailable()) return;
+  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('agent', prompt, input.cwd);
   if (!text) return;
   process.stdout.write(JSON.stringify({

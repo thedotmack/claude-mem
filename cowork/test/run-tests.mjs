@@ -21,10 +21,6 @@ const server = http.createServer((req, res) => {
   req.on('end', () => {
     const rec = { method: req.method, url: req.url, auth: req.headers.authorization, body: body ? JSON.parse(body) : null };
     received.push(rec);
-    if (req.url === '/api/health') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      return res.end('{"status":"ok"}');
-    }
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
       res.writeHead(202, { 'content-type': 'application/json' });
@@ -322,7 +318,8 @@ received = [];
 await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_23' }, { CMEM_PROJECT: 'my-explicit' });
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
 
-// ---- 9c. local-first: an enabled registered injector and healthy worker ----
+// ---- 9c. local-first: an enabled plugin registered in installed_plugins.json
+// with its hook and worker files means no cloud context read, worker up or down ----
 console.log('\n[9c] local-first context');
 const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
 mkdirSync(LOCAL_PLUGIN + '/hooks', { recursive: true });
@@ -332,11 +329,12 @@ writeFileSync(LOCAL_PLUGIN + '/scripts/worker-service.cjs', '// owned injector f
 writeFileSync(TESTHOME + '/.claude/settings.json', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }));
 writeFileSync(TESTHOME + '/.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: LOCAL_PLUGIN }] } }));
 received = [];
-const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' }, { CLAUDE_MEM_WORKER_PORT: String(PORT) });
-check('no /api/hooks/context request when the local worker is reachable', !received.some(r => r.url.startsWith('/api/hooks/context')));
+// run() points CLAUDE_MEM_WORKER_PORT at port 1, so the local worker is down (a cold start)
+const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' });
+check('no /api/hooks/context request when claude-mem is installed locally', !received.some(r => r.url.startsWith('/api/hooks/context')));
 check('no cloud context block injected', !localStart.out.includes('claude-mem-context'), localStart.out.slice(0, 120));
 received = [];
-await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } }, { CLAUDE_MEM_WORKER_PORT: String(PORT) });
+await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } });
 check('agent prompts skip the cloud read too', !received.some(r => r.url.startsWith('/api/hooks/context') || r.url.startsWith('/api/mcp')));
 rmSync(TESTHOME + '/.claude', { recursive: true, force: true });
 received = [];

@@ -12,10 +12,10 @@ are injected back into every new session and every spawned agent.
 
 | Hook | Event sent / behavior |
 |---|---|
-| `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it — skipped when the local injector is registered with existing hook/worker files, not explicitly disabled, and its worker is reachable; cached versions or a healthy server alone do not suppress cloud context |
+| `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it — skipped on a machine with a local claude-mem install (an enabled plugin registered in `installed_plugins.json` with its hook and worker files), whose hook injects from the local db that cloud sync keeps current. A disabled plugin or an orphaned cache copy doesn't count as an install |
 | `UserPromptSubmit` | `session-init` — registers the turn + prompt with the observer pipeline |
 | `PostToolUse` (all tools) | `observation` — streams the raw tool-use fragment (truncated) for server-side synthesis |
-| `PreToolUse` on `Task`/`Agent` | Fetches observations relevant to the agent's prompt and prepends them to it (skipped under the same local-worker conditions as `SessionStart`) |
+| `PreToolUse` on `Task`/`Agent` | Fetches observations relevant to the agent's prompt and prepends them to it (skipped when claude-mem is installed locally, as for `SessionStart`) |
 | `SubagentStop` | Marks the agent's work complete |
 | `Stop` | `summarize` signal (turn boundary for the observer) |
 | `SessionEnd` | Closes the session |
