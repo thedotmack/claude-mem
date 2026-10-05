@@ -37,6 +37,10 @@
  * users are exempt because they authorized per-call spend.
  */
 
+import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { logger } from '../../utils/logger.js';
+
 export type RateLimitWindow =
   | 'five_hour'
   | 'seven_day'
@@ -330,19 +334,50 @@ export function buildUsageLimitHitProps(
 }
 
 /**
- * Per-window utilization thresholds for subscription users (cli/oauth).
- * Crossing one of these aborts the SDK loop so we don't burn through the
- * window on background memory work and starve interactive sessions.
- * `seven_day_overage_included` has none: its figure does not say the
- * observer draws on it (see RateLimitWindow), so only a refusal counts.
+ * Settings that hold the per-window utilization thresholds for subscription
+ * users (cli/oauth). Crossing one of these aborts the SDK loop so we don't
+ * burn through the window on background memory work and starve interactive
+ * sessions. `seven_day_overage_included` has none: its figure does not say
+ * the observer draws on it (see RateLimitWindow), so only a refusal counts.
  */
-const UTILIZATION_THRESHOLDS: Partial<Record<RateLimitWindow, number>> = {
-  five_hour: 0.95,
-  seven_day_opus: 0.93,
-  seven_day_sonnet: 0.92,
-  seven_day: 0.93,
-  overage: 0.95,
+const UTILIZATION_THRESHOLD_SETTINGS: Partial<Record<RateLimitWindow, keyof SettingsDefaults>> = {
+  five_hour: 'CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR',
+  seven_day_opus: 'CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS',
+  seven_day_sonnet: 'CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET',
+  seven_day: 'CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY',
+  overage: 'CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE',
 };
+
+/** Threshold settings already warned about: once per key per process, not per rate_limit_event. */
+const warnedInvalidThresholdKeys = new Set<keyof SettingsDefaults>();
+
+/**
+ * The window's threshold: a fraction from 0 to 1 (0.93 = 93%), where 0 stops
+ * at any utilization and 1 only at full. A blank value gives the shipped
+ * default. So does any other value, such as `93` meant as a percent, which
+ * would otherwise turn the window's guard off silently; that is logged once
+ * per key.
+ */
+function utilizationThreshold(window: RateLimitWindow, settings: SettingsDefaults): number | undefined {
+  const key = UTILIZATION_THRESHOLD_SETTINGS[window];
+  if (!key) return undefined;
+  const fallback = Number(SettingsDefaultsManager.getAllDefaults()[key]);
+  // settings.json is hand-editable, so the value can arrive as a JSON number.
+  const configured: unknown = settings[key];
+  const raw = configured == null ? '' : String(configured).trim();
+  if (raw === '') return fallback;
+  const threshold = Number(raw);
+  // NaN fails both comparisons, so `0.9x` or `abc` falls through as well.
+  if (threshold >= 0 && threshold <= 1) return threshold;
+  if (!warnedInvalidThresholdKeys.has(key)) {
+    warnedInvalidThresholdKeys.add(key);
+    logger.warn('CONFIG', `${key} must be a fraction from 0 to 1 (0.93 = 93%); using the default instead`, {
+      value: raw,
+      default: fallback,
+    });
+  }
+  return fallback;
+}
 
 /** Reset-window grace: bail early if a window resets within this many ms. */
 const RESET_GRACE_MS = 15 * 60 * 1000; // 15 minutes
@@ -383,6 +418,7 @@ export function shouldAbortForQuota(
     'seven_day_overage_included',
     'overage',
   ];
+  const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
   for (const window of windows) {
     const entry = store.get(window);
@@ -395,7 +431,7 @@ export function shouldAbortForQuota(
     if (resetsAtMs !== undefined && resetsAtMs <= now) continue;
 
     const util = entry.utilization;
-    const threshold = UTILIZATION_THRESHOLDS[window];
+    const threshold = utilizationThreshold(window, settings);
     // An explicit false means the provider is not charging the overage bucket,
     // so its utilization does not represent active quota consumption.
     const appliesUtilizationThreshold =
