@@ -139,7 +139,7 @@
 // SessionSearch.ts:76-152; user_prompts: SessionStore.ts:867-895) index them
 // automatically. There is no FTS-external write path in this module.
 //
-// CHROMA: newly inserted rows are forwarded to Chroma AFTER commit,
+// CHROMA: inserted and revised rows are forwarded to Chroma AFTER commit,
 // fire-and-forget (.then().catch() — the ResponseProcessor.ts pattern).
 // The ChromaSyncLike instance is injected; Phase 3's SyncClient wires
 // DatabaseManager.getChromaSync() here. Omitting it skips Chroma (the boot
@@ -940,6 +940,7 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      this.forwardObservation(existing.id, op, body, chromaJobs);
       return 'applied';
     }
 
@@ -974,9 +975,17 @@ export class SyncApply {
       return 'stale';
     }
 
+    this.forwardObservation(inserted.id, op, body, chromaJobs);
+    return 'applied';
+  }
+
+  private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
+    const memorySessionId = fieldString(op, body, 'memory_session_id')!;
+    const project = fieldString(op, body, 'project')!;
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
+    const type = fieldString(op, body, 'type')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      const id = inserted.id;
       chromaJobs.push(() => chroma.syncObservation(
         id,
         memorySessionId,
@@ -995,7 +1004,6 @@ export class SyncApply {
         createdAtEpoch
       ));
     }
-    return 'applied';
   }
 
   private applySummary(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {
@@ -1025,6 +1033,7 @@ export class SyncApply {
         op.rev, this.now(),
         existing.id
       );
+      this.forwardSummary(existing.id, op, body, chromaJobs);
       return 'applied';
     }
 
@@ -1043,9 +1052,16 @@ export class SyncApply {
       createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev
     ) as { id: number };
 
+    this.forwardSummary(inserted.id, op, body, chromaJobs);
+    return 'applied';
+  }
+
+  private forwardSummary(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
+    const memorySessionId = fieldString(op, body, 'memory_session_id')!;
+    const project = fieldString(op, body, 'project')!;
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      const id = inserted.id;
       chromaJobs.push(() => chroma.syncSummary(
         id,
         memorySessionId,
@@ -1062,7 +1078,6 @@ export class SyncApply {
         createdAtEpoch
       ));
     }
-    return 'applied';
   }
 
   /** Resolve the local sdk_sessions id for a remote prompt, or NULL (orphan). */
@@ -1116,6 +1131,7 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      this.forwardPrompt(existing.id, op, body, chromaJobs);
       return 'applied';
     }
 
@@ -1131,9 +1147,17 @@ export class SyncApply {
       this.now(), op.origin_device, op.origin_id, op.rev
     ) as { id: number };
 
+    this.forwardPrompt(inserted.id, op, body, chromaJobs);
+    return 'applied';
+  }
+
+  private forwardPrompt(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
+    const contentSessionId = fieldString(op, body, 'content_session_id')!;
+    const promptText = fieldString(op, body, 'prompt_text')!;
+    const promptNumber = fieldNumber(op, body, 'prompt_number')!;
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      const id = inserted.id;
       chromaJobs.push(() => chroma.syncUserPrompt(
         id,
         fieldString(op, body, 'memory_session_id') ?? contentSessionId,
@@ -1144,7 +1168,6 @@ export class SyncApply {
         fieldString(op, body, 'platform_source') ?? undefined
       ));
     }
-    return 'applied';
   }
 
   // -------------------------------------------------------------------------
