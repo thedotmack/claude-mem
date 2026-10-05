@@ -825,10 +825,21 @@ export class SearchManager {
   async timeline(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
     const { anchor, query, depth_before, depth_after, project, platformSource } = normalized;
-    const depthBefore = depth_before != null ? Number(depth_before) : 10;
-    const depthAfter = depth_after != null ? Number(depth_after) : 10;
+    // HTTP query strings and MCP numbers must describe whole, bounded SQL LIMITs.
+    const parseDepth = (value: unknown): number => value == null ? 10
+      : typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')
+        ? Number(value) : NaN;
+    const depthBefore = parseDepth(depth_before);
+    const depthAfter = parseDepth(depth_after);
     const anchorAsNumber = this.parseNumericAnchor(anchor);
     const cwd = process.cwd();
+
+    if (![depthBefore, depthAfter].every(depth => Number.isSafeInteger(depth) && depth >= 0)) {
+      return { content: [{ type: 'text' as const, text: 'Invalid timeline depth: depth_before and depth_after must be non-negative safe integers' }], isError: true };
+    }
+    if (anchorAsNumber !== null && (!Number.isSafeInteger(anchorAsNumber) || anchorAsNumber <= 0)) {
+      return { content: [{ type: 'text' as const, text: 'Invalid observation anchor: must be a positive safe integer' }], isError: true };
+    }
 
     if (!anchor && !query) {
       return {
@@ -910,8 +921,11 @@ export class SearchManager {
       timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
-        const sessionId = anchor.replace(/^#?S/, '');
-        const sessionNum = parseInt(sessionId, 10);
+        const sessionMatch = /^#?S(\d+)$/.exec(anchor);
+        const sessionNum = sessionMatch ? Number(sessionMatch[1]) : NaN;
+        if (!Number.isSafeInteger(sessionNum) || sessionNum <= 0) {
+          return { content: [{ type: 'text' as const, text: 'Invalid session anchor: must be S followed by a positive safe integer' }], isError: true };
+        }
         const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], { project, platformSource });
         if (sessions.length === 0) {
           return {
