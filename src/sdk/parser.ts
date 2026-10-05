@@ -295,7 +295,7 @@ function extractArrayElements(content: string, arrayName: string, elementName: s
   let elementMatch;
   while ((elementMatch = elementRegex.exec(arrayContent)) !== null) {
     const trimmed = decodeXmlReferences(elementMatch[1].trim());
-    if (trimmed) {
+    if (trimmed.trim()) {
       elements.push(trimmed);
     }
   }
