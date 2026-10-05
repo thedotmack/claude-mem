@@ -14,16 +14,22 @@ const source = Array.from({ length: 100 }, (_, owner) => `class Owner${owner} {\
  + Array.from({ length: 25 }, (_, method) => ` method${method}() { return ${method}; }\n`).join('') + '}\n').join('')
  + 'function finalEntryPoint() { return 42; }\n';
 
-test('native large-file hints are bounded and retain late root and qualified children', () => {
- const hint = formatAvailableSymbols(parseFile(source, 'Hints.ts'));
- expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(4096);
- expect(hint).toContain('finalEntryPoint (function)');
- expect(hint).toContain('Owner0.method0 (method)');
- expect(hint).toContain('Owner1.method0 (method)');
- expect(hint).toContain('more symbols omitted');
+const hintCapBytes = 1024;
+const marker = '  ... more symbols omitted; use smart_search to narrow the lookup.';
+
+test('native large-file hints stay within 1 KiB and lead with names like the missed one', () => {
+ const file = parseFile(source, 'Hints.ts');
+ // The 101 roots alone overflow the budget, so ranking is what keeps the late root.
+ const lateRoot = formatAvailableSymbols(file, 'finalEntry');
+ expect(Buffer.byteLength(lateRoot)).toBeLessThanOrEqual(hintCapBytes);
+ expect(lateRoot.split('\n')[0]).toBe('  - finalEntryPoint (function)');
+ expect(lateRoot.endsWith(marker)).toBe(true);
+ const wrongOwner = formatAvailableSymbols(file, 'Missing.method0');
+ expect(Buffer.byteLength(wrongOwner)).toBeLessThanOrEqual(hintCapBytes);
+ expect(wrongOwner.split('\n').slice(0, 2)).toEqual(['  - Owner0.method0 (method)', '  - Owner1.method0 (method)']);
 }, 120000);
 
-test('real MCP failed lookups return bounded useful hints and retain qualified unfold', async () => {
+test('real MCP failed lookups return a 1 KiB hint with the likely correction and retain qualified unfold', async () => {
  const dir = mkdtempSync(join(tmpdir(), 'cm-bounded-mcp-hints-'));
  const client = new Client({ name: 'owned-native-hint-test', version: '1.0.0' }, { capabilities: {} });
  const transport = new StdioClientTransport({
@@ -34,42 +40,40 @@ test('real MCP failed lookups return bounded useful hints and retain qualified u
    CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_TELEMETRY_ENABLED: 'false' },
   stderr: 'pipe',
  });
+ const textOf = (result: Awaited<ReturnType<typeof client.callTool>>) =>
+  (result.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
  try {
   writeFileSync(join(dir, 'Hints.ts'), source);
   await client.connect(transport);
-  const missing = await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Hints.ts', symbol_name: 'missing' } });
-  const text = (missing.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
-  expect(Buffer.byteLength(text)).toBeLessThan(4300);
-  expect(text).toContain('finalEntryPoint (function)');
-  expect(text).toContain('Owner1.method0 (method)');
-  const found = await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Hints.ts', symbol_name: 'Owner1.method0' } });
-  const body = (found.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
-  expect(body).toContain('method0() { return 0; }');
+  const missing = textOf(await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Hints.ts', symbol_name: 'Missing.method0' } }));
+  // The hint plus the one-line "not found" header.
+  expect(Buffer.byteLength(missing)).toBeLessThan(hintCapBytes + 128);
+  expect(missing).toContain('Available symbols:\n  - Owner0.method0 (method)\n  - Owner1.method0 (method)\n');
+  const found = textOf(await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Hints.ts', symbol_name: 'Owner1.method0' } }));
+  expect(found).toContain('method0() { return 0; }');
   writeFileSync(join(dir, 'Crowded.ts'), crowded);
-  const crowdedMiss = await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Crowded.ts', symbol_name: 'missing' } });
-  const crowdedText = (crowdedMiss.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
-  expect(Buffer.byteLength(crowdedText)).toBeLessThan(4300);
-  expect(crowdedText).toContain('C199 (class)');
-  expect(crowdedText).toContain('C0.m0 (method)');
+  const crowdedMiss = textOf(await client.callTool({ name: 'smart_unfold', arguments: { file_path: 'Crowded.ts', symbol_name: 'C199.render' } }));
+  expect(Buffer.byteLength(crowdedMiss)).toBeLessThan(hintCapBytes + 128);
+  expect(crowdedMiss).toContain('Available symbols:\n  - C199 (class)\n');
  } finally { await client.close(); await transport.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
 
-test('native hints retain qualified methods alongside 200 or more roots', () => {
+test('native hints rank a qualified method or a late root first alongside 200 or more roots', () => {
  for (const count of [200, 205]) {
   const source = 'class C0 { run() { return 0; } }\n'
    + Array.from({ length: count - 1 }, (_, i) => `class C${i + 1} {}\n`).join('');
-  const hint = formatAvailableSymbols(parseFile(source, 'Crowded.ts'));
-  expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(4096);
-  expect(hint).toContain('C0.run (method)');
-  expect(hint).toContain('C198 (class)');
-  expect(hint.split('\n').filter(line => line.startsWith('  - ')).length).toBeLessThanOrEqual(512);
-  expect(hint).toContain(`C${count - 1} (class)`);
+  const file = parseFile(source, 'Crowded.ts');
+  for (const [missedName, firstLine] of [['Missing.run', '  - C0.run (method)'], [`C${count - 1}.render`, `  - C${count - 1} (class)`]]) {
+   const hint = formatAvailableSymbols(file, missedName);
+   expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(hintCapBytes);
+   expect(hint.split('\n')[0]).toBe(firstLine);
+  }
  }
 }, 120000);
 
- test('native hints retain later roots alongside methods when bytes remain', () => {
-  const hint = formatAvailableSymbols(parseFile(crowded, 'Crowded.ts'));
-  expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(4096);
-  expect(hint).toContain('C199 (class)');
-  expect(hint).toContain('C0.m0 (method)');
- }, 120000);
+test('a miss that resembles nothing lists roots in file order within 1 KiB', () => {
+ const hint = formatAvailableSymbols(parseFile(crowded, 'Crowded.ts'), 'missing');
+ expect(Buffer.byteLength(hint)).toBeLessThanOrEqual(hintCapBytes);
+ expect(hint.split('\n').slice(0, 3)).toEqual(['  - C0 (class)', '  - C1 (class)', '  - C2 (class)']);
+ expect(hint.endsWith(marker)).toBe(true);
+}, 120000);

@@ -820,7 +820,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
-        const available = formatAvailableSymbols(parsed);
+        const available = formatAvailableSymbols(parsed, args.symbol_name);
         return {
           content: [{
             type: 'text' as const,

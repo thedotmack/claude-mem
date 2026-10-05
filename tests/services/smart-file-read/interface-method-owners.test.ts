@@ -21,8 +21,7 @@ describe('interface method ownership',()=>{
   },120000);
 });
 
- test('offers qualified child methods in a failed lookup hint',()=>{
-  const hint=formatAvailableSymbols(parseFile(source,'Stores.java'));
-  expect(hint).toContain('Local.reset (method)');
-  expect(hint).toContain('Remote.reset (method)');
+ test('offers qualified child methods first in a failed lookup hint',()=>{
+  const hint=formatAvailableSymbols(parseFile(source,'Stores.java'),'Missing.reset');
+  expect(hint.split('\n')).toEqual(['  - Local.reset (method)','  - Remote.reset (method)','  - Local (interface)','  - Remote (interface)']);
  },120000);

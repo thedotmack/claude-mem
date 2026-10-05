@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -268,31 +268,6 @@ export async function searchCodebase(
     totalSymbolsFound,
     tokenEstimate,
   };
-}
-
-function matchScore(text: string, queryParts: string[]): number {
-  let score = 0;
-  for (const part of queryParts) {
-    if (text === part) {
-      score += 10; 
-    } else if (text.includes(part)) {
-      score += 5; 
-    } else {
-      let ti = 0;
-      let matched = 0;
-      for (const ch of part) {
-        const idx = text.indexOf(ch, ti);
-        if (idx !== -1) {
-          matched++;
-          ti = idx + 1;
-        }
-      }
-      if (matched === part.length) {
-        score += 1; 
-      }
-    }
-  }
-  return score;
 }
 
 function countSymbols(file: FoldedFile): number {
