@@ -28,11 +28,14 @@ jobs:
     name: native Windows report dates and UTF-8 export
     runs-on: windows-2022
     timeout-minutes: 5
+    strategy:
+      matrix:
+        python-version: ['3.9', '3.13']
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.13'
+          python-version: ${{ matrix.python-version }}
       # Windows Python has no system IANA database; report fixtures use PT.
       - name: Install the report timezone prerequisite
         run: python -m pip install tzdata==2026.2
@@ -44,6 +47,8 @@ jobs:
           $distributions = @('plugin', 'claude-mem-cursor', 'claude-mem-grok-bot', 'cowork', 'openclaw')
           foreach ($distribution in $distributions) {
             $tests = "$distribution/skills/agent-cost-report/scripts/tests"
-            python -m unittest discover -s $tests -p 'test_render*.py'
+            python -m unittest discover -v -s $tests -p 'test_render*.py'
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            python -m unittest discover -v -s $tests -p 'test_measure.py'
             if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           }
