@@ -84,14 +84,18 @@ function mapMemorySourceRow(row: MemorySourceRow): MemorySource {
 }
 
 function buildFtsQuery(query: string): string {
-  return query
-    .normalize('NFKC')
+  const tokenQuery = (text: string): string => text
     .trim()
     .split(/\s+/)
     .flatMap(token => token.split(/[^\p{L}\p{N}_]+/gu))
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
+  // unicode61 keeps compatibility characters in stored documents. Search
+  // both forms so exact fullwidth/ligature text and existing normalized
+  // queries against ordinary ASCII text remain reachable.
+  const queries = [...new Set([query, query.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
+  return queries.length > 1 ? queries.map(text => `(${text})`).join(' OR ') : queries[0] ?? '';
 }
 
 export class MemoryItemsRepository {

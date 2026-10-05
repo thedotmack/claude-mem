@@ -61,6 +61,28 @@ describe('server REST API v1 routes', () => {
     mock.restore();
   });
 
+  it.each(['ＡＢＣ', 'ﬁles'])('searches the stored Unicode token form: %s', async title => {
+    const projectResponse = await post('/v1/projects', { name: 'Unicode memory' });
+    const { project } = await projectResponse.json();
+    const memoryResponse = await post('/v1/memories', {
+      projectId: project.id, kind: 'manual', type: 'note', title,
+    });
+    expect(memoryResponse.status).toBe(201);
+    const { memory } = await memoryResponse.json();
+
+    const searchResponse = await post('/v1/search', { projectId: project.id, query: title });
+    expect(searchResponse.status).toBe(200);
+    const { memories } = await searchResponse.json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual([memory.id]);
+  });
+
+  it.each([['ABC', 'ＡＢＣ'], ['files', 'ﬁles']])('preserves compatibility searches for %s using %s', async (title, query) => {
+    const { project } = await (await post('/v1/projects', { name: 'Compatibility search' })).json();
+    const { memory } = await (await post('/v1/memories', { projectId: project.id, kind: 'manual', type: 'note', title })).json();
+    const { memories } = await (await post('/v1/search', { projectId: project.id, query })).json();
+    expect(memories.map((row: { id: string }) => row.id)).toEqual([memory.id]);
+  });
+
   it('creates projects, sessions, events, memories, and searchable context', async () => {
     const projectResponse = await post('/v1/projects', {
       name: 'Claude Mem',
