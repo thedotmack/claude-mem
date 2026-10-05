@@ -133,6 +133,8 @@ interface OmpSession {
   // resolves true once the worker recorded that prompt. Observations and the
   // summary wait on it so they land after the prompts they belong to.
   lastInit?: Promise<boolean>;
+  // All observations dispatched for this identity, including HTTP still in flight.
+  observations?: Promise<void>;
   // The worker recorded at least one prompt for this id (finalize needs one).
   anchored: boolean;
   // The worker skipped this checkout as excluded: nothing more is sent.
@@ -226,13 +228,13 @@ async function recordPrompt(target: OmpSession, body: Record<string, unknown>): 
   }
 }
 
-// Finalize a session the worker recorded a prompt for. Chained after its latest
-// init, so the summary never overtakes the prompts it summarizes; a session
+// Finalize a session the worker recorded a prompt for. Wait for its latest
+// init and all dispatched observations, so the summary cannot overtake them; a session
 // with no recorded prompt (every init failed, or the checkout is excluded) is
 // left alone.
 function finalize(target: OmpSession | undefined, assistantMessage: string): void {
   if (!target) return;
-  void (target.lastInit ?? Promise.resolve(false)).then(() => {
+  void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(() => {
     if (!target.anchored || target.excluded) return;
     return post("/api/sessions/summarize", {
       contentSessionId: target.id,
@@ -314,10 +316,11 @@ export default function claudeMemBridge(pi: HookAPI): void {
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
 
-    void (target.lastInit ?? Promise.resolve(true)).then(recorded => {
+    const observation = (target.lastInit ?? Promise.resolve(true)).then(recorded => {
       if (!recorded || target.excluded) return;
       return post("/api/sessions/observations", body);
     });
+    target.observations = Promise.all([target.observations, observation]).then(() => {});
   });
 
   // agent_end: remember the last assistant message so summarize has an anchor.

@@ -9,6 +9,7 @@ import { ingestObservation, ingestSummarize, setIngestContext } from '../../../s
 import { SettingsDefaultsManager } from '../../../src/shared/SettingsDefaultsManager.js';
 
 const eventName=process.argv[2];
+const delayed=process.argv[3]==='delayed';
 const dataDir=process.env.CLAUDE_MEM_DATA_DIR!;
 const cwd=join(dataDir,'owned-project');mkdirSync(cwd,{recursive:true});
 const store=new SessionStore(':memory:');
@@ -28,7 +29,7 @@ const server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
   let status=200;
   route.handleSessionInitByClaudeId({body,query:{},get(){return undefined}}, {headersSent:false,status(code:number){status=code;return this},json(value:any){resolve(Response.json(value,{status}))}});
  });
- if(path==='/api/sessions/observations')return Response.json(await ingestObservation({contentSessionId:body.contentSessionId,platformSource:body.platformSource,cwd:body.cwd,toolName:body.tool_name,toolInput:body.tool_input,toolResponse:body.tool_response}));
+ if(path==='/api/sessions/observations'){if(delayed)await Bun.sleep(100);return Response.json(await ingestObservation({contentSessionId:body.contentSessionId,platformSource:body.platformSource,cwd:body.cwd,toolName:body.tool_name,toolInput:body.tool_input,toolResponse:body.tool_response}));}
  if(path==='/api/sessions/summarize')return Response.json(await ingestSummarize({contentSessionId:body.contentSessionId,platformSource:body.platformSource,lastAssistantMessage:body.last_assistant_message}));
  throw new Error(`Unexpected route ${path}`);
 }});
@@ -42,7 +43,8 @@ try{
  await hooks.get('session_start')?.({}, {cwd});
  await hooks.get('before_agent_start')?.({prompt:'first owned prompt'},{cwd});
  await hooks.get('tool_result')?.({toolName:'read',input:{path:'first.ts'},content:'first owned file'},{cwd});
- await waitFor('/api/sessions/observations',1);
+ if(!delayed)await waitFor('/api/sessions/observations',1);
+ else await waitFor('/api/sessions/init',1);
  const firstContext=await hooks.get('context')?.({messages:[]},{cwd});assert.equal(firstContext.messages[0].content,'owned memory 1');
  await hooks.get('agent_end')?.({messages:[{role:'assistant',content:'first owned answer'}]},{cwd});
  await hooks.get(eventName)?.(eventName==='session_switch'?{reason:'new',previousSessionFile:'owned-old.jsonl'}:{reason:'branch',entryId:'owned-entry',previousSessionFile:'owned-old.jsonl'},{cwd});
@@ -59,6 +61,11 @@ try{
  await waitFor('/api/sessions/summarize',2);
  const summaries=requests.filter(r=>r.path==='/api/sessions/summarize');
  assert.deepEqual(summaries.map(r=>r.body.last_assistant_message),['first owned answer','']);
+ const drainDeadline=performance.now()+3000;
+ while(manager.getTotalQueueDepth()<4 && performance.now()<drainDeadline)await Bun.sleep(5);
+ const queued=manager.getMessageBuffer().peekTypes(rows[0].id).map(message=>message.message_type);
+ console.log('oldQueue',JSON.stringify(queued));
+ assert.deepEqual(queued,['observation','summarize'],'summary must wait for outstanding tool observations');
  const prompts:any[]=store.db.query('SELECT prompt_number,prompt_text FROM user_prompts ORDER BY id').all();
  assert.deepEqual(prompts.map(r=>r.prompt_number),[1,1]);
  assert.ok(rows.every(r=>r.platform_source==='omp'));
