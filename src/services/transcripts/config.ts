@@ -112,7 +112,20 @@ export function loadTranscriptWatchConfig(path = DEFAULT_CONFIG_PATH): Transcrip
     throw new Error(`Transcript watch config not found: ${resolvedPath}`);
   }
   const parsed = readJsonFileWithBom<TranscriptWatchConfig>(resolvedPath);
-  if (!parsed.version || !parsed.watches) {
+  const validSchema = (schema: unknown): schema is TranscriptSchema => {
+    if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) return false;
+    const value = schema as Partial<TranscriptSchema>;
+    return typeof value.name === 'string' && value.name.trim().length > 0 && Array.isArray(value.events)
+      && value.events.every(event => typeof event === 'object' && event !== null
+        && typeof event.name === 'string' && typeof event.action === 'string');
+  };
+  const validWatches = Array.isArray(parsed?.watches) && parsed.watches.every(watch =>
+    typeof watch === 'object' && watch !== null
+      && typeof watch.name === 'string' && watch.name.trim().length > 0
+      && typeof watch.path === 'string' && watch.path.trim().length > 0
+      && (typeof watch.schema === 'string' && watch.schema.trim().length > 0 || validSchema(watch.schema))
+  );
+  if (parsed?.version !== 1 || !validWatches) {
     throw new Error(`Invalid transcript watch config: ${resolvedPath}`);
   }
   if (!parsed.stateFile) {
