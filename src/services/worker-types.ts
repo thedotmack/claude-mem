@@ -150,6 +150,12 @@ export interface ActiveSession {
    */
   lastContextTokens?: number;
   /**
+   * Random id of the current observer generation, minted at every generation
+   * start (openObserverGeneration), so a recycled or restarted conversation
+   * gets a new one. OpenRouter-family requests send it as `trace.trace_id`.
+   */
+  observerGenerationId?: string;
+  /**
    * The finish reason an HTTP provider reported for the reply about to be
    * processed ('length' / 'MAX_TOKENS' = cut off at the output-token cap).
    * processAgentResponse consumes and clears it, so it never outlives the

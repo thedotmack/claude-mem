@@ -482,20 +482,22 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
-    const sessionStart = parsed.hooks.SessionStart[0].hooks;
+    const sessionStart = parsed.hooks.SessionStart.flatMap((group: any) => group.hooks);
+    const workerStart = sessionStart.find((hook: any) => hook.command.includes('"$_P/scripts/worker-service.cjs" start'));
+    const context = sessionStart.find((hook: any) => hook.command.includes(' hook claude-code context'));
     const userPromptSubmit = parsed.hooks.UserPromptSubmit[0].hooks[0];
 
     expect(sessionStart).toHaveLength(2);
     // `start` only prints a status envelope, and the context hook lazily
     // spawns the worker itself, so session start need not wait for it.
-    expect(sessionStart[0].command).toContain(' start');
-    expect(sessionStart[0].async).toBe(true);
+    expect(workerStart.command).toContain(' start');
+    expect(workerStart.async).toBe(true);
     // `context` must stay synchronous: Claude Code hands an async hook's
     // additionalContext / systemMessage to the model on the next turn and never
     // shows the systemMessage to the user, which would hide the startup
     // timeline, the viewer link and the trial notice.
-    expect(sessionStart[1].command).toContain(' hook claude-code context');
-    expect(sessionStart[1]).not.toHaveProperty('async');
+    expect(context.command).toContain(' hook claude-code context');
+    expect(context).not.toHaveProperty('async');
     expect(userPromptSubmit.command).toContain(' hook claude-code session-init');
     // Keep prompt-row persistence ordered before downstream hooks consume it.
     expect(userPromptSubmit).not.toHaveProperty('async');
@@ -542,7 +544,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     // causing it to ignore suppressOutput and render the raw JSON at the top of
     // every session.
     'SessionStart.0.0': claudeHook(['start']),
-    'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+    'SessionStart.1.0': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': {
       command: claudeHook(['hook', 'claude-code', 'session-init']),
       timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
@@ -717,7 +719,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       // so the shim above would have caught a fast path that never engaged.
       rmSync(cacheScanMarker, { force: true });
       const [{ command: sessionStartCommand }] = claudeCommands().filter(
-        ({ dottedPath }) => dottedPath === 'SessionStart.0.1',
+        ({ dottedPath }) => dottedPath === 'SessionStart.1.0',
       );
       shellEval(instrument(sessionStartCommand), {
         CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),
