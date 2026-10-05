@@ -46,6 +46,17 @@ for (const filename of ['exports.js', 'exports.ts', 'exports.tsx']) {
  }, 120000);
 }
 
+for (const filename of ['decorated.js', 'decorated.ts', 'decorated.tsx']) {
+ test(`keeps export keywords after decorators in ${filename}`, () => {
+  const file = parseFile('@Injectable()\nexport class FooService {}', filename);
+  expect(file.symbols[0].signature).toBe('export class FooService');
+  const multiline = parseFile("@Component({\n  selector: 'x',\n})\nexport default class Widget {}", filename);
+  expect(multiline.symbols[0].signature).toBe('export default class Widget');
+  const sameLine = parseFile('@Dec() /* note */ export class Inline {}', filename);
+  expect(sameLine.symbols[0].signature).toBe('export class Inline');
+ }, 120000);
+}
+
 test('preserves multiline and commented export prefixes', () => {
  const file = parseFile('const café = 1; export default /* public entry */ function greet(\n value\n) { return value; }', 'multiline-export.js');
  expect(file.symbols[0].signature).toBe('export default function greet( value )');

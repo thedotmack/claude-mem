@@ -787,7 +787,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       signature = lines[startRow]?.trim() || name;
     } else {
       // Export wrappers start before their direct declaration. Preserve only
-      // that prefix; a containing exported class must not prefix its methods.
+      // the export keywords that end that prefix: decorators belong to the
+      // wrapper (`@Injectable() export class`), and a containing exported
+      // class must not prefix its methods.
       let exportPrefix = "";
       if (kind !== "method") {
         for (const capture of exportRanges) {
@@ -795,8 +797,9 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
           const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
             .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ")
             .replace(/\s+/g, " ").trim();
-          if (/^export(?: default)?(?: declare)?$/.test(prefix)) {
-            exportPrefix = `${prefix} `;
+          const exportKeywords = prefix.match(/(?:^|\s)(export(?: default)?(?: declare)?)$/);
+          if (exportKeywords) {
+            exportPrefix = `${exportKeywords[1]} `;
             break;
           }
         }
