@@ -1,6 +1,6 @@
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import { Database, type SQLQueryBindings, type Statement } from 'bun:sqlite';
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { DATA_DIR, DB_PATH, ensureDir, OBSERVER_SESSIONS_PROJECT, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import type { ProjectKeySource } from '../../utils/project-name.js';
@@ -47,6 +47,7 @@ import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources }
 import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
+import { stripMemoryTags } from '../../utils/tag-stripping.js';
 import { applySqliteConnectionPragmas } from './connection.js';
 import { streamRows } from './stream-rows.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
@@ -244,6 +245,19 @@ export class SessionStore {
     this.ensureHookSpoolConsumedTable();
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
+    this.ensureNativePromptIdentity();
+  }
+
+  /** Local host retry identity. Runs after every legacy user_prompts rebuild. */
+  private ensureNativePromptIdentity(): void {
+    this.db.transaction(() => {
+      const columns = this.db.query('PRAGMA table_info(user_prompts)').all() as TableColumnInfo[];
+      for (const column of ['native_prompt_id', 'native_prompt_hash']) {
+        if (!columns.some(existing => existing.name === column)) this.db.run(`ALTER TABLE user_prompts ADD COLUMN ${column} TEXT`);
+      }
+      this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_native_identity
+        ON user_prompts(session_db_id, native_prompt_id) WHERE native_prompt_id IS NOT NULL`);
+    }).immediate();
   }
 
   private getIndexColumns(indexName: string): string[] {
@@ -3488,7 +3502,7 @@ export class SessionStore {
     return mutation;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number): number {
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string): number {
     const now = new Date();
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
@@ -3496,12 +3510,41 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts
-      (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
-      VALUES (?, ?, ?, ?, ?, ?)
+      (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch, native_prompt_id, native_prompt_hash)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(resolvedSessionDbId, contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch);
+    const result = stmt.run(resolvedSessionDbId, contentSessionId, promptNumber, storedPromptText, now.toISOString(), nowEpoch, nativePromptId ?? null, nativePromptHash ?? null);
     return result.lastInsertRowid as number;
+  }
+
+  /** The native key claims one prompt atomically, including across worker restarts.
+   * Equal text with a different key is a new real turn. No time window applies.
+   * It is scoped by the DB session (platform_source + content_session_id).
+   */
+  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText): {
+    id: number; promptNumber: number; duplicate: boolean;
+  } {
+    if (!nativePromptId || nativePromptId.length > 256 || /[\s\x00-\x1f\x7f]/.test(nativePromptId)) {
+      throw new Error('Invalid native prompt identity');
+    }
+    const text = normalizeStoredPromptText(promptText);
+    // Compare the entire cleaned ask, before storage/HTTP truncation. Equal
+    // 4,000-character previews must not hide different bodies on a stale retry.
+    const promptHash = createHash('sha256').update(stripMemoryTags(identityPromptText).trim()).digest('hex');
+    return this.db.transaction(() => {
+      const existing = this.db.prepare(`SELECT id, prompt_number, native_prompt_hash FROM user_prompts
+        WHERE session_db_id = ? AND native_prompt_id = ?`).get(sessionDbId, nativePromptId) as
+        { id: number; prompt_number: number; native_prompt_hash: string | null } | null;
+      if (existing) {
+        if (existing.native_prompt_hash !== promptHash) throw new Error('Native prompt identity was reused with different text');
+        return { id: existing.id, promptNumber: existing.prompt_number, duplicate: true };
+      }
+      const promptNumber = this.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) + 1;
+      this.reopenCompletedSession(sessionDbId);
+      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash);
+      return { id, promptNumber, duplicate: false };
+    }).immediate();
   }
 
   getUserPrompt(contentSessionId: string, promptNumber: number, sessionDbId?: number): string | null {
