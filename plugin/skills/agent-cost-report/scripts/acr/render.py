@@ -499,6 +499,10 @@ def render_file(inp, outdir, print_mode=False):
     return path
 
 
+CHROME_TIMEOUT_S = 150       # the whole print, from Chrome's start
+CHROME_EXIT_GRACE_S = 5      # how long Chrome may keep running once the PDF is whole (Chrome on macOS never exits by itself)
+
+
 def _default_chrome():
     """The browser behind the default `google-chrome`: that name on PATH, else Chrome where it is normally
     installed off PATH. Windows: `chrome` on PATH, then Program Files and LocalAppData; macOS: the app
@@ -522,7 +526,7 @@ def _default_chrome():
 def pdf(outdir, chrome="google-chrome"):
     """google-chrome --headless=new ... --print-to-pdf; if Chrome is missing: 'PDF skipped, HTML is canonical' (SKILL.md:165).
     An explicit `chrome` is used as given; only the default also looks where Chrome is installed (_default_chrome)."""
-    import os, shutil, subprocess
+    import os, shutil
     from pathlib import Path
     src = os.path.join(outdir, "report.print.html")
     if not os.path.exists(src):
@@ -533,10 +537,47 @@ def pdf(outdir, chrome="google-chrome"):
     if not exe: return None, "PDF skipped, HTML is canonical (google-chrome not found)"
     out = os.path.join(outdir, "report.pdf")
     profile = os.path.join(os.path.abspath(outdir), ".chrome-profile")   # a private profile; the box has no D-Bus session
+    printed = os.path.join(profile, "report.pdf")                       # moved to `out` only when whole, so a failed print keeps the last PDF
+    shutil.rmtree(profile, ignore_errors=True); os.makedirs(profile, exist_ok=True)
     cmd = [exe, "--headless=new", "--no-sandbox", "--disable-gpu", "--disable-dev-shm-usage", f"--user-data-dir={profile}", "--timeout=60000",
-           f"--print-to-pdf={out}", "--no-pdf-header-footer", Path(src).resolve().as_uri()]   # file:///C:/... on Windows; spaces and '#' escaped
-    try: r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=150)   # a locale-codec decode error would leave r.stderr None
-    except subprocess.TimeoutExpired: return None, "PDF skipped, HTML is canonical (chrome timed out)"
+           f"--print-to-pdf={printed}", "--no-pdf-header-footer", Path(src).resolve().as_uri()]   # file:///C:/... on Windows; spaces and '#' escaped
+    try:
+        rc, err = _print_pdf(cmd, printed)
+        if _pdf_complete(printed):
+            try: os.replace(printed, out)
+            except OSError as ex: return None, f"PDF skipped, HTML is canonical (could not write {out}: {ex})"
+            return out, f"pdf: {out}"
     finally: shutil.rmtree(profile, ignore_errors=True)
-    if r.returncode != 0 or not os.path.exists(out): return None, f"PDF skipped, HTML is canonical (chrome exit {r.returncode}: {r.stderr.strip()[-200:]})"
-    return out, f"pdf: {out}"
+    if rc is None: return None, "PDF skipped, HTML is canonical (chrome timed out)"
+    return None, f"PDF skipped, HTML is canonical (chrome exit {rc}: {err.strip()[-200:]})"
+
+
+def _pdf_complete(path):
+    """True once `path` is a whole PDF: it starts with %PDF- and its last bytes hold the %%EOF marker."""
+    try:
+        with open(path, "rb") as fh:
+            head = fh.read(5); fh.seek(0, 2); fh.seek(max(0, fh.tell() - 64)); tail = fh.read()
+    except OSError: return False
+    return head == b"%PDF-" and b"%%EOF" in tail
+
+
+def _print_pdf(cmd, printed):
+    """Runs Chrome until it exits, or until CHROME_EXIT_GRACE_S after `printed` is a whole PDF (Chrome on macOS writes
+    the PDF, then keeps running), or until CHROME_TIMEOUT_S. Returns (exit code, or None when it timed out; stderr text).
+    stderr goes to an anonymous file, not a pipe: Chrome's helper processes can hold a pipe open after Chrome exits."""
+    import subprocess, tempfile, time
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err)
+        start = time.monotonic(); done_at = None; timed_out = False
+        while proc.poll() is None:
+            now = time.monotonic()
+            if done_at is None and _pdf_complete(printed): done_at = now
+            timed_out = now - start > CHROME_TIMEOUT_S
+            if timed_out or (done_at is not None and now - done_at > CHROME_EXIT_GRACE_S):
+                proc.terminate()
+                try: proc.wait(timeout=10)
+                except subprocess.TimeoutExpired: proc.kill(); proc.wait()
+                break
+            time.sleep(0.2)
+        err.seek(0)
+        return (None if timed_out else proc.returncode), err.read().decode("utf-8", errors="replace")

@@ -4,7 +4,6 @@ import json
 import os
 import re
 import shutil
-import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -94,27 +93,54 @@ def posix(path):
 
 
 MAC_APP = "Google Chrome.app/Contents/MacOS/Google Chrome"
+PDF = b"%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n<<>>\n%%EOF\n"
+
+
+class FakeChrome:
+    """subprocess.Popen stand-in: prints `pdf` to the --print-to-pdf= path (nothing when None), writes `stderr`, then
+    exits with `exit_code`, or, like Chrome on macOS, keeps running until it is terminated (`exits=False`)."""
+    def __init__(self, pdf=PDF, stderr=b"", exit_code=0, exits=True):
+        self.pdf, self.stderr, self.exit_code, self.exits = pdf, stderr, exit_code, exits
+        self.cmds, self.terminated, self.returncode = [], False, None
+
+    def __call__(self, cmd, stdout=None, stderr=None):
+        self.cmds.append(cmd); self.returncode = None
+        if self.pdf is not None:
+            with open(next(a for a in cmd if a.startswith("--print-to-pdf="))[len("--print-to-pdf="):], "wb") as fh: fh.write(self.pdf)
+        stderr.write(self.stderr)
+        return self
+
+    def poll(self):
+        if self.returncode is None and self.exits: self.returncode = self.exit_code
+        return self.returncode
+
+    def wait(self, timeout=None):
+        return self.poll()
+
+    def terminate(self):
+        self.terminated, self.returncode = True, -15
+
+    kill = terminate
 
 
 class ChromeLookup(unittest.TestCase):
-    """pdf()'s default browser lookup, one platform per case, on every OS: sys.platform, PATH, the install
-    check and the Chrome process are patched, so no browser runs."""
+    """pdf() on every OS with sys.platform, PATH, the install check and the Chrome process patched: the default
+    lookup per platform, and how a Chrome that exits, fails, hangs or keeps running after printing is handled."""
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="acr pdf #")          # a space and a '#' must survive into the file URL
         self.addCleanup(shutil.rmtree, self.tmp, True)
         with open(os.path.join(self.tmp, "report.print.html"), "w", encoding="utf-8") as fh: fh.write("<p>report</p>")
 
-    def pdf(self, platform, on_path=(), installed=(), env=None, chrome="google-chrome"):
-        calls = []
-        def chrome_run(cmd, **kw):
-            calls.append((cmd, kw))
-            out = next(a for a in cmd if a.startswith("--print-to-pdf="))[len("--print-to-pdf="):]
-            with open(out, "wb") as fh: fh.write(b"%PDF-1.4")
-            return subprocess.CompletedProcess(cmd, 0, "", "")
+    def pdf(self, platform, on_path=(), installed=(), env=None, chrome="google-chrome", fake=None):
+        fake = fake or FakeChrome()
         with patch("sys.platform", platform), patch("shutil.which", lambda name: "/usr/bin/" + name if name in on_path else None), \
-                patch("os.path.isfile", lambda p: posix(p) in installed), patch.dict(os.environ, env or {}), patch("subprocess.run", chrome_run):
+                patch("os.path.isfile", lambda p: posix(p) in installed), patch.dict(os.environ, env or {}), patch("subprocess.Popen", fake), \
+                patch.object(render, "CHROME_EXIT_GRACE_S", 0.05), patch.object(render, "CHROME_TIMEOUT_S", 0.3):
             path, msg = render.pdf(self.tmp, chrome=chrome)
-        return path, msg, [posix(cmd[0]) for cmd, _ in calls], calls
+        return path, msg, [posix(cmd[0]) for cmd in fake.cmds], fake
+
+    def mac(self, **kw):
+        return self.pdf("darwin", installed=("/Applications/" + MAC_APP,), **kw)
 
     def test_linux_default_is_google_chrome_on_path(self):
         self.assertEqual(self.pdf("linux", on_path=("google-chrome",))[2], ["/usr/bin/google-chrome"])
@@ -122,7 +148,7 @@ class ChromeLookup(unittest.TestCase):
         self.assertEqual((path, exes), (None, [])); self.assertIn("PDF skipped, HTML is canonical", msg)
 
     def test_macos_default_finds_the_app_bundle_off_path(self):
-        self.assertEqual(self.pdf("darwin", installed=("/Applications/" + MAC_APP,))[2], ["/Applications/" + MAC_APP])
+        self.assertEqual(self.mac()[2], ["/Applications/" + MAC_APP])
         user_app = posix(os.path.join(os.path.expanduser("~"), "Applications", *MAC_APP.split("/")))
         self.assertEqual(self.pdf("darwin", installed=(user_app,))[2], [user_app])
         self.assertEqual(self.pdf("darwin", on_path=("google-chrome",), installed=("/Applications/" + MAC_APP,))[2], ["/usr/bin/google-chrome"])
@@ -134,16 +160,31 @@ class ChromeLookup(unittest.TestCase):
         self.assertEqual(self.pdf("win32", on_path=("chrome",), installed=(local,), env=env)[2], ["/usr/bin/chrome"])
 
     def test_explicit_chrome_is_never_substituted(self):
-        path, msg, exes, _ = self.pdf("darwin", installed=("/Applications/" + MAC_APP,), chrome="no-such-browser-xyz")
+        path, msg, exes, _ = self.mac(chrome="no-such-browser-xyz")
         self.assertEqual((path, exes), (None, [])); self.assertIn("PDF skipped", msg)
 
-    def test_chrome_gets_a_file_uri_and_decodes_stderr_as_utf8(self):
-        path, msg, _, calls = self.pdf("darwin", installed=("/Applications/" + MAC_APP,))
+    def test_chrome_gets_a_file_uri(self):
+        path, msg, _, fake = self.mac()
         self.assertEqual(msg, f"pdf: {path}")
-        (cmd, kw), = calls
-        self.assertEqual(cmd[-1], Path(self.tmp, "report.print.html").resolve().as_uri())
-        self.assertIn("%23", cmd[-1]); self.assertNotIn(" ", cmd[-1])      # '#' would start a URL fragment
-        self.assertEqual((kw.get("encoding"), kw.get("errors")), ("utf-8", "replace"))
+        url = fake.cmds[0][-1]
+        self.assertEqual(url, Path(self.tmp, "report.print.html").resolve().as_uri())
+        self.assertIn("%23", url); self.assertNotIn(" ", url)              # a raw '#' would start a URL fragment
+
+    def test_chrome_that_keeps_running_after_printing_is_stopped(self):
+        path, msg, _, fake = self.mac(fake=FakeChrome(exits=False))      # Chrome on macOS writes the PDF, then never exits
+        self.assertEqual((path, msg, fake.terminated), (os.path.join(self.tmp, "report.pdf"), f"pdf: {path}", True))
+        with open(path, "rb") as fh: self.assertEqual(fh.read(), PDF)
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".chrome-profile")))
+
+    def test_failed_print_reports_stderr_and_keeps_the_last_pdf(self):
+        with open(os.path.join(self.tmp, "report.pdf"), "wb") as fh: fh.write(PDF)
+        path, msg, _, _ = self.mac(fake=FakeChrome(pdf=b"%PDF-1.4 cut short", stderr=b"\xff\xfe bad flag \xe2\x80\x94 exiting", exit_code=1))
+        self.assertIsNone(path); self.assertIn("PDF skipped, HTML is canonical (chrome exit 1:", msg); self.assertIn("bad flag — exiting", msg)
+        with open(os.path.join(self.tmp, "report.pdf"), "rb") as fh: self.assertEqual(fh.read(), PDF)   # not replaced by a partial print
+
+    def test_chrome_that_never_prints_times_out(self):
+        path, msg, _, fake = self.mac(fake=FakeChrome(pdf=None, exits=False))
+        self.assertEqual((path, msg, fake.terminated), (None, "PDF skipped, HTML is canonical (chrome timed out)", True))
 
 
 class Excerpts(unittest.TestCase):
