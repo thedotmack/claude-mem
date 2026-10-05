@@ -244,7 +244,7 @@ ${f.stack??""}
       SELECT s.*, s.discovery_tokens
       FROM session_summaries s
       WHERE ${R.join(" AND ")}
-      ORDER BY s.created_at_epoch ${o==="date_asc"?"ASC":"DESC"}
+      ORDER BY s.created_at_epoch DESC
       ${E}
     `;a||O.push(n,i);let I=this.db.prepare(L),S=a?Be(I,O,D=>this.hasDirectChildFileSession(D,e),{limit:n,offset:i}):I.all(...O);return{observations:b,sessions:S}}findByType(e,t={}){let s=[],{limit:n=50,offset:i=0,orderBy:o="date_desc",...a}=t,_={...a,type:e},E=this.buildFilterClause(_,s,"o"),c=this.buildOrderClause(o,!1),d=`
       SELECT o.*, o.discovery_tokens
