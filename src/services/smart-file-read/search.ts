@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -148,11 +148,7 @@ export async function searchCodebase(
 
     const checkSymbols = (symbols: typeof parsed.symbols, parent?: string) => {
       for (const sym of symbols) {
-        // Explicit Ruby singleton receivers identify their actual object even
-        // when the definition is lexically inside another class. `self` stays
-        // relative to its containing class.
-        const qualifiedName = parsed.language === "ruby" && sym.name.includes(".") && !sym.name.startsWith("self.")
-          ? sym.name : parent ? `${parent}.${sym.name}` : sym.name;
+        const qualifiedName = qualifySymbolName(sym.name, parent, parsed.language, sym.kind);
         let score = 0;
         let reason = "";
 
@@ -187,7 +183,7 @@ export async function searchCodebase(
         }
 
         if (sym.children) {
-          checkSymbols(sym.children, sym.name);
+          checkSymbols(sym.children, qualifiedName);
         }
       }
     };

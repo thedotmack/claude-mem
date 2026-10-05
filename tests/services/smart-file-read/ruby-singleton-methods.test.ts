@@ -28,7 +28,7 @@ describe('Ruby singleton method outlines', () => {
     try {
       writeFileSync(join(dir, 'counter.rb'), SOURCE);
       const result = await searchCodebase(dir, 'reset');
-      expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toContain('Counter.self.reset');
+      expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toContain('Counter.reset');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   }, 120000);
 });
@@ -44,7 +44,7 @@ test('distinguishes the same-named instance and singleton method', async () => {
   try {
     writeFileSync(join(dir, 'owned.rb'), source);
     const result = await searchCodebase(dir, 'reset');
-    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter.reset', 'Counter.self.reset']);
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter#reset', 'Counter.reset']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
 
@@ -57,5 +57,22 @@ test('explicit receivers inside a class retain their actual receiver identity', 
     expect(result.matchingSymbols.map(symbol => symbol.symbolName).sort()).toEqual(['Counter.reset', 'Other.reset']);
     expect(unfoldSymbol(source, 'owned.rb', 'Counter.reset')).toContain(':explicit');
     expect(unfoldSymbol(source, 'owned.rb', 'Other.reset')).toContain(':other');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('search identities round trip same-named instance and explicit singleton methods', async () => {
+  const source = 'class Counter\n  def reset\n    :instance\n  end\n  def Counter.reset\n    :explicit_singleton\n  end\nend';
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-ruby-instance-singleton-'));
+  try {
+    writeFileSync(join(dir, 'owned.rb'), source);
+    const result = await searchCodebase(dir, 'reset');
+    expect(result.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter#reset', 'Counter.reset']);
+    for (const match of result.matchingSymbols) {
+      const unfolded = unfoldSymbol(source, 'owned.rb', match.symbolName);
+      const instance = match.lineStart === 1;
+      expect(unfolded).toContain(instance ? ':instance' : ':explicit_singleton');
+      expect(unfolded).not.toContain(instance ? ':explicit_singleton' : ':instance');
+    }
+    expect(unfoldSymbol(source, 'owned.rb', 'reset')).toContain(':instance');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
