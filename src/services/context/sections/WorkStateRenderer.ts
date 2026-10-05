@@ -102,9 +102,8 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
   const entriesByList = new Map<string, WorkStateEntry[]>();
   const listProjectCounts = new Map<string, number>();
   for (const entry of entries) {
-    // A task belongs to its source project's list. Reading adopted projects
-    // must not let their same-name tasks or list state overwrite local work.
-    const projectKey = entry.project.replace(/[A-Z]/g, character => character.toLowerCase());
+    // Checkout aliases share one list; adopted source projects keep separate lists.
+    const projectKey = (entry.scope_project ?? entry.project).replace(/[A-Z]/g, character => character.toLowerCase());
     const key = JSON.stringify([projectKey, entry.list_name]);
     let listEntries = entriesByList.get(key);
     if (!listEntries) {
@@ -119,7 +118,7 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
     .flatMap(listEntries => {
       const first = listEntries[0];
       const label = (listProjectCounts.get(first.list_name) ?? 0) > 1
-        ? `${first.list_name} [${first.project}]`
+        ? `${first.list_name} [${first.scope_project ?? first.project}]`
         : first.list_name;
       return renderWorkStateList(label, foldWorkStateList(listEntries), nowEpoch, includeClosed);
     });
