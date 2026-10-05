@@ -10,8 +10,11 @@ const fixture = String.raw`
   import { SessionStore } from './src/services/sqlite/SessionStore.ts';
   import { SyncApply } from './src/services/sync/SyncApply.ts';
   import { ChromaSync } from './src/services/sync/ChromaSync.ts';
+  import { ChromaMcpManager } from './src/services/sync/ChromaMcpManager.ts';
   const store = new SessionStore(':memory:');
   const chroma = new ChromaSync('revision-fixture');
+  chroma.ensureCollectionExists = async () => {};
+  ChromaMcpManager.getInstance().callTool = async () => ({ ids: [] });
   const writes = [];
   chroma.addDocuments = async documents => {
     writes.push(documents);

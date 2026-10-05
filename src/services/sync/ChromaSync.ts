@@ -861,6 +861,22 @@ export class ChromaSync {
     return written;
   }
 
+  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
+  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
+    await this.ensureCollectionExists();
+    const manager = ChromaMcpManager.getInstance();
+    const existing = await manager.callTool('chroma_get_documents', {
+      collection_name: this.collectionName,
+      where: { $and: [{ doc_type: docType }, { sqlite_id: sqliteId }] },
+      include: [],
+    }) as { ids?: string[] };
+    const currentIds = new Set(documents.map(doc => doc.id));
+    const obsolete = (existing?.ids ?? []).filter(id => !currentIds.has(id));
+    for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
+      await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
+    }
+  }
+
   async syncObservation(
     observationId: number,
     memorySessionId: string,
@@ -868,7 +884,8 @@ export class ChromaSync {
     obs: ParsedObservation,
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting = false
   ): Promise<void> {
     const stored: StoredObservation = {
       id: observationId,
@@ -902,6 +919,11 @@ export class ChromaSync {
     // Chroma error must NOT mark this observation as synced — otherwise the
     // backfill pass on next boot will skip past it (CodeRabbit review on PR
     // #2282).
+    if (replaceExisting) ChromaSyncState.markFragmentReconciliation(project, 'observations', observationId);
+    if (ChromaSyncState.needsFragmentReconciliation(project, 'observations', observationId)) {
+      await this.removeObsoleteFragments('observation', observationId, documents);
+      ChromaSyncState.clearFragmentReconciliation(project, 'observations', observationId);
+    }
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
       ChromaSyncState.clearPending(project, 'observations', [observationId]);
@@ -927,7 +949,8 @@ export class ChromaSync {
     summary: ParsedSummary,
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting = false
   ): Promise<void> {
     const stored: StoredSummary = {
       id: summaryId,
@@ -954,6 +977,11 @@ export class ChromaSync {
     });
 
     // Only bump on a confirmed full write — see syncObservation() for rationale.
+    if (replaceExisting) ChromaSyncState.markFragmentReconciliation(project, 'summaries', summaryId);
+    if (ChromaSyncState.needsFragmentReconciliation(project, 'summaries', summaryId)) {
+      await this.removeObsoleteFragments('session_summary', summaryId, documents);
+      ChromaSyncState.clearFragmentReconciliation(project, 'summaries', summaryId);
+    }
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
       ChromaSyncState.clearPending(project, 'summaries', [summaryId]);
@@ -1315,6 +1343,20 @@ export class ChromaSync {
       const droppedBeforeRow = collectionDropped();
       if (droppedBeforeRow) {
         return droppedBeforeRow;
+      }
+      if (ChromaSyncState.needsFragmentReconciliation(backfillProject, kind, row.id)) {
+        try {
+          await this.removeObsoleteFragments(kind === 'observations' ? 'observation' : 'session_summary', row.id, docs);
+          ChromaSyncState.clearFragmentReconciliation(backfillProject, kind, row.id);
+        } catch (error) {
+          hadWriteFailures = true;
+          consecutiveFailures += 1;
+          logger.warn('CHROMA_SYNC', 'Fragment reconciliation failed; row remains pending', { project: backfillProject, kind, rowId: row.id }, error as Error);
+          if (consecutiveFailures >= this.MAX_CONSECUTIVE_BATCH_FAILURES) {
+            return { writtenDocs, emptyRows, abortReason: 'write_failures', writeFailures: true };
+          }
+          continue;
+        }
       }
       if (docs.length === 0) {
         // Nothing to index at all: no title and no body (a title-only

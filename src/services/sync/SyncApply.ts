@@ -221,7 +221,8 @@ export interface ChromaSyncLike {
     },
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting?: boolean
   ): Promise<void>;
   syncSummary(
     summaryId: number,
@@ -237,7 +238,8 @@ export interface ChromaSyncLike {
     },
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting?: boolean
   ): Promise<void>;
   syncUserPrompt(
     promptId: number,
@@ -358,6 +360,7 @@ export class SyncApply {
   private readonly deviceId: string;
   private readonly chromaSync: ChromaSyncLike | null;
   private readonly now: () => number;
+  private readonly chromaWrites = new Map<string, Promise<void>>();
 
   constructor(db: Database, options: SyncApplyOptions) {
     if (!options.deviceId) {
@@ -604,6 +607,16 @@ export class SyncApply {
     }
 
     return result;
+  }
+
+  /** Preserve hub order per row while unrelated rows can still forward concurrently. */
+  private enqueueChromaWrite(key: string, write: () => Promise<void>): Promise<void> {
+    const previous = this.chromaWrites.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => {}).then(write);
+    this.chromaWrites.set(key, next);
+    const clear = () => { if (this.chromaWrites.get(key) === next) this.chromaWrites.delete(key); };
+    void next.then(clear, clear);
+    return next;
   }
 
   /**
@@ -940,7 +953,7 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
-      this.forwardObservation(existing.id, op, body, chromaJobs);
+      this.forwardObservation(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
 
@@ -979,14 +992,14 @@ export class SyncApply {
     return 'applied';
   }
 
-  private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
+  private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
     const memorySessionId = fieldString(op, body, 'memory_session_id')!;
     const project = fieldString(op, body, 'project')!;
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     const type = fieldString(op, body, 'type')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      chromaJobs.push(() => chroma.syncObservation(
+      chromaJobs.push(() => this.enqueueChromaWrite(`observation:${id}`, () => chroma.syncObservation(
         id,
         memorySessionId,
         project,
@@ -1001,8 +1014,10 @@ export class SyncApply {
           files_modified: parseListColumn(body.files_modified),
         },
         fieldNumber(op, body, 'prompt_number') ?? 0,
-        createdAtEpoch
-      ));
+        createdAtEpoch,
+        undefined,
+        replaceExisting
+      )));
     }
   }
 
@@ -1033,7 +1048,7 @@ export class SyncApply {
         op.rev, this.now(),
         existing.id
       );
-      this.forwardSummary(existing.id, op, body, chromaJobs);
+      this.forwardSummary(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
 
@@ -1056,13 +1071,13 @@ export class SyncApply {
     return 'applied';
   }
 
-  private forwardSummary(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): void {
+  private forwardSummary(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
     const memorySessionId = fieldString(op, body, 'memory_session_id')!;
     const project = fieldString(op, body, 'project')!;
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      chromaJobs.push(() => chroma.syncSummary(
+      chromaJobs.push(() => this.enqueueChromaWrite(`summary:${id}`, () => chroma.syncSummary(
         id,
         memorySessionId,
         project,
@@ -1075,8 +1090,10 @@ export class SyncApply {
           notes: fieldString(op, body, 'notes'),
         },
         fieldNumber(op, body, 'prompt_number') ?? 0,
-        createdAtEpoch
-      ));
+        createdAtEpoch,
+        undefined,
+        replaceExisting
+      )));
     }
   }
 
@@ -1158,7 +1175,7 @@ export class SyncApply {
     const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch')!;
     if (this.chromaSync) {
       const chroma = this.chromaSync;
-      chromaJobs.push(() => chroma.syncUserPrompt(
+      chromaJobs.push(() => this.enqueueChromaWrite(`prompt:${id}`, () => chroma.syncUserPrompt(
         id,
         fieldString(op, body, 'memory_session_id') ?? contentSessionId,
         fieldString(op, body, 'project') ?? 'unknown',
@@ -1166,7 +1183,7 @@ export class SyncApply {
         promptNumber,
         createdAtEpoch,
         fieldString(op, body, 'platform_source') ?? undefined
-      ));
+      )));
     }
   }
 
