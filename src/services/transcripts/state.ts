@@ -30,14 +30,25 @@ export interface TranscriptWatchState {
   cwds?: Record<string, string>;
 }
 
+function normalizeMap<T>(value: unknown, valid: (value: unknown) => value is T): Record<string, T> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value).filter((entry): entry is [string, T] => valid(entry[1])));
+}
+
 export function loadWatchState(statePath: string): TranscriptWatchState {
   try {
     if (!existsSync(statePath)) {
       return { offsets: {} };
     }
     const parsed = readJsonFileWithBom<TranscriptWatchState>(statePath);
-    if (!parsed.offsets) return { offsets: {} };
-    return parsed;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { offsets: {} };
+    const integer = (value: unknown): value is number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+    const text = (value: unknown): value is string => typeof value === 'string';
+    const state: TranscriptWatchState = { offsets: normalizeMap(parsed.offsets, integer) };
+    if (parsed.partials !== undefined) state.partials = normalizeMap(parsed.partials, text);
+    if (parsed.frameLines !== undefined) state.frameLines = normalizeMap(parsed.frameLines, integer);
+    if (parsed.cwds !== undefined) state.cwds = normalizeMap(parsed.cwds, text);
+    return state;
   } catch (error) {
     logger.warn('TRANSCRIPT', 'Failed to load watch state, starting fresh', {
       statePath,
