@@ -202,6 +202,23 @@ const QUERIES: Record<string, string> = {
 (import_declaration) @imp
 `,
 
+  c: `
+(function_definition declarator: (function_declarator declarator: (identifier) @name)) @func
+(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: (identifier) @name))) @func
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
+  cpp: `
+(function_definition declarator: (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier)] @name)) @func
+(function_definition declarator: (pointer_declarator declarator: (function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier)] @name))) @func
+(class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
   kotlin: `
 (function_declaration (simple_identifier) @name) @func
 (class_declaration (type_identifier) @name) @cls
@@ -322,6 +339,8 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "c": return "c";
+    case "cpp": return "cpp";
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
