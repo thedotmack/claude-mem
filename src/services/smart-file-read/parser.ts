@@ -1125,6 +1125,20 @@ export function qualifySymbolName(name: string, parent: string | undefined, lang
   return parent ? `${parent}.${segment}` : segment;
 }
 
+/** Qualified lookup hints include descendants that can be unfolded by owner. */
+export function formatAvailableSymbols(file: FoldedFile): string {
+  const available: string[] = [];
+  const visit = (symbols: CodeSymbol[], parent?: string): void => {
+    for (const symbol of symbols) {
+      const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
+      available.push(`  - ${name} (${symbol.kind})`);
+      if (symbol.children) visit(symbol.children, name);
+    }
+  };
+  visit(file.symbols);
+  return available.join("\n");
+}
+
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
