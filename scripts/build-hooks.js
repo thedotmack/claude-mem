@@ -138,7 +138,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         // fails to parse them, ignores suppressOutput, and dumps the raw text at
         // the top of every session. Let `start` speak for itself.
         'SessionStart.0.0': claudeHook(['start']),
-        'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+        'SessionStart.1.0': claudeHook(['hook', 'claude-code', 'context']),
         'UserPromptSubmit.0.0': {
           command: claudeHook(['hook', 'claude-code', 'session-init']),
           timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
