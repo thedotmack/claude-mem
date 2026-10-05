@@ -607,12 +607,12 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
 
-function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
-  const firstLine = lines[startRow] || "";
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
+  const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
 
   if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
-    const chunk = lines.slice(startRow, Math.min(startRow + 10, endRow + 1)).join("\n");
+    const chunk = [firstLine, ...lines.slice(startRow + 1, Math.min(startRow + 10, endRow + 1))].join("\n");
     const braceIdx = chunk.indexOf("{");
     if (braceIdx !== -1 && braceIdx < 500) {
       sig = chunk.slice(0, braceIdx).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
@@ -703,7 +703,7 @@ function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
-  const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
   const decoratedRanges = new Map<string, RawCapture>();
   const ranges = new Map<CodeSymbol, RawCapture>();
@@ -713,7 +713,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
-        exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+        exportRanges.push(cap);
       }
       if (cap.tag === "decorated_outer") {
         const inner = match.captures.find(capture => capture.tag === "decorated_inner");
@@ -795,7 +795,28 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
     } else {
-      signature = extractSignatureFromLines(lines, startRow, endRow);
+      // Export wrappers start before their direct declaration. Preserve only
+      // the export keywords that end that prefix: decorators belong to the
+      // wrapper (`@Injectable() export class`), and a containing exported
+      // class must not prefix its methods.
+      let exportPrefix = "";
+      if (kind !== "method") {
+        for (const capture of exportRanges) {
+          if (!rangeContains(capture, kindCapture)) continue;
+          const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
+            .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ")
+            .replace(/\s+/g, " ").trim();
+          const exportKeywords = prefix.match(/(?:^|\s)(export(?: default)?(?: declare)?)$/);
+          if (exportKeywords) {
+            exportPrefix = `${exportKeywords[1]} `;
+            break;
+          }
+        }
+      }
+      // Extract the declaration independently: prefix comments may contain
+      // braces or span more rows than the declaration signature budget.
+      signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
+        200 - exportPrefix.length, kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
