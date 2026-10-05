@@ -688,13 +688,24 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const name = nameCapture?.text || "anonymous";
+    let name = nameCapture?.text || "anonymous";
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
+      // Setext heading paragraphs include a trailing newline (and can span
+      // lines), so the CLI prints only their range, without a `text` value.
+      if (nameCapture) {
+        const capturedLines = lines.slice(nameCapture.startRow, nameCapture.endRow + 1);
+        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(nameCapture.startCol).toString();
+        const last = capturedLines.length - 1;
+        capturedLines[last] = Buffer.from(capturedLines[last] ?? "")
+          .subarray(0, nameCapture.endCol - (last === 0 ? nameCapture.startCol : 0)).toString();
+        name = capturedLines.join(" ").trim().replace(/\s+/g, " ");
+      }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const level = hashMatch ? hashMatch[1].length : 1;
+      const underline = lines[endRow - (kindCapture.endCol === 0 ? 1 : 0)] || "";
+      const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {
       const langTag = name !== "anonymous" ? name : "";
