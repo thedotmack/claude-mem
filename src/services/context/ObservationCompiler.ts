@@ -256,12 +256,15 @@ export function querySummariesMulti(
 }
 
 export function cwdToDashed(cwd: string): string {
-  // Claude Code encodes a project's transcript directory by replacing BOTH path
-  // separators AND dots with dashes (e.g. `/Users/john.doe/proj` ->
-  // `-Users-john-doe-proj`). Replacing only `/` left a literal `.` in the dir
-  // name, so "Include last message" silently no-opped for any cwd component
-  // containing a dot — Unix usernames like `john.doe`, dotted dirs, etc. (#2401).
-  return cwd.replace(/[/.]/g, '-');
+  // Claude Code encodes a project's transcript directory by replacing EVERY
+  // non-alphanumeric character with a dash, one-for-one (e.g.
+  // `/Users/john.doe/my_project` -> `-Users-john-doe-my-project`, and a real
+  // macOS temp cwd `/var/folders/m8/w_4jf2z.../T` -> `-var-folders-m8-w-4jf2z...-T`).
+  // Replacing only `/` and `.` left other characters — underscores, spaces — in
+  // the dir name, so the built path never matched the on-disk directory and
+  // "Include last message" / memory-dir resolution silently no-opped for those
+  // cwds (follow-up to the dot-only #2401 fix).
+  return cwd.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function parseAssistantTextFromLine(line: string): string | null {
