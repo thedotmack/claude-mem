@@ -50,7 +50,7 @@ const server = http.createServer((req, res) => {
 function run(event, stdinObj, env = {}) {
   return new Promise((resolve, reject) => {
     const child = execFile('node', [HOOK, event], {
-      env: { ...process.env, HOME: TESTHOME, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', ...env },
+      env: { ...process.env, HOME: TESTHOME, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', CLAUDE_MEM_WORKER_PORT: '1', ...env },
       encoding: 'utf8', timeout: 45000
     }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
     child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
@@ -309,6 +309,22 @@ check('generic dir (/tmp) → cmem_work_root', projOf('tu_22') === 'cmem_work_ro
 received = [];
 await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_23' }, { CMEM_PROJECT: 'my-explicit' });
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
+
+// ---- 9c. local-first: a local claude-mem install means no cloud context read ----
+console.log('\n[9c] local-first context');
+const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
+mkdirSync(LOCAL_PLUGIN, { recursive: true });
+received = [];
+const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' });
+check('no /api/hooks/context request when claude-mem is installed locally', !received.some(r => r.url.startsWith('/api/hooks/context')));
+check('no cloud context block injected', !localStart.out.includes('claude-mem-context'), localStart.out.slice(0, 120));
+received = [];
+await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } });
+check('agent prompts skip the cloud read too', !received.some(r => r.url.startsWith('/api/hooks/context') || r.url.startsWith('/api/mcp')));
+rmSync(TESTHOME + '/.claude', { recursive: true, force: true });
+received = [];
+const cloudStart = await run('context', { session_id: 's10', cwd: '/home/claude', source: 'startup' });
+check('without a local install the cloud context is still read', received.some(r => r.url.startsWith('/api/hooks/context')) && cloudStart.out.includes('claude-mem-context'));
 
 // ---- 10. malformed stdin never crashes ----
 console.log('\n[10] resilience');
