@@ -70,41 +70,65 @@ const fixture = String.raw`
     } else {
       const text = await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: 'project', cwd, sessionId: 'current-host' }))).text();
       const { emitContextInvalidation } = await import('./src/shared/context-invalidation.ts');
-      const { contextCacheKeys, readContextCache } = await import('./src/shared/context-cache.ts');
+      const { contextCacheKeys, listContextCacheFiles, readContextCache } = await import('./src/shared/context-cache.ts');
       emitContextInvalidation({ projects: ['project'] }, 'owned-fixture');
       await cache.flushPendingRenders();
-      const cached = readContextCache(contextCacheKeys(['project'], undefined, false, cwd, 'current-host'), Date.now());
+      const cached = readContextCache(contextCacheKeys(['project'], undefined, false, cwd), Date.now());
       let other;
       if (process.env.TRANSCRIPT_ACTIVE === 'true') {
         other = await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: 'project', cwd, sessionId: 'other-host' }))).text();
       }
-      console.log(JSON.stringify({ text, cached: cached?.body, other }));
+      console.log(JSON.stringify({ text, cached: cached?.body, other, variants: cache.knownVariantCount(), files: listContextCacheFiles().length }));
     }
   } finally { await new Promise(resolve => server.close(resolve)); await cleanup(); }
 `;
 
-function run(kind: string, active = false): any {
+function run(kind: string, active = false, enabledBy: 'settings' | 'env' = 'settings'): any {
   const dir = mkdtempSync(join(tmpdir(), 'prior-transcript-route-'));
   try {
     mkdirSync(join(dir, 'data'));
-    writeFileSync(join(dir, 'data', 'settings.json'), JSON.stringify({ CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'true', CLAUDE_MEM_WELCOME_HINT_ENABLED: 'false' }));
-    const result = Bun.spawnSync([process.execPath, '-e', fixture], { cwd: join(import.meta.dir, '../..'), env: { ...process.env, TRANSCRIPT_ROUTE_KIND: kind, TRANSCRIPT_ACTIVE: String(active), CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_CONFIG_DIR: join(dir, 'config') }, stdout: 'pipe', stderr: 'pipe' });
+    writeFileSync(join(dir, 'data', 'settings.json'), JSON.stringify({
+      CLAUDE_MEM_WELCOME_HINT_ENABLED: 'false',
+      ...(enabledBy === 'settings' ? { CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE: 'true' } : {}),
+    }));
+    const env: Record<string, string | undefined> = { ...process.env, TRANSCRIPT_ROUTE_KIND: kind, TRANSCRIPT_ACTIVE: String(active), CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_CONFIG_DIR: join(dir, 'config') };
+    delete env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE;
+    if (enabledBy === 'env') env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE = 'true';
+    const result = Bun.spawnSync([process.execPath, '-e', fixture], { cwd: join(import.meta.dir, '../..'), env, stdout: 'pipe', stderr: 'pipe' });
     if (result.exitCode !== 0) throw new Error(new TextDecoder().decode(result.stderr));
     return JSON.parse(new TextDecoder().decode(result.stdout).trim().split('\n').at(-1)!);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+// The live answer carries a reply chosen for the asking session; the cached
+// block (the hook's fallback while the worker is down) never carries one.
+function expectCachedWithoutReply(result: any) {
+  expect(result.variants).toBe(1);
+  expect(result.files).toBe(1);
+  expect(result.cached).toContain('Observed fact');
+  expect(result.cached).not.toContain('host response');
+}
+
 describe('prior host transcript in production context routes', () => {
-  it('uses the host cwd for live worker rendering without persisting a session variant', () => {
+  it('uses the host cwd for live worker rendering and caches only the block without the reply', () => {
     const result = run('worker');
     expect(result.text).toContain('The prior host response.');
-    expect(result.cached).toBeUndefined();
+    expectCachedWithoutReply(result);
   });
   it('excludes an active host transcript in live clear or compact context', () => {
     const result = run('worker', true);
+    expect(result.text).toContain('The prior host response.');
     expect(result.text).not.toContain('The active host response.');
-    expect(result.cached).toBeUndefined();
+    expectCachedWithoutReply(result);
     expect(result.other).toContain('The active host response.');
+  });
+  it('honors the setting when only the environment turns it on', () => {
+    // The worker route read the settings file alone, so the asking session
+    // was not excluded and its own reply came back under "Previously".
+    const result = run('worker', true, 'env');
+    expect(result.text).toContain('The prior host response.');
+    expect(result.text).not.toContain('The active host response.');
+    expectCachedWithoutReply(result);
   });
   (process.env.CLAUDE_MEM_TEST_POSTGRES_URL ? it : it.skip)('carries the host identity through real Postgres, HTTP, and the server renderer', () => {
     const result = run('server');

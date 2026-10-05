@@ -27,8 +27,6 @@ const fixture = String.raw`
   const cwd = join(process.env.CLAUDE_MEM_DATA_DIR, 'checkout'); mkdirSync(cwd, { recursive: true });
   const projects = getProjectContext(cwd).allProjects, project = projects.at(-1);
   const sharedKeys = contextCacheKeys(projects, 'claude', false, cwd);
-  const safeKeys = { ...sharedKeys, omitPriorMessage: true };
-  const legacySessionKeys = contextCacheKeys(projects, 'claude', false, cwd, 'current-host');
   const mode = process.env.CACHE_OUTAGE_MODE;
   const store = new SessionStore(join(process.env.CLAUDE_MEM_DATA_DIR, 'claude-mem.db'));
   let cache, routes, safe, live, known, refreshedBeforeBoot;
@@ -44,26 +42,24 @@ const fixture = String.raw`
       live = await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: projects.join(','), platformSource: 'claude', cwd, sessionId: 'closed-host-' + index }))).text();
     }
     await cache.flushPendingRenders();
-    safe = readContextCache(safeKeys, Date.now())?.body;
-    writeContextCache(safeKeys, 'STALE SAFE CACHE', Date.now() - CONTEXT_CACHE_MAX_AGE_MS - 1);
+    safe = readContextCache(sharedKeys, Date.now())?.body;
+    writeContextCache(sharedKeys, 'STALE SHARED CACHE', Date.now() - CONTEXT_CACHE_MAX_AGE_MS - 1);
     await (await fetch(baseUrl + '/api/context/inject?' + new URLSearchParams({ projects: projects.join(','), platformSource: 'claude', cwd, sessionId: 'new-host' }))).text();
     await cache.flushPendingRenders();
-    refreshedBeforeBoot = readContextCache(safeKeys, Date.now())?.body;
-    // Persisted omitPriorMessage must survive startup and still control rendering.
+    refreshedBeforeBoot = readContextCache(sharedKeys, Date.now())?.body;
+    // The learned variant must survive startup and still render without the reply.
     cache.stop();
     cache = new ContextCacheService({ debounceMs: 1, renderVariant: keys => routes.renderContextVariant(keys), expandProjectReadKeys: keys => store.getProjectReadKeys(keys) });
     cache.start(); await cache.flushPendingRenders();
     known = cache.knownVariantCount();
-    // Project changes must refresh only the plain variant, without a transcript.
+    // Project changes must refresh the shared variant, still without a transcript.
     const { emitContextInvalidation } = await import('./src/shared/context-invalidation.ts');
     emitContextInvalidation({ projects }, 'owned-fallback-test'); await cache.flushPendingRenders();
-    safe = readContextCache(safeKeys, Date.now())?.body;
+    safe = readContextCache(sharedKeys, Date.now())?.body;
     cache.stop();
     await new Promise(resolve => server.close(resolve));
   } else {
-    if (mode === 'safe-outage') writeContextCache(safeKeys, 'SAFE MEMORY ONLY', Date.now());
-    writeContextCache(sharedKeys, mode === 'default-outage' ? 'SHARED MEMORY' : 'UNSAFE LEGACY PRIOR HOST REPLY', Date.now());
-    writeContextCache(legacySessionKeys, 'UNSAFE LEGACY ACTIVE HOST REPLY', Date.now());
+    writeContextCache(sharedKeys, 'SHARED MEMORY', Date.now());
   }
   const { contextHandler } = await import('./src/cli/handlers/context.ts');
   const result = await contextHandler.execute({ sessionId: 'current-host', cwd, platform: 'claude-code' });
@@ -83,16 +79,11 @@ function run(mode: string): any {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
-describe('prior transcript outages use only explicitly plain cached memory', () => {
-  it('uses the plain variant after the actual worker health probe fails', () => {
-    const result = run('safe-outage');
+describe('prior transcript outages fall back to the cached memory, which never carries a reply', () => {
+  it('asks the worker first, and uses the cached block after the actual health probe fails', () => {
+    const result = run('cached-outage');
     expect(result.healthCalls).toBeGreaterThan(0);
-    expect(result.result.hookSpecificOutput.additionalContext).toBe('SAFE MEMORY ONLY');
-  });
-  it('rejects generic and session-specific legacy blocks that can contain a prior reply', () => {
-    const result = run('legacy-outage');
-    expect(result.healthCalls).toBeGreaterThan(0);
-    expect(result.result.hookSpecificOutput.additionalContext).toBe('');
+    expect(result.result.hookSpecificOutput.additionalContext).toBe('SHARED MEMORY');
   });
   it('keeps the ordinary shared cache fast path when prior messages are disabled', () => {
     const result = run('default-outage');

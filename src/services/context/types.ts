@@ -16,7 +16,10 @@ export interface ContextInput {
    * itself must opt out (#4221).
    */
   includeHealthWarning?: boolean;
-  /** Explicitly omit prior transcript text when building a shared cached fallback. */
+  /**
+   * False renders without the prior session's reply whatever the setting says:
+   * for a block that may be cached, which any session can read.
+   */
   includePriorMessage?: boolean;
   /**
    * Characters delivered beside this block (the work-state section), taken off

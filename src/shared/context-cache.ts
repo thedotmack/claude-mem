@@ -101,12 +101,8 @@ export interface ContextCacheKeys {
   platformSource: string;
   /** The colored terminal render (colors=true) rather than the model's block. */
   colors: boolean;
-  /** Observed checkout directory used for local transcript lookup. */
+  /** The host's checkout directory; the colored render's file headings are relative to it. */
   cwd?: string;
-  /** Current host session excluded from optional prior-transcript context. */
-  sessionId?: string;
-  /** Producer explicitly omitted prior transcripts; safe for worker-outage fallback. */
-  omitPriorMessage?: true;
 }
 
 export const ALL_PLATFORM_SOURCES_CACHE_KEY = 'all';
@@ -121,16 +117,12 @@ export function contextCacheKeys(
   platformSource: string | undefined,
   colors: boolean,
   cwd?: string,
-  sessionId?: string,
-  omitPriorMessage = false,
 ): ContextCacheKeys {
   return {
     projects: projects.map(project => project.trim()).filter(Boolean),
     platformSource: platformSource || ALL_PLATFORM_SOURCES_CACHE_KEY,
     colors,
     ...(cwd ? { cwd } : {}),
-    ...(sessionId ? { sessionId } : {}),
-    ...(omitPriorMessage ? { omitPriorMessage: true as const } : {}),
   };
 }
 
@@ -140,7 +132,7 @@ export function contextCacheDir(): string {
 
 export function contextCacheVariantId(keys: ContextCacheKeys): string {
   return createHash('sha256')
-    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : []), ...(keys.sessionId ? [{ sessionId: keys.sessionId }] : []), ...(keys.omitPriorMessage === true ? [{ omitPriorMessage: true }] : [])]))
+    .update(JSON.stringify([keys.projects.join(','), keys.platformSource, keys.colors, ...(keys.cwd ? [keys.cwd] : [])]))
     .digest('hex');
 }
 

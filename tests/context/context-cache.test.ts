@@ -588,15 +588,12 @@ describe('context hook reads the precomputed block', () => {
     expect(additionalContext).not.toContain(PLACEHOLDER_MARKER);
   });
 
-  it('passes the host session and avoids another session cache when prior messages are enabled', async () => {
+  it('passes the host session and answers live when prior messages are enabled', async () => {
     showLastMessage = true;
-    writeContextCache(agentKeys, 'A block without current-session exclusion', Date.now());
-    const oldSessionKeys = contextCacheKeys(HOOK_PROJECTS, 'claude', false, '/tmp/cache-hook-repo', 'cache-session');
-    writeContextCache(oldSessionKeys, 'A stale session transcript block', Date.now());
+    writeContextCache(agentKeys, 'A block without the prior reply', Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&sessionId=cache-session']);
     expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
-    rmSync(contextCacheFilePath(oldSessionKeys), { force: true });
   });
 
   it('takes the live path on a miss, including the observed checkout cwd', async () => {
