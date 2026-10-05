@@ -360,8 +360,14 @@ describe('GeminiObservationProvider', () => {
 
       expect(category).toBe(expectedCategory);
       expect(closedBadRequestCategories.has(category)).toBe(true);
-      expect(err.kind).toBe('unrecoverable');
-      expect(err.message).toBe(`Gemini bad request: ${expectedCategory}`);
+      // A refused key is a refused credential; the rest are bad requests.
+      if (expectedCategory === 'api_key') {
+        expect(err.kind).toBe('auth_invalid');
+        expect(err.message).toBe('Gemini auth invalid (status 400)');
+      } else {
+        expect(err.kind).toBe('unrecoverable');
+        expect(err.message).toBe(`Gemini bad request: ${expectedCategory}`);
+      }
       expect(err.message).not.toContain('RAW_PROVIDER_BODY');
       expect(err.cause).toBeInstanceOf(Error);
       expect((err.cause as Error).message).toContain('status 400');
