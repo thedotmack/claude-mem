@@ -193,8 +193,8 @@ const QUERIES: Record<string, string> = {
 (method name: (identifier) @name) @func
 (singleton_method object: (_) @receiver name: (identifier) @name) @method
 (singleton_class value: (self)) @singleton_scope
-(class name: (constant) @name) @cls
-(module name: (constant) @name) @cls
+(class name: [(constant) (scope_resolution)] @name) @cls
+(module name: [(constant) (scope_resolution)] @name) @cls
 (call method: (identifier) @name) @imp
 `,
 
