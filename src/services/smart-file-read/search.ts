@@ -1,6 +1,6 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
-import { join, relative } from "node:path";
+import { basename, extname, join, relative } from "node:path";
 import { parseFilesBatch, formatFoldedView, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
@@ -41,9 +41,18 @@ const MAX_FILE_SIZE = 512 * 1024;
 export interface SearchResult {
   foldedFiles: FoldedFile[];
   matchingSymbols: SymbolMatch[];
+  matchingFiles: FileMatch[];
   totalFilesScanned: number;
   totalSymbolsFound: number;
   tokenEstimate: number;
+}
+
+/** A file whose path contains every query part but none of whose symbols are shown. */
+export interface FileMatch {
+  filePath: string;
+  language: string;
+  totalLines: number;
+  foldedTokenEstimate: number;
 }
 
 export interface SymbolMatch {
@@ -203,17 +212,35 @@ export async function searchCodebase(
 
   const trimmedSymbols = matchingSymbols.slice(0, maxResults);
   const relevantFiles = new Set(trimmedSymbols.map(s => s.filePath));
-  const trimmedFiles = [
-    ...foldedFiles.filter(f => relevantFiles.has(f.filePath)),
-    ...foldedFiles.filter(f => !relevantFiles.has(f.filePath)
-      && matchScore(f.filePath.toLowerCase(), queryParts) > 0),
-  ].slice(0, maxResults);
+  const trimmedFiles = foldedFiles.filter(f => relevantFiles.has(f.filePath)).slice(0, maxResults);
 
   const tokenEstimate = trimmedFiles.reduce((sum, f) => sum + f.foldedTokenEstimate, 0);
+
+  // Path hits without a shown symbol are listed one line each, never folded,
+  // because results go straight into an agent's context: a common word like
+  // "store" or "worker" is a substring of hundreds of paths. Only literal
+  // substrings qualify; the fuzzy fallback stays for symbol names. Every
+  // literal hit scores the same on its full path, so rank by the file name:
+  // an exact name, then a name containing the query, then a directory hit.
+  const matchingFiles: FileMatch[] = queryParts.length === 0 ? [] : [...parsedFiles.values()]
+    .filter(file => {
+      const pathLower = file.filePath.toLowerCase();
+      return !relevantFiles.has(file.filePath) && queryParts.every(part => pathLower.includes(part));
+    })
+    .map(file => ({ file, nameScore: matchScore(basename(file.filePath, extname(file.filePath)).toLowerCase(), queryParts) }))
+    .sort((a, b) => b.nameScore - a.nameScore)
+    .slice(0, maxResults)
+    .map(({ file }) => ({
+      filePath: file.filePath,
+      language: file.language,
+      totalLines: file.totalLines,
+      foldedTokenEstimate: file.foldedTokenEstimate,
+    }));
 
   return {
     foldedFiles: trimmedFiles,
     matchingSymbols: trimmedSymbols,
+    matchingFiles,
     totalFilesScanned: filesToParse.length,
     totalSymbolsFound,
     tokenEstimate,
@@ -255,14 +282,15 @@ function countSymbols(file: FoldedFile): number {
 
 export function formatSearchResults(result: SearchResult, query: string): string {
   const parts: string[] = [];
+  const count = (n: number, noun: string, pluralSuffix = "s") => `${n} ${noun}${n === 1 ? "" : pluralSuffix}`;
 
   parts.push(`🔍 Smart Search: "${query}"`);
   parts.push(`   Scanned ${result.totalFilesScanned} files, found ${result.totalSymbolsFound} symbols`);
-  parts.push(`   ${result.matchingSymbols.length} symbol match${result.matchingSymbols.length === 1 ? '' : 'es'}; ${result.foldedFiles.length} matched file${result.foldedFiles.length === 1 ? '' : 's'} (~${result.tokenEstimate} tokens for folded view)`);
+  parts.push(`   ${count(result.matchingSymbols.length, "symbol match", "es")}; ${count(result.foldedFiles.length, "matched file")} (~${result.tokenEstimate} tokens for folded view); ${count(result.matchingFiles.length, "file")} matched by path only`);
   parts.push("");
 
-  if (result.matchingSymbols.length === 0 && result.foldedFiles.length === 0) {
-    parts.push("   No matching symbols found.");
+  if (result.matchingSymbols.length === 0 && result.matchingFiles.length === 0) {
+    parts.push("   No matching symbols or files found.");
     return parts.join("\n");
   }
 
@@ -282,10 +310,21 @@ export function formatSearchResults(result: SearchResult, query: string): string
     parts.push("");
   }
 
-  parts.push("── Folded File Views ──");
-  parts.push("");
+  if (result.foldedFiles.length > 0) {
+    parts.push("── Folded File Views ──");
+    parts.push("");
+  }
   for (const file of result.foldedFiles) {
     parts.push(formatFoldedView(file));
+    parts.push("");
+  }
+
+  if (result.matchingFiles.length > 0) {
+    parts.push("── Matching Files ──");
+    parts.push("");
+    for (const file of result.matchingFiles) {
+      parts.push(`  ${file.filePath} (${file.language}, ${file.totalLines} lines, ~${file.foldedTokenEstimate} tokens folded) — smart_outline to expand`);
+    }
     parts.push("");
   }
 
