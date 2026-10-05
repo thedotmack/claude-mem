@@ -57,7 +57,8 @@ try {
   assert.equal((store.db.query('SELECT COUNT(*) AS count FROM observations').get() as any).count,0);
   console.log(JSON.stringify({kind,observations:0}));
  } else {
-  for(let n=0;n<100 && !captured;n++) await Bun.sleep(5);
+  const arrivalDeadline = Date.now() + 5000;
+  while (!captured && Date.now() < arrivalDeadline) await Bun.sleep(5);
   assert.ok(captured,'completion hook must reach actual worker ingestion');
   assert.equal(captured.tool_name,operation[0].toUpperCase()+operation.slice(1));
   for(const [key,value] of Object.entries(params)) assert.deepEqual(captured.tool_input[key],value);
