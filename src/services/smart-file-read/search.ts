@@ -5,7 +5,7 @@ import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile }
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
-  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
   ".py", ".pyw",
   ".go",
   ".rs",
