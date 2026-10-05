@@ -706,14 +706,25 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // that function, before any callback parameters or nested definitions.
   const functionNames = matches.flatMap(match => match.captures.filter(c => c.tag === "function_name"))
     .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
+  const findFunctionName = (definition: RawCapture): RawCapture | undefined => {
+    let low = 0;
+    let high = functionNames.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const capture = functionNames[mid];
+      if (capture.startRow < definition.startRow
+        || (capture.startRow === definition.startRow && capture.startCol < definition.startCol)) low = mid + 1;
+      else high = mid;
+    }
+    const capture = functionNames[low];
+    return capture && (capture.endRow < definition.endRow
+      || (capture.endRow === definition.endRow && capture.endCol <= definition.endCol)) ? capture : undefined;
+  };
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
     const nameCapture = match.captures.find(c => c.tag === "name")
       ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
-        ? functionNames.find(c => (c.startRow > kindCapture.startRow
-            || (c.startRow === kindCapture.startRow && c.startCol >= kindCapture.startCol))
-          && (c.endRow < kindCapture.endRow
-            || (c.endRow === kindCapture.endRow && c.endCol <= kindCapture.endCol)))
+        ? findFunctionName(kindCapture)
         : undefined);
     if (!kindCapture) continue;
 
@@ -786,14 +797,40 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  // A named typedef can capture both the alias and its same-named struct.
+  // Retain one structural symbol, with the enclosing typedef source range.
+  const duplicateAliases = new Set<CodeSymbol>();
+  if (language === "c" || language === "cpp") {
+    const structures = new Map<string, typeof containers>();
+    for (const container of containers) {
+      const entries = structures.get(container.sym.name) ?? [];
+      entries.push(container);
+      structures.set(container.sym.name, entries);
+    }
+    for (const alias of symbols.filter(symbol => symbol.kind === "type")) {
+      const range = ranges.get(alias)!;
+      const structure = structures.get(alias.name)?.find(({ range: inner }) =>
+        (inner.startRow > range.startRow || (inner.startRow === range.startRow && inner.startCol >= range.startCol))
+        && (inner.endRow < range.endRow || (inner.endRow === range.endRow && inner.endCol <= range.endCol)));
+      if (!structure) continue;
+      structure.sym.lineStart = alias.lineStart;
+      structure.sym.lineEnd = alias.lineEnd;
+      structure.sym.signature = alias.signature;
+      structure.range = range;
+      ranges.set(structure.sym, range);
+      duplicateAliases.add(alias);
+    }
+  }
+
   // Tree-sitter ranges include columns: row-only comparisons lose methods
   // on the opening line and cannot distinguish adjacent one-line declarations.
   // The latest containing start is the nearest lexical container, so a nested
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
-  const nested = new Set<CodeSymbol>();
+  const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
+    if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
     const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
       && (range.startRow > parent.startRow

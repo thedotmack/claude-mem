@@ -69,3 +69,23 @@ test('uses the enclosing function name before callback parameters', () => {
   const source = 'int apply(int (*callback)(int)) { return callback(1); }\nint (*factory(void))(int) { return 0; }';
   expect(parseFile(source, 'owned.c').symbols.map(symbol => symbol.name)).toEqual(['apply', 'factory']);
 }, 120000);
+
+test('named typedef tags share one symbol while distinct aliases remain visible', async () => {
+  const source = 'typedef struct Point { int x; } Point;\ntypedef struct Tag { int y; } Alias;';
+  const parsed = parseFile(source, 'owned.c');
+  expect(parsed.symbols.filter(symbol => symbol.name === 'Point')).toHaveLength(1);
+  expect(parsed.symbols.map(symbol => symbol.name)).toContain('Tag');
+  expect(parsed.symbols.map(symbol => symbol.name)).toContain('Alias');
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-typedef-unique-'));
+  try {
+    writeFileSync(join(dir, 'owned.c'), source);
+    expect((await searchCodebase(dir, 'Point')).matchingSymbols).toHaveLength(1);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+}, 120000);
+
+test('native large function batch associates names after callback declarations', () => {
+  const source = Array.from({ length: 800 }, (_, i) => `int fn${i}(int (*callback)(int)) { return callback(${i}); }`).join('\n');
+  const parsed = parseFile(source, 'large.c');
+  expect(parsed.symbols).toHaveLength(800);
+  expect(parsed.symbols[799].name).toBe('fn799');
+}, 120000);
