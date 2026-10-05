@@ -22,7 +22,7 @@ const fixture = String.raw`
   const store = new CorpusStore();
   const agent = new KnowledgeAgent(store);
   const outcomes = [];
-  for (scenario of ['prime-error', 'query-error', 'prime-is-error', 'query-is-error', 'prime-subtype-error', 'query-subtype-error', 'prime-throw-before', 'query-throw-before', 'prime-missing', 'query-missing', 'prime-success-throw-after', 'query-success-throw-after']) {
+  for (scenario of ['prime-error', 'query-error', 'prime-is-error', 'query-is-error', 'prime-subtype-error', 'query-subtype-error', 'prime-throw-before', 'query-throw-before', 'prime-missing', 'query-missing', 'prime-success', 'query-success', 'prime-success-throw-after', 'query-success-throw-after']) {
     const corpus = { version: 1, name: scenario, description: '', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), filter: {}, stats: { observation_count: 0, token_estimate: 0, date_range: { earliest: '', latest: '' }, type_breakdown: {} }, system_prompt: 'Answer using only the corpus', session_id: scenario.includes('query') ? 'old-session' : null, observations: [] };
     store.write(corpus);
     let result; let error;
@@ -47,7 +47,10 @@ describe('knowledge agent SDK outcomes', () => {
           expect(entry.error).toBeUndefined();
           expect(entry.memorySession).toBe('new-session');
           expect(entry.diskSession).toBe('new-session');
-          if (entry.scenario.includes('query')) expect(entry.result.answer).toBe('Partial answer');
+          if (entry.scenario.includes('query')) {
+            expect(entry.result.answer).toBe('Partial answer');
+            expect(entry.result.session_id).toBe('new-session');
+          } else expect(entry.result).toBe('new-session');
         } else {
           expect(entry.error, entry.scenario).toBeDefined();
           expect(entry.result).toBeUndefined();
