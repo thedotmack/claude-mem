@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef, useLayoutEffect } from 'react';
 import { Header } from './components/Header';
 import { Feed } from './components/Feed';
 import { ViewTabs, type ViewTab } from './components/ViewTabs';
@@ -65,8 +65,14 @@ export function App() {
   const [feedScope, setFeedScope] = useState<FeedScope>(
     () => scopeForRoute(route, currentFilter) ?? { project: currentFilter, session: null }
   );
-  const activeFeedScopeRef = useRef(feedScopeKey(feedScope));
-  activeFeedScopeRef.current = feedScopeKey(feedScope);
+  const scopeKey = feedScopeKey(feedScope);
+  const activeFeedScopeRef = useRef({ key: scopeKey, version: 0 });
+  const feedVisit = activeFeedScopeRef.current.key === scopeKey
+    ? activeFeedScopeRef.current
+    : { key: scopeKey, version: activeFeedScopeRef.current.version + 1 };
+  // Only a committed scope retires the previous visit's rows and errors.
+  useLayoutEffect(() => { activeFeedScopeRef.current = feedVisit; }, [feedVisit]);
+  const feedVersion = feedVisit.version;
 
   const catalog = useSessionCatalog();
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
@@ -143,29 +149,32 @@ export function App() {
   }, []);
 
   const handleLoadMore = useCallback(async () => {
-    const requestFeedScope = feedScopeKey(feedScope);
+    // A second visit to the same scope has a new owner, even if its key matches.
+    if (activeFeedScopeRef.current.version !== feedVersion) return;
+    const requestFeedVersion = feedVersion;
+    const isCurrentVisit = () => activeFeedScopeRef.current.version === requestFeedVersion;
     setFeedLoadError(null);
     try {
       // Each cursor advances independently; commit its rows before a sibling
       // request can reject the group, or successful pages would be skipped.
       await Promise.all([
         pagination.observations.loadMore().then(rows => {
-          if (rows.length) setPaginatedObservations(prev => [...prev, ...rows]);
+          if (isCurrentVisit() && rows.length) setPaginatedObservations(prev => [...prev, ...rows]);
         }),
         pagination.summaries.loadMore().then(rows => {
-          if (rows.length) setPaginatedSummaries(prev => [...prev, ...rows]);
+          if (isCurrentVisit() && rows.length) setPaginatedSummaries(prev => [...prev, ...rows]);
         }),
         pagination.prompts.loadMore().then(rows => {
-          if (rows.length) setPaginatedPrompts(prev => [...prev, ...rows]);
+          if (isCurrentVisit() && rows.length) setPaginatedPrompts(prev => [...prev, ...rows]);
         })
       ]);
     } catch (error) {
       console.error('Failed to load more data:', error);
-      if (activeFeedScopeRef.current === requestFeedScope) {
+      if (isCurrentVisit()) {
         setFeedLoadError(error instanceof Error ? error.message : 'Failed to load more data');
       }
     }
-  }, [feedScope, pagination.observations, pagination.summaries, pagination.prompts]);
+  }, [feedVersion, pagination.observations, pagination.summaries, pagination.prompts]);
 
   // One removal path for a deleted row, whether this tab deleted it or another
   // tab did (item_deleted SSE, which also reaches this tab): drop it from the

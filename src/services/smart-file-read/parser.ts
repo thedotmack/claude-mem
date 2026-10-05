@@ -191,6 +191,8 @@ const QUERIES: Record<string, string> = {
 
   ruby: `
 (method name: (identifier) @name) @func
+(singleton_method object: (_) @receiver name: (identifier) @name) @method
+(singleton_class value: (self)) @singleton_scope
 (class name: (constant) @name) @cls
 (module name: (constant) @name) @cls
 (call method: (identifier) @name) @imp
@@ -672,10 +674,33 @@ function isExported(
   }
 }
 
+// Tree-sitter columns are UTF-8 byte offsets, not JS string indices, and the
+// CLI prints no `text` for a capture that spans rows. Cutting the last row at
+// its end column before the first row at its start column keeps a one-row
+// capture free of offset arithmetic.
+function captureLines(lines: string[], capture: RawCapture): string[] {
+  const captured = lines.slice(capture.startRow, capture.endRow + 1);
+  if (captured.length === 0) return [];
+  const last = captured.length - 1;
+  captured[last] = Buffer.from(captured[last] ?? "").subarray(0, capture.endCol).toString();
+  captured[0] = Buffer.from(captured[0] ?? "").subarray(capture.startCol).toString();
+  return captured;
+}
+
+// Tree-sitter ranges include columns: row-only comparisons lose methods
+// on the opening line and cannot distinguish adjacent one-line declarations.
+function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
+  return (inner.startRow > outer.startRow
+      || (inner.startRow === outer.startRow && inner.startCol >= outer.startCol))
+    && (inner.endRow < outer.endRow
+      || (inner.endRow === outer.endRow && inner.endCol <= outer.endCol));
+}
+
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
   const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const singletonScopes: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -685,20 +710,16 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "exp") {
         exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
       }
+      if (cap.tag === "singleton_scope") {
+        singletonScopes.push(cap);
+      }
       if (cap.tag === "imp") {
-        const capturedLines = lines.slice(cap.startRow, cap.endRow + 1);
-        // Tree-sitter columns are UTF-8 byte offsets, not JS string indices.
-        // A multiline capture is not repeated as `text` in CLI query output.
-        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(cap.startCol).toString();
-        const last = capturedLines.length - 1;
-        const endCol = cap.endCol - (last === 0 ? cap.startCol : 0);
-        capturedLines[last] = Buffer.from(capturedLines[last]).subarray(0, endCol).toString();
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
         // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
         // is one capture that can span a whole file. Keep both ends, because an
         // import's module source comes last.
-        const importText = capturedLines.map(line => line.trim()).filter(Boolean).join(" ");
+        const importText = captureLines(lines, cap).map(line => line.trim()).filter(Boolean).join(" ");
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
           : importText);
@@ -739,27 +760,18 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     let name = nameCapture?.text || "anonymous";
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
-      if (parameters) {
-        const parameterLines = lines.slice(parameters.startRow, parameters.endRow + 1);
-        parameterLines[0] = Buffer.from(parameterLines[0] ?? "").subarray(parameters.startCol).toString();
-        const last = parameterLines.length - 1;
-        parameterLines[last] = Buffer.from(parameterLines[last]).subarray(0,
-          parameters.endCol - (last === 0 ? parameters.startCol : 0)).toString();
-        name += parameterLines.join(" ").replace(/\s+/g, " ").trim();
-      }
+      if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
     }
+    const receiver = match.captures.find(c => c.tag === "receiver");
+    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
       // Setext heading paragraphs include a trailing newline (and can span
       // lines), so the CLI prints only their range, without a `text` value.
       if (nameCapture && !nameCapture.text) {
-        const capturedLines = lines.slice(nameCapture.startRow, nameCapture.endRow + 1);
-        capturedLines[0] = Buffer.from(capturedLines[0] ?? "").subarray(nameCapture.startCol).toString();
-        const last = capturedLines.length - 1;
-        capturedLines[last] = Buffer.from(capturedLines[last] ?? "")
-          .subarray(0, nameCapture.endCol - (last === 0 ? nameCapture.startCol : 0)).toString();
-        name = capturedLines.join(" ").trim().replace(/\s+/g, " ");
+        name = captureLines(lines, nameCapture).join(" ").trim().replace(/\s+/g, " ");
       }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
@@ -855,8 +867,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  // Tree-sitter ranges include columns: row-only comparisons lose methods
-  // on the opening line and cannot distinguish adjacent one-line declarations.
   // The latest containing start is the nearest lexical container, so a nested
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
@@ -866,10 +876,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (duplicateAliases.has(sym)) continue;
     const range = ranges.get(sym)!;
     const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
-      && (range.startRow > parent.startRow
-        || (range.startRow === parent.startRow && range.startCol >= parent.startCol))
-      && (range.endRow < parent.endRow
-        || (range.endRow === parent.endRow && range.endCol <= parent.endCol)));
+      && rangeContains(parent, range));
+    // A Ruby `def` inside `class << self` defines a class method, so it is named
+    // like `def self.x` — unless a class or module opened in that block is nearer.
+    if (sym.kind === "function" && singletonScopes.some(scope => rangeContains(scope, range)
+      && (!owner || rangeContains(owner.range, scope)))) {
+      sym.name = `self.${sym.name}`;
+      sym.kind = "method";
+    }
     if (owner) {
       if (sym.kind === "function") sym.kind = "method";
       owner.sym.children!.push(sym);
@@ -1098,9 +1112,14 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
-// CSS selectors can contain literal dots, so escape those dots before adding
-// ownership separators. Search results remain unambiguous when copied to unfold.
-export function qualifySymbolName(name: string, parent: string | undefined, language: string): string {
+// Ruby distinguishes instance methods with # and singleton methods with .
+// CSS selectors escape literal dots before adding ownership separators.
+export function qualifySymbolName(name: string, parent: string | undefined, language: string, kind?: CodeSymbol["kind"]): string {
+  if (language === "ruby" && kind === "method") {
+    if (name.startsWith("self.")) return parent ? `${parent}.${name.slice(5)}` : name;
+    if (name.includes(".")) return name;
+    return parent ? `${parent}#${name}` : name;
+  }
   const segment = language === "css" || language === "scss"
     ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
   return parent ? `${parent}.${segment}` : segment;
@@ -1111,7 +1130,7 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
   const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string): CodeSymbol | null => {
     for (const sym of symbols) {
-      const qualifiedName = qualifySymbolName(sym.name, parent, file.language);
+      const qualifiedName = qualifySymbolName(sym.name, parent, file.language, sym.kind);
       if ((qualified ? qualifiedName : sym.name) === symbolName) return sym;
       if (sym.children) {
         const found = findSymbol(sym.children, qualified, qualifiedName);
