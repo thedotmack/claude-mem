@@ -93,8 +93,7 @@ function normalizePathValue(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
   }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
+  return value.trim() ? value : null;
 }
 
 function maybeParseObject(value: unknown): Record<string, unknown> | null {
