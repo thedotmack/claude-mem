@@ -59,6 +59,14 @@ describe('kimiAdapter.normalizeInput', () => {
     }
   });
 
+  test('leaves a kimi-file:// attachment reference unaliased, so it is not recorded as a file read', () => {
+    const rawInput = { path: 'kimi-file://abc', n_lines: 3 };
+    const normalized = kimiAdapter.normalizeInput({ session_id: 'read-attachment', cwd: process.cwd(),
+      tool_name: 'Read', tool_input: rawInput });
+    expect(normalized.toolInput).toBe(rawInput);
+    expect(rawInput).toEqual({ path: 'kimi-file://abc', n_lines: 3 });
+  });
+
   test('maps SessionStart source startup|resume, drops unknown values', () => {
     const base = { hook_event_name: 'SessionStart', session_id: 's1', cwd: process.cwd() };
     expect(kimiAdapter.normalizeInput({ ...base, source: 'startup' }).sessionSource).toBe('startup');
