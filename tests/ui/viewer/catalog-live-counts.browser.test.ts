@@ -9,8 +9,10 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for live catalog request-order tests');
 
-for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation', 'item-deleted-outside-page', 'item-deleted-outside-removed'] as const) {
-  const independent = scenario === 'item-deleted-independent' || scenario === 'item-deleted-confirmation';
+for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', 'item-deleted', 'item-deleted-newer', 'item-deleted-stale', 'item-deleted-independent', 'item-deleted-confirmation', 'item-deleted-outside-page', 'item-deleted-outside-removed', 'item-deleted-recreated', 'item-deleted-recreated-removed'] as const) {
+  const recreated = scenario.startsWith('item-deleted-recreated');
+  const removeRecreated = scenario === 'item-deleted-recreated-removed';
+  const independent = recreated || scenario === 'item-deleted-independent' || scenario === 'item-deleted-confirmation';
   const again = scenario === 'item-deleted-confirmation';
   const outside = scenario.startsWith('item-deleted-outside');
   const removeOutside = scenario === 'item-deleted-outside-removed';
@@ -71,11 +73,18 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           if(${JSON.stringify(scenario)}==='removed')document.getElementById('remove').click();
           await fetch('/release');
           let confirming=false;
+    let recreatedExists=true;
           let provisional;
           if(${independent}){
             await wait(async()=>document.getElementById('loading').textContent==='false' || (await (await fetch('/confirmation-status')).json()).started);
             confirming=document.getElementById('loading').textContent==='true';
             provisional=JSON.parse(document.getElementById('rows').textContent)[0].item_count;
+            if(${recreated}){
+              document.getElementById('remove-outside').click();await new Promise(requestAnimationFrame);
+              document.getElementById('touch-outside').click();await new Promise(requestAnimationFrame);
+              await fetch('/recreated');
+              if(${removeRecreated}){document.getElementById('remove-outside').click();await new Promise(requestAnimationFrame);await fetch('/recreated-removed');}
+            }
             if(${again}){document.getElementById('delete-item').click();await new Promise(requestAnimationFrame);await fetch('/deleted');}
             await fetch('/confirm-release');
           }
@@ -95,6 +104,7 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
     let confirmRelease!:()=>void;
     const confirmationReady=new Promise<void>(resolve=>{confirmRelease=resolve});
     let confirming=false;
+    let recreatedExists=true;
     const requestScopes:string[]=[];
     let latestStarted!:()=>void;
     const latestRequested=new Promise<void>(resolve=>{latestStarted=resolve});
@@ -118,13 +128,15 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
           const snapshot=serverCount;
           if(page===2)await ready;
           if(page===3){confirming=true;await confirmationReady;}
-          return Response.json({sessions:[{...entry,item_count:snapshot}],hasMore:false});
+          return Response.json({sessions:[{...entry,item_count:snapshot}, ...(recreated && recreatedExists ? [{...entry,content_session_id:'outside-session',custom_title:'Recreated server title',item_count:page===1?2:1}] : [])],hasMore:false});
         }
         if(page===3)latestStarted();
         if(page===2 && scenario==='overlap')await firstReady;
         else if(page>1)await ready;
         return Response.json({sessions:scenario==='placeholder'?[]:[{...entry,item_count:page>1 && (scenario==='fresh'||scenario==='item-deleted-newer')?8:page===2&&scenario==='item-deleted-stale'?7:5}],hasMore:false});
       }
+      if(path==='/recreated'){recreatedExists=true;return new Response('ok');}
+      if(path==='/recreated-removed'){recreatedExists=false;return new Response('ok');}
       if(path==='/outside-ready'){outsideCatalog.push({...entry,content_session_id:'outside-session',started_at_epoch:0,item_count:2});outsideCatalog[0].item_count=3;return new Response('ok');}
       if(path==='/outside-removed'){outsideCatalog.splice(outsideCatalog.findIndex(row=>row.content_session_id==='outside-session'),1);return new Response('ok');}
       if(path==='/snapshot-ready'){await snapshotStarted;return new Response('ok');}
@@ -151,6 +163,11 @@ for (const scenario of ['stale', 'fresh', 'placeholder', 'removed', 'overlap', '
         else expect(actual.find(row=>row.content_session_id==='outside-session')).toMatchObject({item_count:2,custom_title:null,started_at_epoch:0});
         expect(requests).toBe(3);
       }else if(independent){
+        if(recreated){
+          expect(actual.rows).toHaveLength(removeRecreated?1:2);
+          if(removeRecreated)expect(actual.rows.some(row=>row.content_session_id==='outside-session')).toBe(false);
+          else expect(actual.rows.find(row=>row.content_session_id==='outside-session')).toMatchObject({item_count:1,custom_title:'Recreated server title'});
+        }
         expect(actual.rows[0].item_count).toBe(again?4:5);
         expect(serverCount).toBe(again?4:5);
         expect(requests).toBe(again?4:3);

@@ -102,7 +102,11 @@ export function useSessionCatalog() {
 
   /** A live row arrived: bump its session's count, or add a session seen for the first time. */
   const touch = useCallback((item: LiveSessionItem) => {
-    journalRef.current.touched.add(sessionKey(item.session));
+    const key = sessionKey(item.session);
+    // A live row after a whole-session deletion recreates this identity.
+    // Earlier tombstones must not hide its new catalog entry.
+    journalRef.current.removed.delete(key);
+    journalRef.current.touched.add(key);
     setSessions(prev => {
       const index = prev.findIndex(entry => sameSession(catalogEntryRef(entry), item.session));
       if (index === -1) {
