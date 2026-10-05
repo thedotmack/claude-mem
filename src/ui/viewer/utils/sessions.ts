@@ -119,12 +119,14 @@ export function removeSessionRows<T extends SessionScopedRow>(rows: T[], ref: Se
 export interface CatalogJournal {
   /** Sessions first seen live (SSE) during the request. */
   added: SessionCatalogEntry[];
+  /** Sessions whose item count changed live during the request. */
+  touched: Set<string>;
   /** sessionKey of every session deleted during the request. */
   removed: Set<string>;
 }
 
 export function emptyCatalogJournal(): CatalogJournal {
-  return { added: [], removed: new Set() };
+  return { added: [], touched: new Set(), removed: new Set() };
 }
 
 /**
@@ -140,12 +142,25 @@ export function mergeCatalogPage(
   mode: 'replace' | 'append',
 ): SessionCatalogEntry[] {
   const keyOf = (entry: SessionCatalogEntry) => sessionKey(catalogEntryRef(entry));
+  const currentByKey = new Map(current.map(entry => [keyOf(entry), entry]));
+  const preserveLiveCount = (entry: SessionCatalogEntry): SessionCatalogEntry => {
+    const key = keyOf(entry);
+    const live = journal.touched.has(key) ? currentByKey.get(key) : undefined;
+    // A page may already include the live rows: use the larger count rather
+    // than adding a delta twice. Keep authoritative page metadata (titles).
+    return live && live.item_count > entry.item_count
+      ? { ...entry, item_count: live.item_count }
+      : entry;
+  };
   let combined: SessionCatalogEntry[];
   if (mode === 'replace') {
     // The page's row carries the real title and count; a live placeholder only
     // survives for a session the page does not have yet.
     const pageKeys = new Set(page.map(keyOf));
-    combined = [...journal.added.filter(entry => !pageKeys.has(keyOf(entry))), ...page];
+    combined = [
+      ...journal.added.filter(entry => !pageKeys.has(keyOf(entry))).map(preserveLiveCount),
+      ...page.map(preserveLiveCount),
+    ];
   } else {
     combined = [...current, ...page];
   }
