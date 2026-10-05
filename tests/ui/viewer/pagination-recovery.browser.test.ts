@@ -40,17 +40,21 @@ for (const scenario of ['partial', 'empty-timeline', 'empty-session']) {
             await new Promise(resolve => setTimeout(resolve, 10));
           }
         }
-        async function renderSettled() { for (let i=0; i<6; i++) await new Promise(requestAnimationFrame); }
         (async () => {
           try {
-            await until(() => settled >= 3); await renderSettled();
+            // Wait for the observable React commit. Animation frames can be
+            // suspended in a background headless tab on the CI runner.
+            await until(() => settled >= 3 && [...document.querySelectorAll('button')].some(b => b.textContent === 'Retry'));
             const initial = document.body.textContent;
             const button = [...document.querySelectorAll('button')].find(b => b.textContent === 'Retry');
             const report = { retainedObservation: initial.includes('OWNED_OBSERVATION'),
               retainedSummary: initial.includes('OWNED_SUMMARY'), loading: initial.includes('Loading more...'),
               retry: !!button, recovered: false, sessionView: !!document.querySelector('.session-detail-header') };
             if (button) {
-              button.click(); await until(() => settled >= ${scenario === 'partial' ? 4 : 6}); await renderSettled();
+              button.click(); await until(() => settled >= ${scenario === 'partial' ? 4 : 6}
+                && document.body.textContent.includes(${scenario === 'partial' ? "'OWNED_PROMPT'" : "'OWNED_OBSERVATION'"})
+                && !document.body.textContent.includes('Loading more...')
+                && !document.querySelector('[role="alert"]'));
               report.recovered = document.body.textContent.includes(${scenario === 'partial' ? "'OWNED_PROMPT'" : "'OWNED_OBSERVATION'"})
                 && !document.body.textContent.includes('Loading more...')
                 && !document.querySelector('[role="alert"]');
