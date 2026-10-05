@@ -152,7 +152,7 @@ export async function searchCodebase(
         let score = 0;
         let reason = "";
 
-        const nameScore = matchScore(sym.name.toLowerCase(), queryParts);
+        const nameScore = matchScore((parsed.language === "ruby" ? qualifiedName : sym.name).toLowerCase(), queryParts);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";

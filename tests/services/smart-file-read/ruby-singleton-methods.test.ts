@@ -74,5 +74,6 @@ test('search identities round trip same-named instance and explicit singleton me
       expect(unfolded).not.toContain(instance ? ':explicit_singleton' : ':instance');
     }
     expect(unfoldSymbol(source, 'owned.rb', 'reset')).toContain(':instance');
+    expect((await searchCodebase(dir, 'Counter#reset')).matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['Counter#reset']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
