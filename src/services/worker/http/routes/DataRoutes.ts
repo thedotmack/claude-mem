@@ -699,7 +699,7 @@ export class DataRoutes extends BaseRouteHandler {
     const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
     // SQLite interprets a negative LIMIT as unbounded, including limit + 1
     // used by PaginationHelper to detect whether another page exists.
-    const limit = Math.min(Math.max(Number.isSafeInteger(requestedLimit) ? requestedLimit : 20, 1), 100);
+    const limit = Math.min(Math.max(requestedLimit, 1), 100);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const contentSessionId = req.query.contentSessionId as string | undefined;

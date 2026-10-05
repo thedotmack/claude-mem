@@ -39,7 +39,7 @@ describe('data feed pagination bounds at the SQLite boundary', () => {
     expect(result.hasMore).toBe(true);
   });
   it('keeps defaults and caps large positive limits', async () => {
-    for (const [query, expected] of [['', 20], ['?limit=1000', 100]]) {
+    for (const [query, expected] of [['', 20], ['?limit=1000', 100], ['?limit=9007199254740992', 100], [`?limit=${'9'.repeat(400)}`, 100]]) {
       const result = await (await fetch(`${endpoint}/api/observations${query}`)).json() as { items: unknown[]; limit: number };
       expect(result.items).toHaveLength(expected);
       expect(result.limit).toBe(expected);
