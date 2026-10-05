@@ -2,14 +2,15 @@
 // Test harness for claude-mem-cowork hooks. Mock cmem.ai server + assertions.
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { existsSync, rmSync, readFileSync, statSync, mkdirSync, appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, rmSync, readFileSync, writeFileSync, statSync, mkdirSync, appendFileSync, mkdtempSync, cpSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
 const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
 const HOOK = PLUGIN_DIR + '/scripts/cmem-hook.mjs';
 // hermetic HOME so the suite never touches the real ~/.claude-mem
-const TESTHOME = '/tmp/cmem-testhome';
+const TESTHOME = mkdtempSync(join(tmpdir(), 'owned-cmem-testhome-'));
 const SPOOL = TESTHOME + '/.claude-mem/cowork-spool.jsonl';
 let received = [];
 let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
@@ -49,8 +50,8 @@ const server = http.createServer((req, res) => {
 
 function run(event, stdinObj, env = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile('node', [HOOK, event], {
-      env: { ...process.env, HOME: TESTHOME, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', CLAUDE_MEM_WORKER_PORT: '1', ...env },
+    const child = execFile(process.execPath, [HOOK, event], {
+      env: { ...process.env, HOME: TESTHOME, USERPROFILE: TESTHOME, CLAUDE_CONFIG_DIR: TESTHOME + '/.claude', CLAUDE_MEM_DATA_DIR: TESTHOME + '/.claude-mem', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', CMEM_USER_ID: 'test-user', CMEM_SYNC_HUB_URL: '', CLAUDE_MEM_WORKER_PORT: '1', ...env },
       encoding: 'utf8', timeout: 45000
     }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
     child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
@@ -215,13 +216,18 @@ mode = 'full';
 
 // ---- 7. no key → inert (blank-config plugin copy, isolated HOME) ----
 console.log('\n[7] unpaired = inert');
-const { execSync } = await import('node:child_process');
-execSync(`rm -rf /tmp/plugin-blank /tmp/emptyhome && mkdir -p /tmp/emptyhome && cp -r ${PLUGIN_DIR} /tmp/plugin-blank`);
-execSync(`node -e "const f='/tmp/plugin-blank/config.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.apiKey='';c.userId='';c.syncHubUrl='';fs.writeFileSync(f,JSON.stringify(c))"`);
+const blankPlugin = join(TESTHOME, 'plugin-blank');
+const unpairedHome = join(TESTHOME, 'unpaired');
+mkdirSync(unpairedHome, { recursive: true });
+cpSync(PLUGIN_DIR, blankPlugin, { recursive: true });
+const blankConfigPath = join(blankPlugin, 'config.json');
+const blankConfig = JSON.parse(readFileSync(blankConfigPath, 'utf8'));
+blankConfig.apiKey = ''; blankConfig.userId = ''; blankConfig.syncHubUrl = '';
+writeFileSync(blankConfigPath, JSON.stringify(blankConfig));
 received = [];
 out = (await new Promise((resolve) => {
-  const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
-    env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
+  const child = execFile(process.execPath, [join(blankPlugin, 'scripts/cmem-hook.mjs'), 'observation'], {
+    env: { ...process.env, HOME: unpairedHome, USERPROFILE: unpairedHome, CLAUDE_CONFIG_DIR: unpairedHome + '/.claude', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '', CMEM_USER_ID: '', CMEM_SYNC_HUB_URL: '' },
     encoding: 'utf8', timeout: 45000
   }, (err, stdout) => resolve({ out: stdout }));
   child.stdin.end(JSON.stringify({ session_id: 's1', tool_name: 'Write', tool_use_id: 'tu_9' }));
@@ -230,11 +236,13 @@ check('no requests without key', received.length === 0);
 check('no stdout', out.trim() === '');
 // 7b: ~/.claude-mem/settings.json fallback supplies credentials when config is blank
 received = [];
-execSync('mkdir -p /tmp/emptyhome/.claude-mem');
-execSync(`node -e "require('fs').writeFileSync('/tmp/emptyhome/.claude-mem/settings.json',JSON.stringify({CLAUDE_MEM_CLOUD_SYNC_TOKEN:'cm_test_fallback',CLAUDE_MEM_CLOUD_SYNC_USER_ID:'u-1',CLAUDE_MEM_WORKER_PORT:'37777'}))"`);
+mkdirSync(join(unpairedHome, '.claude-mem'), { recursive: true });
+writeFileSync(join(unpairedHome, '.claude-mem/settings.json'), JSON.stringify({
+  CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'cm_test_fallback', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u-1', CLAUDE_MEM_WORKER_PORT: '37777',
+}));
 await new Promise((resolve) => {
-  const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
-    env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
+  const child = execFile(process.execPath, [join(blankPlugin, 'scripts/cmem-hook.mjs'), 'observation'], {
+    env: { ...process.env, HOME: unpairedHome, USERPROFILE: unpairedHome, CLAUDE_CONFIG_DIR: unpairedHome + '/.claude', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '', CMEM_USER_ID: '', CMEM_SYNC_HUB_URL: '' },
     encoding: 'utf8', timeout: 45000
   }, () => resolve());
   child.stdin.end(JSON.stringify({ session_id: 's1', tool_name: 'Write', tool_use_id: 'tu_9b' }));
@@ -310,11 +318,18 @@ received = [];
 await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_23' }, { CMEM_PROJECT: 'my-explicit' });
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
 
-// ---- 9c. local-first: a local claude-mem install means no cloud context read ----
+// ---- 9c. local-first: an enabled plugin registered in installed_plugins.json
+// with its hook and worker files means no cloud context read, worker up or down ----
 console.log('\n[9c] local-first context');
 const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
-mkdirSync(LOCAL_PLUGIN, { recursive: true });
+mkdirSync(LOCAL_PLUGIN + '/hooks', { recursive: true });
+mkdirSync(LOCAL_PLUGIN + '/scripts', { recursive: true });
+writeFileSync(LOCAL_PLUGIN + '/hooks/hooks.json', '{}');
+writeFileSync(LOCAL_PLUGIN + '/scripts/worker-service.cjs', '// owned injector fixture');
+writeFileSync(TESTHOME + '/.claude/settings.json', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }));
+writeFileSync(TESTHOME + '/.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: LOCAL_PLUGIN }] } }));
 received = [];
+// run() points CLAUDE_MEM_WORKER_PORT at port 1, so the local worker is down (a cold start)
 const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' });
 check('no /api/hooks/context request when claude-mem is installed locally', !received.some(r => r.url.startsWith('/api/hooks/context')));
 check('no cloud context block injected', !localStart.out.includes('claude-mem-context'), localStart.out.slice(0, 120));
@@ -334,5 +349,6 @@ const r2 = await run('unknown-event', '{}');
 check('unknown event exits 0', r2.code === 0);
 
 server.close();
+rmSync(TESTHOME, { recursive: true, force: true });
 console.log(`\n===== ${pass} passed, ${fail} failed =====`);
 process.exit(fail ? 1 : 0);
