@@ -719,7 +719,7 @@ export async function processAgentResponse(
         contentSessionId: session.contentSessionId,
         toolUseIds: claimedToolUseIds,
         observationId: linkObservationId,
-        memorySessionId: session.memorySessionId,
+        memorySessionId: registeredMemorySessionId,
       });
       logger.debug('DB', `TOOL_USES_LINKED | sessionDbId=${session.sessionDbId} | rows=${linked} | observationId=${linkObservationId}`, {
         sessionId: session.sessionDbId
@@ -820,14 +820,14 @@ export async function processAgentResponse(
     observations: fresh.observations,
     observationIds: fresh.observationIds,
     project: context.project,
-    memorySessionId: session.memorySessionId,
+    memorySessionId: registeredMemorySessionId,
   });
 
   void notifyGrokBotAwareness({
     observations: fresh.observations,
     observationIds: fresh.observationIds,
     project: context.project,
-    memorySessionId: session.memorySessionId,
+    memorySessionId: registeredMemorySessionId,
     agentId: context.pendingAgentId,
   });
 
@@ -851,6 +851,7 @@ export async function processAgentResponse(
     dbManager,
     worker,
     agentName,
+    registeredMemorySessionId,
     projectRoot
   );
 
@@ -862,7 +863,8 @@ export async function processAgentResponse(
     context,
     dbManager,
     worker,
-    agentName
+    agentName,
+    registeredMemorySessionId
   );
 
   if (result.summaryId) {
@@ -971,9 +973,9 @@ async function syncAndBroadcastObservations(
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
   agentName: string,
+  memorySessionId: string,
   projectRoot?: string
 ): Promise<void> {
-  const memorySessionId = session.memorySessionId;
   if (!memorySessionId) {
     return;
   }
@@ -1030,7 +1032,7 @@ async function syncAndBroadcastObservations(
 
     broadcastObservation(worker, {
       id: obsId,
-      memory_session_id: session.memorySessionId,
+      memory_session_id: memorySessionId,
       session_id: session.contentSessionId,
       content_session_id: session.contentSessionId,
       platform_source: session.platformSource,
@@ -1081,12 +1083,12 @@ async function syncAndBroadcastSummary(
   context: ResponseContext,
   dbManager: DatabaseManager,
   worker: WorkerRef | undefined,
-  agentName: string
+  agentName: string,
+  memorySessionId: string
 ): Promise<void> {
   if (!summaryForStore || !result.summaryId) {
     return;
   }
-  const memorySessionId = session.memorySessionId;
   if (!memorySessionId) {
     return;
   }
