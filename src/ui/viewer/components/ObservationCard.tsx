@@ -3,20 +3,11 @@ import { Observation } from '../types';
 import { formatDate } from '../utils/formatters';
 import { DeleteButton } from './DeleteButton';
 import type { DeletableItemType } from '../utils/feed-deletion';
+import { parseStoredStringList } from '../utils/stored-string-list';
 
 interface ObservationCardProps {
   observation: Observation;
   onDeleted: (itemType: DeletableItemType, id: number) => void;
-}
-
-function parseStoredStringArray(raw: string | null | undefined): string[] {
-  if (!raw) return [];
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : [];
-  } catch {
-    return [];
-  }
 }
 
 function stripProjectRoot(filePath: string): string {
@@ -43,10 +34,10 @@ export function ObservationCard({ observation, onDeleted }: ObservationCardProps
   const [showNarrative, setShowNarrative] = useState(false);
   const date = formatDate(observation.created_at_epoch);
 
-  const facts = parseStoredStringArray(observation.facts);
-  const concepts = parseStoredStringArray(observation.concepts);
-  const filesRead = parseStoredStringArray(observation.files_read).map(stripProjectRoot);
-  const filesModified = parseStoredStringArray(observation.files_modified).map(stripProjectRoot);
+  const facts = parseStoredStringList(observation.facts);
+  const concepts = parseStoredStringList(observation.concepts);
+  const filesRead = parseStoredStringList(observation.files_read).map(stripProjectRoot);
+  const filesModified = parseStoredStringList(observation.files_modified).map(stripProjectRoot);
 
   const hasFactsContent = facts.length > 0 || concepts.length > 0 || filesRead.length > 0 || filesModified.length > 0;
 

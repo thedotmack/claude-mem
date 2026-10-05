@@ -8,20 +8,24 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
   ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium for viewer regressions.');
-(chrome ? it : it.skip)('retains valid facts, concepts and files when mixed stored metadata contains invalid entries', async () => {
+(chrome ? it : it.skip)('retains valid facts, concepts and files from mixed and plain-text stored metadata', async () => {
   const esbuild = createRequire(import.meta.url).resolve(`@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`);
   const bundle = execFileSync(esbuild, ['--bundle','--loader=tsx','--platform=browser','--format=iife','--define:process.env.NODE_ENV="production"','--log-level=error'], {
     cwd: resolve(import.meta.dir, '../../..'), timeout: 20000, maxBuffer: 8 * 1024 * 1024, encoding:'utf8',
     input: `import React from 'react'; import {createRoot} from 'react-dom/client';
       import {ObservationCard} from './src/ui/viewer/components/ObservationCard';
       const mixed = value => JSON.stringify([null,4,{invalid:true},value]);
-      createRoot(document.getElementById('root')).render(<ObservationCard observation={{id:1,project:'owned',type:'discovery',title:'OWNED CARD',created_at_epoch:1,
-        facts:mixed('VALID FACT'),concepts:mixed('VALID CONCEPT'),files_read:mixed('/owned/src/read.ts'),files_modified:mixed('/owned/src/changed.ts')}} onDeleted={()=>{}}/>);
+      // The second card stores CJK facts and concepts as plain text, not JSON (#3423).
+      createRoot(document.getElementById('root')).render(<><ObservationCard observation={{id:1,project:'owned',type:'discovery',title:'OWNED CARD',created_at_epoch:1,
+        facts:mixed('VALID FACT'),concepts:mixed('VALID CONCEPT'),files_read:mixed('/owned/src/read.ts'),files_modified:mixed('/owned/src/changed.ts')}} onDeleted={()=>{}}/>
+        <ObservationCard observation={{id:2,project:'owned',type:'discovery',title:'CJK CARD',created_at_epoch:2,
+        facts:'用户身份定位',concepts:'记忆检索',files_read:'[]',files_modified:'[]'}} onDeleted={()=>{}}/></>);
       (async()=>{try {
         const deadline=Date.now()+6000;
-        let button;
-        while(!(button=[...document.querySelectorAll('button')].find(b=>b.textContent==='facts'))){if(Date.now()>deadline) throw new Error('Facts control absent');await new Promise(r=>setTimeout(r,10));}
-        button.click(); for(let i=0;i<4;i++) await new Promise(requestAnimationFrame);
+        let buttons=[];
+        while((buttons=[...document.querySelectorAll('button')].filter(b=>b.textContent==='facts')).length<2){if(Date.now()>deadline) throw new Error('Facts controls absent: found '+buttons.length+' of 2');await new Promise(r=>setTimeout(r,10));}
+        for(const button of buttons) button.click();
+        for(let i=0;i<4;i++) await new Promise(requestAnimationFrame);
         await fetch('/result',{method:'POST',body:JSON.stringify({facts:[...document.querySelectorAll('.facts-list li')].map(n=>n.textContent),text:document.body.textContent})});
       }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})});}})();`
   });
@@ -40,12 +44,13 @@ if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium f
   try {
     const observed=await Promise.race([result,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Owned browser timed out')),30000);})]);
     expect(observed.failure).toBeUndefined();
-    expect(observed.facts).toEqual(['VALID FACT']);
+    expect(observed.facts).toEqual(['VALID FACT', '用户身份定位']);
     expect(observed.text).toContain('VALID CONCEPT');
+    expect(observed.text).toContain('记忆检索');
     expect(observed.text).toContain('src/read.ts');
     expect(observed.text).toContain('src/changed.ts');
     expect(observed.text).not.toContain('[object Object]');
   } finally {
     if(timer) clearTimeout(timer);child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});
   }
-},45000);
+},80000);
