@@ -20,7 +20,7 @@ describe("java-records", () => {
    const result = await searchCodebase(dir, "total");
    const match = result.matchingSymbols.find(s => s.symbolName === "Point.total");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("return x + y;");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
