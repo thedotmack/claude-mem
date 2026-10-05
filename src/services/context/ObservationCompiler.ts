@@ -39,6 +39,30 @@ const OBSERVATION_SELECT = `
       o.project
 `;
 
+// Each project key can match on `project` or `merged_into_project`. One
+// `(project IN … OR merged_into_project IN …) ORDER BY … LIMIT n` makes SQLite
+// fetch every matching row and sort them all. Instead take the newest `limit`
+// rows per (column, key) from the v63 (key COLLATE NOCASE, created_at_epoch DESC)
+// indexes, and keep the newest `limit` ids of the union.
+const PROJECT_KEY_COLUMNS = ['project', 'merged_into_project'] as const;
+
+function newestIdsPerProjectKeySql(
+  alias: string,
+  projectCount: number,
+  perKeySql: (keyPredicate: string) => string,
+): string {
+  const parts: string[] = [];
+  for (const column of PROJECT_KEY_COLUMNS) {
+    for (let i = 0; i < projectCount; i++) {
+      parts.push(`SELECT * FROM (${perKeySql(`${alias}.${column} COLLATE NOCASE = ?`)})`);
+    }
+  }
+  return `
+    SELECT id FROM (${parts.join(' UNION ')})
+    ORDER BY created_at_epoch DESC
+    LIMIT ?`;
+}
+
 export function queryObservationsMulti(
   db: DatabaseOwner,
   projects: string[],
@@ -91,10 +115,6 @@ export function queryObservationsNewest(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
   const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
-  const projectClause = projects.length > 0
-    ? `AND (o.project COLLATE NOCASE IN (${projects.map(() => '?').join(',')})
-           OR o.merged_into_project COLLATE NOCASE IN (${projects.map(() => '?').join(',')}))`
-    : '';
 
   const manualClause = options.includeManualSaves
     ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
@@ -108,13 +128,7 @@ export function queryObservationsNewest(
 
   const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
 
-  return db.db.prepare(`
-    SELECT
-      ${OBSERVATION_SELECT}${reinforcementColumn}
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (? IS NULL OR s.platform_source = ?)
-      ${projectClause}
+  const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
@@ -122,17 +136,44 @@ export function queryObservationsNewest(
           SELECT 1 FROM json_each(o.concepts)
           WHERE value IN (${conceptPlaceholders})
         )
-      ))
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `).all(
+      ))`;
+  const filterParams = [
     options.platformSource ?? null,
     options.platformSource ?? null,
-    ...(projects.length > 0 ? [...projects, ...projects] : []),
     ...typeArray,
     ...conceptArray,
-    options.limit
-  ) as LocalObservation[];
+  ];
+
+  if (projects.length === 0) {
+    return db.db.prepare(`
+      SELECT
+        ${OBSERVATION_SELECT}${reinforcementColumn}
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE ${filterSql}
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?
+    `).all(...filterParams, options.limit) as LocalObservation[];
+  }
+
+  const winnersSql = newestIdsPerProjectKeySql('o', projects.length, keyPredicate => `
+      SELECT o.id, o.created_at_epoch
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE ${keyPredicate} AND ${filterSql}
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?`);
+  const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
+    projects.flatMap(project => [project, ...filterParams, options.limit]));
+
+  return db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}${reinforcementColumn}
+    FROM (${winnersSql}) w
+    JOIN observations o ON o.id = w.id
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    ORDER BY o.created_at_epoch DESC
+  `).all(...perKeyParams, options.limit) as LocalObservation[];
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
@@ -155,7 +196,19 @@ export function querySummariesMulti(
   config: ContextConfig,
   platformSource?: string
 ): LocalSessionSummary[] {
-  const projectPlaceholders = projects.map(() => '?').join(',');
+  if (projects.length === 0) return [];
+  const limit = config.sessionCount + SUMMARY_LOOKAHEAD;
+  const platformParams = [platformSource ?? null, platformSource ?? null];
+
+  const winnersSql = newestIdsPerProjectKeySql('ss', projects.length, keyPredicate => `
+      SELECT ss.id, ss.created_at_epoch
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+      WHERE ${keyPredicate} AND (? IS NULL OR s.platform_source = ?)
+      ORDER BY ss.created_at_epoch DESC
+      LIMIT ?`);
+  const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
+    projects.flatMap(project => [project, ...platformParams, limit]));
 
   return db.db.prepare(`
     SELECT
@@ -171,20 +224,11 @@ export function querySummariesMulti(
       ss.created_at,
       ss.created_at_epoch,
       ss.project
-    FROM session_summaries ss
+    FROM (${winnersSql}) w
+    JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project COLLATE NOCASE IN (${projectPlaceholders})
-           OR ss.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
-    config.sessionCount + SUMMARY_LOOKAHEAD
-  ) as LocalSessionSummary[];
+  `).all(...perKeyParams, limit) as LocalSessionSummary[];
 }
 
 export function cwdToDashed(cwd: string): string {

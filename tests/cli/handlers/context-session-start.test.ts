@@ -78,6 +78,72 @@ beforeEach(() => {
 });
 
 describe('contextHandler SessionStart path', () => {
+  it('skips the model and terminal timeline on Claude resume before contacting the worker', async () => {
+    calls.length = 0;
+    outageNoticeRequests.length = 0;
+    showTerminalOutput = true;
+    workerUnreachable = true;
+    staleReason = 'expired keychain entry';
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-resume-claude',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+        sessionSource: 'resume',
+      });
+
+      expect(result).toEqual({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: 0,
+      });
+      expect(calls).toEqual([]);
+      expect(outageNoticeRequests).toEqual([]);
+    } finally {
+      showTerminalOutput = false;
+      workerUnreachable = false;
+    }
+  });
+
+  for (const sessionSource of ['startup', 'clear', 'compact'] as const) {
+    it(`keeps model and terminal context on Claude ${sessionSource}`, async () => {
+      calls.length = 0;
+      showTerminalOutput = true;
+      try {
+        const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+        const result = await contextHandler.execute({
+          sessionId: `session-${sessionSource}-claude`,
+          cwd: '/tmp/repo',
+          platform: 'claude-code',
+          sessionSource,
+        });
+
+        expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+        expect(result.systemMessage).toContain('context from worker');
+        expect(calls.map(call => call[0])).toEqual([
+          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude',
+          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&colors=true',
+        ]);
+      } finally {
+        showTerminalOutput = false;
+      }
+    });
+  }
+
+  it('keeps context injection for Codex resume', async () => {
+    calls.length = 0;
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-resume-codex',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+      sessionSource: 'resume',
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(calls).toHaveLength(1);
+  });
+
   for (const memoryProvider of ['codex', 'openai-compatible', 'openrouter', 'gemini']) {
     it(`does not request Claude login when memory uses ${memoryProvider} without Claude fallback`, async () => {
       provider = memoryProvider;

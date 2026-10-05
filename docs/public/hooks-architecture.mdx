@@ -74,7 +74,7 @@ Claude Code's hook system provides exactly what we need:
 
 ## The Hook Scripts
 
-Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-mem install` (and `npx claude-mem repair`) set up the runtime; the Setup hook runs `version-check.js`, which completes a plugin-marketplace install whose dependencies are missing and records the install marker. SessionStart runs 2 hooks: worker-service start, which is async so session start never waits on it, and the synchronous context hook, which starts the worker itself when needed.
+Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-mem install` (and `npx claude-mem repair`) set up the runtime; the Setup hook runs `version-check.js`, which completes a plugin-marketplace install whose dependencies are missing and records the install marker. SessionStart runs worker-service start asynchronously on startup, resume, clear, and compact. The synchronous context hook runs on startup, clear, and compact and starts the worker itself when needed. Continue and resume restore the existing conversation without printing or injecting a new timeline, preserving its prompt cache.
 
 ### Setup Hook: Version Check
 
@@ -120,7 +120,7 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-me
 
 **Purpose:** Inject relevant context from previous sessions
 
-**When:** Claude Code starts (runs alongside the async worker-start SessionStart entry)
+**When:** A new Claude Code session starts, or after clear or compact (runs alongside the async worker-start SessionStart entry). Skipped on continue and resume.
 
 **What it does:**
 1. Extracts project name from current working directory
