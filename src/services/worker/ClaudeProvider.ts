@@ -1026,6 +1026,8 @@ export class ClaudeProvider {
         // prompt is built, so the observation carries a summary of the whole
         // field rather than a head/tail slice with the middle cut out (#3800).
         // The field cap scales with the model's window (#3625).
+        // A newer user prompt may arrive while the payload is being condensed.
+        activeResponseContext.current = snapshotResponseContext(session);
         const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
         const optimized = compressField
           ? await optimizeObservationFields(
@@ -1046,7 +1048,6 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd
         }, fieldMaxChars, takeObserverSchemaReminder(session));
-        activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 

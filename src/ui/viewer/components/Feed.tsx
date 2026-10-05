@@ -16,9 +16,10 @@ interface FeedProps {
   onDeleted: (itemType: DeletableItemType, id: number) => void;
   isLoading: boolean;
   hasMore: boolean;
+  loadError?: string | null;
 }
 
-export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore }: FeedProps) {
+export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore, loadError }: FeedProps) {
   const loadMoreRef = useRef<HTMLDivElement>(null);
   const feedRef = useRef<HTMLDivElement>(null);
   const onLoadMoreRef = useRef(onLoadMore);
@@ -34,7 +35,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore 
     const observer = new IntersectionObserver(
       (entries) => {
         const first = entries[0];
-        if (first.isIntersecting && hasMore && !isLoading) {
+        if (first.isIntersecting && hasMore && !isLoading && !loadError) {
           onLoadMoreRef.current?.();
         }
       },
@@ -49,7 +50,7 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore 
       }
       observer.disconnect();
     };
-  }, [hasMore, isLoading]);
+  }, [hasMore, isLoading, loadError]);
 
   return (
     <div className="feed" ref={feedRef}>
@@ -77,7 +78,13 @@ export function Feed({ items, header, onLoadMore, onDeleted, isLoading, hasMore 
             Loading more...
           </div>
         )}
-        {hasMore && !isLoading && items.length > 0 && (
+        {loadError && !isLoading && (
+          <div role="alert" style={{ textAlign: 'center', padding: '20px' }}>
+            <p>{loadError}</p>
+            <button onClick={onLoadMore}>Retry</button>
+          </div>
+        )}
+        {hasMore && !isLoading && !loadError && items.length > 0 && (
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
         {!hasMore && items.length > 0 && (
