@@ -37,16 +37,16 @@ def tag(kind):
 
 def day_label(day, short=False):
     d = dt.date.fromisoformat(day)
-    return d.strftime("%b %-d") if short else d.strftime("%a %b %-d")
+    return f"{d:%b} {d.day}" if short else f"{d:%a %b} {d.day}"
 
 
 def date_pill(window, scope):
     """"Sep 18 – 25, 2026 (PT)"; cross-month "Sep 29 – Oct 2, 2026 (PT)"; one day "Sep 12, 2026 (PT)" (mapping #1)."""
     if scope.get("kind") == "session" and not window.get("start_pt"): return "one session"
     a = dt.date.fromisoformat(window["start_pt"]); b = dt.date.fromisoformat(window["end_exclusive_pt"]) - dt.timedelta(days=1)
-    if a == b: return a.strftime("%b %-d, %Y (PT)")
-    if a.month == b.month: return f"{a.strftime('%b %-d')} – {b.day}, {b.year} (PT)"
-    return f"{a.strftime('%b %-d')} – {b.strftime('%b %-d')}, {b.year} (PT)"
+    if a == b: return f"{a:%b} {a.day}, {a.year} (PT)"
+    if a.month == b.month: return f"{a:%b} {a.day} – {b.day}, {b.year} (PT)"
+    return f"{a:%b} {a.day} – {b:%b} {b.day}, {b.year} (PT)"
 
 
 def cat_sums(items):
@@ -491,11 +491,12 @@ def page(d, print_mode=False):
 # ---- entry points (plan 3.5) ----
 def render_file(inp, outdir, print_mode=False):
     import json, os
-    with open(inp) as fh: d = json.load(fh)
+    with open(inp, encoding="utf-8") as fh: d = json.load(fh)
     os.makedirs(outdir, exist_ok=True)
     name = "report.print.html" if print_mode else "report.html"
     path = os.path.join(outdir, name)
-    with open(path, "w") as fh: fh.write(page(d, print_mode))
+    html_bytes = page(d, print_mode).encode("utf-8")      # build before opening: a failed render must not truncate the last good report
+    with open(path, "wb") as fh: fh.write(html_bytes)
     return path
 
 

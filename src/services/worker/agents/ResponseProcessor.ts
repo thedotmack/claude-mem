@@ -93,8 +93,7 @@ function normalizePathValue(value: unknown): string | null {
   if (typeof value !== 'string') {
     return null;
   }
-  const trimmed = value.trim();
-  return trimmed ? trimmed : null;
+  return value.trim() ? value : null;
 }
 
 function maybeParseObject(value: unknown): Record<string, unknown> | null {
@@ -183,9 +182,12 @@ function extractPatchPaths(toolInput: unknown): string[] {
   }
 
   const patches: string[] = [];
-  const patch = normalizePathValue(input.patch);
-  if (patch) {
-    patches.push(patch);
+  // Codex's apply_patch hook carries the raw patch in tool_input.command.
+  for (const field of ['patch', 'command']) {
+    const patch = normalizePathValue(input[field]);
+    if (patch) {
+      patches.push(patch);
+    }
   }
 
   const edits = input.edits;
@@ -730,15 +732,17 @@ export async function processAgentResponse(
     }
   }
 
-  // A completed store proves the observer pipeline works end-to-end — clear
+  // A store that wrote memory proves the observer pipeline works end-to-end — clear
   // the failure streak in the observer-health ledger, and release any quota
   // breaker so a re-probe that succeeds restores full speed at once rather
   // than waiting out the remaining cooldown (#3634). Codex clears its breaker
   // in query using the admitted cooldown identity: storing an earlier response
   // here must not erase a newer failure from a concurrent pool slot.
-  recordObserverSuccess();
-  if (session.currentProvider && session.currentProvider !== 'codex') {
-    clearQuotaCooldown(session.currentProvider);
+  if (result.observationIds.length > 0 || result.summaryId !== null) {
+    recordObserverSuccess();
+    if (session.currentProvider && session.currentProvider !== 'codex') {
+      clearQuotaCooldown(session.currentProvider);
+    }
   }
 
   // Telemetry: counts, enums, and REAL usage only (lastUsage is never an
