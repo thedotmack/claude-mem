@@ -17,7 +17,7 @@ import {
   SearchOrchestrator,
   SEARCH_CONSTANTS
 } from './search/index.js';
-import type { SearchResults, StrategySearchResult } from './search/index.js';
+import type { SearchResults, StrategySearchResult, DateRange } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
@@ -93,8 +93,9 @@ export class SearchManager {
   }
 
   /**
-   * Shared "Chroma semantic match -> 90-day recency filter -> SQLite hydrate"
-   * pipeline for the single-doc-type hybrid searches. Returns the hydrated rows
+   * Shared "Chroma semantic match -> date-window filter -> SQLite hydrate"
+   * pipeline for the single-doc-type hybrid searches. Explicit ranges replace the
+   * default 90-day window. Returns the hydrated rows
    * (empty when Chroma yields nothing recent); callers own their own FTS
    * fallback and formatting so per-caller behavior is preserved exactly.
    */
@@ -104,7 +105,8 @@ export class SearchManager {
     project: string | undefined,
     platformSource: string | undefined,
     hydrate: (ids: number[], readKeys: string[]) => T[],
-    projects?: string[]
+    projects?: string[],
+    dateRange?: DateRange
   ): Promise<T[]> {
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
@@ -112,13 +114,18 @@ export class SearchManager {
     logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
 
     if (chromaResults?.ids && chromaResults.ids.length > 0) {
-      const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      const startEpoch = dateRange
+        ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
+        : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
       const recentIds = chromaResults.ids.filter((_id, idx) => {
         const meta = chromaResults.metadatas[idx];
-        return meta && meta.created_at_epoch > ninetyDaysAgo;
+        return meta && meta.created_at_epoch != null
+          && (startEpoch === undefined || meta.created_at_epoch >= startEpoch)
+          && (endEpoch === undefined || meta.created_at_epoch <= endEpoch);
       });
 
-      logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
+      logger.debug('SEARCH', dateRange ? 'Results within user date range' : 'Results within 90-day window', { count: recentIds.length });
 
       if (recentIds.length > 0) {
         return hydrate(recentIds, readKeys);
@@ -1005,8 +1012,9 @@ export class SearchManager {
         // `projects` comes parsed from the route (#4304); the keyword fallback
         // below already reads it, so Chroma and the hydration must too (#4248).
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids, readKeys) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, projects: readKeys, platformSource: options.platformSource }),
-          options.projects
+          this.sessionStore.getObservationsByIds(ids, { ...options, orderBy: 'relevance', limit, projects: readKeys }),
+          options.projects,
+          options.dateRange
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
