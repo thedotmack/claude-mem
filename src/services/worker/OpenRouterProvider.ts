@@ -25,7 +25,13 @@ import {
   type StreamLiveness,
 } from './streamed-chat-completion.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
-import { OpenAICompatibleProvider, assistantText, type OpenAIChatMessage as OpenAIMessage, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import {
+  OpenAICompatibleProvider,
+  assistantText,
+  type ObserverRequestLabel,
+  type OpenAIChatMessage as OpenAIMessage,
+  type ProviderQueryResult,
+} from './OpenAICompatibleProvider.js';
 import {
   resolveContextWindowTokens,
   resolveObserverMaxOutputTokens,
@@ -446,6 +452,31 @@ export function normalizeOpenRouterModel(rawModel: unknown): { model: string; fa
   return { model: unique[0], fallbackModels: unique.slice(1) };
 }
 
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+const CLAUDE_MEM_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
+/**
+ * `session_id` and `trace` for a request that reaches OpenRouter, shaped for
+ * OpenRouter Broadcast to PostHog: `session_id` → $ai_session_id,
+ * `trace_id` → $ai_trace_id, `generation_name` → $ai_span_name, any other
+ * trace key → metadata_<key>. The session id is also OpenRouter's
+ * sticky-routing key, so a session stays on the provider that holds its prompt
+ * cache. Hashed and random ids and fixed names only: never a path, a project
+ * name or anything the user wrote. `user` is left to the cmem gateway, which
+ * sets the account server-side.
+ */
+function openRouterRequestLabels(label: ObserverRequestLabel): Record<string, unknown> {
+  return {
+    session_id: label.sessionId,
+    trace: {
+      ...(label.generationId ? { trace_id: label.generationId } : {}),
+      trace_name: 'claude-mem observer',
+      generation_name: label.kind,
+      claude_mem_version: CLAUDE_MEM_VERSION,
+    },
+  };
+}
+
 /**
  * Build the chat-completions request body.
  *
@@ -472,8 +503,12 @@ export function buildOpenRouterRequestBody(input: {
   extraBody?: Record<string, unknown>;
   /** CLAUDE_MEM_OPENROUTER_REASONING_EFFORT; openrouter.ai only. */
   reasoningEffort?: OpenRouterReasoningEffort;
+  /** What the request is; sent as `session_id` and `trace` where the body reaches OpenRouter. */
+  label?: ObserverRequestLabel;
 }): Record<string, unknown> {
   const isOpenRouter = isOpenRouterApiUrl(input.apiUrl);
+  // openrouter.ai itself, or the cmem gateway, which forwards the body there.
+  const reachesOpenRouter = isOpenRouter || isCmemGatewayUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
   const typedReasoning = isOpenRouter && !input.plainText && input.reasoningEffort !== undefined;
   return withOpenRouterExtraBody({
@@ -492,7 +527,7 @@ export function buildOpenRouterRequestBody(input: {
     // Keep the same model, but ask for an answer instead of spending this
     // short rewrite's budget on reasoning. Only known OpenRouter endpoints
     // accept the vendor-specific reasoning control (cmem forwards it).
-    ...(input.plainText && (isOpenRouter || isCmemGatewayUrl(input.apiUrl)) ? {
+    ...(input.plainText && reachesOpenRouter ? {
       response_format: { type: 'text' },
       reasoning: { enabled: false },
     } : {}),
@@ -506,6 +541,10 @@ export function buildOpenRouterRequestBody(input: {
     // Only sent to openrouter.ai — strict custom gateways may reject
     // unknown body fields.
     ...(isOpenRouter ? { usage: { include: true } } : {}),
+    // Sticky routing and the Broadcast trace, wherever the body reaches
+    // OpenRouter. A custom gateway gets neither: strict ones 400 on unknown
+    // body fields.
+    ...(input.label && reachesOpenRouter ? openRouterRequestLabels(input.label) : {}),
   }, typedReasoning ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl, input.plainText);
 }
 
@@ -727,6 +766,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
   ): Promise<ProviderQueryResult> {
     // Rotation wraps withRetry rather than living inside it: the inner retry
     // still owns transient failures against one key, and this outer sweep moves
@@ -737,7 +777,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       { poolId: 'openrouter', keys: resolvePoolKeys(config), label: 'OpenRouter', rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryOpenRouterMultiTurn(
         history, key, poolSize, config.model, config.fallbackModels, config.apiUrl, config.siteUrl, config.appName,
-        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort, paidSendBudget,
+        signal, config.plainText, perAttemptTimeoutMs, config.extraBody, config.reasoningEffort, paidSendBudget, label,
       ),
     );
   }
@@ -764,6 +804,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     plainText?: boolean,
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
+    label?: ObserverRequestLabel,
   ): Promise<ChatCompletionExchange> {
     return sendChatCompletion({
       url: apiUrl,
@@ -775,7 +816,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
         // provider's. Never treated as server-side idempotency.
         'x-client-request-id': clientAttemptId,
       },
-      body: buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort }),
+      body: buildOpenRouterRequestBody({ model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort, label }),
       maxOutputTokens,
       signal: attemptSignal,
       liveness,
@@ -803,6 +844,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     extraBody?: Record<string, unknown>,
     reasoningEffort?: OpenRouterReasoningEffort,
     paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
@@ -826,7 +868,7 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(
         apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, attemptSignal,
-        maxOutputTokens, liveness, plainText, extraBody, reasoningEffort,
+        maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label,
       );
       const requestId = openRouterRequestId(exchange.headers);
       finalRequestId = requestId;
