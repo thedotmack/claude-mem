@@ -19,7 +19,7 @@ export class SSEBroadcaster {
     };
     // Response errors are asynchronous and cannot be caught around write().
     // Keep the listener until close so pending failed writes remain handled.
-    const onError = () => this.removeClient(res);
+    const onError = () => this.disconnectFailedClient(res);
     res.on('error', onError);
     res.on('close', onClose);
     // Bun's node:http emits socket close when a streaming client disconnects.
@@ -61,9 +61,16 @@ export class SSEBroadcaster {
     try {
       res.write(data);
     } catch (error) {
-      this.removeClient(res);
+      this.disconnectFailedClient(res);
       logger.debug('WORKER', 'SSE client write failed', undefined, error instanceof Error ? error : undefined);
     }
+  }
+
+  private disconnectFailedClient(res: Response): void {
+    this.removeClient(res);
+    // A failed stream must close so EventSource can reconnect. Retain the
+    // error listener until close to absorb already queued transport failures.
+    if (!res.destroyed) res.destroy();
   }
 
   private sendToClient(res: Response, event: SSEEvent): void {
