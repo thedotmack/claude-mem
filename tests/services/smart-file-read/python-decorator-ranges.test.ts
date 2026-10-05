@@ -16,11 +16,11 @@ describe("python-decorator-ranges", () => {
   const dir = mkdtempSync(join(tmpdir(), 'cm-python-decorator-ranges-'));
   try {
    writeFileSync(join(dir, filename), source);
-   
+
    const result = await searchCodebase(dir, "answer", { maxResults: 1 });
    const match = result.matchingSymbols.find(s => s.symbolName === "answer");
    expect(match).toBeDefined();
-   
+
    expect(unfoldSymbol(source, filename, match!.symbolName)).toContain("@configure(");
   } finally { rmSync(dir, { recursive: true, force: true }); }
  }, 120000);
