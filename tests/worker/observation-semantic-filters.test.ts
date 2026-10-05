@@ -18,12 +18,14 @@ const fixture = String.raw`
   const sid = store.createSDKSession('host', 'obs-filters', 'ask');
   store.ensureMemorySessionIdRegistered(sid, 'memory');
   const docs = [];
+  const partial = process.env.PARTIAL_SCENARIO === '1';
   const make = (title, type, concepts, files_read, epoch) => {
-    const id = store.storeObservation('memory', 'obs-filters', { type, title, subtitle: null, narrative: 'nativefilterneedle', facts: [], concepts, files_read, files_modified: [] }, 1, 0, epoch).id;
+    const id = store.storeObservation('memory', 'obs-filters', { type, title, subtitle: null, narrative: partial && process.env.PARTIAL_DUPLICATE !== '1' && title === 'WANTED_SEMANTIC' ? 'meaning without literal query' : 'nativefilterneedle', facts: [], concepts, files_read, files_modified: [] }, 1, 0, epoch).id;
     for (let fragment = 0; fragment < Number(process.env.FRAGMENT_COUNT || 1); fragment++) {
       docs.push({ id: 'obs_' + id + '_fact_' + fragment, metadata: { doc_type: 'observation', sqlite_id: id, project: 'obs-filters', created_at_epoch: epoch } });
     }
   };
+  if (partial) make('WANTED_SEMANTIC', 'bugfix', ['target-concept'], ['src/target.ts'], Date.now());
   for (let i = 0; i < Number(process.env.UNRELATED_COUNT || 1); i++) make('UNRELATED_CURRENT_' + i, 'discovery', ['other-concept'], ['src/other.ts'], Date.now());
   const wanted = [
     ['WANTED_CURRENT', 'bugfix', ['target-concept'], ['src/target.ts'], Date.now()],
@@ -45,13 +47,13 @@ const fixture = String.raw`
   };
   try {
     const results = [];
-    if (process.env.BUDGET_SCENARIO === '1') {
+    if (process.env.BUDGET_SCENARIO === '1' || partial) {
       const manager = new SearchManager(new SessionSearch(store.db), store, new ChromaSync('obs-filters'), new FormattingService(), new TimelineService());
       const handlers = new Map();
       new SearchRoutes(manager).setupRoutes({ use() {}, get(path, handler) { handlers.set(path, handler); }, post() {} });
       const body = await new Promise((resolve, reject) => {
         const res = { headersSent: false, locals: {}, status() { return res; }, json(body) { resolve(body); return res; } };
-        handlers.get('/api/search/observations')({ path: '/api/search/observations', query: { query: 'nativefilterneedle', project: 'obs-filters', limit: '1', concepts: 'target-concept' }, body: {}, get() {} }, res, reject);
+        handlers.get('/api/search/observations')({ path: '/api/search/observations', query: { query: 'nativefilterneedle', project: 'obs-filters', limit: partial ? '2' : '1', concepts: 'target-concept' }, body: {}, get() {} }, res, reject);
       });
       console.log(JSON.stringify({ text: body.content[0].text, calls, hydratedIds }));
       process.exit(0);
@@ -103,6 +105,18 @@ function expectFilteredResults(results: any[]) {
 }
 
 describe('observation endpoint semantic row filters', () => {
+  it('keeps partial semantic matches while keyword fallback fills the remaining limit', () => {
+    for (const duplicate of ['0', '1']) {
+      const result = runFixture({ PARTIAL_SCENARIO: '1', PARTIAL_DUPLICATE: duplicate, UNRELATED_COUNT: '8192' });
+      expect(result.text).toContain('WANTED_SEMANTIC');
+      expect(result.text).toContain('WANTED_CURRENT');
+      expect(result.text).toContain('Found 2 observation(s)');
+      expect(result.text).not.toContain('UNRELATED_CURRENT');
+      expect(result.calls.length).toBeLessThanOrEqual(10);
+      expect(result.hydratedIds.length).toBeLessThanOrEqual(1600);
+      expect(result.text.match(/WANTED_SEMANTIC/g)).toHaveLength(1);
+    }
+  });
   it('bounds raw semantic work, hydrates each ID once and uses filtered keyword fallback', () => {
     for (const fragments of ['1', '5']) {
       const result = runFixture({ BUDGET_SCENARIO: '1', UNRELATED_COUNT: '8192', FRAGMENT_COUNT: fragments });

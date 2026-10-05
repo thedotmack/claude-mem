@@ -1056,7 +1056,14 @@ export class SearchManager {
       try {
         const ftsResults = this.sessionSearch.searchObservations(query, options);
         if (ftsResults.length > 0) {
-          results = ftsResults;
+          // At the work cap, keyword results fill the remaining slots without
+          // discarding valid semantic matches or repeating shared row IDs.
+          const seen = new Set(results.map(row => row.id));
+          results = [...results, ...ftsResults.filter(row => {
+            if (seen.has(row.id)) return false;
+            seen.add(row.id);
+            return true;
+          })].slice(0, options.limit || 20);
         }
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for observations', {}, ftsError instanceof Error ? ftsError : undefined);
