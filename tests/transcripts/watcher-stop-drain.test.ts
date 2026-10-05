@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
+import { isZstdSupported } from '../../src/services/transcripts/zstd-frames.js';
 import { loadWatchState } from '../../src/services/transcripts/state.js';
 async function bounded(task: Promise<void>, label: string): Promise<void> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -33,6 +34,11 @@ for (const compressed of [false, true]) it(`stops ${compressed ? 'zstd' : 'JSONL
   let readTask: Promise<void> | undefined;
   try {
     await (watcher as any).addTailer(path, watch, schema);
+    if (compressed && !isZstdSupported()) {
+      // Supported older Bun runtimes intentionally decline compressed transcripts.
+      expect((watcher as any).tailers.size).toBe(0);
+      return;
+    }
     await bounded(first, 'first callback');
     readTask = (watcher as any).tailers.get(path).readTask;
     expect(readTask).toBeInstanceOf(Promise);
