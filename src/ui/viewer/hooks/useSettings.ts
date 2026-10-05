@@ -82,8 +82,13 @@ export function useSettings() {
       .then(data => {
         // An initial GET can finish after the user has already saved. Its
         // older snapshot must not replace that successfully committed state.
-        if (active && savedRevision.current === revisionAtLoad) {
+        if (!active) return;
+        if (savedRevision.current === revisionAtLoad) {
           setSettings({ ...DEFAULT_SETTINGS, ...data });
+        } else {
+          // This file-only value cannot be submitted by the form. Retain it
+          // from the load while preserving every successfully saved field.
+          setSettings(current => ({ ...current, CLAUDE_CODE_PATH: data.CLAUDE_CODE_PATH }));
         }
       })
       .catch(error => {

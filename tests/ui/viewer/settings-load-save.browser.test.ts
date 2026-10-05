@@ -21,10 +21,26 @@ for (const saveSucceeds of [true, false]) {
         import React from 'react';
         import { createRoot } from 'react-dom/client';
         import { useSettings } from './src/ui/viewer/hooks/useSettings';
+        // Observe actual browser JSON consumption, not the server returning it.
+        const nativeFetch = window.fetch.bind(window);
+        let loadConsumed = false;
+        window.fetch = async (...args) => {
+          const response = await nativeFetch(...args);
+          if(args[0] === '/api/settings' && !args[1]?.method) {
+            const nativeJson = response.json.bind(response);
+            response.json = async () => {
+              const data = await nativeJson();
+              loadConsumed = true;
+              return data;
+            };
+          }
+          return response;
+        };
         function Fixture() {
           const state = useSettings();
           return <><output id="model">{state.settings.CLAUDE_MEM_CODEX_MODEL}</output>
             <output id="status">{state.saveStatus}</output>
+            <output id="path">{state.settings.CLAUDE_CODE_PATH}</output>
             <button id="save" onClick={() => state.saveSettings({...state.settings, CLAUDE_MEM_CODEX_MODEL: 'saved-new'})}>Save</button></>;
         }
         createRoot(document.getElementById('root')).render(<Fixture />);
@@ -36,9 +52,10 @@ for (const saveSucceeds of [true, false]) {
           document.getElementById('save').click();
           await wait(() => document.getElementById('status').textContent !== '' && document.getElementById('status').textContent !== 'Saving...');
           await fetch('/release-load');
-          await fetch('/load-returned');
-          for(let i=0;i<6;i++) await new Promise(requestAnimationFrame);
-          await fetch('/result', {method:'POST',body:JSON.stringify({model:document.getElementById('model').textContent})});
+          await wait(() => loadConsumed);
+          // The read-only path proves React committed the consumed GET.
+          await wait(() => document.getElementById('path').textContent === '/owned/claude');
+          await fetch('/result', {method:'POST',body:JSON.stringify({model:document.getElementById('model').textContent,path:document.getElementById('path').textContent,loadConsumed})});
         }
         run().catch(error => fetch('/result',{method:'POST',body:JSON.stringify({error:String(error)})}));
       ` } });
@@ -48,7 +65,7 @@ for (const saveSucceeds of [true, false]) {
       const path = new URL(request.url).pathname;
       if(path === '/fixture.js') return new Response(bundle.outputFiles[0].text, {headers:{'Content-Type':'application/javascript'}});
       if(path === '/api/settings' && request.method === 'POST') return Response.json(saveSucceeds ? {success:true} : {error:'owned rejection'}, {status:saveSucceeds?200:400});
-      if(path === '/api/settings') { await loadReady; markLoaded(); return Response.json({CLAUDE_MEM_CODEX_MODEL:'loaded-old'}); }
+      if(path === '/api/settings') { await loadReady; markLoaded(); return Response.json({CLAUDE_MEM_CODEX_MODEL:'loaded-old',CLAUDE_CODE_PATH:'/owned/claude'}); }
       if(path === '/release-load') { releaseLoad(); return new Response('ok'); }
       if(path === '/load-returned') { await loaded; return new Response('ok'); }
       if(path === '/result') { finish(await request.json()); return new Response('ok'); }
@@ -60,7 +77,7 @@ for (const saveSucceeds of [true, false]) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       const actual=await Promise.race([result,new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('Browser result timed out')),25000);})]);
-      expect(actual).toEqual({model:saveSucceeds?'saved-new':'loaded-old'});
+      expect(actual).toEqual({model:saveSucceeds?'saved-new':'loaded-old',path:'/owned/claude',loadConsumed:true});
     } finally {
       clearTimeout(timer); releaseLoad(); child.kill(); await child.exited; server.stop(true);
       rmSync(profile,{recursive:true,force:true});
