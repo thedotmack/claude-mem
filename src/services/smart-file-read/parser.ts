@@ -144,7 +144,9 @@ const QUERIES: Record<string, string> = {
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
-(public_field_definition name: (property_identifier) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(public_field_definition name: (_) @name value: (_) @field_value) @method
+[(arrow_function) (function_expression) (generator_function)] @callable_value
+(parenthesized_expression (_) @grouped_value) @grouped_expression
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -163,7 +165,9 @@ const QUERIES: Record<string, string> = {
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
-(field_definition property: (property_identifier) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(field_definition property: (_) @name value: (_) @field_value) @method
+[(arrow_function) (function_expression) (generator_function)] @callable_value
+(parenthesized_expression (_) @grouped_value) @grouped_expression
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -729,6 +733,22 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
+  const captureKey = (capture: RawCapture): string =>
+    `${capture.startRow}:${capture.startCol}:${capture.endRow}:${capture.endCol}`;
+  const callableValues = new Set(matches.flatMap(match =>
+    match.captures.filter(capture => capture.tag === "callable_value").map(captureKey)));
+  const groupedValues = new Map<string, string>();
+  for (const match of matches) {
+    const group = match.captures.find(capture => capture.tag === "grouped_expression");
+    const value = match.captures.find(capture => capture.tag === "grouped_value");
+    if (group && value) groupedValues.set(captureKey(group), captureKey(value));
+  }
+  const isCallableField = (capture: RawCapture): boolean => {
+    let key = captureKey(capture);
+    while (groupedValues.has(key)) key = groupedValues.get(key)!;
+    return callableValues.has(key);
+  };
+
   // Names are captured independently of the surrounding pointer/reference
   // wrappers. The first native function declarator inside a definition names
   // that function, before any callback parameters or nested definitions.
@@ -755,6 +775,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         ? findFunctionName(kindCapture)
         : undefined);
     if (!kindCapture) continue;
+    const fieldValue = match.captures.find(capture => capture.tag === "field_value");
+    if (fieldValue && !isCallableField(fieldValue)) continue;
 
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;

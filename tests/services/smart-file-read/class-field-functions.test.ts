@@ -15,3 +15,18 @@ describe('class field function outlines', () => {
     }, 120000);
   }
 });
+
+for (const extension of ['js', 'ts', 'tsx']) test(`retains private, quoted, computed and grouped .${extension} callables`, () => {
+  const source = `class Store {
+    #private = () => { private_body(); };
+    "quoted" = function () { quoted_body(); };
+    [Symbol.iterator] = () => { iterator_body(); };
+    grouped = (((() => { grouped_body(); })));
+    wrapped = wrap(() => { not_a_method(); });
+    data = { callback: () => {} };
+  }`;
+  const methods = parseFile(source, `store.${extension}`).symbols[0].children;
+  expect(methods?.map(method => method.name)).toEqual(['#private', '"quoted"', '[Symbol.iterator]', 'grouped']);
+  expect(unfoldSymbol(source, `store.${extension}`, 'Store.grouped')).toContain('grouped_body');
+  expect(unfoldSymbol(source, `store.${extension}`, 'Store.#private')).toContain('private_body');
+}, 120000);
