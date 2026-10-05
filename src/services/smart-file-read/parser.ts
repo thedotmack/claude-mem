@@ -999,11 +999,12 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[]): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], parent?: string): CodeSymbol | null => {
     for (const sym of symbols) {
-      if (sym.name === symbolName) return sym;
+      const qualifiedName = parent ? `${parent}.${sym.name}` : sym.name;
+      if (sym.name === symbolName || qualifiedName === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children);
+        const found = findSymbol(sym.children, qualifiedName);
         if (found) return found;
       }
     }

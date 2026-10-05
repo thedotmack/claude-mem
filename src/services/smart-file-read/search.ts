@@ -182,7 +182,7 @@ export async function searchCodebase(
         }
 
         if (sym.children) {
-          checkSymbols(sym.children, sym.name);
+          checkSymbols(sym.children, parent ? `${parent}.${sym.name}` : sym.name);
         }
       }
     };
