@@ -712,18 +712,7 @@ export class WorkerService implements WorkerRef {
           wsEnabled: settings.CLAUDE_MEM_CLOUD_SYNC_WS !== 'false',
           // While the socket is live, pushes debounce at the fast tier —
           // fan-out makes the push the delivery (Phase 4 task 3).
-          // Precomputed SessionStart files are current only once Realtime is
-          // joined AND the join's catch-up pull has applied whatever was
-          // published while the socket was down (e.g. a remote deletion) —
-          // so servable follows onRealtimeCaughtUpChange, never the join. A
-          // later advance beyond the cursor flips it off until that is applied.
-          // Down = remove them at once so the hook takes the live path,
-          // which pulls first.
-          onSocketLiveChange: (live) => {
-            cloudSyncForPull.setFastDebounce(live);
-            if (!live) this.contextCacheService?.setServable(false);
-          },
-          onRealtimeCaughtUpChange: (caughtUp) => this.contextCacheService?.setServable(caughtUp),
+          onSocketLiveChange: (live) => cloudSyncForPull.setFastDebounce(live),
         });
         // Push piggyback: a flush that reveals unseen hub ops pulls without
         // waiting for the poll timer (free poll for the active device).
@@ -755,8 +744,9 @@ export class WorkerService implements WorkerRef {
           return this.searchRoutes.renderContextVariant(keys);
         },
         expandProjectReadKeys: (projects) => projectReadKeys(contextCacheDb, projects),
-        // Sync on: nothing is servable until Realtime joins and catches up (onRealtimeCaughtUpChange above).
-        initiallyServable: this.syncClient === null || this.syncClient.isRealtimeCaughtUp(),
+        // Local-first: the local db is the source of truth, so the files are
+        // servable with or without cloud sync. Sync applies other devices' ops in
+        // the background, and every applied op invalidates the files (SyncApply).
       });
       this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient);
       this.server.registerRoutes(this.searchRoutes);

@@ -139,7 +139,8 @@ function resolveGrammarPath(language: string): string | null {
 const QUERIES: Record<string, string> = {
   jsts: `
 (function_declaration name: (identifier) @name) @func
-(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(generator_function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (interface_declaration name: (type_identifier) @name) @iface
@@ -155,7 +156,8 @@ const QUERIES: Record<string, string> = {
   // unknown node type. Class names are (identifier) here, not (type_identifier).
   js: `
 (function_declaration name: (identifier) @name) @func
-(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(generator_function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
 (method_definition name: (property_identifier) @name) @method
 (import_statement) @imp
