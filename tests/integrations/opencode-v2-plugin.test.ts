@@ -24,6 +24,11 @@ function send(type: string, data: any = {}, directory = '/work/project'): void {
   const value = { type, data: { sessionID: 'ses_real-host-id', ...data }, location: { directory } };
   if (pending) { const resolve = pending; pending = undefined; resolve(value); } else buffered.push(value);
 }
+// 2.0.23 emits session.execution.* and session.deleted without a location envelope.
+function sendUnlocated(type: string, data: any = {}): void {
+  const value = { type, data: { sessionID: 'ses_real-host-id', ...data } };
+  if (pending) { const resolve = pending; pending = undefined; resolve(value); } else buffered.push(value);
+}
 beforeEach(async () => {
   originalFetch = globalThis.fetch;
   messages = [user('msg_real-1', 'Read the parser')];
@@ -317,6 +322,26 @@ describe('OpenCode v2 consumed-turn capture', () => {
     expect(calls.filter(call => call.body).map(call => call.route)).toEqual(['/api/sessions/init', '/api/sessions/observations']);
   });
 
+  it('captures a late tool result from the turn it ran in when the next prompt cannot anchor', async () => {
+    let finish!: (response: Response) => void;
+    let inits = 0;
+    init = () => ++inits === 1
+      ? new Promise<Response>(resolve => { finish = resolve; })
+      : Response.json({ skipped: true, reason: 'project_excluded' });
+    const first = emit('context', context());
+    await until(() => !!finish);
+    messages.push(user('msg_real-2', 'Excluded turn'));
+    const second = emit('context', context());
+    const tool = read();
+    await new Promise(resolve => setTimeout(resolve, 2));
+    finish(Response.json({ sessionDbId: 42 }));
+    await Promise.all([first, second, tool]);
+    await new Promise(resolve => setTimeout(resolve, 5));
+    const observations = calls.filter(call => call.route === '/api/sessions/observations');
+    expect(observations).toHaveLength(1);
+    expect(observations[0].body).toMatchObject({ tool_use_id: 'call_host-7', tool_input: { path: 'parser.ts' } });
+  });
+
   it('keeps duplicate acknowledgements anchored and suppresses excluded turns', async () => {
     init = async () => Response.json({ sessionDbId: 42, skipped: true, reason: 'duplicate' });
     await emit('context', context()); await read();
@@ -372,6 +397,26 @@ describe('OpenCode v2 consumed-turn capture', () => {
     await cleanup();
     expect(disposed).toBe(3);
     cleanup = async () => {};
+  });
+
+  it('summarizes from a location-less execution event, the envelope 2.0.23 emits', async () => {
+    await emit('context', context()); await read();
+    send('session.text.ended', { text: 'Parser checked', assistantMessageID: 'msg_answer', ordinal: 0 });
+    sendUnlocated('session.execution.succeeded');
+    await until(() => calls.some(call => call.route === '/api/sessions/summarize'));
+    const writes = calls.filter(call => call.body);
+    expect(writes.map(call => call.route)).toEqual(['/api/sessions/init', '/api/sessions/observations', '/api/sessions/summarize']);
+    expect(writes[2].body.last_assistant_message).toBe('Parser checked');
+  });
+
+  it('aborts a session from a location-less deleted event, the envelope 2.0.23 emits', async () => {
+    await emit('context', context());
+    sendUnlocated('session.deleted');
+    await until(() => handledEvents.includes('session.deleted'));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    await emit('context', context()); await read();
+    expect(calls.filter(call => call.route === '/api/sessions/init')).toHaveLength(1);
+    expect(calls.some(call => call.route === '/api/sessions/observations')).toBe(false);
   });
 });
 

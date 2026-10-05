@@ -137,4 +137,15 @@ describe('version-aware OpenCode installation', () => {
     writeFileSync(cli, '#!/usr/bin/env node\nconsole.log("1.17.8");\n', { mode: 0o755 });
     expect(resolveOpenCodePluginAPI()).toBe(1);
   });
+
+  it.skipIf(process.platform === 'win32')('detects the v-prefixed version line the 2.0.23 CLI prints', () => {
+    delete process.env.CLAUDE_MEM_OPENCODE_API;
+    const bin = join(folder, 'bin'); mkdirSync(bin);
+    const cli = join(bin, 'opencode');
+    process.env.PATH = bin + ':' + previous.PATH;
+    writeFileSync(cli, '#!/usr/bin/env node\nconsole.log("opencode v2.0.23");\n', { mode: 0o755 });
+    expect(resolveOpenCodePluginAPI()).toBe(2);
+    expect(installOpenCodePlugin()).toBe(0);
+    expect(readFileSync(getInstalledPluginPath(), 'utf8')).toBe('// v2 definition');
+  });
 });
