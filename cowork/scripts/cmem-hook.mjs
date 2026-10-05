@@ -18,7 +18,7 @@
  *   CLI:    search "query" [--limit N] | status
  */
 
-import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync, readdirSync } from 'node:fs';
+import { readFileSync, appendFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -318,16 +318,17 @@ function viewerPort() {
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
 }
 
-// Local-first: on a machine with a local claude-mem install, the local hook
-// injects memory from the local db, which cloud sync keeps current. Reading
-// cmem.ai there only adds a network round trip and a second, overlapping block.
-// Cowork containers have no local install, so they keep reading the cloud.
+// Local-first when the local hook can inject: its plugin must not be disabled
+// and its worker must be reachable. Cached versions alone prove neither.
+// Otherwise Cowork keeps reading the cloud so memory remains available.
 async function localClaudeMemAvailable() {
   const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
   try {
-    const versions = readdirSync(join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem'));
-    if (versions.some(v => /^\d/.test(v))) return true;
-  } catch { /* not installed through the plugin cache */ }
+    const raw = readFileSync(join(configDir, 'settings.json'), 'utf8');
+    const settings = JSON.parse(raw.replace(/^\uFEFF/, ''));
+    // Match the local worker's explicit-disable policy (plugin-state.ts).
+    if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
+  } catch { /* no usable plugin settings — check the worker itself */ }
   try {
     const res = await fetch(`http://127.0.0.1:${viewerPort()}/api/health`, { signal: AbortSignal.timeout(300) });
     return res.ok;
