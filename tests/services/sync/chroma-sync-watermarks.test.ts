@@ -32,6 +32,7 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
           }
 
           return {
+            ids: [...existingObservationIds].sort((a, b) => a - b).map(id => `obs_${id}_narrative`),
             metadatas: [...existingObservationIds].sort((a, b) => a - b).map(sqliteId => ({
               sqlite_id: sqliteId,
               doc_type: 'observation',
@@ -177,6 +178,7 @@ function makeStoreFromRows(
 
             return [];
           },
+          finalize: () => {},
           get: (...params: Array<string | number>) => {
             if (query.includes('COUNT(*) as count FROM observations')) {
               return { count: observationRows.length };
