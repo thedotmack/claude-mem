@@ -171,7 +171,7 @@ Each row in `line-items.csv` / `report.json.line_items`:
 `acr.py` writes one directory containing:
 
 1. **`report.html`** — self-contained (inline CSS, no script, no external resources), Timing-style
-2. **`report.pdf`** — from `report.print.html` with headless `google-chrome`; when Chrome is missing the run says "PDF skipped, HTML is canonical"
+2. **`report.pdf`** — from `report.print.html` with headless Chrome (`google-chrome` on PATH, else Chrome's standard install location on macOS and Windows); when Chrome is missing the run says "PDF skipped, HTML is canonical"
 3. **`report.json`** — window, scope, spend, totals, by_day, by_model, by_device, line_items, wins, behavior, timeline
 4. **`line-items.csv`** — one row per work item
 5. **`evidence.json`** — observation IDs cited, short titles, observer tokens, model, session ids

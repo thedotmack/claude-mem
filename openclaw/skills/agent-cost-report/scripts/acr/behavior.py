@@ -122,7 +122,7 @@ def scan(s_ms, e_ms, session=None, pattern=transcripts.CLAUDE_GLOB):
              if s_dt is None or dt.datetime.fromtimestamp(os.path.getmtime(f), PT) >= s_dt]
     sessions = collections.defaultdict(new_session)
     for f in files:
-        with open(f, errors="ignore") as fh:
+        with open(f, encoding="utf-8", errors="ignore") as fh:
             for line in fh:
                 if '"timestamp"' not in line or ('"assistant"' not in line and '"user"' not in line): continue
                 if session is not None and session not in line: continue
