@@ -21,7 +21,7 @@
  * Both workers are always stopped, and the sandboxes --keep-temp kept are
  * removed once their traces are copied into the report.
  */
-import { spawnSync } from 'child_process';
+import { spawnSync, type SpawnSyncReturns } from 'child_process';
 import fs from 'fs';
 import { createRequire } from 'module';
 import net from 'net';
@@ -487,17 +487,42 @@ function pidsFrom(output: string): number[] {
   return output.split('\n').map(line => Number(line.trim())).filter(pid => Number.isInteger(pid) && pid > 0);
 }
 
+/** A spawnSync run, as processesStillUsingArm reads it. Bun sets `error` and leaves stdout null when the tool cannot run. */
+type ProcessQuery = (
+  command: string,
+  args: string[],
+) => Pick<SpawnSyncReturns<string>, 'error' | 'status' | 'signal' | 'stdout' | 'stderr'>;
+
+/** `text` as a POSIX extended regex that matches only itself: `pgrep -f` takes a regex, and a checkout path may hold `.`, `(` or `+`. */
+function extendedRegexLiteral(text: string): string {
+  return text.replace(/[.[\\()*+?{|^$]/g, '\\$&');
+}
+
 /**
  * Processes still tied to an arm: `pgrep -f` finds helpers that carry the data
  * dir on their command line; the worker daemon carries only `--daemon` and gets
  * its data dir from the environment, so it shows up as the listener on the
- * arm's own port.
+ * arm's own port. Both tools exit 1 when nothing matches, and lsof exits 1 on
+ * errors too, which it explains on stderr. Any other answer throws: read as
+ * "nothing left", it would skip the sweep and leave a leaked worker unreported.
  */
-function processesStillUsingArm(arm: EvalArm): number[] {
-  const byDataDirectory = pidsFrom(spawnSync('pgrep', ['-f', arm.dataDirectory], { encoding: 'utf8' }).stdout ?? '');
-  const byPort = pidsFrom(
-    spawnSync('lsof', ['-nP', `-iTCP:${arm.port}`, '-sTCP:LISTEN', '-t'], { encoding: 'utf8' }).stdout ?? '',
-  );
+export function processesStillUsingArm(
+  arm: Pick<EvalArm, 'name' | 'dataDirectory' | 'port'>,
+  query: ProcessQuery = (command, args) => spawnSync(command, args, { encoding: 'utf8' }),
+): number[] {
+  const pidsFoundBy = (command: string, args: string[]): number[] => {
+    const result = query(command, args);
+    const nothingMatched = result.status === 1 && !result.stderr?.trim();
+    if (result.error || (result.status !== 0 && !nothingMatched)) {
+      const failure = result.error
+        ? `could not run (${result.error.message})`
+        : `exited ${result.status ?? result.signal}: ${result.stderr?.trim() || 'no error output'}`;
+      throw new Error(`${command} ${failure}; cannot tell whether the gate-${arm.name} worker (port ${arm.port}) left processes running`);
+    }
+    return pidsFrom(result.stdout ?? '');
+  };
+  const byDataDirectory = pidsFoundBy('pgrep', ['-f', '--', extendedRegexLiteral(arm.dataDirectory)]);
+  const byPort = pidsFoundBy('lsof', ['-nP', `-iTCP:${arm.port}`, '-sTCP:LISTEN', '-t']);
   return [...new Set([...byDataDirectory, ...byPort])].filter(pid => pid !== process.pid);
 }
 
@@ -509,15 +534,21 @@ function stopWorker(arm: EvalArm): void {
   } catch (error) {
     stopError = error;
   }
-  const deadline = Date.now() + 30_000;
-  while (processesStillUsingArm(arm).length > 0 && Date.now() < deadline) Bun.sleepSync(500);
-  for (const pid of processesStillUsingArm(arm)) {
-    console.warn(`Stopping leftover process ${pid} of the gate-${arm.name} worker (port ${arm.port})`);
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch (error) {
-      console.warn(`Process ${pid} could not be signalled: ${error instanceof Error ? error.message : error}`);
+  try {
+    const deadline = Date.now() + 30_000;
+    while (processesStillUsingArm(arm).length > 0 && Date.now() < deadline) Bun.sleepSync(500);
+    for (const pid of processesStillUsingArm(arm)) {
+      console.warn(`Stopping leftover process ${pid} of the gate-${arm.name} worker (port ${arm.port})`);
+      try {
+        process.kill(pid, 'SIGTERM');
+      } catch (error) {
+        console.warn(`Process ${pid} could not be signalled: ${error instanceof Error ? error.message : error}`);
+      }
     }
+  } catch (sweepError) {
+    // The sweep cannot see what is left; keep a failed `stop` in the report too.
+    if (stopError === null) throw sweepError;
+    throw new Error([stopError, sweepError].map(error => (error instanceof Error ? error.message : String(error))).join('; then '));
   }
   if (stopError) throw stopError;
 }

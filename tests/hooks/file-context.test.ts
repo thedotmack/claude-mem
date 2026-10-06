@@ -1,7 +1,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, afterAll, spyOn, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
+import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync, statSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 import { resolveDbPath } from '../../src/shared/paths.js';
@@ -760,6 +760,27 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
   });
 
+  it('does not deny a Read whose file stat fails with anything but ENOENT — the timeline is still context', async () => {
+    // A path through a regular file: stat fails with ENOTDIR, so the lookup
+    // goes on without its size and mtime checks. A claude-mem failure must
+    // never block a Read.
+    const unstatablePath = join(gatedFile, 'nested.ts');
+    let statErrorCode: string | undefined;
+    try {
+      statSync(unstatablePath);
+    } catch (error) {
+      statErrorCode = (error as NodeJS.ErrnoException).code;
+    }
+    expect(statErrorCode).toBe('ENOTDIR');
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: unstatablePath }));
+
+    expectContextNotDeny(result);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
+    expect(fetchSpy).toHaveBeenCalled();
+  });
+
   it('lets a targeted Read through (offset 40, limit 20) with context', async () => {
     answerWithFileHistory();
 
@@ -924,34 +945,38 @@ describe('shouldDenyFullFileRead', () => {
   // The tree-sitter CLI is installed: an explicit stub, never the machine's install.
   const smartReadAvailable = () => true;
 
+  // History whose lookup stat'ed the file: its size and mtime checks ran.
+  const statVerifiedHistory = (absolutePath: string) => ({ absolutePath, fileStatVerified: true });
+
   it('denies a whole-file Read without counting lines when no limit is set', () => {
     const countTotalLines = mock(() => GATED_FILE_LINE_COUNT);
 
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadAvailable)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'true', countTotalLines, smartReadAvailable)).toBe(true);
     expect(countTotalLines).not.toHaveBeenCalled();
   });
 
   it('treats an unset setting as on — only an explicit false turns the gate off', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
 
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, undefined, countTotalLines, smartReadAvailable)).toBe(true);
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'false', countTotalLines, smartReadAvailable)).toBe(false);
+    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), undefined, countTotalLines, smartReadAvailable)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'false', countTotalLines, smartReadAvailable)).toBe(false);
   });
 
   it('counts lines only after every cheaper condition holds, and checks smart-read availability after that', () => {
     const countTotalLines = mock(() => GATED_FILE_LINE_COUNT);
     const isSmartReadAvailable = mock(() => true);
     const limited = { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT };
-    const notGated: Array<[string, NormalizedHookInput, { absolutePath: string } | null, string | undefined]> = [
-      ['codex platform', wholeFileRead({ platform: 'codex', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
-      ['Qwen Code transcript', wholeFileRead({ transcriptPath: '/home/dot/.qwen/tmp/abc123/chats/session.json', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
-      ['gate off', wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'false'],
-      ['subagent', wholeFileRead({ agentId: 'subagent-1', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
-      ['Codex filePaths', wholeFileRead({ toolInput: { ...limited, filePaths: [gatedFile] } }), { absolutePath: gatedFile }, 'true'],
+    const notGated: Array<[string, NormalizedHookInput, { absolutePath: string; fileStatVerified: boolean } | null, string | undefined]> = [
+      ['codex platform', wholeFileRead({ platform: 'codex', toolInput: limited }), statVerifiedHistory(gatedFile), 'true'],
+      ['Qwen Code transcript', wholeFileRead({ transcriptPath: '/home/dot/.qwen/tmp/abc123/chats/session.json', toolInput: limited }), statVerifiedHistory(gatedFile), 'true'],
+      ['gate off', wholeFileRead({ toolInput: limited }), statVerifiedHistory(gatedFile), 'false'],
+      ['subagent', wholeFileRead({ agentId: 'subagent-1', toolInput: limited }), statVerifiedHistory(gatedFile), 'true'],
+      ['Codex filePaths', wholeFileRead({ toolInput: { ...limited, filePaths: [gatedFile] } }), statVerifiedHistory(gatedFile), 'true'],
       ['no history', wholeFileRead({ toolInput: limited }), null, 'true'],
-      ['markdown', wholeFileRead({ toolInput: limited }), { absolutePath: testFile }, 'true'],
-      ['outside cwd', wholeFileRead({ cwd: join(tmpDir, 'project'), toolInput: limited }), { absolutePath: gatedFile }, 'true'],
-      ['offset 40', wholeFileRead({ toolInput: { ...limited, offset: 40 } }), { absolutePath: gatedFile }, 'true'],
+      ['stat failed', wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile, fileStatVerified: false }, 'true'],
+      ['markdown', wholeFileRead({ toolInput: limited }), statVerifiedHistory(testFile), 'true'],
+      ['outside cwd', wholeFileRead({ cwd: join(tmpDir, 'project'), toolInput: limited }), statVerifiedHistory(gatedFile), 'true'],
+      ['offset 40', wholeFileRead({ toolInput: { ...limited, offset: 40 } }), statVerifiedHistory(gatedFile), 'true'],
     ];
 
     for (const [label, input, fileHistory, setting] of notGated) {
@@ -960,11 +985,11 @@ describe('shouldDenyFullFileRead', () => {
     expect(countTotalLines).not.toHaveBeenCalled();
     expect(isSmartReadAvailable).not.toHaveBeenCalled();
 
-    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: { ...limited, limit: GATED_FILE_LINE_COUNT - 1 } }), { absolutePath: gatedFile }, 'true', countTotalLines, isSmartReadAvailable)).toBe(false);
+    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: { ...limited, limit: GATED_FILE_LINE_COUNT - 1 } }), statVerifiedHistory(gatedFile), 'true', countTotalLines, isSmartReadAvailable)).toBe(false);
     expect(countTotalLines).toHaveBeenCalledTimes(1);
     expect(isSmartReadAvailable).not.toHaveBeenCalled();
 
-    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'true', countTotalLines, isSmartReadAvailable)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: limited }), statVerifiedHistory(gatedFile), 'true', countTotalLines, isSmartReadAvailable)).toBe(true);
     expect(countTotalLines).toHaveBeenCalledTimes(2);
     expect(isSmartReadAvailable).toHaveBeenCalledTimes(1);
   });
@@ -973,10 +998,10 @@ describe('shouldDenyFullFileRead', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
     const smartReadUnavailable = () => false;
 
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadUnavailable)).toBe(false);
+    expect(shouldDenyFullFileRead(wholeFileRead(), statVerifiedHistory(gatedFile), 'true', countTotalLines, smartReadUnavailable)).toBe(false);
     expect(shouldDenyFullFileRead(
       wholeFileRead({ toolInput: { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT } }),
-      { absolutePath: gatedFile },
+      statVerifiedHistory(gatedFile),
       'true',
       countTotalLines,
       smartReadUnavailable,
@@ -986,7 +1011,7 @@ describe('shouldDenyFullFileRead', () => {
   it('treats non-finite or negative offset/limit as absent', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
     const deny = (toolInput: Record<string, unknown>) =>
-      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadAvailable);
+      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), statVerifiedHistory(gatedFile), 'true', countTotalLines, smartReadAvailable);
 
     for (const unusable of [Number.NaN, Number.POSITIVE_INFINITY, -5, 'not-a-number', null]) {
       expect([unusable, deny({ offset: unusable })]).toEqual([unusable, true]);
@@ -997,7 +1022,7 @@ describe('shouldDenyFullFileRead', () => {
   it('reads numeric-string offset/limit as numbers so a targeted Read still passes', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
     const deny = (toolInput: Record<string, unknown>) =>
-      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadAvailable);
+      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), statVerifiedHistory(gatedFile), 'true', countTotalLines, smartReadAvailable);
 
     expect(deny({ offset: '40', limit: '20' })).toBe(false);
     expect(deny({ limit: String(GATED_FILE_LINE_COUNT) })).toBe(true);
@@ -1006,6 +1031,6 @@ describe('shouldDenyFullFileRead', () => {
   it('fails open when the file cannot be read to count its lines', () => {
     const input = wholeFileRead({ toolInput: { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT } });
 
-    expect(shouldDenyFullFileRead(input, { absolutePath: gatedFile }, 'true', () => null, smartReadAvailable)).toBe(false);
+    expect(shouldDenyFullFileRead(input, statVerifiedHistory(gatedFile), 'true', () => null, smartReadAvailable)).toBe(false);
   });
 });

@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { spawnSync } from 'child_process';
+import net from 'net';
 import {
   analyzeReadGateTrace,
   CASE_GATE_OFF_ANSWERS,
@@ -8,6 +10,7 @@ import {
   decideVerdicts,
   GET_OBSERVATIONS_TOOL,
   isWholeFileRead,
+  processesStillUsingArm,
   READ_GATE_DENY_MARKER,
   SMART_OUTLINE_TOOL,
   SMART_UNFOLD_TOOL,
@@ -217,4 +220,82 @@ describe('decideVerdicts', () => {
     expect(statusById['gate-on-deny-exercised']).toBe('fail');
     expect(statusById['gate-on-attempts-denied']).toBe('pass');
   });
+});
+
+describe('processesStillUsingArm', () => {
+  const arm = { name: 'on' as const, dataDirectory: '/work/claude-mem 🧠 (copy)/.scratch/read-gate-eval/t/on/data', port: 51234 };
+  type ProcessQueryResult = ReturnType<NonNullable<Parameters<typeof processesStillUsingArm>[1]>>;
+  const nothingMatched: ProcessQueryResult = { status: 1, signal: null, stdout: '', stderr: '' };
+
+  /** Stands in for spawnSync: each tool's canned answer (default: nothing matched), every call recorded. */
+  function answering(answers: Partial<Record<'pgrep' | 'lsof', ProcessQueryResult>>) {
+    const calls: Array<[string, string[]]> = [];
+    const query = (command: string, args: string[]): ProcessQueryResult => {
+      calls.push([command, args]);
+      return answers[command as 'pgrep' | 'lsof'] ?? nothingMatched;
+    };
+    return { calls, query };
+  }
+
+  it('merges what pgrep and lsof find, drops this process, and gives pgrep the data dir as a literal pattern', () => {
+    const { calls, query } = answering({
+      pgrep: { status: 0, signal: null, stdout: `4100\n${process.pid}\n`, stderr: '' },
+      lsof: { status: 0, signal: null, stdout: '4100\n4200\n', stderr: '' },
+    });
+
+    expect(processesStillUsingArm(arm, query)).toEqual([4100, 4200]);
+    expect(calls).toEqual([
+      ['pgrep', ['-f', '--', '/work/claude-mem 🧠 \\(copy\\)/\\.scratch/read-gate-eval/t/on/data']],
+      ['lsof', ['-nP', '-iTCP:51234', '-sTCP:LISTEN', '-t']],
+    ]);
+  });
+
+  it('reads exit 1 with nothing on stderr as nothing left', () => {
+    expect(processesStillUsingArm(arm, answering({}).query)).toEqual([]);
+  });
+
+  it('throws, naming the tool, arm and port, when a tool cannot run', () => {
+    // What Bun's spawnSync returns for a binary missing from PATH: error set, stdout null.
+    const missing = spawnSync('read-gate-eval-no-such-tool', [], { encoding: 'utf8' });
+    expect(missing.error).toBeDefined();
+
+    expect(() => processesStillUsingArm(arm, answering({ pgrep: missing }).query))
+      .toThrow(/^pgrep could not run .*the gate-on worker \(port 51234\)/);
+    expect(() => processesStillUsingArm(arm, answering({ lsof: missing }).query))
+      .toThrow(/^lsof could not run .*the gate-on worker \(port 51234\)/);
+  });
+
+  it('throws when pgrep fails, as with a pattern it cannot compile (exit 2)', () => {
+    const query = answering({
+      pgrep: { status: 2, signal: null, stdout: '', stderr: "pgrep: Cannot compile regular expression `x (' (parentheses not balanced)\n" },
+    }).query;
+
+    expect(() => processesStillUsingArm(arm, query)).toThrow(/^pgrep exited 2: pgrep: Cannot compile .*the gate-on worker \(port 51234\)/);
+  });
+
+  it('throws when lsof exits 1 with an error on stderr, unlike its silent exit 1 for no match', () => {
+    const query = answering({
+      lsof: { status: 1, signal: null, stdout: '', stderr: 'lsof: unacceptable port specification in: -i TCP:x\n' },
+    }).query;
+
+    expect(() => processesStillUsingArm(arm, query)).toThrow(/^lsof exited 1: lsof: unacceptable .*the gate-on worker \(port 51234\)/);
+  });
+
+  it.skipIf(!Bun.which('pgrep') || !Bun.which('lsof'))(
+    'finds a process whose command line carries a data dir full of regex metacharacters, with the real pgrep and lsof',
+    async () => {
+      const dataDirectory = '/no/such/claude-mem 🧠 (1) a+b [c] {2} |^$?* back\\slash/.scratch/on/data';
+      const listener = net.createServer();
+      await new Promise<void>(resolve => listener.listen(0, '127.0.0.1', resolve));
+      const port = (listener.address() as net.AddressInfo).port;
+      const child = Bun.spawn([process.execPath, '-e', 'setTimeout(() => {}, 30000)', dataDirectory], { stdout: 'ignore', stderr: 'ignore' });
+      try {
+        // lsof finds this test process on the port, which is dropped like the runner itself.
+        expect(processesStillUsingArm({ name: 'on', dataDirectory, port })).toEqual([child.pid]);
+      } finally {
+        child.kill();
+        listener.close();
+      }
+    },
+  );
 });

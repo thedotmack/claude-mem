@@ -99,6 +99,12 @@ interface FileObservationHistory {
   newestObservationMs: number;
   /** Deduped and ranked down to DISPLAY_LIMIT, then ordered oldest first for display. */
   displayedObservations: ObservationRow[];
+  /**
+   * The lookup stat'ed the file, so its size and mtime checks ran. False when
+   * stat failed with anything but ENOENT: the timeline is still context, but
+   * the gate never denies a Read it could not check.
+   */
+  fileStatVerified: boolean;
 }
 
 /** Escapes a path for the quoted tool-call hints (backslashes, quotes, newlines). */
@@ -186,16 +192,17 @@ function countFileLines(absolutePath: string): number | null {
  * File Read Gate: deny a Read only when ALL hold — Claude Code main session
  * (not Qwen Code, which runs the same command), gate setting not 'false', a
  * single `file_path` Read of a file smart_outline can outline, inside the
- * project, with observation history (the lookup already enforced size >=
- * FILE_READ_GATE_MIN_BYTES and mtime older than the newest observation), the
- * Read would return the whole file, and the smart tools can parse here.
+ * project, with observation history whose lookup stat'ed the file (it enforced
+ * size >= FILE_READ_GATE_MIN_BYTES and mtime older than the newest
+ * observation), the Read would return the whole file, and the smart tools can
+ * parse here.
  * Targeted reads always pass: Edit's read-before-edit rule needs one (#2094).
  * Conditions run cheapest first; `countTotalLines` runs only when the Read sets
  * a limit, and `isSmartReadAvailable` runs last.
  */
 export function shouldDenyFullFileRead(
   input: NormalizedHookInput,
-  fileHistory: Pick<FileObservationHistory, 'absolutePath'> | null,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified'> | null,
   fileReadGateSetting: string | undefined,
   countTotalLines: (absolutePath: string) => number | null,
   isSmartReadAvailable: () => boolean,
@@ -211,7 +218,8 @@ export function shouldDenyFullFileRead(
   const readInput = toolInput as Record<string, unknown>;
   if (typeof readInput.file_path !== 'string' || Array.isArray(readInput.filePaths)) return false;
 
-  if (!fileHistory) return false;
+  // A failed stat skipped the size and mtime checks; a claude-mem failure must never block a Read.
+  if (!fileHistory || !fileHistory.fileStatVerified) return false;
   if (UNGATED_LANGUAGES.has(detectLanguage(fileHistory.absolutePath))) return false;
 
   if (!input.cwd) return false;
@@ -338,6 +346,7 @@ async function lookupFileObservationHistory(
   filePath: string,
 ): Promise<FileObservationHistory | null> {
   let fileMtimeMs = 0;
+  let fileStatVerified = false;
   try {
     const statPath = path.isAbsolute(filePath)
       ? filePath
@@ -347,11 +356,12 @@ async function lookupFileObservationHistory(
       return null;
     }
     fileMtimeMs = stat.mtimeMs;
+    fileStatVerified = true;
   } catch (err) {
     if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
-    logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
+    logger.debug('HOOK', 'File stat failed: timeline as context only, the gate will not deny this Read', { error: err instanceof Error ? err.message : String(err) });
   }
 
   const context = getProjectContext(input.cwd);
@@ -419,5 +429,5 @@ async function lookupFileObservationHistory(
   const displayedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT)
     .sort((a, b) => a.created_at_epoch - b.created_at_epoch);
 
-  return { filePath, absolutePath, relativePath, newestObservationMs, displayedObservations };
+  return { filePath, absolutePath, relativePath, newestObservationMs, displayedObservations, fileStatVerified };
 }
