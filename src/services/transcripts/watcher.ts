@@ -188,14 +188,13 @@ function fingerprintBeforeOffset(filePath: string, offset: number, identity: str
 }
 
 /**
- * Whether a file whose device/inode changed still holds the bytes up to a
- * checkpoint: it does not end before the checkpoint, and the bytes just
- * before it match the checkpoint's fingerprint. A new identity alone is not a
- * replacement: device numbers can change across a reboot or remount, and sync
- * tools rewrite a file through temp-plus-rename with its bytes intact, so
- * resetting on it would replay every transcript through the observer. A
- * checkpoint saved without a fingerprint keeps its offset, as it did before
- * identities were tracked.
+ * Whether a file still holds the bytes up to a checkpoint: it does not end
+ * before the checkpoint, and the bytes just before it match the checkpoint's
+ * fingerprint. A new identity alone is not a replacement: device numbers can
+ * change across a reboot or remount, and sync tools rewrite a file through
+ * temp-plus-rename with its bytes intact, so resetting on it would replay
+ * every transcript through the observer. A checkpoint saved without a
+ * fingerprint keeps its offset, as it did before identities were tracked.
  */
 function keepsCheckpointBytes(filePath: string, identity: string, size: number, offset: number, fingerprint: string | undefined): boolean {
   if (size < offset) return false;
@@ -954,23 +953,27 @@ export class TranscriptWatcher {
       }
     }
 
-    // The checkpoint belongs to the file it was taken from. A file replaced
-    // while the watcher was down (a new device/inode and other bytes before
-    // the checkpoint) is read from byte 0; one that only changed identity
-    // keeps its checkpoint. Its current identity is recorded either way.
+    // The checkpoint belongs to the bytes it was taken from. A file replaced
+    // or rewritten while nothing was reading it (the watcher was down, or the
+    // file had vanished) is read from byte 0 when the bytes before the
+    // checkpoint changed. That is checked whatever the device/inode says: a
+    // file created again at the same path can get the freed inode back (ext4
+    // reuses them), and a renumbered device keeps the bytes and the
+    // checkpoint. The current identity is recorded either way.
     try {
       const stat = statSync(filePath);
       const identity = fileIdentityOf(stat);
       const savedIdentity = this.state.fileIdentities?.[filePath];
-      if (identity !== savedIdentity) {
-        if (savedOffset !== undefined && savedIdentity !== undefined &&
-          !keepsCheckpointBytes(filePath, identity, stat.size, savedOffset, this.state.checkpointFingerprints?.[filePath])) {
-          offset = 0;
-          this.state.offsets[filePath] = 0;
-          delete this.state.partials?.[filePath];
-          delete this.state.frameLines?.[filePath];
-          this.forgetReplacedTranscript(filePath, fileContext);
-        }
+      const replaced = savedOffset !== undefined && savedIdentity !== undefined &&
+        !keepsCheckpointBytes(filePath, identity, stat.size, savedOffset, this.state.checkpointFingerprints?.[filePath]);
+      if (replaced) {
+        offset = 0;
+        this.state.offsets[filePath] = 0;
+        delete this.state.partials?.[filePath];
+        delete this.state.frameLines?.[filePath];
+        this.forgetReplacedTranscript(filePath, fileContext);
+      }
+      if (replaced || identity !== savedIdentity) {
         (this.state.fileIdentities ??= {})[filePath] = identity;
         const fingerprint = fingerprintBeforeOffset(filePath, offset, identity);
         if (fingerprint !== null) {

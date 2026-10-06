@@ -179,3 +179,23 @@ it("records the initial scan's file identities in one state write", async () => 
     }
   } finally { saves.mockRestore(); }
 });
+
+it('reads a file rewritten on the same inode with other bytes from byte zero after a restart', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-reused-inode-')); roots.push(root);
+  const file = join(root, 'session.jsonl'); const state = join(root, 'state.json');
+  writeFileSync(file, contextLine(1) + contextLine(2));
+  const config = { version: 1 as const, watches: [{ name: 'context', path: file, schema: contextSchema }] };
+  const before = new TranscriptWatcher(config, state); watchers.push(before); await before.start();
+  await waitFor(() => loadWatchState(state).offsets[file] === statSync(file).size);
+  before.stop();
+  // Same device/inode, other and more bytes: what a transcript deleted and
+  // created again at its path gets when the filesystem reuses the inode (ext4).
+  const inode = statSync(file).ino;
+  writeFileSync(file, contextLine(7) + contextLine(8) + contextLine(9));
+  expect(statSync(file).ino).toBe(inode);
+  const after = new TranscriptWatcher(config, state); watchers.push(after);
+  const dispatched = recordDispatches(after);
+  await after.start();
+  await (after as any).tailers.get(file).readTask;
+  expect(dispatched).toEqual(['/line-7', '/line-8', '/line-9']);
+});
