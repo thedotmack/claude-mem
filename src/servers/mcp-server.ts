@@ -17,7 +17,7 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } from '../services/smart-file-read/parser.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -820,7 +820,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
-        const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
+        const available = formatAvailableSymbols(parsed, args.symbol_name);
         return {
           content: [{
             type: 'text' as const,
