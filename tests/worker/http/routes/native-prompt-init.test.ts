@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, setSystemTime } from 'bun:test';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -125,6 +125,53 @@ describe('native prompt init HTTP contract', () => {
       expect(legacyRetry.body.reason).toBe('duplicate');
       expect(legacyRetry.body.promptNumber).toBe(legacy.body.promptNumber);
     } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+      store.close();
+    }
+  });
+
+  it('broadcasts and vector-syncs each turn\'s own prompt when two native turns are saved in the same millisecond', async () => {
+    const store = new SessionStore(':memory:', { syncOpsEnabled: false });
+    const active = new Map<number, any>();
+    const manager = {
+      getSession: (id: number) => active.get(id),
+      initializeSession: (id: number, _prompt: string, promptNumber: number) => {
+        const row = store.getSessionById(id)!;
+        const session = { contentSessionId: row.content_session_id, project: row.project, lastPromptNumber: promptNumber };
+        active.set(id, session); return session;
+      },
+      getMessageBuffer: () => ({ getPendingCount: () => 0 }),
+    };
+    const broadcast: { id: number; prompt_text: string }[] = [];
+    const synced: { id: number; text: string }[] = [];
+    const routes = new SessionRoutes(manager as any, {
+      getSessionStore: () => store, getCloudSync: () => undefined,
+      getChromaSync: () => ({ syncUserPrompt: async (id: number, _memorySessionId: unknown, _project: unknown, text: string) => { synced.push({ id, text }); } }),
+    } as any, {} as any, {} as any, {} as any, {
+      broadcastNewPrompt(prompt: { id: number; prompt_text: string }) { broadcast.push({ id: prompt.id, prompt_text: prompt.prompt_text }); },
+      broadcastSessionStarted() {},
+    } as any, {} as any, {} as any);
+    routes.ensureGeneratorRunning = async () => {};
+    const app = express(); app.use(express.json()); routes.setupRoutes(app);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    const address = server.address() as { port: number };
+    const init = async (nativePromptId: string, prompt: string) => (await fetch('http://127.0.0.1:' + address.port + '/api/sessions/init', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ contentSessionId: 'rapid-session', project: 'fixture', platformSource: 'hermes', nativePromptId, prompt }),
+    })).status;
+    setSystemTime(new Date('2026-10-05T11:00:00.000Z'));
+    try {
+      expect(await init('rapid-1', 'FIRST RAPID PROMPT')).toBe(200);
+      expect(await init('rapid-2', 'SECOND RAPID PROMPT')).toBe(200);
+      const rows = store.db.query('SELECT id, prompt_text, created_at_epoch FROM user_prompts ORDER BY id').all() as { id: number; prompt_text: string; created_at_epoch: number }[];
+      expect(rows.map(row => row.prompt_text)).toEqual(['FIRST RAPID PROMPT', 'SECOND RAPID PROMPT']);
+      expect(rows[0]!.created_at_epoch).toBe(rows[1]!.created_at_epoch);
+      const own = rows.map(row => ({ id: row.id, prompt_text: row.prompt_text }));
+      expect(broadcast).toEqual(own);
+      expect(synced).toEqual(own.map(row => ({ id: row.id, text: row.prompt_text })));
+    } finally {
+      setSystemTime();
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
       store.close();
     }

@@ -2899,10 +2899,8 @@ export class SessionStore {
     return { sessions: rows.slice(0, limit), hasMore: rows.length > limit };
   }
 
-  getLatestUserPrompt(contentSessionId: string, sessionDbId?: number): LatestPromptResult | undefined {
-    const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
-    const whereClause = resolvedSessionDbId !== null ? 'up.session_db_id = ?' : 'up.content_session_id = ?';
-    const param = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
+  /** One saved prompt with its session's fields, by the row id its save returned. */
+  getUserPromptById(userPromptId: number): LatestPromptResult | undefined {
     const stmt = this.db.prepare(`
       SELECT
         up.*,
@@ -2911,12 +2909,10 @@ export class SessionStore {
         COALESCE(s.platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE ${whereClause}
-      ORDER BY up.created_at_epoch DESC
-      LIMIT 1
+      WHERE up.id = ?
     `);
 
-    return stmt.get(param) as LatestPromptResult | undefined;
+    return stmt.get(userPromptId) as LatestPromptResult | undefined;
   }
 
   findRecentDuplicateUserPrompt(

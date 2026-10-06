@@ -963,7 +963,7 @@ ${L.stack??""}
       FROM sdk_sessions s
       WHERE s.project IS NOT NULL AND s.project != ''
         AND s.project != ?
-    `,i=[Q];e.project&&(n+=" AND s.project = ?",i.push(e.project)),e.platformSource&&(n+=` AND COALESCE(s.platform_source, '${p}') = ?`,i.push(b(e.platformSource))),n+=" ORDER BY s.started_at_epoch DESC, s.id DESC LIMIT ? OFFSET ?",i.push(t+1,s);let o=this.db.prepare(n).all(...i);return{sessions:o.slice(0,t),hasMore:o.length>t}}getLatestUserPrompt(e,t){let s=this.resolvePromptSessionDbId(e,t),n=s!==null?"up.session_db_id = ?":"up.content_session_id = ?",i=s!==null?s:e;return this.db.prepare(`
+    `,i=[Q];e.project&&(n+=" AND s.project = ?",i.push(e.project)),e.platformSource&&(n+=` AND COALESCE(s.platform_source, '${p}') = ?`,i.push(b(e.platformSource))),n+=" ORDER BY s.started_at_epoch DESC, s.id DESC LIMIT ? OFFSET ?",i.push(t+1,s);let o=this.db.prepare(n).all(...i);return{sessions:o.slice(0,t),hasMore:o.length>t}}getUserPromptById(e){return this.db.prepare(`
       SELECT
         up.*,
         s.memory_session_id,
@@ -971,10 +971,8 @@ ${L.stack??""}
         COALESCE(s.platform_source, '${p}') as platform_source
       FROM user_prompts up
       JOIN sdk_sessions s ON up.session_db_id = s.id
-      WHERE ${n}
-      ORDER BY up.created_at_epoch DESC
-      LIMIT 1
-    `).get(i)}findRecentDuplicateUserPrompt(e,t,s,n){return jt(this.db,e,ne(t),s,this.resolvePromptSessionDbId(e,n)??void 0)}getRecentSessionsWithStatus(e,t=3,s){let n=[e],i="";return s&&(i=`AND COALESCE(NULLIF(s.platform_source, ''), '${p}') = ?`,n.push(b(s))),n.push(t),this.db.prepare(`
+      WHERE up.id = ?
+    `).get(e)}findRecentDuplicateUserPrompt(e,t,s,n){return jt(this.db,e,ne(t),s,this.resolvePromptSessionDbId(e,n)??void 0)}getRecentSessionsWithStatus(e,t=3,s){let n=[e],i="";return s&&(i=`AND COALESCE(NULLIF(s.platform_source, ''), '${p}') = ?`,n.push(b(s))),n.push(t),this.db.prepare(`
       SELECT * FROM (
         SELECT
           s.memory_session_id,

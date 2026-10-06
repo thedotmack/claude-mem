@@ -929,9 +929,12 @@ export class SessionRoutes extends BaseRouteHandler {
     // (#2373). Only this route reopens at all: the observation and summarize
     // routes can carry trailing traffic from the turn that just ended, where
     // 'completed' is the truth.
-    if (!nativeAnchor) {
+    let savedUserPromptId: number;
+    if (nativeAnchor) {
+      savedUserPromptId = nativeAnchor.id;
+    } else {
       store.reopenCompletedSession(sessionDbId);
-      store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+      savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
     }
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
@@ -950,42 +953,44 @@ export class SessionRoutes extends BaseRouteHandler {
     if (platformSource !== 'cursor') {
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
+      // The row this request saved, by id. A newest-by-timestamp lookup can
+      // return a neighbouring turn saved in the same millisecond.
+      const savedUserPrompt = store.getUserPromptById(savedUserPromptId);
 
-      if (latestPrompt) {
+      if (savedUserPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
-          id: latestPrompt.id,
-          content_session_id: latestPrompt.content_session_id,
-          project: latestPrompt.project,
-          platform_source: latestPrompt.platform_source,
-          prompt_number: latestPrompt.prompt_number,
-          prompt_text: latestPrompt.prompt_text,
-          created_at_epoch: latestPrompt.created_at_epoch
+          id: savedUserPrompt.id,
+          content_session_id: savedUserPrompt.content_session_id,
+          project: savedUserPrompt.project,
+          platform_source: savedUserPrompt.platform_source,
+          prompt_number: savedUserPrompt.prompt_number,
+          prompt_text: savedUserPrompt.prompt_text,
+          created_at_epoch: savedUserPrompt.created_at_epoch
         });
 
         const chromaStart = Date.now();
-        const promptText = latestPrompt.prompt_text;
+        const promptText = savedUserPrompt.prompt_text;
         this.dbManager.getChromaSync()?.syncUserPrompt(
-          latestPrompt.id,
-          latestPrompt.memory_session_id,
-          latestPrompt.project,
+          savedUserPrompt.id,
+          savedUserPrompt.memory_session_id,
+          savedUserPrompt.project,
           promptText,
-          latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch,
-          latestPrompt.platform_source
+          savedUserPrompt.prompt_number,
+          savedUserPrompt.created_at_epoch,
+          savedUserPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60
             ? promptText.substring(0, 60) + '...'
             : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             duration: `${chromaDuration}ms`,
             prompt: truncatedPrompt
           });
         }).catch((error) => {
           logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);
         });
