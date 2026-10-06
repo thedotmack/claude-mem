@@ -648,6 +648,13 @@ export function ContextSettingsModal({
                   checked={formState.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true'}
                   onChange={() => toggleBoolean('CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE')}
                 />
+                <ToggleSwitch
+                  id="file-read-gate"
+                  label="Block full-file reads"
+                  description="Send Claude to smart_outline/smart_unfold and past observations instead of reading whole files that have history"
+                  checked={formState.CLAUDE_MEM_FILE_READ_GATE_ENABLED !== 'false'}
+                  onChange={(checked) => updateSetting('CLAUDE_MEM_FILE_READ_GATE_ENABLED', checked ? 'true' : 'false')}
+                />
               </div>
             </CollapsibleSection>
           </fieldset>
