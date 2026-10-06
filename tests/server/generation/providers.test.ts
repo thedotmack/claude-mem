@@ -562,6 +562,41 @@ describe('GeminiObservationProvider', () => {
 });
 
 describe('OpenRouterObservationProvider', () => {
+  it('extracts text blocks from successful compatible responses without leaking reasoning', async () => {
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      fetchImpl: async () => jsonResponse(200, {
+        choices: [{ message: { content: [
+          { type: 'reasoning', text: 'private reasoning' },
+          { type: 'text', text: '<observation>first' },
+          { type: 'text', text: 'second</observation>' },
+          { type: 'tool_call', arguments: 'not an answer' },
+          null,
+        ] } }],
+        usage: { total_tokens: 11 },
+      }),
+    });
+    const result = await provider.generate(makeContext());
+    expect(result.rawText).toBe('<observation>first\nsecond</observation>');
+    expect(result.tokensUsed).toBe(11);
+  });
+
+  it('treats non-text compatible response content as empty', async () => {
+    const nonTextContents = [
+      null,
+      42,
+      { text: 'not a content block array' },
+      [{ type: 'reasoning', text: 'private' }],
+    ];
+    for (const content of nonTextContents) {
+      const provider = new OpenRouterObservationProvider({
+        apiKey: 'fake',
+        fetchImpl: async () => jsonResponse(200, { choices: [{ message: { content } }] }),
+      });
+      expect((await provider.generate(makeContext())).rawText).toBe('');
+    }
+  });
+
   it('retries the exact token-field compatibility response', async () => {
     const issueReport = readFileSync(new URL('../../fixtures/claude-mem-issue-3712.md', import.meta.url), 'utf8');
     const compatibilityError = issueReport.match(/Unsupported parameter:[\s\S]*?instead\./)?.[0] ?? '';
