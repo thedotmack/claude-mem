@@ -163,12 +163,12 @@ export interface TraceAnalysisOptions {
   fixtureTotalLines: number;
 }
 
-/** What the run's `result` event reports it used. */
+/** What the run's `result` event reports it used; null where it reports no number. */
 export interface TokenUsage {
-  inputTokens: number;
-  outputTokens: number;
-  cacheCreationInputTokens: number;
-  cacheReadInputTokens: number;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  cacheCreationInputTokens: number | null;
+  cacheReadInputTokens: number | null;
 }
 
 export interface ReadGateTraceAnalysis {
@@ -224,9 +224,9 @@ function isFixturePath(filePath: unknown, fixtureRelativePath: string): boolean 
   return normalized === fixtureRelativePath || normalized.endsWith(`/${fixtureRelativePath}`);
 }
 
-function tokenCount(usage: Record<string, unknown>, key: string): number {
+function tokenCount(usage: Record<string, unknown>, key: string): number | null {
   const value = usage[key];
-  return typeof value === 'number' ? value : 0;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function toolResultText(content: unknown): string {
@@ -426,16 +426,24 @@ export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
       () => passesAtLeastTwoThirds(gateOnLargeFileRuns, ANSWER_GRADERS)),
     verdict('large-file-gate-off-answers', 'Large file, gate OFF: answer graders pass in at least 2/3 of runs', gateOffLargeFileRuns,
       () => passesAtLeastTwoThirds(gateOffLargeFileRuns, ANSWER_GRADERS)),
-    // Without it the cost comparison measures nothing: a gate-OFF run that only
-    // greps and reads a window never pays for the whole file the gate saves.
+    // The two verdicts below are what make the cost comparison measure the gate:
+    // a gate-ON run that never met the deny, or a gate-OFF run that only greps
+    // and reads a window, never differs by the whole file the gate keeps out.
+    // The gate-ON deny verdict above can pass on the other gate-ON cases alone.
+    verdict('large-file-gate-on-denied', 'Large file, gate ON: Claude tried a whole-file Read and got the deny in at least 2/3 of runs', gateOnLargeFileRuns, () => {
+      const denied = gateOnLargeFileRuns.filter(run => run.analysis.wholeFileReadsDenied > 0).length;
+      return { passed: denied * 3 >= gateOnLargeFileRuns.length * 2, detail: `${denied} of ${gateOnLargeFileRuns.length} runs` };
+    }),
     verdict('large-file-gate-off-reads-whole-file', 'Large file, gate OFF: Claude read the whole file in at least 2/3 of runs', gateOffLargeFileRuns, () => {
       const reading = gateOffLargeFileRuns.filter(run => run.analysis.wholeFileReadsSucceeded > 0).length;
       return { passed: reading * 3 >= gateOffLargeFileRuns.length * 2, detail: `${reading} of ${gateOffLargeFileRuns.length} runs` };
     }),
     verdict('large-file-gate-on-cheaper', 'Large file: gate ON costs less per run than gate OFF', largeFileComparisonRuns, () => {
-      const gateOnCost = mean(gateOnLargeFileRuns.map(run => run.costUsd));
-      const gateOffCost = mean(gateOffLargeFileRuns.map(run => run.costUsd));
-      if (gateOnCost === null || gateOffCost === null) return { passed: false, detail: 'a large-file arm has no run with a cost' };
+      // A mean over only the priced runs would compare different runs per arm.
+      const unpriced = largeFileComparisonRuns.filter(run => run.costUsd === null);
+      if (unpriced.length > 0) return { passed: false, detail: `no cost for ${unpriced.map(runLabel).join(', ')}` };
+      const gateOnCost = mean(gateOnLargeFileRuns.map(run => run.costUsd))!;
+      const gateOffCost = mean(gateOffLargeFileRuns.map(run => run.costUsd))!;
       return {
         passed: gateOnCost < gateOffCost,
         detail: `mean $${gateOnCost.toFixed(3)} gate ON vs $${gateOffCost.toFixed(3)} gate OFF (${formatChange(gateOnCost, gateOffCost)})`,
