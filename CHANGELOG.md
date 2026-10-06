@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.33.0] - 2026-10-06
+
+## The File Read Gate now works for marketplace installs
+
+v13.32.0 turned the File Read Gate on by default, but it never switched on for anyone who installed claude-mem from the plugin marketplace. The gate only blocks a Read where `smart_outline` can parse the file, and parsing needs the tree-sitter CLI executable that tree-sitter-cli's install script downloads. Claude Code installs a plugin's dependencies with install scripts turned off, and the Setup hook that could have downloaded it doesn't run on install, update or normal startup. So `smart_search`, `smart_outline` and `smart_unfold` answered "Could not parse" for every file, and the gate never blocked anything. (#4551)
+
+- **The worker now downloads the tree-sitter CLI.** Every install starts the worker, so at startup it fetches the executable into its own plugin folder. The download runs in the background, so the worker never waits on it. In a clean-room marketplace install, the executable was in place 5 seconds after the worker started. If the download fails, the worker logs it and tries again on its next start, or you can run `npx claude-mem repair`.
+- **Only a verified executable runs.** `tree-sitter-cli` is pinned to exactly `0.26.9`. A downloaded executable must match the SHA-256 pinned for that version and your platform before it runs at all. It's moved into place only after it answers `--version`, so a failed, killed or timed-out download never leaves a broken executable behind.
+- **Running sessions pick it up.** The MCP server used to remember its first lookup of the executable. A session that started before the download kept answering "Could not parse", even after the gate began blocking Reads and sending Claude to those tools. It now checks again on every call.
+
+## The gate now blocks only code files of 32 KB and up
+
+A whole-file `Read` is now blocked only when the code file is **32 KB or larger**. Code files from 1,500 bytes up still get their observation timeline added as context, as before. (#4553)
+
+Blocking a Read isn't free. Claude saves the tokens of the file it doesn't read, but it takes extra turns to get what it needs, and every turn re-reads the whole context. A new eval case on a 49 KB file measured the same question with the gate on and off (#4552). The table compares the cost of a run with the gate on against the gate off:
+
+| File | Sonnet 5.5 | Opus 5.5 |
+| --- | --- | --- |
+| 49 KB, blocked | **-38%** | **-30%** |
+| 19 KB, blocked (v13.32.0) | -6% | **+20%** |
+| 19 KB, not blocked (this release) | -1% | 0% |
+
+Sonnet 5.5 ran 3 times per case and Opus 5.5 twice. Edits still work after a block: in all 5 edit runs on the 49 KB file, the whole-file Read was blocked, Claude used Grep and a 15-line targeted Read instead, and the Edit changed only the intended line.
+
+The viewer's **Block full-file reads** toggle and the docs (File Read Gate → Size Thresholds) now say "code files of 32 KB and up".
+
+## Fixes
+
+- **Plan mode:** claude-mem's read-only tools now run in plan mode without a permission prompt. Before, `-p` sessions refused them outright. Plan mode skips the prompt only for tools that declare themselves read-only, and these 14 now do: `important_workflow`, `search`, `timeline`, `get_observations`, `get_tool_uses`, `work_state_read`, `session_start_context`, `observation_search`, `observation_context`, `observation_generation_status`, `smart_search`, `smart_outline`, `smart_unfold` and `list_corpora`. That includes every tool the File Read Gate sends Claude to. Tools that write, such as `work_state_write`, still ask. (#4551)
+- **Smaller installs:** the File Read Gate eval suite (cases, graders, scaffold scripts and a 20 KB fixture) no longer ships inside every plugin install. It now lives in `evals/read-gate/` in the repository. (#4551)
+
+## Tests and tooling
+
+- `npm run eval:read-gate` adds a gate-on/gate-off pair on a 49 KB fixture, per-run token and cost accounting, and a "same question, gate ON vs OFF" table for each fixture. (#4552, #4553)
+- The sync e2e script's `CMEM_SYNC_E2E_ALLOW_REMOTE_HUB` now takes a comma-separated list of exact hostnames, so production smoke runs through `sync.cmem.ai` can join Realtime on the Supabase project host (#4484). Empty entries in that list are now refused instead of silently dropped (#4550).
+
 ## [13.32.0] - 2026-10-06
 
 ## The File Read Gate is back, on by default

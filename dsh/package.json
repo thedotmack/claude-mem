@@ -1,0 +1,22 @@
+{
+  "name": "@claude-mem/dsh",
+  "version": "13.31.0",
+  "private": true,
+  "description": "First-party DeepSeek Harness memory integration, based on Bleed00/dsh-claude-mem",
+  "type": "module",
+  "main": "./lib/index.js",
+  "license": "Apache-2.0",
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "LICENSE",
+    "NOTICE",
+    "transcript-schema.json",
+    "THIRD-PARTY-LICENSES.txt"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

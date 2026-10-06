@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-13.32.0-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.33.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
@@ -179,6 +179,15 @@ Or install for OMP (Oh My Pi):
 ```bash
 npx claude-mem install --ide omp
 ```
+
+Or install the native Pi extension or DeepSeek Harness plugin:
+
+```bash
+npx claude-mem install --ide pi
+npx claude-mem install --ide dsh --dsh-profile tui
+```
+
+Pi and DeepSeek Harness use the worker runtime. See [native harness setup](docs/native-harness-integrations.md) for capture, recall, and troubleshooting.
 
 Or install from the plugin marketplace inside Claude Code:
 
