@@ -97,8 +97,10 @@ async function waitFor(condition: () => boolean, label: string, timeoutMs = 10_0
  * host, Realtime socket on the Supabase project host). No wildcard or suffix
  * match — any other host is still refused.
  */
-const ALLOWED_REMOTE_HOSTS = (process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? '')
-  .split(',').map(host => host.trim().toLowerCase()).filter(host => host !== '');
+const ALLOWED_REMOTE_HUB_SETTING = (process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? '').trim();
+const ALLOWED_REMOTE_HOSTS = ALLOWED_REMOTE_HUB_SETTING === ''
+  ? []
+  : ALLOWED_REMOTE_HUB_SETTING.split(',').map(host => host.trim().toLowerCase());
 for (const host of ALLOWED_REMOTE_HOSTS) {
   if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(host)) {
     throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB must be exact hostnames, comma-separated (no scheme, port, path or wildcard)');
