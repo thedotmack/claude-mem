@@ -4305,6 +4305,7 @@ export class SessionStore {
     project: string;
     platform_source?: string;
     user_prompt: string;
+    custom_title?: string | null;
     started_at: string;
     started_at_epoch: number;
     completed_at: string | null;
@@ -4323,9 +4324,9 @@ export class SessionStore {
 
     const stmt = this.db.prepare(`
       INSERT INTO sdk_sessions (
-        content_session_id, memory_session_id, project, platform_source, user_prompt,
+        content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title,
         started_at, started_at_epoch, completed_at, completed_at_epoch, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -4334,6 +4335,7 @@ export class SessionStore {
 	      session.project,
 	      normalizedPlatformSource,
       session.user_prompt,
+      session.custom_title ?? null,
       session.started_at,
       session.started_at_epoch,
       session.completed_at,
