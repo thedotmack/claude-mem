@@ -6,7 +6,7 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptAnchorError, TranscriptObservationError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
+import { TranscriptAnchorError, TranscriptEventProcessor, TranscriptObservationError, type TranscriptFileContext } from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -24,7 +24,11 @@ interface TailState {
 // Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
 // after startup with an mtime just before it.
 const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
-/** A rename gap can return intact; absent sources retire their full resume tuple after this bounded grace. */
+
+/**
+ * How long a transcript that disappeared has to come back (a rename away and
+ * back) before the tool calls saved for it are retired.
+ */
 const MISSING_TRANSCRIPT_GRACE_MS = 1000;
 
 /**
@@ -147,6 +151,17 @@ function fileIdentityOf(stat: { dev: number; ino: number }): string {
   return `${stat.dev}:${stat.ino}`;
 }
 
+/** True only when a path is gone (ENOENT, ENOTDIR); any other stat failure is not proof of that. */
+function isMissingPath(filePath: string): boolean {
+  try {
+    statSync(filePath);
+    return false;
+  } catch (error: unknown) {
+    const code = (error as NodeJS.ErrnoException).code;
+    return code === 'ENOENT' || code === 'ENOTDIR';
+  }
+}
+
 /** A checkpoint's fingerprint covers at most this many bytes just before its offset. */
 const CHECKPOINT_FINGERPRINT_BYTES = 4096;
 
@@ -236,6 +251,7 @@ class FileTailer {
     initialFrameLinesDone = 0,
     initialFileIdentity?: string,
     initialCheckpointFingerprint?: string,
+    // Called when the file is read again from byte 0 (replaced or truncated).
     private onReset?: () => void
   ) {
     this.fileIdentity = initialFileIdentity;
@@ -491,8 +507,12 @@ export class TranscriptWatcher {
   private processor = new TranscriptEventProcessor();
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
+  /** Each transcript's context (its session's directory, its outstanding tool calls), shared with the processor. */
   private fileContexts = new Map<string, TranscriptFileContext>();
-  private missingFiles = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Transcripts with saved tool calls that may be gone, checked together once the grace has passed. */
+  private retirementCandidates = new Set<string>();
+  private retirementTimer: ReturnType<typeof setTimeout> | null = null;
+  private missingTranscriptGraceMs = MISSING_TRANSCRIPT_GRACE_MS;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
   /** One-shot re-checks of a root watch on a missing root's ancestor, or one that just moved (WATCH_ROOT_SETTLE_MS). */
   private rootWatchSettleTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -513,15 +533,14 @@ export class TranscriptWatcher {
       await this.setupWatch(watch);
     }
     if (this.stopped) return;
-    for (const file of Object.keys(this.state.offsets)) {
-      if (!this.tailers.has(file)) this.deferMissingFileRetirement(file);
+    // The saved tool calls of a transcript that is gone are retired: their inputs can hold secrets.
+    for (const file of Object.keys(this.state.pendingTools ?? {})) {
+      if (!this.tailers.has(file)) this.scheduleRetirementCheck(file);
     }
   }
 
   stop(): void {
     this.stopped = true;
-    for (const timer of this.missingFiles.values()) clearTimeout(timer);
-    this.missingFiles.clear();
     for (const tailer of this.tailers.values()) {
       tailer.close();
     }
@@ -532,6 +551,9 @@ export class TranscriptWatcher {
     this.rootWatchers = [];
     for (const timer of this.rootWatchSettleTimers) clearTimeout(timer);
     this.rootWatchSettleTimers.clear();
+    if (this.retirementTimer) clearTimeout(this.retirementTimer);
+    this.retirementTimer = null;
+    this.retirementCandidates.clear();
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -544,11 +566,9 @@ export class TranscriptWatcher {
     const resolvedPath = expandHomePath(watch.path);
     const files = this.resolveWatchFiles(resolvedPath);
 
-    // Register every valid source before any tailer can dispatch a result.
-    // Filesystem enumeration order must not determine cross-file recovery.
-    for (const filePath of files) {
-      try { this.getFileContext(filePath); } catch { /* a file can disappear during the scan */ }
-    }
+    // Every file of the scan is registered before any tailer dispatches, so a
+    // result can find its tool call in a file enumerated after its own.
+    for (const filePath of files) this.getFileContext(filePath);
     const initialScan = { stateChanged: false };
     for (const filePath of files) {
       await this.addTailer(filePath, watch, schema, false, initialScan);
@@ -597,67 +617,6 @@ export class TranscriptWatcher {
     }
   }
 
-  private getFileContext(file: string): TranscriptFileContext {
-    let stat: ReturnType<typeof statSync> | undefined;
-    try { stat = statSync(file); }
-    catch (error) {
-      if (!error || typeof error !== 'object' || !('code' in error) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) throw error;
-      this.deferMissingFileRetirement(file);
-    }
-    const previous = this.state.pendingToolFileIdentities?.[file] ?? this.state.fileIdentities?.[file];
-    const identity = stat ? `${stat.dev}:${stat.ino}` : previous;
-    if (stat && ((previous !== undefined && previous !== identity) || stat.size < (this.state.offsets[file] ?? 0))) {
-      this.retirePendingToolMetadata(file);
-      // A known path changed identity, so its opening belongs to the replacement,
-      // even if the watch ordinarily skips preexisting history at startup.
-      this.state.offsets[file] = 0;
-      saveWatchState(this.statePath, this.state);
-    }
-    const timer = this.missingFiles.get(file);
-    if (stat && timer) clearTimeout(timer);
-    if (stat) this.missingFiles.delete(file);
-    let context = this.fileContexts.get(file);
-    if (!context) {
-      context = { cwd: this.state.cwds?.[file], pendingTools: this.state.pendingTools?.[file], pendingToolFileIdentity: identity };
-      context.isCurrent = () => {
-        try { const current = statSync(file); return `${current.dev}:${current.ino}` === context!.pendingToolFileIdentity && current.size >= (this.state.offsets[file] ?? 0); }
-        catch { return false; }
-      };
-      this.fileContexts.set(file, context);
-    }
-    this.processor.registerFileContext(context);
-    return context;
-  }
-
-  private deferMissingFileRetirement(file: string): void {
-    if (this.missingFiles.has(file)) return;
-    const timer = setTimeout(() => {
-      this.missingFiles.delete(file);
-      if (this.stopped) return;
-      try {
-        const stat = statSync(file);
-        if (this.tailers.has(file) && `${stat.dev}:${stat.ino}` === this.state.pendingToolFileIdentities?.[file]) return;
-      } catch { /* still absent: retire the complete resume tuple */ }
-      this.tailers.get(file)?.close();
-      this.tailers.delete(file);
-      this.retirePendingToolMetadata(file);
-      saveWatchState(this.statePath, this.state);
-    }, MISSING_TRANSCRIPT_GRACE_MS);
-    this.missingFiles.set(file, timer);
-  }
-
-  private retirePendingToolMetadata(file: string): void {
-    this.processor.resetFileContext(this.fileContexts.get(file) ?? { cwd: this.state.cwds?.[file], pendingTools: this.state.pendingTools?.[file] });
-    this.fileContexts.delete(file);
-    delete this.state.pendingTools?.[file];
-    delete this.state.pendingToolFileIdentities?.[file];
-    delete this.state.fileIdentities?.[file];
-    delete this.state.offsets[file];
-    delete this.state.cwds?.[file];
-    delete this.state.partials?.[file];
-    delete this.state.frameLines?.[file];
-  }
-
   private handleRootWatchEvent(
     watchRoot: string,
     resolvedPath: string,
@@ -669,10 +628,12 @@ export class TranscriptWatcher {
     const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
     const existingTailer = this.tailers.get(changed);
     if (existingTailer) {
+      // A transcript that is gone is no longer tailed. Its saved tool calls are
+      // retired unless it comes back within the grace (a rename away and back).
       if (!existsSync(changed)) {
         existingTailer.close();
         this.tailers.delete(changed);
-        this.deferMissingFileRetirement(changed);
+        this.scheduleRetirementCheck(changed);
         return;
       }
       existingTailer.poke();
@@ -732,6 +693,74 @@ export class TranscriptWatcher {
       }
     }, WATCH_ROOT_SETTLE_MS);
     this.rootWatchSettleTimers.add(timer);
+  }
+
+  /**
+   * A transcript's context: its session's directory and its outstanding tool
+   * calls, restored from the watch state. It is registered with the processor
+   * so that a result in another file of the session can find its tool call.
+   */
+  private getFileContext(file: string): TranscriptFileContext {
+    let context = this.fileContexts.get(file);
+    if (!context) {
+      context = {
+        cwd: this.state.cwds?.[file],
+        pendingTools: this.state.pendingTools?.[file],
+        // A path that holds another file than the checkpointed one (replaced
+        // or truncated, and not read again yet) lends no tool calls.
+        isCurrent: () => this.isCheckpointedFile(file),
+      };
+      this.fileContexts.set(file, context);
+    }
+    this.processor.registerFileContext(context);
+    return context;
+  }
+
+  private isCheckpointedFile(file: string): boolean {
+    try {
+      const stat = statSync(file);
+      return fileIdentityOf(stat) === this.state.fileIdentities?.[file] && stat.size >= (this.state.offsets[file] ?? 0);
+    } catch {
+      return false;
+    }
+  }
+
+  private scheduleRetirementCheck(file: string): void {
+    this.retirementCandidates.add(file);
+    this.retirementTimer ??= setTimeout(() => this.retireMissingTranscripts(), this.missingTranscriptGraceMs);
+  }
+
+  /**
+   * A candidate still missing after the grace is gone: the tool calls saved
+   * for it are dropped, all in one state write. Nothing else is: a file that
+   * exists but has no tailer (a watch removed or skipped, a zstd file this
+   * runtime cannot read, the other watcher's file) keeps its tool calls, and
+   * every file keeps its checkpoint.
+   */
+  private retireMissingTranscripts(): void {
+    this.retirementTimer = null;
+    const candidates = [...this.retirementCandidates];
+    this.retirementCandidates.clear();
+    if (this.stopped) return;
+    let retired = false;
+    for (const file of candidates) {
+      if (this.tailers.has(file) || !isMissingPath(file)) continue;
+      const context = this.fileContexts.get(file);
+      if (context) this.processor.retireFileContext(context);
+      this.fileContexts.delete(file);
+      if (this.state.pendingTools?.[file]) {
+        delete this.state.pendingTools[file];
+        retired = true;
+      }
+    }
+    if (retired) saveWatchState(this.statePath, this.state);
+  }
+
+  /** A replaced transcript's tool calls and directory belonged to the old file. */
+  private forgetReplacedTranscript(filePath: string, fileContext: TranscriptFileContext): void {
+    this.processor.resetFileContext(fileContext);
+    delete this.state.pendingTools?.[filePath];
+    delete this.state.cwds?.[filePath];
   }
 
   private addDiscoveredTailers(resolvedPath: string, watch: WatchTarget, schema: TranscriptSchema): void {
@@ -889,8 +918,10 @@ export class TranscriptWatcher {
     }
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
-
+    // The session's working directory and outstanding tool calls, restored
+    // for a watcher that resumes past the lines that reported them.
     const fileContext = this.getFileContext(filePath);
+
     const savedOffset = this.state.offsets[filePath];
     let offset = savedOffset ?? 0;
     let stateChanged = false;
@@ -938,6 +969,7 @@ export class TranscriptWatcher {
           this.state.offsets[filePath] = 0;
           delete this.state.partials?.[filePath];
           delete this.state.frameLines?.[filePath];
+          this.forgetReplacedTranscript(filePath, fileContext);
         }
         (this.state.fileIdentities ??= {})[filePath] = identity;
         const fingerprint = fingerprintBeforeOffset(filePath, offset, identity);
@@ -958,34 +990,16 @@ export class TranscriptWatcher {
       else if (initialScan) initialScan.stateChanged = true;
     }
 
-    // The session's working directory, restored for a watcher that resumes
-    // past the line that reported it; saved with the next checkpoint.
     // A subagent-only watch learns the rollout's marker from its first line,
     // and a session whose directory is not known yet learns it there too
     // (DeepSeek Harness writes it on that line only; a turn without one is
     // skipped). A tail that resumes past that line reads it once, before the
     // first new one, for its context only.
-    const resetMetadata = () => {
-      this.processor.resetFileContext(fileContext);
-      delete this.state.pendingTools?.[filePath];
-      delete this.state.pendingToolFileIdentities?.[filePath];
-      delete this.state.cwds?.[filePath];
-      this.state.offsets[filePath] = 0;
-      delete this.state.partials?.[filePath];
-      delete this.state.frameLines?.[filePath];
-      saveWatchState(this.statePath, this.state);
-    };
     let primeFirstLine = offset > 0 && (Boolean(watch.subagentSource) || !fileContext.cwd);
     const tailer = new FileTailer(
       filePath,
       offset,
       async (line: string) => {
-        const stat = statSync(filePath);
-        const identity = `${stat.dev}:${stat.ino}`;
-        if (fileContext.pendingToolFileIdentity !== undefined && fileContext.pendingToolFileIdentity !== identity) {
-          resetMetadata();
-        }
-        fileContext.pendingToolFileIdentity = identity;
         try {
           if (primeFirstLine) {
             primeFirstLine = false;
@@ -993,9 +1007,7 @@ export class TranscriptWatcher {
           }
           await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
         } finally {
-          if (fileContext.pendingToolFileIdentity) {
-            (this.state.pendingToolFileIdentities ??= {})[filePath] = fileContext.pendingToolFileIdentity;
-          }
+          // Saved with the next checkpoint.
           if (fileContext.pendingTools) {
             (this.state.pendingTools ??= {})[filePath] = fileContext.pendingTools;
           }
@@ -1028,7 +1040,7 @@ export class TranscriptWatcher {
       this.state.frameLines?.[filePath] ?? 0,
       this.state.fileIdentities?.[filePath],
       this.state.checkpointFingerprints?.[filePath],
-      resetMetadata
+      () => this.forgetReplacedTranscript(filePath, fileContext)
     );
 
     tailer.start();
@@ -1085,8 +1097,9 @@ export class TranscriptWatcher {
       const entry = JSON.parse(line);
       await this.processor.processEntry(entry, watch, schema, sessionIdOverride ?? undefined, fileContext);
     } catch (error: unknown) {
-      // A turn whose prompt the worker did not record stops the pass with the
-      // checkpoint at its line (or frame), so it is retried, not misfiled.
+      // A turn whose prompt the worker did not record, or an event it did not
+      // accept, stops the pass with the checkpoint at its line (or frame), so
+      // it is retried, not misfiled or lost.
       if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError) {
         logger.warn('TRANSCRIPT', 'Transcript event not accepted; it is retried from its own line', {
           watch: watch.name,
