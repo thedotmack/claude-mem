@@ -48,9 +48,10 @@ export class TranscriptObservationError extends Error {
 }
 
 /**
- * The standalone watcher could not write an observation or summary to the
- * durable hook spool the worker drains. The line is retried from its own
- * position, like a turn whose prompt was not recorded.
+ * An event could not be written to the durable hook spool the worker drains:
+ * an observation or summary of the standalone watcher, or any watcher's file
+ * edit. The line is retried from its own position, like a turn whose prompt
+ * was not recorded.
  */
 export class TranscriptSpoolError extends Error {
   constructor(sessionId: string, cause: unknown) {
@@ -601,13 +602,19 @@ export class TranscriptEventProcessor {
       return;
     }
 
-    await fileEditHandler.execute({
-      sessionId: session.sessionId,
-      cwd: session.cwd,
-      filePath,
-      edits: Array.isArray(fields.edits) ? fields.edits : undefined,
-      platform: session.platformSource
-    });
+    try {
+      await fileEditHandler.execute({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        filePath,
+        edits: Array.isArray(fields.edits) ? fields.edits : undefined,
+        platform: session.platformSource
+      });
+    } catch (error) {
+      // The inputs are checked above, so what throws is the spool write: the
+      // line is retried rather than its edit lost.
+      throw new TranscriptSpoolError(session.sessionId, error);
+    }
   }
 
   private maybeParseJson(value: unknown): unknown {
