@@ -860,7 +860,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
     let receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
-    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*/, "");
+    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*\s*/, "");
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;

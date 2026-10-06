@@ -282,14 +282,17 @@ export async function searchCodebase(
 
 /**
  * Plain type queries score the leaf method name. A qualified query must match
- * the method part, so `Store.Reset` does not match `Store.Fetch`; receiver
- * identity then only adds a bonus, which keeps `srv.Reset` (a call copied from
+ * the method part, so `Store.Reset` does not match `Store.Fetch`.
+ * A trailing dot requests that receiver's methods only. Receiver
+ * identity otherwise adds a bonus, which keeps `srv.Reset` (a call copied from
  * code) matching every `Reset`.
  */
 function scoreGoMethodName(name: string, query: string, parts: string[]): number {
   const leaf = name.slice(name.lastIndexOf(".") + 1);
   if (!query.includes(".")) return matchScore(leaf, parts);
-  const leafScore = matchScore(leaf, [query.slice(query.lastIndexOf(".") + 1)]);
+  const methodQuery = query.slice(query.lastIndexOf(".") + 1);
+  if (!methodQuery) return name.startsWith(query) ? 20 : 0;
+  const leafScore = matchScore(leaf, [methodQuery]);
   if (leafScore === 0) return 0;
   if (name === query) return leafScore + 20;
   return leafScore + (name.startsWith(query) ? 10 : 0);
