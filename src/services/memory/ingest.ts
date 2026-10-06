@@ -4,8 +4,9 @@
  * Claude Code writes "auto memory" — markdown it distills for itself — to
  *   <CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/memory/MEMORY.md   (an index of links)
  *   <CLAUDE_CONFIG_DIR>/projects/<encoded-cwd>/memory/<topic>.md  (distilled prose)
- * where <encoded-cwd> is the repo's absolute path with '/' and '.' replaced by
- * '-' (CLAUDE_CONFIG_DIR defaults to ~/.claude).
+ * where <encoded-cwd> is the repo's absolute path with every character outside
+ * [a-zA-Z0-9] replaced by '-', and a name over 200 characters cut to 200 plus a
+ * hash suffix (see `cwdToDashed`; CLAUDE_CONFIG_DIR defaults to ~/.claude).
  *
  * Unlike transcripts, memory is ALREADY distilled — each topic file is the same
  * KIND of artifact the observation generator produces. So memory-ingest does NOT
