@@ -30,44 +30,20 @@ export function ageDays(dateISO: string, today: Date): number {
   return diff < 1 ? 1 : diff;
 }
 
-export interface ReinforcementHistory {
-  dates: string[];
-  /** undefined is a legacy array whose seed identity was never recorded. */
-  seedIndex?: number | null;
-}
-
-/** Read both legacy date arrays and versioned histories with explicit seed identity. */
-export function parseReinforcementHistory(raw: string | null | undefined): ReinforcementHistory {
-  if (!raw) return { dates: [] };
+/**
+ * Parse the JSON-encoded `reinforcement_dates` column into a list of ISO date
+ * strings. Tolerant of null / malformed values: returns [].
+ */
+export function parseReinforcementDates(raw: string | null | undefined): string[] {
+  if (!raw) return [];
   try {
     const parsed = JSON.parse(raw);
-    const validDates = (dates: unknown[]): string[] => dates.filter((d): d is string => typeof d === 'string' && d.length > 0);
-    if (Array.isArray(parsed)) return { dates: validDates(parsed) };
-    if (parsed?.version === 1 && Array.isArray(parsed.dates)) {
-      const dates = validDates(parsed.dates);
-      const seedIndex = Number.isInteger(parsed.seedIndex) && parsed.seedIndex >= 0 && parsed.seedIndex < dates.length
-        ? parsed.seedIndex : null;
-      return { dates, seedIndex };
-    }
-    return { dates: [] };
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((d): d is string => typeof d === 'string' && d.length > 0);
   } catch {
-    // A hand-edited or corrupt column must not break ranking.
-    return { dates: [] };
+    // [ANTI-PATTERN IGNORED]: a hand-edited or corrupt column must not break ranking; an unreadable history ranks as no reinforcement.
+    return [];
   }
-}
-
-/**
- * Legacy arrays cannot distinguish an original first creation-day seed from a
- * later confirmation on that day that FIFO has moved to the first position.
- * Preserve the legacy seed convention; new writes record the identity explicitly.
- */
-export function reinforcementSeedIndex(history: ReinforcementHistory, creationDay: string): number | null {
-  return history.seedIndex !== undefined ? history.seedIndex : history.dates[0] === creationDay ? 0 : null;
-}
-
-/** The retained dates, independent of the storage encoding. */
-export function parseReinforcementDates(raw: string | null | undefined): string[] {
-  return parseReinforcementHistory(raw).dates;
 }
 
 /** ISO `YYYY-MM-DD` for a date in UTC: the canonical reinforcement-date form. */
