@@ -20,6 +20,7 @@ export interface PostgresObservation {
   projectId: string;
   teamId: string;
   serverSessionId: string | null;
+  contentSessionId?: string | null;
   kind: string;
   content: string;
   generationKey: string | null;
@@ -46,6 +47,7 @@ interface ObservationRow {
   project_id: string;
   team_id: string;
   server_session_id: string | null;
+  content_session_id?: string | null;
   kind: string;
   content: string;
   generation_key: string | null;
@@ -187,7 +189,9 @@ export class PostgresObservationRepository {
       : null;
     const result = await this.client.query<ObservationRow>(
       `
-        SELECT observations.* FROM observations
+        SELECT observations.*,
+          COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
+        FROM observations
         LEFT JOIN server_sessions
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
@@ -453,6 +457,7 @@ function mapObservationRow(row: ObservationRow): PostgresObservation {
     projectId: row.project_id,
     teamId: row.team_id,
     serverSessionId: row.server_session_id,
+    ...(row.content_session_id !== undefined ? { contentSessionId: row.content_session_id } : {}),
     kind: row.kind,
     content: row.content,
     generationKey: row.generation_key,

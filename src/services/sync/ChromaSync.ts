@@ -1,6 +1,7 @@
 
 import { ChromaMcpManager } from './ChromaMcpManager.js';
 import { ChromaSyncState, ProjectWatermarks } from './ChromaSyncState.js';
+import { parseStringListField } from './string-list-field.js';
 import { ParsedObservation, ParsedSummary } from '../../sdk/parser.js';
 // cmem-sdk: keep SessionStore + parseFileList off the SDK's import graph.
 // Both come from the SQLite layer (`bun:sqlite`). The SDK never calls the
@@ -132,39 +133,6 @@ interface StoredUserPrompt {
   platform_source: string;
 }
 
-function parseStringListField(
-  rawValue: string | null | undefined,
-  fieldName: 'facts' | 'concepts',
-  rowId: number,
-): string[] {
-  if (!rawValue) {
-    return [];
-  }
-
-  try {
-    const parsed = JSON.parse(rawValue);
-    if (!Array.isArray(parsed)) {
-      logger.warn('CHROMA_SYNC', 'Expected JSON array in observation list field, using plain string fallback', {
-        fieldName,
-        rowId,
-        parsedType: typeof parsed,
-      });
-      if (typeof parsed === 'string') {
-        return parsed.trim() ? [parsed] : [];
-      }
-      return rawValue.trim() ? [rawValue] : [];
-    }
-    return parsed.filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  } catch (error) {
-    logger.warn('CHROMA_SYNC', 'Malformed observation list field, using plain string fallback', {
-      fieldName,
-      rowId,
-      errorName: error instanceof Error ? error.name : 'NonError',
-    });
-    return rawValue.trim() ? [rawValue] : [];
-  }
-}
-
 /**
  * Whether the worker has begun shutting down: local Chroma then refuses every
  * mutation (see {@link ChromaMcpManager.acceptsMutations}).
@@ -198,6 +166,11 @@ const CORRUPT_SEGMENT_ERROR_SIGNATURE = 'Failed to apply logs to the hnsw segmen
 // A stuck segment fails every write, a fluke does not: the signature has to
 // repeat on this many distinct batches, with no successful write in between.
 const CORRUPT_SEGMENT_CONFIRMING_BATCHES = 2;
+
+/** Raw-document exhaustion for consumers that widen a filtered candidate window. */
+export interface ChromaQueryProgress {
+  exhausted?: boolean;
+}
 
 /** The last corrupt collection this process dropped, for health reporting. */
 export interface ChromaCollectionDrop {
@@ -862,22 +835,49 @@ export class ChromaSync {
     return written;
   }
 
+  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
+  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
+    await this.ensureCollectionExists();
+    const manager = ChromaMcpManager.getInstance();
+    const existing = await manager.callTool('chroma_get_documents', {
+      collection_name: this.collectionName,
+      where: { $and: [{ doc_type: docType }, { sqlite_id: sqliteId }] },
+      include: [],
+    });
+    // MCP transport success can still decode to null (empty/non-JSON content).
+    // Only a valid ID list proves which fragments exist; failures must leave
+    // the durable reconciliation flag set for the next backfill.
+    if (!existing || typeof existing !== 'object' || !('ids' in existing)
+      || !Array.isArray(existing.ids)
+      || !existing.ids.every(id => typeof id === 'string' && id.length > 0)) {
+      throw new Error('Chroma fragment lookup did not return a valid document ID list');
+    }
+    const currentIds = new Set(documents.map(doc => doc.id));
+    const obsolete = (existing.ids as string[]).filter(id => !currentIds.has(id));
+    for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
+      await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
+    }
+  }
+
   async syncObservation(
     observationId: number,
     memorySessionId: string,
     project: string,
-    obs: ParsedObservation,
+    obs: ParsedObservation & { text?: string | null; merged_into_project?: string | null },
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting = false
   ): Promise<void> {
     const stored: StoredObservation = {
       id: observationId,
       memory_session_id: memorySessionId,
       project: project,
-      merged_into_project: null,
+      // New local observations have neither; a replicated row passes its
+      // stored values so these documents match what backfill writes.
+      merged_into_project: obs.merged_into_project ?? null,
       platform_source: platformSource ? normalizePlatformSource(platformSource) : normalizePlatformSource(undefined),
-      text: null, // Legacy field, not used
+      text: obs.text ?? null,
       type: obs.type,
       title: obs.title,
       subtitle: obs.subtitle,
@@ -903,6 +903,11 @@ export class ChromaSync {
     // Chroma error must NOT mark this observation as synced — otherwise the
     // backfill pass on next boot will skip past it (CodeRabbit review on PR
     // #2282).
+    if (replaceExisting) ChromaSyncState.markFragmentReconciliation(project, 'observations', observationId);
+    if (ChromaSyncState.needsFragmentReconciliation(project, 'observations', observationId)) {
+      await this.removeObsoleteFragments('observation', observationId, documents);
+      ChromaSyncState.clearFragmentReconciliation(project, 'observations', observationId);
+    }
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
       ChromaSyncState.clearPending(project, 'observations', [observationId]);
@@ -925,16 +930,17 @@ export class ChromaSync {
     summaryId: number,
     memorySessionId: string,
     project: string,
-    summary: ParsedSummary,
+    summary: ParsedSummary & { merged_into_project?: string | null },
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    replaceExisting = false
   ): Promise<void> {
     const stored: StoredSummary = {
       id: summaryId,
       memory_session_id: memorySessionId,
       project: project,
-      merged_into_project: null,
+      merged_into_project: summary.merged_into_project ?? null,
       platform_source: platformSource ? normalizePlatformSource(platformSource) : normalizePlatformSource(undefined),
       request: summary.request,
       investigated: summary.investigated,
@@ -955,6 +961,11 @@ export class ChromaSync {
     });
 
     // Only bump on a confirmed full write — see syncObservation() for rationale.
+    if (replaceExisting) ChromaSyncState.markFragmentReconciliation(project, 'summaries', summaryId);
+    if (ChromaSyncState.needsFragmentReconciliation(project, 'summaries', summaryId)) {
+      await this.removeObsoleteFragments('session_summary', summaryId, documents);
+      ChromaSyncState.clearFragmentReconciliation(project, 'summaries', summaryId);
+    }
     const written = await this.addDocuments(documents);
     if (written === documents.length) {
       ChromaSyncState.clearPending(project, 'summaries', [summaryId]);
@@ -1343,6 +1354,20 @@ export class ChromaSync {
       if (droppedBeforeRow) {
         return droppedBeforeRow;
       }
+      if (ChromaSyncState.needsFragmentReconciliation(backfillProject, kind, row.id)) {
+        try {
+          await this.removeObsoleteFragments(kind === 'observations' ? 'observation' : 'session_summary', row.id, docs);
+          ChromaSyncState.clearFragmentReconciliation(backfillProject, kind, row.id);
+        } catch (error) {
+          hadWriteFailures = true;
+          consecutiveFailures += 1;
+          logger.warn('CHROMA_SYNC', 'Fragment reconciliation failed; row remains pending', { project: backfillProject, kind, rowId: row.id }, error as Error);
+          if (consecutiveFailures >= this.MAX_CONSECUTIVE_BATCH_FAILURES) {
+            return { writtenDocs, emptyRows, abortReason: 'write_failures', writeFailures: true };
+          }
+          continue;
+        }
+      }
       if (docs.length === 0) {
         // Nothing to index at all: no title and no body (a title-only
         // observation still gets its title document). Drain the row so it
@@ -1657,8 +1682,10 @@ export class ChromaSync {
   async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    progress?: ChromaQueryProgress
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    if (progress) progress.exhausted = false;
     await this.ensureCollectionExists();
 
     let results: any;
@@ -1711,6 +1738,9 @@ export class ChromaSync {
         // -- and chroma handles a selective filter cheaply. So fall through.
         if (filtered.ids.length >= limit) {
           this.selectiveFilters.delete(filterKey);
+          // A full unique-row window can still hide later rows, even when the
+          // over-fetch reached the end of the raw document list.
+          if (progress) progress.exhausted = rawIds.length < overfetch && filtered.ids.length <= limit;
           return {
             ids: filtered.ids.slice(0, limit),
             distances: filtered.distances.slice(0, limit),
@@ -1746,6 +1776,9 @@ export class ChromaSync {
       throw error;
     }
 
+    // Use raw fragments, not deduplicated row IDs: one observation can occupy
+    // many document slots, so a short unique-ID list does not imply exhaustion.
+    if (progress) progress.exhausted = (results?.ids?.[0]?.length ?? 0) < limit;
     return this.deduplicateQueryResults(results);
   }
 

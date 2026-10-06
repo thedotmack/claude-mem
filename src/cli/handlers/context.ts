@@ -107,7 +107,11 @@ export const contextHandler: EventHandler = {
     const platformSourceParam = input.platform && settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES !== 'true'
       ? `&platformSource=${encodeURIComponent(normalizedPlatformSource!)}`
       : '';
-    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}`;
+    // "Include last message" picks the prior session's reply by excluding this
+    // one, so the worker gets the session id and SessionStart is answered live.
+    const showLastMessage = settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true';
+    const sessionParam = showLastMessage && input.sessionId ? `&sessionId=${encodeURIComponent(input.sessionId)}` : '';
+    const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
     // Server runtime reads the shared server (plan-24 step 4). When the server
@@ -133,10 +137,12 @@ export const contextHandler: EventHandler = {
     // Precomputed SessionStart context (liveness plan, Phase 6): the worker
     // keeps each variant it has served rendered on disk, keyed exactly like
     // the URLs above. A hit needs no worker at all; a miss takes the live path.
+    // A cached block never carries the prior reply, so with "Include last
+    // message" on it is read only when the worker cannot answer.
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
       if (serverRuntime) return null;
-      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors);
+      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;
       logger.debug('HOOK', 'SessionStart context served from the context cache', {
@@ -145,16 +151,24 @@ export const contextHandler: EventHandler = {
       });
       return fillContextPlaceholders(cached.body, cacheNowEpochMs, cached.placeholderNonce);
     };
-    const cachedModelContext = readCachedRender(false);
+    const cachedModelContext = showLastMessage ? null : readCachedRender(false);
 
     // ponytail: Codex's MCP normally starts the worker; this one bounded
     // fallback covers cold sessions without the old startup process chain.
     const workerOptions = input.platform === 'codex'
       ? { workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT, timeoutMs: 2_000 }
       : undefined;
-    const contextResult = serverRender
+    let workerOutageNotice: string | null = null;
+    let contextResult = serverRender
       ? serverRender.model
       : cachedModelContext ?? await executeWithWorkerFallback<string>(apiPath, 'GET', undefined, workerOptions);
+    if (showLastMessage && isWorkerFallback(contextResult)) {
+      const cachedFallback = readCachedRender(false);
+      if (cachedFallback !== null) {
+        contextResult = cachedFallback;
+        workerOutageNotice = await consumeWorkerOutageNotice(input.sessionId);
+      }
+    }
     if (isWorkerFallback(contextResult)) {
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
@@ -221,12 +235,15 @@ export const contextHandler: EventHandler = {
 
     let coloredTimeline = '';
     if (showTerminalOutput) {
+      const colors = input.platform === 'claude-code';
       const colorResult = serverRender
         ? serverRender.terminal
-        : readCachedRender(input.platform === 'claude-code')
+        : (showLastMessage ? null : readCachedRender(colors))
           ?? await executeWithWorkerFallback<string>(colorApiPath, 'GET', undefined, workerOptions);
       if (!isWorkerFallback(colorResult) && typeof colorResult === 'string') {
         coloredTimeline = colorResult.trim();
+      } else if (showLastMessage && isWorkerFallback(colorResult)) {
+        coloredTimeline = readCachedRender(colors)?.trim() ?? '';
       }
     }
 
@@ -260,7 +277,9 @@ export const contextHandler: EventHandler = {
         hookEventName: 'SessionStart',
         additionalContext
       },
-      systemMessage
+      systemMessage: workerOutageNotice
+        ? [workerOutageNotice, systemMessage].filter(Boolean).join('\n\n')
+        : systemMessage
     };
   }
 };

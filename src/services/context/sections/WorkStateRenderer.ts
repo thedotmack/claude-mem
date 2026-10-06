@@ -37,7 +37,7 @@ export function foldWorkStateList(entries: WorkStateEntry[]): FoldedWorkStateLis
   for (const entry of entries) {
     const taskName = entry.fields.task;
     if (taskName === undefined || taskName === null || taskName === '') {
-      Object.assign(folded.state, entry.fields);
+      folded.state = { ...folded.state, ...entry.fields };
       folded.stateUpdatedAtEpoch = entry.created_at_epoch;
       continue;
     }

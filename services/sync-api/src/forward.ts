@@ -21,8 +21,11 @@ const FORWARDED_REQUEST_HEADERS = [
 	"X-Device-Id",
 	"X-Device-Name",
 	"Content-Type",
+	"Content-Encoding",
 	"Accept",
 ] as const;
+
+const PUSH_OPS_PATH = "/v1/sync/ops";
 
 /**
  * Not copied from the upstream response. Hop-by-hop headers are per
@@ -70,15 +73,31 @@ function upstreamUnavailable(error: unknown): Response {
 	return response;
 }
 
+/**
+ * Supabase's Cloudflare WAF blocks some plain-JSON memory pushes with an HTML
+ * 403 before they reach cmem-sync; gzipped bodies pass, and cmem-sync decodes
+ * them. Compressing here fixes every shipped client without a plugin release.
+ * A body the client already encoded passes through untouched.
+ */
+function upstreamRequestBody(request: Request, url: URL, headers: Headers): ReadableStream<Uint8Array> | undefined {
+	if (request.method === "GET" || request.method === "HEAD" || request.body === null) return undefined;
+	if (request.method !== "POST" || url.pathname !== PUSH_OPS_PATH || headers.has("Content-Encoding")) {
+		return request.body;
+	}
+	headers.set("Content-Encoding", "gzip");
+	return request.body.pipeThrough(new CompressionStream("gzip"));
+}
+
 async function forwardToUpstream(request: Request, url: URL, forwardOrigin: string): Promise<Response> {
-	const hasBody = request.method !== "GET" && request.method !== "HEAD" && request.body !== null;
+	const headers = forwardedRequestHeaders(request);
+	const body = upstreamRequestBody(request, url, headers);
 	let upstream: Response;
 	try {
 		upstream = await fetch(buildForwardUrl(url, forwardOrigin), {
 			method: request.method,
-			headers: forwardedRequestHeaders(request),
+			headers,
 			// Streamed, never buffered: large pushes pass straight through.
-			body: hasBody ? request.body : undefined,
+			body,
 			// Required for a streamed request body (fetch spec).
 			duplex: "half",
 			redirect: "manual",
