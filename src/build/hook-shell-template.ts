@@ -254,7 +254,11 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `let R=null;` +
     `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
     `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
-    `require(p.join(R,'scripts',${require}))`
+    // p.resolve, not p.join: R is relative when CLAUDE_PLUGIN_ROOT or
+    // CLAUDE_CONFIG_DIR is, and require() reads a relative path such as
+    // plugin/scripts/mcp-server.cjs as a package name. Resolving against cwd
+    // matches the existsSync check above, as the old child-process spawn did.
+    `require(p.resolve(R,'scripts',${require}))`
   );
 }
 

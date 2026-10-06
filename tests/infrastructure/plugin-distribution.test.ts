@@ -318,7 +318,7 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
     expect(command).toContain('mcp-server.cjs');
-    expect(command).toMatch(/require\(p\.join\(R,'scripts',["']mcp-server\.cjs["']\)\)/);
+    expect(command).toMatch(/require\(p\.resolve\(R,'scripts',["']mcp-server\.cjs["']\)\)/);
     expect(command).not.toContain('child_process');
     expect(command).not.toContain('.spawn(');
     // No bare absolute "/scripts/..." path leaks through.
@@ -372,6 +372,52 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Plugin Distribution - MCP launcher process (#4269)', () => {
+  // Runs the shipped plugin/.mcp.json entry against a fixture server that
+  // prints its own pid. Loaded in-process, the server's pid is the launcher's,
+  // so each MCP session costs one Node process rather than an idle launcher
+  // plus a child.
+  const { command, args } = readJson('plugin/.mcp.json').mcpServers['mcp-search'];
+
+  function launchMcpServer(pluginRootFor: ((sandbox: string) => string) | null) {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'claude-mem-mcp-launch-'));
+    try {
+      mkdirSync(path.join(sandbox, 'fixture', 'scripts'), { recursive: true });
+      writeFileSync(path.join(sandbox, 'fixture', 'scripts', 'mcp-server.cjs'), 'process.stdout.write(String(process.pid));\n');
+      // An empty HOME and config dir, so no real install can satisfy a candidate.
+      const home = path.join(sandbox, 'home');
+      const configDir = path.join(sandbox, 'claude-config');
+      mkdirSync(home);
+      mkdirSync(configDir);
+      const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir };
+      delete env.CLAUDE_PLUGIN_ROOT;
+      delete env.PLUGIN_ROOT;
+      if (pluginRootFor) env.CLAUDE_PLUGIN_ROOT = pluginRootFor(sandbox);
+      return spawnSync(command, args, { cwd: sandbox, env, encoding: 'utf-8', timeout: 20000 });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }
+
+  it('runs the server inside the launcher process for an absolute plugin root', () => {
+    const result = launchMcpServer(sandbox => path.join(sandbox, 'fixture'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(String(result.pid));
+  });
+
+  it('resolves a relative plugin root against the working directory', () => {
+    const result = launchMcpServer(() => './fixture');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(String(result.pid));
+  });
+
+  it('exits 1 with the not-found message when no candidate has the server', () => {
+    const result = launchMcpServer(null);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('claude-mem: mcp server not found');
   });
 });
 
