@@ -23,6 +23,8 @@ npm run eval:read-gate -- --runs 1 --case gate-on-edits-file
 | `--case <glob>` | all cases | Passed through as `--case`; verdicts for cases that did not run are reported as not run |
 | `--preflight-only` | off | Stop after the pre-flight; no model is called |
 
+The suite lives in `evals/read-gate/`, outside `plugin/`, because marketplace installs copy `plugin/` from git and none of them needs it. `claude plugin eval --eval-dir` only reads a directory below the plugin, so the runner copies the suite to `plugin/evals-read-gate/` (gitignored) for each run and removes it afterwards.
+
 ## Cases
 
 | Case | Arm | Prompt | Graders |
@@ -60,7 +62,7 @@ Both workers are always stopped, including on Ctrl-C. The sandboxes `--keep-temp
 
 The gate only denies where `smart_outline` can parse. That takes the `tree-sitter` executable, which tree-sitter-cli's `install.js` downloads (decision D9 in `plans/2026-10-05-file-read-gate-restore.md`). `npm run build` installs the plugin's dependencies with lifecycle scripts off, so `plugin/node_modules/tree-sitter-cli` has no executable after a build. Both the built hook and the built MCP server resolve that copy first, so the gate would stay dormant and `smart_outline` could not parse.
 
-Before it starts any worker, the runner provisions that copy the way a real install does. It calls the installer's own `ensureTreeSitterCliBinary(plugin/)` from `src/npx-cli/install/setup-runtime.ts`, which runs the package's `install.js` (a download from the tree-sitter releases, so it needs network) unless the executable already answers `--version`. The runner stops with the reason if that fails, and records the version in `summary.json` and the summary header.
+Before it starts any worker, the runner provisions that copy the way a real install does. It calls `ensureTreeSitterCliBinary(plugin/)` from `src/services/smart-file-read/tree-sitter-cli-provision.ts`, the function the installer and the worker use, which runs the package's `install.js` (a download from the tree-sitter releases, so it needs network) unless the executable already answers `--version`, and installs the download only if its SHA-256 matches the digest pinned in `tree-sitter-cli-checksums.ts`. The runner stops with the reason if that fails, and records the version in `summary.json` and the summary header.
 
 ## Cost
 

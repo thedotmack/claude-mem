@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync } from 'fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -12,10 +13,9 @@ import {
   bunCommonPaths,
   uvCommonPaths,
   installPluginDependencies,
-  ensureTreeSitterCliBinary,
   provisionTreeSitterCli,
-  treeSitterCliBinaryPath,
 } from '../src/npx-cli/install/setup-runtime';
+import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
 import { createInstallSummary, InstallAbortError } from '../src/npx-cli/install/error-reporter';
 import { ErrorSeverity } from '../src/npx-cli/install/error-taxonomy';
 import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
@@ -258,6 +258,7 @@ describe('doctor marketplace runtime hygiene', () => {
 // package-local script when the CLI is not usable.
 describe('tree-sitter CLI provisioning (#2910)', () => {
   const TREE_SITTER_BINARY_NAME = process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter';
+  const TREE_SITTER_INSTALL_TIMEOUT_MS = 30_000;
   const REPO_TREE_SITTER_BINARY = join(import.meta.dir, '..', 'node_modules', 'tree-sitter-cli', TREE_SITTER_BINARY_NAME);
   let tempDir: string;
   let previousDataDir: string | undefined;
@@ -277,7 +278,7 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   function writeCliPackage(installScript?: string): string {
     const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
     mkdirSync(cliDir, { recursive: true });
-    writeFileSync(join(cliDir, 'package.json'), JSON.stringify({ bin: { 'tree-sitter': 'tree-sitter' } }));
+    writeFileSync(join(cliDir, 'package.json'), JSON.stringify({ name: 'tree-sitter-cli', version: '0.26.9', bin: { 'tree-sitter': 'tree-sitter' } }));
     if (installScript !== undefined) writeFileSync(join(cliDir, 'install.js'), installScript);
     return cliDir;
   }
@@ -288,18 +289,85 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
     if (process.platform !== 'win32') chmodSync(target, 0o755);
   }
 
+  // Like tree-sitter-cli's real install.js, these write the executable into
+  // their working directory, which is a staging directory inside the package.
   const materializingInstallScript = (): string => [
     `const fs = require('fs');`,
-    `const target = require('path').join(__dirname, ${JSON.stringify(TREE_SITTER_BINARY_NAME)});`,
+    `const target = require('path').join(process.cwd(), ${JSON.stringify(TREE_SITTER_BINARY_NAME)});`,
     `fs.copyFileSync(${JSON.stringify(REPO_TREE_SITTER_BINARY)}, target);`,
     process.platform === 'win32' ? '' : 'fs.chmodSync(target, 0o755);',
   ].join('\n');
 
-  it('runs the package install script when the executable is missing', async () => {
-    writeCliPackage(materializingInstallScript());
+  const partialDownloadScript = (exitStatement: string): string => [
+    `require('fs').writeFileSync(require('path').join(process.cwd(), ${JSON.stringify(TREE_SITTER_BINARY_NAME)}), 'half a download');`,
+    exitStatement,
+  ].join('\n');
 
-    await expect(ensureTreeSitterCliBinary(tempDir)).resolves.toBeUndefined();
+  const sha256 = (content: string | Buffer) => createHash('sha256').update(content).digest('hex');
+  // The fake downloads are the repo's own tree-sitter build, so pin its digest.
+  const pinRepoBinary = () => sha256(readFileSync(REPO_TREE_SITTER_BINARY));
+
+  function expectNothingLeftInPlace(cliDir: string): void {
+    expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(false);
+    expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
+  }
+
+  it('runs the package install script when the executable is missing', async () => {
+    const cliDir = writeCliPackage(materializingInstallScript());
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).resolves.toBeUndefined();
     expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(true);
+    expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
+  });
+
+  // The File Read Gate and the parser only check that the executable exists, so
+  // a half-written one would send Claude to smart_outline, which cannot parse.
+  it('leaves no executable in place when the download fails partway', async () => {
+    const cliDir = writeCliPackage(partialDownloadScript('process.exitCode = 2;'));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).rejects.toMatchObject({ code: 2 });
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('leaves no executable in place when the download is killed by the timeout', async () => {
+    const cliDir = writeCliPackage(partialDownloadScript('setTimeout(() => {}, 5000);'));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, 1000, pinRepoBinary)).rejects.toMatchObject({ killed: true });
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('never moves an executable that does not answer --version into place', async () => {
+    const cliDir = writeCliPackage(partialDownloadScript(''));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => sha256('half a download')))
+      .rejects.toThrow('without creating a working executable');
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  // A replaced release asset must never run, not even for the --version probe.
+  it.skipIf(process.platform === 'win32')('refuses, without running it, an executable whose SHA-256 is not the pinned one', async () => {
+    const ranMarker = join(tempDir, 'downloaded-executable-ran');
+    const cliDir = writeCliPackage([
+      `const target = require('path').join(process.cwd(), 'tree-sitter');`,
+      `require('fs').writeFileSync(target, ${JSON.stringify(`#!/bin/sh
+touch '${ranMarker}'
+echo 'tree-sitter 0.26.9'
+`)});`,
+      `require('fs').chmodSync(target, 0o755);`,
+    ].join('\n'));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).rejects.toThrow('not the pinned');
+    expect(existsSync(ranMarker)).toBe(false);
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('downloads nothing when no SHA-256 is pinned for the package version', async () => {
+    const downloadMarker = join(tempDir, 'install-script-ran');
+    const cliDir = writeCliPackage(`require('fs').writeFileSync(${JSON.stringify(downloadMarker)}, '');`);
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => undefined)).rejects.toThrow('No SHA-256 is pinned');
+    expect(existsSync(downloadMarker)).toBe(false);
+    expectNothingLeftInPlace(cliDir);
   });
 
   it.skipIf(process.platform === 'win32')('closes stdin before accepting a package-local version response', async () => {
@@ -312,21 +380,21 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
     chmodSync(binaryPath, 0o755);
 
     const startedAt = Date.now();
-    await expect(ensureTreeSitterCliBinary(tempDir)).resolves.toBeUndefined();
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBeUndefined();
     expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 
   it('never borrows a tree-sitter package from an ancestor node_modules', async () => {
     copyRealBinaryInto(writeCliPackage());
 
-    await expect(ensureTreeSitterCliBinary(join(tempDir, 'nested', 'cache'))).rejects.toThrow('install script not found');
+    await expect(ensureTreeSitterCliBinary(join(tempDir, 'nested', 'cache'), TREE_SITTER_INSTALL_TIMEOUT_MS)).rejects.toThrow('install script not found');
   });
 
   it('rejects a tree-sitter package path that is not a directory', async () => {
     mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
     writeFileSync(join(tempDir, 'node_modules', 'tree-sitter-cli'), 'not a directory');
 
-    await expect(ensureTreeSitterCliBinary(tempDir)).rejects.toThrow('package path is not a directory');
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).rejects.toThrow('package path is not a directory');
   });
 
   it('install: a provisioning failure only warns, so the install still reaches sign-in', async () => {

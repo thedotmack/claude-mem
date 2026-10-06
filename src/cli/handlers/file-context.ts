@@ -146,7 +146,7 @@ function formatFileContextTimeline(history: FileObservationHistory): string {
 }
 
 // The `Full-file Read blocked by claude-mem:` line is the read-gate eval's trace
-// anchor (plugin/evals-read-gate) — keep it verbatim.
+// anchor (evals/read-gate) — keep it verbatim.
 function formatFullFileReadDenyReason(history: FileObservationHistory): string {
   const safePath = escapePathForHint(history.filePath);
   const displayedIds = history.displayedObservations.map(obs => obs.id).join(', ');

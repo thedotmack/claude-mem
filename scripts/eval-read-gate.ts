@@ -2,7 +2,7 @@
 /**
  * File Read Gate eval: gate ON against gate OFF, through real claude-mem
  * workers and real Claude Code. What it proves and how to read the results:
- * plugin/evals-read-gate/README.md.
+ * evals/read-gate/README.md.
  *
  *   npm run eval:read-gate [-- --runs 3 --model claude-sonnet-5-5 -j 3 --max-cost-usd 10 --case <glob> --preflight-only]
  *
@@ -15,7 +15,7 @@
  * 3. Pre-flight, no model: checks the tree-sitter CLI the built hook resolves,
  *    then pipes PreToolUse Read payloads into the real file-context hook
  *    against each worker.
- * 4. Runs plugin/evals-read-gate with `claude plugin eval`, analyzes every
+ * 4. Runs evals/read-gate with `claude plugin eval`, analyzes every
  *    run's trace, writes reports/read-gate/<timestamp>/summary.{md,json} and
  *    exits non-zero when a verdict fails or a requested run did not complete.
  * Both workers are always stopped, and the sandboxes --keep-temp kept are
@@ -28,13 +28,21 @@ import net from 'net';
 import path from 'path';
 import { isTreeSitterCliAvailable } from '../src/services/smart-file-read/tree-sitter-bin-path.js';
 import { treeSitterBinaryName } from '../src/services/smart-file-read/tree-sitter-bin-name.js';
+import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision.js';
 
 const repoRoot = path.resolve(import.meta.dir, '..');
 const pluginDirectory = path.join(repoRoot, 'plugin');
+/**
+ * The suite is tracked outside plugin/ because a marketplace install copies
+ * plugin/ from git and no install needs the eval. `claude plugin eval
+ * --eval-dir` only reads a directory below the plugin, so each run stages a
+ * copy at plugin/evals-read-gate (gitignored) and removes it afterwards.
+ */
+const suiteSourceDirectory = path.join(repoRoot, 'evals', 'read-gate');
 const SUITE_DIRECTORY_NAME = 'evals-read-gate';
-const suiteDirectory = path.join(pluginDirectory, SUITE_DIRECTORY_NAME);
-const fixtureDirectory = path.join(suiteDirectory, 'fixture');
-const seedObservationsPath = path.join(suiteDirectory, 'seed-observations.json');
+const stagedSuiteDirectory = path.join(pluginDirectory, SUITE_DIRECTORY_NAME);
+const fixtureDirectory = path.join(suiteSourceDirectory, 'fixture');
+const seedObservationsPath = path.join(suiteSourceDirectory, 'seed-observations.json');
 const workerScriptPath = path.join(pluginDirectory, 'scripts', 'worker-service.cjs');
 const bunRunnerPath = path.join(pluginDirectory, 'scripts', 'bun-runner.js');
 const scratchDirectory = path.join(repoRoot, '.scratch', 'read-gate-eval');
@@ -52,7 +60,7 @@ export const GET_OBSERVATIONS_TOOL = `${MCP_SEARCH_TOOL_PREFIX}get_observations`
 export const CASE_GATE_ON_ANSWERS = 'gate-on-answers-question';
 export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
 export const CASE_GATE_OFF_ANSWERS = 'gate-off-reads-normally';
-/** Every case in plugin/evals-read-gate. */
+/** Every case in evals/read-gate. */
 export const EVAL_CASE_NAMES: readonly string[] = [CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS];
 const ANSWER_GRADERS = ['answer-rate', 'answer-minimum'];
 const EDIT_GRADERS = ['edited', 'old-value-gone'];
@@ -635,6 +643,22 @@ function removeActiveDataDirectoryFiles(): void {
   activeDataDirectoryFilesWritten = false;
 }
 
+let suiteStagedByThisRun = false;
+
+// Symlinks stay verbatim: the cases' scaffolds link to the shared ones beside them.
+function stageSuite(): void {
+  fs.rmSync(stagedSuiteDirectory, { recursive: true, force: true });
+  fs.cpSync(suiteSourceDirectory, stagedSuiteDirectory, { recursive: true, verbatimSymlinks: true });
+  suiteStagedByThisRun = true;
+}
+
+/** Only a suite this run staged: a --preflight-only run must not remove a full run's. */
+function removeStagedSuite(): void {
+  if (!suiteStagedByThisRun) return;
+  fs.rmSync(stagedSuiteDirectory, { recursive: true, force: true });
+  suiteStagedByThisRun = false;
+}
+
 // ---------------------------------------------------------------------------
 // tree-sitter CLI (D9: the gate only denies where smart_outline can parse)
 // ---------------------------------------------------------------------------
@@ -655,6 +679,8 @@ export interface PluginTreeSitterCheck {
   failure: string | null;
 }
 
+const TREE_SITTER_CLI_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** The output of `<binary> --version` when it answers like the tree-sitter CLI, else null. */
 function treeSitterVersion(binary: string, searchPath: string = process.env.PATH ?? ''): string | null {
   const result = spawnSync(binary, ['--version'], {
@@ -674,12 +700,10 @@ function treeSitterVersion(binary: string, searchPath: string = process.env.PATH
  * loads. Without it the gate stays dormant and smart_outline cannot parse.
  */
 async function provisionPluginTreeSitterCli(): Promise<TreeSitterProvisioning> {
-  // Loaded here rather than at the top: only this step needs the installer's module graph.
-  const { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } = await import('../src/npx-cli/install/setup-runtime.js');
   const binaryPath = treeSitterCliBinaryPath(pluginDirectory);
   const relativeBinaryPath = path.relative(repoRoot, binaryPath);
   try {
-    await ensureTreeSitterCliBinary(pluginDirectory);
+    await ensureTreeSitterCliBinary(pluginDirectory, TREE_SITTER_CLI_INSTALL_TIMEOUT_MS);
   } catch (error) {
     const failure = error as Error & { stdout?: string; stderr?: string };
     const output = `${failure.stderr ?? ''}\n${failure.stdout ?? ''}`.trim();
@@ -1365,9 +1389,11 @@ async function main(): Promise<number> {
     }
 
     writeActiveDataDirectoryFiles(arms);
+    stageSuite();
     const evalOutputDirectory = path.join(reportDirectory, 'eval');
     const evalExitCode = runPluginEval(options, evalOutputDirectory);
     removeActiveDataDirectoryFiles();
+    removeStagedSuite();
     const aggregatePath = path.join(evalOutputDirectory, 'aggregate-result.json');
     if (!fs.existsSync(aggregatePath)) {
       throw new Error(`claude plugin eval exited ${evalExitCode} without writing ${path.relative(repoRoot, aggregatePath)}`);
@@ -1382,6 +1408,7 @@ async function main(): Promise<number> {
     return summary.passed ? 0 : 1;
   } finally {
     removeActiveDataDirectoryFiles();
+    removeStagedSuite();
     stopStartedWorkers();
   }
 }
@@ -1393,6 +1420,7 @@ if (import.meta.main) {
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       process.on(signal, () => {
         removeActiveDataDirectoryFiles();
+        removeStagedSuite();
         stopStartedWorkers();
         process.exit(130);
       });

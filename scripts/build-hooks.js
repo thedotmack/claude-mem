@@ -333,7 +333,12 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.4.3',
-        'tree-sitter-cli': '^0.26.5',
+        // Exact, not a range: the worker only installs a tree-sitter executable
+        // whose SHA-256 is pinned for this version
+        // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
+        // install that ignores bun.lock (npm) would resolve a range to a newer,
+        // unpinned release and leave smart_outline without an executable.
+        'tree-sitter-cli': '0.26.9',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
         'tree-sitter-go': '^0.25.0',
