@@ -60,15 +60,17 @@ export const SMART_OUTLINE_TOOL = `${MCP_SEARCH_TOOL_PREFIX}smart_outline`;
 export const SMART_UNFOLD_TOOL = `${MCP_SEARCH_TOOL_PREFIX}smart_unfold`;
 export const GET_OBSERVATIONS_TOOL = `${MCP_SEARCH_TOOL_PREFIX}get_observations`;
 
-export const CASE_GATE_ON_ANSWERS = 'gate-on-answers-question';
-export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
-export const CASE_GATE_OFF_ANSWERS = 'gate-off-reads-normally';
 export const CASE_GATE_ON_LARGE_FILE = 'gate-on-large-file';
 export const CASE_GATE_OFF_LARGE_FILE = 'gate-off-large-file';
+export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
+export const CASE_GATE_ON_SMALL_FILE = 'gate-on-small-file';
+export const CASE_GATE_OFF_SMALL_FILE = 'gate-off-small-file';
 /** Every case in evals/read-gate. */
 export const EVAL_CASE_NAMES: readonly string[] = [
-  CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS, CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE,
+  CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE, CASE_GATE_ON_EDITS, CASE_GATE_ON_SMALL_FILE, CASE_GATE_OFF_SMALL_FILE,
 ];
+/** Cases on the large fixture, which is over the gate's deny size; the small one is under it. */
+const LARGE_FIXTURE_CASE_NAMES: readonly string[] = [CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE, CASE_GATE_ON_EDITS];
 const ANSWER_GRADERS = ['answer-rate', 'answer-minimum'];
 const EDIT_GRADERS = ['edited', 'old-value-gone'];
 
@@ -358,15 +360,16 @@ function verdict(
   return { id, description, status: passed ? 'pass' : 'fail', detail };
 }
 
-/** The plan's verdicts (plans/2026-10-05-file-read-gate-restore.md, 5.2 step 7). */
+/** The plan's verdicts (plans/2026-10-05-file-read-gate-restore.md, 5.2 step 7), with the deny size split. */
 export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
-  const gateOnAnswerRuns = runs.filter(run => run.caseName === CASE_GATE_ON_ANSWERS);
-  const gateOnEditRuns = runs.filter(run => run.caseName === CASE_GATE_ON_EDITS);
   const gateOnLargeFileRuns = runs.filter(run => run.caseName === CASE_GATE_ON_LARGE_FILE);
-  const gateOnRuns = [...gateOnAnswerRuns, ...gateOnEditRuns, ...gateOnLargeFileRuns];
-  const gateOffAnswerRuns = runs.filter(run => run.caseName === CASE_GATE_OFF_ANSWERS);
+  const gateOnEditRuns = runs.filter(run => run.caseName === CASE_GATE_ON_EDITS);
+  // The gate-ON runs on a file over the deny size, which the gate must deny.
+  const gateOnRuns = [...gateOnLargeFileRuns, ...gateOnEditRuns];
+  const gateOnSmallFileRuns = runs.filter(run => run.caseName === CASE_GATE_ON_SMALL_FILE);
+  const gateOffSmallFileRuns = runs.filter(run => run.caseName === CASE_GATE_OFF_SMALL_FILE);
   const gateOffLargeFileRuns = runs.filter(run => run.caseName === CASE_GATE_OFF_LARGE_FILE);
-  const gateOffRuns = [...gateOffAnswerRuns, ...gateOffLargeFileRuns];
+  const gateOffRuns = [...gateOffSmallFileRuns, ...gateOffLargeFileRuns];
   // The cost comparison needs both arms; with one of them filtered out by --case it did not run.
   const largeFileComparisonRuns = gateOnLargeFileRuns.length > 0 && gateOffLargeFileRuns.length > 0
     ? [...gateOnLargeFileRuns, ...gateOffLargeFileRuns]
@@ -398,10 +401,22 @@ export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
           + (missed.length > 0 ? `; not denied: ${missed.map(runLabel).join(', ')}` : ''),
       };
     }),
-    verdict('gate-on-answers', 'Gate ON: answer graders pass in at least 2/3 of runs', gateOnAnswerRuns,
-      () => passesAtLeastTwoThirds(gateOnAnswerRuns, ANSWER_GRADERS)),
-    verdict('gate-on-edits', 'Gate ON: the edit leaves 5.25 and no 4.85 in at least 2/3 of runs', gateOnEditRuns,
+    verdict('gate-on-edits', 'Gate ON: the edit leaves 24.75 and no 22.40 in at least 2/3 of runs', gateOnEditRuns,
       () => passesAtLeastTwoThirds(gateOnEditRuns, EDIT_GRADERS)),
+    verdict('gate-on-small-file-not-denied', 'Gate ON, file under the deny size: no deny marker in any run', gateOnSmallFileRuns, () => {
+      const denied = gateOnSmallFileRuns.filter(run => run.analysis.denyMarkerAppeared);
+      return {
+        passed: denied.length === 0,
+        detail: denied.length === 0 ? `0 of ${gateOnSmallFileRuns.length} runs` : `deny marker in: ${denied.map(runLabel).join(', ')}`,
+      };
+    }),
+    // Without a whole-file Read, a run never asks the gate the question the deny size answers.
+    verdict('gate-on-small-file-reads-whole-file', 'Gate ON, file under the deny size: Claude read the whole file in at least 2/3 of runs', gateOnSmallFileRuns, () => {
+      const reading = gateOnSmallFileRuns.filter(run => run.analysis.wholeFileReadsSucceeded > 0).length;
+      return { passed: reading * 3 >= gateOnSmallFileRuns.length * 2, detail: `${reading} of ${gateOnSmallFileRuns.length} runs` };
+    }),
+    verdict('gate-on-small-file-answers', 'Gate ON, file under the deny size: answer graders pass in at least 2/3 of runs', gateOnSmallFileRuns,
+      () => passesAtLeastTwoThirds(gateOnSmallFileRuns, ANSWER_GRADERS)),
     verdict('gate-off-never-denied', 'Gate OFF: no deny marker in any run', gateOffRuns, () => {
       const denied = gateOffRuns.filter(run => run.analysis.denyMarkerAppeared);
       return {
@@ -420,8 +435,8 @@ export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
           : `no successful Read in: ${withoutRead.map(runLabel).join(', ')}`,
       };
     }),
-    verdict('gate-off-answers', 'Gate OFF: answer graders pass in at least 2/3 of runs', gateOffAnswerRuns,
-      () => passesAtLeastTwoThirds(gateOffAnswerRuns, ANSWER_GRADERS)),
+    verdict('gate-off-answers', 'Gate OFF, small file: answer graders pass in at least 2/3 of runs', gateOffSmallFileRuns,
+      () => passesAtLeastTwoThirds(gateOffSmallFileRuns, ANSWER_GRADERS)),
     verdict('large-file-gate-on-answers', 'Large file, gate ON: answer graders pass in at least 2/3 of runs', gateOnLargeFileRuns,
       () => passesAtLeastTwoThirds(gateOnLargeFileRuns, ANSWER_GRADERS)),
     verdict('large-file-gate-off-answers', 'Large file, gate OFF: answer graders pass in at least 2/3 of runs', gateOffLargeFileRuns,
@@ -923,7 +938,10 @@ async function seedObservationDatabase(seedDirectory: string | undefined): Promi
 interface HookWorkspace {
   home: string;
   cwd: string;
-  fixturePath: string;
+  /** Over the gate's deny size. */
+  largeFixturePath: string;
+  /** Under the gate's deny size. */
+  smallFixturePath: string;
 }
 
 interface HookSpecificOutput {
@@ -949,15 +967,21 @@ function listFiles(directory: string): string[] {
   });
 }
 
-/** The eval sandbox's layout: HOME with ~/.claude-mem linked to the arm's data dir, and the fixture in HOME/cwd dated 2026-01-01. */
+/** The eval sandbox's layout: HOME with ~/.claude-mem linked to the arm's data dir, and both fixtures in HOME/cwd dated 2026-01-01. */
 function prepareHookWorkspace(arm: EvalArm): HookWorkspace {
   const home = path.join(arm.directory, 'preflight', 'home');
   const cwd = path.join(home, 'cwd');
   fs.mkdirSync(home, { recursive: true });
   fs.cpSync(fixtureDirectory, cwd, { recursive: true });
+  fs.cpSync(largeFixtureDirectory, cwd, { recursive: true });
   for (const file of listFiles(cwd)) fs.utimesSync(file, FIXTURE_MTIME, FIXTURE_MTIME);
   fs.symlinkSync(arm.dataDirectory, path.join(home, '.claude-mem'));
-  return { home, cwd, fixturePath: path.join(cwd, FIXTURE_RELATIVE_PATH) };
+  return {
+    home,
+    cwd,
+    largeFixturePath: path.join(cwd, LARGE_FIXTURE_RELATIVE_PATH),
+    smallFixturePath: path.join(cwd, FIXTURE_RELATIVE_PATH),
+  };
 }
 
 /**
@@ -1058,14 +1082,19 @@ function runPreflight(arms: EvalArm[], seeded: SeededObservation[]): PreflightCh
     const workspace = prepareHookWorkspace(arm);
     const cases = arm.gateEnabled
       ? [
-        { name: 'whole-file Read is denied', toolInput: { file_path: workspace.fixturePath }, expect: expectDeny },
+        { name: 'whole-file Read of the large file is denied', toolInput: { file_path: workspace.largeFixturePath }, expect: expectDeny },
         {
           name: 'targeted Read (offset 40, limit 20) gets context',
-          toolInput: { file_path: workspace.fixturePath, offset: 40, limit: 20 },
+          toolInput: { file_path: workspace.largeFixturePath, offset: 40, limit: 20 },
+          expect: expectContext,
+        },
+        {
+          name: 'whole-file Read under the deny size gets context',
+          toolInput: { file_path: workspace.smallFixturePath },
           expect: expectContext,
         },
       ]
-      : [{ name: 'whole-file Read gets context', toolInput: { file_path: workspace.fixturePath }, expect: expectContext }];
+      : [{ name: 'whole-file Read gets context', toolInput: { file_path: workspace.largeFixturePath }, expect: expectContext }];
     cases.forEach((check, index) => {
       // A session per check: the dedupe claim is per (session, file).
       const { output, wallTimeMs } = runFileContextHook(workspace, `read-gate-preflight-${arm.name}-${index + 1}`, check.toolInput);
@@ -1073,7 +1102,7 @@ function runPreflight(arms: EvalArm[], seeded: SeededObservation[]): PreflightCh
       checks.push({
         arm: arm.name,
         name: check.name,
-        toolInput: { ...check.toolInput, file_path: path.relative(workspace.cwd, workspace.fixturePath) },
+        toolInput: { ...check.toolInput, file_path: path.relative(workspace.cwd, check.toolInput.file_path) },
         wallTimeMs,
         permissionDecision: output.permissionDecision ?? null,
         seededObservationIdsShown: shown,
@@ -1180,13 +1209,13 @@ function keepRunArtifacts(caseName: string, runNumber: number, tracePath: string
   }
   // --keep-temp seals the run's home/ (and the workspace in it) under sealed/.
   const workspaceFixturePath = [path.join(sandbox, 'sealed', 'home'), path.join(sandbox, 'home')]
-    .map(home => path.join(home, 'cwd', FIXTURE_RELATIVE_PATH))
+    .map(home => path.join(home, 'cwd', LARGE_FIXTURE_RELATIVE_PATH))
     .find(candidate => fs.existsSync(candidate));
   if (caseName === CASE_GATE_ON_EDITS) {
     if (workspaceFixturePath) {
-      fs.copyFileSync(workspaceFixturePath, path.join(tracesDirectory, `${caseName}-run-${runNumber}.${path.basename(FIXTURE_RELATIVE_PATH)}`));
+      fs.copyFileSync(workspaceFixturePath, path.join(tracesDirectory, `${caseName}-run-${runNumber}.${path.basename(LARGE_FIXTURE_RELATIVE_PATH)}`));
     } else {
-      console.warn(`No edited ${FIXTURE_RELATIVE_PATH} found in ${sandbox} for ${caseName} run ${runNumber}`);
+      console.warn(`No edited ${LARGE_FIXTURE_RELATIVE_PATH} found in ${sandbox} for ${caseName} run ${runNumber}`);
     }
   }
   fs.rmSync(sandbox, { recursive: true, force: true });
@@ -1200,8 +1229,10 @@ export interface FixtureInfo {
 }
 
 interface EvalFixtures {
-  standard: FixtureInfo;
+  /** Over the gate's deny size. */
   large: FixtureInfo;
+  /** Under it. */
+  small: FixtureInfo;
 }
 
 function readFixtureInfo(directory: string, relativePath: string): FixtureInfo {
@@ -1209,9 +1240,9 @@ function readFixtureInfo(directory: string, relativePath: string): FixtureInfo {
   return { relativePath, totalLines: countLines(content), bytes: Buffer.byteLength(content) };
 }
 
-/** The file a case's Reads are counted against: the large-file cases have their own. */
+/** The file a case's Reads are counted against. */
 function fixtureOfCase(fixtures: EvalFixtures, caseName: string): FixtureInfo {
-  return caseName === CASE_GATE_ON_LARGE_FILE || caseName === CASE_GATE_OFF_LARGE_FILE ? fixtures.large : fixtures.standard;
+  return LARGE_FIXTURE_CASE_NAMES.includes(caseName) ? fixtures.large : fixtures.small;
 }
 
 function collectRunEvidence(aggregate: AggregateResult, reportDirectory: string, fixtures: EvalFixtures): RunEvidence[] {
@@ -1345,14 +1376,14 @@ function buildSummary(input: {
     caseFilter: input.options.caseGlob,
     evalExitCode: input.evalExitCode,
     evalCostUsd: input.aggregate.costUsd ?? null,
-    fixtures: [input.fixtures.standard, input.fixtures.large],
+    fixtures: [input.fixtures.large, input.fixtures.small],
     treeSitter: input.treeSitter,
     seededObservations: input.seeded,
     preflight: input.preflight,
     verdicts,
     comparisons: [
-      comparison(input.fixtures.standard, CASE_GATE_ON_ANSWERS, CASE_GATE_OFF_ANSWERS),
       comparison(input.fixtures.large, CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE),
+      comparison(input.fixtures.small, CASE_GATE_ON_SMALL_FILE, CASE_GATE_OFF_SMALL_FILE),
     ],
     runs: input.runs,
   };
@@ -1481,8 +1512,8 @@ async function main(): Promise<number> {
   const reportDirectory = path.join(repoRoot, 'reports', 'read-gate', timestamp);
   fs.mkdirSync(reportDirectory, { recursive: true });
   const fixtures: EvalFixtures = {
-    standard: readFixtureInfo(fixtureDirectory, FIXTURE_RELATIVE_PATH),
     large: readFixtureInfo(largeFixtureDirectory, LARGE_FIXTURE_RELATIVE_PATH),
+    small: readFixtureInfo(fixtureDirectory, FIXTURE_RELATIVE_PATH),
   };
   const provisionedTreeSitter = await provisionPluginTreeSitterCli();
   console.log(`tree-sitter CLI for the plugin: ${provisionedTreeSitter.binaryPath} (${provisionedTreeSitter.version})`);
@@ -1508,7 +1539,7 @@ async function main(): Promise<number> {
     };
     const preflight = runPreflight(arms, seeded);
     fs.writeFileSync(path.join(reportDirectory, 'preflight.json'), `${JSON.stringify({
-      fixture: fixtures.standard,
+      fixtures: [fixtures.large, fixtures.small],
       treeSitter,
       seededObservations: seeded,
       checks: preflight,

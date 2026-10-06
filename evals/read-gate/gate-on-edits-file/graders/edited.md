@@ -1,5 +1,5 @@
 ---
 type: regex
-target: { source: file, path: src/shipping/rate-calculator.ts }
-pattern: '5\.25'
+target: { source: file, path: src/shipping/carrier-tariffs.ts }
+pattern: '24\.75'
 ---

@@ -1,6 +1,6 @@
 ---
 type: regex
-target: { source: file, path: src/shipping/rate-calculator.ts }
-pattern: '4\.85'
+target: { source: file, path: src/shipping/carrier-tariffs.ts }
+pattern: '22\.40?\b'
 match: not_contains
 ---

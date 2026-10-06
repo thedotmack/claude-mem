@@ -17,7 +17,18 @@ import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace
 import { claimFileContextInjection } from './file-context-dedupe.js';
 import { isQwenCodeHookEvent } from './session-init.js';
 
-const FILE_READ_GATE_MIN_BYTES = 1_500;
+/** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
+const FILE_CONTEXT_MIN_BYTES = 1_500;
+
+/**
+ * The File Read Gate denies a whole-file Read only from this size up; smaller
+ * files get the timeline as context. A deny costs turns: the denied Read and
+ * every smart-tool or targeted Read after it, each re-reading the whole
+ * context, against the file it keeps out. evals/read-gate asked one question
+ * with the gate on and off: on a 19 KB file it cost -6% on Sonnet and +20% on
+ * Opus, on a 49 KB file -35% and -32%.
+ */
+export const FILE_READ_GATE_DENY_MIN_BYTES = 32 * 1024;
 
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
@@ -106,6 +117,8 @@ interface FileObservationHistory {
    * the gate never denies a Read it could not check.
    */
   fileStatVerified: boolean;
+  /** The size the lookup stat'ed; 0 when the stat failed. */
+  fileSizeBytes: number;
 }
 
 /** Escapes a path for the quoted tool-call hints (backslashes, quotes, newlines). */
@@ -237,13 +250,14 @@ async function fileResolvesInsideWorkspace(filePath: string, workspaceCwd: strin
  * Claude Code main session (not Qwen Code, which runs the same command), gate
  * setting not 'false', a single `file_path` Read of a file smart_outline can
  * outline, with observation history whose lookup stat'ed the file (it enforced
- * size >= FILE_READ_GATE_MIN_BYTES and mtime older than the newest
- * observation), a session cwd, and a Read that starts at line 1. Only a Read
+ * size >= FILE_CONTEXT_MIN_BYTES and mtime older than the newest
+ * observation), a size of at least FILE_READ_GATE_DENY_MIN_BYTES, a session
+ * cwd, and a Read that starts at line 1. Only a Read
  * that meets all of them pays for the workspace check, which resolves symlinks.
  */
 function isFullFileReadGateCandidate(
   input: NormalizedHookInput,
-  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified'>,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified' | 'fileSizeBytes'>,
   fileReadGateSetting: string | undefined,
 ): boolean {
   if (input.platform !== 'claude-code') return false;
@@ -259,6 +273,7 @@ function isFullFileReadGateCandidate(
 
   // A failed stat skipped the size and mtime checks; a claude-mem failure must never block a Read.
   if (!fileHistory.fileStatVerified) return false;
+  if (fileHistory.fileSizeBytes < FILE_READ_GATE_DENY_MIN_BYTES) return false;
   if (UNGATED_LANGUAGES.has(detectLanguage(fileHistory.absolutePath))) return false;
   if (!input.cwd) return false;
   return (readWindowValue(readInput.offset) ?? 0) <= 1;
@@ -276,7 +291,7 @@ function isFullFileReadGateCandidate(
  */
 export function shouldDenyFullFileRead(
   input: NormalizedHookInput,
-  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified'> | null,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified' | 'fileSizeBytes'> | null,
   fileReadGateSetting: string | undefined,
   fileIsInsideWorkspace: boolean,
   fileHasMoreLinesThan: (absolutePath: string, lineCount: number) => boolean | null,
@@ -407,16 +422,18 @@ async function lookupFileObservationHistory(
 ): Promise<FileObservationHistory | null> {
   let fileMtimeMs = 0;
   let fileStatVerified = false;
+  let fileSizeBytes = 0;
   try {
     const statPath = path.isAbsolute(filePath)
       ? filePath
       : path.resolve(input.cwd || process.cwd(), filePath);
     const stat = statSync(statPath);
-    if (!stat.isFile() || stat.size < FILE_READ_GATE_MIN_BYTES) {
+    if (!stat.isFile() || stat.size < FILE_CONTEXT_MIN_BYTES) {
       return null;
     }
     fileMtimeMs = stat.mtimeMs;
     fileStatVerified = true;
+    fileSizeBytes = stat.size;
   } catch (err) {
     if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
@@ -489,5 +506,5 @@ async function lookupFileObservationHistory(
   const displayedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT)
     .sort((a, b) => a.created_at_epoch - b.created_at_epoch);
 
-  return { filePath, absolutePath, relativePath, newestObservationMs, displayedObservations, fileStatVerified };
+  return { filePath, absolutePath, relativePath, newestObservationMs, displayedObservations, fileStatVerified, fileSizeBytes };
 }
