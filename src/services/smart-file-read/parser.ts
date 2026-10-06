@@ -145,7 +145,7 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -163,7 +163,7 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -188,7 +188,7 @@ const QUERIES: Record<string, string> = {
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
-(impl_item type: (type_identifier) @name) @impl_def
+(impl_item type: (_) @name) @impl_def
 (use_declaration) @imp
 `,
 
@@ -239,6 +239,11 @@ const QUERIES: Record<string, string> = {
 `,
 
   swift: `
+(init_declaration name: "init" @name) @swift_init
+(init_declaration (parameter) @swift_parameter) @swift_parameters
+(init_declaration (type_parameters) @swift_generics) @swift_header
+(init_declaration (type_constraints) @swift_constraints) @swift_header
+(deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -290,7 +295,9 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
-(test_declaration) @func
+(test_declaration (string) @name) @func
+(test_declaration (identifier) @name) @doctest
+(test_declaration . (block)) @func
 `,
 
   css: `
@@ -603,6 +610,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   method: "method",
   ctor: "method",
   kotlin_ctor: "method",
+  swift_init: "method",
   haskell_signature: "method",
   iface: "interface",
   tdef: "type",
@@ -615,9 +623,10 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   code_block: "code",
   frontmatter: "metadata",
   ref: "reference",
+  doctest: "function",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface"]);
 
 // Kinds that own nested symbols only in some languages: a PHP enum holds its
 // methods, and a Haskell function holds its `where`/`let` helpers.
@@ -731,6 +740,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
   const decoratedRanges = new Map<string, RawCapture>();
+  const swiftParameters = new Map<string, string[]>();
+  const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
   const haskellSignatures = new Set<CodeSymbol>();
   const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
@@ -746,6 +757,24 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "decorated_outer") {
         const inner = match.captures.find(capture => capture.tag === "decorated_inner");
         if (inner) decoratedRanges.set(`${inner.startRow}:${inner.startCol}`, cap);
+      }
+      if (cap.tag === "swift_header") {
+        const key = `${cap.startRow}:${cap.startCol}`;
+        const header = swiftHeaders.get(key) ?? {};
+        for (const detail of match.captures) {
+          if (detail.tag === "swift_generics") header.generics = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+          if (detail.tag === "swift_constraints") header.constraints = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+        }
+        swiftHeaders.set(key, header);
+      }
+      if (cap.tag === "swift_parameters") {
+        const parameter = match.captures.find(capture => capture.tag === "swift_parameter");
+        if (parameter) {
+          const key = `${cap.startRow}:${cap.startCol}`;
+          const parameters = swiftParameters.get(key) ?? [];
+          parameters.push(captureLines(lines, parameter).join(" ").replace(/\s+/g, " ").trim());
+          swiftParameters.set(key, parameters);
+        }
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -805,6 +834,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (kindCapture.tag === "kotlin_ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       name = "constructor" + (parameters ? captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim() : "");
+    }
+    if (kindCapture.tag === "swift_init") {
+      const key = `${startRow}:${kindCapture.startCol}`;
+      const header = swiftHeaders.get(key);
+      name = `init${header?.generics ?? ""}(${(swiftParameters.get(key) ?? []).join(", ")})${header?.constraints ? ` ${header.constraints}` : ""}`;
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
     const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
@@ -902,6 +936,13 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       symbols.length = 0;
       symbols.push(...filtered);
     }
+  }
+
+  // A Zig doctest is named by the declaration it documents (`test add`
+  // documents `fn add`), so its identity keeps the keyword and both stay
+  // unfoldable.
+  if (language === "zig") {
+    for (const sym of symbols) if (ranges.get(sym)?.tag === "doctest") sym.name = `test ${sym.name}`;
   }
 
   // A named typedef can capture both the alias and its same-named struct.
@@ -1228,6 +1269,80 @@ export function qualifySymbolName(name: string, parent: string | undefined, lang
   const segment = language === "css" || language === "scss"
     ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
   return parent ? `${parent}.${segment}` : segment;
+}
+
+/**
+ * Lookup hints for a failed unfold. Every miss lands in the agent's context,
+ * so the hint stays within 1 KiB: names most like the missed one come first,
+ * and ties keep roots first, then qualified children offered fairly.
+ */
+export function formatAvailableSymbols(file: FoldedFile, missedName: string): string {
+  const marker = "  ... more symbols omitted; use smart_search to narrow the lookup.";
+  const byteBudget = 1024 - Buffer.byteLength(marker) - 1;
+  // Split like a smart_search query, plus owner separators (`Foo::bar`, `Foo#bar`).
+  const missedParts = missedName.toLowerCase().split(/[\s_\-./:#]+/).filter(part => part.length > 0);
+  const candidates: Array<{ line: string; similarity: number }> = [];
+  const groups: Array<{ symbols: CodeSymbol[]; parent: string; index: number }> = [];
+  let omitted = false;
+  const offer = (symbol: CodeSymbol, parent?: string): void => {
+    const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
+    candidates.push({ line: `  - ${name} (${symbol.kind})`, similarity: matchScore(name.toLowerCase(), missedParts) });
+    if (symbol.children?.length) groups.push({ symbols: symbol.children, parent: name, index: 0 });
+  };
+  // Bound traversal separately from the byte budget so roots that still fit
+  // do not disappear merely to reserve visits for their qualified children.
+  const maxVisits = 512;
+  const reservedChildVisits = Math.min(64, file.symbols.slice(0, maxVisits)
+    .reduce((count, symbol) => count + (symbol.children?.length ?? 0), 0));
+  // A large early class must not bury a later top-level entry point.
+  for (const symbol of file.symbols) {
+    if (candidates.length >= maxVisits - reservedChildVisits) { omitted = true; break; }
+    offer(symbol);
+  }
+  // Round-robin owner groups keeps qualified suggestions from multiple roots.
+  while (groups.length && candidates.length < maxVisits) {
+    const group = groups.shift()!;
+    offer(group.symbols[group.index++], group.parent);
+    if (group.index < group.symbols.length) groups.push(group);
+  }
+  if (groups.length) omitted = true;
+  // A stable sort, so equally similar names keep the traversal order above.
+  candidates.sort((a, b) => b.similarity - a.similarity);
+  const available: string[] = [];
+  let bytes = 0;
+  for (const { line } of candidates) {
+    const size = Buffer.byteLength(line) + (available.length ? 1 : 0);
+    if (bytes + size <= byteBudget) { available.push(line); bytes += size; }
+    else omitted = true;
+  }
+  if (omitted) available.push(marker);
+  return available.join("\n");
+}
+
+/** Query relevance shared by smart_search and the unfold hints: exact 10, substring 5, in-order subsequence 1, per part. */
+export function matchScore(text: string, queryParts: string[]): number {
+  let score = 0;
+  for (const part of queryParts) {
+    if (text === part) {
+      score += 10;
+    } else if (text.includes(part)) {
+      score += 5;
+    } else {
+      let ti = 0;
+      let matched = 0;
+      for (const ch of part) {
+        const idx = text.indexOf(ch, ti);
+        if (idx !== -1) {
+          matched++;
+          ti = idx + 1;
+        }
+      }
+      if (matched === part.length) {
+        score += 1;
+      }
+    }
+  }
+  return score;
 }
 
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
