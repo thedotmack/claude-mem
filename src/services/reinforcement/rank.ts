@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-import { ACT_R_DECAY, ageDays, parseReinforcementDates } from './strength.js';
+import { ACT_R_DECAY, ageDays, isoDay, parseReinforcementDates } from './strength.js';
 
 /**
  * Strength-weighted selection for SessionStart context injection (opt-in).
@@ -50,12 +50,13 @@ function recencyWeight(epochMs: number, today: Date): number {
 export function blendedScore(item: Rankable, today: Date, alpha: number): number {
   const created = recencyWeight(item.created_at_epoch, today);
 
-  // Reinforcement terms are the dates beyond the seeded creation day (the
-  // first entry): created_at_epoch already supplies the creation term.
+  // created_at_epoch already supplies the creation term. Identify its seed
+  // by date: FIFO history trimming eventually removes it from the first slot.
   const dates = parseReinforcementDates(item.reinforcement_dates);
+  const creationDay = isoDay(new Date(item.created_at_epoch));
   let reinforcementSum = 0;
-  for (let k = 1; k < dates.length; k++) {
-    reinforcementSum += Math.pow(ageDays(dates[k], today), -ACT_R_DECAY);
+  for (const day of dates) {
+    if (day !== creationDay) reinforcementSum += Math.pow(ageDays(day, today), -ACT_R_DECAY);
   }
 
   return Math.log(1 + created + alpha * reinforcementSum);
