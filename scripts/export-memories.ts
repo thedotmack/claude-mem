@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 
-import { writeFileSync } from 'fs';
+import { statSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
+import { writeJsonFileAtomic } from '../src/shared/atomic-json.js';
 import type {
   ObservationRecord,
   SdkSessionRecord,
@@ -116,7 +117,18 @@ export async function exportMemories(query: string, outputFile: string, project?
     prompts
   };
 
-  writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
+  let streamTarget = false;
+  try {
+    const target = statSync(outputFile);
+    streamTarget = target.isCharacterDevice() || target.isFIFO();
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error;
+  }
+  // Devices and pipes are streams, not replaceable files. Keep their native
+  // write behavior; only regular file destinations use atomic replacement.
+  if (streamTarget) writeFileSync(outputFile, JSON.stringify(exportData, null, 2));
+  else writeJsonFileAtomic(outputFile, exportData);
 
   console.log(`\n📦 Export complete!`);
   console.log(`📄 Output: ${outputFile}`);
