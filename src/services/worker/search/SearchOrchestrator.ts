@@ -211,7 +211,8 @@ export class SearchOrchestrator {
     }
 
     if (normalized.type && !normalized.searchType) {
-      if (['observations', 'sessions', 'prompts'].includes(normalized.type)) {
+      const categories = Array.isArray(normalized.type) ? normalized.type : [normalized.type];
+      if (categories.length > 0 && categories.every((category: string) => SEARCH_CATEGORIES.includes(category as SearchCategory))) {
         normalized.searchType = normalized.type;
         delete normalized.type;
       }

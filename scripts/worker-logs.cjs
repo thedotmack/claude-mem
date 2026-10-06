@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
-const { closeSync, fstatSync, openSync, readSync, watchFile } = require('fs');
+const { closeSync, fstatSync, openSync, readSync, watchFile, unwatchFile } = require('fs');
 const path = require('path');
-const os = require('os');
+const { resolveDataDir } = require('./resolve-data-dir.cjs');
 
 const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;
@@ -10,7 +10,7 @@ const CHUNK_SIZE = 64 * 1024;
 
 function todaysLogPath() {
   const stamp = new Date().toISOString().slice(0, 10);
-  return path.join(os.homedir(), '.claude-mem', 'logs', `claude-mem-${stamp}.log`);
+  return path.join(resolveDataDir(), 'logs', `claude-mem-${stamp}.log`);
 }
 
 function readAt(fd, position, length) {
@@ -67,8 +67,10 @@ try {
 }
 
 let size;
+let followedIdentity;
 try {
-  size = fstatSync(fd).size;
+  followedIdentity = fstatSync(fd);
+  size = followedIdentity.size;
   const lines = readLastLines(fd, size, LINE_COUNT);
   if (lines.length > 0) console.log(lines.join('\n'));
 } finally {
@@ -77,22 +79,46 @@ try {
 
 if (follow) {
   let offset = size;
-  watchFile(logPath, { interval: POLL_INTERVAL_MS }, (current, previous) => {
-    // A rename-and-recreate rotation can leave the replacement at exactly the
-    // previous offset's size, so byte counts alone cannot detect it — a change
-    // of file identity must also reset the read position. A missing file stats
-    // as all-zero, and the size === offset check below skips the read until it
-    // reappears.
-    const replaced = current.ino !== previous.ino || current.dev !== previous.dev;
-    if (replaced || current.size < offset) offset = 0;
-    if (current.size === offset) return;
-    const appended = openSync(logPath, 'r');
+  let reading = false;
+  let pending = false;
+
+  async function drain() {
+    if (reading) return;
+    reading = true;
     try {
-      const buffer = readAt(appended, offset, current.size - offset);
-      offset += buffer.length;
-      process.stdout.write(buffer);
-    } finally {
-      closeSync(appended);
-    }
+      while (pending) {
+        pending = false;
+        let appended;
+        try { appended = openSync(logPath, 'r'); }
+        catch (error) { if (error.code === 'ENOENT') continue; throw error; }
+        try {
+          // Stat the opened descriptor: rotation may happen after the poll.
+          const current = fstatSync(appended);
+          if (current.ino !== followedIdentity.ino || current.dev !== followedIdentity.dev || current.size < offset) offset = 0;
+          followedIdentity = current;
+          while (offset < current.size) {
+            const buffer = Buffer.alloc(Math.min(CHUNK_SIZE, current.size - offset));
+            const bytes = readSync(appended, buffer, 0, buffer.length, offset);
+            if (bytes === 0) break; // truncated while following; the next poll resets the offset
+            offset += bytes;
+            // Await flushing each chunk so a slow consumer cannot queue the
+            // entire appended log in memory. Later polls request another pass.
+            await new Promise((resolve, reject) => {
+              process.stdout.write(buffer.subarray(0, bytes), error => error ? reject(error) : resolve());
+            });
+          }
+        } finally { closeSync(appended); }
+      }
+    } finally { reading = false; }
+  }
+
+  watchFile(logPath, { interval: POLL_INTERVAL_MS }, (current) => {
+    if (current.size === offset && current.ino === followedIdentity.ino && current.dev === followedIdentity.dev) return;
+    pending = true;
+    drain().catch(error => {
+      console.error(`Cannot follow worker log ${logPath}: ${error.message}`);
+      process.exitCode = 1;
+      unwatchFile(logPath);
+    });
   });
 }
