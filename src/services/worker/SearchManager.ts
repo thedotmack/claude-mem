@@ -19,6 +19,7 @@ import {
 } from './search/index.js';
 import type { SearchResults, StrategySearchResult } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
+import { isCategoryRequested, buildCategoryWhereFilter } from './search/types.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
@@ -527,9 +528,9 @@ export class SearchManager {
       files,
     });
 
-    const searchObservations = !category || category === 'observations';
-    const searchSessions = !category || category === 'sessions';
-    const searchPrompts = !category || category === 'prompts';
+    const searchObservations = isCategoryRequested(category, 'observations');
+    const searchSessions = isCategoryRequested(category, 'sessions');
+    const searchPrompts = isCategoryRequested(category, 'prompts');
 
     if (!query) {
       logger.debug('SEARCH', 'Filter-only query (no query text), using direct SQLite filtering', { enablesDateFilters: true });
@@ -550,13 +551,8 @@ export class SearchManager {
       logger.debug('SEARCH', 'Using ChromaDB semantic search', { typeFilter: category || 'all' });
 
       const whereFilters: Array<Record<string, any>> = [];
-      if (category === 'observations') {
-        whereFilters.push({ doc_type: 'observation' });
-      } else if (category === 'sessions') {
-        whereFilters.push({ doc_type: 'session_summary' });
-      } else if (category === 'prompts') {
-        whereFilters.push({ doc_type: 'user_prompt' });
-      }
+      const categoryFilter = buildCategoryWhereFilter(category);
+      if (categoryFilter) whereFilters.push(categoryFilter);
 
       if (projectReadKeys.length > 0) {
         whereFilters.push(buildProjectWhereFilter(projectReadKeys));

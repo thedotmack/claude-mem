@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 /**
- * Tests for the `tail -n 50 ~/.claude-mem/logs/worker-$(date +%F).log`
+ * Tests for the `tail -n 50 ~/.claude-mem/logs/claude-mem-$(date -u +%F).log`
  * replacement. `tail`, `date +%F` and `~` are all bash-only, so this is what
  * makes `npm run worker:logs` work in native PowerShell.
  *
@@ -33,7 +33,7 @@ describe('worker-logs', () => {
   beforeEach(() => {
     home = mkdtempSync(join(tmpdir(), 'claude-mem-worker-logs-'));
     mkdirSync(join(home, '.claude-mem', 'logs'), { recursive: true });
-    logPath = join(home, '.claude-mem', 'logs', `worker-${logStamp()}.log`);
+    logPath = join(home, '.claude-mem', 'logs', `claude-mem-${logStamp()}.log`);
   });
 
   afterEach(() => {
