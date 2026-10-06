@@ -37,6 +37,15 @@ export class TranscriptAnchorError extends Error {
   }
 }
 
+/** An observation declined before the worker accepted it must retain its line. */
+export class TranscriptObservationError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`observation not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptObservationError';
+    this.cause = cause;
+  }
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -381,7 +390,6 @@ export class TranscriptEventProcessor {
       if (pending) {
         if (!toolName) toolName = pending.toolName;
         if (toolInput === undefined) toolInput = pending.toolInput;
-        session.pendingTools.delete(toolId);
       }
     }
 
@@ -392,6 +400,7 @@ export class TranscriptEventProcessor {
         toolResponse,
         toolUseId: toolId,
       });
+      if (toolId) session.pendingTools?.delete(toolId);
     } else {
       logger.debug('TRANSCRIPT', 'Dropping tool_result with no resolvable toolName', {
         sessionId: session.sessionId,
@@ -408,19 +417,29 @@ export class TranscriptEventProcessor {
       return;
     }
 
-    const result = await ingestObservation({
-      contentSessionId: session.sessionId,
-      cwd: session.cwd,
-      toolName,
-      toolInput: this.maybeParseJson(fields.toolInput),
-      toolResponse: this.maybeParseJson(fields.toolResponse),
-      platformSource: session.platformSource,
-      toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
-      agentId: resolveWatchAgentId(watch),
-    });
-
-    if (!result.ok) {
-      throw new Error(`ingestObservation failed: ${result.reason}`);
+    let accepted = false;
+    try {
+      const result = await ingestObservation({
+        contentSessionId: session.sessionId,
+        cwd: session.cwd,
+        toolName,
+        toolInput: this.maybeParseJson(fields.toolInput),
+        toolResponse: this.maybeParseJson(fields.toolResponse),
+        platformSource: session.platformSource,
+        toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
+        agentId: resolveWatchAgentId(watch),
+      }, { markHandedOff: () => { accepted = true; } });
+      if (!result.ok) throw new Error(result.reason);
+    } catch (error) {
+      // A generator kick can fail after queueObservation accepted the event.
+      // That event is already owned by the worker and must not be replayed.
+      if (accepted) {
+        logger.warn('TRANSCRIPT', 'Observation accepted before generator kick failed', {
+          sessionId: session.sessionId,
+        }, error instanceof Error ? error : undefined);
+        return;
+      }
+      throw new TranscriptObservationError(session.sessionId, error);
     }
   }
 

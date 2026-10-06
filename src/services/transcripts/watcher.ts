@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptAnchorError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
+import { TranscriptAnchorError, TranscriptObservationError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -724,8 +724,8 @@ export class TranscriptWatcher {
     } catch (error: unknown) {
       // A turn whose prompt the worker did not record stops the pass with the
       // checkpoint at its line (or frame), so it is retried, not misfiled.
-      if (error instanceof TranscriptAnchorError) {
-        logger.warn('TRANSCRIPT', 'Transcript turn not anchored; it is retried from its own line', {
+      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError) {
+        logger.warn('TRANSCRIPT', 'Transcript event not accepted; it is retried from its own line', {
           watch: watch.name,
           file: basename(filePath),
           error: error.message,
