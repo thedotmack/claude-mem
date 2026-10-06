@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { classifyPostKillState } from './ghost-state.js';
-import { reapOwnedLiveTree, reapSnapshottedDescendants, runForMatchingProcess, snapshotDescendants, type ProcessIdentity } from './process-tree.js';
+import { reapOwnedLiveTree, reapSnapshottedDescendants, runForMatchingProcess, snapshotDescendants, survivingProcesses, type ProcessIdentity } from './process-tree.js';
 
 describe('ghost fixture descendant cleanup', () => {
   const snapshot: ProcessIdentity[] = [
@@ -105,8 +105,8 @@ describe('ghost fixture descendant cleanup', () => {
     ];
     const killed: number[] = [];
     const kill = (pid: number) => { killed.push(pid); };
-    expect(reapOwnedLiveTree(20, null, kill, () => true, rows)).toBe(false);
-    expect(reapOwnedLiveTree(20, 'fixture-original', kill, (_, token) => token === 'replacement', rows)).toBe(false);
+    expect(reapOwnedLiveTree(20, null, kill, () => true, rows)).toBeNull();
+    expect(reapOwnedLiveTree(20, 'fixture-original', kill, (_, token) => token === 'replacement', rows)).toBeNull();
     expect(killed).toEqual([]);
   });
 
@@ -117,13 +117,48 @@ describe('ghost fixture descendant cleanup', () => {
       { pid: 22, ppid: 21, name: 'python.exe', startToken: 'python-original' },
     ];
     const killed: number[] = [];
-    expect(reapOwnedLiveTree(20, 'fixture-original', pid => { killed.push(pid); }, () => true, rows)).toBe(true);
+    expect(reapOwnedLiveTree(20, 'fixture-original', pid => { killed.push(pid); }, () => true, rows)).toEqual([
+      { pid: 21, name: 'chroma-mcp.exe', startToken: 'chroma-original' },
+      { pid: 22, name: 'python.exe', startToken: 'python-original' },
+    ]);
     expect(killed).toEqual([22, 21, 20]);
 
     let rootChecks = 0;
     killed.length = 0;
     expect(reapOwnedLiveTree(20, 'fixture-original', pid => { killed.push(pid); }, pid =>
-      pid !== 20 || ++rootChecks === 1, rows)).toBe(true);
+      pid !== 20 || ++rootChecks === 1, rows)).toHaveLength(2);
     expect(killed).toEqual([22, 21]); // Root PID was reissued during cleanup.
+  });
+
+  it('retains a live null-token child for final verification without killing it', () => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: 'fixture-original' },
+      { pid: 21, ppid: 20, name: 'python.exe', startToken: null },
+      { pid: 22, ppid: 20, name: 'uv.exe', startToken: 'uv-original' },
+    ];
+    const killed: number[] = [];
+    let retained: ProcessIdentity[] = [];
+    const discovered = reapOwnedLiveTree(
+      20, 'fixture-original', pid => { killed.push(pid); }, () => true,
+      rows, children => { retained = children; }
+    );
+    expect(discovered).toEqual(retained);
+    expect(killed).toEqual([22, 20]);
+    expect(survivingProcesses(retained, pid => pid === 21, () => null)).toEqual([
+      { pid: 21, name: 'python.exe', startToken: null },
+    ]);
+  });
+
+  it('retains failed-start children before a kill error interrupts cleanup', () => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: 'fixture-original' },
+      { pid: 21, ppid: 20, name: 'python.exe', startToken: 'python-original' },
+    ];
+    let retained: ProcessIdentity[] = [];
+    expect(() => reapOwnedLiveTree(
+      20, 'fixture-original', () => { throw new Error('Access is denied'); },
+      () => true, rows, children => { retained = children; }
+    )).toThrow('Access is denied');
+    expect(retained).toEqual([{ pid: 21, name: 'python.exe', startToken: 'python-original' }]);
   });
 });

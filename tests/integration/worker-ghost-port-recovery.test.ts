@@ -123,6 +123,14 @@ let inflightEnsureStarted: Promise<unknown> | null = null;
 // these exact descendants remain alive, so teardown must retain this proof.
 let descendantSnapshot: ProcessIdentity[] = [];
 
+function retainDescendants(target: ProcessIdentity[], entries: ProcessIdentity[]): void {
+  for (const entry of entries) {
+    if (!target.some(saved => saved.pid === entry.pid && saved.startToken === entry.startToken)) {
+      target.push(entry);
+    }
+  }
+}
+
 function bunExecutable(): string {
   return process.env.BUN_EXECUTABLE || process.execPath;
 }
@@ -265,6 +273,7 @@ async function startFixture(): Promise<FixtureHandle> {
   const deadline = startedAt + FIXTURE_READY_TIMEOUT_MS;
   let lastStage = '(none)';
   let lastReportAt = startedAt;
+  let processedEventLines = 0;
 
   while (Date.now() < deadline) {
     // Only the events file is a contract channel — stdout is deliberately NOT
@@ -273,11 +282,17 @@ async function startFixture(): Promise<FixtureHandle> {
     // passed on the fallback anyway, and CI kept hanging), and on CI it cannot
     // save the run either: the buffering that hides the events is what
     // redirects to that same stdout.
-    for (const line of readJsonLines(eventsFile)) {
+    const eventLines = readJsonLines(eventsFile);
+    for (const line of eventLines.slice(processedEventLines)) {
       const payload = JSON.parse(line) as Record<string, unknown>;
       if (payload.event === 'progress') {
         lastStage = `${String(payload.stage)}@${String(payload.elapsedMs)}ms`;
         if (typeof payload.port === 'number') reportedPort = payload.port;
+        // Capture while the root still proves the ancestry. Readiness can
+        // fail after sidecars spawn, and then a post-mortem walk loses them.
+        if (spawnedFixtureToken) {
+          retainDescendants(descendantSnapshot, snapshotDescendants(spawnedPid, spawnedFixtureToken));
+        }
         continue;
       }
       if (payload.event === 'spawned') {
@@ -304,7 +319,7 @@ async function startFixture(): Promise<FixtureHandle> {
         active = handle;
         // Take the ownership snapshot before returning, so even an assertion
         // failure immediately after readiness leaves teardown safe targets.
-        descendantSnapshot = snapshotDescendants(handle.pid, handle.startToken);
+        retainDescendants(descendantSnapshot, snapshotDescendants(handle.pid, handle.startToken));
         console.log(`[ghost-gate] fixture ready after ${Date.now() - startedAt}ms: ${JSON.stringify(handle)}`);
         return handle;
       }
@@ -312,6 +327,7 @@ async function startFixture(): Promise<FixtureHandle> {
         throw new Error(`fixture failed: ${String(payload.message)}`);
       }
     }
+    processedEventLines = eventLines.length;
 
     // Read its last events before reporting an early exit: they can carry the
     // self-reported token and port needed for safe failed-start cleanup.
@@ -389,12 +405,16 @@ afterEach(async () => {
   if (!handle && detachedPid === null) return;
 
   const cleanupErrors: string[] = [];
+  const cleanupSnapshots = [...snapshot];
+  const retainCleanupDescendants = (children: ProcessIdentity[]): void => {
+    retainDescendants(cleanupSnapshots, children);
+  };
   const recordError = (stage: string, error: unknown): void => {
     cleanupErrors.push(`${stage}: ${error instanceof Error ? error.message : String(error)}`);
   };
   if (handle && processExists(handle.pid)) {
     try {
-      if (!await runForMatchingProcess(handle.pid, handle.startToken, killProcessOnly)) {
+      if (reapOwnedLiveTree(handle.pid, handle.startToken, killProcessOnly, undefined, undefined, retainCleanupDescendants) === null) {
         cleanupErrors.push(`fixture pid ${handle.pid} is alive without a matching start token`);
       }
     } catch (error) {
@@ -404,7 +424,7 @@ afterEach(async () => {
     // A failed start has no trusted chroma root. Discover each child with its
     // start token in the same row and never walk a reused fixture PID.
     try {
-      if (!reapOwnedLiveTree(detachedPid, detachedToken, killProcessOnly)) {
+      if (reapOwnedLiveTree(detachedPid, detachedToken, killProcessOnly, undefined, undefined, retainCleanupDescendants) === null) {
         cleanupErrors.push(`failed-readiness fixture pid ${detachedPid} is alive without a matching start token`);
       }
     } catch (error) {
@@ -422,7 +442,7 @@ afterEach(async () => {
       if (typeof info.pid === 'number' && info.pid !== handle?.pid && info.pid !== detachedPid && processExists(info.pid)) {
         // Real replacement workers write a token in the PID file. Never use
         // the current token as proof for a PID learned from an older file.
-        if (!reapOwnedLiveTree(info.pid, info.startToken, killProcessOnly)) {
+        if (reapOwnedLiveTree(info.pid, info.startToken, killProcessOnly, undefined, undefined, retainCleanupDescendants) === null) {
           cleanupErrors.push(`pid-file worker ${info.pid} is alive without a matching start token`);
         }
       }
@@ -462,9 +482,9 @@ afterEach(async () => {
     }
   }
 
-  const remaining = await waitForOrphansToClear(snapshot, 5_000);
+  const remaining = await waitForOrphansToClear(cleanupSnapshots, 5_000);
   if (remaining.length > 0) {
-    cleanupErrors.push(`fixture sidecars survived teardown: ${describeProcesses(remaining)}`);
+    cleanupErrors.push(`fixture or replacement sidecars survived teardown: ${describeProcesses(remaining)}`);
   }
   if (cleanupErrors.length > 0) throw new Error(cleanupErrors.join('\n'));
 });

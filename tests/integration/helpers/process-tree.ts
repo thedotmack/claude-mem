@@ -19,6 +19,7 @@ import { execFileSync } from 'child_process';
 import { readFileSync, readdirSync } from 'fs';
 import { captureProcessStartToken, isPidAlive } from '../../../src/supervisor/process-registry.js';
 import { hasMatchingProcessStartToken } from '../../../src/shared/process-identity.js';
+import { sanitizeEnv } from '../../../src/supervisor/env-sanitizer.js';
 
 export interface ProcessIdentity {
   pid: number;
@@ -96,6 +97,9 @@ function readProcessTablePosix(): ProcessRow[] {
     encoding: 'utf-8',
     timeout: 30_000,
     maxBuffer: 32 * 1024 * 1024,
+    // The production token reader forces this locale. lstart must have the
+    // same 24-byte shape in both reads or a valid owner looks unrelated.
+    env: { ...sanitizeEnv(process.env), LC_ALL: 'C', LANG: 'C' },
   });
 
   const rows: ProcessRow[] = [];
@@ -189,9 +193,13 @@ export function snapshotDescendants(
  * number — not a survivor. When no token was captured (the OS declined), fall
  * back to liveness alone and let the caller see it in the failure message.
  */
-export function survivingProcesses(snapshot: ProcessIdentity[]): ProcessIdentity[] {
+export function survivingProcesses(
+  snapshot: ProcessIdentity[],
+  isAlive = isPidAlive,
+  readStartToken = captureProcessStartToken
+): ProcessIdentity[] {
   return snapshot.filter(entry => {
-    if (!isPidAlive(entry.pid)) return false;
+    if (!isAlive(entry.pid)) return false;
     if (entry.startToken === null) return true;
 
     // Bias toward "still alive" when the token cannot be re-read.
@@ -203,7 +211,7 @@ export function survivingProcesses(snapshot: ProcessIdentity[]): ProcessIdentity
     // empty, a single transient null anywhere in the polling loop would end
     // the primary gate GREEN over real orphans. Only a token that was read
     // successfully AND differs proves the PID was recycled.
-    const currentToken = captureProcessStartToken(entry.pid);
+    const currentToken = readStartToken(entry.pid);
     if (currentToken === null) return true;
     return currentToken === entry.startToken;
   });
@@ -276,10 +284,15 @@ export function reapOwnedLiveTree(
   startToken: string | null | undefined,
   killOne: (pid: number) => void,
   matchesStartToken = hasMatchingProcessStartToken,
-  rows?: ProcessRow[]
-): boolean {
-  if (!startToken || !matchesStartToken(pid, startToken)) return false;
+  rows?: ProcessRow[],
+  onSnapshot?: (children: ProcessIdentity[]) => void
+): ProcessIdentity[] | null {
+  if (!startToken || !matchesStartToken(pid, startToken)) return null;
   const children = snapshotDescendants(pid, startToken, rows ?? readProcessTable());
+  // Hand the evidence to the caller BEFORE any kill can throw or orphan a
+  // child. The caller must verify this snapshot after teardown; an unverified
+  // child is never silently treated as cleaned up.
+  onSnapshot?.(children);
   const failures: string[] = [];
   try {
     reapSnapshottedDescendants(children, matchesStartToken, killOne);
@@ -295,5 +308,5 @@ export function reapOwnedLiveTree(
     }
   }
   if (failures.length > 0) throw new Error(failures.join('; '));
-  return true;
+  return children;
 }
