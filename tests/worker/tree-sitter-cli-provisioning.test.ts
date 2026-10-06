@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { createHash } from 'crypto';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { provisionTreeSitterCliForPluginRoot } from '../../src/services/worker/tree-sitter-cli-provisioning.js';
@@ -11,6 +12,8 @@ import { treeSitterCliBinaryPath } from '../../src/services/smart-file-read/tree
 describe('worker tree-sitter CLI provisioning', () => {
   const TREE_SITTER_BINARY_NAME = process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter';
   const REPO_TREE_SITTER_BINARY = join(import.meta.dir, '..', '..', 'node_modules', 'tree-sitter-cli', TREE_SITTER_BINARY_NAME);
+  // The fake download is the repo's own tree-sitter build, so pin its digest.
+  const pinRepoBinary = () => createHash('sha256').update(readFileSync(REPO_TREE_SITTER_BINARY)).digest('hex');
   let pluginRoot: string;
 
   beforeEach(() => {
@@ -41,7 +44,7 @@ describe('worker tree-sitter CLI provisioning', () => {
   it('downloads the executable a marketplace install left out', async () => {
     writeMarketplaceCliPackage(downloadingInstallScript);
 
-    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot)).toBe('provisioned');
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary)).toBe('provisioned');
     expect(existsSync(treeSitterCliBinaryPath(pluginRoot))).toBe(true);
   });
 
@@ -60,7 +63,7 @@ describe('worker tree-sitter CLI provisioning', () => {
   it('rejects when the download fails, so the worker logs it and the next start retries', async () => {
     writeMarketplaceCliPackage("console.error('release asset unavailable'); process.exitCode = 1;");
 
-    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot)).rejects.toMatchObject({ code: 1 });
+    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary)).rejects.toMatchObject({ code: 1 });
     expect(existsSync(treeSitterCliBinaryPath(pluginRoot))).toBe(false);
   });
 });

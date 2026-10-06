@@ -66,7 +66,7 @@ Both workers are always stopped, including on Ctrl-C. The sandboxes `--keep-temp
 
 The gate only denies where `smart_outline` can parse. That takes the `tree-sitter` executable, which tree-sitter-cli's `install.js` downloads (decision D9 in `plans/2026-10-05-file-read-gate-restore.md`). `npm run build` installs the plugin's dependencies with lifecycle scripts off, so `plugin/node_modules/tree-sitter-cli` has no executable after a build. Both the built hook and the built MCP server resolve that copy first, so the gate would stay dormant and `smart_outline` could not parse.
 
-Before it starts any worker, the runner provisions that copy the way a real install does. It calls `ensureTreeSitterCliBinary(plugin/)` from `src/services/smart-file-read/tree-sitter-cli-provision.ts`, the function the installer and the worker use, which runs the package's `install.js` (a download from the tree-sitter releases, so it needs network) unless the executable already answers `--version`. The runner stops with the reason if that fails, and records the version in `summary.json` and the summary header.
+Before it starts any worker, the runner provisions that copy the way a real install does. It calls `ensureTreeSitterCliBinary(plugin/)` from `src/services/smart-file-read/tree-sitter-cli-provision.ts`, the function the installer and the worker use, which runs the package's `install.js` (a download from the tree-sitter releases, so it needs network) unless the executable already answers `--version`, and installs the download only if its SHA-256 matches the digest pinned in `tree-sitter-cli-checksums.ts`. The runner stops with the reason if that fails, and records the version in `summary.json` and the summary header.
 
 ## Cost
 
