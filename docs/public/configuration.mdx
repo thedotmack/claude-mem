@@ -23,7 +23,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
 | `CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY` | `true`                   | Leave subagent observations out of SessionStart context so their step-logs don't crowd durable main-session memory out of the window. A subagent row carries both an agent id and an agent type; transcript-watch rows (e.g. Grok Bot seats) stay in. Applies in the server runtime too, where a row counts as a subagent row when the hook event it was generated from carried both. Search and the viewer still show everything. |
 | `CLAUDE_MEM_REINFORCE_ALPHA` | `0`                              | Opt-in ACT-R ranking for SessionStart context. `0` (default) keeps the N most recent observations, unchanged. Above `0` (try `0.5`), observations the write path saw re-confirmed on later days can climb into the window: each observation's creation and re-confirmation days are scored with power-law decay, `ln(1 + age^-0.5 + ALPHA · Σ age_k^-0.5)`. The newest quarter of the window is always kept by recency. |
-| `CLAUDE_MEM_FILE_READ_GATE_ENABLED` | `true`                    | Block whole-file Reads of code files that have observation history and send Claude to `smart_outline` / `smart_unfold` / `get_observations` instead (Claude Code only). Targeted Reads with `offset`/`limit` still work. `false` lets every Read through and still adds the file's timeline as context. See [File Read Gate](/file-read-gate). |
+| `CLAUDE_MEM_FILE_READ_GATE_ENABLED` | `true`                    | Block whole-file Reads of code files of 32 KB and up that have observation history and send Claude to `smart_outline` / `smart_unfold` / `get_observations` instead (Claude Code only). Targeted Reads with `offset`/`limit` still work. `false` lets every Read through and still adds the file's timeline as context. See [File Read Gate](/file-read-gate). |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_WORKER_AUTOSTART` | `true`                          | Set `false` when you run the worker yourself (a process manager, a container, `worker-service.cjs --daemon`). Hooks, the MCP server and `start` then use a worker that is already running but never launch, kill or recycle one: no lazy spawn, no version-mismatch recycle, no wedged-worker recycle or reclaim. While your worker is down, hooks skip their work quietly instead of counting it as a failure. |
@@ -581,7 +581,7 @@ Token economics help you understand the value of cached observations vs. re-read
 | **MCP search server** | true | Enable Model Context Protocol search tools |
 | **Include last summary** | false | Add previous session's summary to context |
 | **Include last message** | false | Add previous session's final message |
-| **Block full-file reads** | true | Block whole-file Reads of code files that have observation history ([File Read Gate](/file-read-gate)) |
+| **Block full-file reads** | true | Block whole-file Reads of code files of 32 KB and up that have observation history ([File Read Gate](/file-read-gate)) |
 
 ### Manual Configuration
 

@@ -20,7 +20,7 @@ All of these must hold:
 - **The session is Claude Code** (not Qwen Code), and the Read comes from the main session, not a subagent.
 - **The file is code that `smart_outline` can parse** (see the table below).
 - **The file is inside the project**, meaning under the session's working directory once symlinks are resolved. `smart_outline` and `smart_unfold` apply the same check, so a symlink in the project that points outside it is never blocked: those tools would refuse it.
-- **The file is at least 1,500 bytes.**
+- **The file is at least 32 KB.** Smaller files with history get the timeline as context and are never blocked. See [Size Thresholds](#size-thresholds).
 - **The file has observation history**, and it **has not been modified since the newest of those observations**.
 - **The Read would return the whole file.** Reads of part of a file always go through. See [Whole-File vs Targeted Reads](#whole-file-vs-targeted-reads).
 - **The tree-sitter CLI that powers `smart_outline` and `smart_unfold` is installed.** Without it, the Read goes through with the timeline as context, so Claude is never sent to a tool that can't parse the file. Claude Code's plugin install leaves this executable out, so the claude-mem worker downloads it from the tree-sitter GitHub releases in the background each time it starts without one. It only runs or installs a download whose SHA-256 matches the digest claude-mem pins for that tree-sitter version and platform. On a new install the gate turns on a few seconds into the first session. If the download can't reach GitHub, the worker log says so; run `npx claude-mem repair` once the network allows it.
@@ -80,10 +80,11 @@ Claude calls Read(file_path="/Users/you/code/acme-api/src/billing/invoice-servic
    Claude Code (not Qwen)? ────── No ──┐
    Gate setting on? ───────────── No ──┤
    Code file? ─────────────────── No ──┤
+   At least 32 KB? ────────────── No ──┤
    Inside the project? ────────── No ──┼──→ Read proceeds, timeline added as context
    Whole-file Read? ───────────── No ──┤    (once per session per file)
    Tree-sitter CLI installed? ─── No ──┘
-         ↓ Yes to all six
+         ↓ Yes to all seven
    DENY the Read: Claude gets the timeline and where to look instead
 ```
 
@@ -230,9 +231,20 @@ The `PreToolUse` hook on `Read` is **synchronous**. It has to be, because only a
 
 ## Configuration
 
-### Small File Bypass
+### Size Thresholds
 
-Files under **1,500 bytes** are never blocked and get no timeline. At that size, reading the file costs about as much as the timeline would. The threshold is fixed in `src/cli/handlers/file-context.ts`.
+- Files under **1,500 bytes** get nothing: no timeline and no block. At that size, reading the file costs about as much as the timeline would.
+- Files from 1,500 bytes up to **32 KB** get the timeline as context, but are never blocked.
+- Code files of **32 KB and up** can be blocked.
+
+A block isn't free. The denied Read is a turn, and so is every `smart_outline`, `smart_unfold` or targeted Read after it, and each turn re-reads the whole conversation. A block saves the file it keeps out of context. That saving outgrows those turns only on larger files. The read-gate eval (`evals/read-gate` in the repository) asked the same walkthrough question with the gate on and off:
+
+| File | `claude-sonnet-5-5` | `claude-opus-5-5` |
+| --- | --- | --- |
+| 513 lines, 19 KB | -6% | +20% |
+| 941 lines, 49 KB | -35% | -32% |
+
+Both thresholds are fixed in `src/cli/handlers/file-context.ts`.
 
 ### Project Exclusions
 
