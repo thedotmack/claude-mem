@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
-import { join } from 'path';
+import { join, relative, resolve } from 'path';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 import { logger } from '../../src/utils/logger.js';
 import { fileEditHandler } from '../../src/cli/handlers/file-edit.js';
@@ -53,8 +53,8 @@ describe('TranscriptWatcher missing files', () => {
     watcher.stop();
   });
 
-  for (const glob of [false, true]) {
-    it(`discovers a ${glob ? 'glob' : 'literal'} transcript created under initially missing directories`, async () => {
+  for (const glob of [false, true]) for (const relativePath of [false, true]) {
+    it(`discovers a ${relativePath ? 'relative' : 'absolute'} ${glob ? 'glob' : 'literal'} transcript created under initially missing directories`, async () => {
       const target = join(tmpRoot, 'future', 'sessions', 'wanted.jsonl');
       const captured: unknown[] = [];
       const capture = spyOn(fileEditHandler, 'execute').mockImplementation(async input => {
@@ -64,7 +64,8 @@ describe('TranscriptWatcher missing files', () => {
       const captureSchema: TranscriptSchema = { name: 'capture', sessionIdPath: 'session', events: [
         { name: 'edit', match: { path: 'type', equals: 'edit' }, action: 'file_edit', fields: { filePath: 'path' } },
       ] };
-      const watch: WatchTarget = { name: 'codex', path: glob ? join(tmpRoot, 'future', 'sessions', '*.jsonl') : target, workspace: tmpRoot, schema: captureSchema };
+      const pattern = glob ? join(tmpRoot, 'future', 'sessions', '*.jsonl') : target;
+      const watch: WatchTarget = { name: 'codex', path: relativePath ? relative(process.cwd(), pattern) : pattern, workspace: tmpRoot, schema: captureSchema };
       const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, join(tmpRoot, 'state.json'));
       try {
         await watcher.start();
@@ -76,7 +77,7 @@ describe('TranscriptWatcher missing files', () => {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
         expect(captured).toEqual([expect.objectContaining({ sessionId: 'wanted', filePath: 'wanted.ts', cwd: tmpRoot })]);
-        expect((watcher as any).tailers.has(target)).toBe(true);
+        expect(Array.from((watcher as any).tailers.keys() as Iterable<string>).some(path => resolve(path) === target)).toBe(true);
         expect((watcher as any).tailers.has(join(tmpRoot, 'unrelated.jsonl'))).toBe(false);
       } finally { watcher.stop(); capture.mockRestore(); }
     });

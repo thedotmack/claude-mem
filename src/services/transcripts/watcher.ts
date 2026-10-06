@@ -475,7 +475,7 @@ export class TranscriptWatcher {
     }
     // A missing path may require watching a broad ancestor. Directory creation
     // on the configured prefix matters, but sibling writes cannot add matches.
-    const prefix = this.literalWatchPrefix(resolvedPath).replace(/\\/g, '/');
+    const prefix = resolvePath(this.literalWatchPrefix(resolvedPath)).replace(/\\/g, '/');
     if (changed !== prefix && !changed.startsWith(prefix.endsWith('/') ? prefix : prefix + '/') &&
       !prefix.startsWith(changed.endsWith('/') ? changed : changed + '/')) return;
     const matches = this.resolveWatchFiles(resolvedPath);
