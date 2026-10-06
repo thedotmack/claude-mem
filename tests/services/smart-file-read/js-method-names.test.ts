@@ -4,8 +4,6 @@ import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { parseFile, unfoldSymbol, formatFoldedView } from '../../../src/services/smart-file-read/parser.js';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
 const source = "class Widget {\n  \"quoted\"() { return 1; }\n  [\"computed\"]() { return 2; }\n  #private() { return 3; }\n  regular() { return 4; }\n}\n";
 const filename = "names.js";
@@ -32,16 +30,24 @@ test('retains the same legal method names under the TypeScript grammar', () => {
  expect(parseFile(source, 'names.ts').symbols[0].children?.map(s => s.name)).toEqual(['"quoted"', '["computed"]', '#private', 'regular']);
 }, 120000);
 
+test('retains numeric and symbol-keyed method names', () => {
+ const source = 'class Widget {\n  0() { return "zero"; }\n  [Symbol.iterator]() { return "iterator"; }\n}\n';
+ for (const filename of ['numbers.js', 'numbers.ts', 'numbers.tsx']) {
+  expect(parseFile(source, filename).symbols[0].children?.map(s => s.name)).toEqual(['0', '[Symbol.iterator]']);
+ }
+ expect(unfoldSymbol(source, 'numbers.js', 'Widget.[Symbol.iterator]')).toContain('return "iterator";');
+}, 120000);
+
 for (const filename of ['multiline.js', 'multiline.ts', 'multiline.tsx']) {
  test(`multiline computed method names retain unique search and unfold identities in ${filename}`, async () => {
   const source = 'class Widget {\n [\n "first"\n ]() { return "first body"; }\n [\n "second"\n ]() { return "second body"; }\n}';
   const file = parseFile(source, filename);
-  expect(file.symbols[0].children?.map(symbol => symbol.name)).toEqual(['[\n "first"\n ]', '[\n "second"\n ]']);
+  expect(file.symbols[0].children?.map(symbol => symbol.name)).toEqual(['[ "first" ]', '[ "second" ]']);
   const dir = mkdtempSync(join(tmpdir(), 'cm-computed-multiline-'));
   try {
    writeFileSync(join(dir, filename), source);
    const result = await searchCodebase(dir, 'second');
-   const match = result.matchingSymbols.find(symbol => symbol.symbolName === 'Widget.[\n "second"\n ]');
+   const match = result.matchingSymbols.find(symbol => symbol.symbolName === 'Widget.[ "second" ]');
    expect(match).toBeDefined();
    const unfolded = unfoldSymbol(source, filename, match!.symbolName)!;
    expect(unfolded).toContain('return "second body";');
@@ -54,7 +60,7 @@ test('multiline computed string keys preserve literal whitespace in search and u
  const source = 'class Widget {\n [\n "a  b"\n ]() { return "double space"; }\n [\n "a b"\n ]() { return "single space"; }\n}';
  const filename = 'literal-spaces.js';
  const names = parseFile(source, filename).symbols[0].children!.map(symbol => symbol.name);
- expect(new Set(names).size).toBe(2);
+ expect(names).toEqual(['[ "a  b" ]', '[ "a b" ]']);
  const dir = mkdtempSync(join(tmpdir(), 'cm-computed-literal-spaces-'));
  try {
   writeFileSync(join(dir, filename), source);
@@ -66,80 +72,4 @@ test('multiline computed string keys preserve literal whitespace in search and u
    expect(unfolded).not.toContain(`return "${other}";`);
   }
  } finally { rmSync(dir, { recursive: true, force: true }); }
-}, 120000);
-
-test('folded method headers escape newlines without changing lookup identities', () => {
- const source = 'class Widget {\n [\n "a  b"\n ]() { return "double space"; }\n}';
- const file = parseFile(source, 'header.js');
- const symbol = file.symbols[0].children![0];
- expect(symbol.name).toBe('[\n "a  b"\n ]');
- const header = formatFoldedView(file).split('\n').find(line => line.includes(JSON.stringify(`Widget.${symbol.name}`)));
- expect(header).toBeDefined();
- expect(header).toContain('(L2-4)');
- expect(unfoldSymbol(source, 'header.js', `Widget.${symbol.name}`)).toContain('return "double space"');
-}, 120000);
-
-
-test('copied native outline aliases unfold through MCP without changing raw identities', async () => {
- const source = 'class Widget {\n [`a\nb`]() { return "newline body"; }\n [`a\\nb`]() { return "literal body"; }\n}';
- const filename = 'aliases.js';
- const file = parseFile(source, filename);
- const outline = formatFoldedView(file);
- const dir = mkdtempSync(join(tmpdir(), 'cm-display-alias-mcp-'));
- const client = new Client({ name: 'native-display-alias-test', version: '1.0.0' }, { capabilities: {} });
- const transport = new StdioClientTransport({ command: process.execPath,
-  args: [join(import.meta.dir, '../../../src/servers/mcp-server.ts')], cwd: dir,
-  env: { ...process.env as Record<string, string>, HOME: dir, USERPROFILE: dir,
-   CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_TELEMETRY_ENABLED: 'false' }, stderr: 'pipe' });
- try {
-  writeFileSync(join(dir, filename), source);
-  await client.connect(transport);
-  for (const [index, body, other] of [[0, 'newline body', 'literal body'], [1, 'literal body', 'newline body']] as const) {
-   const symbol = file.symbols[0].children![index];
-   const header = outline.split('\n').filter(line => /^\s*ƒ /.test(line))[index];
-   const displayed = header?.match(/^\s*ƒ (.*?) \(L/)?.[1];
-   expect(displayed).toBeDefined();
-   const response = await client.callTool({ name: 'smart_unfold', arguments: { file_path: filename, symbol_name: displayed! } });
-   const text = (response.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
-   expect(text).toContain(body);
-   expect(text).not.toContain(other);
-   const local = unfoldSymbol(source, filename, displayed!)!;
-   expect(local).toContain(body);
-   expect(local).not.toContain(other);
-   expect(unfoldSymbol(source, filename, `Widget.${symbol.name}`)).toContain(body);
-   expect(unfoldSymbol(source, filename, symbol.name)).toContain(body);
-   const search = await searchCodebase(dir, 'a');
-   expect(search.matchingSymbols.some(match => match.symbolName === `Widget.${symbol.name}`)).toBe(true);
-
-  }
-
-  const computed = '[\n key\n ]';
-  const decoy = JSON.stringify(computed);
-  const collision = `class Trap {\n ${computed}() { return "real body"; }\n ${decoy}() { return "decoy body"; }\n}`;
-  const collisionFile = 'collision.js';
-  writeFileSync(join(dir, collisionFile), collision);
-  const collisionParsed = parseFile(collision, collisionFile);
-  const copied = formatFoldedView(collisionParsed).split('\n').filter(line => /^\s*ƒ /.test(line))[0].match(/^\s*ƒ (.*?) \(L/)![1];
-  const copiedResult = await client.callTool({ name: 'smart_unfold', arguments: { file_path: collisionFile, symbol_name: copied } });
-  const copiedText = (copiedResult.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
-  expect(copiedText).toContain('return "real body"');
-  expect(copiedText).not.toContain('return "decoy body"');
-  const ambiguous = JSON.stringify(computed);
-  expect(collisionParsed.symbols[0].children![1].name).toBe(ambiguous);
-  const missed = await client.callTool({ name: 'smart_unfold', arguments: { file_path: collisionFile, symbol_name: ambiguous } });
-  const missText = (missed.content as Array<{ type: string; text: string }>).find(item => item.type === 'text')!.text;
-  expect(missText).toContain('not found');
-  expect(missText).toContain('Available symbols');
-  expect(missText).not.toContain('return "decoy body"');
-  expect(unfoldSymbol(collision, collisionFile, ambiguous)).toBeNull();
-  expect(unfoldSymbol(collision, collisionFile, `Trap.${computed}`)).toContain('return "real body"');
-  expect(unfoldSymbol(collision, collisionFile, `Trap.${collisionParsed.symbols[0].children![1].name}`)).toContain('return "decoy body"');
-
-  const plain = 'class First { regular() { return "first plain"; } }\nclass Second { regular() { return "second plain"; } }';
-  expect(unfoldSymbol(plain, filename, 'regular')).toContain('return "first plain"');
-  const name = file.symbols[0].children![0].name;
-  const duplicate = `class First { ${name}() { return "first"; } }\nclass Second { ${name}() { return "second"; } }`;
-  expect(unfoldSymbol(duplicate, filename, JSON.stringify(name))).toBeNull();
-  expect(unfoldSymbol(duplicate, filename, JSON.stringify(`Second.${name}`))).toContain('return "second"');
- } finally { await client.close(); await transport.close(); rmSync(dir, { recursive: true, force: true }); }
 }, 120000);

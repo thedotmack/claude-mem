@@ -782,10 +782,6 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     // backtick, so names come from the source range. A zero-width MISSING node
     // from error recovery leaves nothing to read and stays `anonymous`.
     let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
-    if (kind === "method" && nameCapture && !nameCapture.text
-      && ["javascript", "typescript", "tsx"].includes(language)) {
-      name = captureLines(lines, nameCapture).join("\n").trim();
-    }
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
@@ -1058,7 +1054,7 @@ export function formatFoldedView(file: FoldedFile): string {
   }
 
   for (const sym of file.symbols) {
-    parts.push(formatSymbol(sym, "  ", file.language));
+    parts.push(formatSymbol(sym, "  "));
   }
 
   return parts.join("\n");
@@ -1115,13 +1111,7 @@ function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): n
   return bestLevel;
 }
 
-// Quote escaped names consistently so literal backslashes stay distinct from
-// newline characters. Lookup compares these aliases without decoding them.
-function displaySymbolName(name: string): string {
-  return /[\r\n\\]/.test(name) ? JSON.stringify(name) : name;
-}
-
-function formatSymbol(sym: CodeSymbol, indent: string, language: string, parent?: string): string {
+function formatSymbol(sym: CodeSymbol, indent: string): string {
   const parts: string[] = [];
 
   const icon = getSymbolIcon(sym.kind);
@@ -1130,13 +1120,7 @@ function formatSymbol(sym: CodeSymbol, indent: string, language: string, parent?
     ? `L${sym.lineStart + 1}`
     : `L${sym.lineStart + 1}-${sym.lineEnd + 1}`;
 
-  // Preserve the exact lookup identity while keeping its display on one line.
-  const qualifiedName = qualifySymbolName(sym.name, parent, language, sym.kind);
-  // Escaped names need a copyable owner path when a short display alias
-  // collides with another symbol's raw name. Raw identities stay unchanged.
-  const displayName = displaySymbolName(sym.name) === sym.name
-    ? sym.name : displaySymbolName(qualifiedName);
-  parts.push(`${indent}${icon} ${displayName}${exportTag} (${lineRange})`);
+  parts.push(`${indent}${icon} ${sym.name}${exportTag} (${lineRange})`);
   parts.push(`${indent}  ${sym.signature}`);
 
   if (sym.jsdoc) {
@@ -1155,7 +1139,7 @@ function formatSymbol(sym: CodeSymbol, indent: string, language: string, parent?
 
   if (sym.children && sym.children.length > 0) {
     for (const child of sym.children) {
-      parts.push(formatSymbol(child, indent + "  ", language, qualifiedName));
+      parts.push(formatSymbol(child, indent + "  "));
     }
   }
 
@@ -1201,25 +1185,7 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return null;
   };
 
-  const rawSymbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
-  const aliases = new Set<CodeSymbol>();
-  const findAliases = (symbols: CodeSymbol[], parent?: string): void => {
-    for (const candidate of symbols) {
-      const qualifiedName = qualifySymbolName(candidate.name, parent, file.language, candidate.kind);
-      const displayedName = displaySymbolName(candidate.name);
-      const displayedQualifiedName = displaySymbolName(qualifiedName);
-      // Plain names add no alias: keep legacy raw duplicate-name lookup.
-      if ((displayedName !== candidate.name && displayedName === symbolName)
-        || (displayedQualifiedName !== qualifiedName && displayedQualifiedName === symbolName)) aliases.add(candidate);
-      if (candidate.children) findAliases(candidate.children, qualifiedName);
-    }
-  };
-  findAliases(file.symbols);
-  // A copied display alias can equal a different quoted method's raw name.
-  // Refuse that collision instead of silently selecting either body.
-  if (rawSymbol && [...aliases].some(candidate => candidate !== rawSymbol)) return null;
-  let symbol = rawSymbol;
-  if (!symbol && aliases.size === 1) symbol = aliases.values().next().value ?? null;
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
   if (!symbol) return null;
 
   const lines = content.split("\n");
