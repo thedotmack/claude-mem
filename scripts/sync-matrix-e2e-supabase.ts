@@ -93,9 +93,9 @@ async function waitFor(condition: () => boolean, label: string, timeoutMs = 10_0
  * Loopback only by default. A deliberate production smoke run opts in with
  * CMEM_SYNC_E2E_ALLOW_REMOTE_HUB=<exact hostname>[,<exact hostname>]: those
  * hosts are also allowed, over TLS only (https:/wss:), and the Hub URL must be
- * on the first. A second host covers the proxied topology (Hub at
- * sync.cmem.ai, Realtime socket on the Supabase project host). No wildcard or
- * suffix match — any other host is still refused.
+ * on the first. A second host covers the proxied topology (Hub on the proxy
+ * host, Realtime socket on the Supabase project host). No wildcard or suffix
+ * match — any other host is still refused.
  */
 const ALLOWED_REMOTE_HOSTS = (process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? '')
   .split(',').map(host => host.trim().toLowerCase()).filter(host => host !== '');
