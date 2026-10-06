@@ -139,3 +139,54 @@ if (process.env.CI && !chrome) throw new Error('CI requires Chrome for log reque
     clearTimeout(timer);if(child){child.kill();await child.exited;}server?.stop(true);rmSync(owned,{recursive:true,force:true});
   }
 },25000);
+
+for(const scenario of ['reconciled','read-hung'] as const) {
+(chrome ? it : it.skip)(`a clear with a lost acknowledgment reconciles current logs while auto-refresh is off: ${scenario}`, async () => {
+  const owned=mkdtempSync(join(tmpdir(),'claude-mem-clear-reconcile-'));
+  let child:ReturnType<typeof Bun.spawn>|undefined;
+  let server:ReturnType<typeof Bun.serve>|undefined;
+  let timer:ReturnType<typeof setTimeout>|undefined;
+  let release!:()=>void;
+  const held=new Promise<void>(resolve=>{release=resolve});
+  let cleared=false;
+  let requests=0;
+  let report!:(value:unknown)=>void;
+  const result=new Promise(resolve=>{report=resolve});
+  try {
+    const bundle=await build({write:false,bundle:true,platform:'browser',format:'iife',define:{'process.env.NODE_ENV':'"production"'},
+      stdin:{resolveDir:resolve(import.meta.dir,'../../..'),loader:'tsx',contents:`
+        import React from 'react';import {createRoot} from 'react-dom/client';
+        import {LogsDrawer} from './src/ui/viewer/components/LogsModal';
+        createRoot(document.getElementById('root')).render(<LogsDrawer isOpen={true} onClose={()=>{}}/>);
+        window.confirm=()=>true;
+        async function waitFor(test){const end=Date.now()+13000;while(!test()){if(Date.now()>end)throw Error('Browser state timeout');await new Promise(r=>setTimeout(r,10));}}
+        (async()=>{try{
+          await waitFor(()=>document.querySelector('.log-message'));
+          const clear=document.querySelector('[title="Clear logs"]');clear.click();
+          await waitFor(()=>clear.disabled);await waitFor(()=>!clear.disabled);
+          await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+          await fetch('/result',{method:'POST',body:JSON.stringify({messages:[...document.querySelectorAll('.log-message')].map(row=>row.textContent),unknown:document.querySelector('.console-error')?.textContent.includes('outcome is unknown')??false,autoRefresh:document.querySelector('.console-auto-refresh input').checked})});
+        }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})})}})();
+      `}});
+    server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
+      const path=new URL(request.url).pathname;
+      if(path==='/')return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
+      if(path==='/fixture.js'){
+        clearTimeout(timer);timer=setTimeout(()=>report({failure:'Browser page timeout'}),20000);
+        return new Response(bundle.outputFiles[0].text,{headers:{'Content-Type':'application/javascript'}});
+      }
+      if(path==='/api/logs'){requests++;if(scenario==='read-hung'&&requests>1)await held;return Response.json({logs:cleared?'':'[2026-10-05 12:00:00] [INFO ] [WORKER ] OLD_BEFORE_CLEAR'});}
+      if(path==='/api/logs/clear'){cleared=true;await held;return Response.json({success:true});}
+      if(path==='/result'){report(await request.json());return new Response('received');}
+      return new Response('missing',{status:404});
+    }});
+    timer=setTimeout(()=>report({failure:'Chrome startup timeout'}),30000);
+    child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
+    const received=await result;
+    expect(received).toEqual({messages:scenario==='read-hung'?['OLD_BEFORE_CLEAR']:[],unknown:true,autoRefresh:false});expect(requests).toBe(2);
+  }finally{
+    release();clearTimeout(timer);if(child){child.kill();await child.exited;}server?.stop(true);rmSync(owned,{recursive:true,force:true});
+  }
+},60000);
+
+}

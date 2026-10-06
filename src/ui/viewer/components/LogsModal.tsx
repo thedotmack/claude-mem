@@ -174,7 +174,30 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       }
       if (request === requestSeqRef.current) setLogs('');
     } catch (err) {
-      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
+      if (controller.signal.aborted) {
+        // Abort only says that the acknowledgment was lost: the worker may
+        // already have cleared the file. Reconcile even with auto-refresh off,
+        // keeping this operation's request ownership and a bounded read.
+        const reconciliation = new AbortController();
+        const reconciliationTimeout = setTimeout(() => reconciliation.abort(), 5000);
+        try {
+          const response = await fetch('/api/logs', { signal: reconciliation.signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          if (request === requestSeqRef.current) {
+            setLogs(data.logs || '');
+            setError('Clear request timed out; its outcome is unknown. Displaying current logs.');
+          }
+        } catch {
+          if (request === requestSeqRef.current) {
+            setError('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.');
+          }
+        } finally {
+          clearTimeout(reconciliationTimeout);
+        }
+      } else if (request === requestSeqRef.current) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
     } finally {
       clearTimeout(timeout);
       clearingRef.current = false;
