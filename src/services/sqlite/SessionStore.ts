@@ -4322,6 +4322,11 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    const customTitle = session.custom_title ?? null;
+    if (customTitle !== null) {
+      this.validateSetTitleMutation(session.content_session_id, normalizedPlatformSource, customTitle);
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO sdk_sessions (
         content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title,
@@ -4329,21 +4334,26 @@ export class SessionStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-	      session.content_session_id,
-	      session.memory_session_id,
-	      session.project,
-	      normalizedPlatformSource,
-      session.user_prompt,
-      session.custom_title ?? null,
-      session.started_at,
-      session.started_at_epoch,
-      session.completed_at,
-      session.completed_at_epoch,
-      session.status
-    );
+    return this.db.transaction(() => {
+      const result = stmt.run(
+  	      session.content_session_id,
+  	      session.memory_session_id,
+  	      session.project,
+  	      normalizedPlatformSource,
+        session.user_prompt,
+        customTitle,
+        session.started_at,
+        session.started_at_epoch,
+        session.completed_at,
+        session.completed_at_epoch,
+        session.status
+      );
 
-    return { imported: true, id: result.lastInsertRowid as number };
+      if (customTitle !== null) {
+        this.enqueueSetTitleOp(session.content_session_id, normalizedPlatformSource, customTitle);
+      }
+      return { imported: true, id: result.lastInsertRowid as number };
+    })();
   }
 
   importSessionSummary(summary: {
