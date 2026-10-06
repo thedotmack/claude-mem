@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.34.1] - 2026-10-06
+
+The CMEM Pro installer and every client promotion now show **30 Day Free Trial**. This restores the public offer to match the cloud's standard 30-day trial and removes the shorter “up to 14 days” wording from provider selection, installer completion, session and context banners, welcome hints, the viewer, and public documentation.
+
+Trial URLs keep their existing source attribution, and the client still uses the trial expiration and account status returned by the cloud. Inference allowances, subscription and fallback behavior, paid billing disclosures, and provider settings are unchanged. The installer order remains the existing flow; the login-first web installation work is tracked separately.
+
+Validation: 58 existing installer OAuth, promotion, and gateway tests and 17 committed bundle/version and agent selection tests passed. Root and viewer typechecking, the postinstall allowlist guard, and build-and-sync passed, including a verified v13.34.1 local worker restart. Built CLI, worker, and viewer copy was checked before publication.
+
 ## [13.34.0] - 2026-10-06
 
 ## New: Pi and DeepSeek Harness integrations
