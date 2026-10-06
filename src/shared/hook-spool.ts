@@ -16,7 +16,7 @@ import { logger } from '../utils/logger.js';
  *
  * Dedupe + ordering design (the simpler of the two correct options):
  * - The filename IS the deterministic key: `<kind>-<key>.json`, key =
- *   `tool_use_id` when present (and filename-safe), else
+ *   a hash of session + platform followed by `tool_use_id` when filename-safe, else
  *   sha256(kind, contentSessionId, canonical payload). A re-delivered event
  *   therefore overwrites its own file — no directory scan on the hook path,
  *   and no window where two hooks racing the same event create two files.
@@ -143,7 +143,15 @@ function canonicalJson(value: unknown): string {
 export function hookSpoolKeyFor<K extends HookSpoolKind>(kind: K, payload: HookSpoolPayloadByKind[K]): string {
   const toolUseId = (payload as { toolUseId?: unknown }).toolUseId;
   if (typeof toolUseId === 'string' && FILENAME_SAFE_TOOL_USE_ID.test(toolUseId)) {
-    return toolUseId;
+    // Tool ids are opaque host values; some hosts number them within a
+    // session. Scope the durable filename (and consumed marker) like the
+    // worker dedup key, so a second session cannot overwrite the first.
+    const sessionKey = createHash('sha256')
+      .update(payload.contentSessionId)
+      .update('\0')
+      .update(normalizePlatformSource(payload.platformSource))
+      .digest('hex');
+    return `${sessionKey}-${toolUseId}`;
   }
   return createHash('sha256')
     .update(kind)
@@ -232,7 +240,24 @@ export class HookSpool {
     requestedAtEpochMs?: number,
   ): string {
     const normalizedPayload = { ...payload, platformSource: normalizePlatformSource(payload.platformSource) };
-    const entryPath = join(this.directory, `${kind}-${hookSpoolKeyFor(kind, normalizedPayload)}.json`);
+    let entryPath = join(this.directory, `${kind}-${hookSpoolKeyFor(kind, normalizedPayload)}.json`);
+    const toolUseId = (normalizedPayload as { toolUseId?: unknown }).toolUseId;
+    if (typeof toolUseId === 'string' && FILENAME_SAFE_TOOL_USE_ID.test(toolUseId)) {
+      const legacyPath = join(this.directory, `${kind}-${toolUseId}.json`);
+      try {
+        const legacy = parseHookSpoolEntry(readFileSync(legacyPath, 'utf8'));
+        if (!('corruptReason' in legacy) && legacy.kind === kind
+          && legacy.payload.contentSessionId === normalizedPayload.contentSessionId
+          && legacy.payload.platformSource === normalizedPayload.platformSource) {
+          // A pre-upgrade file may remain after handoff but before unlink.
+          // Keep its key until removal so its durable consumed marker still
+          // suppresses re-delivery; another scope must use the new key.
+          entryPath = legacyPath;
+        }
+      } catch {
+        // No legacy entry: new enqueues use the session/platform namespace.
+      }
+    }
     const enqueuedAtEpochMs = this.existingEnqueuedAt(entryPath) ?? requestedAtEpochMs ?? monotonicNowEpochMs();
     writeJsonFileAtomic(entryPath, { kind, payload: normalizedPayload, enqueuedAtEpochMs });
     return entryPath;
