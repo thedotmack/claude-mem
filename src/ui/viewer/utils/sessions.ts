@@ -1,4 +1,4 @@
-import type { FeedItemType, SessionCatalogEntry, StreamEvent } from '../types';
+import type { SessionCatalogEntry, StreamEvent } from '../types';
 import { API_ENDPOINTS } from '../constants/api';
 
 /**
@@ -96,54 +96,6 @@ export async function deleteSession(ref: SessionRef, fetchImpl: typeof fetch = f
   if (!response.ok) {
     throw new Error(describeSessionDeleteFailure(response.status));
   }
-}
-
-/** Confirm existence after an ambiguous delete acknowledgment without assuming
- * that an absent entry in the project's loaded prefix proves deletion. */
-export async function confirmSessionExists(ref: SessionRef, fetchImpl: typeof fetch = fetch): Promise<boolean> {
-  let offset = 0;
-  for (;;) {
-    const params = new URLSearchParams({ platformSource: ref.platformSource, offset: String(offset), limit: '1000' });
-    const response = await fetchImpl(`${API_ENDPOINTS.SESSIONS}?${params}`);
-    if (!response.ok) throw new Error(`Could not confirm the session's current state: HTTP ${response.status}.`);
-    const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
-    if (!Array.isArray(data.sessions)) throw new Error('Could not confirm the session: invalid catalog response.');
-    if (data.sessions.some(entry => sameSession(catalogEntryRef(entry), ref))) return true;
-    if (data.hasMore !== true) return false;
-    if (!data.sessions.length) throw new Error('Could not confirm the session: empty continuation page.');
-    offset += data.sessions.length;
-  }
-}
-
-/** Confirm only the already-visible row identities after an ambiguous delete.
- * Fresh session-scoped pages distinguish rows captured before server deletion
- * from rows belonging to a recreation. Live rows arriving during this lookup
- * are not candidates and must not be removed by its older snapshot. */
-export async function confirmSessionRowIds(
-  ref: SessionRef,
-  candidates: Record<FeedItemType, Set<number>>,
-  fetchImpl: typeof fetch = fetch,
-): Promise<Record<FeedItemType, Set<number>>> {
-  const confirmed = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-  const endpoints = { observation: API_ENDPOINTS.OBSERVATIONS, summary: API_ENDPOINTS.SUMMARIES, prompt: API_ENDPOINTS.PROMPTS };
-  await Promise.all((['observation', 'summary', 'prompt'] as const).map(async itemType => {
-    if (!candidates[itemType].size) return;
-    let offset = 0;
-    for (;;) {
-      const params = new URLSearchParams({ platformSource: ref.platformSource, contentSessionId: ref.contentSessionId, offset: String(offset), limit: '1000' });
-      const response = await fetchImpl(`${endpoints[itemType]}?${params}`);
-      if (!response.ok) throw new Error(`Could not confirm the session's current rows: HTTP ${response.status}.`);
-      const data = await response.json() as { items: (SessionScopedRow & { id: number })[]; hasMore?: boolean };
-      if (!Array.isArray(data.items)) throw new Error('Could not confirm the session: invalid row response.');
-      for (const row of data.items) {
-        if (sameSession(sessionRefOf(row), ref) && candidates[itemType].has(row.id)) confirmed[itemType].add(row.id);
-      }
-      if (data.hasMore !== true || confirmed[itemType].size === candidates[itemType].size) return;
-      if (!data.items.length) throw new Error('Could not confirm the session: empty row continuation page.');
-      offset += data.items.length;
-    }
-  }));
-  return confirmed;
 }
 
 /** The session a `session_deleted` SSE event names, or null when the event is malformed. */

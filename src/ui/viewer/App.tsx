@@ -18,8 +18,6 @@ import { removeLoadedRow } from './utils/feed-deletion';
 import {
   catalogEntryRef,
   deleteSession,
-  confirmSessionExists,
-  confirmSessionRowIds,
   parseViewRoute,
   removeSessionRows,
   sameSession,
@@ -61,14 +59,11 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
   const [feedLoadError, setFeedLoadError] = useState<string | null>(null);
-  const [sessionDeleteNotice, setSessionDeleteNotice] = useState<string | null>(null);
   const handledDeletionsRef = useRef(new Set<string>());
   // A page started before a session was deleted must not restore its old rows,
   // even if a live row has since re-created that same session identity.
   const deletionVersionRef = useRef(0);
   const sessionDeletionVersionsRef = useRef(new Map<string, number>());
-  const activityVersionRef = useRef(0);
-  const sessionActivityVersionsRef = useRef(new Map<string, number>());
   const [route, setRoute] = useState<ViewRoute>(() => parseViewRoute(window.location.hash));
   // The Sessions list keeps the last timeline/session scope, so switching back
   // does not reload pages that are still correct.
@@ -89,7 +84,6 @@ export function App() {
     onItemDeleted: removeDeletedItem,
     onSessionDeleted: removeDeletedSession,
     onLiveItem: item => {
-      sessionActivityVersionsRef.current.set(sessionKey(item.session), ++activityVersionRef.current);
       handledDeletionsRef.current.delete(`session:${sessionKey(item.session)}`);
       catalog.touch(item);
     },
@@ -183,7 +177,6 @@ export function App() {
         // recreation whose live SSE event this tab missed. Keep history for
         // older pending pages while rearming the identity for future deletes.
         handledDeletionsRef.current.delete(`session:${key}`);
-        sessionActivityVersionsRef.current.set(key, ++activityVersionRef.current);
         return true;
       });
     };
@@ -224,8 +217,6 @@ export function App() {
   // the next page does not skip a row.
   const loadedRowsRef = useRef({ observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts });
   loadedRowsRef.current = { observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts };
-  const liveRowsRef = useRef({ observation: observations, summary: summaries, prompt: prompts });
-  liveRowsRef.current = { observation: observations, summary: summaries, prompt: prompts };
 
   function removeDeletedItem(itemType: FeedItemType, id: number): void {
     const key = `${itemType}:${id}`;
@@ -237,7 +228,6 @@ export function App() {
       ?? loadedRowsRef.current[itemType].find(row => row.id === id);
     const deletedSession = deletedRow ? sessionRefOf(deletedRow) : null;
     if (deletedSession) catalog.noteItemRemoved(deletedSession);
-    else void catalog.refreshLoaded(currentFilter);
 
     removeLiveItem(itemType, id);
     if (itemType === 'observation') {
@@ -252,26 +242,6 @@ export function App() {
     }
   }
 
-  function retireLoadedSession(session: SessionRef, absent?: Record<FeedItemType, Set<number>>): void {
-    function retireRows<T extends SessionScopedRow & { id: number }>(rows: T[], itemType: FeedItemType) {
-      if (absent === undefined) return removeSessionRows(rows, session);
-      const retained = rows.filter(row => !sameSession(sessionRefOf(row), session)
-        || !absent[itemType].has(row.id));
-      return { rows: retained, removedCount: rows.length - retained.length };
-    }
-    const loaded = loadedRowsRef.current;
-    const lostObservations = retireRows(loaded.observation, 'observation').removedCount;
-    const lostSummaries = retireRows(loaded.summary, 'summary').removedCount;
-    const lostPrompts = retireRows(loaded.prompt, 'prompt').removedCount;
-    if (lostObservations > 0) pagination.observations.noteRemoved(lostObservations);
-    if (lostSummaries > 0) pagination.summaries.noteRemoved(lostSummaries);
-    if (lostPrompts > 0) pagination.prompts.noteRemoved(lostPrompts);
-    setPaginatedObservations(prev => retireRows(prev, 'observation').rows);
-    setPaginatedSummaries(prev => retireRows(prev, 'summary').rows);
-    setPaginatedPrompts(prev => retireRows(prev, 'prompt').rows);
-
-  }
-
   // Same single path for a whole deleted session (this tab or session_deleted
   // SSE): drop it from the catalog and every list, rebase each loaded page's
   // offset by the rows it lost, and leave its detail view if it is open.
@@ -283,7 +253,16 @@ export function App() {
 
     catalog.remove(session);
     removeLiveSession(session);
-    retireLoadedSession(session);
+    const loaded = loadedRowsRef.current;
+    const lostObservations = removeSessionRows(loaded.observation, session).removedCount;
+    const lostSummaries = removeSessionRows(loaded.summary, session).removedCount;
+    const lostPrompts = removeSessionRows(loaded.prompt, session).removedCount;
+    if (lostObservations > 0) pagination.observations.noteRemoved(lostObservations);
+    if (lostSummaries > 0) pagination.summaries.noteRemoved(lostSummaries);
+    if (lostPrompts > 0) pagination.prompts.noteRemoved(lostPrompts);
+    setPaginatedObservations(prev => removeSessionRows(prev, session).rows);
+    setPaginatedSummaries(prev => removeSessionRows(prev, session).rows);
+    setPaginatedPrompts(prev => removeSessionRows(prev, session).rows);
 
     if (route.view === 'session' && sameSession(route.session, session)) {
       navigate(sessionsHash());
@@ -292,73 +271,13 @@ export function App() {
 
   /** Rejects with a user-facing reason; the card shows it. */
   async function handleDeleteSession(session: SessionRef): Promise<void> {
-    setSessionDeleteNotice(null);
     const key = sessionKey(session);
     const deletionVersion = sessionDeletionVersionsRef.current.get(key) ?? 0;
-    const activityVersion = sessionActivityVersionsRef.current.get(key) ?? 0;
-    // Rows present when the action starts belong to the deleted incarnation.
-    // Activity arriving while DELETE is pending can already be a recreation.
-    const actionRows = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-    for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-      for (const row of [...loadedRowsRef.current[itemType], ...liveRowsRef.current[itemType]]) {
-        if (sameSession(sessionRefOf(row), session)) actionRows[itemType].add(row.id);
-      }
-    }
     await deleteSession(session);
     // The stream may have already delivered this delete, followed by a new
     // live row recreating the session. Its HTTP acknowledgment must not delete
     // that newer incarnation a second time.
     if ((sessionDeletionVersionsRef.current.get(key) ?? 0) === deletionVersion) {
-      const currentActivityVersion = sessionActivityVersionsRef.current.get(key) ?? 0;
-      if (currentActivityVersion !== activityVersion) {
-        // Only the successful server acknowledgment is a deletion boundary.
-        // Requests started between the user's action and that acknowledgment
-        // may still contain the old incarnation, even after live recreation.
-        const acknowledgmentVersion = ++deletionVersionRef.current;
-        sessionDeletionVersionsRef.current.set(key, acknowledgmentVersion);
-        const candidates = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-        for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-          for (const row of [...loadedRowsRef.current[itemType], ...liveRowsRef.current[itemType]]) {
-            if (sameSession(sessionRefOf(row), session)) candidates[itemType].add(row.id);
-          }
-        }
-        let exists: boolean | undefined;
-        try {
-          exists = await confirmSessionExists(session);
-          const confirmed = exists ? await confirmSessionRowIds(session, candidates)
-            : { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-          await catalog.refreshLoaded(currentFilter);
-          if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
-          const absent = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-            for (const id of candidates[itemType]) {
-              if (!confirmed[itemType].has(id)) absent[itemType].add(id);
-            }
-          }
-          retireLoadedSession(session, absent);
-          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-            for (const id of absent[itemType]) removeLiveItem(itemType, id);
-          }
-          if (exists) return;
-        } catch {
-          // DELETE already succeeded. A failed read cannot turn that fact into
-          // a refused deletion, or send the user to retry a now-absent session.
-          // Only action-start rows are known to belong to that deletion.
-          // A failed read gives no absence evidence for pending-request activity,
-          // which may already be a legitimate recreation before HTTP ack.
-          if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
-          retireLoadedSession(session, actionRows);
-          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-            for (const id of actionRows[itemType]) removeLiveItem(itemType, id);
-          }
-          setSessionDeleteNotice('Session deleted. Newer activity could not be verified; reload to reconcile the current view.');
-          void catalog.refreshLoaded(currentFilter);
-          return;
-        }
-        // A live recreation observed while confirming absence belongs to the
-        // newer state; its rows were not in the confirmation snapshot.
-        if ((sessionActivityVersionsRef.current.get(key) ?? 0) !== currentActivityVersion) return;
-      }
       removeDeletedSession(session);
     }
   }
@@ -442,7 +361,6 @@ export function App() {
         }}
       />
 
-      {sessionDeleteNotice && <div className="card-delete-error" role="alert">{sessionDeleteNotice}</div>}
       {content}
 
       {!welcomeDismissed && (

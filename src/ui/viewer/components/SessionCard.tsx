@@ -26,7 +26,6 @@ export function SessionCard({ session, onOpen, onDelete }: SessionCardProps) {
       await onDelete();
     } catch (error) {
       setFailure(error instanceof Error ? error.message : String(error));
-    } finally {
       setIsDeleting(false);
     }
   };

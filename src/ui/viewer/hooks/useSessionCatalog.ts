@@ -37,9 +37,8 @@ export function useSessionCatalog() {
   // Live changes made while a page request is in flight, re-applied to its
   // response so a refresh never hides a new session or restores a deleted one.
   const journalRef = useRef<CatalogJournal>(emptyCatalogJournal());
-  const removalRevisionRef = useRef(0);
 
-  const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append', prefixSize = SESSION_CATALOG_PAGE_SIZE) => {
+  const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append') => {
     const requestSeq = ++requestSeqRef.current;
     const offset = mode === 'replace' ? 0 : offsetRef.current;
     // A superseded request may already have live events in its journal.
@@ -53,40 +52,12 @@ export function useSessionCatalog() {
     setLoadError(null);
     const params = new URLSearchParams({ offset: String(offset), limit: String(SESSION_CATALOG_PAGE_SIZE) });
     if (project) params.append('project', project);
-    // Single responses already reconcile deletions through the journal. Only
-    // multi-chunk prefixes can skip a survivor when later offsets shift.
-    const hasOffsetChunks = mode === 'replace' && prefixSize > 1000;
-    let accepted: SessionCatalogEntry[] | undefined;
     try {
-      let interruptedPrefixes = 0;
       for (;;) {
-        const removalRevision = removalRevisionRef.current;
-        let prefixInterrupted = false;
-        const data: { sessions: SessionCatalogEntry[]; hasMore?: boolean } = { sessions: [] };
-        do {
-          params.set('offset', String(offset + data.sessions.length));
-          // The endpoint caps catalog pages at 1000. Revalidate the whole
-          // loaded prefix without discarding older pages or sending huge pages.
-          params.set('limit', String(Math.min(1000, prefixSize - data.sessions.length)));
-          const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
-          if (!response.ok) throw new Error(`HTTP ${response.status}`);
-          const page = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
-          if (requestSeq !== requestSeqRef.current) return;
-          if (hasOffsetChunks && removalRevision !== removalRevisionRef.current) {
-            prefixInterrupted = true;
-            break;
-          }
-          data.sessions.push(...page.sessions);
-          data.hasMore = page.hasMore;
-          if (!page.sessions.length) break;
-        } while (mode === 'replace' && data.hasMore && data.sessions.length < prefixSize);
-        // Offset chunks have no snapshot token. A deletion can shift the next
-        // chunk after an earlier response was captured; start again from zero
-        // rather than committing a stitched prefix with a missing survivor.
-        if (prefixInterrupted || (hasOffsetChunks && removalRevision !== removalRevisionRef.current)) {
-          if (++interruptedPrefixes >= 3) throw new Error('Session catalog changed repeatedly. Retry the refresh.');
-          continue;
-        }
+        const response = await fetch(`${API_ENDPOINTS.SESSIONS}?${params}`);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
+        if (requestSeq !== requestSeqRef.current) return;
         const journal = journalRef.current;
         // A session deleted mid-request that the page still contains moved the
         // server's list up by one more. Deletes of already-loaded sessions made
@@ -96,7 +67,6 @@ export function useSessionCatalog() {
         offsetRef.current = mode === 'replace' ? pageAdvance : offsetRef.current + pageAdvance;
         setHasMore(data.hasMore === true);
         setSessions(prev => mergeCatalogPage(prev, data.sessions, journal, mode));
-        accepted = data.sessions;
         if (mode !== 'replace' || (journal.decreased.size === 0 && journal.recreated.size === 0)) break;
         // Counts cannot identify deletion or recreation freshness. Confirm
         // once after all overlapping deletions, keeping this request loading.
@@ -110,7 +80,6 @@ export function useSessionCatalog() {
         };
       }
     } catch (error) {
-      accepted = undefined;
       if (requestSeq === requestSeqRef.current) {
         setLoadError(`Could not load sessions: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -121,15 +90,9 @@ export function useSessionCatalog() {
         setIsLoading(false);
       }
     }
-    return accepted;
   }, []);
 
   const refresh = useCallback((project: string) => fetchPage(project, 'replace'), [fetchPage]);
-
-  // Refresh counts without collapsing an already paged catalog to page one.
-  const refreshLoaded = useCallback((project: string) => fetchPage(project, 'replace',
-    project === projectRef.current ? Math.max(SESSION_CATALOG_PAGE_SIZE, offsetRef.current) : SESSION_CATALOG_PAGE_SIZE
-  ), [fetchPage]);
 
   /** The next (older) page for the project the list was last loaded for. */
   const loadMore = useCallback(async () => {
@@ -178,7 +141,6 @@ export function useSessionCatalog() {
   }, []);
 
   const remove = useCallback((session: SessionRef) => {
-    removalRevisionRef.current++;
     const key = sessionKey(session);
     journalRef.current.removed.add(key);
     journalRef.current.recreated.delete(key);
@@ -189,5 +151,5 @@ export function useSessionCatalog() {
     setSessions(prev => prev.filter(entry => !sameSession(catalogEntryRef(entry), session)));
   }, []);
 
-  return { sessions, isLoading, hasMore, loadError, refresh, refreshLoaded, loadMore, touch, noteItemRemoved, remove };
+  return { sessions, isLoading, hasMore, loadError, refresh, loadMore, touch, noteItemRemoved, remove };
 }

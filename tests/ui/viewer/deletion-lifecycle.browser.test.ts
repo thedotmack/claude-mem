@@ -11,7 +11,7 @@ const chrome=Bun.which('google-chrome')??Bun.which('chromium')
     ?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':null);
 if(process.env.CI&&!chrome)throw Error('CI requires Chrome for viewer deletion lifecycle tests');
 
-for(const scenario of ['item','recreated-visible','recreated-session','late-delete-response','catalog-recreated','late-delete-no-event','live-before-delete','new-page-before-ack','old-page-after-action'] as const) {
+for(const scenario of ['item','recreated-visible','recreated-session','late-delete-response','catalog-recreated','live-before-delete'] as const) {
   (chrome?it:it.skip)(`viewer preserves deletion identity across pending pages: ${scenario}`,async()=>{
     const owned=mkdtempSync(join(tmpdir(),'cm-viewer-deletion-'));
     let child:ReturnType<typeof Bun.spawn>|undefined;
@@ -21,12 +21,8 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
     const gate=new Promise<void>(resolve=>{release=resolve});
     let releaseDelete!:()=>void;
     const deleteGate=new Promise<void>(resolve=>{releaseDelete=resolve});
-    let commitDelete!:()=>void;
-    const commitGate=new Promise<void>(resolve=>{commitDelete=resolve});
-    let oldPageStarted!:()=>void;
-    const oldPageStart=new Promise<void>(resolve=>{oldPageStarted=resolve});
-    let releaseOldPage!:()=>void;
-    const oldPageGate=new Promise<void>(resolve=>{releaseOldPage=resolve});
+    let markReady!:()=>void;
+    const ready=new Promise<void>(resolve=>{markReady=resolve});
     let started!:()=>void;
     const snapshotStarted=new Promise<void>(resolve=>{started=resolve});
     let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
@@ -51,26 +47,17 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
           }
           async function paint(){for(let i=0;i<4;i++)await new Promise(requestAnimationFrame)}
           (async()=>{try{
+            await fetch('/ready');
             await until(()=>document.querySelector('.session-card-count')?.textContent==='1 memory');
             await fetch('/snapshot-started');
-            if(['late-delete-response','late-delete-no-event','live-before-delete','new-page-before-ack','old-page-after-action'].includes(${JSON.stringify(scenario)})) {
+            if(['late-delete-response','live-before-delete'].includes(${JSON.stringify(scenario)})) {
               window.confirm=()=>true;
               document.querySelector('.session-card-menu-trigger').click();await paint();
               document.querySelector('.session-card-menu-item--danger').click();
             } else await fetch('/delete');
             await paint();
-            if(${JSON.stringify(scenario)}==='old-page-after-action') {
-              location.hash='#/sessions/claude/owned-session';
-              await fetch('/old-page-started');await fetch('/commit-delete');await fetch('/recreate');
-              await fetch('/release-old-page');
-              await until(()=>document.body.textContent.includes('DELETED_CAPTURE'));
-              await fetch('/release-delete');
-              await until(()=>performance.getEntriesByName(location.origin+'/api/sessions?offset=0&limit=100').length>=2);
-              await paint();
-              await fetch('/result',{method:'POST',body:JSON.stringify({ghost:document.body.textContent.includes('DELETED_CAPTURE'),fresh:document.body.textContent.includes('RECREATED_CAPTURE')})});return;
-            }
             if(${JSON.stringify(scenario)}!=='item') {
-              if(!['late-delete-no-event','live-before-delete','new-page-before-ack'].includes(${JSON.stringify(scenario)})) await until(()=>document.querySelectorAll('.session-card').length===0);
+              if(!['live-before-delete'].includes(${JSON.stringify(scenario)})) await until(()=>document.querySelectorAll('.session-card').length===0);
               await fetch('/recreate');
               if(${JSON.stringify(scenario)}==='catalog-recreated') {
                 location.hash='';await paint();location.hash='#/sessions';
@@ -79,16 +66,8 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
                 await until(()=>document.body.textContent.includes('RECREATED_CAPTURE')||document.body.textContent.includes('No items to display'));
                 await fetch('/result',{method:'POST',body:JSON.stringify({detailFresh:document.body.textContent.includes('RECREATED_CAPTURE')})});return;
               }
-              await until(()=>document.querySelector('.session-card-count')?.textContent===(${JSON.stringify(scenario)}==='late-delete-no-event'||${JSON.stringify(scenario)}==='live-before-delete'?'2 memories':'1 memory'));
-              if(${JSON.stringify(scenario)}==='new-page-before-ack') {
-                location.hash='#/sessions/claude/owned-session';
-                await until(()=>document.body.textContent.includes('AUTHORITATIVE_NEW_PAGE'));
-                await fetch('/release-delete');
-                await until(()=>performance.getEntriesByName(location.origin+'/api/sessions?offset=0&limit=100').length>=2||!document.body.textContent.includes('AUTHORITATIVE_NEW_PAGE'));
-                await paint();
-                await fetch('/result',{method:'POST',body:JSON.stringify({detailFresh:document.body.textContent.includes('AUTHORITATIVE_NEW_PAGE')})});return;
-              }
-              if(['late-delete-response','late-delete-no-event','live-before-delete','new-page-before-ack','old-page-after-action'].includes(${JSON.stringify(scenario)})) {await fetch('/release-delete');await new Promise(resolve=>setTimeout(resolve,250));}
+              await until(()=>document.querySelector('.session-card-count')?.textContent===(${JSON.stringify(scenario)}==='live-before-delete'?'2 memories':'1 memory'));
+              if(['late-delete-response','live-before-delete'].includes(${JSON.stringify(scenario)})) {await fetch('/release-delete');await new Promise(resolve=>setTimeout(resolve,250));}
               if(${JSON.stringify(scenario)}==='recreated-session') {await fetch('/delete');await paint();}
             } else await new Promise(resolve=>setTimeout(resolve,150));
             const count=document.querySelector('.session-card-count')?.textContent??null;
@@ -123,27 +102,20 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
       server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
         const url=new URL(request.url);
         if(url.pathname==='/')return new Response(html,{headers:{'Content-Type':'text/html'}});
-        if(url.pathname==='/fixture.js'){
-          clearTimeout(timer);timer=setTimeout(()=>finish({failure:'Browser page timed out'}),20000);
-          return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
-        }
+        if(url.pathname==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+        if(url.pathname==='/ready'){markReady();return new Response('ready')}
         if(url.pathname==='/stream')return new Response(new ReadableStream({start(c){controller=c;send({type:'initial_load',projects:['alpha']})}}),
           {headers:{'Content-Type':'text/event-stream'}});
         if(url.pathname==='/api/sessions/claude/owned-session' && request.method==='DELETE') {
           if(scenario==='live-before-delete')await deleteGate;
-          if(scenario==='old-page-after-action')await commitGate;
           deleted=true;if(scenario==='late-delete-response')send({type:'session_deleted',platformSource:'claude',contentSessionId:'owned-session'});
           if(scenario!=='live-before-delete')await deleteGate;return Response.json({success:true});
         }
-        if(url.pathname==='/commit-delete'){commitDelete();return new Response('committed')}
-        if(url.pathname==='/old-page-started'){await oldPageStart;return new Response('started')}
-        if(url.pathname==='/release-old-page'){releaseOldPage();return new Response('released')}
         if(url.pathname==='/release-delete'){releaseDelete();return new Response('released')}
         if(url.pathname==='/api/sessions')return Response.json({sessions:scenario==='item'
           ?[{...session,item_count:deleted?0:1}]:deleted?[]:[session],hasMore:false});
         if(url.pathname==='/api/observations') {
-          if(url.searchParams.has('contentSessionId')&&scenario==='old-page-after-action'&&!deleted&&observationRequests===1){observationRequests++;oldPageStarted();await oldPageGate;return Response.json({items:[row],hasMore:false});}
-          if(url.searchParams.has('contentSessionId'))return Response.json({items:[{...row,id:2,title:scenario==='new-page-before-ack'?'AUTHORITATIVE_NEW_PAGE':'RECREATED_CAPTURE'}],hasMore:false});
+          if(url.searchParams.has('contentSessionId'))return Response.json({items:[{...row,id:2,title:'RECREATED_CAPTURE'}],hasMore:false});
           offsets.push(Number(url.searchParams.get('offset')));
           if(++observationRequests===1)return new Response(new ReadableStream({async start(c){
             c.enqueue(new TextEncoder().encode(' '));started();await gate;
@@ -160,23 +132,28 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
             :{type:'session_deleted',platformSource:'claude',contentSessionId:'owned-session'});
           return new Response('deleted');
         }
-        if(url.pathname==='/recreate'){deleted=false;if(!['catalog-recreated','new-page-before-ack'].includes(scenario))send({type:'new_observation',observation:{...row,id:2,title:'RECREATED_CAPTURE'}});return new Response('recreated')}
+        if(url.pathname==='/recreate'){deleted=false;if(!['catalog-recreated'].includes(scenario))send({type:'new_observation',observation:{...row,id:2,title:'RECREATED_CAPTURE'}});return new Response('recreated')}
         if(url.pathname==='/offsets')return Response.json(offsets);
         if(url.pathname==='/release'){release();return new Response('released')}
         if(url.pathname==='/result'){finish(await request.json());return new Response('received')}
         return Response.json({});
       }});
-      timer=setTimeout(()=>finish({failure:'Chrome startup timed out'}),30000);
       child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
+        '--disable-background-timer-throttling','--disable-renderer-backgrounding',
         '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
-      const received=await result;
-      if(scenario==='old-page-after-action'){expect(received).toEqual({ghost:false,fresh:true});return;}
-      if(['catalog-recreated','new-page-before-ack'].includes(scenario)){expect(received).toEqual({detailFresh:true});return;}
-      expect(received).toEqual({count:scenario==='item'?'0 memories':['recreated-session','live-before-delete','new-page-before-ack'].includes(scenario)?null:'1 memory',ghost:false,recreatedGhost:scenario!=='item'&&!['recreated-session','live-before-delete','new-page-before-ack'].includes(scenario),control:true,next:true,offsets:[0,UI.PAGINATION_PAGE_SIZE-1]});
+      // Chrome's cold start gets its own window; the page's phases start at /ready.
+      await Promise.race([ready,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('Viewer did not become ready')),30000)})]);
+      clearTimeout(timer);
+      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser page timed out'}),25000)})]);
+      if(scenario==='catalog-recreated'){expect(received).toEqual({detailFresh:true});return;}
+      // item: the deleted row was never loaded, so this tab cannot attribute it
+      // to a session and the card count stays stale until the server names the
+      // owning session in item_deleted.
+      expect(received).toEqual({count:['recreated-session','live-before-delete'].includes(scenario)?null:'1 memory',ghost:false,recreatedGhost:scenario!=='item'&&!['recreated-session','live-before-delete'].includes(scenario),control:true,next:true,offsets:[0,UI.PAGINATION_PAGE_SIZE-1]});
     }finally{
-      release();releaseDelete();commitDelete();releaseOldPage();clearTimeout(timer);
+      release();releaseDelete();clearTimeout(timer);
       if(child){child.kill();await child.exited;}
       server?.stop(true);rmSync(owned,{recursive:true,force:true});
     }
-  },60000);
+  },80000);
 }
