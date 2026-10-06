@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { build } from 'esbuild';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import express from 'express';
@@ -38,6 +38,8 @@ assert.ok(chrome && key, 'Owned fixture needs a browser and a known count field'
     const profile = mkdtempSync(join(tmpdir(), 'claude-mem-count-save-'));
     const originalSettingsPath = paths.settings;
     paths.settings = () => join(profile, 'settings.json');
+    // Start away from the fallback so a failed clear cannot pass unchanged.
+    writeFileSync(paths.settings(), JSON.stringify({ [key]: '17' }));
     const app = express();
     app.use(express.json());
     app.use(async (request, _response, next) => {
@@ -113,10 +115,16 @@ assert.ok(chrome && key, 'Owned fixture needs a browser and a known count field'
         if (Date.now() > fieldDeadline) throw new Error('Count field did not render');
         await Bun.sleep(10);
       }
-      await evaluate(`${field}.focus();${field}.select()`);
+      assert.equal(await evaluate(`${field}.value`), '17');
+      await evaluate(`${field}.focus();window.countInputEvents=0;${field}.addEventListener('input',()=>window.countInputEvents++)`);
+      // Numeric inputs do not reliably support DOM select() across Chrome platforms.
+      // Send the browser's editing command before deleting, as a user would.
+      await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, commands: ['selectAll'] });
+      await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65 });
       await send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
       await send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8 });
       await settle();
+      assert.ok(await evaluate('window.countInputEvents > 0'), 'Clearing must dispatch a real input event');
       assert.equal(await evaluate(`${field}.value`), fallback);
       await evaluate('document.querySelector(".save-btn").click()');
       const saveDeadline = Date.now() + 10000;
