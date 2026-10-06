@@ -23,6 +23,14 @@ describe('pinned tree-sitter executable digests', () => {
     for (const digest of Object.values(digests)) expect(digest).toMatch(/^[0-9a-f]{64}$/);
   });
 
+  // An installer that ignores bun.lock (npm) resolves the manifest's spec, so a
+  // range would let it install a newer release that has no pinned digest.
+  it('pins tree-sitter-cli to that exact version in the plugin manifest', () => {
+    const manifest = JSON.parse(readFileSync(join(import.meta.dir, '..', '..', '..', 'plugin', 'package.json'), 'utf-8'));
+
+    expect(manifest.dependencies['tree-sitter-cli']).toBe(lockedVersion);
+  });
+
   it('looks the digest up by version, platform and arch', () => {
     expect(pinnedTreeSitterExecutableSha256('0.26.9', 'linux', 'x64')).toBe(TREE_SITTER_EXECUTABLE_SHA256['0.26.9']['linux-x64']);
     expect(pinnedTreeSitterExecutableSha256('0.26.9', 'linux', 'ia32')).toBeUndefined();
