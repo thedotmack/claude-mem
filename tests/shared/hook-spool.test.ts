@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import {
   HookSpool,
+  type HookSpoolConsumedMarkers,
   HOOK_SPOOL_RETRY_WINDOW_MS,
   migrateLegacySessionEndReplay,
   resolveHookSpoolDirectory,
@@ -75,6 +76,27 @@ describe('HookSpool', () => {
       return true;
     });
     expect(received.sort()).toEqual(['session-1:claude', 'session-1:codex', 'session-2:claude']);
+  });
+
+  it('keeps an existing legacy handoff marker authoritative during upgrade', async () => {
+    const spool = new HookSpool();
+    mkdirSync(spool.directory, { recursive: true });
+    const legacyPath = join(spool.directory, 'observation-call_1.json');
+    writeFileSync(legacyPath, JSON.stringify({ kind: 'observation', payload: observation('call_1'), enqueuedAtEpochMs: Date.now() }));
+    const consumed = new Set(['observation-call_1']);
+    const markers: HookSpoolConsumedMarkers = {
+      isConsumed: key => consumed.has(key),
+      markConsumed: key => { consumed.add(key); },
+      clearConsumed: key => { consumed.delete(key); },
+      pruneConsumedBefore: () => {},
+    };
+    expect(spool.enqueue('observation', observation('call_1'))).toBe(legacyPath);
+    spool.enqueue('observation', { ...observation('call_1'), contentSessionId: 'other-session' });
+    const received: string[] = [];
+    await spool.drain(entry => { received.push(entry.payload.contentSessionId); return true; }, markers);
+    expect(received).toEqual(['other-session']);
+    expect(spoolFiles(spool)).toEqual([]);
+    expect(consumed.size).toBe(0);
   });
 
   it('drains in enqueue order, across kinds', async () => {

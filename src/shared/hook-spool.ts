@@ -240,7 +240,24 @@ export class HookSpool {
     requestedAtEpochMs?: number,
   ): string {
     const normalizedPayload = { ...payload, platformSource: normalizePlatformSource(payload.platformSource) };
-    const entryPath = join(this.directory, `${kind}-${hookSpoolKeyFor(kind, normalizedPayload)}.json`);
+    let entryPath = join(this.directory, `${kind}-${hookSpoolKeyFor(kind, normalizedPayload)}.json`);
+    const toolUseId = (normalizedPayload as { toolUseId?: unknown }).toolUseId;
+    if (typeof toolUseId === 'string' && FILENAME_SAFE_TOOL_USE_ID.test(toolUseId)) {
+      const legacyPath = join(this.directory, `${kind}-${toolUseId}.json`);
+      try {
+        const legacy = parseHookSpoolEntry(readFileSync(legacyPath, 'utf8'));
+        if (!('corruptReason' in legacy) && legacy.kind === kind
+          && legacy.payload.contentSessionId === normalizedPayload.contentSessionId
+          && legacy.payload.platformSource === normalizedPayload.platformSource) {
+          // A pre-upgrade file may remain after handoff but before unlink.
+          // Keep its key until removal so its durable consumed marker still
+          // suppresses re-delivery; another scope must use the new key.
+          entryPath = legacyPath;
+        }
+      } catch {
+        // No legacy entry: new enqueues use the session/platform namespace.
+      }
+    }
     const enqueuedAtEpochMs = this.existingEnqueuedAt(entryPath) ?? requestedAtEpochMs ?? monotonicNowEpochMs();
     writeJsonFileAtomic(entryPath, { kind, payload: normalizedPayload, enqueuedAtEpochMs });
     return entryPath;
