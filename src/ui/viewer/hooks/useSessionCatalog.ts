@@ -96,9 +96,9 @@ export function useSessionCatalog() {
 
   /** The next (older) page for the project the list was last loaded for. */
   const loadMore = useCallback(async () => {
-    if (inFlightRef.current || !hasMore) return;
+    if (inFlightRef.current || (!hasMore && !loadError)) return;
     await fetchPage(projectRef.current, 'append');
-  }, [fetchPage, hasMore]);
+  }, [fetchPage, hasMore, loadError]);
 
   /** A live row arrived: bump its session's count, or add a session seen for the first time. */
   const touch = useCallback((item: LiveSessionItem) => {
