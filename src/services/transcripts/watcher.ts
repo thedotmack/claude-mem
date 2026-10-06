@@ -1,4 +1,5 @@
-import { existsSync, statSync, watch as fsWatch } from 'fs';
+import { createHash } from 'crypto';
+import { closeSync, existsSync, fstatSync, openSync, readSync, statSync, watch as fsWatch } from 'fs';
 import { open } from 'fs/promises';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
@@ -139,6 +140,52 @@ async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number
   }
 }
 
+/** A file's device/inode pair: which file a path held when its checkpoint was saved. */
+function fileIdentityOf(stat: { dev: number; ino: number }): string {
+  return `${stat.dev}:${stat.ino}`;
+}
+
+/** A checkpoint's fingerprint covers at most this many bytes just before its offset. */
+const CHECKPOINT_FINGERPRINT_BYTES = 4096;
+
+/**
+ * sha256 of the up-to-4 KiB of a transcript just before `offset`, read from
+ * the file whose identity is `identity`. Null when the path now holds another
+ * file, ends before `offset`, or cannot be read.
+ */
+function fingerprintBeforeOffset(filePath: string, offset: number, identity: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, 'r');
+    if (fileIdentityOf(fstatSync(fd)) !== identity) return null;
+    const start = Math.max(0, offset - CHECKPOINT_FINGERPRINT_BYTES);
+    const window = Buffer.alloc(offset - start);
+    if (readSync(fd, window, 0, window.length, start) < window.length) return null;
+    return createHash('sha256').update(window).digest('hex');
+  } catch (error: unknown) {
+    logger.debug('TRANSCRIPT', 'Could not fingerprint a transcript checkpoint', { file: filePath }, error instanceof Error ? error : undefined);
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Whether a file whose device/inode changed still holds the bytes up to a
+ * checkpoint: it does not end before the checkpoint, and the bytes just
+ * before it match the checkpoint's fingerprint. A new identity alone is not a
+ * replacement: device numbers can change across a reboot or remount, and sync
+ * tools rewrite a file through temp-plus-rename with its bytes intact, so
+ * resetting on it would replay every transcript through the observer. A
+ * checkpoint saved without a fingerprint keeps its offset, as it did before
+ * identities were tracked.
+ */
+function keepsCheckpointBytes(filePath: string, identity: string, size: number, offset: number, fingerprint: string | undefined): boolean {
+  if (size < offset) return false;
+  if (fingerprint === undefined) return true;
+  return fingerprintBeforeOffset(filePath, offset, identity) === fingerprint;
+}
+
 async function readByteRange(filePath: string, start: number, length: number): Promise<Buffer> {
   const file = await open(filePath, 'r');
   try {
@@ -165,17 +212,31 @@ class FileTailer {
    * with the checkpoint.
    */
   private frameLinesDone: number;
+  /** The device/inode of the file the checkpoint was taken from. Persisted. */
+  private fileIdentity?: string;
+  /** sha256 of the up-to-4 KiB before the checkpoint (fingerprintBeforeOffset). Persisted. */
+  private checkpointFingerprint?: string;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number, partial: string, frameLinesDone: number) => void,
+    private onOffset: (
+      offset: number,
+      partial: string,
+      frameLinesDone: number,
+      fileIdentity?: string,
+      checkpointFingerprint?: string
+    ) => void,
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
     initialPartial = '',
-    initialFrameLinesDone = 0
+    initialFrameLinesDone = 0,
+    initialFileIdentity?: string,
+    initialCheckpointFingerprint?: string
   ) {
+    this.fileIdentity = initialFileIdentity;
+    this.checkpointFingerprint = initialCheckpointFingerprint;
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
     this.frameLinesDone = this.isZstd ? initialFrameLinesDone : 0;
@@ -231,14 +292,34 @@ class FileTailer {
     if (!existsSync(this.filePath)) return;
 
     let size = 0;
+    let identity: string;
     try {
-      size = statSync(this.filePath).size;
+      const stat = statSync(this.filePath);
+      size = stat.size;
+      identity = fileIdentityOf(stat);
     } catch (error: unknown) {
       logger.debug('WORKER', 'Failed to stat transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
       return;
     }
 
-    if (size < this.tailState.readOffset) {
+    // An atomic replacement (a new device/inode with other bytes) is a new
+    // file, read from byte 0: an equal-size or larger one passes the shrink
+    // check below. The same bytes under a new identity keep the checkpoint.
+    const identityChanged = identity !== this.fileIdentity;
+    let replaced = false;
+    if (identityChanged && this.fileIdentity !== undefined) {
+      if (keepsCheckpointBytes(this.filePath, identity, size, this.tailState.offset, this.checkpointFingerprint)) {
+        // An unterminated record past the checkpoint is read again, from the new file.
+        this.tailState.readOffset = this.tailState.offset;
+        this.pendingRecord = Buffer.alloc(0);
+      } else {
+        replaced = true;
+      }
+    }
+    this.fileIdentity = identity;
+
+    const reset = replaced || size < this.tailState.readOffset;
+    if (reset) {
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
       this.tailState.partial = '';
@@ -246,7 +327,11 @@ class FileTailer {
       this.frameLinesDone = 0;
     }
 
-    if (size === this.tailState.readOffset) return;
+    if (size === this.tailState.readOffset) {
+      // Record a new identity (or a reset) even at an unchanged end of file.
+      if (identityChanged || reset) this.checkpoint(this.tailState.offset, this.tailState.partial);
+      return;
+    }
 
     if (this.isZstd) {
       await this.readNewZstdFrames(size);
@@ -259,7 +344,10 @@ class FileTailer {
   private checkpoint(offset: number, partial = ''): void {
     this.tailState.offset = offset;
     this.tailState.partial = partial;
-    this.onOffset(offset, partial, this.frameLinesDone);
+    this.checkpointFingerprint = this.fileIdentity === undefined
+      ? undefined
+      : fingerprintBeforeOffset(this.filePath, offset, this.fileIdentity) ?? undefined;
+    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint);
   }
 
   /**
@@ -444,12 +532,13 @@ export class TranscriptWatcher {
     const resolvedPath = expandHomePath(watch.path);
     const files = this.resolveWatchFiles(resolvedPath);
 
+    const initialScan = { stateChanged: false };
     for (const filePath of files) {
-      await this.addTailer(filePath, watch, schema);
+      await this.addTailer(filePath, watch, schema, false, initialScan);
       await yieldToEventLoop();
     }
-    // The startAtEnd offsets the initial scan chose, in one write.
-    if (files.length > 0 && watch.startAtEnd) saveWatchState(this.statePath, this.state);
+    // The startAtEnd offsets and file identities the initial scan recorded, in one write.
+    if (initialScan.stateChanged) saveWatchState(this.statePath, this.state);
 
     this.watchTranscriptRoot(resolvedPath, watch, schema);
   }
@@ -678,7 +767,9 @@ export class TranscriptWatcher {
     filePath: string,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    discoveredAfterStartup: boolean = false
+    discoveredAfterStartup: boolean = false,
+    // The initial scan (setupWatch) saves the state its tailers recorded once, here flagged.
+    initialScan?: { stateChanged: boolean }
   ): Promise<void> {
     // Expand a leading tilde here, the single point every path feeds through.
     // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
@@ -689,7 +780,7 @@ export class TranscriptWatcher {
     if (this.tailers.has(filePath) || this.startingTailers.has(filePath)) return;
     this.startingTailers.add(filePath);
     try {
-      await this.startTailer(filePath, watch, schema, discoveredAfterStartup);
+      await this.startTailer(filePath, watch, schema, discoveredAfterStartup, initialScan);
     } finally {
       this.startingTailers.delete(filePath);
     }
@@ -699,7 +790,8 @@ export class TranscriptWatcher {
     filePath: string,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    discoveredAfterStartup: boolean
+    discoveredAfterStartup: boolean,
+    initialScan?: { stateChanged: boolean }
   ): Promise<void> {
     const isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     if (isZstd && !isZstdSupported()) {
@@ -716,6 +808,7 @@ export class TranscriptWatcher {
 
     const savedOffset = this.state.offsets[filePath];
     let offset = savedOffset ?? 0;
+    let stateChanged = false;
     // `startAtEnd` means "do not replay history that predates this worker".
     // A transcript created after startup is read from byte 0: by the time the
     // recursive root watch reports it, session_meta and the opening turns are
@@ -738,12 +831,46 @@ export class TranscriptWatcher {
         if (!replayFromStart) offset = isZstd ? await zstdResumeOffset(filePath, stat.size) : stat.size;
         if (this.stopped) return;
         this.state.offsets[filePath] = offset;
-        // The initial scan saves once for all its files (setupWatch).
-        if (discoveredAfterStartup) saveWatchState(this.statePath, this.state);
+        stateChanged = true;
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
       }
+    }
+
+    // The checkpoint belongs to the file it was taken from. A file replaced
+    // while the watcher was down (a new device/inode and other bytes before
+    // the checkpoint) is read from byte 0; one that only changed identity
+    // keeps its checkpoint. Its current identity is recorded either way.
+    try {
+      const stat = statSync(filePath);
+      const identity = fileIdentityOf(stat);
+      const savedIdentity = this.state.fileIdentities?.[filePath];
+      if (identity !== savedIdentity) {
+        if (savedOffset !== undefined && savedIdentity !== undefined &&
+          !keepsCheckpointBytes(filePath, identity, stat.size, savedOffset, this.state.checkpointFingerprints?.[filePath])) {
+          offset = 0;
+          this.state.offsets[filePath] = 0;
+          delete this.state.partials?.[filePath];
+          delete this.state.frameLines?.[filePath];
+        }
+        (this.state.fileIdentities ??= {})[filePath] = identity;
+        const fingerprint = fingerprintBeforeOffset(filePath, offset, identity);
+        if (fingerprint !== null) {
+          (this.state.checkpointFingerprints ??= {})[filePath] = fingerprint;
+        } else {
+          delete this.state.checkpointFingerprints?.[filePath];
+        }
+        stateChanged = true;
+      }
+    } catch (error: unknown) {
+      // Gone since the scan: the tailer finds nothing to read.
+      logger.debug('WORKER', 'Failed to stat transcript file for its identity', { file: filePath }, error instanceof Error ? error : undefined);
+    }
+    if (stateChanged) {
+      // The initial scan saves once for all its files (setupWatch).
+      if (discoveredAfterStartup) saveWatchState(this.statePath, this.state);
+      else if (initialScan) initialScan.stateChanged = true;
     }
 
     // The session's working directory, restored for a watcher that resumes
@@ -771,7 +898,13 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial: string, frameLinesDone: number) => {
+      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string) => {
+        if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
+        if (checkpointFingerprint !== undefined) {
+          (this.state.checkpointFingerprints ??= {})[filePath] = checkpointFingerprint;
+        } else if (this.state.checkpointFingerprints) {
+          delete this.state.checkpointFingerprints[filePath];
+        }
         this.state.offsets[filePath] = newOffset;
         if (partial) {
           (this.state.partials ??= {})[filePath] = partial;
@@ -786,7 +919,9 @@ export class TranscriptWatcher {
         saveWatchState(this.statePath, this.state);
       },
       this.state.partials?.[filePath] ?? '',
-      this.state.frameLines?.[filePath] ?? 0
+      this.state.frameLines?.[filePath] ?? 0,
+      this.state.fileIdentities?.[filePath],
+      this.state.checkpointFingerprints?.[filePath]
     );
 
     tailer.start();
