@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
 import path from 'path';
 import { collectDescendantIdentities } from '../../src/shared/kill-process-tree.js';
-import { snapshotDescendants } from '../integration/helpers/process-tree.js';
+import { reapSnapshottedDescendants, snapshotDescendants, type ProcessIdentity } from '../integration/helpers/process-tree.js';
 import {
   captureProcessStartToken,
   isSameProcess,
@@ -25,16 +25,34 @@ import {
  * asserted rather than assumed — on whatever platform the suite runs.
  */
 
-const strays: number[] = [];
+const strays: Array<{ command: ReturnType<typeof spawn>; descendants: ProcessIdentity[] }> = [];
 
 function settle(ms = 500): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-afterAll(() => {
-  for (const pid of strays) {
-    try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
+function stopFixture(fixture: (typeof strays)[number]): void {
+  try {
+    // The snapshot was taken while this exact root was alive. Revalidate each
+    // child's start token and kill only that PID, never an unchecked subtree.
+    if (process.platform === 'win32') {
+      reapSnapshottedDescendants(fixture.descendants);
+    } else {
+      reapSnapshottedDescendants(fixture.descendants, undefined, pid => {
+        try { process.kill(pid, 'SIGKILL'); }
+        catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+        }
+      });
+    }
+  } finally {
+    // ChildProcess retains the handle for the fixture root itself.
+    fixture.command.kill('SIGKILL');
   }
+}
+
+afterAll(() => {
+  for (const fixture of strays) stopFixture(fixture);
 });
 
 describe('descendant enumeration agrees with captureProcessStartToken', () => {
@@ -45,19 +63,22 @@ describe('descendant enumeration agrees with captureProcessStartToken', () => {
       stdio: 'ignore', windowsHide: true,
     });
     const rootPid = command.pid!;
-    strays.push(rootPid);
-    await settle();
+    const fixture = { command, descendants: [] as ProcessIdentity[] };
+    strays.push(fixture);
+    try {
+      await settle();
 
-    const rootToken = captureProcessStartToken(rootPid);
-    expect(rootToken).toMatch(/^\d{14}\.\d{6}$/);
-    const descendants = snapshotDescendants(rootPid, rootToken!);
-    expect(descendants.length).toBeGreaterThan(0);
-    const verified = descendants.filter(entry => entry.startToken !== null);
-    expect(verified.length).toBeGreaterThan(0);
-    const reprobed = captureProcessStartToken(verified[0]!.pid);
-    if (reprobed !== null) expect(reprobed).toBe(verified[0]!.startToken);
-
-    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+      const rootToken = captureProcessStartToken(rootPid);
+      if (rootToken) fixture.descendants = snapshotDescendants(rootPid, rootToken);
+      expect(rootToken).toMatch(/^\d{14}\.\d{6}$/);
+      expect(fixture.descendants.length).toBeGreaterThan(0);
+      const verified = fixture.descendants.filter(entry => entry.startToken !== null);
+      expect(verified.length).toBeGreaterThan(0);
+      const reprobed = captureProcessStartToken(verified[0]!.pid);
+      if (reprobed !== null) expect(reprobed).toBe(verified[0]!.startToken);
+    } finally {
+      stopFixture(fixture);
+    }
   }, 30_000);
 
   it('produces tokens identical to an independent re-probe', async () => {
@@ -66,27 +87,32 @@ describe('descendant enumeration agrees with captureProcessStartToken', () => {
       : spawn('/bin/sh', ['-c', 'sleep 60 & sleep 60 & wait'], { stdio: 'ignore' });
 
     const rootPid = command.pid!;
-    strays.push(rootPid);
-    await settle();
+    const fixture = { command, descendants: [] as ProcessIdentity[] };
+    strays.push(fixture);
+    try {
+      await settle();
+      const rootToken = captureProcessStartToken(rootPid);
+      if (rootToken) fixture.descendants = snapshotDescendants(rootPid, rootToken);
 
-    const descendants = await collectDescendantIdentities(rootPid);
-    expect(descendants.length).toBeGreaterThan(0);
+      const descendants = await collectDescendantIdentities(rootPid);
+      expect(descendants.length).toBeGreaterThan(0);
 
-    // At least one token must have been readable, or the comparison below is
-    // vacuous — every entry would trivially "agree" via the null fallback.
-    const withTokens = descendants.filter(entry => entry.startToken !== null);
-    expect(withTokens.length).toBeGreaterThan(0);
+      // At least one token must have been readable, or the comparison below is
+      // vacuous — every entry would trivially "agree" via the null fallback.
+      const withTokens = descendants.filter(entry => entry.startToken !== null);
+      expect(withTokens.length).toBeGreaterThan(0);
 
-    for (const entry of withTokens) {
-      const reprobed = captureProcessStartToken(entry.pid);
-      // A null re-probe means the process exited between the two reads, which
-      // is legitimate; only a NON-null disagreement is a format bug.
-      if (reprobed === null) continue;
-      expect(reprobed).toBe(entry.startToken);
+      for (const entry of withTokens) {
+        const reprobed = captureProcessStartToken(entry.pid);
+        // A null re-probe means the process exited between the two reads, which
+        // is legitimate; only a NON-null disagreement is a format bug.
+        if (reprobed === null) continue;
+        expect(reprobed).toBe(entry.startToken);
+      }
+    } finally {
+      stopFixture(fixture);
     }
-
-    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
-  }, 30_000);
+  }, 60_000);
 
   it('returns leaves before their ancestors', async () => {
     if (process.platform === 'win32') return;
@@ -97,19 +123,24 @@ describe('descendant enumeration agrees with captureProcessStartToken', () => {
       { stdio: 'ignore' }
     );
     const rootPid = command.pid!;
-    strays.push(rootPid);
-    await settle();
+    const fixture = { command, descendants: [] as ProcessIdentity[] };
+    strays.push(fixture);
+    try {
+      await settle();
+      const rootToken = captureProcessStartToken(rootPid);
+      if (rootToken) fixture.descendants = snapshotDescendants(rootPid, rootToken);
 
-    const descendants = await collectDescendantIdentities(rootPid);
-    expect(descendants.length).toBeGreaterThanOrEqual(2);
+      const descendants = await collectDescendantIdentities(rootPid);
+      expect(descendants.length).toBeGreaterThanOrEqual(2);
 
-    // The intermediate shell is a direct child of the root; the innermost
-    // sleep is its child. Leaves-first means the deeper one comes first.
-    const pids = descendants.map(entry => entry.pid);
-    const intermediate = pids[pids.length - 1];
-    expect(descendants[0]!.pid).not.toBe(intermediate);
-
-    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+      // The intermediate shell is a direct child of the root; the innermost
+      // sleep is its child. Leaves-first means the deeper one comes first.
+      const pids = descendants.map(entry => entry.pid);
+      const intermediate = pids[pids.length - 1];
+      expect(descendants[0]!.pid).not.toBe(intermediate);
+    } finally {
+      stopFixture(fixture);
+    }
   }, 30_000);
 });
 
