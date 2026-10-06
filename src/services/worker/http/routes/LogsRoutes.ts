@@ -86,6 +86,14 @@ export class LogsRoutes extends BaseRouteHandler {
   }
 
   private handleGetLogs = this.wrapHandler((req: Request, res: Response): void => {
+    const rawLines = req.query.lines;
+    const requestedLines = rawLines === undefined ? 1000
+      : typeof rawLines === 'string' && /^\d+$/.test(rawLines) ? Number(rawLines) : NaN;
+    if (!Number.isSafeInteger(requestedLines) || requestedLines < 0) {
+      this.badRequest(res, 'lines must be a nonnegative safe integer');
+      return;
+    }
+
     const logFilePath = this.getLogFilePath();
 
     if (!existsSync(logFilePath)) {
@@ -97,7 +105,6 @@ export class LogsRoutes extends BaseRouteHandler {
       return;
     }
 
-    const requestedLines = parseInt(req.query.lines as string || '1000', 10);
     const maxLines = Math.min(requestedLines, 10000); 
 
     const { lines: recentLines, totalEstimate } = readLastLines(logFilePath, maxLines);
