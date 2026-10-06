@@ -147,6 +147,7 @@ class FileTailer {
   private tailState: TailState;
   private readTask: Promise<void> | null = null;
   private readPending = false;
+  private closed = false;
   private readonly isZstd: boolean;
   /** JSONL only: the bytes of the unterminated record between `offset` and `readOffset`. */
   private pendingRecord: Buffer = Buffer.alloc(0);
@@ -187,6 +188,7 @@ class FileTailer {
   }
 
   close(): void {
+    this.closed = true;
     this.watcher?.close();
     this.watcher = null;
   }
@@ -196,6 +198,7 @@ class FileTailer {
   }
 
   private requestRead(): void {
+    if (this.closed) return;
     if (this.readTask) {
       this.readPending = true;
       return;
@@ -213,7 +216,7 @@ class FileTailer {
       // A bounded pass that left work behind asks for another; hand the
       // event loop back first so the worker's HTTP API keeps being served.
       if (this.readPending) await yieldToEventLoop();
-    } while (this.readPending);
+    } while (this.readPending && !this.closed);
   }
 
   private async readNewData(): Promise<void> {
@@ -279,6 +282,10 @@ class FileTailer {
     let lineStart = 0;
     let dispatched = 0;
     for (let newline = buffer.indexOf(0x0a); newline !== -1; newline = buffer.indexOf(0x0a, lineStart)) {
+      if (this.closed) {
+        this.checkpoint(base + lineStart);
+        return;
+      }
       const line = buffer.toString('utf8', lineStart, newline).trim();
       if (line) {
         try {
@@ -349,6 +356,11 @@ class FileTailer {
       const lines = (partialBefore + plain).split('\n');
       const partialAfter = lines.pop() ?? '';
       for (let index = this.frameLinesDone; index < lines.length; index++) {
+        if (this.closed) {
+          this.frameLinesDone = index;
+          this.checkpoint(frame.start, partialBefore);
+          return;
+        }
         const line = lines[index].trim();
         if (!line) continue;
         try {
