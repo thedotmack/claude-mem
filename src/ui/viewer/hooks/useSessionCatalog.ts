@@ -53,6 +53,9 @@ export function useSessionCatalog() {
     setLoadError(null);
     const params = new URLSearchParams({ offset: String(offset), limit: String(SESSION_CATALOG_PAGE_SIZE) });
     if (project) params.append('project', project);
+    // Single responses already reconcile deletions through the journal. Only
+    // multi-chunk prefixes can skip a survivor when later offsets shift.
+    const hasOffsetChunks = mode === 'replace' && prefixSize > 1000;
     let accepted: SessionCatalogEntry[] | undefined;
     try {
       let interruptedPrefixes = 0;
@@ -69,7 +72,7 @@ export function useSessionCatalog() {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const page = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
           if (requestSeq !== requestSeqRef.current) return;
-          if (mode === 'replace' && removalRevision !== removalRevisionRef.current) {
+          if (hasOffsetChunks && removalRevision !== removalRevisionRef.current) {
             prefixInterrupted = true;
             break;
           }
@@ -80,7 +83,7 @@ export function useSessionCatalog() {
         // Offset chunks have no snapshot token. A deletion can shift the next
         // chunk after an earlier response was captured; start again from zero
         // rather than committing a stitched prefix with a missing survivor.
-        if (prefixInterrupted || (mode === 'replace' && removalRevision !== removalRevisionRef.current)) {
+        if (prefixInterrupted || (hasOffsetChunks && removalRevision !== removalRevisionRef.current)) {
           if (++interruptedPrefixes >= 3) throw new Error('Session catalog changed repeatedly. Retry the refresh.');
           continue;
         }

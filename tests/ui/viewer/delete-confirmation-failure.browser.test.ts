@@ -15,6 +15,7 @@ for(const scenario of ['existence-fails','rows-fail','later-live'] as const){
     let server:ReturnType<typeof Bun.serve>|undefined;
     let timer:ReturnType<typeof setTimeout>|undefined;
     let release!:()=>void;const held=new Promise<void>(resolve=>{release=resolve});
+    let markDeleted!:()=>void;const serverDeleted=new Promise<void>(resolve=>{markDeleted=resolve});
     let controller:ReadableStreamDefaultController<Uint8Array>|undefined;
     let report!:(value:unknown)=>void;const result=new Promise(resolve=>{report=resolve});
     let deleteCalls=0,deleted=false,recreated=false,laterSent=false;
@@ -47,9 +48,11 @@ for(const scenario of ['existence-fails','rows-fail','later-live'] as const){
         if(url.pathname==='/fixture.js'){clearTimeout(timer);timer=setTimeout(()=>report({failure:'Page timed out'}),25000);return new Response(bundle,{headers:{'Content-Type':'application/javascript'}})}
         if(url.pathname==='/stream')return new Response(new ReadableStream({start(c){controller=c;send({type:'initial_load',projects:['alpha']})}}),{headers:{'Content-Type':'text/event-stream'}});
         if(url.pathname==='/api/sessions/claude/owned'&&request.method==='DELETE'){
-          deleteCalls++;await held;deleted=true;recreated=scenario==='rows-fail';return Response.json({success:true});
+          // The server deletion precedes the delayed HTTP acknowledgment.
+          // Row 2 can therefore be a real recreation while DELETE is pending.
+          deleteCalls++;deleted=true;markDeleted();await held;return Response.json({success:true});
         }
-        if(url.pathname==='/activity'){send({type:'new_observation',observation:{...row,id:2,title:'PRE_ACK_CAPTURE'}});return new Response('activity')}
+        if(url.pathname==='/activity'){await serverDeleted;recreated=true;send({type:'new_observation',observation:{...row,id:2,title:'PRE_ACK_CAPTURE'}});return new Response('activity')}
         if(url.pathname==='/acknowledge'){release();return new Response('released')}
         if(url.pathname==='/api/sessions'){
           if(deleted&&url.searchParams.get('limit')==='1000'&&scenario!=='rows-fail'){
@@ -69,7 +72,7 @@ for(const scenario of ['existence-fails','rows-fail','later-live'] as const){
       }});
       timer=setTimeout(()=>report({failure:'Chrome startup timeout'}),30000);
       child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
-      expect(await result).toEqual({noticeSuccess:true,old:false,preAck:false,later:scenario==='later-live',cards:scenario==='existence-fails'?0:1,deleting:false});expect(deleteCalls).toBe(1);
+      expect(await result).toEqual({noticeSuccess:true,old:false,preAck:true,later:scenario==='later-live',cards:1,deleting:false});expect(deleteCalls).toBe(1);
     }finally{release();clearTimeout(timer);if(child){child.kill();await child.exited;}server?.stop(true);rmSync(owned,{recursive:true,force:true})}
   },70000);
 }

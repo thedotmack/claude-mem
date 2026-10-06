@@ -293,6 +293,14 @@ export function App() {
     const key = sessionKey(session);
     const deletionVersion = sessionDeletionVersionsRef.current.get(key) ?? 0;
     const activityVersion = sessionActivityVersionsRef.current.get(key) ?? 0;
+    // Rows present when the action starts belong to the deleted incarnation.
+    // Activity arriving while DELETE is pending can already be a recreation.
+    const actionRows = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
+    for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+      for (const row of [...loadedRowsRef.current[itemType], ...liveRowsRef.current[itemType]]) {
+        if (sameSession(sessionRefOf(row), session)) actionRows[itemType].add(row.id);
+      }
+    }
     await deleteSession(session);
     // The stream may have already delivered this delete, followed by a new
     // live row recreating the session. Its HTTP acknowledgment must not delete
@@ -332,17 +340,15 @@ export function App() {
         } catch {
           // DELETE already succeeded. A failed read cannot turn that fact into
           // a refused deletion, or send the user to retry a now-absent session.
-          // Retire only the captured provisional rows; later live arrivals and
-          // a recreation actually confirmed by the catalog retain their owner.
+          // Only action-start rows are known to belong to that deletion.
+          // A failed read gives no absence evidence for pending-request activity,
+          // which may already be a legitimate recreation before HTTP ack.
           if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
-          retireLoadedSession(session, candidates);
+          retireLoadedSession(session, actionRows);
           for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-            for (const id of candidates[itemType]) removeLiveItem(itemType, id);
+            for (const id of actionRows[itemType]) removeLiveItem(itemType, id);
           }
-          if (exists !== true && (sessionActivityVersionsRef.current.get(key) ?? 0) === currentActivityVersion) {
-            catalog.remove(session);
-          }
-          setSessionDeleteNotice('Session deleted. The current view could not be refreshed; reload to check for newer activity.');
+          setSessionDeleteNotice('Session deleted. Newer activity could not be verified; reload to reconcile the current view.');
           void catalog.refreshLoaded(currentFilter);
           return;
         }
