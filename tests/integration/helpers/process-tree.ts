@@ -134,6 +134,24 @@ function isWindowsRunnerNoise(name: string): boolean {
 }
 
 /**
+ * A parent-child link is credible only when both process creation times are
+ * readable and the child was created no earlier than its alleged parent.
+ * Windows can retain a dead parent's PID in a child's PPID after that PID has
+ * been reused. A fresh token on the child alone does not prove ownership.
+ */
+function childStartedAfterParent(parentToken: string | null, childToken: string | null): boolean {
+  if (!parentToken || !childToken) return false;
+  if (/^\d+$/.test(parentToken) && /^\d+$/.test(childToken)) {
+    // Win32 CreationDate (20 decimal digits) and Linux /proc starttime ticks.
+    return BigInt(childToken) >= BigInt(parentToken);
+  }
+  // macOS/BSD ps lstart is forced to the C locale in readProcessTablePosix.
+  const parentTime = Date.parse(parentToken);
+  const childTime = Date.parse(childToken);
+  return Number.isFinite(parentTime) && Number.isFinite(childTime) && childTime >= parentTime;
+}
+
+/**
  * Every transitive descendant of `rootPid`, with identity captured.
  *
  * MUST be called while the root is still alive: once it exits, its children
@@ -166,18 +184,25 @@ export function snapshotDescendants(
 
   const found: ProcessIdentity[] = [];
   const seen = new Set<number>([rootPid]);
-  const queue = [rootPid];
+  const rootRow = rows.find(row => row.pid === rootPid);
+  const queue = [{ pid: rootPid, trustedToken: rootRow?.startToken ?? null }];
 
   while (queue.length > 0) {
     const current = queue.shift()!;
-    for (const child of childrenByParent.get(current) ?? []) {
+    for (const child of childrenByParent.get(current.pid) ?? []) {
       if (seen.has(child.pid)) continue;
       seen.add(child.pid);
-      queue.push(child.pid);
+      // Keep an unproven edge visible as a null-token survivor, but do not
+      // authorize killing it or any grandchild below that edge. Validate each
+      // edge, not merely each descendant against the fixture's root time.
+      const trustedToken = childStartedAfterParent(current.trustedToken, child.startToken)
+        ? child.startToken
+        : null;
+      queue.push({ pid: child.pid, trustedToken });
       if (isWindowsRunnerNoise(child.name)) continue;
       found.push({
         pid: child.pid,
-        startToken: child.startToken,
+        startToken: trustedToken,
         name: child.name,
       });
     }
