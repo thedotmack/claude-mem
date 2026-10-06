@@ -5,7 +5,7 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptAnchorError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
+import { TranscriptAnchorError, TranscriptSpoolError, TranscriptEventProcessor, type TranscriptFileContext } from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -632,7 +632,7 @@ export class TranscriptWatcher {
 
     // The session's working directory, restored for a watcher that resumes
     // past the line that reported it; saved with the next checkpoint.
-    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath] };
+    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath], pendingTools: this.state.pendingTools?.[filePath] };
     // A subagent-only watch learns the rollout's marker from its first line,
     // and a session whose directory is not known yet learns it there too
     // (DeepSeek Harness writes it on that line only; a turn without one is
@@ -650,6 +650,9 @@ export class TranscriptWatcher {
           }
           await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
         } finally {
+          if (fileContext.pendingTools) {
+            (this.state.pendingTools ??= {})[filePath] = fileContext.pendingTools;
+          }
           if (fileContext.cwd && fileContext.cwd !== this.state.cwds?.[filePath]) {
             (this.state.cwds ??= {})[filePath] = fileContext.cwd;
           }
@@ -729,7 +732,7 @@ export class TranscriptWatcher {
     } catch (error: unknown) {
       // A turn whose prompt the worker did not record stops the pass with the
       // checkpoint at its line (or frame), so it is retried, not misfiled.
-      if (error instanceof TranscriptAnchorError) {
+      if (error instanceof TranscriptAnchorError || error instanceof TranscriptSpoolError) {
         logger.warn('TRANSCRIPT', 'Transcript turn not anchored; it is retried from its own line', {
           watch: watch.name,
           file: basename(filePath),

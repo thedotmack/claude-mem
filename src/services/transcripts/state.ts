@@ -5,6 +5,8 @@ import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-js
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
+  /** Unaccepted result-only events need their earlier tool-use metadata after restart. */
+  pendingTools?: Record<string, Record<string, Record<string, { toolName: string; toolInput?: unknown }>>>;
   /**
    * zstd files only: the unterminated JSONL prefix a durable offset has
    * advanced past. zstd frames are only resumable at frame boundaries, so when
@@ -52,6 +54,18 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     );
     if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
     if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
+    if (parsed.pendingTools !== undefined) {
+      const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
+      const tool = (value: unknown): value is { toolName: string; toolInput?: unknown } =>
+        record(value) && typeof value.toolName === 'string' && value.toolName.length > 0;
+      state.pendingTools = Object.fromEntries(
+        Object.entries(continuation(normalizeMap(parsed.pendingTools, record))).map(([file, sessions]) => [
+          file, Object.fromEntries(Object.entries(normalizeMap(sessions, record)).map(([session, tools]) => [
+            session, normalizeMap(tools, tool),
+          ])),
+        ]),
+      );
+    }
     if (parsed.cwds !== undefined) state.cwds = normalizeMap(parsed.cwds, text);
     return state;
   } catch (error) {

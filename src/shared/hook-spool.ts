@@ -274,7 +274,10 @@ export class HookSpool {
     // A marker outlives its file only when a crash hit between unlink and clear.
     consumedMarkers?.pruneConsumedBefore(Date.now() - HOOK_SPOOL_RETRY_WINDOW_MS);
 
+    const blockedSessions = new Set<string>();
     for (const file of files) {
+      const sessionKey = JSON.stringify([file.entry.payload.contentSessionId, normalizePlatformSource(file.entry.payload.platformSource)]);
+      if (blockedSessions.has(sessionKey)) { retained++; continue; }
       const entryKey = file.filename.replace(/\.json$/, '');
       if (consumedMarkers?.isConsumed(entryKey)) {
         logger.info('HOOK', 'Hook spool entry was already handed to ingest before a restart; removing it without ingesting again', {
@@ -328,6 +331,7 @@ export class HookSpool {
         if (this.expireIfPastRetryWindow(file)) {
           expired++;
         } else {
+          blockedSessions.add(sessionKey);
           retained++;
         }
         continue;
