@@ -1,6 +1,6 @@
 /**
  * Opt-in idle exit (CLAUDE_MEM_IDLE_EXIT_SEC): after the window elapses with
- * no session activity, no queued work, no host traffic and no AI
+ * no session activity, no queued work, no open or recent requests and no AI
  * interaction, the worker shuts itself down through the same graceful
  * sequence as `claude-mem stop` (reason 'idle').
  *
@@ -22,33 +22,47 @@
  * an awaited dependency that fails to settle would latch the tick guard and
  * silently disable the monitor forever — the failure mode is invisible, and
  * every backing signal here is in-memory anyway (SessionManager's session
- * map and message buffer, the Server's request stamp, a recorded timestamp).
+ * map and message buffer, the Server's request counters, the SSE client set,
+ * a recorded timestamp).
  */
 
 import { logger } from '../../utils/logger.js';
+
+/**
+ * The shortest idle window the worker accepts; CLAUDE_MEM_IDLE_EXIT_SEC
+ * values from 1 to 59 are raised to it. The monitor checks every 30 s, so a
+ * shorter window means nothing, and it would cold-boot the worker on nearly
+ * every prompt.
+ */
+export const MIN_IDLE_EXIT_MS = 60_000;
 
 export interface IdleExitMonitorDeps {
   /** Idle window in milliseconds; 0 disables the monitor. */
   idleExitMs: number;
   /**
    * True when any in-memory session saw message/generator activity at or
-   * after the cutoff (SessionManager.hasSessionActivitySince). Deliberately
-   * NOT a session count: a session that merely exists is not activity — a
-   * standing memory seat registered at boot, or a session idling between
-   * prompts, would otherwise pin the worker awake forever.
+   * after the cutoff, or still has a generator running
+   * (SessionManager.hasSessionActivitySince). Deliberately NOT a session
+   * count: a session that merely exists is not activity — a standing memory
+   * seat registered at boot, or a session idling between prompts, would
+   * otherwise pin the worker awake forever.
    */
   hasSessionActivitySince: (cutoffMs: number) => boolean;
   /** Queued/pending work depth (SessionManager.getTotalQueueDepth). */
   getQueueDepth: () => number;
   /**
-   * When a host last sent this worker a request (epoch ms), or null if never
+   * When a request last started or finished (epoch ms), or null if none has
    * (Server.getLastRequestAt).
-   *
-   * A timestamp, NOT an open-socket count: socket lifecycle is unreliable
-   * across runtimes (see Server.getLastRequestAt), and a long-lived client
-   * refreshes a timestamp exactly like it refreshes a socket count.
    */
   getLastRequestAt: () => number | null;
+  /**
+   * Requests still open (Server.getInFlightRequestCount): the viewer's event
+   * stream, a corpus build or prime, a slow search. A request stamps
+   * getLastRequestAt only when it starts and ends, so an open one counts here.
+   */
+  getInFlightRequestCount: () => number;
+  /** Viewer tabs connected to the event stream (SSEBroadcaster.getClientCount). */
+  getViewerClientCount: () => number;
   /** Timestamp (epoch ms) of the last completed AI interaction, or null if none yet. */
   getLastAiInteractionAt: () => number | null;
   /** Fired once when the idle window elapses; the caller runs the graceful shutdown. */
@@ -121,9 +135,13 @@ export class IdleExitMonitor {
 
     let sessionActivity: boolean;
     let queueDepth: number;
+    let inFlightRequests: number;
+    let viewerClients: number;
     try {
       sessionActivity = this.deps.hasSessionActivitySince(now - this.deps.idleExitMs);
       queueDepth = this.deps.getQueueDepth();
+      inFlightRequests = this.deps.getInFlightRequestCount();
+      viewerClients = this.deps.getViewerClientCount();
     } catch (error: unknown) {
       // Never exit on an observation failure — refresh the clock instead.
       this.lastActivityAt = now;
@@ -135,19 +153,20 @@ export class IdleExitMonitor {
 
     const idleMs = now - this.lastActivityAt;
 
-    // Logged on EVERY tick, busy or not: "why isn't my worker exiting?" is
-    // the first question this feature will ever be asked, and the answer has
-    // to be in the log.
-    logger.info('SYSTEM', 'Idle-exit check', {
+    // DEBUG, not INFO: one line per 30 s tick is 2,880 lines a day. "Why
+    // isn't my worker exiting?" is answered with CLAUDE_MEM_LOG_LEVEL=DEBUG.
+    logger.debug('SYSTEM', 'Idle-exit check', {
       idleMs,
       idleExitMs: this.deps.idleExitMs,
       sessionActivity,
       queueDepth,
+      inFlightRequests,
+      viewerClients,
       lastRequestAt,
       lastAiAt,
     });
 
-    if (sessionActivity || queueDepth > 0) {
+    if (sessionActivity || queueDepth > 0 || inFlightRequests > 0 || viewerClients > 0) {
       this.lastActivityAt = now;
       return;
     }
@@ -156,7 +175,7 @@ export class IdleExitMonitor {
 
     // Disarm first so the drain (or any late tick) cannot re-fire onIdle.
     this.stop();
-    logger.info('SYSTEM', 'Idle window elapsed — no session activity, queued work, client connections or AI interactions — initiating idle shutdown', {
+    logger.info('SYSTEM', 'Idle window elapsed — no session activity, queued work, open or recent requests, or AI interactions — initiating idle shutdown', {
       idleMs,
       idleExitMs: this.deps.idleExitMs,
     });
@@ -167,12 +186,15 @@ export class IdleExitMonitor {
 /**
  * Parse CLAUDE_MEM_IDLE_EXIT_SEC. Returns milliseconds for a valid value, 0
  * for an absent/empty value (the seeded default '0' means "never"), or null
- * when the value is present but not a non-negative integer of seconds — the
- * caller warns and stays off.
+ * when the value is present but not a non-negative integer of seconds whose
+ * millisecond value is a safe integer (`1e308` would be Infinity ms and never
+ * fire) — the caller warns and stays off. Windows under MIN_IDLE_EXIT_MS are
+ * returned as given; the caller raises them to the minimum with a warning.
  */
 export function parseIdleExitMs(raw: string | undefined): number | null {
   if (raw === undefined || raw.trim() === '') return 0;
   const seconds = Number(raw.trim());
-  if (!Number.isInteger(seconds) || seconds < 0) return null;
-  return seconds * 1000;
+  const milliseconds = seconds * 1000;
+  if (!Number.isInteger(seconds) || seconds < 0 || !Number.isSafeInteger(milliseconds)) return null;
+  return milliseconds;
 }

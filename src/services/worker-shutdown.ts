@@ -32,7 +32,7 @@ import { logger } from '../utils/logger.js';
  * stop = /api/admin/shutdown (CLI `stop`), restart = /api/admin/restart or
  * CLI `restart` (tagged ?reason=restart), signal = SIGTERM/SIGINT handler,
  * idle = the idle-exit monitor (the CLAUDE_MEM_IDLE_EXIT_SEC window elapsed
- * with no active sessions, queued work, client connections or AI
+ * with no session activity, queued work, open or recent requests, or AI
  * interactions).
  */
 export type WorkerShutdownReason = 'stop' | 'restart' | 'signal' | 'idle';

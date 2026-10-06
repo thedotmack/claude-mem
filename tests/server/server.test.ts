@@ -387,4 +387,77 @@ describe('Server', () => {
       expect(body.error).toBe('NotFound');
     });
   });
+
+  describe('request activity (idle exit)', () => {
+    const until = async (condition: () => boolean): Promise<void> => {
+      const deadline = Date.now() + 5_000;
+      while (!condition() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+    };
+
+    it('counts an open request until its response finishes, and settles it exactly once', async () => {
+      server = new Server(mockOptions);
+      let finishHeldRequest!: () => void;
+      const heldRequestMayFinish = new Promise<void>(resolve => { finishHeldRequest = resolve; });
+      server.registerRoutes({
+        setupRoutes(app) {
+          app.get('/test/held', async (_req, res) => {
+            res.write('started;');
+            await heldRequestMayFinish;
+            res.end('done');
+          });
+        },
+      });
+      const testPort = await listenOnEphemeralPort(server);
+      expect(server.getInFlightRequestCount()).toBe(0);
+      expect(server.getLastRequestAt()).toBeNull();
+
+      const response = await fetch(`http://127.0.0.1:${testPort}/test/held`);
+      expect(server.getInFlightRequestCount()).toBe(1);
+      const startedAt = server.getLastRequestAt();
+      expect(startedAt).not.toBeNull();
+
+      finishHeldRequest();
+      expect(await response.text()).toBe('started;done');
+      await until(() => server.getInFlightRequestCount() === 0);
+      // 'finish', then 'close', then the socket's 'close' may all follow: one decrement, never below 0.
+      await new Promise(resolve => setTimeout(resolve, 50));
+      expect(server.getInFlightRequestCount()).toBe(0);
+      expect(server.getLastRequestAt()!).toBeGreaterThanOrEqual(startedAt!);
+    });
+
+    it('settles a streaming request when its client disconnects, like a closed viewer tab', async () => {
+      server = new Server(mockOptions);
+      server.registerRoutes({
+        setupRoutes(app) {
+          app.get('/test/stream', (_req, res) => {
+            res.setHeader('Content-Type', 'text/event-stream');
+            res.flushHeaders();
+            res.write(': ping\n\n'); // never ends, like the viewer's /stream
+          });
+        },
+      });
+      const testPort = await listenOnEphemeralPort(server);
+      const controller = new AbortController();
+      const response = await fetch(`http://127.0.0.1:${testPort}/test/stream`, { signal: controller.signal });
+      expect(response.status).toBe(200);
+      expect(server.getInFlightRequestCount()).toBe(1);
+
+      controller.abort();
+      await until(() => server.getInFlightRequestCount() === 0);
+      expect(server.getInFlightRequestCount()).toBe(0);
+    });
+
+    it('settles every request on a reused keep-alive connection', async () => {
+      server = new Server(mockOptions);
+      const testPort = await listenOnEphemeralPort(server);
+      for (let request = 0; request < 3; request++) {
+        const response = await fetch(`http://127.0.0.1:${testPort}/api/health`);
+        expect(response.status).toBe(200);
+        await response.text();
+      }
+      await until(() => server.getInFlightRequestCount() === 0);
+      expect(server.getInFlightRequestCount()).toBe(0);
+      expect(server.getLastRequestAt()).not.toBeNull();
+    });
+  });
 });

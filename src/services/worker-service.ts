@@ -32,7 +32,8 @@ import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
-import { IdleExitMonitor, parseIdleExitMs } from './worker/idle-exit-monitor.js';
+import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
+import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -390,25 +391,53 @@ export class WorkerService implements WorkerRef {
 
   /**
    * Opt-in idle exit (CLAUDE_MEM_IDLE_EXIT_SEC, default '0' = never): after
-   * the window elapses with no active sessions, no queued work, no client
-   * connections and no AI interaction, the worker shuts itself down through
-   * the same graceful sequence as `claude-mem stop` (reason 'idle').
+   * the window elapses with no session activity or running generator, no
+   * queued work, no open or recent request and no AI interaction, the worker
+   * shuts itself down through the same graceful sequence as `claude-mem stop`
+   * (reason 'idle').
+   *
+   * Never armed where nothing would start the worker again: with
+   * CLAUDE_MEM_WORKER_AUTOSTART=false hooks and the MCP server never launch
+   * one (and a clean exit 0 is not restarted by an on-failure process
+   * manager), and a running transcript watcher is the only capture for the
+   * hosts it watches.
    */
   private startIdleExitMonitor(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): void {
-    const idleExitMs = parseIdleExitMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
-    if (idleExitMs === null) {
+    const configuredIdleExitMs = parseIdleExitMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
+    if (configuredIdleExitMs === null) {
       logger.warn('SYSTEM', 'Ignoring invalid CLAUDE_MEM_IDLE_EXIT_SEC (expected a non-negative integer of seconds)', {
         value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
       });
       return;
     }
-    if (idleExitMs === 0) return;
+    if (configuredIdleExitMs === 0) return;
+    if (isWorkerAutostartDisabled(settings)) {
+      logger.warn('SYSTEM', 'Idle exit stays off: CLAUDE_MEM_WORKER_AUTOSTART=false, so nothing would start the worker again', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (this.transcriptWatcher !== null) {
+      logger.warn('SYSTEM', 'Idle exit stays off: transcript watches are active, and only a running worker captures them', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    let idleExitMs = configuredIdleExitMs;
+    if (idleExitMs < MIN_IDLE_EXIT_MS) {
+      logger.warn('SYSTEM', 'CLAUDE_MEM_IDLE_EXIT_SEC is below the 60 s minimum; using 60', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      idleExitMs = MIN_IDLE_EXIT_MS;
+    }
 
     this.idleExitMonitor = new IdleExitMonitor({
       idleExitMs,
       hasSessionActivitySince: (cutoffMs) => this.sessionManager.hasSessionActivitySince(cutoffMs),
       getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
       getLastRequestAt: () => this.server.getLastRequestAt(),
+      getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
+      getViewerClientCount: () => this.sseBroadcaster.getClientCount(),
       getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
       onIdle: () => {
         // The sequence never exits the process for non-restart reasons —
@@ -912,9 +941,11 @@ export class WorkerService implements WorkerRef {
       });
 
       // Idle exit: arm only once the worker is fully up — the monitor's
-      // activity clock starts here, so boot can never race the window. Hooks
-      // and plugins lazy-spawn the worker on the next request, so an idle
-      // exit costs one boot, not availability.
+      // activity clock starts here, so boot can never race the window — and
+      // after startTranscriptWatcher, which decides whether it may arm at
+      // all. The next hook that reads memory (or the MCP server's next call)
+      // starts the worker again; plugin hosts that never start it (OpenCode,
+      // OpenClaw) are why the docs say to leave idle exit off there.
       this.startIdleExitMonitor(settings);
 
       return;

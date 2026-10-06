@@ -739,10 +739,15 @@ export class SessionManager {
    * answers "did any session do work recently?" instead of "are any sessions
    * registered?". Queued-but-unprocessed work is a separate signal
    * (getTotalQueueDepth).
+   *
+   * A running generator is activity however old its last message: it may be
+   * waiting on an observer reply with nothing left in the buffer (the
+   * bare-prompt init turn). It cannot pin the worker awake for long, since a
+   * generator with no messages ends after IDLE_TIMEOUT_MS (3 min).
    */
   hasSessionActivitySince(cutoffMs: number): boolean {
     for (const session of this.sessions.values()) {
-      if (session.lastGeneratorActivity >= cutoffMs) return true;
+      if (session.generatorPromise || session.lastGeneratorActivity >= cutoffMs) return true;
     }
     return false;
   }

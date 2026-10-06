@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { IdleExitMonitor, parseIdleExitMs } from '../../src/services/worker/idle-exit-monitor.js';
+import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from '../../src/services/worker/idle-exit-monitor.js';
 
 // IdleExitMonitor lives in src/services/worker/idle-exit-monitor.ts (not
 // worker-service.ts) for the same reason as runShutdownSequence in
@@ -22,8 +22,12 @@ interface Harness {
     /** Timestamp of the last session message/generator activity, or null if none. */
     lastSessionActivityAt: number | null;
     queueDepth: number;
-    /** Timestamp of the last inbound host request, or null if never. */
+    /** Timestamp of the last request start or finish, or null if never. */
     lastRequestAt: number | null;
+    /** Requests still open (a viewer stream, a corpus prime). */
+    inFlightRequests: number;
+    /** Viewer tabs connected to the event stream. */
+    viewerClients: number;
     lastAiAt: number | null;
   };
   idleCalls: number[];
@@ -40,6 +44,8 @@ function makeHarness(overrides: {
     lastSessionActivityAt: null as number | null,
     queueDepth: 0,
     lastRequestAt: null as number | null,
+    inFlightRequests: 0,
+    viewerClients: 0,
     lastAiAt: null as number | null,
   };
   const idleCalls: number[] = [];
@@ -52,6 +58,8 @@ function makeHarness(overrides: {
       state.lastSessionActivityAt !== null && state.lastSessionActivityAt >= cutoffMs,
     getQueueDepth: overrides.getQueueDepth ?? (() => state.queueDepth),
     getLastRequestAt: () => state.lastRequestAt,
+    getInFlightRequestCount: () => state.inFlightRequests,
+    getViewerClientCount: () => state.viewerClients,
     getLastAiInteractionAt: () => state.lastAiAt,
     onIdle: (idleMs: number) => { idleCalls.push(idleMs); },
     now: () => nowMs,
@@ -150,8 +158,8 @@ describe('IdleExitMonitor — idle decision', () => {
     const h = makeHarness();
 
     h.monitor.start();
-    // A viewer tab or plugin poller hitting the worker keeps it alive: the
-    // request timestamp observed at this tick resets the window.
+    // A plugin poller hitting the worker keeps it alive: the request
+    // timestamp observed at this tick resets the window.
     h.advance(IDLE_EXIT_MS - 1_000);
     h.state.lastRequestAt = h.now();
     h.monitor.tick();
@@ -198,6 +206,42 @@ describe('IdleExitMonitor — idle decision', () => {
     expect(h.idleCalls.length).toBe(0);
 
     h.advance(1_000);
+    h.monitor.tick();
+    expect(h.idleCalls.length).toBe(1);
+  });
+
+  it('never exits while a request is still open, however long ago it started (a corpus prime)', () => {
+    const h = makeHarness();
+
+    h.monitor.start();
+    // One request that started at arm time and is still running: its stamp is old.
+    h.state.lastRequestAt = h.now();
+    h.state.inFlightRequests = 1;
+    h.advance(IDLE_EXIT_MS * 3);
+    h.monitor.tick();
+    expect(h.idleCalls.length).toBe(0);
+
+    // It finishes: the window runs from the last tick that saw it open.
+    h.state.inFlightRequests = 0;
+    h.advance(IDLE_EXIT_MS - 1_000);
+    h.monitor.tick();
+    expect(h.idleCalls.length).toBe(0);
+    h.advance(1_000);
+    h.monitor.tick();
+    expect(h.idleCalls.length).toBe(1);
+  });
+
+  it('never exits while a viewer tab is connected to the event stream', () => {
+    const h = makeHarness();
+
+    h.monitor.start();
+    h.state.viewerClients = 1;
+    h.advance(IDLE_EXIT_MS * 3);
+    h.monitor.tick();
+    expect(h.idleCalls.length).toBe(0);
+
+    h.state.viewerClients = 0;
+    h.advance(IDLE_EXIT_MS);
     h.monitor.tick();
     expect(h.idleCalls.length).toBe(1);
   });
@@ -253,5 +297,17 @@ describe('parseIdleExitMs — CLAUDE_MEM_IDLE_EXIT_SEC parsing', () => {
     expect(parseIdleExitMs('abc')).toBeNull();
     expect(parseIdleExitMs('1.5')).toBeNull();
     expect(parseIdleExitMs('-1')).toBeNull();
+  });
+
+  it('rejects windows whose milliseconds are not a safe integer (1e308 s would be Infinity ms and never fire)', () => {
+    expect(parseIdleExitMs('1e308')).toBeNull();
+    expect(parseIdleExitMs('Infinity')).toBeNull();
+    expect(parseIdleExitMs(String(Number.MAX_SAFE_INTEGER))).toBeNull();
+    expect(parseIdleExitMs('86400')).toBe(86_400_000);
+  });
+
+  it('returns windows under the 60 s minimum as given; the worker wiring raises them', () => {
+    expect(parseIdleExitMs('5')).toBe(5_000);
+    expect(MIN_IDLE_EXIT_MS).toBe(60_000);
   });
 });
