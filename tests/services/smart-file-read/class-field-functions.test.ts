@@ -21,7 +21,7 @@ for (const extension of ['js', 'ts', 'tsx']) test(`retains private, quoted, comp
     #private = () => { private_body(); };
     "quoted" = function () { quoted_body(); };
     [Symbol.iterator] = () => { iterator_body(); };
-    grouped = (((() => { grouped_body(); })));
+    grouped = (() => { grouped_body(); });
     wrapped = wrap(() => { not_a_method(); });
     data = { callback: () => {} };
   }`;
