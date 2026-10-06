@@ -28,15 +28,20 @@ for (const succeeds of [true, false]) {
         function Fixture() {
           const state = useSettings();
           return <ContextSettingsModal isOpen={true} onClose={() => {}} onSave={state.saveSettings}
-            settings={state.settings} isSaving={state.isSaving} saveStatus={state.saveStatus} />;
+            settings={state.settings} isLoaded={state.isLoaded} loadError={state.loadError}
+            onRetryLoad={state.reload} isSaving={state.isSaving} saveStatus={state.saveStatus} />;
         }
         createRoot(document.getElementById('root')).render(<Fixture />);
+        fetch('/ready');
       ` },
     });
+    let markReady!: () => void;
+    const ready = new Promise<void>(resolve => { markReady = resolve; });
     const styles = readFileSync(resolve(import.meta.dir, '../../../src/ui/viewer-template.html'), 'utf8').match(/<style>([\s\S]*?)<\/style>/)![1];
     const server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
       const path = new URL(request.url).pathname;
       if (path === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
+      if (path === '/ready') { markReady(); return new Response('ready'); }
       if (path === '/api/settings' && request.method === 'POST') {
         posted = await request.json(); await responseReady;
         return Response.json(succeeds ? { success: true } : { error: 'Owned rejection' }, { status: succeeds ? 200 : 400 });
@@ -50,7 +55,14 @@ for (const succeeds of [true, false]) {
       '--disable-background-networking', '--no-first-run', '--remote-debugging-port=0',
       `--user-data-dir=${profile}`, server.url.href], { stdout: 'ignore', stderr: 'ignore' });
     let socket: WebSocket | undefined;
+    let readyTimer: ReturnType<typeof setTimeout> | undefined;
     try {
+      // Separate Chrome's cold start from the settings steps. Chrome writes
+      // DevToolsActivePort before it loads the page, so it exists by now.
+      await Promise.race([ready, new Promise<never>((_, reject) => {
+        readyTimer = setTimeout(() => reject(new Error('Owned browser did not become ready')), 30000);
+      })]);
+      clearTimeout(readyTimer);
       const startupDeadline = Date.now() + 10000;
       const portFile = join(profile, 'DevToolsActivePort');
       let port = '';
@@ -89,8 +101,10 @@ for (const succeeds of [true, false]) {
       };
       const settle = () => evaluate('new Promise(async resolve => { for(let i=0;i<4;i++) await new Promise(requestAnimationFrame); resolve(true); })');
       const renderDeadline = Date.now() + 10000;
-      while (!await evaluate('!!document.querySelector(".section-header-btn")')) {
-        if (Date.now() > renderDeadline) throw new Error('Settings did not render');
+      // The section toggles sit in the fieldset, which stays disabled until
+      // the settings load; a click before then would be ignored.
+      while (!await evaluate('!!document.querySelector(".section-header-btn:not(:disabled)")')) {
+        if (Date.now() > renderDeadline) throw new Error('Settings did not load');
         await Bun.sleep(10);
       }
       await evaluate('[...document.querySelectorAll(".section-header-btn")].find(x=>x.textContent.includes("Advanced")).click()');
@@ -133,8 +147,8 @@ for (const succeeds of [true, false]) {
         toggleDisabled: true, finishedValue: 'owned-A', enabledAfter: true, editableAfter: 'owned-C',
       });
     } finally {
-      release(); socket?.close(); child.kill(); await child.exited; server.stop(true);
+      clearTimeout(readyTimer); release(); socket?.close(); child.kill(); await child.exited; server.stop(true);
       rmSync(profile, { recursive: true, force: true });
     }
-  }, 30000);
+  }, 80000);
 }

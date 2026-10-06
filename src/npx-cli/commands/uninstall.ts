@@ -366,6 +366,10 @@ export async function runUninstallCommand(): Promise<void> {
   ]);
 
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
+    { label: 'T3 Code provider plugins', fn: async () => {
+      const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
+      return uninstallT3Code();
+    }},
     { label: 'Windsurf hooks', fn: async () => {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
