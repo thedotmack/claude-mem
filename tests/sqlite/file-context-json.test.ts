@@ -58,9 +58,17 @@ it('isolates malformed modified-only metadata and searches whitespace/escaped ar
       prompt_number: 1, discovery_tokens: 0,
       created_at: new Date(1000).toISOString(), created_at_epoch: 1000,
     };
-    for (const metadata of ['[invalid', '{"path":"file.ts"}', '"file.ts"', 'null', 'true', '42', '', ' \t[invalid', ' \n{"path":"file.ts"}']) {
-      store.importObservation({ ...row, files_modified: metadata });
+    const malformed = ['[invalid', '{"path":"file.ts"}', '"file.ts"', 'null', 'true', '42', '', ' \t[invalid', ' \n{"path":"file.ts"}'];
+    // A timestamp per fixture keeps all nine as separate rows whatever the
+    // import's replay match is, so every malformed value is really queried.
+    for (const [index, metadata] of malformed.entries()) {
+      expect(store.importObservation({ ...row, files_modified: metadata, created_at_epoch: 1000 + index }).imported)
+        .toBe(true);
     }
+    const stored = store.db
+      .query("SELECT files_modified FROM observations WHERE title = 'invalid' ORDER BY created_at_epoch")
+      .all() as Array<{ files_modified: string }>;
+    expect(stored.map(r => r.files_modified)).toEqual(malformed);
     const good = store.importObservation({ ...row, title: 'modified',
       files_modified: ' \t\r\n["file.ts"] \n', created_at_epoch: 2000 });
     const escapedPath = 'quoted"%_\\file.ts';
