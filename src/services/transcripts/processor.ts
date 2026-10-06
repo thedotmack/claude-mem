@@ -38,6 +38,20 @@ export class TranscriptAnchorError extends Error {
   }
 }
 
+/** An observation declined before the worker accepted it must retain its line. */
+export class TranscriptObservationError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`observation not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptObservationError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * The standalone watcher could not write an observation or summary to the
+ * durable hook spool the worker drains. The line is retried from its own
+ * position, like a turn whose prompt was not recorded.
+ */
 export class TranscriptSpoolError extends Error {
   constructor(sessionId: string, cause: unknown) {
     super(`transcript event not persisted for session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -45,6 +59,13 @@ export class TranscriptSpoolError extends Error {
     this.cause = cause;
   }
 }
+
+/**
+ * How observations and summaries reach the worker. The worker's own watcher
+ * ingests in-process; the standalone `transcript watch` command has no ingest
+ * context, so it writes them to the hook spool the worker drains.
+ */
+export type TranscriptObservationTransport = 'in-process' | 'spool';
 
 interface PendingTool {
   toolName: string;
@@ -64,25 +85,32 @@ interface SessionState {
 
 /**
  * What the watcher keeps per transcript file across restarts: the working
- * directory its session last reported. Some hosts write it once, on the
- * session's first line (DeepSeek Harness), so a watcher that resumes mid-file
- * would otherwise never learn it. The processor reads it as a fallback and
- * updates it whenever the session reports one.
+ * directory its session last reported, and the tool calls still waiting for
+ * their results. Some hosts write the directory once, on the session's first
+ * line (DeepSeek Harness), so a watcher that resumes mid-file would otherwise
+ * never learn it; and a result retried after a restart still needs its tool's
+ * name and input. The processor reads both as a fallback and updates them.
  */
 export interface TranscriptFileContext {
-  /** A cross-file source must still be the watched file whose snapshot was registered. */
+  /** False once the path holds another file than the one this context was saved from. */
   isCurrent?: () => boolean;
   cwd?: string;
-  pendingToolFileIdentity?: string;
+  /** Outstanding tool calls by session key, then tool id: the file's newest MAX_PENDING_TOOLS_PER_FILE. */
   pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
 }
 
 /** How many subagent rollouts the processor remembers past their last turn. */
 const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
 
+/**
+ * Outstanding tool calls a file keeps, the newest: calls whose result never
+ * comes (an interrupted turn, a schema with no matching result event) would
+ * otherwise pile up in the watch state, inputs and all.
+ */
+const MAX_PENDING_TOOLS_PER_FILE = 64;
+
 export class TranscriptEventProcessor {
-  /** Standalone watchers have no in-process worker ingestion context. */
-  constructor(private observationTransport: 'in-process' | 'spool' = 'in-process') {}
+  constructor(private observationTransport: TranscriptObservationTransport = 'in-process') {}
 
   private sessions = new Map<string, SessionState>();
   /** Ownership is in-memory only; durable snapshots below contain each file's tools. */
@@ -98,21 +126,31 @@ export class TranscriptEventProcessor {
    */
   private subagentSessionKeys = new Set<string>();
 
-  /** A replaced transcript cannot lend its outstanding tools to a new file. */
+  /** A replaced transcript lends neither its outstanding tools nor its directory to the new file. */
   resetFileContext(file: TranscriptFileContext): void {
-    const keys = new Set([...Object.keys(file.pendingTools ?? {}), ...(this.fileSessionKeys.get(file) ?? [])]);
-    for (const key of keys) {
-      const tools = file.pendingTools?.[key] ?? {};
+    for (const key of this.sessionKeysOf(file)) {
       const session = this.sessions.get(key);
-      for (const [id, tool] of Object.entries(tools)) {
-        if (session?.pendingTools?.get(id) === tool) session.pendingTools.delete(id);
-      }
       if (session && session.cwd === file.cwd) session.cwd = undefined;
+    }
+    this.retireFileContext(file);
+    file.cwd = undefined;
+  }
+
+  /** A transcript that is gone: its outstanding tool calls are dropped, and it lends none to other files. */
+  retireFileContext(file: TranscriptFileContext): void {
+    for (const key of this.sessionKeysOf(file)) {
+      const tools = this.sessions.get(key)?.pendingTools;
+      for (const [id, tool] of tools ?? []) {
+        if (this.pendingToolOwners.get(tool) === file) tools!.delete(id);
+      }
     }
     this.fileContexts.delete(file);
     this.fileSessionKeys.delete(file);
     file.pendingTools = {};
-    file.cwd = undefined;
+  }
+
+  private sessionKeysOf(file: TranscriptFileContext): Set<string> {
+    return new Set([...Object.keys(file.pendingTools ?? {}), ...(this.fileSessionKeys.get(file) ?? [])]);
   }
 
   async processEntry(
@@ -328,14 +366,33 @@ export class TranscriptEventProcessor {
           break;
       }
     } finally {
-      if (file) {
-        const pending: Record<string, PendingTool> = event.action === 'session_end' ? {} : { ...file.pendingTools?.[sessionKey] };
-        for (const [id, tool] of session.pendingTools ?? []) {
-          if (this.pendingToolOwners.get(tool) === file) pending[id] = tool;
-        }
-        file.pendingTools = { ...file.pendingTools, [sessionKey]: pending };
-        if (Object.keys(pending).length === 0) delete file.pendingTools[sessionKey];
-      }
+      if (file) this.snapshotPendingTools(file, session, sessionKey, event.action === 'session_end');
+    }
+  }
+
+  /**
+   * Records the session's outstanding tool calls that this file made in the
+   * file's durable snapshot (saved with the watch state), and keeps only the
+   * file's newest MAX_PENDING_TOOLS_PER_FILE: older ones are forgotten here
+   * and in the session.
+   */
+  private snapshotPendingTools(file: TranscriptFileContext, session: SessionState, sessionKey: string, sessionEnded: boolean): void {
+    const pending: Record<string, PendingTool> = sessionEnded ? {} : { ...file.pendingTools?.[sessionKey] };
+    for (const [id, tool] of session.pendingTools ?? []) {
+      if (this.pendingToolOwners.get(tool) === file) pending[id] = tool;
+    }
+    file.pendingTools = { ...file.pendingTools, [sessionKey]: pending };
+    if (Object.keys(pending).length === 0) delete file.pendingTools[sessionKey];
+
+    // Oldest first: a snapshot keeps its keys in insertion order.
+    const held = Object.entries(file.pendingTools).flatMap(([key, tools]) => Object.keys(tools).map(id => [key, id] as const));
+    for (const [key, id] of held.slice(0, Math.max(0, held.length - MAX_PENDING_TOOLS_PER_FILE))) {
+      const tools = file.pendingTools[key];
+      const forgotten = tools[id];
+      delete tools[id];
+      if (Object.keys(tools).length === 0) delete file.pendingTools[key];
+      const sessionTools = this.sessions.get(key)?.pendingTools;
+      if (sessionTools?.get(id) === forgotten) sessionTools.delete(id);
     }
   }
 
@@ -454,10 +511,13 @@ export class TranscriptEventProcessor {
       ? (toolId ? fileTools?.[toolId] : undefined) ?? (cached && this.pendingToolOwners.get(cached) === file ? cached : undefined)
       : cached;
     if (!pending && file && toolId) {
+      // A result can land in another file of the same session. Its tool call is
+      // borrowed only from a single holder that still is the file it was saved
+      // from: two holders of one id are not guessed between. The id is checked
+      // first, since isCurrent() stats the file.
       const candidates = Array.from(this.fileContexts).flatMap(context => {
-        if (context.isCurrent?.() === false) return [];
         const tool = context.pendingTools?.[this.getSessionKey(watch, session.sessionId)]?.[toolId];
-        return tool ? [{ context, tool }] : [];
+        return tool && context.isCurrent?.() !== false ? [{ context, tool }] : [];
       });
       if (candidates.length === 1) {
         owner = candidates[0].context;
@@ -508,14 +568,28 @@ export class TranscriptEventProcessor {
       agentId: resolveWatchAgentId(watch),
     };
     if (this.observationTransport === 'spool') {
-      try { spoolHookEvent('observation', payload); }
-      catch (error) { throw new TranscriptSpoolError(session.sessionId, error); }
+      try {
+        spoolHookEvent('observation', payload);
+      } catch (error) {
+        throw new TranscriptSpoolError(session.sessionId, error);
+      }
       return;
     }
-    const result = await ingestObservation(payload);
 
-    if (!result.ok) {
-      throw new Error(`ingestObservation failed: ${result.reason}`);
+    let accepted = false;
+    try {
+      const result = await ingestObservation(payload, { markHandedOff: () => { accepted = true; } });
+      if (!result.ok) throw new Error(result.reason);
+    } catch (error) {
+      // A generator kick can fail after queueObservation accepted the event.
+      // That event is already owned by the worker and must not be replayed.
+      if (accepted) {
+        logger.warn('TRANSCRIPT', 'Observation accepted before generator kick failed', {
+          sessionId: session.sessionId,
+        }, error instanceof Error ? error : undefined);
+        return;
+      }
+      throw new TranscriptObservationError(session.sessionId, error);
     }
   }
 
@@ -586,6 +660,7 @@ export class TranscriptEventProcessor {
 
   private async queueSummary(session: SessionState): Promise<void> {
     if (this.observationTransport === 'spool') {
+      // Spooled after the session's observations, which the drain hands over first.
       try {
         spoolHookEvent('summarize', {
           contentSessionId: session.sessionId,
@@ -593,7 +668,9 @@ export class TranscriptEventProcessor {
           lastAssistantMessage: session.lastAssistantMessage ?? '',
           ...(session.cwd ? { cwd: session.cwd } : {}),
         });
-      } catch (error) { throw new TranscriptSpoolError(session.sessionId, error); }
+      } catch (error) {
+        throw new TranscriptSpoolError(session.sessionId, error);
+      }
       return;
     }
     const workerReady = await ensureWorkerRunning();

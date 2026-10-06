@@ -167,6 +167,11 @@ const CORRUPT_SEGMENT_ERROR_SIGNATURE = 'Failed to apply logs to the hnsw segmen
 // repeat on this many distinct batches, with no successful write in between.
 const CORRUPT_SEGMENT_CONFIRMING_BATCHES = 2;
 
+/** Raw-document exhaustion for consumers that widen a filtered candidate window. */
+export interface ChromaQueryProgress {
+  exhausted?: boolean;
+}
+
 /** The last corrupt collection this process dropped, for health reporting. */
 export interface ChromaCollectionDrop {
   collection: string;
@@ -1677,8 +1682,10 @@ export class ChromaSync {
   async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    progress?: ChromaQueryProgress
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
+    if (progress) progress.exhausted = false;
     await this.ensureCollectionExists();
 
     let results: any;
@@ -1731,6 +1738,9 @@ export class ChromaSync {
         // -- and chroma handles a selective filter cheaply. So fall through.
         if (filtered.ids.length >= limit) {
           this.selectiveFilters.delete(filterKey);
+          // A full unique-row window can still hide later rows, even when the
+          // over-fetch reached the end of the raw document list.
+          if (progress) progress.exhausted = rawIds.length < overfetch && filtered.ids.length <= limit;
           return {
             ids: filtered.ids.slice(0, limit),
             distances: filtered.distances.slice(0, limit),
@@ -1766,6 +1776,9 @@ export class ChromaSync {
       throw error;
     }
 
+    // Use raw fragments, not deduplicated row IDs: one observation can occupy
+    // many document slots, so a short unique-ID list does not imply exhaustion.
+    if (progress) progress.exhausted = (results?.ids?.[0]?.length ?? 0) < limit;
     return this.deduplicateQueryResults(results);
   }
 

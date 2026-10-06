@@ -32,6 +32,8 @@ import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
+import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
+import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -275,6 +277,7 @@ export class WorkerService implements WorkerRef {
   private transcriptWatcher: TranscriptWatcher | null = null;
   private syncClient: SyncClient | null = null;
   private contextCacheService: ContextCacheService | null = null;
+  private idleExitMonitor: IdleExitMonitor | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -284,6 +287,9 @@ export class WorkerService implements WorkerRef {
     provider: string;
     error?: string;
   } | null = null;
+
+  /** Queue depth of the last processing_status frame; null before the first (broadcastProcessingStatus). */
+  private lastBroadcastQueueDepth: number | null = null;
 
   constructor() {
     this.initializationComplete = new Promise((resolve) => {
@@ -381,6 +387,70 @@ export class WorkerService implements WorkerRef {
     configureSupervisorSignalHandlers(async () => {
       await this.shutdown('signal');
     });
+  }
+
+  /**
+   * Opt-in idle exit (CLAUDE_MEM_IDLE_EXIT_SEC, default '0' = never): after
+   * the window elapses with no session activity or running generator, no
+   * queued work, no open or recent request and no AI interaction, the worker
+   * shuts itself down through the same graceful sequence as `claude-mem stop`
+   * (reason 'idle').
+   *
+   * Never armed where nothing would start the worker again: with
+   * CLAUDE_MEM_WORKER_AUTOSTART=false hooks and the MCP server never launch
+   * one (and a clean exit 0 is not restarted by an on-failure process
+   * manager), and a running transcript watcher is the only capture for the
+   * hosts it watches.
+   */
+  private startIdleExitMonitor(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): void {
+    const configuredIdleExitMs = parseIdleExitMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
+    if (configuredIdleExitMs === null) {
+      logger.warn('SYSTEM', 'Ignoring invalid CLAUDE_MEM_IDLE_EXIT_SEC (expected a non-negative integer of seconds)', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (configuredIdleExitMs === 0) return;
+    if (isWorkerAutostartDisabled(settings)) {
+      logger.warn('SYSTEM', 'Idle exit stays off: CLAUDE_MEM_WORKER_AUTOSTART=false, so nothing would start the worker again', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (this.transcriptWatcher !== null) {
+      logger.warn('SYSTEM', 'Idle exit stays off: transcript watches are active, and only a running worker captures them', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    let idleExitMs = configuredIdleExitMs;
+    if (idleExitMs < MIN_IDLE_EXIT_MS) {
+      logger.warn('SYSTEM', 'CLAUDE_MEM_IDLE_EXIT_SEC is below the 60 s minimum; using 60', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      idleExitMs = MIN_IDLE_EXIT_MS;
+    }
+
+    this.idleExitMonitor = new IdleExitMonitor({
+      idleExitMs,
+      hasSessionActivitySince: (cutoffMs) => this.sessionManager.hasSessionActivitySince(cutoffMs),
+      getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
+      getLastRequestAt: () => this.server.getLastRequestAt(),
+      getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
+      getViewerClientCount: () => this.sseBroadcaster.getClientCount(),
+      getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
+      onIdle: () => {
+        // The sequence never exits the process for non-restart reasons —
+        // the route path exits via flushResponseThen and the signal path via
+        // the supervisor's signal handler — so the idle path owns its exit.
+        void this.shutdown('idle').then(
+          () => process.exit(0),
+          () => process.exit(0),
+        );
+      },
+    });
+    this.idleExitMonitor.start();
+    logger.info('SYSTEM', 'Idle exit enabled', { idleExitSec: idleExitMs / 1000 });
   }
 
   /**
@@ -870,6 +940,14 @@ export class WorkerService implements WorkerRef {
         logger.debug('WORKER', 'MCP self-check failed (non-fatal)', { error: err.message });
       });
 
+      // Idle exit: arm only once the worker is fully up — the monitor's
+      // activity clock starts here, so boot can never race the window — and
+      // after startTranscriptWatcher, which decides whether it may arm at
+      // all. The next hook that reads memory (or the MCP server's next call)
+      // starts the worker again; plugin hosts that never start it (OpenCode,
+      // OpenClaw) are why the docs say to leave idle exit off there.
+      this.startIdleExitMonitor(settings);
+
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
@@ -934,10 +1012,20 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const { config: transcriptConfig, scoped, removed } = scopeNativeHookBackedCodexWatches(
-      loadTranscriptWatchConfig(configPath),
-      settings,
-    );
+    let loadedConfig: ReturnType<typeof scopeNativeHookBackedCodexWatches>;
+    try {
+      loadedConfig = scopeNativeHookBackedCodexWatches(loadTranscriptWatchConfig(configPath), settings);
+    } catch (error) {
+      // Background init awaits this method, so a throw here would also skip the
+      // Chroma backfill, CloudSync, the pull loop and the MCP self-check for the
+      // worker's lifetime. An unreadable or invalid config turns off transcript
+      // capture only.
+      logger.error('TRANSCRIPT', 'Invalid transcript watch config (continuing without transcript ingestion)', {
+        configPath: resolvedConfigPath
+      }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const { config: transcriptConfig, scoped, removed } = loadedConfig;
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
     if (scoped > 0) {
@@ -1006,6 +1094,12 @@ export class WorkerService implements WorkerRef {
       beforeGracefulShutdown: async () => {
         this.stopPendingSessionResume();
         this.hookSpoolDrainer.stop();
+        // Stop the idle monitor before the drain: its own trigger has
+        // already disarmed it, and a route- or signal-initiated drain must
+        // not let a late tick fire into the sequence (it would be a guarded
+        // no-op, but stopped-by-construction is better).
+        this.idleExitMonitor?.stop();
+        this.idleExitMonitor = null;
         // Before the DB closes: a pending re-render would read a closed connection.
         this.contextCacheService?.stop();
         this.contextCacheService = null;
@@ -1061,24 +1155,34 @@ export class WorkerService implements WorkerRef {
     });
   }
 
+  /**
+   * Send viewers a processing_status frame when the queue depth changes.
+   *
+   * Only a change goes out (#4087). Every buffer mutation calls this, and a
+   * claim or a reset leaves the depth as it was (claimed messages still
+   * count), so a signed-out observer cycling one batch re-sent the same frame
+   * about 83 times a second and logged each one at INFO, until the log filled
+   * the disk. The change check is the fix; the log line is DEBUG so that real
+   * changes stay out of the default log too. A viewer that connects later
+   * gets the current status from ViewerRoutes when it connects.
+   */
   broadcastProcessingStatus(): void {
-    void (async () => {
-      const queueDepth = await this.sessionManager.getTotalActiveWork();
-      const isProcessing = queueDepth > 0;
-      const activeSessions = this.sessionManager.getActiveSessionCount();
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    if (queueDepth === this.lastBroadcastQueueDepth) return;
+    this.lastBroadcastQueueDepth = queueDepth;
+    const isProcessing = queueDepth > 0;
 
-      logger.info('WORKER', 'Broadcasting processing status', {
-        isProcessing,
-        queueDepth,
-        activeSessions
-      });
+    logger.debug('WORKER', 'Broadcasting processing status', {
+      isProcessing,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount()
+    });
 
-      this.sseBroadcaster.broadcast({
-        type: 'processing_status',
-        isProcessing,
-        queueDepth
-      });
-    })();
+    this.sseBroadcaster.broadcast({
+      type: 'processing_status',
+      isProcessing,
+      queueDepth
+    });
   }
 
   /**

@@ -229,3 +229,26 @@ describe('WorkStateRoutes', () => {
     expect((await read({})).status).toBe(400);
   });
 });
+
+
+describe('literal primitive field keys', () => {
+  it('continues to reject object values, arrays and empty keys', async () => {
+    for (const fields of [JSON.parse('{"__proto__":{"polluted":true}}'), [], { '': 'invalid' }]) {
+      const response = await write({ cwd: checkout, list: 'config', fields });
+      expect(response.status).toBe(400);
+    }
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+  it('preserves prototype-named state keys through HTTP writes and reads', async () => {
+    const fields = JSON.parse('{"__proto__":"literal state","constructor":"ordinary"}');
+    const response = await write({ cwd: checkout, list: 'config', fields });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('__proto__=literal state');
+    const stored = store.getWorkStateEntries([project], 'config')[0];
+    expect(Object.hasOwn(stored.fields, '__proto__')).toBe(true);
+    const readResponse = await read({ cwd: checkout, list: 'config' });
+    expect(await readResponse.text()).toContain('__proto__=literal state');
+    expect(Object.getPrototypeOf(stored.fields)).toBe(Object.prototype);
+  });
+});

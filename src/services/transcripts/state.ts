@@ -5,10 +5,21 @@ import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-js
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
-  /** Shared with inode-aware tailers; retirement must clear this resume identity too. */
+  /** Device/inode pair belonging to each checkpoint; absent in legacy state. */
   fileIdentities?: Record<string, string>;
-  /** Unaccepted result-only events need their earlier tool-use metadata after restart. */
-  pendingToolFileIdentities?: Record<string, string>;
+  /**
+   * sha256 of the up-to-4 KiB just before each checkpoint. When a file's
+   * device/inode changes, it is a replacement (read from byte 0) only if these
+   * bytes changed too: a renumbered device or a sync tool's temp-plus-rename
+   * keeps them, and keeps the checkpoint.
+   */
+  checkpointFingerprints?: Record<string, string>;
+  /**
+   * Each file's tool calls still waiting for their results, by session key
+   * and tool id, so a result retried after a restart keeps its tool's name and
+   * input. An input larger than MAX_SAVED_TOOL_INPUT_BYTES is saved as the name
+   * alone.
+   */
   pendingTools?: Record<string, Record<string, Record<string, { toolName: string; toolInput?: unknown }>>>;
   /**
    * zstd files only: the unterminated JSONL prefix a durable offset has
@@ -58,7 +69,7 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
     if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
     if (parsed.fileIdentities !== undefined) state.fileIdentities = continuation(normalizeMap(parsed.fileIdentities, text));
-    if (parsed.pendingToolFileIdentities !== undefined) state.pendingToolFileIdentities = continuation(normalizeMap(parsed.pendingToolFileIdentities, text));
+    if (parsed.checkpointFingerprints !== undefined) state.checkpointFingerprints = continuation(normalizeMap(parsed.checkpointFingerprints, text));
     if (parsed.pendingTools !== undefined) {
       const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
       const tool = (value: unknown): value is { toolName: string; toolInput?: unknown } =>
@@ -82,15 +93,45 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
   }
 }
 
+/** A pending tool call's input is saved only up to this many bytes of JSON (a Write's input is the whole file). */
+const MAX_SAVED_TOOL_INPUT_BYTES = 64 * 1024;
+
+type PendingToolCall = { toolName: string; toolInput?: unknown };
+const savedToolCalls = new WeakMap<PendingToolCall, PendingToolCall>();
+
+/** What the state file keeps of a pending tool call: all of it, or its name alone when its input is large. */
+function savedToolCall(tool: PendingToolCall): PendingToolCall {
+  let saved = savedToolCalls.get(tool);
+  if (!saved) {
+    const inputBytes = tool.toolInput === undefined ? 0 : Buffer.byteLength(JSON.stringify(tool.toolInput) ?? '');
+    saved = inputBytes <= MAX_SAVED_TOOL_INPUT_BYTES ? tool : { toolName: tool.toolName };
+    savedToolCalls.set(tool, saved);
+  }
+  return saved;
+}
+
+function savedPendingTools(pendingTools: NonNullable<TranscriptWatchState['pendingTools']>): NonNullable<TranscriptWatchState['pendingTools']> {
+  const saved: NonNullable<TranscriptWatchState['pendingTools']> = {};
+  for (const [file, sessions] of Object.entries(pendingTools)) {
+    saved[file] = {};
+    for (const [session, tools] of Object.entries(sessions)) {
+      saved[file][session] = {};
+      for (const [id, tool] of Object.entries(tools)) saved[file][session][id] = savedToolCall(tool);
+    }
+  }
+  return saved;
+}
+
 export function saveWatchState(statePath: string, state: TranscriptWatchState): void {
   try {
     const dir = dirname(statePath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
+    const saved = state.pendingTools ? { ...state, pendingTools: savedPendingTools(state.pendingTools) } : state;
     // Pending tool inputs may contain credentials: keep both new and replaced
     // state files private from the first byte written.
-    writeJsonFileAtomic(statePath, state, { mode: 0o600 });
+    writeJsonFileAtomic(statePath, saved, { mode: 0o600 });
   } catch (error) {
     logger.warn('TRANSCRIPT', 'Failed to save watch state', {
       statePath,

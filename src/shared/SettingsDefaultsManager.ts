@@ -23,6 +23,12 @@ const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
 /** Pinned workers.dev hub from the Cloudflare SyncHub era. */
 const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
+/**
+ * Production cmem-sync Supabase function, which Connect handed out for a few
+ * hours after the Supabase cutover. Supabase's Cloudflare WAF blocks plain
+ * memory pushes there; the sync.cmem.ai proxy gzips them through.
+ */
+const DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST = 'ziczmqtpmaxbornfghye.supabase.co';
 /** Canonical Pro hub after the Fly cutover. */
 const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
 
@@ -130,7 +136,8 @@ function migratedCloudSyncHubUrl(raw: unknown): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   try {
-    if (new URL(trimmed).hostname === LEGACY_CLOUD_SYNC_HUB_HOST) {
+    const hostname = new URL(trimmed).hostname;
+    if (hostname === LEGACY_CLOUD_SYNC_HUB_HOST || hostname === DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST) {
       return CANONICAL_CLOUD_SYNC_HUB_URL;
     }
   } catch {
@@ -149,6 +156,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
   CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: string;
+  CLAUDE_MEM_IDLE_EXIT_SEC: string;  // Worker idle-exit window in seconds; '0' (default) = never idle-exit.
   CLAUDE_MEM_SKIP_TOOLS: string;
   CLAUDE_MEM_SKIP_BASH_PATTERNS: string;
   CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: string;  // #2736 — skip ALL subagent observations (agent id AND agent type present)
@@ -366,6 +374,13 @@ export class SettingsDefaultsManager {
                                 // https://37700.host.<user>.<domain>). Empty => localhost.
     CLAUDE_MEM_API_TIMEOUT_MS: String(getTimeout(HOOK_TIMEOUTS.API_REQUEST)),
     CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS: String(defaultSessionInitRequestTimeoutMs()),  // 10s; 7s on Windows, whose hook start-up the budget never sees
+    // Worker idle exit (opt-in; minimum 60): after this many seconds with no
+    // session activity, no queued work, no open or recent requests and no AI
+    // interaction, the worker shuts itself down through the graceful stop
+    // sequence (shutdown_reason 'idle'). The next hook that reads memory
+    // starts it again. Never armed with CLAUDE_MEM_WORKER_AUTOSTART=false or
+    // while transcript watches run.
+    CLAUDE_MEM_IDLE_EXIT_SEC: '0',
     CLAUDE_MEM_SKIP_TOOLS: 'ListMcpResourcesTool,SlashCommand,Skill,TodoWrite,AskUserQuestion',
     CLAUDE_MEM_SKIP_BASH_PATTERNS: '',  // Regex matched against a shell command (Bash; Codex exec_command); when it matches, the observation is skipped. Empty = capture every command. Use alternation for several patterns, e.g. ^(ls|cat|pwd)\b
     CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',  // #2736 — default off preserves current behavior; set 'true' to skip every subagent observation (recommended for heavy Dynamic Workflows users)
@@ -721,7 +736,7 @@ export class SettingsDefaultsManager {
             hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
             { mode: 0o600 },
           );
-          console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
+          console.warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
         }
