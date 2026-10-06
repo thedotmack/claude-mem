@@ -32,6 +32,7 @@ import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
+import { provisionTreeSitterCliForPluginRoot } from './worker/tree-sitter-cli-provisioning.js';
 import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
 import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
@@ -704,6 +705,13 @@ export class WorkerService implements WorkerRef {
       } else {
         logger.info('SYSTEM', 'Dependency preflight passed');
       }
+
+      // Not awaited: a download must not hold readiness. See
+      // provisionTreeSitterCliForPluginRoot for why the worker does it.
+      const pluginRoot = path.dirname(__dirname);
+      provisionTreeSitterCliForPluginRoot(pluginRoot).catch(error => {
+        logger.warn('SYSTEM', 'tree-sitter CLI provisioning failed: smart_search, smart_outline and smart_unfold cannot parse, and the File Read Gate stays off, until the next worker start retries (or npx claude-mem repair)', { pluginRoot }, error instanceof Error ? error : new Error(String(error)));
+      });
 
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();

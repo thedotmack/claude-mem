@@ -366,14 +366,6 @@ function getQueryFile(queryKey: string): string {
   return filePath;
 }
 
-let cachedBinPath: string | null = null;
-
-function getTreeSitterBin(): string {
-  if (cachedBinPath) return cachedBinPath;
-  cachedBinPath = resolveTreeSitterBinPath();
-  return cachedBinPath;
-}
-
 // `tree-sitter query -p <grammar-dir>` implies --rebuild (#3926): the CLI
 // recompiles the grammar from source on EVERY invocation, so each smart_outline
 // / smart_search / smart_unfold call paid a full C compile before it could match
@@ -442,7 +434,7 @@ function ensureGrammarLib(language: string, grammarPath: string): string | null 
 
     if (needsBuild) {
       mkdirSync(GRAMMAR_LIB_DIR, { recursive: true });
-      execFileSync(getTreeSitterBin(), ["build", "-o", libPath, grammarPath], {
+      execFileSync(resolveTreeSitterBinPath(), ["build", "-o", libPath, grammarPath], {
         encoding: "utf-8",
         timeout: 120000,
         stdio: ["pipe", "pipe", "pipe"],
@@ -484,7 +476,7 @@ function execQuery(execArgs: string[], sourceFileCount: number): string | null {
   let outputFd: number | undefined;
   try {
     outputFd = openSync(outputPath, "w");
-    execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", outputFd, "pipe"] });
+    execFileSync(resolveTreeSitterBinPath(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", outputFd, "pipe"] });
     return readFileSync(outputPath, "utf-8");
   } catch (error) {
     logger.debug('WORKER', `tree-sitter query failed for ${sourceFileCount} file(s)`, undefined, error instanceof Error ? error : undefined);

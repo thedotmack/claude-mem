@@ -10,13 +10,8 @@ import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
-import {
-  getBunVersion,
-  getUvVersion,
-  isInstallCurrent,
-  isTreeSitterCliBinaryUsable,
-  treeSitterCliBinaryPath,
-} from '../install/setup-runtime.js';
+import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
+import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';

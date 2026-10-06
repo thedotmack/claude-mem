@@ -17,6 +17,11 @@ const _require = typeof __filename !== 'undefined'
 // Without the `.exe` suffix the existsSync check below always misses on Windows,
 // silently falling through to a bare `tree-sitter` that may not be on PATH —
 // smart file parsing then returns empty results with no error.
+//
+// Callers resolve per use and never cache the answer: the worker provisions the
+// executable in the background (tree-sitter-cli-provision.ts), and a process
+// that kept the bare-name fallback could not parse for its lifetime while the
+// File Read Gate, which checks on every Read, already sends Claude here.
 export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
   const binName = treeSitterBinaryName(platform);
 

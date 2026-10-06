@@ -28,6 +28,7 @@ import net from 'net';
 import path from 'path';
 import { isTreeSitterCliAvailable } from '../src/services/smart-file-read/tree-sitter-bin-path.js';
 import { treeSitterBinaryName } from '../src/services/smart-file-read/tree-sitter-bin-name.js';
+import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision.js';
 
 const repoRoot = path.resolve(import.meta.dir, '..');
 const pluginDirectory = path.join(repoRoot, 'plugin');
@@ -655,6 +656,8 @@ export interface PluginTreeSitterCheck {
   failure: string | null;
 }
 
+const TREE_SITTER_CLI_INSTALL_TIMEOUT_MS = 5 * 60 * 1000;
+
 /** The output of `<binary> --version` when it answers like the tree-sitter CLI, else null. */
 function treeSitterVersion(binary: string, searchPath: string = process.env.PATH ?? ''): string | null {
   const result = spawnSync(binary, ['--version'], {
@@ -674,12 +677,10 @@ function treeSitterVersion(binary: string, searchPath: string = process.env.PATH
  * loads. Without it the gate stays dormant and smart_outline cannot parse.
  */
 async function provisionPluginTreeSitterCli(): Promise<TreeSitterProvisioning> {
-  // Loaded here rather than at the top: only this step needs the installer's module graph.
-  const { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } = await import('../src/npx-cli/install/setup-runtime.js');
   const binaryPath = treeSitterCliBinaryPath(pluginDirectory);
   const relativeBinaryPath = path.relative(repoRoot, binaryPath);
   try {
-    await ensureTreeSitterCliBinary(pluginDirectory);
+    await ensureTreeSitterCliBinary(pluginDirectory, TREE_SITTER_CLI_INSTALL_TIMEOUT_MS);
   } catch (error) {
     const failure = error as Error & { stdout?: string; stderr?: string };
     const output = `${failure.stderr ?? ''}\n${failure.stdout ?? ''}`.trim();

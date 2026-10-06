@@ -23,7 +23,7 @@ All of these must hold:
 - **The file is at least 1,500 bytes.**
 - **The file has observation history**, and it **has not been modified since the newest of those observations**.
 - **The Read would return the whole file.** Reads of part of a file always go through. See [Whole-File vs Targeted Reads](#whole-file-vs-targeted-reads).
-- **The tree-sitter CLI that powers `smart_outline` and `smart_unfold` is installed.** Without it, the Read goes through with the timeline as context, so Claude is never sent to a tool that can't parse the file.
+- **The tree-sitter CLI that powers `smart_outline` and `smart_unfold` is installed.** Without it, the Read goes through with the timeline as context, so Claude is never sent to a tool that can't parse the file. Claude Code's plugin install leaves this executable out, so the claude-mem worker downloads it from the tree-sitter GitHub releases in the background each time it starts without one. On a new install the gate turns on a few seconds into the first session. If the download can't reach GitHub, the worker log says so; run `npx claude-mem repair` once the network allows it.
 
 Code files the gate covers:
 
