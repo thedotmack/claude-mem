@@ -483,6 +483,13 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 }
 
+// Plan mode lets an MCP tool run without a prompt only when it declares
+// readOnlyHint (#3483). The File Read Gate sends Claude to smart_outline,
+// smart_unfold and get_observations, so those must work in plan mode too.
+// Tools that write (work_state_write, observation_add, the corpus builders and
+// query_corpus, which appends to the corpus session) keep prompting.
+const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
+
 const tools = [
   {
     name: 'important_workflow',
@@ -496,6 +503,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       type: 'object',
       properties: {}
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async () => ({
       content: [{
         type: 'text' as const,
@@ -542,6 +550,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       // In server-beta runtime the local worker /api/search reads the local SQLite via
       // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
@@ -588,6 +597,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/timeline', { query: args });
     }
@@ -607,6 +617,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
     }
@@ -629,6 +640,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/tool-uses/batch', { body: args });
     }
@@ -665,6 +677,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => callWorker('/api/work-state', {
       query: { cwd: process.cwd(), list: args?.list, includeClosed: args?.includeClosed },
       text: true,
@@ -690,6 +703,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleSessionStartContext(args ?? {}),
   },
   // Phase 8 — observation_* tools backed by server REST core.
@@ -746,6 +760,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationSearch(args ?? {}),
   },
   {
@@ -761,6 +776,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationContext(args ?? {}),
   },
   {
@@ -774,6 +790,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['jobId'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
   },
   {
@@ -801,6 +818,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['query']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
@@ -830,6 +848,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path', 'symbol_name']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
@@ -870,6 +889,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
@@ -919,6 +939,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/corpus', { query: args });
     }
@@ -1013,7 +1034,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations
     }))
   };
 });
