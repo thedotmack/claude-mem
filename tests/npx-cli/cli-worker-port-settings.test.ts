@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock,
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join, sep } from 'path';
+import { spawnSync } from 'child_process';
 
 // The worker binds the port in ~/.claude-mem/settings.json (getWorkerPort loads
 // the file; an env var of the same name overrides it). doctor, uninstall and the
@@ -12,7 +13,9 @@ import { join, sep } from 'path';
 // Sandbox every path these commands touch BEFORE any src module loads:
 // shared/paths.ts freezes the data dir on first import, and the OpenClaw
 // installer resolves its marketplace root from CLAUDE_CONFIG_DIR at import time.
-// So no src module is imported statically in this file.
+// So no src module is imported statically in this file. Bun on Linux reads the
+// home dir once at startup, so HOME set here does not move os.homedir(): the
+// OpenClaw install, which writes under it, runs in a child process (below).
 const realSettingsPath = join(homedir(), '.claude-mem', 'settings.json');
 const sandbox = mkdtempSync(join(tmpdir(), 'claude-mem-cli-port-'));
 const savedEnv: Record<string, string | undefined> = {};
@@ -199,49 +202,76 @@ describe('npx claude-mem uninstall stops the worker on the port from settings.js
 
 describe('OpenClaw install registers the worker port from settings.json', () => {
   const openclawConfig = join(sandbox, '.openclaw', 'openclaw.json');
+  const installerPath = join(import.meta.dir, '..', '..', 'src', 'services', 'integrations', 'OpenClawInstaller.ts');
+  const childScript = join(sandbox, 'install-openclaw.mjs');
 
   beforeAll(() => {
     // A pre-built plugin bundle where the installer looks for one.
     const dist = join(sandbox, '.claude', 'plugins', 'marketplaces', 'thedotmack', 'openclaw', 'dist');
     mkdirSync(dist, { recursive: true });
     writeFileSync(join(dist, 'index.js'), '');
+
+    // The installer writes under os.homedir(), and Bun on Linux reads the home
+    // dir once at startup, so changing HOME in this process does not move it.
+    // Run the install in a child whose HOME is the sandbox from the start, and
+    // have the child refuse to install anywhere else.
+    writeFileSync(childScript, [
+      "import { homedir } from 'node:os';",
+      "import { pathToFileURL } from 'node:url';",
+      'if (homedir() !== process.env.CLAUDE_MEM_TEST_SANDBOX_HOME) {',
+      "  console.error(`refusing to install: home dir ${homedir()} is not the test sandbox`);",
+      '  process.exit(3);',
+      '}',
+      'const { installOpenClawPlugin } = await import(pathToFileURL(process.env.CLAUDE_MEM_TEST_INSTALLER).href);',
+      'process.exit(installOpenClawPlugin());',
+    ].join('\n'));
   });
 
   beforeEach(() => {
     rmSync(join(sandbox, '.openclaw'), { recursive: true, force: true });
   });
 
-  async function install(): Promise<{ workerPort?: number }> {
-    const { installOpenClawPlugin } = await import('../../src/services/integrations/OpenClawInstaller.js');
-    const log = spyOn(console, 'log').mockImplementation(() => {});
-    try {
-      expect(installOpenClawPlugin()).toBe(0);
-    } finally {
-      log.mockRestore();
+  function install(): { workerPort?: number } {
+    const env: Record<string, string> = {};
+    for (const [key, value] of Object.entries(process.env)) {
+      if (value !== undefined) env[key] = value;
     }
+    Object.assign(env, {
+      HOME: sandbox,
+      USERPROFILE: sandbox,
+      CLAUDE_CONFIG_DIR: join(sandbox, '.claude'),
+      CLAUDE_MEM_DATA_DIR: join(sandbox, 'data'),
+      CLAUDE_MEM_TEST_SANDBOX_HOME: sandbox,
+      CLAUDE_MEM_TEST_INSTALLER: installerPath,
+      // The child has no tests/preload.ts mocks; nothing it might send leaves the machine.
+      CLAUDE_MEM_TELEMETRY_HOST: 'http://127.0.0.1:9',
+    });
+    // cwd is one of the installer's marketplace roots; keep it in the sandbox too.
+    const child = spawnSync(process.execPath, [childScript], { cwd: sandbox, env, encoding: 'utf-8' });
+    expect({ status: child.status, stderr: child.status === 0 ? '' : child.stderr }).toEqual({ status: 0, stderr: '' });
     return JSON.parse(readFileSync(openclawConfig, 'utf-8')).plugins.entries['claude-mem'].config;
   }
 
-  it('uses the port written in settings.json', async () => {
+  it('uses the port written in settings.json', () => {
     writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT });
 
-    expect((await install()).workerPort).toBe(Number(FILE_PORT));
+    expect(install().workerPort).toBe(Number(FILE_PORT));
   });
 
-  it('lets the environment variable override settings.json', async () => {
+  it('lets the environment variable override settings.json', () => {
     writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT });
     process.env.CLAUDE_MEM_WORKER_PORT = ENV_PORT;
 
-    expect((await install()).workerPort).toBe(Number(ENV_PORT));
+    expect(install().workerPort).toBe(Number(ENV_PORT));
   });
 
-  it('keeps a workerPort the user already set in openclaw.json', async () => {
+  it('keeps a workerPort the user already set in openclaw.json', () => {
     writeSettings({ CLAUDE_MEM_WORKER_PORT: FILE_PORT });
     mkdirSync(join(sandbox, '.openclaw'), { recursive: true });
     writeFileSync(openclawConfig, JSON.stringify({
       plugins: { entries: { 'claude-mem': { enabled: true, config: { workerPort: 40001 } } } },
     }));
 
-    expect((await install()).workerPort).toBe(40001);
+    expect(install().workerPort).toBe(40001);
   });
 });
