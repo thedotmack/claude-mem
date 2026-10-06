@@ -282,7 +282,9 @@ export async function searchCodebase(
 function scoreGoMethodName(name: string, query: string, parts: string[]): number {
   const leaf = name.slice(name.lastIndexOf(".") + 1);
   if (!query.includes(".")) return matchScore(leaf, parts);
-  const leafScore = matchScore(leaf, [query.slice(query.lastIndexOf(".") + 1)]);
+  const methodQuery = query.slice(query.lastIndexOf(".") + 1);
+  if (!methodQuery) return 0;
+  const leafScore = matchScore(leaf, [methodQuery]);
   if (leafScore === 0) return 0;
   if (name === query) return leafScore + 20;
   return leafScore + (name.startsWith(query) ? 10 : 0);
