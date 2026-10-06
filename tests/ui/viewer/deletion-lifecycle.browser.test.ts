@@ -11,7 +11,7 @@ const chrome=Bun.which('google-chrome')??Bun.which('chromium')
     ?'/Applications/Google Chrome.app/Contents/MacOS/Google Chrome':null);
 if(process.env.CI&&!chrome)throw Error('CI requires Chrome for viewer deletion lifecycle tests');
 
-for(const scenario of ['item','recreated-visible','recreated-session','late-delete-response'] as const) {
+for(const scenario of ['item','recreated-visible','recreated-session','late-delete-response','catalog-recreated','late-delete-no-event','live-before-delete','new-page-before-ack'] as const) {
   (chrome?it:it.skip)(`viewer preserves deletion identity across pending pages: ${scenario}`,async()=>{
     const owned=mkdtempSync(join(tmpdir(),'cm-viewer-deletion-'));
     let child:ReturnType<typeof Bun.spawn>|undefined;
@@ -47,17 +47,32 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
           (async()=>{try{
             await until(()=>document.querySelector('.session-card-count')?.textContent==='1 memory');
             await fetch('/snapshot-started');
-            if(${JSON.stringify(scenario)}==='late-delete-response') {
+            if(['late-delete-response','late-delete-no-event','live-before-delete','new-page-before-ack'].includes(${JSON.stringify(scenario)})) {
               window.confirm=()=>true;
               document.querySelector('.session-card-menu-trigger').click();await paint();
               document.querySelector('.session-card-menu-item--danger').click();
             } else await fetch('/delete');
             await paint();
             if(${JSON.stringify(scenario)}!=='item') {
-              await until(()=>document.querySelectorAll('.session-card').length===0);
+              if(!['late-delete-no-event','live-before-delete','new-page-before-ack'].includes(${JSON.stringify(scenario)})) await until(()=>document.querySelectorAll('.session-card').length===0);
               await fetch('/recreate');
-              await until(()=>document.querySelector('.session-card-count')?.textContent==='1 memory');
-              if(${JSON.stringify(scenario)}==='late-delete-response') {await fetch('/release-delete');await new Promise(resolve=>setTimeout(resolve,150));}
+              if(${JSON.stringify(scenario)}==='catalog-recreated') {
+                location.hash='';await paint();location.hash='#/sessions';
+                await until(()=>document.querySelector('.session-card-count')?.textContent==='1 memory');
+                document.querySelector('.session-card').click();
+                await until(()=>document.body.textContent.includes('RECREATED_CAPTURE')||document.body.textContent.includes('No items to display'));
+                await fetch('/result',{method:'POST',body:JSON.stringify({detailFresh:document.body.textContent.includes('RECREATED_CAPTURE')})});return;
+              }
+              await until(()=>document.querySelector('.session-card-count')?.textContent===(${JSON.stringify(scenario)}==='late-delete-no-event'||${JSON.stringify(scenario)}==='live-before-delete'?'2 memories':'1 memory'));
+              if(${JSON.stringify(scenario)}==='new-page-before-ack') {
+                location.hash='#/sessions/claude/owned-session';
+                await until(()=>document.body.textContent.includes('AUTHORITATIVE_NEW_PAGE'));
+                await fetch('/release-delete');
+                await until(()=>performance.getEntriesByName(location.origin+'/api/sessions?offset=0&limit=100').length>=2||!document.body.textContent.includes('AUTHORITATIVE_NEW_PAGE'));
+                await paint();
+                await fetch('/result',{method:'POST',body:JSON.stringify({detailFresh:document.body.textContent.includes('AUTHORITATIVE_NEW_PAGE')})});return;
+              }
+              if(['late-delete-response','late-delete-no-event','live-before-delete','new-page-before-ack'].includes(${JSON.stringify(scenario)})) {await fetch('/release-delete');await new Promise(resolve=>setTimeout(resolve,250));}
               if(${JSON.stringify(scenario)}==='recreated-session') {await fetch('/delete');await paint();}
             } else await new Promise(resolve=>setTimeout(resolve,150));
             const count=document.querySelector('.session-card-count')?.textContent??null;
@@ -92,17 +107,22 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
       server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
         const url=new URL(request.url);
         if(url.pathname==='/')return new Response(html,{headers:{'Content-Type':'text/html'}});
-        if(url.pathname==='/fixture.js')return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+        if(url.pathname==='/fixture.js'){
+          clearTimeout(timer);timer=setTimeout(()=>finish({failure:'Browser page timed out'}),20000);
+          return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+        }
         if(url.pathname==='/stream')return new Response(new ReadableStream({start(c){controller=c;send({type:'initial_load',projects:['alpha']})}}),
           {headers:{'Content-Type':'text/event-stream'}});
         if(url.pathname==='/api/sessions/claude/owned-session' && request.method==='DELETE') {
-          deleted=true;send({type:'session_deleted',platformSource:'claude',contentSessionId:'owned-session'});
-          await deleteGate;return Response.json({success:true});
+          if(scenario==='live-before-delete')await deleteGate;
+          deleted=true;if(scenario==='late-delete-response')send({type:'session_deleted',platformSource:'claude',contentSessionId:'owned-session'});
+          if(scenario!=='live-before-delete')await deleteGate;return Response.json({success:true});
         }
         if(url.pathname==='/release-delete'){releaseDelete();return new Response('released')}
         if(url.pathname==='/api/sessions')return Response.json({sessions:scenario==='item'
           ?[{...session,item_count:deleted?0:1}]:deleted?[]:[session],hasMore:false});
         if(url.pathname==='/api/observations') {
+          if(url.searchParams.has('contentSessionId'))return Response.json({items:[{...row,id:2,title:scenario==='new-page-before-ack'?'AUTHORITATIVE_NEW_PAGE':'RECREATED_CAPTURE'}],hasMore:false});
           offsets.push(Number(url.searchParams.get('offset')));
           if(++observationRequests===1)return new Response(new ReadableStream({async start(c){
             c.enqueue(new TextEncoder().encode(' '));started();await gate;
@@ -119,20 +139,22 @@ for(const scenario of ['item','recreated-visible','recreated-session','late-dele
             :{type:'session_deleted',platformSource:'claude',contentSessionId:'owned-session'});
           return new Response('deleted');
         }
-        if(url.pathname==='/recreate'){deleted=false;send({type:'new_observation',observation:{...row,id:2,title:'RECREATED_CAPTURE'}});return new Response('recreated')}
+        if(url.pathname==='/recreate'){deleted=false;if(!['catalog-recreated','new-page-before-ack'].includes(scenario))send({type:'new_observation',observation:{...row,id:2,title:'RECREATED_CAPTURE'}});return new Response('recreated')}
         if(url.pathname==='/offsets')return Response.json(offsets);
         if(url.pathname==='/release'){release();return new Response('released')}
         if(url.pathname==='/result'){finish(await request.json());return new Response('received')}
         return Response.json({});
       }});
+      timer=setTimeout(()=>finish({failure:'Chrome startup timed out'}),30000);
       child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
         '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
-      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser timed out'}),15000)})]);
-      expect(received).toEqual({count:scenario==='item'?'0 memories':scenario==='recreated-session'?null:'1 memory',ghost:false,recreatedGhost:scenario!=='item'&&scenario!=='recreated-session',control:true,next:true,offsets:[0,UI.PAGINATION_PAGE_SIZE-1]});
+      const received=await result;
+      if(['catalog-recreated','new-page-before-ack'].includes(scenario)){expect(received).toEqual({detailFresh:true});return;}
+      expect(received).toEqual({count:scenario==='item'?'0 memories':['recreated-session','live-before-delete','new-page-before-ack'].includes(scenario)?null:'1 memory',ghost:false,recreatedGhost:scenario!=='item'&&!['recreated-session','live-before-delete','new-page-before-ack'].includes(scenario),control:true,next:true,offsets:[0,UI.PAGINATION_PAGE_SIZE-1]});
     }finally{
       release();releaseDelete();clearTimeout(timer);
       if(child){child.kill();await child.exited;}
       server?.stop(true);rmSync(owned,{recursive:true,force:true});
     }
-  },20000);
+  },60000);
 }

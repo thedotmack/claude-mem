@@ -98,6 +98,23 @@ export async function deleteSession(ref: SessionRef, fetchImpl: typeof fetch = f
   }
 }
 
+/** Confirm existence after an ambiguous delete acknowledgment without assuming
+ * that an absent entry in the project's loaded prefix proves deletion. */
+export async function confirmSessionExists(ref: SessionRef, fetchImpl: typeof fetch = fetch): Promise<boolean> {
+  let offset = 0;
+  for (;;) {
+    const params = new URLSearchParams({ platformSource: ref.platformSource, offset: String(offset), limit: '1000' });
+    const response = await fetchImpl(`${API_ENDPOINTS.SESSIONS}?${params}`);
+    if (!response.ok) throw new Error(`Could not confirm the session's current state: HTTP ${response.status}.`);
+    const data = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
+    if (!Array.isArray(data.sessions)) throw new Error('Could not confirm the session: invalid catalog response.');
+    if (data.sessions.some(entry => sameSession(catalogEntryRef(entry), ref))) return true;
+    if (data.hasMore !== true) return false;
+    if (!data.sessions.length) throw new Error('Could not confirm the session: empty continuation page.');
+    offset += data.sessions.length;
+  }
+}
+
 /** The session a `session_deleted` SSE event names, or null when the event is malformed. */
 export function sessionDeletedTarget(event: StreamEvent): SessionRef | null {
   if (event.type !== 'session_deleted') return null;
