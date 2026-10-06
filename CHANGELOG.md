@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.34.2] - 2026-10-06
+
+This patch removes a worker regression that broke prompt-cache reuse for observer sessions on the providers that share the OpenAI-compatible HTTP observer loop, such as OpenRouter and Gemini.
+
+## What was wrong
+
+Since v13.29.0 (PR #3151), the worker pruned the observer's conversation history before every request. Once a tool-use exchange fell out of the most recent eight messages, its payload was replaced in place with a short stub marked `pruned="true"`. That kept each request smaller, but it also rewrote messages the provider had already received. From the fifth observation of a session onward, every request changed an earlier message, so the conversation no longer started with the same bytes as the request before it. Providers that cache a prompt by its prefix could not reuse the cached conversation and had to read the rewritten part again as new input.
+
+## What changed
+
+The shared HTTP provider no longer prunes history. The import and both per-turn calls are gone: the one before each observation request and the one before each summary request. Within a generation, a message that has been sent is now sent again unchanged, so each request extends the previous one and the summary request still sees the original tool payloads.
+
+## What stays the same
+
+Requests are still bounded by the limits that were already in place:
+
+- The observer conversation is still recycled into a new generation when it reaches its size budget, which comes from the observer context window (`CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`) and the last reported context token count.
+- A context-overflow error from a provider still recycles the conversation and continues.
+- The output cap (`CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`) and the cleanup after a rejected request are unchanged.
+- Model routing, retries, and billing behavior are unchanged.
+
+Because old payloads are no longer shrunk, a generation reaches its size budget in fewer turns than it did in v13.29.0 through v13.34.1, and long sessions recycle more often. The effect on provider cost has not been measured in production, so this release makes no claim about savings.
+
+## Validation
+
+- `tests/history-pruning.test.ts` passes (9 tests). Its two new regression tests keep a deep copy of every request as it was sent. The first runs 40 observations and a summary and checks that each request begins with the previous request's messages, unchanged. The second drains 200 events across several bounded generations, checks the same thing within each generation, and confirms that request size stays under the bound.
+- 880 of the 881 tests in the 63 test files that cover the shared provider, the individual providers, and observer recycling pass. The one failure is a socket-timing assertion in `tests/worker/field-deadline-wire.test.ts`. It fails the same way on unmodified v13.34.1 and exercises the field-compression path, which this release does not change.
+- Root and viewer type checks, the postinstall allowlist guard, and the version-consistency and plugin-distribution tests on the built tree pass. `build-and-sync` succeeded, including a verified local worker restart on v13.34.2, and the built worker bundle no longer contains the pruning code.
+
 ## [13.34.1] - 2026-10-06
 
 The CMEM Pro installer and every client promotion now show **30 Day Free Trial**. This restores the public offer to match the cloud's standard 30-day trial and removes the shorter “up to 14 days” wording from provider selection, installer completion, session and context banners, welcome hints, the viewer, and public documentation.
