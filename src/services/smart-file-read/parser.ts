@@ -178,7 +178,7 @@ const QUERIES: Record<string, string> = {
 
   go: `
 (function_declaration name: (identifier) @name) @func
-(method_declaration name: (field_identifier) @name) @method
+(method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
 (import_declaration) @imp
 `,
@@ -829,7 +829,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       name = `init${header?.generics ?? ""}(${(swiftParameters.get(key) ?? []).join(", ")})${header?.constraints ? ` ${header.constraints}` : ""}`;
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
-    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    let receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*/, "");
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
@@ -886,7 +887,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       jsdoc: comment || docstring,
       lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
-      exported: isExported(name, startRow, endRow, exportRanges, lines, language),
+      exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
     };
 
     if (CONTAINER_KINDS.has(kind) || (language === "php" && kind === "enum")) {
@@ -1309,7 +1310,12 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return null;
   };
 
-  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
+  // Go methods are named with their receiver (`Local.Reset`), so a bare method
+  // name still unfolds the first method with that leaf, as in other languages.
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
+    ?? (file.language === "go"
+      ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null
+      : null);
   if (!symbol) return null;
 
   const lines = content.split("\n");
