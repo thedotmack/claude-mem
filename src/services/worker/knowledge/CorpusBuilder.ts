@@ -42,7 +42,9 @@ export class CorpusBuilder {
   ): Promise<CorpusFile> {
     logger.debug('WORKER', `Building corpus "${name}" with filter`, { filter });
 
-    const searchArgs: Record<string, unknown> = {};
+    // A corpus contains observations; unrelated prompts and summaries must
+    // not consume the semantic search candidate window.
+    const searchArgs: Record<string, unknown> = { searchType: 'observations' };
     if (filter.project) searchArgs.project = filter.project;
     if (filter.types && filter.types.length > 0) searchArgs.obs_type = filter.types.join(',');
     if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts;
