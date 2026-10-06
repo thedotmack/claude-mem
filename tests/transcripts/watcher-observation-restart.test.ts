@@ -49,3 +49,26 @@ for (const compressed of [false, true]) it(`retries a result-only ${compressed ?
     expect(done.pendingTools[file]).toEqual({});
   } finally { first.stop(); second?.stop(); rmSync(root, { recursive: true, force: true }); }
 });
+for (const restart of [false, true]) it(`does not reuse pending metadata from a replaced transcript${restart ? ' across restart' : ''}`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-retry-replaced-'));
+  const file = join(root, 'session.jsonl'); const state = join(root, 'state.json');
+  const use = JSON.stringify({ session: 's', type: 'use', id: 't', name: 'Read', input: { path: 'old-long-enough-metadata-file' } }) + '\n';
+  const result = JSON.stringify({ session: 's', type: 'result', id: 't', output: 'new' }) + '\n';
+  writeFileSync(file, use);
+  const watch = { name: 'retry', path: file, workspace: '/repo', schema };
+  const first = new TranscriptWatcher({ version: 1, watches: [watch] }, state);
+  let second: TranscriptWatcher | undefined;
+  try {
+    delivered.length = 0; accepting = true;
+    await (first as any).addTailer(file, watch, schema); await (first as any).tailers.get(file).readTask;
+    if (restart) first.stop();
+    const replacement = join(root, 'new.jsonl'); writeFileSync(replacement, result);
+    const { renameSync } = await import('node:fs'); renameSync(replacement, file);
+    if (restart) {
+      second = new TranscriptWatcher({ version: 1, watches: [watch] }, state);
+      await (second as any).addTailer(file, watch, schema); await (second as any).tailers.get(file).readTask;
+    } else { await (first as any).tailers.get(file).readNewData(); }
+    expect(delivered).toHaveLength(0);
+    expect(JSON.parse(readFileSync(state, 'utf8')).pendingTools[file]).toEqual({});
+  } finally { first.stop(); second?.stop(); rmSync(root, { recursive: true, force: true }); }
+});
