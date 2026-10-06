@@ -8,6 +8,7 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
+import type { WorkStateFields } from '../../../sqlite/work-state.js';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
@@ -17,10 +18,21 @@ import {
 /** One write is a few short fields; anything bigger would crowd the SessionStart section. */
 export const MAX_WORK_STATE_FIELDS_JSON_CHARS = 2_000;
 
+// z.record intentionally drops __proto__; here every field is a primitive,
+// so validate own entries and copy with spread to keep literal data keys safely.
+const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    && Object.entries(value).every(([key, field]) => key.length > 0 && (
+      field === null || typeof field === 'string' || typeof field === 'boolean'
+      || (typeof field === 'number' && Number.isFinite(field))
+    )),
+  'fields must map non-empty keys to strings, finite numbers, booleans or null',
+).transform(fields => ({ ...fields }));
+
 const workStateWriteSchema = z.object({
   cwd: z.string().trim().min(1),
   list: z.string().trim().min(1).max(200),
-  fields: z.record(z.string().min(1), z.union([z.string(), z.number(), z.boolean(), z.null()]))
+  fields: workStateFieldsSchema
     .refine(fields => Object.keys(fields).length > 0, 'fields must set at least one key')
     .refine(
       fields => JSON.stringify(fields).length <= MAX_WORK_STATE_FIELDS_JSON_CHARS,
