@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
+import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
 import { parseRetryAfterMs, withRetry } from '../../src/services/worker/retry.js';
 import { parseRetryAfterMs as parseServerRetryAfterMs } from '../../src/server/generation/providers/shared/error-classification.js';
 
@@ -16,14 +17,22 @@ describe('finite Retry-After hints', () => {
     });
   }
 
-  it('uses normal backoff after a real endpoint sends a non-finite rate-limit hint', async () => {
+  it('preserves gateway defaults only when the retry header is absent', () => {
+    const input = { status: 429, bodyText: JSON.stringify({ error: { code: 'rate_limited' } }), cause: null };
+    expect(classifyOpenRouterError(input).retryAfterMs).toBe(60_000);
+    expect(classifyOpenRouterError({ ...input, headers: new Headers({ 'Retry-After': 'Infinity' }) }).retryAfterMs).toBeUndefined();
+    expect(classifyOpenRouterError({ ...input, headers: new Headers({ 'Retry-After': '12' }) }).retryAfterMs).toBe(12_000);
+  });
+
+  for (const [name, classify] of [['compatible', classifyOpenAICompatError], ['gateway', classifyOpenRouterError]] as const) {
+  it(`uses normal backoff after a real ${name} endpoint sends a non-finite rate-limit hint`, async () => {
     let requests = 0;
     const server = Bun.serve({
       hostname: '127.0.0.1', port: 0,
       fetch() {
         requests++;
         return requests === 1
-          ? new Response('rate limit', { status: 429, headers: { 'Retry-After': 'Infinity' } })
+          ? new Response(JSON.stringify({ error: { code: 'rate_limited', message: 'rate limit' } }), { status: 429, headers: { 'Retry-After': 'Infinity' } })
           : new Response('recovered');
       },
     });
@@ -34,7 +43,7 @@ describe('finite Retry-After hints', () => {
         const response = await fetch(server.url, { signal });
         const bodyText = await response.text();
         if (!response.ok) {
-          throw classifyOpenAICompatError({ status: response.status, headers: response.headers, bodyText, cause: null });
+          throw classify({ status: response.status, headers: response.headers, bodyText, cause: null });
         }
         return bodyText;
       }, { abortSignal: controller.signal, maxRetries: 1, baseDelayMs: 0, maxDelayMs: 0, perAttemptTimeoutMs: 1_000 });
@@ -45,4 +54,5 @@ describe('finite Retry-After hints', () => {
       server.stop(true);
     }
   }, 10_000);
+  }
 });
