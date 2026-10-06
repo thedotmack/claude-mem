@@ -477,6 +477,15 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
       });
 
+      it('rewrites the direct production Supabase function URL to sync.cmem.ai', () => {
+        writeFileSync(settingsPath, JSON.stringify({
+          CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://ziczmqtpmaxbornfghye.supabase.co/functions/v1/cmem-sync',
+        }));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+        expect(result.CLAUDE_MEM_CLOUD_SYNC_HUB_URL).toBe('https://sync.cmem.ai');
+      });
+
       it('leaves a different hub host untouched', () => {
         writeFileSync(settingsPath, JSON.stringify({
           CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.example.test',
