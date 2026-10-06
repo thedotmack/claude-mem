@@ -47,8 +47,11 @@ export function getObservationsByFilePath(
 
   params.push(limit);
 
+  // An array can start with '[' or one of JSON's four whitespace characters.
+  // This inexpensive prefix filter skips other shapes before JSON parsing;
+  // validity and array-type checks still reject padded non-arrays below.
   const arrayJson = (column: string): string =>
-    `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
+    `CASE WHEN ${column} GLOB '[' || char(32, 9, 10, 13) || '[]*' THEN CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END ELSE '[]' END`;
 
   const stmt = db.prepare(`
     SELECT o.*

@@ -45,3 +45,40 @@ it('keeps valid file context readable beside malformed legacy imported JSON', ()
     s.close();
   }
 });
+
+it('isolates malformed modified-only metadata and searches whitespace/escaped arrays', () => {
+  const store = new SessionStore(':memory:');
+  try {
+    const id = store.createSDKSession('modified-content', 'app', 'prompt');
+    store.updateMemorySessionId(id, 'modified-memory');
+    const row = {
+      memory_session_id: 'modified-memory', project: 'app', text: null,
+      type: 'discovery', title: 'invalid', subtitle: null, facts: null,
+      narrative: null, concepts: null, files_read: null, files_modified: null,
+      prompt_number: 1, discovery_tokens: 0,
+      created_at: new Date(1000).toISOString(), created_at_epoch: 1000,
+    };
+    for (const metadata of ['[invalid', '{"path":"file.ts"}', '"file.ts"', 'null', 'true', '42', '', ' \t[invalid', ' \n{"path":"file.ts"}']) {
+      store.importObservation({ ...row, files_modified: metadata });
+    }
+    const good = store.importObservation({ ...row, title: 'modified',
+      files_modified: ' \t\r\n["file.ts"] \n', created_at_epoch: 2000 });
+    const escapedPath = 'quoted"%_\\file.ts';
+    const escaped = store.importObservation({ ...row, title: 'escaped',
+      files_modified: JSON.stringify([escapedPath]), created_at_epoch: 3000 });
+    const unicode = store.importObservation({ ...row, title: 'unicode',
+      files_modified: '["f\\u0069le.ts"]', created_at_epoch: 4000 });
+    expect(getObservationsByFilePath(store.db, 'file.ts', { projects: ['app'] }).map(r => r.id))
+      .toEqual([unicode.id, good.id]);
+    expect(getObservationsByFilePath(store.db, escapedPath).map(r => r.id)).toEqual([escaped.id]);
+    const padded = [' ', '\t', '\r', '\n'].map((prefix, index) =>
+      store.importObservation({ ...row, title: 'padded', files_modified: prefix + '["padded.ts"]',
+        created_at_epoch: 5000 + index }));
+    expect(getObservationsByFilePath(store.db, 'padded.ts').map(r => r.id))
+      .toEqual(padded.map(result => result.id).reverse());
+    expect(getObservationsByFilePath(store.db, 'file.ts', { projects: ['other'] })).toEqual([]);
+    expect(getObservationsByFilePath(store.db, 'absent.ts')).toEqual([]);
+  } finally {
+    store.close();
+  }
+});
