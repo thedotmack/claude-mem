@@ -207,6 +207,19 @@ describe('runShutdownSequence — restart successor handoff', () => {
     expect(h.counters.spawnDaemon).toBe(0);
   });
 
+  it("stays kill-only for reason 'idle' (idle-exit monitor)", async () => {
+    const h = makeHarness({ reason: 'idle' });
+
+    await runShutdownSequence(h.options);
+
+    // An idle exit is a graceful stop — the drain runs, no successor spawn.
+    expect(h.counters.beforeGraceful).toBe(1);
+    expect(h.counters.graceful).toBe(1);
+    expect(h.counters.waitForPortFree).toBe(0);
+    expect(h.counters.removePidFile).toBe(0);
+    expect(h.counters.spawnDaemon).toBe(0);
+  });
+
   it('completes (logging loudly, not throwing) when spawnDaemon returns undefined', async () => {
     const h = makeHarness({ reason: 'restart', spawnResult: undefined });
 
