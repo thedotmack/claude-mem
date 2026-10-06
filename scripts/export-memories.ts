@@ -71,7 +71,7 @@ export async function exportMemories(query: string, outputFile: string, project?
 
   const observations: ObservationRecord[] = searchData.observations || [];
   const summaries: SessionSummaryRecord[] = searchData.sessions || [];
-  const prompts: UserPromptRecord[] = searchData.prompts || [];
+  const prompts: Array<UserPromptRecord & { id?: number; memory_session_id?: string | null }> = searchData.prompts || [];
 
   console.log(`✅ Found ${observations.length} observations`);
   console.log(`✅ Found ${summaries.length} session summaries`);
@@ -84,14 +84,24 @@ export async function exportMemories(query: string, outputFile: string, project?
   summaries.forEach((s) => {
     if (s.memory_session_id) memorySessionIds.add(s.memory_session_id);
   });
+  // Prompt search rows carry their joined SDK session's memory identity too.
+  // A prompt-only export still needs that parent for project/platform ownership.
+  prompts.forEach((p) => {
+    if (p.memory_session_id) memorySessionIds.add(p.memory_session_id);
+  });
+
+  // Prompt IDs resolve their actual foreign-key parents even before the SDK
+  // has registered a memory ID; never infer ownership from content ID alone.
+  const promptIds = prompts.map(p => p.id).filter((id): id is number =>
+    typeof id === 'number' && Number.isSafeInteger(id) && id > 0);
 
   console.log('📡 Fetching SDK sessions metadata...');
   let sessions: SdkSessionRecord[] = [];
-  if (memorySessionIds.size > 0) {
+  if (memorySessionIds.size > 0 || promptIds.length > 0) {
     const sessionsResponse = await fetchWithTimeout(`${baseUrl}/api/sdk-sessions/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ memorySessionIds: Array.from(memorySessionIds) })
+      body: JSON.stringify({ memorySessionIds: Array.from(memorySessionIds), ...(promptIds.length > 0 ? { promptIds } : {}) })
     });
     if (sessionsResponse.ok) {
       sessions = await sessionsResponse.json();
