@@ -87,3 +87,45 @@ it('lets the first authoritative observation replace an inferred session', () =>
     store.close();
   }
 });
+
+it('keeps a linked owner when a replay refreshes the raw tool payload', () => {
+  const store = new SessionStore(':memory:');
+  try {
+    store.upsertToolUse({
+      toolUseId: 'tool',
+      contentSessionId: 'content',
+      toolName: 'Read',
+      project: 'app',
+      memorySessionId: 'inferred',
+      toolInput: 'first',
+    });
+    store.linkToolUsesToObservation({
+      contentSessionId: 'content',
+      toolUseIds: ['tool'],
+      observationId: 1,
+      memorySessionId: 'authoritative',
+    });
+    store.upsertToolUse({
+      toolUseId: 'tool',
+      contentSessionId: 'content',
+      toolName: 'Read',
+      project: 'app',
+      memorySessionId: 'other',
+      toolResponse: 'replayed result',
+    });
+    store.linkToolUsesToObservation({
+      contentSessionId: 'content',
+      toolUseIds: ['tool'],
+      observationId: 2,
+      memorySessionId: 'other',
+    });
+    expect(store.queryToolUses({ memorySessionId: 'authoritative' })[0]).toMatchObject({
+      observation_id: 1,
+      memory_session_id: 'authoritative',
+      tool_response: 'replayed result',
+    });
+    expect(store.queryToolUses({ memorySessionId: 'other' })).toEqual([]);
+  } finally {
+    store.close();
+  }
+});
