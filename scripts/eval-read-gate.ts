@@ -643,14 +643,20 @@ function removeActiveDataDirectoryFiles(): void {
   activeDataDirectoryFilesWritten = false;
 }
 
+let suiteStagedByThisRun = false;
+
 // Symlinks stay verbatim: the cases' scaffolds link to the shared ones beside them.
 function stageSuite(): void {
   fs.rmSync(stagedSuiteDirectory, { recursive: true, force: true });
   fs.cpSync(suiteSourceDirectory, stagedSuiteDirectory, { recursive: true, verbatimSymlinks: true });
+  suiteStagedByThisRun = true;
 }
 
+/** Only a suite this run staged: a --preflight-only run must not remove a full run's. */
 function removeStagedSuite(): void {
+  if (!suiteStagedByThisRun) return;
   fs.rmSync(stagedSuiteDirectory, { recursive: true, force: true });
+  suiteStagedByThisRun = false;
 }
 
 // ---------------------------------------------------------------------------
