@@ -19,6 +19,7 @@ import {
   catalogEntryRef,
   deleteSession,
   confirmSessionExists,
+  confirmSessionRowIds,
   parseViewRoute,
   removeSessionRows,
   sameSession,
@@ -65,7 +66,6 @@ export function App() {
   // even if a live row has since re-created that same session identity.
   const deletionVersionRef = useRef(0);
   const sessionDeletionVersionsRef = useRef(new Map<string, number>());
-  const pageRowVersionsRef = useRef(new Map<string, number>());
   const activityVersionRef = useRef(0);
   const sessionActivityVersionsRef = useRef(new Map<string, number>());
   const [route, setRoute] = useState<ViewRoute>(() => parseViewRoute(window.location.hash));
@@ -179,7 +179,6 @@ export function App() {
         // recreation whose live SSE event this tab missed. Keep history for
         // older pending pages while rearming the identity for future deletes.
         handledDeletionsRef.current.delete(`session:${key}`);
-        pageRowVersionsRef.current.set(`${itemType}:${row.id}`, deletionVersion);
         sessionActivityVersionsRef.current.set(key, ++activityVersionRef.current);
         return true;
       });
@@ -249,11 +248,11 @@ export function App() {
     }
   }
 
-  function retireLoadedSession(session: SessionRef, beforeVersion?: number): void {
+  function retireLoadedSession(session: SessionRef, absent?: Record<FeedItemType, Set<number>>): void {
     function retireRows<T extends SessionScopedRow & { id: number }>(rows: T[], itemType: FeedItemType) {
-      if (beforeVersion === undefined) return removeSessionRows(rows, session);
+      if (absent === undefined) return removeSessionRows(rows, session);
       const retained = rows.filter(row => !sameSession(sessionRefOf(row), session)
-        || (pageRowVersionsRef.current.get(`${itemType}:${row.id}`) ?? 0) >= beforeVersion);
+        || !absent[itemType].has(row.id));
       return { rows: retained, removedCount: rows.length - retained.length };
     }
     const loaded = loadedRowsRef.current;
@@ -292,10 +291,6 @@ export function App() {
     const key = sessionKey(session);
     const deletionVersion = sessionDeletionVersionsRef.current.get(key) ?? 0;
     const activityVersion = sessionActivityVersionsRef.current.get(key) ?? 0;
-    const priorLiveRows = liveRowsRef.current;
-    // Retire pages already in flight; requests begun after the delete action
-    // can carry authoritative new-incarnation rows before its acknowledgment.
-    const requestDeletionVersion = ++deletionVersionRef.current;
     await deleteSession(session);
     // The stream may have already delivered this delete, followed by a new
     // live row recreating the session. Its HTTP acknowledgment must not delete
@@ -303,22 +298,36 @@ export function App() {
     if ((sessionDeletionVersionsRef.current.get(key) ?? 0) === deletionVersion) {
       const currentActivityVersion = sessionActivityVersionsRef.current.get(key) ?? 0;
       if (currentActivityVersion !== activityVersion) {
-        // New rows alone cannot prove recreation: they may precede the server's
-        // delete. Confirm against the authoritative catalog before fallback.
-        const exists = await confirmSessionExists(session);
-        await catalog.refreshLoaded(currentFilter);
-        if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== deletionVersion
-          || (sessionActivityVersionsRef.current.get(key) ?? 0) !== currentActivityVersion) return;
-        if (exists) {
-          sessionDeletionVersionsRef.current.set(key, requestDeletionVersion);
-          retireLoadedSession(session, requestDeletionVersion);
-          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-            for (const row of priorLiveRows[itemType]) {
-              if (sameSession(sessionRefOf(row), session)) removeLiveItem(itemType, row.id);
-            }
+        // Only the successful server acknowledgment is a deletion boundary.
+        // Requests started between the user's action and that acknowledgment
+        // may still contain the old incarnation, even after live recreation.
+        const acknowledgmentVersion = ++deletionVersionRef.current;
+        sessionDeletionVersionsRef.current.set(key, acknowledgmentVersion);
+        const candidates = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
+        for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+          for (const row of [...loadedRowsRef.current[itemType], ...liveRowsRef.current[itemType]]) {
+            if (sameSession(sessionRefOf(row), session)) candidates[itemType].add(row.id);
           }
-          return;
         }
+        const exists = await confirmSessionExists(session);
+        const confirmed = exists ? await confirmSessionRowIds(session, candidates)
+          : { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
+        await catalog.refreshLoaded(currentFilter);
+        if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
+        const absent = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
+        for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+          for (const id of candidates[itemType]) {
+            if (!confirmed[itemType].has(id)) absent[itemType].add(id);
+          }
+        }
+        retireLoadedSession(session, absent);
+        for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+          for (const id of absent[itemType]) removeLiveItem(itemType, id);
+        }
+        if (exists) return;
+        // A live recreation observed while confirming absence belongs to the
+        // newer state; its rows were not in the confirmation snapshot.
+        if ((sessionActivityVersionsRef.current.get(key) ?? 0) !== currentActivityVersion) return;
       }
       removeDeletedSession(session);
     }
