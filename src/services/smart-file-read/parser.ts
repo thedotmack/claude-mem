@@ -231,6 +231,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   kotlin: `
+(secondary_constructor (function_value_parameters) @parameters) @kotlin_ctor
 (function_declaration (simple_identifier) @name) @func
 (class_declaration (type_identifier) @name) @cls
 (object_declaration (type_identifier) @name) @cls
@@ -598,6 +599,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   cls: "class",
   method: "method",
   ctor: "method",
+  kotlin_ctor: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -785,6 +787,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
+    }
+    if (kindCapture.tag === "kotlin_ctor") {
+      const parameters = match.captures.find(c => c.tag === "parameters");
+      name = "constructor" + (parameters ? captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim() : "");
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
     const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
