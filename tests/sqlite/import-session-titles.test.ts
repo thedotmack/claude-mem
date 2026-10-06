@@ -52,64 +52,79 @@ it('keeps legacy omitted and explicit null titles nullable', () => {
   }
 });
 
-it('queues exactly one validated restored-title mutation for a remote replica', () => {
+it('restores historical titles locally without overwriting newer replica titles', () => {
   const source = new SessionStore(':memory:');
   const target = new SessionStore(':memory:');
   const replica = new SessionStore(':memory:');
   try {
-    const id = source.createSDKSession('content', 'app', 'prompt', 'Restored name', 'cursor');
+    const id = source.createSDKSession('content', 'app', 'prompt', 'Older backup name', 'cursor');
     source.updateMemorySessionId(id, 'memory');
     const [exported] = source.getSdkSessionsBySessionIds(['memory']);
-    target.importSdkSession(exported);
+    const remoteId = replica.createSDKSession('content', 'app', 'prompt', 'Newer replica name', 'cursor');
+    const imported = target.importSdkSession(exported);
     target.importSdkSession(exported);
     const queued = target.db.query('SELECT op_uuid, rev, body FROM sync_outbox').all() as Array<{
       op_uuid: string;
       rev: string;
       body: string;
     }>;
-    expect(queued).toHaveLength(1);
-    expect(JSON.parse(queued[0].body)).toEqual({
-      op: 'set_title',
-      target: { content_session_id: 'content', platform_source: 'cursor' },
-      fields: { custom_title: 'Restored name' },
-    });
-    const remoteId = replica.createSDKSession('content', 'app', 'prompt', undefined, 'cursor');
     new SyncApply(replica.db, { deviceId: 'replica' }).applyOps(
-      [
-        {
-          seq: '1',
-          kind: 'mutation',
-          origin_device: 'restore-device',
-          origin_id: queued[0].op_uuid,
-          rev: String(queued[0].rev),
-          body: queued[0].body,
-          server_ts: 1000,
-        },
-      ],
+      queued.map((operation, index) => ({
+        seq: String(index + 1),
+        kind: 'mutation' as const,
+        origin_device: 'restore-device',
+        origin_id: operation.op_uuid,
+        rev: String(operation.rev),
+        body: operation.body,
+        server_ts: 1000,
+      })),
       { epoch: 'test-epoch' }
     );
-    expect(replica.getSessionById(remoteId)?.custom_title).toBe('Restored name');
+    expect(target.getSessionById(imported.id)?.custom_title).toBe('Older backup name');
+    expect(replica.getSessionById(remoteId)?.custom_title).toBe('Newer replica name');
+    expect(queued).toHaveLength(0);
+    // Explicitly creating a titled session remains a current sync mutation.
+    target.createSDKSession('new-content', 'app', 'prompt', 'New chosen name', 'cursor');
+    expect(target.db.query('SELECT count(*) AS n FROM sync_outbox').get()).toEqual({ n: 1 });
   } finally {
     source.close();
     target.close();
     replica.close();
   }
 });
-it('rejects invalid imported titles before inserting a session', () => {
+
+it('restores legacy SQLite title strings exactly, including blank and oversized values', () => {
+  const source = new SessionStore(':memory:');
+  const target = new SessionStore(':memory:');
+  try {
+    for (const [index, title] of ['', '   ', 'é'.repeat(2049), 'Current valid title'].entries()) {
+      const id = source.createSDKSession(`content-${index}`, 'app', 'prompt');
+      source.updateMemorySessionId(id, `memory-${index}`);
+      source.db.query('UPDATE sdk_sessions SET custom_title = ? WHERE id = ?').run(title, id);
+      const [exported] = source.getSdkSessionsBySessionIds([`memory-${index}`]);
+      const imported = target.importSdkSession(exported);
+      expect(imported.imported).toBe(true);
+      expect(target.getSessionById(imported.id)?.custom_title).toBe(title);
+    }
+    expect(target.db.query('SELECT count(*) AS n FROM sdk_sessions').get()).toEqual({ n: 4 });
+    expect(target.db.query('SELECT count(*) AS n FROM sync_outbox').get()).toEqual({ n: 0 });
+  } finally {
+    source.close();
+    target.close();
+  }
+});
+
+it('rejects non-string title JSON values before inserting a session', () => {
   const source = new SessionStore(':memory:');
   const target = new SessionStore(':memory:');
   try {
     const id = source.createSDKSession('content', 'app', 'prompt');
     source.updateMemorySessionId(id, 'memory');
-    const [session] = source.getSdkSessionsBySessionIds(['memory']);
-    for (const title of ['', '   ', 'é'.repeat(2049)]) {
-      expect(() => target.importSdkSession({ ...session, custom_title: title })).toThrow(
-        /non-blank string/
-      );
+    const [exported] = source.getSdkSessionsBySessionIds(['memory']);
+    for (const title of [123, false, {}, []]) {
+      expect(() => target.importSdkSession({ ...exported, custom_title: title as any })).toThrow();
     }
     expect(target.db.query('SELECT count(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
-    target.importSdkSession({ ...session, custom_title: 'é'.repeat(2048) });
-    expect(target.getSessionById(1)?.custom_title).toBe('é'.repeat(2048));
   } finally {
     source.close();
     target.close();

@@ -4323,8 +4323,10 @@ export class SessionStore {
     }
 
     const customTitle = session.custom_title ?? null;
-    if (customTitle !== null) {
-      this.validateSetTitleMutation(session.content_session_id, normalizedPlatformSource, customTitle);
+    // Backup values are historical SQLite data, not a newly authored title.
+    // Preserve legacy strings exactly; JSON objects/numbers are not title values.
+    if (customTitle !== null && typeof customTitle !== 'string') {
+      throw new TypeError('Imported custom_title must be a string or null');
     }
 
     const stmt = this.db.prepare(`
@@ -4349,9 +4351,8 @@ export class SessionStore {
         session.status
       );
 
-      if (customTitle !== null) {
-        this.enqueueSetTitleOp(session.content_session_id, normalizedPlatformSource, customTitle);
-      }
+      // Backups contain no title mutation clock. Publishing this historical
+      // value as a new set_title op could overwrite a newer replica title.
       return { imported: true, id: result.lastInsertRowid as number };
     })();
   }
