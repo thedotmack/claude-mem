@@ -194,8 +194,10 @@ export function codexSpawn(args: string[]): SpawnSyncReturns<string> {
   return spawnSync(invocation.command, invocation.args, invocation.options);
 }
 
-function runCodex(args: string[]): void {
-  const result = codexSpawn(args);
+type CodexSpawn = (args: string[]) => SpawnSyncReturns<string>;
+
+function runCodex(args: string[], spawn: CodexSpawn = codexSpawn): void {
+  const result = spawn(args);
   const output = console;
   const stdout = result.stdout?.trimEnd();
   const stderr = result.stderr?.trimEnd();
@@ -218,9 +220,9 @@ function isMarketplaceDifferentSourceError(error: unknown): boolean {
     || message.includes(`marketplace \`${MARKETPLACE_NAME}\` is already added from a different source`);
 }
 
-function registerCodexMarketplace(marketplaceRoot: string): void {
+function registerCodexMarketplace(marketplaceRoot: string, run = runCodex): void {
   try {
-    runCodex(['plugin', 'marketplace', 'add', marketplaceRoot]);
+    run(['plugin', 'marketplace', 'add', marketplaceRoot]);
     return;
   } catch (error) {
     if (!isMarketplaceDifferentSourceError(error)) {
@@ -229,8 +231,8 @@ function registerCodexMarketplace(marketplaceRoot: string): void {
   }
 
   console.warn(`  Codex marketplace ${MARKETPLACE_NAME} is already registered from another source; replacing it with ${marketplaceRoot}.`);
-  runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
-  runCodex(['plugin', 'marketplace', 'add', marketplaceRoot]);
+  run(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
+  run(['plugin', 'marketplace', 'add', marketplaceRoot]);
 }
 
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
@@ -321,10 +323,10 @@ export function removeLegacyCodexMcpSearchConfig(content: string): string {
   return kept.map((block) => block.text).join('\n').replace(/^\n+/, '').replace(/\n{3,}/g, '\n\n');
 }
 
-function writeCodexPluginConfig(enabled: boolean): boolean {
-  if (!enabled && !existsSync(CODEX_CONFIG_PATH)) return false;
-  mkdirSync(CODEX_DIR, { recursive: true });
-  const current = existsSync(CODEX_CONFIG_PATH) ? readFileSync(CODEX_CONFIG_PATH, 'utf-8') : '';
+function writeCodexPluginConfig(enabled: boolean, configPath = CODEX_CONFIG_PATH): boolean {
+  if (!enabled && !existsSync(configPath)) return false;
+  mkdirSync(path.dirname(configPath), { recursive: true });
+  const current = existsSync(configPath) ? readFileSync(configPath, 'utf-8') : '';
   let next = current;
 
   if (enabled) {
@@ -337,7 +339,7 @@ function writeCodexPluginConfig(enabled: boolean): boolean {
   next = setTomlPluginEnabled(next, CODEX_PLUGIN_ID, enabled);
 
   if (next === current) return false;
-  writeFileSync(CODEX_CONFIG_PATH, next);
+  writeFileSync(configPath, next);
   return true;
 }
 
@@ -355,8 +357,8 @@ function extractSemver(value: string): string | null {
   return value.match(/\d+\.\d+\.\d+/)?.[0] ?? null;
 }
 
-function assertCodexMarketplaceSupported(): void {
-  const result = codexSpawn(['--version']);
+function assertCodexMarketplaceSupported(spawn: CodexSpawn = codexSpawn): void {
+  const result = spawn(['--version']);
   const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
 
   if (result.error) {
@@ -492,6 +494,24 @@ export async function installCodexCli(marketplaceRootOverride?: string): Promise
     console.error(`\nInstallation failed: ${message}`);
     return 1;
   }
+}
+
+/** Install into the shared home used by a T3 Code provider, without changing process.env. */
+export function installCodexPluginForHome(options: {
+  marketplaceRoot: string;
+  homePath: string;
+  spawn: CodexSpawn;
+}): void {
+  const root = assertCodexMarketplaceRoot(options.marketplaceRoot);
+  assertCodexMarketplaceSupported(options.spawn);
+  const run = (args: string[]) => runCodex(args, options.spawn);
+  registerCodexMarketplace(root, run);
+  run(['plugin', 'add', CODEX_PLUGIN_ID]);
+  writeCodexPluginConfig(true, path.join(options.homePath, 'config.toml'));
+}
+
+export function disableCodexPluginForHome(homePath: string): void {
+  writeCodexPluginConfig(false, path.join(homePath, 'config.toml'));
 }
 
 function performCodexInstall(marketplaceRootOverride?: string): number {

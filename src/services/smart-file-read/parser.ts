@@ -39,6 +39,8 @@ const LANG_MAP: Record<string, string> = {
   ".cjs": "javascript",
   ".jsx": "tsx",
   ".ts": "typescript",
+  ".mts": "typescript",
+  ".cts": "typescript",
   ".tsx": "tsx",
   ".py": "python",
   ".pyw": "python",
@@ -77,7 +79,7 @@ const LANG_MAP: Record<string, string> = {
 
 function detectLanguage(filePath: string): string {
   const ext = filePath.slice(filePath.lastIndexOf("."));
-  return LANG_MAP[ext] ?? "unknown";
+  return LANG_MAP[ext.toLowerCase()] ?? "unknown";
 }
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
@@ -167,6 +169,7 @@ const QUERIES: Record<string, string> = {
 `,
 
   python: `
+(decorated_definition definition: (_) @decorated_inner) @decorated_outer
 (function_definition name: (identifier) @name) @func
 (class_definition name: (identifier) @name) @cls
 (import_statement) @imp
@@ -193,8 +196,8 @@ const QUERIES: Record<string, string> = {
 (method name: (identifier) @name) @func
 (singleton_method object: (_) @receiver name: (identifier) @name) @method
 (singleton_class value: (self)) @singleton_scope
-(class name: (constant) @name) @cls
-(module name: (constant) @name) @cls
+(class name: [(constant) (scope_resolution)] @name) @cls
+(module name: [(constant) (scope_resolution)] @name) @cls
 (call method: (identifier) @name) @imp
 `,
 
@@ -202,6 +205,7 @@ const QUERIES: Record<string, string> = {
 (method_declaration name: (identifier) @name) @method
 (constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @ctor
 (class_declaration name: (identifier) @name) @cls
+(record_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
 (enum_declaration name: (identifier) @name) @enm
 (import_declaration) @imp
@@ -245,11 +249,15 @@ const QUERIES: Record<string, string> = {
 (class_declaration name: (name) @name) @cls
 (interface_declaration name: (name) @name) @iface
 (trait_declaration name: (name) @name) @trait_def
+(enum_declaration name: (name) @name) @enm
 (method_declaration name: (name) @name) @method
 (namespace_use_declaration) @imp
 `,
 
   lua: `
+(assignment_statement
+  (variable_list . name: [(identifier) (dot_index_expression) (bracket_index_expression)] @name .)
+  (expression_list . value: (function_definition) .)) @const_func
 (function_declaration name: (identifier) @name) @func
 (function_declaration name: (dot_index_expression) @name) @func
 (function_declaration name: (method_index_expression) @name) @func
@@ -301,8 +309,10 @@ const QUERIES: Record<string, string> = {
   toml: `
 (table (bare_key) @name) @cls
 (table (dotted_key) @name) @cls
+(table (quoted_key) @name) @cls
 (table_array_element (bare_key) @name) @cls
 (table_array_element (dotted_key) @name) @cls
+(table_array_element (quoted_key) @name) @cls
 `,
 
   yaml: `
@@ -603,12 +613,12 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
 
-function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
-  const firstLine = lines[startRow] || "";
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
+  const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
 
   if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
-    const chunk = lines.slice(startRow, Math.min(startRow + 10, endRow + 1)).join("\n");
+    const chunk = [firstLine, ...lines.slice(startRow + 1, Math.min(startRow + 10, endRow + 1))].join("\n");
     const braceIdx = chunk.indexOf("{");
     if (braceIdx !== -1 && braceIdx < 500) {
       sig = chunk.slice(0, braceIdx).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
@@ -687,6 +697,12 @@ function captureLines(lines: string[], capture: RawCapture): string[] {
   return captured;
 }
 
+// A capture as one line: each row loses its indentation and CRLF, while
+// whitespace inside a row stays exact, so `"a  b"` and `"a b"` stay distinct.
+function captureText(lines: string[], capture: RawCapture): string {
+  return captureLines(lines, capture).map(line => line.trim()).filter(Boolean).join(" ");
+}
+
 // Tree-sitter ranges include columns: row-only comparisons lose methods
 // on the opening line and cannot distinguish adjacent one-line declarations.
 function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
@@ -699,8 +715,9 @@ function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
-  const exportRanges: Array<{ startRow: number; endRow: number }> = [];
+  const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
+  const decoratedRanges = new Map<string, RawCapture>();
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -708,7 +725,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   for (const match of matches) {
     for (const cap of match.captures) {
       if (cap.tag === "exp") {
-        exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+        exportRanges.push(cap);
+      }
+      if (cap.tag === "decorated_outer") {
+        const inner = match.captures.find(capture => capture.tag === "decorated_inner");
+        if (inner) decoratedRanges.set(`${inner.startRow}:${inner.startCol}`, cap);
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -719,7 +740,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
         // is one capture that can span a whole file. Keep both ends, because an
         // import's module source comes last.
-        const importText = captureLines(lines, cap).map(line => line.trim()).filter(Boolean).join(" ");
+        const importText = captureText(lines, cap);
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
           : importText);
@@ -757,7 +778,10 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    let name = nameCapture?.text || "anonymous";
+    // The CLI prints `text` only for one-row captures and cuts it at the first
+    // backtick, so names come from the source range. A zero-width MISSING node
+    // from error recovery leaves nothing to read and stays `anonymous`.
+    let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
     if (kindCapture.tag === "ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
@@ -786,7 +810,28 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
     } else {
-      signature = extractSignatureFromLines(lines, startRow, endRow);
+      // Export wrappers start before their direct declaration. Preserve only
+      // the export keywords that end that prefix: decorators belong to the
+      // wrapper (`@Injectable() export class`), and a containing exported
+      // class must not prefix its methods.
+      let exportPrefix = "";
+      if (kind !== "method") {
+        for (const capture of exportRanges) {
+          if (!rangeContains(capture, kindCapture)) continue;
+          const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
+            .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ")
+            .replace(/\s+/g, " ").trim();
+          const exportKeywords = prefix.match(/(?:^|\s)(export(?: default)?(?: declare)?)$/);
+          if (exportKeywords) {
+            exportPrefix = `${exportKeywords[1]} `;
+            break;
+          }
+        }
+      }
+      // Extract the declaration independently: prefix comments may contain
+      // braces or span more rows than the declaration signature budget.
+      signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
+        200 - exportPrefix.length, kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
@@ -797,17 +842,17 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       kind,
       signature,
       jsdoc: comment || docstring,
-      lineStart: startRow,
+      lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
       exported: isExported(name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind)) {
+    if (CONTAINER_KINDS.has(kind) || (language === "php" && kind === "enum")) {
       sym.children = [];
       containers.push({ sym, range: kindCapture });
     }
 
-    ranges.set(sym, kindCapture);
+    ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
@@ -1115,6 +1160,7 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
 // Ruby distinguishes instance methods with # and singleton methods with .
 // CSS selectors escape literal dots before adding ownership separators.
 export function qualifySymbolName(name: string, parent: string | undefined, language: string, kind?: CodeSymbol["kind"]): string {
+  if (language === "ruby" && name.startsWith("::")) return name;
   if (language === "ruby" && kind === "method") {
     if (name.startsWith("self.")) return parent ? `${parent}.${name.slice(5)}` : name;
     if (name.includes(".")) return name;

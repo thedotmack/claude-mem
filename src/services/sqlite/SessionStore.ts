@@ -176,6 +176,17 @@ const DEDUP_SCHEMA_VERSION = 56;
 /** ACT-R reinforcement columns (v56 is the dedup tables above, v58 advisor_calls). */
 const REINFORCEMENT_SCHEMA_VERSION = 57;
 
+/**
+ * A by-ids lookup's row limit: a positive integer, or undefined for no limit.
+ * Callers can pass a raw query-string value, so it is coerced and checked here
+ * and then bound as a parameter, never written into the SQL text. Only safe
+ * integers count: SQLite rejects a bound LIMIT beyond its integer range.
+ */
+function positiveIntegerRowLimit(limit: unknown): number | undefined {
+  const parsedLimit = Number(limit);
+  return Number.isSafeInteger(parsedLimit) && parsedLimit > 0 ? parsedLimit : undefined;
+}
+
 export class SessionStore {
   public db: Database;
   private readonly syncOpsEnabled: boolean;
@@ -3046,12 +3057,13 @@ export class SessionStore {
   ): ObservationSearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, platformSource, type, concepts, files } = options;
+    const { orderBy = 'date_desc', platformSource, type, concepts, files } = options;
+    const limit = positiveIntegerRowLimit(options.limit);
     const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
     const direction = orderBy === 'date_asc' ? 'ASC' : 'DESC';
     const orderClause = preserveIdOrder ? '' : `ORDER BY o.created_at_epoch ${direction}, o.id ${direction}`;
-    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
 
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
@@ -3104,6 +3116,7 @@ export class SessionStore {
     const whereClause = additionalConditions.length > 0
       ? `WHERE o.id IN (${placeholders}) AND ${additionalConditions.join(' AND ')}`
       : `WHERE o.id IN (${placeholders})`;
+    if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
       SELECT o.*
@@ -3306,7 +3319,7 @@ export class SessionStore {
     `).run(observedModel || null, observedBilling || null, sessionDbId);
   }
 
-  getSdkSessionsBySessionIds(memorySessionIds: string[]): {
+  getSdkSessionsBySessionIds(memorySessionIds: string[], promptIds: number[] = []): {
     id: number;
     content_session_id: string;
     memory_session_id: string;
@@ -3320,20 +3333,31 @@ export class SessionStore {
     completed_at_epoch: number | null;
     status: string;
   }[] {
-    if (memorySessionIds.length === 0) return [];
+    if (memorySessionIds.length === 0 && promptIds.length === 0) return [];
 
-    const placeholders = memorySessionIds.map(() => '?').join(',');
-    const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project,
-             COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-             user_prompt, custom_title,
-             started_at, started_at_epoch, completed_at, completed_at_epoch, status
-      FROM sdk_sessions
-      WHERE memory_session_id IN (${placeholders})
-      ORDER BY started_at_epoch DESC
-    `);
-
-    return stmt.all(...memorySessionIds) as any[];
+    // Memory and prompt references share a 500-binding budget. Deduplicate
+    // both references and returned rows; one parent can span many chunks.
+    const references: Array<string | number> = [...new Set(memorySessionIds), ...new Set(promptIds)];
+    const sessions = new Map<number, ReturnType<SessionStore['getSdkSessionsBySessionIds']>[number]>();
+    for (let offset = 0; offset < references.length; offset += 500) {
+      const batch = references.slice(offset, offset + 500);
+      const memoryIds = batch.filter((id): id is string => typeof id === 'string');
+      const prompts = batch.filter((id): id is number => typeof id === 'number');
+      const conditions: string[] = [];
+      if (memoryIds.length) conditions.push(`memory_session_id IN (${memoryIds.map(() => '?').join(',')})`);
+      if (prompts.length) conditions.push(`id IN (SELECT session_db_id FROM user_prompts WHERE id IN (${prompts.map(() => '?').join(',')}))`);
+      const stmt = this.db.prepare(`
+        SELECT id, content_session_id, memory_session_id, project,
+               COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+               user_prompt, custom_title,
+               started_at, started_at_epoch, completed_at, completed_at_epoch, status
+        FROM sdk_sessions
+        WHERE ${conditions.join(' OR ')}
+        ORDER BY started_at_epoch DESC
+      `);
+      for (const row of stmt.all(...batch) as ReturnType<SessionStore['getSdkSessionsBySessionIds']>) sessions.set(row.id, row);
+    }
+    return [...sessions.values()].sort((a, b) => b.started_at_epoch - a.started_at_epoch);
   }
 
   /**
@@ -3929,11 +3953,12 @@ export class SessionStore {
   ): SessionSummarySearchResult[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, platformSource } = options;
+    const { orderBy = 'date_desc', platformSource } = options;
+    const limit = positiveIntegerRowLimit(options.limit);
     const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
@@ -3952,6 +3977,7 @@ export class SessionStore {
     const additionalFilter = additionalConditions.length > 0
       ? `AND ${additionalConditions.join(' AND ')}`
       : '';
+    if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
       SELECT ss.*
@@ -3976,11 +4002,12 @@ export class SessionStore {
   ): UserPromptRecord[] {
     if (ids.length === 0) return [];
 
-    const { orderBy = 'date_desc', limit, platformSource } = options;
+    const { orderBy = 'date_desc', platformSource } = options;
+    const limit = positiveIntegerRowLimit(options.limit);
     const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
     const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
-    const limitClause = limit && !preserveIdOrder ? `LIMIT ${limit}` : '';
+    const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
     const additionalConditions: string[] = [];
@@ -3999,6 +4026,7 @@ export class SessionStore {
     const additionalFilter = additionalConditions.length > 0
       ? `AND ${additionalConditions.join(' AND ')}`
       : '';
+    if (limitClause) params.push(limit);
 
     const stmt = this.db.prepare(`
       SELECT
