@@ -1,5 +1,5 @@
 import { afterAll, expect, it, mock } from 'bun:test';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { zstdCompressSync } from 'node:zlib';
@@ -84,9 +84,11 @@ for (const restart of [false, true]) it(`retires unmatched tools when their tran
     if (restart) first.stop(); rmSync(file);
     if (restart) { second = new TranscriptWatcher({ version: 1, watches: [watch] }, state); await second.start(); }
     else (first as any).handleRootWatchEvent(root, file, watch, schema, 'session.jsonl');
+    await new Promise(resolve => setTimeout(resolve, 1150));
     const saved = JSON.parse(readFileSync(state, 'utf8'));
     expect(saved.pendingTools[file]).toBeUndefined(); expect(saved.pendingToolFileIdentities[file]).toBeUndefined();
     expect(readFileSync(state, 'utf8')).not.toContain('fake-secret');
+    expect(saved.offsets[file]).toBeUndefined(); expect(saved.cwds?.[file]).toBeUndefined(); expect((first as any).missingFiles.size).toBe(0);
   } finally { first.stop(); second?.stop(); rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -142,4 +144,76 @@ it('does not retire saved retry metadata when stop cancels asynchronous start', 
   let release!: () => void; (watcher as any).setupWatch = () => new Promise<void>(resolve => { release = resolve; });
   try { const start = watcher.start(); watcher.stop(); release(); await start; expect(JSON.parse(readFileSync(state, 'utf8')).pendingTools[file]['retry:s'].t.toolInput).toBe('saved'); }
   finally { watcher.stop(); rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const restart of [false, true]) it(`matches a unique cross-file tool result${restart ? ' after restart' : ''}`, async () => {
+ const root=mkdtempSync(join(tmpdir(),'cm-cross-result-')); delivered.length=0;accepting=true;
+ const a=join(root,'z-source.jsonl'),b=join(root,'a-result.jsonl'),state=join(root,'checkpoint.json');
+ writeFileSync(a,JSON.stringify({session:'s',type:'use',id:'t',name:'Read',input:{path:'A'}})+'\n'); writeFileSync(b,'');
+ const watch={name:'spool',path:join(root,'*.jsonl'),workspace:'/repo',schema};
+ const first=new TranscriptWatcher({version:1,watches:[watch]},state); let second:TranscriptWatcher|undefined;
+ try {
+  await first.start(); for(const t of (first as any).tailers.values()) await t.readTask;
+  if(restart){first.stop();second=new TranscriptWatcher({version:1,watches:[watch]},state);await second.start();for(const t of(second as any).tailers.values())await t.readTask;}
+  const current=second??first; appendFileSync(b,JSON.stringify({session:'s',type:'result',id:'t',output:'B result'})+'\n');await(current as any).tailers.get(b).readNewData();
+  const entries=delivered;expect(entries).toHaveLength(1);expect(entries[0]).toMatchObject({toolName:'Read',toolInput:{path:'A'},toolResponse:'B result'});
+  expect(JSON.parse(readFileSync(state,'utf8')).pendingTools[a]['spool:s']?.t).toBeUndefined();
+ }finally{first.stop();second?.stop();rmSync(root,{recursive:true,force:true});}
+});
+it('does not guess between ambiguous same-ID tools from other files',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-ambiguous-result-'));delivered.length=0;accepting=true;
+ const files=['a','b','c'].map(n=>join(root,n+'.jsonl'));const state=join(root,'checkpoint.json');
+ for(const [i,file]of files.entries())writeFileSync(file,i===2?'':JSON.stringify({session:'s',type:'use',id:'t',name:i===0?'Read':'Write',input:{path:i===0?'A':'B'}})+'\n');
+ const watch={name:'spool',path:join(root,'*.jsonl'),workspace:'/repo',schema};const watcher=new TranscriptWatcher({version:1,watches:[watch]},state);
+ try{await watcher.start();for(const t of(watcher as any).tailers.values())await t.readTask;appendFileSync(files[2],JSON.stringify({session:'s',type:'result',id:'t',output:'ambiguous'})+'\n');await(watcher as any).tailers.get(files[2]).readNewData();const entries=delivered;expect(entries).toHaveLength(0);}
+ finally{watcher.stop();rmSync(root,{recursive:true,force:true});}
+});
+it('preserves tools/checkpoint across a brief same-inode disappearance',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-returned-file-'));delivered.length=0;accepting=true;
+ const file=join(root,'session.jsonl'),away=join(root,'away'),state=join(root,'checkpoint.json');
+ writeFileSync(file,JSON.stringify({session:'s',type:'use',id:'t',name:'Read',input:{path:'A'}})+'\n');const inode=statSync(file).ino;
+ const watch={name:'spool',path:file,workspace:'/repo',schema};const watcher=new TranscriptWatcher({version:1,watches:[watch]},state);
+ try{await watcher.start();await(watcher as any).tailers.get(file).readTask;renameSync(file,away);(watcher as any).handleRootWatchEvent(root,file,watch,schema,'session.jsonl');await new Promise(r=>setTimeout(r,20));renameSync(away,file);appendFileSync(file,JSON.stringify({session:'s',type:'result',id:'t',output:'returned'})+'\n');expect(statSync(file).ino).toBe(inode);await(watcher as any).addTailer(file,watch,schema,true);await(watcher as any).tailers.get(file).readTask;const entries=delivered;expect(entries).toHaveLength(1);expect(entries[0].toolName).toBe('Read');}
+ finally{watcher.stop();rmSync(root,{recursive:true,force:true});}
+});
+it('starts a larger replacement at zero with its new cwd after disappearance',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-recreated-file-'));delivered.length=0;accepting=true;
+ const file=join(root,'session.jsonl'),state=join(root,'checkpoint.json');
+ const localSchema={...schema,events:[{name:'context',match:{path:'type',equals:'ctx'},action:'session_context',fields:{cwd:'cwd'}},...schema.events]} as any;
+ const line=(v:unknown)=>JSON.stringify(v)+'\n';writeFileSync(file,line({session:'s',type:'ctx',cwd:'/old'})+line({session:'s',type:'use',id:'old',name:'Read',input:{path:'old'}}));
+ const watch={name:'spool',path:file,schema:localSchema};const watcher=new TranscriptWatcher({version:1,watches:[watch]},state);
+ try{await watcher.start();await(watcher as any).tailers.get(file).readTask;const prior=statSync(file).size;rmSync(file);(watcher as any).handleRootWatchEvent(root,file,watch,localSchema,'session.jsonl');
+  const replacement=line({session:'s',type:'ctx',cwd:'/new'})+line({session:'s',type:'use',id:'new',name:'Write',input:{path:'X'.repeat(300)}})+line({session:'s',type:'result',id:'new',output:'new contents'});expect(Buffer.byteLength(replacement)).toBeGreaterThan(prior);writeFileSync(file,replacement);await(watcher as any).addTailer(file,watch,localSchema,true);await(watcher as any).tailers.get(file).readTask;
+  const entries=delivered;expect(entries).toHaveLength(1);expect(entries[0]).toMatchObject({toolName:'Write',cwd:'/new'});
+ }finally{watcher.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+it('does not borrow tools from a source excluded by the current watch configuration',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-excluded-tool-'));delivered.length=0;accepting=true;
+ const a=join(root,'source.jsonl'),b=join(root,'result.jsonl'),state=join(root,'checkpoint.json');writeFileSync(a,JSON.stringify({session:'s',type:'use',id:'t',name:'Read',input:{path:'excluded'}})+'\n');writeFileSync(b,'');
+ const watch={name:'spool',path:a,workspace:'/repo',schema};const first=new TranscriptWatcher({version:1,watches:[watch]},state);let second:TranscriptWatcher|undefined;
+ try{await first.start();await(first as any).tailers.get(a).readTask;first.stop();appendFileSync(b,JSON.stringify({session:'s',type:'result',id:'t',output:'ignored'})+'\n');const selected={...watch,path:b};second=new TranscriptWatcher({version:1,watches:[selected]},state);await second.start();await(second as any).tailers.get(b).readTask;const entries=delivered;expect(entries).toHaveLength(0);await new Promise(r=>setTimeout(r,1150));expect(JSON.parse(readFileSync(state,'utf8')).pendingTools[a]).toBeUndefined();}
+ finally{first.stop();second?.stop();rmSync(root,{recursive:true,force:true});}
+});
+it('cancels bounded retirement timers on stop without deleting valid retry state',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-stop-retirement-'));const file=join(root,'session.jsonl'),state=join(root,'checkpoint.json');
+ writeFileSync(state,JSON.stringify({offsets:{[file]:20},pendingTools:{[file]:{'spool:s':{t:{toolName:'Read'}}}}}));const watcher=new TranscriptWatcher({version:1,watches:[]},state);
+ try{await watcher.start();expect((watcher as any).missingFiles.size).toBe(1);watcher.stop();expect((watcher as any).missingFiles.size).toBe(0);await new Promise(r=>setTimeout(r,1100));expect(JSON.parse(readFileSync(state,'utf8')).offsets[file]).toBe(20);}
+ finally{watcher.stop();rmSync(root,{recursive:true,force:true});}
+});
+
+it('does not lend truncated source metadata to an earlier-enumerated result after restart',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-truncated-cross-'));const source=join(root,'z-source.jsonl'),result=join(root,'a-result.jsonl'),state=join(root,'checkpoint.json');
+ writeFileSync(source,JSON.stringify({session:'s',type:'use',id:'t',name:'Read',input:{path:'retired-original-input'}})+'\n');writeFileSync(result,'');const watch={name:'spool',path:join(root,'*.jsonl'),workspace:'/repo',schema};
+ const first=new TranscriptWatcher({version:1,watches:[watch]},state);let second:TranscriptWatcher|undefined;
+ try{delivered.length=0;accepting=true;await first.start();for(const t of(first as any).tailers.values())await t.readTask;first.stop();const inode=statSync(source).ino;writeFileSync(source,'{}\n');expect(statSync(source).ino).toBe(inode);appendFileSync(result,JSON.stringify({session:'s',type:'result',id:'t',output:'new'})+'\n');second=new TranscriptWatcher({version:1,watches:[watch]},state);const add=(second as any).addTailer.bind(second);(second as any).addTailer=async(file:string,...args:any[])=>{if(file===source)await new Promise(r=>setTimeout(r,50));return add(file,...args);};await second.start();for(const t of(second as any).tailers.values())await t.readTask;expect(delivered).toHaveLength(0);}
+ finally{first.stop();second?.stop();rmSync(root,{recursive:true,force:true});}
+});
+it('rewinds a replacement that returns after disappearing before tailer attachment',async()=>{
+ const root=mkdtempSync(join(tmpdir(),'cm-attach-replacement-'));delivered.length=0;accepting=true;
+ const file=join(root,'session.jsonl'),away=join(root,'away'),state=join(root,'checkpoint.json');writeFileSync(file,JSON.stringify({session:'s',type:'use',id:'old',name:'Read',input:{path:'old'}})+'\n');const watch={name:'spool',path:file,workspace:'/repo',schema};
+ const first=new TranscriptWatcher({version:1,watches:[watch]},state);let second:TranscriptWatcher|undefined;
+ try{await first.start();await(first as any).tailers.get(file).readTask;first.stop();renameSync(file,away);second=new TranscriptWatcher({version:1,watches:[watch]},state);await(second as any).addTailer(file,watch,schema);await(second as any).tailers.get(file).readTask;
+  writeFileSync(file,JSON.stringify({session:'s',type:'use',id:'new',name:'Write',input:{path:'x'.repeat(300)}})+'\n'+JSON.stringify({session:'s',type:'result',id:'new',output:'returned new'})+'\n');await(second as any).tailers.get(file).readNewData();const entries=delivered;expect(entries).toHaveLength(1);expect(entries[0].toolName).toBe('Write');
+ }finally{first.stop();second?.stop();rmSync(root,{recursive:true,force:true});}
 });
