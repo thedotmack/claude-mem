@@ -627,7 +627,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   ref: "reference",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface"]);
 
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
   const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
@@ -1189,6 +1189,80 @@ export function qualifySymbolName(name: string, parent: string | undefined, lang
   const segment = language === "css" || language === "scss"
     ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
   return parent ? `${parent}.${segment}` : segment;
+}
+
+/**
+ * Lookup hints for a failed unfold. Every miss lands in the agent's context,
+ * so the hint stays within 1 KiB: names most like the missed one come first,
+ * and ties keep roots first, then qualified children offered fairly.
+ */
+export function formatAvailableSymbols(file: FoldedFile, missedName: string): string {
+  const marker = "  ... more symbols omitted; use smart_search to narrow the lookup.";
+  const byteBudget = 1024 - Buffer.byteLength(marker) - 1;
+  // Split like a smart_search query, plus owner separators (`Foo::bar`, `Foo#bar`).
+  const missedParts = missedName.toLowerCase().split(/[\s_\-./:#]+/).filter(part => part.length > 0);
+  const candidates: Array<{ line: string; similarity: number }> = [];
+  const groups: Array<{ symbols: CodeSymbol[]; parent: string; index: number }> = [];
+  let omitted = false;
+  const offer = (symbol: CodeSymbol, parent?: string): void => {
+    const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
+    candidates.push({ line: `  - ${name} (${symbol.kind})`, similarity: matchScore(name.toLowerCase(), missedParts) });
+    if (symbol.children?.length) groups.push({ symbols: symbol.children, parent: name, index: 0 });
+  };
+  // Bound traversal separately from the byte budget so roots that still fit
+  // do not disappear merely to reserve visits for their qualified children.
+  const maxVisits = 512;
+  const reservedChildVisits = Math.min(64, file.symbols.slice(0, maxVisits)
+    .reduce((count, symbol) => count + (symbol.children?.length ?? 0), 0));
+  // A large early class must not bury a later top-level entry point.
+  for (const symbol of file.symbols) {
+    if (candidates.length >= maxVisits - reservedChildVisits) { omitted = true; break; }
+    offer(symbol);
+  }
+  // Round-robin owner groups keeps qualified suggestions from multiple roots.
+  while (groups.length && candidates.length < maxVisits) {
+    const group = groups.shift()!;
+    offer(group.symbols[group.index++], group.parent);
+    if (group.index < group.symbols.length) groups.push(group);
+  }
+  if (groups.length) omitted = true;
+  // A stable sort, so equally similar names keep the traversal order above.
+  candidates.sort((a, b) => b.similarity - a.similarity);
+  const available: string[] = [];
+  let bytes = 0;
+  for (const { line } of candidates) {
+    const size = Buffer.byteLength(line) + (available.length ? 1 : 0);
+    if (bytes + size <= byteBudget) { available.push(line); bytes += size; }
+    else omitted = true;
+  }
+  if (omitted) available.push(marker);
+  return available.join("\n");
+}
+
+/** Query relevance shared by smart_search and the unfold hints: exact 10, substring 5, in-order subsequence 1, per part. */
+export function matchScore(text: string, queryParts: string[]): number {
+  let score = 0;
+  for (const part of queryParts) {
+    if (text === part) {
+      score += 10;
+    } else if (text.includes(part)) {
+      score += 5;
+    } else {
+      let ti = 0;
+      let matched = 0;
+      for (const ch of part) {
+        const idx = text.indexOf(ch, ti);
+        if (idx !== -1) {
+          matched++;
+          ti = idx + 1;
+        }
+      }
+      if (matched === part.length) {
+        score += 1;
+      }
+    }
+  }
+  return score;
 }
 
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
