@@ -4,6 +4,60 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.34.0] - 2026-10-06
+
+## New: Pi and DeepSeek Harness integrations
+
+Claude-Mem 13.34.0 adds first-party memory integrations for Pi and DeepSeek Harness, makes installation follow the agents you actually use, and gives native user turns durable identities so a retry cannot create a second prompt or attach capture to the wrong turn.
+
+### Pi
+
+- Install with `npx claude-mem install --ide pi`, then restart Pi. The self-contained ESM extension installs under `~/.pi/agent/extensions/claude-mem`; `PI_CODING_AGENT_DIR` is respected.
+- Use `mem_search`, `mem_timeline`, and `mem_get_observations` for progressive recall: search for useful IDs, inspect their surrounding timeline, and fetch only the records needed.
+- Compatible hosts capture the persisted user prompt before tool results, retain the real Pi session and tool-call identities, and summarize once per turn. Only text is captured; image payloads stay out of memory.
+- Failed worker requests leave Pi usable. Capture remains disarmed until the worker acknowledges the actual persisted user-entry ID. The extension can recover on that same entry after a temporary outage or unavailable branch data, without requiring a new user turn.
+- Private prompts and excluded projects suppress automatic context and capture. Switching sessions, forking, or changing the session tree clears the prior capture anchor.
+- Installation and `npx claude-mem pi status` confirm extension-file presence; they do not verify the Pi version or automatic capture. Pi 0.79.6 supports manual recall only. Automatic capture compatibility has been source-reviewed for Pi 1.0.2 and 1.0.4; other versions require a compatibility check and capture requires a compatible Claude-Mem worker. See [Pi capture compatibility and update guidance](https://github.com/thedotmack/claude-mem/blob/main/docs/pi-native-capture.md).
+
+### DeepSeek Harness
+
+- Install DSH and `pnpm`, then run `npx claude-mem install --ide dsh --dsh-profile web`. The default profile is `web`; `--dsh-profile` also supports an existing profile such as `tui` on an older host.
+- The bundled `@claude-mem/dsh` package installs through DSH's own profile and workspace commands. Restart DSH and start or restart the Claude-Mem worker after installation.
+- The native plugin injects checkout context before the first turn and provides `mem_search`, `mem_timeline`, `mem_get_observations`, `mem_save`, and `mem_context`.
+- Fetching observations by ID retains every requested record, including records that share the same text. A configured recall project still respects exclusion of the actual checkout.
+- Automatic capture uses one worker-managed transcript watch. Plugin ingestion and summarization stay off by default, preventing a second writer. New managed watches start at the end of existing transcripts rather than unexpectedly importing historical sessions.
+- Capture retains the real session-header ID, matches current and legacy tool-result formats, and restores directory and pending-tool context after a watcher restart. Replaced transcript files cannot borrow the previous file's session ID, directory, or outstanding tool calls.
+- Existing user-managed DSH watches remain authoritative. Installation respects the configured transcript-watch path and `DSH_HOME`, preserves an explicit `CLAUDE_MEM_TRANSCRIPTS_ENABLED=false`, and reports incomplete capture setup separately from successful plugin installation.
+- Pi and DSH use the configured worker address, including persisted settings and environment overrides. DSH recall can target a remote worker with `DSH_MEM_BASE_URL` or plugin configuration without starting a local worker for that remote address.
+
+## Installation improvements
+
+- The interactive installer asks which agents you use and preselects detected agents. Claude Code is the fallback when no supported agent is detected; its host-install prompt appears when Claude Code is selected and missing.
+- Pi and DeepSeek Harness appear in agent detection and CLI selection. Native Pi extension install, status, and uninstall commands are available from `npx claude-mem pi`.
+- Pi and DSH currently require worker runtime. Their combination with server runtime is rejected before package copying begins.
+- Native installers validate required bundle, attribution, and configuration inputs before changing the destination or invoking DSH profile installation. Missing inputs and malformed configuration leave working installations intact.
+- Pi replaces its explicit owned file set with rollback if a replacement fails. Repeat installation refreshes the complete set, and uninstall retains unrelated extension files.
+- DSH installation records managed profiles for later uninstall, restores that ownership record when DSH installation fails, and leaves unrelated watches and host configuration in place.
+- If DSH is missing or refuses profile removal, uninstall continues cleaning other integrations, reports incomplete DSH cleanup, and retains the profile ownership records and package needed to retry.
+- Marketplace installation refreshes the root project `LICENSE` and `NOTICE` together. Pi and DSH packages include their adapted-project attribution and bundled dependency license texts; the build validates Pi's pinned TypeBox version and provenance before writing the native bundles.
+
+## Durable native prompt retries
+
+- Native user-entry IDs are stored atomically with the prompt and scoped to the worker's platform/session identity. Two intentional turns with equal text remain distinct; retrying the same entry returns the existing prompt receipt, including after a worker restart.
+- Prompt broadcasts and vector synchronization use the exact claimed prompt record, so rapid turns saved within the same millisecond cannot sync the preceding turn.
+- Reusing an entry ID for different cleaned prompt text is rejected. Identity checks use the complete cleaned ask, so equal truncated previews cannot hide conflicting retry bodies.
+- If a durable prompt was saved but live session initialization failed, retry repairs the stale live prompt context. An earlier receipt cannot downgrade a newer active turn. Cold retries remain lazy until real observation capture needs the session.
+- Slash-only native asks retain their actual turn context. Legacy callers continue to use the existing same-text retry behavior.
+- The read-only native capability probe prevents an older worker from silently treating a Pi native entry as legacy text capture. Only a matching current-entry acknowledgement enables automatic tool and summary capture.
+
+## Upgrade and credits
+
+Run `npx claude-mem@13.34.0 install`, select your agents, and restart newly configured hosts. See [native harness installation](https://github.com/thedotmack/claude-mem/blob/main/docs/native-harness-integrations.md) for configuration, compatibility, and uninstall details.
+
+The Pi recall design and text extraction build on [husniadil/pi-mem](https://github.com/husniadil/pi-mem), by Husni Adil Makmur, under MIT. The DeepSeek Harness plugin adapts [Bleed00/dsh-claude-mem](https://github.com/Bleed00/dsh-claude-mem), by Bleed00, under Apache-2.0. Their original attribution and required notices ship with the integrations.
+
+Included changes: [#4377](https://github.com/thedotmack/claude-mem/pull/4377), [#4378](https://github.com/thedotmack/claude-mem/pull/4378), and [#4461](https://github.com/thedotmack/claude-mem/pull/4461).
+
 ## [13.33.0] - 2026-10-06
 
 ## The File Read Gate now works for marketplace installs
