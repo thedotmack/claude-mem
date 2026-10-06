@@ -2,20 +2,21 @@
  * Cross-platform descendant enumeration + identity for the Windows Chroma
  * lifecycle gates.
  *
- * Why this is not `collectDescendantPids` from src/shared/kill-process-tree.ts:
- * that helper walks with `pgrep`, which is POSIX-only and returns [] on
- * Windows by construction. The whole point of these tests is to observe the
- * Windows process tree, so the enumeration has to work there.
+ * Kept independent of the production descendant collector so the lifecycle
+ * gates can assert what the worker actually left behind, including image names
+ * for failure messages.
  *
  * Identity, not just PID: every recorded descendant carries its start token
- * (Win32_Process CreationDate / /proc starttime) via the PRODUCTION
- * captureProcessStartToken(). Asserting "pid is gone" alone is unsound — the
- * OS can hand that number to something else between snapshot and assertion and
- * produce a false PASS. A survivor only counts as alive when the pid is alive
- * AND its start token still matches.
+ * (Win32_Process CreationDate / /proc starttime) from the SAME row that
+ * established its parent link. Probing tokens after finding PIDs could record
+ * a replacement's token and later authorize killing that replacement. Asserting
+ * "pid is gone" alone is also unsound: the OS can reuse that number. A fresh
+ * mismatching token proves reuse; an unreadable token leaves the result
+ * uncertain and is reported as a survivor rather than a false pass.
  */
 
 import { execFileSync } from 'child_process';
+import { readFileSync, readdirSync } from 'fs';
 import { captureProcessStartToken, isPidAlive } from '../../../src/supervisor/process-registry.js';
 import { hasMatchingProcessStartToken } from '../../../src/shared/process-identity.js';
 
@@ -27,11 +28,12 @@ export interface ProcessIdentity {
   name: string;
 }
 
-/** One row per process: pid, parent pid, image name. */
-interface ProcessRow {
+/** One row carrying ancestry, image name, and identity together. */
+export interface ProcessRow {
   pid: number;
   ppid: number;
   name: string;
+  startToken: string | null;
 }
 
 function readProcessTableWindows(): ProcessRow[] {
@@ -43,26 +45,54 @@ function readProcessTableWindows(): ProcessRow[] {
       '-NoProfile',
       '-NonInteractive',
       '-Command',
-      'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Csv -NoTypeInformation',
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,@{Name='StartToken';Expression={$_.CreationDate.ToString('yyyyMMddHHmmss.ffffff')}} | ConvertTo-Csv -NoTypeInformation",
     ],
     { encoding: 'utf-8', timeout: 30_000, windowsHide: true, maxBuffer: 32 * 1024 * 1024 }
   );
 
   const rows: ProcessRow[] = [];
   for (const line of stdout.split(/\r?\n/).slice(1)) {
-    const match = line.match(/^"(\d+)","(\d+)","(.*)"$/);
+    const match = line.match(/^"(\d+)","(\d+)","(.*)","(.*)"$/);
     if (!match) continue;
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
       name: match[3]!,
+      startToken: match[4]!.trim() || null,
+    });
+  }
+  return rows;
+}
+
+function readProcessTableLinux(): ProcessRow[] {
+  const rows: ProcessRow[] = [];
+  for (const entry of readdirSync('/proc')) {
+    if (!/^\d+$/.test(entry)) continue;
+    let raw: string;
+    try {
+      raw = readFileSync(`/proc/${entry}/stat`, 'utf-8');
+    } catch {
+      continue; // Exited before its row could be observed.
+    }
+    const tailStart = raw.lastIndexOf(') ');
+    const nameStart = raw.indexOf('(');
+    if (tailStart < 0 || nameStart < 0) continue;
+    const fields = raw.slice(tailStart + 2).split(' ');
+    const ppid = Number.parseInt(fields[1] ?? '', 10);
+    if (!Number.isInteger(ppid)) continue;
+    const starttime = fields[19];
+    rows.push({
+      pid: Number.parseInt(entry, 10),
+      ppid,
+      name: raw.slice(nameStart + 1, tailStart),
+      startToken: starttime && /^\d+$/.test(starttime) ? starttime : null,
     });
   }
   return rows;
 }
 
 function readProcessTablePosix(): ProcessRow[] {
-  const stdout = execFileSync('ps', ['-eo', 'pid=,ppid=,comm='], {
+  const stdout = execFileSync('ps', ['-eo', 'pid=,ppid=,lstart=,comm='], {
     encoding: 'utf-8',
     timeout: 30_000,
     maxBuffer: 32 * 1024 * 1024,
@@ -70,19 +100,22 @@ function readProcessTablePosix(): ProcessRow[] {
 
   const rows: ProcessRow[] = [];
   for (const line of stdout.split('\n')) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.*)$/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(.{24})\s+(.*)$/);
     if (!match) continue;
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
-      name: match[3]!.trim(),
+      name: match[4]!.trim(),
+      startToken: match[3]!.trim() || null,
     });
   }
   return rows;
 }
 
 function readProcessTable(): ProcessRow[] {
-  return process.platform === 'win32' ? readProcessTableWindows() : readProcessTablePosix();
+  if (process.platform === 'win32') return readProcessTableWindows();
+  if (process.platform === 'linux') return readProcessTableLinux();
+  return readProcessTablePosix();
 }
 
 /**
@@ -104,8 +137,22 @@ function isWindowsRunnerNoise(name: string): boolean {
  * of the parent-child table entirely, so a post-mortem walk finds nothing and
  * would report a false PASS.
  */
-export function snapshotDescendants(rootPid: number): ProcessIdentity[] {
-  const rows = readProcessTable();
+export function snapshotDescendants(
+  rootPid: number,
+  expectedRootToken?: string,
+  rows: ProcessRow[] = readProcessTable()
+): ProcessIdentity[] {
+  const rowPids = new Set<number>();
+  for (const row of rows) {
+    if (rowPids.has(row.pid)) throw new Error(`process table repeated pid ${row.pid} during descendant snapshot`);
+    rowPids.add(row.pid);
+  }
+  if (expectedRootToken !== undefined) {
+    const root = rows.find(row => row.pid === rootPid);
+    if (!root || root.startToken !== expectedRootToken) {
+      throw new Error(`fixture root identity changed before descendant snapshot (pid=${rootPid})`);
+    }
+  }
   const childrenByParent = new Map<number, ProcessRow[]>();
   for (const row of rows) {
     const siblings = childrenByParent.get(row.ppid);
@@ -126,7 +173,7 @@ export function snapshotDescendants(rootPid: number): ProcessIdentity[] {
       if (isWindowsRunnerNoise(child.name)) continue;
       found.push({
         pid: child.pid,
-        startToken: captureProcessStartToken(child.pid),
+        startToken: child.startToken,
         name: child.name,
       });
     }
@@ -167,6 +214,18 @@ export function describeProcesses(entries: ProcessIdentity[]): string {
   return entries.map(e => `${e.name}(pid=${e.pid})`).join(', ');
 }
 
+/** Authorize a root cleanup only with a recorded, freshly matching identity. */
+export async function runForMatchingProcess(
+  pid: number,
+  startToken: string | null | undefined,
+  action: (pid: number, startToken: string) => void | Promise<void>,
+  matchesStartToken = hasMatchingProcessStartToken
+): Promise<boolean> {
+  if (!startToken || !matchesStartToken(pid, startToken)) return false;
+  await action(pid, startToken);
+  return true;
+}
+
 /**
  * Reap only descendants captured while the fixture was alive. A free listener
  * does not imply its sidecars exited: Bun 1.4 releases the socket while the
@@ -194,9 +253,47 @@ export function reapSnapshottedDescendants(
 ): void {
   // snapshotDescendants is breadth-first. Kill leaves before their parents,
   // without trusting a post-exit parent PID or a possibly recycled child PID.
+  const failures: string[] = [];
   for (const entry of [...snapshot].reverse()) {
     if (entry.startToken === null) continue;
     if (!matchesStartToken(entry.pid, entry.startToken)) continue;
-    killOne(entry.pid);
+    try {
+      killOne(entry.pid);
+    } catch (error) {
+      failures.push(`${entry.name}(pid=${entry.pid}): ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
+  if (failures.length > 0) throw new Error(`snapshot descendant cleanup failed: ${failures.join('; ')}`);
+}
+
+/**
+ * Cleanup for a still-live fixture or replacement worker. The root must carry
+ * a token recorded by that process before teardown; its descendants are then
+ * discovered with ancestry and tokens from the same process-table rows.
+ */
+export function reapOwnedLiveTree(
+  pid: number,
+  startToken: string | null | undefined,
+  killOne: (pid: number) => void,
+  matchesStartToken = hasMatchingProcessStartToken,
+  rows?: ProcessRow[]
+): boolean {
+  if (!startToken || !matchesStartToken(pid, startToken)) return false;
+  const children = snapshotDescendants(pid, startToken, rows ?? readProcessTable());
+  const failures: string[] = [];
+  try {
+    reapSnapshottedDescendants(children, matchesStartToken, killOne);
+  } catch (error) {
+    failures.push(error instanceof Error ? error.message : String(error));
+  }
+  // Child cleanup can take time. Revalidate before killing the root itself.
+  if (matchesStartToken(pid, startToken)) {
+    try {
+      killOne(pid);
+    } catch (error) {
+      failures.push(`root pid ${pid}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (failures.length > 0) throw new Error(failures.join('; '));
+  return true;
 }

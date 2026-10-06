@@ -19,7 +19,7 @@ export type PostKillState =
   | { kind: 'runtime-capability-skip' }
   | {
       kind: 'malformed';
-      reason: 'chain-died' | 'fixture-pid-recycled' | 'ghost-shared-port' | 'foreign-owner';
+      reason: 'chain-died' | 'fixture-pid-alive' | 'ghost-shared-port' | 'foreign-owner';
     };
 
 export interface PostKillObservation {
@@ -36,8 +36,12 @@ export interface PostKillObservation {
 export function classifyPostKillState(obs: PostKillObservation): PostKillState {
   const { fixturePid, fixtureAlive, portOwners, chainSurvived } = obs;
 
+  // A live fixture PID means the out-of-band death is unproven, including
+  // when the listener is free. Never classify that state as a runtime skip.
+  if (fixtureAlive) return { kind: 'malformed', reason: 'fixture-pid-alive' };
+
   // The ghost: the port is bound ONLY under the dead worker's pid.
-  if (!fixtureAlive && portOwners.length > 0 && portOwners.every(pid => pid === fixturePid)) {
+  if (portOwners.length > 0 && portOwners.every(pid => pid === fixturePid)) {
     return { kind: 'ghost' };
   }
 
@@ -51,11 +55,6 @@ export function classifyPostKillState(obs: PostKillObservation): PostKillState {
 
   if (portOwners.length === 0) {
     return { kind: 'malformed', reason: 'chain-died' };
-  }
-  if (portOwners.every(pid => pid === fixturePid)) {
-    // Only reachable when fixtureAlive: the ghost condition above already
-    // handled the dead-pid case, so this pid belongs to someone else now.
-    return { kind: 'malformed', reason: 'fixture-pid-recycled' };
   }
   return portOwners.some(pid => pid === fixturePid)
     ? { kind: 'malformed', reason: 'ghost-shared-port' }
