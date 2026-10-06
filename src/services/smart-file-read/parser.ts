@@ -239,6 +239,11 @@ const QUERIES: Record<string, string> = {
 `,
 
   swift: `
+(init_declaration name: "init" @name) @swift_init
+(init_declaration (parameter) @swift_parameter) @swift_parameters
+(init_declaration (type_parameters) @swift_generics) @swift_header
+(init_declaration (type_constraints) @swift_constraints) @swift_header
+(deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -600,6 +605,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   method: "method",
   ctor: "method",
   kotlin_ctor: "method",
+  swift_init: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -720,6 +726,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
   const decoratedRanges = new Map<string, RawCapture>();
+  const swiftParameters = new Map<string, string[]>();
+  const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
@@ -732,6 +740,24 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "decorated_outer") {
         const inner = match.captures.find(capture => capture.tag === "decorated_inner");
         if (inner) decoratedRanges.set(`${inner.startRow}:${inner.startCol}`, cap);
+      }
+      if (cap.tag === "swift_header") {
+        const key = `${cap.startRow}:${cap.startCol}`;
+        const header = swiftHeaders.get(key) ?? {};
+        for (const detail of match.captures) {
+          if (detail.tag === "swift_generics") header.generics = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+          if (detail.tag === "swift_constraints") header.constraints = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+        }
+        swiftHeaders.set(key, header);
+      }
+      if (cap.tag === "swift_parameters") {
+        const parameter = match.captures.find(capture => capture.tag === "swift_parameter");
+        if (parameter) {
+          const key = `${cap.startRow}:${cap.startCol}`;
+          const parameters = swiftParameters.get(key) ?? [];
+          parameters.push(captureLines(lines, parameter).join(" ").replace(/\s+/g, " ").trim());
+          swiftParameters.set(key, parameters);
+        }
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -791,6 +817,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (kindCapture.tag === "kotlin_ctor") {
       const parameters = match.captures.find(c => c.tag === "parameters");
       name = "constructor" + (parameters ? captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim() : "");
+    }
+    if (kindCapture.tag === "swift_init") {
+      const key = `${startRow}:${kindCapture.startCol}`;
+      const header = swiftHeaders.get(key);
+      name = `init${header?.generics ?? ""}(${(swiftParameters.get(key) ?? []).join(", ")})${header?.constraints ? ` ${header.constraints}` : ""}`;
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
     const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
