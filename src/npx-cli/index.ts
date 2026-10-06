@@ -29,7 +29,7 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
-  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
+  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server prints the docker compose command for pg+redis without running it, and provisions a hook API key only when CLAUDE_MEM_SERVER_DATABASE_URL is set; otherwise run npx claude-mem server keys rotate once Postgres is up)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
