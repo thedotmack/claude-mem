@@ -116,3 +116,14 @@ Beside it: `summary.json` (the same data, every run included), `preflight.json`,
 On the large file the gate keeps about 20,000 tokens of cache writes out of the run and pays for four extra turns, each re-reading the whole context. It comes out about a third cheaper on both models. Sonnet answered from `smart_outline` and `smart_unfold`. Opus ran `smart_outline` and then read the sections it named through targeted Reads, and still saved. Under the deny size the gate stays out of the way, and the small file costs the same with it on or off. Before the deny size existed, the same small-file question cost Opus 20% more with the gate on (`reports/read-gate/2026-10-06T09-37-47-324Z`).
 
 After the deny, every edit run on both models found the line with Grep, read the 15 lines around it, and changed line 526 only.
+
+### Edit after the deny on older models
+
+Claude Code's tools reference says some older models always need a Read before an Edit. The edit case shows a targeted Read is enough for them too. 2026-10-06, Claude Code 2.1.291, 2 runs each, every verdict passed:
+
+| Model | Report | After the deny | Turns | Cost per run |
+| --- | --- | --- | ---: | ---: |
+| `claude-opus-4-6` | `reports/read-gate/2026-10-06T10-02-03-933Z` | Grep, a 7-line targeted Read, Edit | 5 | $0.19 |
+| `claude-haiku-4-5` | `reports/read-gate/2026-10-06T10-02-37-495Z` | `smart_outline`, `smart_unfold`, a 10 to 15-line targeted Read, Edit | 7 | $0.03 |
+
+Both changed line 526 only.
