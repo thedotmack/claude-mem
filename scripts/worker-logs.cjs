@@ -2,7 +2,7 @@
 
 const { closeSync, fstatSync, openSync, readSync, watchFile, unwatchFile } = require('fs');
 const path = require('path');
-const os = require('os');
+const { resolveDataDir } = require('./resolve-data-dir.cjs');
 
 const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;
@@ -10,7 +10,7 @@ const CHUNK_SIZE = 64 * 1024;
 
 function todaysLogPath() {
   const stamp = new Date().toISOString().slice(0, 10);
-  return path.join(os.homedir(), '.claude-mem', 'logs', `claude-mem-${stamp}.log`);
+  return path.join(resolveDataDir(), 'logs', `claude-mem-${stamp}.log`);
 }
 
 function readAt(fd, position, length) {

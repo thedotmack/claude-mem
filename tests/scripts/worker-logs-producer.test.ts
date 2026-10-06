@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { spawnSync } from 'child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -19,27 +19,40 @@ describe('daily log consumers use the real worker logger', () => {
   beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'claude-mem-log-producer-')); });
   afterEach(() => { rmSync(home, { recursive: true, force: true }); });
 
-  function env(tz: string) {
-    return { ...process.env, CLAUDE_MEM_DATA_DIR: '', CLAUDE_MEM_WORKER_PORT: '1', HOME: home, USERPROFILE: home, TZ: tz };
+  function env(tz: string, dataDir = '') {
+    return { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_WORKER_PORT: '1', HOME: home, USERPROFILE: home, TZ: tz };
   }
 
-  function produce(tz: string) {
+  function produce(tz: string, dataDir = '') {
     const result = spawnSync(process.execPath, ['-e', CLOCK + `
       const { logger } = await import(${JSON.stringify(LOGGER)});
       logger.info('WORKER', 'native worker marker 🧭');
-    `], { env: env(tz), encoding: 'utf-8' });
+    `], { env: env(tz, dataDir), encoding: 'utf-8' });
     expect(result.status).toBe(0);
     const logs = join(home, '.claude-mem', 'logs');
+    mkdirSync(logs, { recursive: true });
     // Obsolete and previous-local-day files must not win over the producer.
     writeFileSync(join(logs, 'worker-2026-04-02.log'), 'obsolete filename\n');
     writeFileSync(join(logs, 'worker-2026-04-01.log'), 'obsolete local filename\n');
     writeFileSync(join(logs, 'claude-mem-2026-04-01.log'), 'previous UTC day\n');
+    // Under a custom data directory, even today's file in the default one is stale.
+    if (dataDir) writeFileSync(join(logs, 'claude-mem-2026-04-02.log'), 'obsolete default directory\n');
   }
 
-  function tail(tz: string) {
+  function tail(tz: string, dataDir = '') {
     const clockPath = join(home, 'clock.cjs');
     writeFileSync(clockPath, CLOCK);
-    return spawnSync('node', ['--require', clockPath, SCRIPT], { env: env(tz), encoding: 'utf-8' });
+    return spawnSync('node', ['--require', clockPath, SCRIPT], { env: env(tz, dataDir), encoding: 'utf-8' });
+  }
+
+  function collect(tz: string, dataDir = ''): string {
+    const result = spawnSync(process.execPath, ['-e', CLOCK + `
+      const { collectDiagnostics } = await import(${JSON.stringify(COLLECTOR)});
+      const result = await collectDiagnostics();
+      process.stdout.write('DIAGNOSTIC_LOGS=' + JSON.stringify(result.logs.workerLog));
+    `], { env: env(tz, dataDir), encoding: 'utf-8', timeout: 20000 });
+    expect(result.status).toBe(0);
+    return JSON.parse(result.stdout.split('DIAGNOSTIC_LOGS=')[1]).join('\n');
   }
 
   for (const tz of ['UTC', 'America/Los_Angeles', 'Asia/Tokyo']) {
@@ -55,14 +68,20 @@ describe('daily log consumers use the real worker logger', () => {
 
   it('includes the logger-produced daily file in bug report diagnostics', () => {
     produce('America/Los_Angeles');
-    const result = spawnSync(process.execPath, ['-e', CLOCK + `
-      const { collectDiagnostics } = await import(${JSON.stringify(COLLECTOR)});
-      const result = await collectDiagnostics();
-      process.stdout.write('DIAGNOSTIC_LOGS=' + JSON.stringify(result.logs.workerLog));
-    `], { env: env('America/Los_Angeles'), encoding: 'utf-8', timeout: 20000 });
-    expect(result.status).toBe(0);
-    const logs = JSON.parse(result.stdout.split('DIAGNOSTIC_LOGS=')[1]);
-    expect(logs.join('\n')).toContain('native worker marker 🧭');
-    expect(logs.join('\n')).not.toContain('obsolete');
+    const logs = collect('America/Los_Angeles');
+    expect(logs).toContain('native worker marker 🧭');
+    expect(logs).not.toContain('obsolete');
+  }, 25000);
+
+  it('reads the logger-produced daily file from a custom data directory in both consumers', () => {
+    const custom = join(home, 'custom data');
+    produce('America/Los_Angeles', custom);
+    const tailed = tail('America/Los_Angeles', custom);
+    expect(tailed.status).toBe(0);
+    expect(tailed.stdout).toContain('native worker marker 🧭');
+    expect(tailed.stdout).not.toContain('obsolete');
+    const logs = collect('America/Los_Angeles', custom);
+    expect(logs).toContain('native worker marker 🧭');
+    expect(logs).not.toContain('obsolete');
   }, 25000);
 });
