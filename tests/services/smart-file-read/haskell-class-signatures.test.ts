@@ -82,19 +82,32 @@ test('grouped and operator class signatures have independent search and unfold i
  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
 
-test('a class signature and its default stay apart when another method sits between them', () => {
- // Signatures first (the common layout), and a default written before its signature.
- for (const source of [
-  'class C a where\n f :: a -> Int\n g :: a -> Int\n f _ = 1\n g _ = 2\n',
-  'class C a where\n f _ = 1\n g :: a -> Int\n f :: a -> Int\n g _ = 2\n',
- ]) {
-  const methods = parseFile(source, 'separated.hs').symbols[0].children!;
-  expect(methods.map(method => [method.name, method.signature])).toEqual([['f', 'f :: a -> Int'], ['g', 'g :: a -> Int']]);
-  const f = unfoldSymbol(source, 'separated.hs', 'C.f');
-  expect(f).toContain('f _ = 1');
-  expect(f).not.toContain('g :: a -> Int');
-  const g = unfoldSymbol(source, 'separated.hs', 'C.g');
-  expect(g).toContain('g _ = 2');
-  expect(g).not.toContain('f _ = 1');
- }
+test('separated class signatures unfold with their defaults without neighbouring methods', async () => {
+  const sources = [
+    'class C a where\n f :: a -> Int\n g :: a -> Int\n f _ = 1\n g _ = 2\n',
+    'class C a where\n f _ = 1\n g :: a -> Int\n f :: a -> Int\n g _ = 2\n',
+    'class C a where\n f :: a\n   -> Int\n g :: a -> Int\n f _ = 1\n g _ = 2\n',
+  ];
+  const dir = mkdtempSync(join(tmpdir(), 'cm-haskell-separated-'));
+  try {
+    for (const source of sources) {
+      const filename = 'separated.hs';
+      const methods = parseFile(source, filename).symbols[0].children!;
+      expect(methods.map(method => method.name)).toEqual(['f', 'g']);
+      writeFileSync(join(dir, filename), source);
+      for (const [name, other, value] of [['f', 'g', '1'], ['g', 'f', '2']]) {
+        const match = (await searchCodebase(dir, `C.${name}`)).matchingSymbols.find(
+          symbol => symbol.symbolName === `C.${name}`
+        );
+        expect(match).toBeDefined();
+        const unfolded = unfoldSymbol(source, filename, match!.symbolName);
+        expect(unfolded).toContain(`${name} :: a`);
+        expect(unfolded).toContain(`${name} _ = ${value}`);
+        expect(unfolded).not.toContain(`${other} :: a`);
+        expect(unfolded).not.toContain(`${other} _ =`);
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }, 120000);

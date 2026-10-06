@@ -19,6 +19,8 @@ export interface CodeSymbol {
   jsdoc?: string;
   lineStart: number;
   lineEnd: number;
+  /** Disjoint declaration/body ranges when one symbol is not contiguous. */
+  unfoldRanges?: { lineStart: number; lineEnd: number }[];
   parent?: string;
   exported: boolean;
   children?: CodeSymbol[];
@@ -980,8 +982,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     || b.range.startCol - a.range.startCol);
   // A typeclass signature and its default implementation describe one method:
   // the default takes the signature's type and comment. An adjacent pair
-  // unfolds as one range. When another declaration sits between them, each
-  // keeps its own lines, so an unfold never pulls in a neighbouring method.
+  // unfolds as one range. When another declaration sits between them, retain
+  // both narrow ranges so unfolding includes the type without a neighbouring method.
   // Grouped names (`f, g :: …`) share the signature's range, so they never
   // count as being between.
   for (const signature of haskellSignatures) {
@@ -1013,6 +1015,11 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         implementation.lineEnd = later.endRow;
         ranges.set(implementation, { ...implementationRange, startRow: earlier.startRow, startCol: earlier.startCol,
           endRow: later.endRow, endCol: later.endCol });
+      } else {
+        implementation.unfoldRanges = [earlier, later].map(range => ({
+          lineStart: range.startRow,
+          lineEnd: range.endRow,
+        }));
       }
     }
   }
@@ -1385,6 +1392,13 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
     const extracted = lines.slice(start, end + 1).join("\n");
     return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
+  }
+
+  if (symbol.unfoldRanges) {
+    return symbol.unfoldRanges.map(range => {
+      const extracted = lines.slice(range.lineStart, range.lineEnd + 1).join("\n");
+      return `// 📍 ${filePath} L${range.lineStart + 1}-${range.lineEnd + 1}\n${extracted}`;
+    }).join("\n");
   }
 
   let start = symbol.lineStart;
