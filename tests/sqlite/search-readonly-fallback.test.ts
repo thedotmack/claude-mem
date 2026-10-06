@@ -6,6 +6,30 @@ afterEach(() => {
   store?.close();
   store = undefined;
 });
+for (const [title, query] of [['Éclair', 'éclair'], ['foo bar', 'foo-bar']]) {
+  it(`uses readable indexes for ${query} when FTS creation is forbidden`, () => {
+    store = new SessionStore(':memory:');
+    const sid = store.createSDKSession(`readable-${query}`, 'app', 'prompt');
+    store.updateMemorySessionId(sid, `memory-${query}`);
+    store.storeObservation(`memory-${query}`, 'app', {
+      type: 'discovery', title, subtitle: null, narrative: null,
+      facts: [], concepts: [], files_read: [], files_modified: [],
+    }, 1);
+    store.storeSummary(`memory-${query}`, 'app', {
+      request: title, investigated: null, learned: null, completed: null,
+      next_steps: null, notes: null,
+    });
+    // Initialize real indexes while writes are permitted, then reopen search
+    // on the same read-only connection; no mock of FTS availability.
+    new SessionSearch(store.db);
+    store.db.run('PRAGMA query_only=1');
+    const search = new SessionSearch(store.db);
+    expect(search.searchObservations(query, { project: 'app' })).toHaveLength(1);
+    expect(search.searchSessions(query, { project: 'app' })).toHaveLength(1);
+    expect(search.searchObservations(query, { project: 'unrelated' })).toEqual([]);
+    expect(search.searchSessions(query, { project: 'app', offset: 1 })).toEqual([]);
+  });
+}
 it('reads Latin text from a query-only connection when the FTS probe cannot write', () => {
   store = new SessionStore(':memory:');
   const sid = store.createSDKSession('content-readonly', 'app', 'prompt');
