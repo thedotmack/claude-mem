@@ -10,6 +10,7 @@ import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { spoolHookEvent } from '../../cli/spool-hook-event.js';
 import { ingestObservation } from '../worker/http/shared.js';
 
 const AGENT_ID_IN_PATH =
@@ -63,6 +64,9 @@ export interface TranscriptFileContext {
 const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
 
 export class TranscriptEventProcessor {
+  /** Standalone watchers have no in-process worker ingestion context. */
+  constructor(private observationTransport: 'in-process' | 'spool' = 'in-process') {}
+
   private sessions = new Map<string, SessionState>();
   /**
    * Session keys of confirmed subagent rollouts. Codex ends a session per
@@ -408,7 +412,7 @@ export class TranscriptEventProcessor {
       return;
     }
 
-    const result = await ingestObservation({
+    const payload = {
       contentSessionId: session.sessionId,
       cwd: session.cwd,
       toolName,
@@ -417,7 +421,12 @@ export class TranscriptEventProcessor {
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
       agentId: resolveWatchAgentId(watch),
-    });
+    };
+    if (this.observationTransport === 'spool') {
+      spoolHookEvent('observation', payload);
+      return;
+    }
+    const result = await ingestObservation(payload);
 
     if (!result.ok) {
       throw new Error(`ingestObservation failed: ${result.reason}`);

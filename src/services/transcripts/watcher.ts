@@ -388,7 +388,7 @@ class FileTailer {
 }
 
 export class TranscriptWatcher {
-  private processor = new TranscriptEventProcessor();
+  private processor: TranscriptEventProcessor;
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
@@ -398,7 +398,12 @@ export class TranscriptWatcher {
   /** Set by stop(): a tailer still awaiting its start offset then never starts. */
   private stopped = false;
 
-  constructor(private config: TranscriptWatchConfig, private statePath: string) {
+  constructor(
+    private config: TranscriptWatchConfig,
+    private statePath: string,
+    observationTransport: 'in-process' | 'spool' = 'in-process'
+  ) {
+    this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);
   }
 

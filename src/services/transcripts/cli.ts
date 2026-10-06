@@ -30,7 +30,7 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
         }
       }
       const statePath = expandHomePath(config.stateFile ?? DEFAULT_STATE_PATH);
-      const watcher = new TranscriptWatcher(config, statePath);
+      const watcher = new TranscriptWatcher(config, statePath, 'spool');
       await watcher.start();
       console.log('Transcript watcher running. Press Ctrl+C to stop.');
 
