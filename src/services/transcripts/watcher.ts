@@ -157,17 +157,20 @@ class FileTailer {
    * with the checkpoint.
    */
   private frameLinesDone: number;
+  private fileIdentity?: string;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number, partial: string, frameLinesDone: number) => void,
+    private onOffset: (offset: number, partial: string, frameLinesDone: number, fileIdentity?: string) => void,
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
     initialPartial = '',
-    initialFrameLinesDone = 0
+    initialFrameLinesDone = 0,
+    initialFileIdentity?: string
   ) {
+    this.fileIdentity = initialFileIdentity;
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
     this.frameLinesDone = this.isZstd ? initialFrameLinesDone : 0;
@@ -223,14 +226,22 @@ class FileTailer {
     if (!existsSync(this.filePath)) return;
 
     let size = 0;
+    let replaced = false;
+    let identityChanged = false;
     try {
-      size = statSync(this.filePath).size;
+      const stat = statSync(this.filePath);
+      size = stat.size;
+      const identity = `${stat.dev}:${stat.ino}`;
+      identityChanged = identity !== this.fileIdentity;
+      replaced = this.fileIdentity !== undefined && identityChanged;
+      this.fileIdentity = identity;
     } catch (error: unknown) {
       logger.debug('WORKER', 'Failed to stat transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
       return;
     }
 
-    if (size < this.tailState.readOffset) {
+    const reset = replaced || size < this.tailState.readOffset;
+    if (reset) {
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
       this.tailState.partial = '';
@@ -238,7 +249,12 @@ class FileTailer {
       this.frameLinesDone = 0;
     }
 
-    if (size === this.tailState.readOffset) return;
+    if (size === this.tailState.readOffset) {
+      // Save the identity even for an unchanged EOF checkpoint (startAtEnd),
+      // so an atomic replacement while the watcher is down is distinguishable.
+      if (identityChanged || reset) this.checkpoint(this.tailState.offset, this.tailState.partial);
+      return;
+    }
 
     if (this.isZstd) {
       await this.readNewZstdFrames(size);
@@ -251,7 +267,7 @@ class FileTailer {
   private checkpoint(offset: number, partial = ''): void {
     this.tailState.offset = offset;
     this.tailState.partial = partial;
-    this.onOffset(offset, partial, this.frameLinesDone);
+    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity);
   }
 
   /**
@@ -650,7 +666,8 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial: string, frameLinesDone: number) => {
+      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string) => {
+        if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
         this.state.offsets[filePath] = newOffset;
         if (partial) {
           (this.state.partials ??= {})[filePath] = partial;
@@ -665,7 +682,8 @@ export class TranscriptWatcher {
         saveWatchState(this.statePath, this.state);
       },
       this.state.partials?.[filePath] ?? '',
-      this.state.frameLines?.[filePath] ?? 0
+      this.state.frameLines?.[filePath] ?? 0,
+      this.state.fileIdentities?.[filePath]
     );
 
     tailer.start();

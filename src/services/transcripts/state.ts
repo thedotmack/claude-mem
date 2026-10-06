@@ -5,6 +5,8 @@ import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-js
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
+  /** Device/inode pair belonging to each checkpoint; absent in legacy state. */
+  fileIdentities?: Record<string, string>;
   /**
    * zstd files only: the unterminated JSONL prefix a durable offset has
    * advanced past. zstd frames are only resumable at frame boundaries, so when
@@ -52,6 +54,7 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     );
     if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
     if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
+    if (parsed.fileIdentities !== undefined) state.fileIdentities = continuation(normalizeMap(parsed.fileIdentities, text));
     if (parsed.cwds !== undefined) state.cwds = normalizeMap(parsed.cwds, text);
     return state;
   } catch (error) {
