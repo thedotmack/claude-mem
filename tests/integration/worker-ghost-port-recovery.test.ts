@@ -61,6 +61,7 @@ import {
   snapshotDescendants,
   survivingProcesses,
   describeProcesses,
+  reapSnapshottedDescendants,
   type ProcessIdentity,
 } from './helpers/process-tree.js';
 import { classifyPostKillState } from './helpers/ghost-state.js';
@@ -112,6 +113,9 @@ let reportedPort: number | null = null;
 // A deadline failure cannot cancel ensureWorkerStarted() — track the call so
 // teardown can let it settle (or reap what it spawned) before cleanup runs.
 let inflightEnsureStarted: Promise<unknown> | null = null;
+// Captured while the fixture root is alive. The port can become free while
+// these exact descendants remain alive, so teardown must retain this proof.
+let descendantSnapshot: ProcessIdentity[] = [];
 
 function bunExecutable(): string {
   return process.env.BUN_EXECUTABLE || process.execPath;
@@ -348,6 +352,8 @@ afterEach(async () => {
   spawnedFixturePid = null;
   const fixturePort = handle?.port ?? reportedPort;
   reportedPort = null;
+  const snapshot = descendantSnapshot;
+  descendantSnapshot = [];
   if (!handle && detachedPid === null) return;
 
   const { killProcessTree } = await import('../../src/shared/kill-process-tree.js');
@@ -376,19 +382,36 @@ afterEach(async () => {
   };
   await killPidFileWorker();
 
-  if (fixturePort === null) return;
+  // Reap the pre-kill-identified sidecars even when Bun released the port.
+  // Each PID is checked against a fresh, non-null start token before a
+  // single-process kill; recycled PIDs and unsnapshotted processes are left
+  // alone. A failed kill must remain visible after the port sweep.
+  let descendantCleanupError: unknown;
+  try {
+    reapSnapshottedDescendants(snapshot);
+  } catch (error) {
+    descendantCleanupError = error;
+  }
 
   // Bounded sweep. The wait above is time-boxed, so a launcher that was still
   // mid-flight can spawn its worker or reclaim the chain AFTER the kills —
   // that late work is what survives cleanup and leaks a listener into the next
   // run. Repeat "reap the worker, free the port" until the port is quiet.
-  const { reclaimGhostListeningPort } = await import('../../src/shared/port-reclaim.js');
-  for (let attempt = 0; attempt < 3; attempt++) {
-    if (listeningOwnerPids(fixturePort).length === 0) return;
-    await reclaimGhostListeningPort(fixturePort).catch(() => {});
-    await new Promise(resolve => setTimeout(resolve, 2_000));
-    await killPidFileWorker();
+  if (fixturePort !== null) {
+    const { reclaimGhostListeningPort } = await import('../../src/shared/port-reclaim.js');
+    for (let attempt = 0; attempt < 3; attempt++) {
+      if (listeningOwnerPids(fixturePort).length === 0) break;
+      await reclaimGhostListeningPort(fixturePort).catch(() => {});
+      await new Promise(resolve => setTimeout(resolve, 2_000));
+      await killPidFileWorker();
+    }
   }
+
+  const remaining = await waitForOrphansToClear(snapshot, 5_000);
+  if (remaining.length > 0) {
+    throw new Error(`fixture sidecars survived teardown: ${describeProcesses(remaining)}`);
+  }
+  if (descendantCleanupError) throw descendantCleanupError;
 });
 
 describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left by an out-of-band kill', () => {
@@ -399,6 +422,7 @@ describe.if(RUN_GATE && IS_WINDOWS)('worker recovers from a ghost listener left 
     // Snapshot BEFORE the kill: once the root exits, identity is the only
     // way to tell the survivors apart from anything that recycled its PID.
     const snapshot = snapshotDescendants(fixture.pid);
+    descendantSnapshot = snapshot;
     expect(snapshot.length).toBeGreaterThan(0);
     const names = snapshot.map(p => p.name.toLowerCase()).join(' ');
     expect(names).toMatch(/uv|python/);

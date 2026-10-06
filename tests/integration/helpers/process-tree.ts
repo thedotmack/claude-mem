@@ -17,6 +17,7 @@
 
 import { execFileSync } from 'child_process';
 import { captureProcessStartToken, isPidAlive } from '../../../src/supervisor/process-registry.js';
+import { hasMatchingProcessStartToken } from '../../../src/shared/process-identity.js';
 
 export interface ProcessIdentity {
   pid: number;
@@ -164,4 +165,38 @@ export function survivingProcesses(snapshot: ProcessIdentity[]): ProcessIdentity
 export function describeProcesses(entries: ProcessIdentity[]): string {
   if (entries.length === 0) return '(none)';
   return entries.map(e => `${e.name}(pid=${e.pid})`).join(', ');
+}
+
+/**
+ * Reap only descendants captured while the fixture was alive. A free listener
+ * does not imply its sidecars exited: Bun 1.4 releases the socket while the
+ * detached chroma/Python chain can remain alive. Never walk a dead root or use
+ * taskkill /T here: either could select processes outside this snapshot.
+ *
+ * Missing or unreadable start tokens are not permission to kill. The caller
+ * checks for survivors afterwards and reports an incomplete cleanup.
+ */
+export function reapSnapshottedDescendants(
+  snapshot: ProcessIdentity[],
+  matchesStartToken = hasMatchingProcessStartToken,
+  killOne = (pid: number): void => {
+    try {
+      execFileSync('taskkill', ['/F', '/PID', String(pid)], {
+        stdio: 'ignore',
+        windowsHide: true,
+        timeout: 30_000,
+      });
+    } catch (error) {
+      // The child may exit between the final identity read and taskkill.
+      if ((error as { status?: number }).status !== 128) throw error;
+    }
+  }
+): void {
+  // snapshotDescendants is breadth-first. Kill leaves before their parents,
+  // without trusting a post-exit parent PID or a possibly recycled child PID.
+  for (const entry of [...snapshot].reverse()) {
+    if (entry.startToken === null) continue;
+    if (!matchesStartToken(entry.pid, entry.startToken)) continue;
+    killOne(entry.pid);
+  }
 }
