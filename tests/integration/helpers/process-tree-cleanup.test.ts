@@ -218,7 +218,10 @@ describe('ghost fixture descendant cleanup', () => {
       20, '100', pid => { killed.push(pid); }, () => true,
       rows, children => { retained = children; }
     );
-    expect(discovered).toEqual(retained);
+    expect(retained).toEqual([
+      { pid: 20, name: 'fixture.exe', startToken: '100' },
+      ...discovered!,
+    ]);
     expect(killed).toEqual([22, 20]);
     expect(survivingProcesses(retained, pid => pid === 21, () => null)).toEqual([
       { pid: 21, name: 'python.exe', startToken: null },
@@ -235,6 +238,25 @@ describe('ghost fixture descendant cleanup', () => {
       20, '100', () => { throw new Error('Access is denied'); },
       () => true, rows, children => { retained = children; }
     )).toThrow('Access is denied');
-    expect(retained).toEqual([{ pid: 21, name: 'python.exe', startToken: '200' }]);
+    expect(retained).toEqual([
+      { pid: 20, name: 'fixture.exe', startToken: '100' },
+      { pid: 21, name: 'python.exe', startToken: '200' },
+    ]);
+  });
+
+  it('reports a live root when its final identity probe is unreadable', () => {
+    const rows = [{ pid: 20, ppid: 1, name: 'fixture.exe', startToken: '100' }];
+    let checks = 0;
+    let retained: ProcessIdentity[] = [];
+    const killed: number[] = [];
+    reapOwnedLiveTree(
+      20, '100', pid => { killed.push(pid); },
+      () => ++checks === 1,
+      rows, snapshot => { retained = snapshot; }
+    );
+    expect(killed).toEqual([]);
+    expect(survivingProcesses(retained, () => true, () => null)).toEqual([
+      { pid: 20, name: 'fixture.exe', startToken: '100' },
+    ]);
   });
 });

@@ -317,14 +317,19 @@ export function reapOwnedLiveTree(
   killOne: (pid: number) => void,
   matchesStartToken = hasMatchingProcessStartToken,
   rows?: ProcessRow[],
-  onSnapshot?: (children: ProcessIdentity[]) => void
+  onSnapshot?: (processes: ProcessIdentity[]) => void
 ): ProcessIdentity[] | null {
   if (!startToken || !matchesStartToken(pid, startToken)) return null;
-  const children = snapshotDescendants(pid, startToken, rows ?? readProcessTable());
+  const processRows = rows ?? readProcessTable();
+  const children = snapshotDescendants(pid, startToken, processRows);
   // Hand the evidence to the caller BEFORE any kill can throw or orphan a
-  // child. The caller must verify this snapshot after teardown; an unverified
-  // child is never silently treated as cleaned up.
-  onSnapshot?.(children);
+  // child. Include the root: a later unreadable root identity must not turn
+  // a skipped root kill into a successful teardown. The caller checks every
+  // retained process for survivors after cleanup.
+  onSnapshot?.([
+    { pid, startToken, name: processRows.find(row => row.pid === pid)?.name ?? 'fixture root' },
+    ...children,
+  ]);
   const failures: string[] = [];
   try {
     reapSnapshottedDescendants(children, matchesStartToken, killOne);

@@ -39,7 +39,9 @@ afterAll(() => {
 
 describe('descendant enumeration agrees with captureProcessStartToken', () => {
   it.if(process.platform === 'win32')('ghost test helper recognizes real CIM creation times (Windows)', async () => {
-    const command = spawn('cmd.exe', ['/c', 'ping -n 8 127.0.0.1 > NUL'], {
+    // A slow CIM query can take most of this test's 30-second deadline. Keep
+    // the child alive long enough for enumeration, then stop the fixture.
+    const command = spawn('cmd.exe', ['/c', 'ping -n 60 127.0.0.1 > NUL'], {
       stdio: 'ignore', windowsHide: true,
     });
     const rootPid = command.pid!;
