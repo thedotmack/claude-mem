@@ -38,6 +38,8 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
           }
           createRoot(document.getElementById('root')).render(<Fixture/>);
           async function run() {
+            // Readiness handshake: the page deadlines start only once Chrome runs this script.
+            await fetch('/ready');
             const deadline=Date.now()+20000;
             if(${JSON.stringify(scenario)}==='project-switch') {
               while(!document.querySelector('.session-card-name')) {
@@ -56,7 +58,7 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
             const retry=[...document.querySelectorAll('button')].find(x=>x.textContent==='Retry');
             if(retry) retry.click();
             const end=Date.now()+10000;
-            while(retry && !document.querySelector('.session-card-name')?.textContent.includes('Recovered') && Date.now()<end)
+            while(retry && ![...document.querySelectorAll('.session-card-name')].some(x=>x.textContent==='Recovered') && Date.now()<end)
               await new Promise(resolve=>setTimeout(resolve,10));
             await fetch('/result',{method:'POST',body:JSON.stringify({before,hasRetry:!!retry,
               names:[...document.querySelectorAll('.session-card-name')].map(x=>x.textContent),
@@ -69,10 +71,11 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
       server = Bun.serve({ hostname: '127.0.0.1', port: 0, async fetch(request) {
         const path = new URL(request.url).pathname;
         if(path==='/') return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
-        if(path==='/fixture.js') {
+        if(path==='/fixture.js') return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+        if(path==='/ready') {
           clearTimeout(timeout);
           timeout=setTimeout(()=>report({failure:'Browser page timed out'}),45000);
-          return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+          return new Response('ready');
         }
         if(path==='/api/sessions') {
           const n=++requests;
@@ -89,7 +92,7 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
       }});
       timeout=setTimeout(()=>report({failure:'Chrome startup timed out'}),30000);
       child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
-        '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
+        '--disable-background-timer-throttling','--disable-renderer-backgrounding','--no-first-run',`--user-data-dir=${join(owned,'browser')}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
       const received=await result;
       expect(received).toEqual({before:scenario==='first-page'?1:2,hasRetry:true,recovered:true,names:scenario==='older-page'?['Seed','Recovered']:['Recovered']});
       if(scenario==='project-switch') expect(offsets).toEqual([0,0,0]);
