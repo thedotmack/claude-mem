@@ -3,6 +3,25 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, st
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
+// Import-time TTY/settings constants and module mocks require a fresh process.
+// The ordinary full-suite test spawns this same file once; the child retains
+// every fixture case without leaking its mocks into sibling suites.
+if (process.env.CLAUDE_MEM_INSTALLER_FIXTURE_CHILD !== import.meta.path) {
+  describe('isolated installer fixture', () => {
+    it('passes every case in a fresh Bun process', () => {
+      const child = Bun.spawnSync({
+        cmd: [process.execPath, 'test', '--timeout', '10000', import.meta.path],
+        cwd: join(import.meta.dir, '..', '..'),
+        env: { ...process.env, CLAUDE_MEM_INSTALLER_FIXTURE_CHILD: import.meta.path },
+        stdout: 'pipe', stderr: 'pipe', timeout: 45_000,
+      });
+      if (child.stdout) process.stdout.write(child.stdout);
+      if (child.stderr) process.stderr.write(child.stderr);
+      expect(child.exitCode).toBe(0);
+      expect(child.success).toBe(true);
+    }, 50_000);
+  });
+} else {
 // Run this file as its own Bun invocation. Real packaged PTY coverage is
 // separate: this suite drives the public command through controlled prompts.
 const fixture = mkdtempSync(join(tmpdir(), 'cmem-combined-install-boundary-'));
@@ -286,3 +305,5 @@ describe('combined public integration dispatch and partial summaries', () => {
     expect(profiles).toEqual(['review']);
   });
 });
+
+}
