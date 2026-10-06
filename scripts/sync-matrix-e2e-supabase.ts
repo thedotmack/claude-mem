@@ -28,8 +28,9 @@
  *   CMEM_SYNC_E2E_USER_ID  pro_users.user_id of the seeded account (required)
  *   CMEM_SYNC_E2E_TOKEN    its setup_token (required)
  *   CMEM_SYNC_E2E_REALTIME_BUDGET_MS  max push->B-cursor latency over Realtime (default 5000)
- *   CMEM_SYNC_E2E_ALLOW_REMOTE_HUB    one exact hostname also allowed (TLS only) for a production
- *                                     smoke run against a dedicated test account; unset = loopback only
+ *   CMEM_SYNC_E2E_ALLOW_REMOTE_HUB    exact hostname(s), comma-separated, also allowed (TLS only) for a
+ *                                     production smoke run against a dedicated test account; the Hub URL
+ *                                     must be on the first; unset = loopback only
  */
 
 import { mkdtempSync, rmSync } from 'fs';
@@ -90,13 +91,18 @@ async function waitFor(condition: () => boolean, label: string, timeoutMs = 10_0
 
 /**
  * Loopback only by default. A deliberate production smoke run opts in with
- * CMEM_SYNC_E2E_ALLOW_REMOTE_HUB=<exact hostname>: then that one host is also
- * allowed, over TLS only (https:/wss:), and the Hub URL must be on it. No
- * wildcard or suffix match — any other host is still refused.
+ * CMEM_SYNC_E2E_ALLOW_REMOTE_HUB=<exact hostname>[,<exact hostname>]: those
+ * hosts are also allowed, over TLS only (https:/wss:), and the Hub URL must be
+ * on the first. A second host covers the proxied topology (Hub on the proxy
+ * host, Realtime socket on the Supabase project host). No wildcard or suffix
+ * match — any other host is still refused.
  */
-const ALLOWED_REMOTE_HUB_HOST = (process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? '').trim().toLowerCase();
-if (ALLOWED_REMOTE_HUB_HOST && !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(ALLOWED_REMOTE_HUB_HOST)) {
-  throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB must be one exact hostname (no scheme, port, path or wildcard)');
+const ALLOWED_REMOTE_HOSTS = (process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? '')
+  .split(',').map(host => host.trim().toLowerCase()).filter(host => host !== '');
+for (const host of ALLOWED_REMOTE_HOSTS) {
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/.test(host)) {
+    throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB must be exact hostnames, comma-separated (no scheme, port, path or wildcard)');
+  }
 }
 const TLS_OF: Record<string, string> = { 'http:': 'https:', 'ws:': 'wss:' };
 
@@ -104,7 +110,7 @@ function guardedUrl(input: RequestInfo | URL, label: string, protocols: string[]
   const raw = input instanceof Request ? input.url : String(input);
   const url = new URL(raw);
   const loopback = protocols.includes(url.protocol) && (url.hostname === '127.0.0.1' || url.hostname === 'localhost');
-  const allowedRemote = ALLOWED_REMOTE_HUB_HOST !== '' && url.hostname === ALLOWED_REMOTE_HUB_HOST
+  const allowedRemote = ALLOWED_REMOTE_HOSTS.includes(url.hostname)
     && url.port === '' && protocols.some(protocol => TLS_OF[protocol] === url.protocol);
   if (!loopback && !allowedRemote) {
     throw new Error(`${label} refused non-loopback URL: ${url.origin}`);
@@ -116,7 +122,7 @@ function guardedUrl(input: RequestInfo | URL, label: string, protocols: string[]
  * The ONE fetch this script makes to the Hub (status, log reads, and every
  * client request via guardedFetch). The URL is guarded, and redirects are
  * never followed: a 3xx could send the request (and its bearer token) to a
- * host outside the one-host boundary, so any 3xx fails the run.
+ * host outside the allowed-host boundary, so any 3xx fails the run.
  */
 async function hubFetch(input: RequestInfo | URL, init: RequestInit | undefined, label: string): Promise<Response> {
   const url = guardedUrl(input, label);
@@ -130,8 +136,8 @@ async function hubFetch(input: RequestInfo | URL, init: RequestInit | undefined,
 
 const hubUrl = (process.env.CMEM_SYNC_E2E_HUB_URL ?? DEFAULT_HUB_URL).trim().replace(/\/+$/, '');
 guardedUrl(hubUrl, 'Hub');
-if (ALLOWED_REMOTE_HUB_HOST && new URL(hubUrl).hostname !== ALLOWED_REMOTE_HUB_HOST) {
-  throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB is set but the Hub URL is not on that host');
+if (ALLOWED_REMOTE_HOSTS.length > 0 && new URL(hubUrl).hostname !== ALLOWED_REMOTE_HOSTS[0]) {
+  throw new Error('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB is set but the Hub URL is not on its first host');
 }
 const USER_ID = requiredEnv('CMEM_SYNC_E2E_USER_ID');
 const TOKEN = requiredEnv('CMEM_SYNC_E2E_TOKEN');

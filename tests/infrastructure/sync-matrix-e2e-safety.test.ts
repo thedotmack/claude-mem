@@ -56,17 +56,17 @@ describe('sync matrix E2E (Supabase cmem-sync) safety contract', () => {
     expect(supabaseScript).not.toContain('wrangler');
   });
 
-  it('allows a remote Hub only for one exact opted-in host, over TLS, and only when the Hub URL is on it', () => {
+  it('allows remote hosts only when exactly opted in, over TLS, with the Hub URL on the first one', () => {
     expect(supabaseScript).toContain("process.env.CMEM_SYNC_E2E_ALLOW_REMOTE_HUB ?? ''");
-    expect(supabaseScript).toContain("url.hostname === ALLOWED_REMOTE_HUB_HOST");
+    expect(supabaseScript).toContain('ALLOWED_REMOTE_HOSTS.includes(url.hostname)');
     expect(supabaseScript).toContain("const TLS_OF: Record<string, string> = { 'http:': 'https:', 'ws:': 'wss:' }");
-    expect(supabaseScript).toContain("ALLOWED_REMOTE_HUB_HOST !== ''");
-    expect(supabaseScript).toContain('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB is set but the Hub URL is not on that host');
-    expect(supabaseScript).not.toContain('endsWith(ALLOWED_REMOTE_HUB_HOST');
-    expect(supabaseScript).not.toMatch(/ALLOWED_REMOTE_HUB_HOST\s*=\s*['"]/);
+    expect(supabaseScript).toContain('new URL(hubUrl).hostname !== ALLOWED_REMOTE_HOSTS[0]');
+    expect(supabaseScript).toContain('CMEM_SYNC_E2E_ALLOW_REMOTE_HUB is set but the Hub URL is not on its first host');
+    expect(supabaseScript).not.toContain('hostname.endsWith(');
+    expect(supabaseScript).not.toMatch(/ALLOWED_REMOTE_HOSTS\s*=\s*\[/);
   });
 
-  it('refuses every non-loopback host when the remote opt-in is unset or names another host', async () => {
+  it('refuses every non-loopback host when the remote opt-in is unset, names other hosts, or puts the Hub second', async () => {
     const run = (env: Record<string, string>) => Bun.spawnSync(['bun', join(root, 'scripts/sync-matrix-e2e-supabase.ts')], {
       env: { PATH: process.env.PATH ?? '', CMEM_SYNC_E2E_USER_ID: 'u', CMEM_SYNC_E2E_TOKEN: 't', ...env },
       stdout: 'pipe', stderr: 'pipe', timeout: 20_000,
@@ -77,10 +77,12 @@ describe('sync matrix E2E (Supabase cmem-sync) safety contract', () => {
       { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'other.example.test' },
       { CMEM_SYNC_E2E_HUB_URL: 'http://hub.example.test/functions/v1/cmem-sync', CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test' },
       { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: '*.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'other.example.test,hub.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,*.example.test' },
     ]) {
       const result = run(env);
       expect(result.exitCode).not.toBe(0);
-      expect(result.stderr.toString()).toMatch(/refused non-loopback URL|must be one exact hostname|not on that host/);
+      expect(result.stderr.toString()).toMatch(/refused non-loopback URL|must be exact hostnames|not on its first host/);
     }
   }, 60_000);
 
