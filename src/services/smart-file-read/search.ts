@@ -159,6 +159,13 @@ export async function searchCodebase(
     const checkSymbols = (symbols: typeof parsed.symbols, parent?: string) => {
       for (const sym of symbols) {
         const qualifiedName = qualifySymbolName(sym.name, parent, parsed.language, sym.kind);
+        // A namespace is a scope, not a result. A project's root namespace
+        // repeats in every file, so scoring it would fill a capped search with
+        // folded files that merely declare it. Its members still qualify.
+        if (sym.kind === "namespace") {
+          checkSymbols(sym.children ?? [], qualifiedName);
+          continue;
+        }
         let score = 0;
         let reason = "";
 
@@ -179,8 +186,9 @@ export async function searchCodebase(
           ? (sym.kind === 'method' ? qualifiedRubyScore
             : matchScore(qualifiedName.toLowerCase(), [queryLower]))
           : matchScore(sym.name.toLowerCase(), queryParts);
-        const nameScore = ownNameScore
-          || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
+        const nameScore = parsed.language === "go" && sym.kind === "method"
+          ? scoreGoMethodName(qualifiedName.toLowerCase(), queryLower, queryParts)
+          : ownNameScore || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
@@ -270,6 +278,21 @@ export async function searchCodebase(
     totalSymbolsFound,
     tokenEstimate,
   };
+}
+
+/**
+ * Plain type queries score the leaf method name. A qualified query must match
+ * the method part, so `Store.Reset` does not match `Store.Fetch`; receiver
+ * identity then only adds a bonus, which keeps `srv.Reset` (a call copied from
+ * code) matching every `Reset`.
+ */
+function scoreGoMethodName(name: string, query: string, parts: string[]): number {
+  const leaf = name.slice(name.lastIndexOf(".") + 1);
+  if (!query.includes(".")) return matchScore(leaf, parts);
+  const leafScore = matchScore(leaf, [query.slice(query.lastIndexOf(".") + 1)]);
+  if (leafScore === 0) return 0;
+  if (name === query) return leafScore + 20;
+  return leafScore + (name.startsWith(query) ? 10 : 0);
 }
 
 function countSymbols(file: FoldedFile): number {
