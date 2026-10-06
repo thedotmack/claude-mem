@@ -728,7 +728,7 @@ export class SettingsDefaultsManager {
             hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
             { mode: 0o600 },
           );
-          console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
+          console.warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
         }
