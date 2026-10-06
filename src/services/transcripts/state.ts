@@ -85,7 +85,9 @@ export function saveWatchState(statePath: string, state: TranscriptWatchState): 
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    writeJsonFileAtomic(statePath, state);
+    // Pending tool inputs may contain credentials: keep both new and replaced
+    // state files private from the first byte written.
+    writeJsonFileAtomic(statePath, state, { mode: 0o600 });
   } catch (error) {
     logger.warn('TRANSCRIPT', 'Failed to save watch state', {
       statePath,
