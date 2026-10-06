@@ -23,6 +23,8 @@ interface TailState {
 // Coarse filesystem clocks (HFS+ 1 s, FAT 2 s) can stamp a file written just
 // after startup with an mtime just before it.
 const WRITTEN_SINCE_STARTUP_SLACK_MS = 2000;
+/** A rename gap can return intact; absent sources retire their full resume tuple after this bounded grace. */
+const MISSING_TRANSCRIPT_GRACE_MS = 1000;
 
 /**
  * A transcript discovered after startup with a fresh mtime whose first record
@@ -167,7 +169,8 @@ class FileTailer {
     // the offset already dispatched, persisted with the frame-aligned offset.
     initialPartial = '',
     initialFrameLinesDone = 0,
-    private onReset?: () => void
+    private onReset?: () => void,
+    private hasChangedIdentity?: (identity: string) => boolean
   ) {
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
@@ -224,14 +227,17 @@ class FileTailer {
     if (!existsSync(this.filePath)) return;
 
     let size = 0;
+    let changedIdentity = false;
     try {
-      size = statSync(this.filePath).size;
+      const stat = statSync(this.filePath);
+      size = stat.size;
+      changedIdentity = this.hasChangedIdentity?.(`${stat.dev}:${stat.ino}`) ?? false;
     } catch (error: unknown) {
       logger.debug('WORKER', 'Failed to stat transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
       return;
     }
 
-    if (size < this.tailState.readOffset) {
+    if (changedIdentity || size < this.tailState.readOffset) {
       this.onReset?.();
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
@@ -393,6 +399,8 @@ export class TranscriptWatcher {
   private processor: TranscriptEventProcessor;
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
+  private fileContexts = new Map<string, TranscriptFileContext>();
+  private missingFiles = new Map<string, ReturnType<typeof setTimeout>>();
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
   private startedAtMs = 0;
   private warnedZstdUnsupported = false;
@@ -416,15 +424,15 @@ export class TranscriptWatcher {
       await this.setupWatch(watch);
     }
     if (this.stopped) return;
-    let retired = false;
-    for (const file of Object.keys(this.state.pendingTools ?? {})) {
-      if (!this.tailers.has(file)) { this.retirePendingToolMetadata(file); retired = true; }
+    for (const file of Object.keys(this.state.offsets)) {
+      if (!this.tailers.has(file)) this.deferMissingFileRetirement(file);
     }
-    if (retired) saveWatchState(this.statePath, this.state);
   }
 
   stop(): void {
     this.stopped = true;
+    for (const timer of this.missingFiles.values()) clearTimeout(timer);
+    this.missingFiles.clear();
     for (const tailer of this.tailers.values()) {
       tailer.close();
     }
@@ -445,6 +453,11 @@ export class TranscriptWatcher {
     const resolvedPath = expandHomePath(watch.path);
     const files = this.resolveWatchFiles(resolvedPath);
 
+    // Register every valid source before any tailer can dispatch a result.
+    // Filesystem enumeration order must not determine cross-file recovery.
+    for (const filePath of files) {
+      try { this.getFileContext(filePath); } catch { /* a file can disappear during the scan */ }
+    }
     for (const filePath of files) {
       await this.addTailer(filePath, watch, schema);
       await yieldToEventLoop();
@@ -472,10 +485,65 @@ export class TranscriptWatcher {
     }
   }
 
+  private getFileContext(file: string): TranscriptFileContext {
+    let stat: ReturnType<typeof statSync> | undefined;
+    try { stat = statSync(file); }
+    catch (error) {
+      if (!error || typeof error !== 'object' || !('code' in error) || (error.code !== 'ENOENT' && error.code !== 'ENOTDIR')) throw error;
+      this.deferMissingFileRetirement(file);
+    }
+    const previous = this.state.pendingToolFileIdentities?.[file] ?? this.state.fileIdentities?.[file];
+    const identity = stat ? `${stat.dev}:${stat.ino}` : previous;
+    if (stat && ((previous !== undefined && previous !== identity) || stat.size < (this.state.offsets[file] ?? 0))) {
+      this.retirePendingToolMetadata(file);
+      // A known path changed identity, so its opening belongs to the replacement,
+      // even if the watch ordinarily skips preexisting history at startup.
+      this.state.offsets[file] = 0;
+      saveWatchState(this.statePath, this.state);
+    }
+    const timer = this.missingFiles.get(file);
+    if (stat && timer) clearTimeout(timer);
+    if (stat) this.missingFiles.delete(file);
+    let context = this.fileContexts.get(file);
+    if (!context) {
+      context = { cwd: this.state.cwds?.[file], pendingTools: this.state.pendingTools?.[file], pendingToolFileIdentity: identity };
+      context.isCurrent = () => {
+        try { const current = statSync(file); return `${current.dev}:${current.ino}` === context!.pendingToolFileIdentity && current.size >= (this.state.offsets[file] ?? 0); }
+        catch { return false; }
+      };
+      this.fileContexts.set(file, context);
+    }
+    this.processor.registerFileContext(context);
+    return context;
+  }
+
+  private deferMissingFileRetirement(file: string): void {
+    if (this.missingFiles.has(file)) return;
+    const timer = setTimeout(() => {
+      this.missingFiles.delete(file);
+      if (this.stopped) return;
+      try {
+        const stat = statSync(file);
+        if (this.tailers.has(file) && `${stat.dev}:${stat.ino}` === this.state.pendingToolFileIdentities?.[file]) return;
+      } catch { /* still absent: retire the complete resume tuple */ }
+      this.tailers.get(file)?.close();
+      this.tailers.delete(file);
+      this.retirePendingToolMetadata(file);
+      saveWatchState(this.statePath, this.state);
+    }, MISSING_TRANSCRIPT_GRACE_MS);
+    this.missingFiles.set(file, timer);
+  }
+
   private retirePendingToolMetadata(file: string): void {
-    this.processor.resetFileContext({ pendingTools: this.state.pendingTools?.[file] });
+    this.processor.resetFileContext(this.fileContexts.get(file) ?? { cwd: this.state.cwds?.[file], pendingTools: this.state.pendingTools?.[file] });
+    this.fileContexts.delete(file);
     delete this.state.pendingTools?.[file];
     delete this.state.pendingToolFileIdentities?.[file];
+    delete this.state.fileIdentities?.[file];
+    delete this.state.offsets[file];
+    delete this.state.cwds?.[file];
+    delete this.state.partials?.[file];
+    delete this.state.frameLines?.[file];
   }
 
   private handleRootWatchEvent(
@@ -492,8 +560,7 @@ export class TranscriptWatcher {
       if (!existsSync(changed)) {
         existingTailer.close();
         this.tailers.delete(changed);
-        this.retirePendingToolMetadata(changed);
-        saveWatchState(this.statePath, this.state);
+        this.deferMissingFileRetirement(changed);
         return;
       }
       existingTailer.poke();
@@ -619,6 +686,7 @@ export class TranscriptWatcher {
 
     const sessionIdOverride = this.extractSessionIdFromPath(filePath);
 
+    const fileContext = this.getFileContext(filePath);
     const savedOffset = this.state.offsets[filePath];
     let offset = savedOffset ?? 0;
     // `startAtEnd` means "do not replay history that predates this worker".
@@ -653,7 +721,6 @@ export class TranscriptWatcher {
 
     // The session's working directory, restored for a watcher that resumes
     // past the line that reported it; saved with the next checkpoint.
-    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath], pendingTools: this.state.pendingTools?.[filePath], pendingToolFileIdentity: this.state.pendingToolFileIdentities?.[filePath] };
     // A subagent-only watch learns the rollout's marker from its first line,
     // and a session whose directory is not known yet learns it there too
     // (DeepSeek Harness writes it on that line only; a turn without one is
@@ -664,6 +731,10 @@ export class TranscriptWatcher {
       delete this.state.pendingTools?.[filePath];
       delete this.state.pendingToolFileIdentities?.[filePath];
       delete this.state.cwds?.[filePath];
+      this.state.offsets[filePath] = 0;
+      delete this.state.partials?.[filePath];
+      delete this.state.frameLines?.[filePath];
+      saveWatchState(this.statePath, this.state);
     };
     let primeFirstLine = offset > 0 && (Boolean(watch.subagentSource) || !fileContext.cwd);
     const tailer = new FileTailer(
@@ -710,7 +781,12 @@ export class TranscriptWatcher {
       },
       this.state.partials?.[filePath] ?? '',
       this.state.frameLines?.[filePath] ?? 0,
-      resetMetadata
+      resetMetadata,
+      (identity: string) => {
+        const changed = fileContext.pendingToolFileIdentity !== undefined && fileContext.pendingToolFileIdentity !== identity;
+        fileContext.pendingToolFileIdentity = identity;
+        return changed;
+      }
     );
 
     tailer.start();

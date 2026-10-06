@@ -5,6 +5,8 @@ import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-js
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
+  /** Shared with inode-aware tailers; retirement must clear this resume identity too. */
+  fileIdentities?: Record<string, string>;
   /** Unaccepted result-only events need their earlier tool-use metadata after restart. */
   pendingToolFileIdentities?: Record<string, string>;
   pendingTools?: Record<string, Record<string, Record<string, { toolName: string; toolInput?: unknown }>>>;
@@ -55,6 +57,7 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     );
     if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
     if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
+    if (parsed.fileIdentities !== undefined) state.fileIdentities = continuation(normalizeMap(parsed.fileIdentities, text));
     if (parsed.pendingToolFileIdentities !== undefined) state.pendingToolFileIdentities = continuation(normalizeMap(parsed.pendingToolFileIdentities, text));
     if (parsed.pendingTools !== undefined) {
       const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
