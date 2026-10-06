@@ -16,6 +16,7 @@ import * as realHookSettings from '../../src/shared/hook-settings.js';
 import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 import * as realProjectName from '../../src/utils/project-name.js';
 import * as realProjectFilter from '../../src/utils/project-filter.js';
+import * as realTreeSitterBinPath from '../../src/services/smart-file-read/tree-sitter-bin-path.js';
 
 // Snapshot the real exports into plain objects NOW, before mock.module mutates
 // the live ESM namespace bindings. These snapshots are re-registered in afterAll.
@@ -24,6 +25,7 @@ const realHookSettingsSnapshot = { ...realHookSettings };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const realProjectNameSnapshot = { ...realProjectName };
 const realProjectFilterSnapshot = { ...realProjectFilter };
+const realTreeSitterBinPathSnapshot = { ...realTreeSitterBinPath };
 
 mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -83,6 +85,14 @@ mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
 }));
 
+// The gate denies only where smart_outline can parse (the tree-sitter CLI is
+// installed). Stubbed so these tests never depend on the machine's install.
+let treeSitterCliAvailable = true;
+mock.module('../../src/services/smart-file-read/tree-sitter-bin-path.js', () => ({
+  ...realTreeSitterBinPathSnapshot,
+  isTreeSitterCliAvailable: () => treeSitterCliAvailable,
+}));
+
 import {
   fileContextHandler,
   shouldDenyFullFileRead,
@@ -134,6 +144,7 @@ beforeEach(() => {
   gatedFile = join(tmpDir, 'gated.ts');
   writeFileSync(gatedFile, GATED_FILE_CONTENT);
   fileReadGateSetting = 'true';
+  treeSitterCliAvailable = true;
   workerFallbackCalls.length = 0;
 
   // #3480 — the per-(session,file) injection gate persists in the SQLite DB
@@ -167,6 +178,7 @@ afterAll(() => {
   mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
   mock.module('../../src/utils/project-filter.js', () => realProjectFilterSnapshot);
+  mock.module('../../src/services/smart-file-read/tree-sitter-bin-path.js', () => realTreeSitterBinPathSnapshot);
 });
 
 describe('fileContextHandler — #2094 (no Read mutation)', () => {
@@ -727,6 +739,27 @@ describe('fileContextHandler — File Read Gate', () => {
     }
   });
 
+  it('does not deny Qwen Code, which runs the same claude-code hook command — the timeline is context', async () => {
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: gatedFile }, { transcriptPath: '/home/dot/.qwen/tmp/abc123/chats/session.json' })
+    );
+
+    expectContextNotDeny(result);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
+  });
+
+  it('does not deny when the tree-sitter CLI is missing (smart_outline cannot parse) — the timeline is context', async () => {
+    treeSitterCliAvailable = false;
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    expectContextNotDeny(result);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
+  });
+
   it('lets a targeted Read through (offset 40, limit 20) with context', async () => {
     answerWithFileHistory();
 
@@ -888,25 +921,30 @@ describe('shouldDenyFullFileRead', () => {
     };
   }
 
+  // The tree-sitter CLI is installed: an explicit stub, never the machine's install.
+  const smartReadAvailable = () => true;
+
   it('denies a whole-file Read without counting lines when no limit is set', () => {
     const countTotalLines = mock(() => GATED_FILE_LINE_COUNT);
 
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'true', countTotalLines)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadAvailable)).toBe(true);
     expect(countTotalLines).not.toHaveBeenCalled();
   });
 
   it('treats an unset setting as on — only an explicit false turns the gate off', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
 
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, undefined, countTotalLines)).toBe(true);
-    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'false', countTotalLines)).toBe(false);
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, undefined, countTotalLines, smartReadAvailable)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'false', countTotalLines, smartReadAvailable)).toBe(false);
   });
 
-  it('counts lines only after every cheaper condition holds', () => {
+  it('counts lines only after every cheaper condition holds, and checks smart-read availability after that', () => {
     const countTotalLines = mock(() => GATED_FILE_LINE_COUNT);
+    const isSmartReadAvailable = mock(() => true);
     const limited = { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT };
     const notGated: Array<[string, NormalizedHookInput, { absolutePath: string } | null, string | undefined]> = [
       ['codex platform', wholeFileRead({ platform: 'codex', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
+      ['Qwen Code transcript', wholeFileRead({ transcriptPath: '/home/dot/.qwen/tmp/abc123/chats/session.json', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
       ['gate off', wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'false'],
       ['subagent', wholeFileRead({ agentId: 'subagent-1', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
       ['Codex filePaths', wholeFileRead({ toolInput: { ...limited, filePaths: [gatedFile] } }), { absolutePath: gatedFile }, 'true'],
@@ -917,18 +955,38 @@ describe('shouldDenyFullFileRead', () => {
     ];
 
     for (const [label, input, fileHistory, setting] of notGated) {
-      expect([label, shouldDenyFullFileRead(input, fileHistory, setting, countTotalLines)]).toEqual([label, false]);
+      expect([label, shouldDenyFullFileRead(input, fileHistory, setting, countTotalLines, isSmartReadAvailable)]).toEqual([label, false]);
     }
     expect(countTotalLines).not.toHaveBeenCalled();
+    expect(isSmartReadAvailable).not.toHaveBeenCalled();
 
-    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'true', countTotalLines)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: { ...limited, limit: GATED_FILE_LINE_COUNT - 1 } }), { absolutePath: gatedFile }, 'true', countTotalLines, isSmartReadAvailable)).toBe(false);
     expect(countTotalLines).toHaveBeenCalledTimes(1);
+    expect(isSmartReadAvailable).not.toHaveBeenCalled();
+
+    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'true', countTotalLines, isSmartReadAvailable)).toBe(true);
+    expect(countTotalLines).toHaveBeenCalledTimes(2);
+    expect(isSmartReadAvailable).toHaveBeenCalledTimes(1);
+  });
+
+  it('never denies when smart_outline cannot parse here (no tree-sitter CLI)', () => {
+    const countTotalLines = () => GATED_FILE_LINE_COUNT;
+    const smartReadUnavailable = () => false;
+
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadUnavailable)).toBe(false);
+    expect(shouldDenyFullFileRead(
+      wholeFileRead({ toolInput: { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT } }),
+      { absolutePath: gatedFile },
+      'true',
+      countTotalLines,
+      smartReadUnavailable,
+    )).toBe(false);
   });
 
   it('treats non-finite or negative offset/limit as absent', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
     const deny = (toolInput: Record<string, unknown>) =>
-      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines);
+      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadAvailable);
 
     for (const unusable of [Number.NaN, Number.POSITIVE_INFINITY, -5, 'not-a-number', null]) {
       expect([unusable, deny({ offset: unusable })]).toEqual([unusable, true]);
@@ -939,7 +997,7 @@ describe('shouldDenyFullFileRead', () => {
   it('reads numeric-string offset/limit as numbers so a targeted Read still passes', () => {
     const countTotalLines = () => GATED_FILE_LINE_COUNT;
     const deny = (toolInput: Record<string, unknown>) =>
-      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines);
+      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines, smartReadAvailable);
 
     expect(deny({ offset: '40', limit: '20' })).toBe(false);
     expect(deny({ limit: String(GATED_FILE_LINE_COUNT) })).toBe(true);
@@ -948,6 +1006,6 @@ describe('shouldDenyFullFileRead', () => {
   it('fails open when the file cannot be read to count its lines', () => {
     const input = wholeFileRead({ toolInput: { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT } });
 
-    expect(shouldDenyFullFileRead(input, { absolutePath: gatedFile }, 'true', () => null)).toBe(false);
+    expect(shouldDenyFullFileRead(input, { absolutePath: gatedFile }, 'true', () => null, smartReadAvailable)).toBe(false);
   });
 });

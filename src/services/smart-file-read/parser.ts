@@ -6,8 +6,12 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
 import { resolveDataDir } from "../../shared/paths.js";
-import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
+import { resolveTreeSitterBinPath } from "./tree-sitter-bin-path.js";
 import { detectLanguage } from "./language-map.js";
+
+// Lives in tree-sitter-bin-path.ts so the file-context hook can check for the
+// CLI without bundling the parser; re-exported for existing importers.
+export { resolveTreeSitterBinPath };
 
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
@@ -359,27 +363,6 @@ function getQueryFile(queryKey: string): string {
   writeFileSync(filePath, QUERIES[queryKey]);
   queryFileCache.set(queryKey, filePath);
   return filePath;
-}
-
-// tree-sitter-cli installs `tree-sitter.exe` on Windows, not a bare `tree-sitter`
-// (see ChromaMcpManager.resolveUvxCommand for the same platform-suffix idiom).
-// Without the `.exe` suffix the existsSync check below always misses on Windows,
-// silently falling through to a bare `tree-sitter` that may not be on PATH —
-// smart file parsing then returns empty results with no error.
-export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
-  const binName = treeSitterBinaryName(platform);
-
-  try {
-    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), binName);
-    if (existsSync(binPath)) {
-      return binPath;
-    }
-  } catch {
-    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
-  }
-
-  return binName;
 }
 
 let cachedBinPath: string | null = null;
