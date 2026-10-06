@@ -1,6 +1,6 @@
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync, openSync, closeSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -146,6 +146,8 @@ const QUERIES: Record<string, string> = {
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
 (method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(public_field_definition name: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -164,6 +166,8 @@ const QUERIES: Record<string, string> = {
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
 (method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(field_definition property: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(field_definition property: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -532,11 +536,21 @@ function runQuery(queryFile: string, sourceFile: string, grammarPath: string, la
 }
 
 function execQuery(execArgs: string[], sourceFileCount: number): string | null {
+  // Native capture output can exceed execFileSync's fixed pipe buffer for a
+  // language batch. Spool stdout to an owned file so valid matches survive.
+  const outputDir = mkdtempSync(join(tmpdir(), "smart-read-query-output-"));
+  const outputPath = join(outputDir, "captures.txt");
+  let outputFd: number | undefined;
   try {
-    return execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+    outputFd = openSync(outputPath, "w");
+    execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", outputFd, "pipe"] });
+    return readFileSync(outputPath, "utf-8");
   } catch (error) {
     logger.debug('WORKER', `tree-sitter query failed for ${sourceFileCount} file(s)`, undefined, error instanceof Error ? error : undefined);
     return null;
+  } finally {
+    if (outputFd !== undefined) closeSync(outputFd);
+    rmSync(outputDir, { recursive: true, force: true });
   }
 }
 
