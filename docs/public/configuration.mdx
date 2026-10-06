@@ -23,6 +23,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
 | `CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY` | `true`                   | Leave subagent observations out of SessionStart context so their step-logs don't crowd durable main-session memory out of the window. A subagent row carries both an agent id and an agent type; transcript-watch rows (e.g. Grok Bot seats) stay in. Applies in the server runtime too, where a row counts as a subagent row when the hook event it was generated from carried both. Search and the viewer still show everything. |
 | `CLAUDE_MEM_REINFORCE_ALPHA` | `0`                              | Opt-in ACT-R ranking for SessionStart context. `0` (default) keeps the N most recent observations, unchanged. Above `0` (try `0.5`), observations the write path saw re-confirmed on later days can climb into the window: each observation's creation and re-confirmation days are scored with power-law decay, `ln(1 + age^-0.5 + ALPHA · Σ age_k^-0.5)`. The newest quarter of the window is always kept by recency. |
+| `CLAUDE_MEM_FILE_READ_GATE_ENABLED` | `true`                    | Block whole-file Reads of code files that have observation history and send Claude to `smart_outline` / `smart_unfold` / `get_observations` instead (Claude Code only). Targeted Reads with `offset`/`limit` still work. `false` lets every Read through and still adds the file's timeline as context. See [File Read Gate](/file-read-gate). |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
 | `CLAUDE_MEM_WORKER_AUTOSTART` | `true`                          | Set `false` when you run the worker yourself (a process manager, a container, `worker-service.cjs --daemon`). Hooks, the MCP server and `start` then use a worker that is already running but never launch, kill or recycle one: no lazy spawn, no version-mismatch recycle, no wedged-worker recycle or reclaim. While your worker is down, hooks skip their work quietly instead of counting it as a failure. |
@@ -366,7 +367,7 @@ Hooks are registered in `plugin/hooks/hooks.json`. The current shape uses a sing
 - `Setup` → `version-check.js` (installs missing plugin dependencies, records `.install-version`)
 - `SessionStart` → start the worker, then `hook claude-code context` (context injection)
 - `UserPromptSubmit` → `hook claude-code session-init`
-- `PreToolUse` (matcher `Read`) → `hook claude-code file-context`
+- `PreToolUse` (matcher `Read`) → `hook claude-code file-context` (synchronous: adds the file's observation timeline as context and can block whole-file Reads; see [File Read Gate](/file-read-gate))
 - `PostToolUse` (matcher `*`) → `hook claude-code observation`
 - `Stop` → `hook claude-code summarize`
 
@@ -380,7 +381,7 @@ These switches are read from the hook's environment only, not from `~/.claude-me
 |----------|------------------------|
 | `CLAUDE_MEM_DISABLE_TOOL_HOOKS` | PreToolUse (`file-context`) and PostToolUse (`observation`) return a no-op right away. SessionStart, UserPromptSubmit and Stop keep working. |
 | `CLAUDE_MEM_DISABLE_OBSERVATION` | Only PostToolUse `observation` returns a no-op (tool calls are no longer captured). |
-| `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | Only PreToolUse `file-context` returns a no-op (no file history is injected before `Read`). |
+| `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | Only PreToolUse `file-context` returns a no-op: no file history is injected before `Read`, and the [File Read Gate](/file-read-gate) never blocks a Read. |
 
 Claude Code still launches each hook, so these switches turn off claude-mem's per-tool work, not the hook process itself.
 
@@ -507,7 +508,7 @@ Access the settings modal from the web viewer. The worker prints its URL on star
 1. Click the **gear icon** in the header
 2. Adjust settings in the right panel
 3. See changes reflected live in the **Terminal Preview** on the left
-4. Settings auto-save as you change them
+4. Click **Save** to keep your changes
 
 The Terminal Preview shows the selected project and source. Select **All sources** to preview a combined SessionStart context.
 
@@ -579,6 +580,7 @@ Token economics help you understand the value of cached observations vs. re-read
 | **MCP search server** | true | Enable Model Context Protocol search tools |
 | **Include last summary** | false | Add previous session's summary to context |
 | **Include last message** | false | Add previous session's final message |
+| **Block full-file reads** | true | Block whole-file Reads of code files that have observation history ([File Read Gate](/file-read-gate)) |
 
 ### Manual Configuration
 
@@ -676,8 +678,8 @@ Hook timeouts are written into `plugin/hooks/hooks.json` by the installer. The c
 
 - Setup (`version-check.js`): 300s ceiling; fast when the plugin's dependencies are complete, up to 120s when it has to run `bun install`
 - SessionStart (worker-start + context): 60s
-- UserPromptSubmit: 60s
-- PreToolUse (file-context, Read matcher): 60s
+- UserPromptSubmit: 15s
+- PreToolUse (file-context, Read matcher): 15s, synchronous so the [File Read Gate](/file-read-gate) can block a Read; its worker lookup gives up after 3s
 - PostToolUse (observation): 120s
 - Stop (summary): 120s
 
