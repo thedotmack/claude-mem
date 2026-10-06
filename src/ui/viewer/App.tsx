@@ -59,6 +59,11 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
   const [feedLoadError, setFeedLoadError] = useState<string | null>(null);
+  const handledDeletionsRef = useRef(new Set<string>());
+  // A page started before a session was deleted must not restore its old rows,
+  // even if a live row has since re-created that same session identity.
+  const deletionVersionRef = useRef(0);
+  const sessionDeletionVersionsRef = useRef(new Map<string, number>());
   const [route, setRoute] = useState<ViewRoute>(() => parseViewRoute(window.location.hash));
   // The Sessions list keeps the last timeline/session scope, so switching back
   // does not reload pages that are still correct.
@@ -78,7 +83,10 @@ export function App() {
   const { observations, summaries, prompts, projects, isProcessing, queueDepth, removeLiveItem, removeLiveSession } = useSSE({
     onItemDeleted: removeDeletedItem,
     onSessionDeleted: removeDeletedSession,
-    onLiveItem: catalog.touch,
+    onLiveItem: item => {
+      handledDeletionsRef.current.delete(`session:${sessionKey(item.session)}`);
+      catalog.touch(item);
+    },
   });
   const { settings, saveSettings, isSaving, saveStatus } = useSettings();
   const { preference, setThemePreference } = useTheme();
@@ -152,20 +160,40 @@ export function App() {
     // A second visit to the same scope has a new owner, even if its key matches.
     if (activeFeedScopeRef.current.version !== feedVersion) return;
     const requestFeedVersion = feedVersion;
+    const deletionVersion = deletionVersionRef.current;
     const isCurrentVisit = () => activeFeedScopeRef.current.version === requestFeedVersion;
     setFeedLoadError(null);
+    const retainPageRows = <T extends SessionScopedRow & { id: number }>(rows: T[], itemType: FeedItemType): T[] => {
+      return rows.filter(row => {
+        if (handledDeletionsRef.current.has(`${itemType}:${row.id}`)) return false;
+        const session = sessionRefOf(row);
+        if (!session) return true;
+        const key = sessionKey(session);
+        return !handledDeletionsRef.current.has(`session:${key}`)
+          && (sessionDeletionVersionsRef.current.get(key) ?? 0) <= deletionVersion;
+      });
+    };
     try {
       // Each cursor advances independently; commit its rows before a sibling
       // request can reject the group, or successful pages would be skipped.
       await Promise.all([
         pagination.observations.loadMore().then(rows => {
-          if (isCurrentVisit() && rows.length) setPaginatedObservations(prev => [...prev, ...rows]);
+          if (!isCurrentVisit() || !rows.length) return;
+          const retained = retainPageRows(rows, 'observation');
+          pagination.observations.noteRemoved(rows.length - retained.length);
+          setPaginatedObservations(prev => [...prev, ...retained]);
         }),
         pagination.summaries.loadMore().then(rows => {
-          if (isCurrentVisit() && rows.length) setPaginatedSummaries(prev => [...prev, ...rows]);
+          if (!isCurrentVisit() || !rows.length) return;
+          const retained = retainPageRows(rows, 'summary');
+          pagination.summaries.noteRemoved(rows.length - retained.length);
+          setPaginatedSummaries(prev => [...prev, ...retained]);
         }),
         pagination.prompts.loadMore().then(rows => {
-          if (isCurrentVisit() && rows.length) setPaginatedPrompts(prev => [...prev, ...rows]);
+          if (!isCurrentVisit() || !rows.length) return;
+          const retained = retainPageRows(rows, 'prompt');
+          pagination.prompts.noteRemoved(rows.length - retained.length);
+          setPaginatedPrompts(prev => [...prev, ...retained]);
         })
       ]);
     } catch (error) {
@@ -180,7 +208,6 @@ export function App() {
   // tab did (item_deleted SSE, which also reaches this tab): drop it from the
   // live and loaded lists once, and move a loaded page's offset back by one so
   // the next page does not skip a row.
-  const handledDeletionsRef = useRef(new Set<string>());
   const loadedRowsRef = useRef({ observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts });
   loadedRowsRef.current = { observation: paginatedObservations, summary: paginatedSummaries, prompt: paginatedPrompts };
 
@@ -194,6 +221,7 @@ export function App() {
       ?? loadedRowsRef.current[itemType].find(row => row.id === id);
     const deletedSession = deletedRow ? sessionRefOf(deletedRow) : null;
     if (deletedSession) catalog.noteItemRemoved(deletedSession);
+    else void catalog.refresh(currentFilter);
 
     removeLiveItem(itemType, id);
     if (itemType === 'observation') {
@@ -215,6 +243,7 @@ export function App() {
     const key = `session:${sessionKey(session)}`;
     if (handledDeletionsRef.current.has(key)) return;
     handledDeletionsRef.current.add(key);
+    sessionDeletionVersionsRef.current.set(sessionKey(session), ++deletionVersionRef.current);
 
     catalog.remove(session);
     removeLiveSession(session);
@@ -236,8 +265,15 @@ export function App() {
 
   /** Rejects with a user-facing reason; the card shows it. */
   async function handleDeleteSession(session: SessionRef): Promise<void> {
+    const key = sessionKey(session);
+    const deletionVersion = sessionDeletionVersionsRef.current.get(key) ?? 0;
     await deleteSession(session);
-    removeDeletedSession(session);
+    // The stream may have already delivered this delete, followed by a new
+    // live row recreating the session. Its HTTP acknowledgment must not delete
+    // that newer incarnation a second time.
+    if ((sessionDeletionVersionsRef.current.get(key) ?? 0) === deletionVersion) {
+      removeDeletedSession(session);
+    }
   }
 
   useEffect(() => {
