@@ -5,8 +5,15 @@ import { readJsonFileWithBom, writeJsonFileAtomic } from '../../shared/atomic-js
 
 export interface TranscriptWatchState {
   offsets: Record<string, number>;
-  /** Shared with inode-aware tailers; retirement must clear this resume identity too. */
+  /** Device/inode pair belonging to each checkpoint; absent in legacy state. */
   fileIdentities?: Record<string, string>;
+  /**
+   * sha256 of the up-to-4 KiB just before each checkpoint. When a file's
+   * device/inode changes, it is a replacement (read from byte 0) only if these
+   * bytes changed too: a renumbered device or a sync tool's temp-plus-rename
+   * keeps them, and keeps the checkpoint.
+   */
+  checkpointFingerprints?: Record<string, string>;
   /** Unaccepted result-only events need their earlier tool-use metadata after restart. */
   pendingToolFileIdentities?: Record<string, string>;
   pendingTools?: Record<string, Record<string, Record<string, { toolName: string; toolInput?: unknown }>>>;
@@ -58,6 +65,7 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
     if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
     if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
     if (parsed.fileIdentities !== undefined) state.fileIdentities = continuation(normalizeMap(parsed.fileIdentities, text));
+    if (parsed.checkpointFingerprints !== undefined) state.checkpointFingerprints = continuation(normalizeMap(parsed.checkpointFingerprints, text));
     if (parsed.pendingToolFileIdentities !== undefined) state.pendingToolFileIdentities = continuation(normalizeMap(parsed.pendingToolFileIdentities, text));
     if (parsed.pendingTools !== undefined) {
       const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);

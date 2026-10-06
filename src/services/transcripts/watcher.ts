@@ -1,4 +1,5 @@
-import { existsSync, statSync, watch as fsWatch } from 'fs';
+import { createHash } from 'crypto';
+import { closeSync, existsSync, fstatSync, openSync, readSync, statSync, watch as fsWatch } from 'fs';
 import { open } from 'fs/promises';
 import { basename, join, resolve as resolvePath, sep as pathSep } from 'path';
 import { logger } from '../../utils/logger.js';
@@ -45,6 +46,14 @@ const MAX_BYTES_PER_PASS = 4 * 1024 * 1024;
 
 /** The startAtEnd frame scan of a zstd file walks this many bytes of frames between yields. */
 const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
+
+/**
+ * A root watch that just started on a missing root's ancestor, or just moved,
+ * is checked once more after this long. fs.watch registers asynchronously on
+ * some platforms (macOS), so a directory or file created in its first few
+ * milliseconds can raise no event on it.
+ */
+const WATCH_ROOT_SETTLE_MS = 100;
 
 // A bulk backfill can walk hundreds of files and tens of thousands of lines on
 // the Bun event loop that also serves the worker's HTTP API. Awaiting line
@@ -133,6 +142,52 @@ async function firstRecordTimeMs(filePath: string, isZstd: boolean, size: number
   }
 }
 
+/** A file's device/inode pair: which file a path held when its checkpoint was saved. */
+function fileIdentityOf(stat: { dev: number; ino: number }): string {
+  return `${stat.dev}:${stat.ino}`;
+}
+
+/** A checkpoint's fingerprint covers at most this many bytes just before its offset. */
+const CHECKPOINT_FINGERPRINT_BYTES = 4096;
+
+/**
+ * sha256 of the up-to-4 KiB of a transcript just before `offset`, read from
+ * the file whose identity is `identity`. Null when the path now holds another
+ * file, ends before `offset`, or cannot be read.
+ */
+function fingerprintBeforeOffset(filePath: string, offset: number, identity: string): string | null {
+  let fd: number | undefined;
+  try {
+    fd = openSync(filePath, 'r');
+    if (fileIdentityOf(fstatSync(fd)) !== identity) return null;
+    const start = Math.max(0, offset - CHECKPOINT_FINGERPRINT_BYTES);
+    const window = Buffer.alloc(offset - start);
+    if (readSync(fd, window, 0, window.length, start) < window.length) return null;
+    return createHash('sha256').update(window).digest('hex');
+  } catch (error: unknown) {
+    logger.debug('TRANSCRIPT', 'Could not fingerprint a transcript checkpoint', { file: filePath }, error instanceof Error ? error : undefined);
+    return null;
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
+/**
+ * Whether a file whose device/inode changed still holds the bytes up to a
+ * checkpoint: it does not end before the checkpoint, and the bytes just
+ * before it match the checkpoint's fingerprint. A new identity alone is not a
+ * replacement: device numbers can change across a reboot or remount, and sync
+ * tools rewrite a file through temp-plus-rename with its bytes intact, so
+ * resetting on it would replay every transcript through the observer. A
+ * checkpoint saved without a fingerprint keeps its offset, as it did before
+ * identities were tracked.
+ */
+function keepsCheckpointBytes(filePath: string, identity: string, size: number, offset: number, fingerprint: string | undefined): boolean {
+  if (size < offset) return false;
+  if (fingerprint === undefined) return true;
+  return fingerprintBeforeOffset(filePath, offset, identity) === fingerprint;
+}
+
 async function readByteRange(filePath: string, start: number, length: number): Promise<Buffer> {
   const file = await open(filePath, 'r');
   try {
@@ -159,19 +214,32 @@ class FileTailer {
    * with the checkpoint.
    */
   private frameLinesDone: number;
+  /** The device/inode of the file the checkpoint was taken from. Persisted. */
+  private fileIdentity?: string;
+  /** sha256 of the up-to-4 KiB before the checkpoint (fingerprintBeforeOffset). Persisted. */
+  private checkpointFingerprint?: string;
 
   constructor(
     private filePath: string,
     initialOffset: number,
     private onLine: (line: string) => Promise<void>,
-    private onOffset: (offset: number, partial: string, frameLinesDone: number) => void,
+    private onOffset: (
+      offset: number,
+      partial: string,
+      frameLinesDone: number,
+      fileIdentity?: string,
+      checkpointFingerprint?: string
+    ) => void,
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
     initialPartial = '',
     initialFrameLinesDone = 0,
-    private onReset?: () => void,
-    private hasChangedIdentity?: (identity: string) => boolean
+    initialFileIdentity?: string,
+    initialCheckpointFingerprint?: string,
+    private onReset?: () => void
   ) {
+    this.fileIdentity = initialFileIdentity;
+    this.checkpointFingerprint = initialCheckpointFingerprint;
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
     this.frameLinesDone = this.isZstd ? initialFrameLinesDone : 0;
@@ -227,17 +295,34 @@ class FileTailer {
     if (!existsSync(this.filePath)) return;
 
     let size = 0;
-    let changedIdentity = false;
+    let identity: string;
     try {
       const stat = statSync(this.filePath);
       size = stat.size;
-      changedIdentity = this.hasChangedIdentity?.(`${stat.dev}:${stat.ino}`) ?? false;
+      identity = fileIdentityOf(stat);
     } catch (error: unknown) {
       logger.debug('WORKER', 'Failed to stat transcript file', { file: this.filePath }, error instanceof Error ? error : undefined);
       return;
     }
 
-    if (changedIdentity || size < this.tailState.readOffset) {
+    // An atomic replacement (a new device/inode with other bytes) is a new
+    // file, read from byte 0: an equal-size or larger one passes the shrink
+    // check below. The same bytes under a new identity keep the checkpoint.
+    const identityChanged = identity !== this.fileIdentity;
+    let replaced = false;
+    if (identityChanged && this.fileIdentity !== undefined) {
+      if (keepsCheckpointBytes(this.filePath, identity, size, this.tailState.offset, this.checkpointFingerprint)) {
+        // An unterminated record past the checkpoint is read again, from the new file.
+        this.tailState.readOffset = this.tailState.offset;
+        this.pendingRecord = Buffer.alloc(0);
+      } else {
+        replaced = true;
+      }
+    }
+    this.fileIdentity = identity;
+
+    const reset = replaced || size < this.tailState.readOffset;
+    if (reset) {
       this.onReset?.();
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
@@ -246,7 +331,11 @@ class FileTailer {
       this.frameLinesDone = 0;
     }
 
-    if (size === this.tailState.readOffset) return;
+    if (size === this.tailState.readOffset) {
+      // Record a new identity (or a reset) even at an unchanged end of file.
+      if (identityChanged || reset) this.checkpoint(this.tailState.offset, this.tailState.partial);
+      return;
+    }
 
     if (this.isZstd) {
       await this.readNewZstdFrames(size);
@@ -259,7 +348,10 @@ class FileTailer {
   private checkpoint(offset: number, partial = ''): void {
     this.tailState.offset = offset;
     this.tailState.partial = partial;
-    this.onOffset(offset, partial, this.frameLinesDone);
+    this.checkpointFingerprint = this.fileIdentity === undefined
+      ? undefined
+      : fingerprintBeforeOffset(this.filePath, offset, this.fileIdentity) ?? undefined;
+    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint);
   }
 
   /**
@@ -402,6 +494,8 @@ export class TranscriptWatcher {
   private fileContexts = new Map<string, TranscriptFileContext>();
   private missingFiles = new Map<string, ReturnType<typeof setTimeout>>();
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
+  /** One-shot re-checks of a root watch on a missing root's ancestor, or one that just moved (WATCH_ROOT_SETTLE_MS). */
+  private rootWatchSettleTimers = new Set<ReturnType<typeof setTimeout>>();
   private startedAtMs = 0;
   private warnedZstdUnsupported = false;
   private startingTailers = new Set<string>();
@@ -436,6 +530,8 @@ export class TranscriptWatcher {
       watcher.close();
     }
     this.rootWatchers = [];
+    for (const timer of this.rootWatchSettleTimers) clearTimeout(timer);
+    this.rootWatchSettleTimers.clear();
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -453,29 +549,50 @@ export class TranscriptWatcher {
     for (const filePath of files) {
       try { this.getFileContext(filePath); } catch { /* a file can disappear during the scan */ }
     }
+    const initialScan = { stateChanged: false };
     for (const filePath of files) {
-      await this.addTailer(filePath, watch, schema);
+      await this.addTailer(filePath, watch, schema, false, initialScan);
       await yieldToEventLoop();
     }
-    // The startAtEnd offsets the initial scan chose, in one write.
-    if (files.length > 0 && watch.startAtEnd) saveWatchState(this.statePath, this.state);
+    // The startAtEnd offsets and file identities the initial scan recorded, in one write.
+    if (initialScan.stateChanged) saveWatchState(this.statePath, this.state);
 
-    const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
-    if (!watchRoot || !existsSync(watchRoot)) {
-      logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, watchRoot });
+    this.watchTranscriptRoot(resolvedPath, watch, schema);
+  }
+
+  /**
+   * Puts the watch's fs.watch on its root. Once the literal prefix exists, that
+   * is the prefix (a literal file: its directory), watched recursively. While
+   * it is missing, the closest existing ancestor is watched non-recursively and
+   * the watch moves down as the host creates each directory: a recursive watch
+   * on a broad ancestor (the home directory, for a tool that is not installed)
+   * registers one inotify watch per subdirectory on Linux, on every start.
+   */
+  private watchTranscriptRoot(resolvedPath: string, watch: WatchTarget, schema: TranscriptSchema, moved = false): void {
+    const target = this.selectWatchRoot(resolvedPath);
+    if (!target) {
+      logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, path: resolvedPath });
       return;
     }
 
+    const { root, recursive } = target;
     try {
-      const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
-        this.handleRootWatchEvent(watchRoot, resolvedPath, watch, schema, name);
+      const watcher: ReturnType<typeof fsWatch> = fsWatch(root, { recursive, persistent: true }, (_event, name) => {
+        if (recursive) {
+          this.handleRootWatchEvent(root, resolvedPath, watch, schema, name);
+        } else {
+          this.handleAncestorWatchEvent(watcher, root, resolvedPath, watch, schema, name);
+        }
       });
       this.rootWatchers.push(watcher);
-      logger.info('TRANSCRIPT', 'Watching transcript root recursively', { watch: watch.name, watchRoot });
+      if (moved || !recursive) this.settleRootWatch(watcher, root, recursive, resolvedPath, watch, schema);
+      logger.info('TRANSCRIPT', recursive
+        ? 'Watching transcript root recursively'
+        : 'Transcript root does not exist yet; watching its closest existing directory', { watch: watch.name, watchRoot: root });
     } catch (error) {
-      logger.warn('TRANSCRIPT', 'Failed to start recursive fs.watch on transcript root', {
+      logger.warn('TRANSCRIPT', 'Failed to start fs.watch on transcript root', {
         watch: watch.name,
-        watchRoot,
+        watchRoot: root,
       }, error instanceof Error ? error : undefined);
     }
   }
@@ -561,8 +678,64 @@ export class TranscriptWatcher {
       existingTailer.poke();
       return;
     }
-    const matches = this.resolveWatchFiles(resolvedPath);
-    for (const filePath of matches) {
+    // Sibling writes (a literal file's directory) cannot add matches.
+    if (!this.touchesLiteralPrefix(changed, resolvedPath)) return;
+    this.addDiscoveredTailers(resolvedPath, watch, schema);
+  }
+
+  /**
+   * An event on the closest existing ancestor of a missing transcript root.
+   * Only a change on the path to the literal prefix can move the watch. When
+   * the closest existing directory changes, this watch is replaced by the next
+   * one, and files the host already created below it are picked up at once.
+   */
+  private handleAncestorWatchEvent(
+    ancestorWatcher: ReturnType<typeof fsWatch>,
+    ancestor: string,
+    resolvedPath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    name: string | null
+  ): void {
+    // A watch already replaced (its late events, its settle check) does nothing.
+    if (this.stopped || !this.rootWatchers.includes(ancestorWatcher)) return;
+    if (name && !this.touchesLiteralPrefix(resolvePath(ancestor, name), resolvedPath)) return;
+    const next = this.selectWatchRoot(resolvedPath);
+    if (next && next.root === ancestor && !next.recursive) return;
+
+    ancestorWatcher.close();
+    this.rootWatchers = this.rootWatchers.filter(watcher => watcher !== ancestorWatcher);
+    this.watchTranscriptRoot(resolvedPath, watch, schema, true);
+    this.addDiscoveredTailers(resolvedPath, watch, schema);
+  }
+
+  /**
+   * Checks a root watch that just started on a missing root's ancestor, or just
+   * moved, once more after WATCH_ROOT_SETTLE_MS: a directory created while it
+   * registered moves it again, and a file created then is picked up.
+   */
+  private settleRootWatch(
+    watcher: ReturnType<typeof fsWatch>,
+    root: string,
+    recursive: boolean,
+    resolvedPath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema
+  ): void {
+    const timer = setTimeout(() => {
+      this.rootWatchSettleTimers.delete(timer);
+      if (this.stopped || !this.rootWatchers.includes(watcher)) return;
+      if (recursive) {
+        this.addDiscoveredTailers(resolvedPath, watch, schema);
+      } else {
+        this.handleAncestorWatchEvent(watcher, root, resolvedPath, watch, schema, null);
+      }
+    }, WATCH_ROOT_SETTLE_MS);
+    this.rootWatchSettleTimers.add(timer);
+  }
+
+  private addDiscoveredTailers(resolvedPath: string, watch: WatchTarget, schema: TranscriptSchema): void {
+    for (const filePath of this.resolveWatchFiles(resolvedPath)) {
       if (!this.tailers.has(filePath)) {
         void this.addTailer(filePath, watch, schema, true).catch(error => {
           logger.debug('TRANSCRIPT', 'Failed to add transcript tailer', { file: filePath, watch: watch.name }, error instanceof Error ? error : undefined);
@@ -571,31 +744,56 @@ export class TranscriptWatcher {
     }
   }
 
-  private deepestNonGlobAncestor(inputPath: string): string {
-    if (!this.hasGlob(inputPath)) {
-      if (existsSync(inputPath)) {
-        try {
-          const stat = statSync(inputPath);
-          return stat.isDirectory() ? inputPath : resolvePath(inputPath, '..');
-        } catch (error: unknown) {
-          logger.debug('TRANSCRIPT', 'Failed to stat watch path ancestor, falling back to parent directory', { path: inputPath }, error instanceof Error ? error : new Error(String(error)));
-          return resolvePath(inputPath, '..');
-        }
-      }
-      return inputPath;
-    }
+  /** Whether a changed path is the watch's literal prefix, inside it, or one of its ancestors. */
+  private touchesLiteralPrefix(changedPath: string, resolvedPath: string): boolean {
+    const changed = changedPath.replace(/\\/g, '/');
+    const prefix = resolvePath(this.literalWatchPrefix(resolvedPath)).replace(/\\/g, '/');
+    const isInside = (path: string, directory: string) => path.startsWith(directory.endsWith('/') ? directory : directory + '/');
+    return changed === prefix || isInside(changed, prefix) || isInside(prefix, changed);
+  }
 
-    const segments = inputPath.split(/[/\\]/);
-    const literalSegments: string[] = [];
-    for (const segment of segments) {
-      if (/[*?[\]{}()]/.test(segment)) break;
-      literalSegments.push(segment);
+  private literalWatchPrefix(inputPath: string): string {
+    let candidate = inputPath;
+    if (this.hasGlob(inputPath)) {
+      const segments = inputPath.split(/[/\\]/);
+      const literalSegments: string[] = [];
+      for (const segment of segments) {
+        if (/[*?[\]{}()]/.test(segment)) break;
+        literalSegments.push(segment);
+      }
+      // Do not turn a pattern with no literal root into a filesystem-wide watch.
+      if (literalSegments.length === 0 || (literalSegments.length === 1 && literalSegments[0] === '')) return '';
+      candidate = literalSegments.join(pathSep);
     }
-    if (literalSegments.length === 0) return '';
-    if (literalSegments.length === 1 && literalSegments[0] === '') {
-      return '';
+    return candidate;
+  }
+
+  /**
+   * Where a watch's fs.watch goes. Once the literal prefix exists: the prefix
+   * (a literal file: its directory), recursively. While it is missing (a host
+   * creates its directories only after the watcher starts): the closest
+   * existing ancestor, non-recursively, and never the filesystem root unless
+   * that root is the prefix. resolveWatchFiles stays the selector, so files
+   * outside the pattern are never ingested. Null for a pattern with no literal
+   * root.
+   */
+  private selectWatchRoot(inputPath: string): { root: string; recursive: boolean } | null {
+    const literalPrefix = this.literalWatchPrefix(inputPath);
+    if (!literalPrefix) return null;
+    const prefix = resolvePath(literalPrefix);
+    try {
+      return { root: statSync(prefix).isDirectory() ? prefix : resolvePath(prefix, '..'), recursive: true };
+    } catch {
+      // Missing or inaccessible: watch the closest existing ancestor below.
     }
-    return literalSegments.join(pathSep);
+    for (let candidate = resolvePath(prefix, '..'); resolvePath(candidate, '..') !== candidate; candidate = resolvePath(candidate, '..')) {
+      try {
+        if (statSync(candidate).isDirectory()) return { root: candidate, recursive: false };
+      } catch {
+        // Missing or inaccessible candidates are retried from their parent.
+      }
+    }
+    return null;
   }
 
   private resolveSchema(watch: WatchTarget): TranscriptSchema | null {
@@ -630,7 +828,15 @@ export class TranscriptWatcher {
   }
 
   private scanGlob(pattern: string): string[] {
-    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
+    try {
+      return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
+    } catch (error) {
+      // An absent literal prefix is a valid initial state: the parent watch
+      // will discover its files when the host creates the directories.
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+      throw error;
+    }
   }
 
   private normalizeGlobPattern(inputPath: string): string {
@@ -645,7 +851,9 @@ export class TranscriptWatcher {
     filePath: string,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    discoveredAfterStartup: boolean = false
+    discoveredAfterStartup: boolean = false,
+    // The initial scan (setupWatch) saves the state its tailers recorded once, here flagged.
+    initialScan?: { stateChanged: boolean }
   ): Promise<void> {
     // Expand a leading tilde here, the single point every path feeds through.
     // Some path sources skip expandHomePath, so a literal '~' can reach fs.watch
@@ -656,7 +864,7 @@ export class TranscriptWatcher {
     if (this.tailers.has(filePath) || this.startingTailers.has(filePath)) return;
     this.startingTailers.add(filePath);
     try {
-      await this.startTailer(filePath, watch, schema, discoveredAfterStartup);
+      await this.startTailer(filePath, watch, schema, discoveredAfterStartup, initialScan);
     } finally {
       this.startingTailers.delete(filePath);
     }
@@ -666,7 +874,8 @@ export class TranscriptWatcher {
     filePath: string,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    discoveredAfterStartup: boolean
+    discoveredAfterStartup: boolean,
+    initialScan?: { stateChanged: boolean }
   ): Promise<void> {
     const isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     if (isZstd && !isZstdSupported()) {
@@ -684,6 +893,7 @@ export class TranscriptWatcher {
     const fileContext = this.getFileContext(filePath);
     const savedOffset = this.state.offsets[filePath];
     let offset = savedOffset ?? 0;
+    let stateChanged = false;
     // `startAtEnd` means "do not replay history that predates this worker".
     // A transcript created after startup is read from byte 0: by the time the
     // recursive root watch reports it, session_meta and the opening turns are
@@ -706,12 +916,46 @@ export class TranscriptWatcher {
         if (!replayFromStart) offset = isZstd ? await zstdResumeOffset(filePath, stat.size) : stat.size;
         if (this.stopped) return;
         this.state.offsets[filePath] = offset;
-        // The initial scan saves once for all its files (setupWatch).
-        if (discoveredAfterStartup) saveWatchState(this.statePath, this.state);
+        stateChanged = true;
       } catch (error: unknown) {
         logger.debug('WORKER', 'Failed to stat file for startAtEnd offset', { file: filePath }, error instanceof Error ? error : undefined);
         offset = 0;
       }
+    }
+
+    // The checkpoint belongs to the file it was taken from. A file replaced
+    // while the watcher was down (a new device/inode and other bytes before
+    // the checkpoint) is read from byte 0; one that only changed identity
+    // keeps its checkpoint. Its current identity is recorded either way.
+    try {
+      const stat = statSync(filePath);
+      const identity = fileIdentityOf(stat);
+      const savedIdentity = this.state.fileIdentities?.[filePath];
+      if (identity !== savedIdentity) {
+        if (savedOffset !== undefined && savedIdentity !== undefined &&
+          !keepsCheckpointBytes(filePath, identity, stat.size, savedOffset, this.state.checkpointFingerprints?.[filePath])) {
+          offset = 0;
+          this.state.offsets[filePath] = 0;
+          delete this.state.partials?.[filePath];
+          delete this.state.frameLines?.[filePath];
+        }
+        (this.state.fileIdentities ??= {})[filePath] = identity;
+        const fingerprint = fingerprintBeforeOffset(filePath, offset, identity);
+        if (fingerprint !== null) {
+          (this.state.checkpointFingerprints ??= {})[filePath] = fingerprint;
+        } else {
+          delete this.state.checkpointFingerprints?.[filePath];
+        }
+        stateChanged = true;
+      }
+    } catch (error: unknown) {
+      // Gone since the scan: the tailer finds nothing to read.
+      logger.debug('WORKER', 'Failed to stat transcript file for its identity', { file: filePath }, error instanceof Error ? error : undefined);
+    }
+    if (stateChanged) {
+      // The initial scan saves once for all its files (setupWatch).
+      if (discoveredAfterStartup) saveWatchState(this.statePath, this.state);
+      else if (initialScan) initialScan.stateChanged = true;
     }
 
     // The session's working directory, restored for a watcher that resumes
@@ -760,7 +1004,13 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial: string, frameLinesDone: number) => {
+      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string) => {
+        if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
+        if (checkpointFingerprint !== undefined) {
+          (this.state.checkpointFingerprints ??= {})[filePath] = checkpointFingerprint;
+        } else if (this.state.checkpointFingerprints) {
+          delete this.state.checkpointFingerprints[filePath];
+        }
         this.state.offsets[filePath] = newOffset;
         if (partial) {
           (this.state.partials ??= {})[filePath] = partial;
@@ -776,12 +1026,9 @@ export class TranscriptWatcher {
       },
       this.state.partials?.[filePath] ?? '',
       this.state.frameLines?.[filePath] ?? 0,
-      resetMetadata,
-      (identity: string) => {
-        const changed = fileContext.pendingToolFileIdentity !== undefined && fileContext.pendingToolFileIdentity !== identity;
-        fileContext.pendingToolFileIdentity = identity;
-        return changed;
-      }
+      this.state.fileIdentities?.[filePath],
+      this.state.checkpointFingerprints?.[filePath],
+      resetMetadata
     );
 
     tailer.start();

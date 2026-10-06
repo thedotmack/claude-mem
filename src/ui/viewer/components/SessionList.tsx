@@ -30,7 +30,7 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
 
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0].isIntersecting && hasMore && !isLoading) {
+        if (entries[0].isIntersecting && entries[0].target.isConnected && hasMore && !isLoading && !loadError) {
           onLoadMoreRef.current?.();
         }
       },
@@ -38,13 +38,16 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
     );
     observer.observe(element);
     return () => observer.disconnect();
-  }, [hasMore, isLoading]);
+  }, [hasMore, isLoading, loadError]);
 
   return (
     <div className="session-list">
       <div className="session-list-content">
         {header}
-        {loadError && <div className="card-delete-error" role="alert">{loadError}</div>}
+        {loadError && <div className="card-delete-error" role="alert">
+          {loadError}
+          {!isLoading && <button onClick={onLoadMore}>Retry</button>}
+        </div>}
         {sessions.map(session => {
           const ref = catalogEntryRef(session);
           return (
@@ -64,7 +67,7 @@ export function SessionList({ header, sessions, isLoading, hasMore, loadError, o
         {isLoading && sessions.length > 0 && (
           <div className="session-list-empty">Loading older sessions…</div>
         )}
-        {hasMore && !isLoading && sessions.length > 0 && (
+        {hasMore && !isLoading && !loadError && sessions.length > 0 && (
           <div ref={loadMoreRef} style={{ height: '20px', margin: '10px 0' }} />
         )}
       </div>
