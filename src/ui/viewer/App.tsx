@@ -80,7 +80,10 @@ export function App() {
     onSessionDeleted: removeDeletedSession,
     onLiveItem: catalog.touch,
   });
-  const { settings, saveSettings, isSaving, saveStatus } = useSettings();
+  const {
+    settings, saveSettings, isSaving, saveStatus,
+    isLoaded: settingsLoaded, loadError: settingsLoadError, reload: reloadSettings,
+  } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(feedScope.project, feedScope.session);
 
@@ -329,6 +332,9 @@ export function App() {
         isOpen={contextPreviewOpen}
         onClose={toggleContextPreview}
         settings={settings}
+        isLoaded={settingsLoaded}
+        loadError={settingsLoadError}
+        onRetryLoad={reloadSettings}
         onSave={saveSettings}
         isSaving={isSaving}
         saveStatus={saveStatus}
