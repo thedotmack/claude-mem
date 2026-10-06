@@ -216,6 +216,7 @@ describe('decideVerdicts', () => {
       ['gate-on-attempts-denied', 'pass'],
       ['gate-on-edits', 'pass'],
       ['gate-on-small-file-not-denied', 'pass'],
+      ['gate-on-small-file-reads-whole-file', 'pass'],
       ['gate-on-small-file-answers', 'pass'],
       ['gate-off-never-denied', 'pass'],
       ['gate-off-reads-succeed', 'pass'],
@@ -292,16 +293,18 @@ describe('decideVerdicts', () => {
     expect(statusById['gate-off-reads-succeed']).toBe('pass');
   });
 
-  it('fails the small-file verdict when the gate denied a file under the deny size, or no Read went through', () => {
+  it('fails the small-file verdicts when the gate denied a file under the deny size, or the runs only read windows', () => {
     const verdicts = decideVerdicts([
       run(CASE_GATE_ON_SMALL_FILE, 1, answeredOff, readNormally),
       run(CASE_GATE_ON_SMALL_FILE, 2, answeredOff, blocked),
-      run(CASE_GATE_ON_SMALL_FILE, 3, answeredOff, {}),
+      run(CASE_GATE_ON_SMALL_FILE, 3, answeredOff, { targetedReads: 1, targetedReadsSucceeded: 1 }),
     ]);
-    const smallFileVerdict = verdicts.find(item => item.id === 'gate-on-small-file-not-denied');
+    const byId = Object.fromEntries(verdicts.map(item => [item.id, item]));
 
-    expect(smallFileVerdict?.status).toBe('fail');
-    expect(smallFileVerdict?.detail).toBe(`denied or no successful Read: ${CASE_GATE_ON_SMALL_FILE} #2, ${CASE_GATE_ON_SMALL_FILE} #3`);
+    expect(byId['gate-on-small-file-not-denied'].status).toBe('fail');
+    expect(byId['gate-on-small-file-not-denied'].detail).toBe(`deny marker in: ${CASE_GATE_ON_SMALL_FILE} #2`);
+    expect(byId['gate-on-small-file-reads-whole-file'].status).toBe('fail');
+    expect(byId['gate-on-small-file-reads-whole-file'].detail).toBe('1 of 3 runs');
   });
 
   it('fails when gate-ON runs never tried a whole-file Read, which would pass the other gate-ON verdicts vacuously', () => {

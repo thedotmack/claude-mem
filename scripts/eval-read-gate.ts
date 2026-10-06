@@ -403,16 +403,17 @@ export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
     }),
     verdict('gate-on-edits', 'Gate ON: the edit leaves 24.75 and no 22.40 in at least 2/3 of runs', gateOnEditRuns,
       () => passesAtLeastTwoThirds(gateOnEditRuns, EDIT_GRADERS)),
-    verdict('gate-on-small-file-not-denied', 'Gate ON, file under the deny size: no deny marker and a successful Read in every run', gateOnSmallFileRuns, () => {
-      const offenders = gateOnSmallFileRuns.filter(
-        run => run.analysis.denyMarkerAppeared || run.analysis.wholeFileReadsSucceeded + run.analysis.targetedReadsSucceeded === 0,
-      );
+    verdict('gate-on-small-file-not-denied', 'Gate ON, file under the deny size: no deny marker in any run', gateOnSmallFileRuns, () => {
+      const denied = gateOnSmallFileRuns.filter(run => run.analysis.denyMarkerAppeared);
       return {
-        passed: offenders.length === 0,
-        detail: offenders.length === 0
-          ? `${gateOnSmallFileRuns.length} of ${gateOnSmallFileRuns.length} runs`
-          : `denied or no successful Read: ${offenders.map(runLabel).join(', ')}`,
+        passed: denied.length === 0,
+        detail: denied.length === 0 ? `0 of ${gateOnSmallFileRuns.length} runs` : `deny marker in: ${denied.map(runLabel).join(', ')}`,
       };
+    }),
+    // Without a whole-file Read, a run never asks the gate the question the deny size answers.
+    verdict('gate-on-small-file-reads-whole-file', 'Gate ON, file under the deny size: Claude read the whole file in at least 2/3 of runs', gateOnSmallFileRuns, () => {
+      const reading = gateOnSmallFileRuns.filter(run => run.analysis.wholeFileReadsSucceeded > 0).length;
+      return { passed: reading * 3 >= gateOnSmallFileRuns.length * 2, detail: `${reading} of ${gateOnSmallFileRuns.length} runs` };
     }),
     verdict('gate-on-small-file-answers', 'Gate ON, file under the deny size: answer graders pass in at least 2/3 of runs', gateOnSmallFileRuns,
       () => passesAtLeastTwoThirds(gateOnSmallFileRuns, ANSWER_GRADERS)),
