@@ -17,6 +17,9 @@ import {
   classifyGeminiServerError,
   type GeminiBadRequestCategory,
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
+import { parseAgentXml } from '../../../src/sdk/parser.js';
+import { assistantText } from '../../../src/shared/assistant-text.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
@@ -562,6 +565,18 @@ describe('GeminiObservationProvider', () => {
 });
 
 describe('OpenRouterObservationProvider', () => {
+  it('preserves XML tags and words split across content blocks without changing worker separation', async () => {
+    const xml = '<observation><type>discovery</type><title>Native answer</title><narrative>Reliable extraction</narrative></observation>';
+    const content = [{ type: 'text', text: '<observ' }, { type: 'reasoning', text: 'private' }, { type: 'text', text: xml.slice(7) }];
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: async () => jsonResponse(200, { choices: [{ message: { content } }] }) });
+    const response = await provider.generate(makeContext());
+    expect(response.rawText).toBe(xml);
+    ModeManager.getInstance().loadMode('code');
+    expect(parseAgentXml(response.rawText, 'boundary').valid).toBe(true);
+    expect(parseAgentXml(response.rawText, 'boundary').observations[0].title).toBe('Native answer');
+    expect(assistantText([{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }])).toBe('first\nsecond');
+  });
+
   it('extracts text blocks from successful compatible responses without leaking reasoning', async () => {
     const provider = new OpenRouterObservationProvider({
       apiKey: 'fake',
@@ -577,7 +592,7 @@ describe('OpenRouterObservationProvider', () => {
       }),
     });
     const result = await provider.generate(makeContext());
-    expect(result.rawText).toBe('<observation>first\nsecond</observation>');
+    expect(result.rawText).toBe('<observation>firstsecond</observation>');
     expect(result.tokensUsed).toBe(11);
   });
 

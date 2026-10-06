@@ -147,7 +147,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = assistantText(data.choices?.[0]?.message?.content).trim();
+    const rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
     if (!rawText) {
       logger.warn('SDK', 'OpenRouter returned empty content', {
         provider: 'openrouter',
