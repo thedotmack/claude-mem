@@ -105,6 +105,8 @@ export const POISON_OP_REJECTION_THRESHOLD = 3;
 const MAX_POISON_QUARANTINES_PER_FLUSH = 25;
 /** Failure-streak ledger writes are throttled to one per interval. */
 const HEALTH_WRITE_THROTTLE_MS = 60 * 1_000;
+/** While a hub declines work_state, its status is re-read this often (shouldProbeContentKinds). */
+const CONTENT_KINDS_REPROBE_MS = 60 * 60 * 1_000;
 
 /**
  * Typed hub HTTP failure. Carries Retry-After so scheduleRetry can wait
@@ -286,6 +288,7 @@ const TABLE_BY_KIND: Record<RowKind, string> = {
   observation: 'observations',
   summary: 'session_summaries',
   prompt: 'user_prompts',
+  work_state: 'work_state_entries',
 };
 
 interface KindSpec {
@@ -463,6 +466,32 @@ const KINDS: KindSpec[] = [
       platform_source: r.platform_source ?? null,
     }),
   },
+  {
+    kind: 'work_state',
+    localTable: 'work_state_entries',
+    // The agent's to-do lists and working state (sqlite/work-state.ts): an
+    // append-only log, so a row's first revision is normally its whole life.
+    // `fields` travels as the object it stores, like observation metadata.
+    // Pushed only to a hub whose status lists the kind (hubAcceptsKind).
+    selectSql: `
+      SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
+        project, list_name, fields, created_at, created_at_epoch
+      FROM work_state_entries
+      WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ORDER BY id LIMIT ?`,
+    selectOneSql: `
+      SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
+        project, list_name, fields, created_at, created_at_epoch
+      FROM work_state_entries
+      WHERE id = ? AND origin_device_id IS NULL`,
+    toBody: (r) => ({
+      project: r.project ?? 'unknown',
+      list_name: r.list_name ?? null,
+      fields: jsonPayloadColumn(r.fields, 'fields', 'object'),
+      created_at: r.created_at ?? null,
+      created_at_epoch: decimalPayload(r.created_at_epoch, 'created_at_epoch'),
+    }),
+  },
 ];
 
 export type CloudSyncSettingKeys = Pick<SettingsDefaults,
@@ -511,7 +540,7 @@ export interface CloudSyncOptions {
 export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
-  pending: { observations: number; summaries: number; prompts: number; mutations: number; tombstones: number };
+  pending: { observations: number; summaries: number; prompts: number; workState: number; mutations: number; tombstones: number };
   quarantine: { count: number; latestReason: string | null };
   /** Pulled hub ops this device set aside because they can never apply here. */
   pullQuarantine: { count: number; latestReason: string | null };
@@ -527,6 +556,8 @@ export interface CloudSyncStatus {
     epoch: string | null;
     headSeq: string | null;
     projectedSeq: string | null;
+    /** Kinds the hub accepts (`content_kinds`); [] for a hub that predates the field; null until probed. */
+    contentKinds: string[] | null;
     error: string | null;
   };
 }
@@ -573,6 +604,7 @@ export class CloudSync {
     epoch: null,
     headSeq: null,
     projectedSeq: null,
+    contentKinds: null,
     error: null,
   };
   /** True while SyncClient's advisory socket is live (setFastDebounce). */
@@ -745,7 +777,13 @@ export class CloudSync {
         this.flushAgainRequested = false;
         await this.drainContentOutbox();
         await this.drainMutations();
+        if (this.countPending('work_state_entries') > 0 && this.shouldProbeContentKinds()) {
+          // One status GET learns which kinds this hub accepts (hubAcceptsKind).
+          await this.probeHubStatus();
+          if (this.stopped) return;
+        }
         for (const kind of KINDS) {
+          if (!this.hubAcceptsKind(kind.kind)) continue;
           await this.drainKind(kind);
         }
       } while (this.flushAgainRequested && !this.stopped);
@@ -785,6 +823,7 @@ export class CloudSync {
         observations: this.countPending('observations'),
         summaries: this.countPending('session_summaries'),
         prompts: this.countPending('user_prompts'),
+        workState: this.countPending('work_state_entries'),
         mutations: this.countPendingMutations(),
         tombstones: this.countPendingTombstones(),
       },
@@ -911,6 +950,29 @@ export class CloudSync {
     return this.status();
   }
 
+  /**
+   * Content kinds the hub advertises in GET /v1/sync/status (`content_kinds`).
+   * A kind the hub has not listed is never pushed: its rows wait, unsynced, for
+   * a hub that accepts them. Without this an older hub would refuse the op by
+   * name and the poison-op threshold (#4086) would dead-letter the row for
+   * good. The three launch kinds predate the field and are always accepted.
+   */
+  private hubAcceptsKind(kind: ContentKind): boolean {
+    if (kind !== 'work_state') return true;
+    return this.hubStatus.contentKinds?.includes(kind) ?? false;
+  }
+
+  /**
+   * Ask the hub which kinds it accepts before pushing one it may not: when it
+   * has never been asked, and again once an hour while it declines work_state,
+   * so a hub upgrade is learned without waiting for a worker restart.
+   */
+  private shouldProbeContentKinds(): boolean {
+    if (this.hubStatus.contentKinds === null) return true;
+    if (this.hubAcceptsKind('work_state')) return false;
+    return Date.now() - (this.hubStatus.checkedAt ?? 0) >= CONTENT_KINDS_REPROBE_MS;
+  }
+
   private probeHubStatus(): Promise<void> {
     if (!this.statusProbePromise) {
       this.statusProbePromise = this.runHubStatusProbe().finally(() => {
@@ -976,12 +1038,17 @@ export class CloudSync {
       if (compareCanonicalDecimals(projectedSeq, headSeq) > 0) {
         throw new Error('sync hub status: projected_seq exceeds head_seq');
       }
+      // A hub that predates `content_kinds` accepts only the launch kinds.
+      const contentKinds = Array.isArray(record.content_kinds)
+        ? record.content_kinds.filter((kind): kind is string => typeof kind === 'string')
+        : [];
       this.hubStatus = {
         checkedAt,
         reachable: true,
         epoch,
         headSeq,
         projectedSeq,
+        contentKinds,
         error: null,
       };
       this.exitAuthPause();
@@ -998,6 +1065,8 @@ export class CloudSync {
         epoch: null,
         headSeq: null,
         projectedSeq: null,
+        // What the hub accepted last time still holds; an outage changes nothing.
+        contentKinds: this.hubStatus.contentKinds,
         error: safe,
       };
     }

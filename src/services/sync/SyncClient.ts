@@ -89,7 +89,8 @@ function localPayload(payload: Record<string, unknown> | null): Record<string, u
       result[key] = canonicalDecimalToSafeInteger(value, key);
     } else if (LOCAL_JSON_FIELDS.has(key)) {
       result[key] = canonicalJson(value);
-    } else if (key === 'metadata') {
+    } else if (key === 'metadata' || key === 'fields') {
+      // Stored as JSON text locally: observation metadata, work-state fields.
       result[key] = canonicalJson(value);
     }
   }
