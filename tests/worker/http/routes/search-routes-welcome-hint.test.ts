@@ -468,5 +468,17 @@ describe('SearchRoutes Welcome Hint', () => {
       expect(res.send).toHaveBeenCalledWith('');
       expect(generateContextStub).not.toHaveBeenCalled();
     });
+
+    it('injects nothing for an excluded checkout even when the host names another project', async () => {
+      process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+      const handler = captureContextInjectHandler(new SearchRoutes(searchManagerWithObservations() as any));
+      const res = createMockRes();
+
+      handler({ query: { cwd: checkout, projects: 'project-override' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(res.send).toHaveBeenCalledWith('');
+      expect(generateContextStub).not.toHaveBeenCalled();
+    });
   });
 });

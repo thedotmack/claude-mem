@@ -1,0 +1,7 @@
+- insert:
+    - id: claude-mem
+      name: '@claude-mem/dsh'
+      config:
+        injectContext: true
+        ingest: false
+        summarize: false
