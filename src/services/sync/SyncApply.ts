@@ -188,7 +188,7 @@ export interface UndecodableOp {
 /** One op as returned by the hub's getChanges (SyncHub.ts ChangeOp). */
 export interface SyncOp {
   seq: string;
-  kind: 'observation' | 'summary' | 'prompt' | 'mutation';
+  kind: 'observation' | 'summary' | 'prompt' | 'work_state' | 'mutation';
   origin_device: string;
   origin_id: string;
   rev: string;
@@ -413,6 +413,7 @@ export class SyncApply {
           { table: 'observations', kind: 'observation' },
           { table: 'session_summaries', kind: 'summary' },
           { table: 'user_prompts', kind: 'prompt' },
+          { table: 'work_state_entries', kind: 'work_state' },
         ]) {
           requeued += this.db.prepare(`
             UPDATE ${table} SET synced_at = NULL
@@ -776,7 +777,9 @@ export class SyncApply {
         ? 'observations'
         : op.kind === 'summary'
           ? 'session_summaries'
-          : 'user_prompts';
+          : op.kind === 'work_state'
+            ? 'work_state_entries'
+            : 'user_prompts';
       this.db.prepare(
         `DELETE FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
       ).run(op.origin_device, op.origin_id);
@@ -811,9 +814,57 @@ export class SyncApply {
         return this.applySummary(op, body, chromaJobs);
       case 'prompt':
         return this.applyPrompt(op, body, chromaJobs);
+      case 'work_state':
+        return this.applyWorkState(op, body);
       default:
         throw invalidOp(op, `unknown row kind`);
     }
+  }
+
+  /**
+   * work_state rows (sqlite/work-state.ts) are an append-only log the agent
+   * keeps: a pulled row is inserted once under its origin identity and only a
+   * higher revision rewrites it. The table has no session FK and no Chroma
+   * copy, so nothing else is created for it.
+   */
+  private applyWorkState(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+    const project = fieldString(op, body, 'project');
+    const listName = fieldString(op, body, 'list_name');
+    const fields = fieldString(op, body, 'fields');
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch');
+    if (!project || !listName || fields === null || createdAtEpoch === null) {
+      throw invalidOp(op, 'work_state body requires project, list_name, fields, created_at_epoch');
+    }
+    let parsedFields: unknown;
+    try {
+      parsedFields = JSON.parse(fields);
+    } catch {
+      parsedFields = undefined;
+    }
+    if (parsedFields === null || typeof parsedFields !== 'object' || Array.isArray(parsedFields)) {
+      throw invalidOp(op, 'work_state fields must be a JSON object');
+    }
+    const createdAt = fieldString(op, body, 'created_at') ?? new Date(createdAtEpoch).toISOString();
+
+    const existing = this.findByOrigin('work_state_entries', op.origin_device, op.origin_id);
+    if (existing) {
+      if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
+      this.db.prepare(`
+        UPDATE work_state_entries SET
+          project = ?, list_name = ?, fields = ?, created_at = ?, created_at_epoch = ?,
+          sync_rev = ?, synced_at = ?
+        WHERE id = ?
+      `).run(project, listName, fields, createdAt, createdAtEpoch, op.rev, this.now(), existing.id);
+      return 'applied';
+    }
+    // synced_at pre-stamped: the push drain's WHERE synced_at IS NULL never selects it.
+    this.db.prepare(`
+      INSERT INTO work_state_entries
+        (project, list_name, fields, created_at, created_at_epoch,
+         synced_at, origin_device_id, origin_local_id, sync_rev)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(project, listName, fields, createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev);
+    return 'applied';
   }
 
   // ------------------------------------------------------------------------

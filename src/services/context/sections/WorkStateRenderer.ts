@@ -113,8 +113,14 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
     }
     listEntries.push(entry);
   }
+  // Most recently written list first, by write clock rather than rowid: a list
+  // pulled from another device sorts by when it was written, not when it landed.
   return [...entriesByList.values()]
-    .sort((a, b) => b[b.length - 1].id - a[a.length - 1].id)
+    .sort((a, b) => {
+      const lastA = a[a.length - 1];
+      const lastB = b[b.length - 1];
+      return (lastB.created_at_epoch - lastA.created_at_epoch) || (lastB.id - lastA.id);
+    })
     .flatMap(listEntries => {
       const first = listEntries[0];
       const label = (listProjectCounts.get(first.list_name) ?? 0) > 1
