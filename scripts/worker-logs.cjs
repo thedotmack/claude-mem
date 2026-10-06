@@ -2,7 +2,7 @@
 
 const { closeSync, fstatSync, openSync, readSync, watchFile, unwatchFile } = require('fs');
 const path = require('path');
-const { resolveDataDir } = require('../src/shared/runtime-settings.cjs');
+const { resolveDataDir } = require('./resolve-data-dir.cjs');
 
 const LINE_COUNT = 50;
 const POLL_INTERVAL_MS = 250;

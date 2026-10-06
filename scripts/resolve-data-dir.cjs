@@ -1,5 +1,11 @@
-// Shared by the TypeScript runtime and standalone Node scripts. Keep settings
-// target, BOM and home expansion rules here so their effective data dirs agree.
+// The worker's data-directory rule (resolveDataDir in src/shared/paths.ts) for
+// standalone Node scripts such as worker-logs.cjs, which run without a build.
+//
+// This is a deliberate second copy. TypeScript modules must not import it:
+// bundling a CommonJS module into an ESM bundle makes esbuild emit a `require`
+// shim that throws "Dynamic require of fs is not supported" at load.
+// tests/scripts/resolve-data-dir-parity.test.ts runs both copies against every
+// settings shape the worker accepts, so they cannot drift apart.
 const { existsSync, readFileSync } = require('fs');
 const { homedir } = require('os');
 const { join } = require('path');
@@ -56,12 +62,4 @@ function resolveDataDir() {
   return defaultDataDir;
 }
 
-module.exports = {
-  expandHome,
-  classifySettingsDocument,
-  settingsTarget,
-  stripUtf8Bom,
-  parseJsonWithBom,
-  readJsonFileWithBom,
-  resolveDataDir,
-};
+module.exports = { resolveDataDir };

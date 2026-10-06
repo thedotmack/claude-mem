@@ -34,8 +34,6 @@
   },
   "files": [
     "dist",
-    "scripts/worker-logs.cjs",
-    "src/shared/runtime-settings.cjs",
     ".agents/plugins/marketplace.json",
     ".claude-plugin",
     ".codex-plugin",

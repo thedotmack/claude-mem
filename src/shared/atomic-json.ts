@@ -19,7 +19,17 @@ import { emitDiagnostic } from './hook-io.js';
 
 export const IS_WINDOWS_PLATFORM = process.platform === 'win32';
 
-export { stripUtf8Bom, parseJsonWithBom, readJsonFileWithBom } from './runtime-settings.cjs';
+export function stripUtf8Bom(raw: string): string {
+  return raw.replace(/^\uFEFF/, '');
+}
+
+export function parseJsonWithBom<T = unknown>(raw: string): T {
+  return JSON.parse(stripUtf8Bom(raw)) as T;
+}
+
+export function readJsonFileWithBom<T = unknown>(filepath: string): T {
+  return parseJsonWithBom<T>(readFileSync(filepath, 'utf-8'));
+}
 
 export function ensureDirectoryExists(directoryPath: string): void {
   if (!existsSync(directoryPath)) {

@@ -593,44 +593,6 @@ resolve_extension_dir() {
 
 CLAUDE_MEM_EXTENSION_DIR=""
 
-# Standalone OpenClaw installs copy the bundled plugin tree, not src/. Keep
-# this Node-readable resolver identical to the worker and CLI source module.
-copy_runtime_settings() {
-  local repo_root="$1"
-  local extension_dir="$2"
-  mkdir -p "${extension_dir}/plugin/scripts"
-  cp "${repo_root}/src/shared/runtime-settings.cjs" "${extension_dir}/plugin/scripts/runtime-settings.cjs"
-}
-
-# --upgrade intentionally skips cloning and reinstalling. Older standalone
-# bundles still need this canonical helper before any existing worker is stopped.
-ensure_runtime_settings() {
-  local install_dir="$1"
-  if [[ -z "$install_dir" ]]; then
-    if ! find_claude_mem_install_dir; then
-      error "Cannot find claude-mem installation before worker startup."
-      return 1
-    fi
-    install_dir="$CLAUDE_MEM_INSTALL_DIR"
-  fi
-  local module="${install_dir}/plugin/scripts/runtime-settings.cjs"
-  if [[ -f "$module" || -f "${install_dir}/src/shared/runtime-settings.cjs" ]]; then
-    return 0
-  fi
-  mkdir -p "${install_dir}/plugin/scripts"
-  local temporary_dir
-  temporary_dir="$(mktemp -d "${install_dir}/plugin/scripts/.runtime-settings.XXXXXX")"
-  local temporary="${temporary_dir}/runtime-settings.cjs"
-  local url="https://raw.githubusercontent.com/thedotmack/claude-mem/${CLAUDE_MEM_BRANCH}/src/shared/runtime-settings.cjs"
-  if ! curl -fsSL "$url" -o "$temporary" || ! node --check "$temporary"; then
-    INSTALLER_TEMP_DIR="$temporary_dir" node -e 'require("fs").rmSync(process.env.INSTALLER_TEMP_DIR, { recursive: true, force: true })'
-    error "Cannot deliver the data directory resolver — upgrade aborted before worker restart."
-    return 1
-  fi
-  mv "$temporary" "$module"
-  INSTALLER_TEMP_DIR="$temporary_dir" node -e 'require("fs").rmSync(process.env.INSTALLER_TEMP_DIR, { recursive: true, force: true })'
-}
-
 install_plugin() {
   check_git
 
@@ -782,7 +744,6 @@ install_plugin() {
     info "Copying core plugin files to ${extension_dir}..."
 
     cp -R "${repo_root}/plugin" "${extension_dir}/"
-    copy_runtime_settings "$repo_root" "$extension_dir"
 
     local root_version
     root_version="$(node -e "console.log(require('${repo_root}/package.json').version)")"
@@ -1144,20 +1105,7 @@ start_worker() {
   fi
 
   local worker_script="${CLAUDE_MEM_INSTALL_DIR}/plugin/scripts/worker-service.cjs"
-  local settings_module="${CLAUDE_MEM_INSTALL_DIR}/plugin/scripts/runtime-settings.cjs"
-  if [[ ! -f "$settings_module" ]]; then
-    settings_module="${CLAUDE_MEM_INSTALL_DIR}/src/shared/runtime-settings.cjs"
-  fi
-  if [[ ! -f "$settings_module" ]]; then
-    error "Data directory resolver missing — reinstall or update the claude-mem plugin."
-    return 1
-  fi
-  local data_dir
-  if ! data_dir="$(INSTALLER_SETTINGS_MODULE="$settings_module" node -e 'process.stdout.write(require(process.env.INSTALLER_SETTINGS_MODULE).resolveDataDir())')"; then
-    error "Cannot resolve the claude-mem data directory"
-    return 1
-  fi
-  local log_dir="${data_dir}/logs"
+  local log_dir="${HOME}/.claude-mem/logs"
   local log_date
   log_date="$(date +%Y-%m-%d)"
   local log_file="${log_dir}/worker-${log_date}.log"
@@ -1587,7 +1535,8 @@ main() {
   setup_ai_provider
 
   echo ""
-  info "${COLOR_BOLD}[6/8]${COLOR_RESET} Preparing settings..."
+  info "${COLOR_BOLD}[6/8]${COLOR_RESET} Writing settings..."
+  write_settings
 
   echo ""
   info "${COLOR_BOLD}[7/8]${COLOR_RESET} Starting worker service..."
@@ -1626,8 +1575,6 @@ main() {
       fi
 
       if [[ "$needs_restart" == "true" ]]; then
-        ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR" || return 1
-        write_settings
         info "Stopping existing worker..."
         curl -s -X POST "http://127.0.0.1:37777/api/admin/shutdown" >/dev/null 2>&1 || true
         sleep 2
@@ -1657,7 +1604,6 @@ main() {
           warn "Worker restart failed — you can start it manually later"
         fi
       else
-        write_settings
         local uptime_display=""
         if [[ -n "$WORKER_UPTIME" && "$WORKER_UPTIME" =~ ^[0-9]+$ && "$WORKER_UPTIME" != "0" ]]; then
           uptime_display="$(format_uptime_ms "$WORKER_UPTIME")"
@@ -1681,14 +1627,11 @@ main() {
         fi
       fi
     else
-      write_settings
       warn "Port 37777 is occupied but not responding to health checks"
       warn "Another process may be using this port. Stop it and re-run the installer,"
       warn "or change CLAUDE_MEM_WORKER_PORT in ~/.claude-mem/settings.json"
     fi
   else
-    ensure_runtime_settings "$CLAUDE_MEM_INSTALL_DIR" || return 1
-    write_settings
     if start_worker; then
       verify_health || true
     else
