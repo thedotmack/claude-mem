@@ -29,7 +29,7 @@ npx claude-mem install
 
 The interactive installer runs in three stages — runtime first, sign in second, then pick your memory provider:
 
-1. **Install runtime.** Runs a runtime check (auto-installs Bun and uv if missing), detects your installed IDEs (Claude Code, Cursor, Windsurf, OpenCode, Codex CLI, Antigravity CLI, Grok Bot) and lets you multi-select which ones to wire up, offers to install Claude Code if it isn't found, then copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
+1. **Choose agents and install runtime.** Pre-selects detected agents, including OpenCode, OMP, Cursor, and Codex CLI. Offers to install Claude Code only when you select it and it isn't found. If the host download or installation fails, returns to agent selection so you can retry or choose another agent. Then checks Bun and uv, copies plugin files into the marketplace directory, registers the plugin, and installs dependencies.
 2. **Sign in.** Skipped for `--provider claude` (memory runs on your own Anthropic plan). The CLI does **not** ask for an email. It starts an OAuth pairing (`POST https://cmem.ai/api/installer/oauth/start`), prints a device code `XXXX-XXXX`, opens `authorization_url` in your browser, and polls until you are authenticated. No card required.
 3. **Choose your memory provider.** **CMEM Pro is pre-selected.** Picking it opens a checkout/trial URL, polls until the account is `ready`, writes `~/.claude-mem/settings.json`, and restarts the worker. Other choices: personal OpenRouter, Gemini, Anthropic plan, or `--provider host` (local loopback observer).
 

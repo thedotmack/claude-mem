@@ -12,6 +12,11 @@ export interface IDEInfo {
   hint?: string;
 }
 
+export function initialIDESelection(ides: IDEInfo[]): string[] {
+  const detected = ides.filter(ide => ide.detected).map(ide => ide.id);
+  return detected.length ? detected : ['claude-code'];
+}
+
 function isCommandInPath(command: string): boolean {
   try {
     if (IS_WINDOWS) {

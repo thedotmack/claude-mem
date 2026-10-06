@@ -192,6 +192,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
@@ -708,10 +709,14 @@ function applyClaudeCodePathSetupIfNeeded(): void {
   process.env.PATH = `${claudeBinDir}:${currentPath}`;
 }
 
-async function installClaudeCode(): Promise<boolean> {
-  const command = IS_WINDOWS
+export function claudeCodeInstallCommand(windows = IS_WINDOWS): string {
+  return windows
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
-    : 'curl -fsSL https://claude.ai/install.sh | bash';
+    : 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash';
+}
+
+async function installClaudeCode(): Promise<boolean> {
+  const command = claudeCodeInstallCommand();
   const installShell = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash';
 
   const spinner = isInteractive ? p.spinner() : null;
@@ -759,31 +764,7 @@ async function installClaudeCode(): Promise<boolean> {
 }
 
 async function promptForIDESelection(): Promise<string[]> {
-  let detectedIDEs = detectInstalledIDEs();
-  const claudeCodeInfo = detectedIDEs.find((ide) => ide.id === 'claude-code');
-
-  if (claudeCodeInfo && !claudeCodeInfo.detected) {
-    log.warn('Claude Code is not installed. Claude-mem works best in Claude Code, but also works with the IDEs below.');
-    const choice = await p.select<'install' | 'skip' | 'cancel'>({
-      message: 'Install Claude Code now?',
-      options: [
-        { value: 'install', label: 'Yes — install Claude Code (recommended)' },
-        { value: 'skip', label: 'No — pick another IDE below' },
-        { value: 'cancel', label: 'Cancel installation' },
-      ],
-      initialValue: 'install',
-    });
-    if (p.isCancel(choice) || choice === 'cancel') {
-      p.cancel('Installation cancelled.');
-      process.exit(0);
-    }
-    if (choice === 'install') {
-      if (await installClaudeCode()) {
-        detectedIDEs = detectInstalledIDEs();
-      }
-    }
-  }
-
+  const detectedIDEs = detectInstalledIDEs();
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
@@ -799,15 +780,11 @@ async function promptForIDESelection(): Promise<string[]> {
     };
   });
 
-  // Pre-check Claude Code (plus anything else detected). It is the IDE almost
-  // everyone installing claude-mem is running, and an empty multiselect makes
-  // the common case a required chore before the install can continue.
-  const preselected = detectedIDEs
-    .filter((ide) => ide.detected || ide.id === 'claude-code')
-    .map((ide) => ide.id);
+  // Prefer the agents already installed; Claude Code is the fallback when none are detected.
+  const preselected = initialIDESelection(detectedIDEs);
 
   const result = await p.multiselect({
-    message: 'Which IDEs do you use?',
+    message: 'Which agents do you use?',
     options,
     initialValues: preselected,
     required: true,
@@ -818,7 +795,16 @@ async function promptForIDESelection(): Promise<string[]> {
     process.exit(0);
   }
 
-  return result as string[];
+  const selected = result as string[];
+  if (selected.includes('claude-code') && !detectedIDEs.find(ide => ide.id === 'claude-code')?.detected) {
+    const installHost = await p.confirm({ message: 'Install Claude Code now?', initialValue: true });
+    if (p.isCancel(installHost)) { p.cancel('Installation cancelled.'); process.exit(0); }
+    if (installHost && !await installClaudeCode()) {
+      log.warn('Claude Code installation failed. Choose an agent again, or decline the host installation to set it up later.');
+      return promptForIDESelection();
+    }
+  }
+  return selected;
 }
 
 function copyPluginToMarketplace(): void {
