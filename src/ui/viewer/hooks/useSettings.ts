@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Settings } from '../types';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { API_ENDPOINTS } from '../constants/api';
@@ -65,27 +65,48 @@ export async function saveSettings(
 
 export function useSettings() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS);
+  // `settings` holds DEFAULT_SETTINGS until the first GET succeeds. A save
+  // before then would post those defaults over settings.json (provider,
+  // worker port, blank API keys), so the modal keeps Save off until loaded.
+  const [isLoaded, setIsLoaded] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [loadAttempt, setLoadAttempt] = useState(0);
   const [isSaving, setIsSaving] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
 
   useEffect(() => {
+    let active = true;
     fetch(API_ENDPOINTS.SETTINGS)
       .then(async res => {
         if (!res.ok) {
-          throw new Error(`Failed to load settings (${res.status})`);
+          throw new Error(`HTTP ${res.status}`);
         }
         return res.json();
       })
       .then(data => {
+        if (!active) return;
         setSettings({ ...DEFAULT_SETTINGS, ...data });
+        setIsLoaded(true);
       })
       .catch(error => {
         console.error('Failed to load settings:', error);
+        if (!active) return;
+        setLoadError(`Could not load settings: ${error instanceof Error ? error.message : String(error)}`);
       });
+    return () => { active = false; };
+  }, [loadAttempt]);
+
+  /** Re-run the initial GET after it failed. */
+  const reload = useCallback(() => {
+    setLoadError(null);
+    setLoadAttempt(attempt => attempt + 1);
   }, []);
 
   return {
     settings,
+    isLoaded,
+    loadError,
+    reload,
     saveSettings: (newSettings: Settings) => saveSettings(newSettings, {
       fetchImpl: fetch.bind(globalThis) as typeof fetch,
       setSettings,

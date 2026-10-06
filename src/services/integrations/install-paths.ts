@@ -47,8 +47,9 @@ export function getPluginRootAbsolutePath(): string | null {
   ].filter((value): value is string => Boolean(value));
 
   for (const candidate of candidates) {
-    if (existsSync(path.join(candidate, 'scripts'))) {
-      return candidate;
+    const absolute = path.resolve(candidate);
+    if (existsSync(path.join(absolute, 'scripts'))) {
+      return absolute;
     }
   }
   return null;
