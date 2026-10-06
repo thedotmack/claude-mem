@@ -1267,7 +1267,12 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return null;
   };
 
-  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
+  // Go methods are named with their receiver (`Local.Reset`), so a bare method
+  // name still unfolds the first method with that leaf, as in other languages.
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
+    ?? (file.language === "go"
+      ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null
+      : null);
   if (!symbol) return null;
 
   const lines = content.split("\n");

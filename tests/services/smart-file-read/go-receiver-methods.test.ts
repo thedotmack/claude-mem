@@ -19,6 +19,11 @@ describe('Go method receiver identity', () => {
     expect(remote).toContain('remote_body');
     expect(remote).not.toContain('local_body');
   }, 120000);
+  test('still unfolds a bare method name and rejects a wrong receiver', () => {
+    expect(unfoldSymbol(source, 'store.go', 'Reset')).toContain('local_body');
+    expect(unfoldSymbol(source, 'store.go', 'Remote.Reset')).toContain('remote_body');
+    expect(unfoldSymbol(source, 'store.go', 'Missing.Reset')).toBeNull();
+  }, 120000);
 });
 
  test('keeps generic and unnamed receivers supported', () => {
