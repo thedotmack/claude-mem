@@ -232,6 +232,27 @@ export class PostgresObservationGenerationJobRepository {
     throw new Error('observation generation job status transition was not applied');
   }
 
+  // Rows left in `processing` by a worker that died mid-job. Nothing else
+  // moves them: lockOutbox skips a `processing` row on redelivery and retry
+  // refuses one with 409. Server-wide by design; callers apply the scoped
+  // transition per row.
+  async listStaleProcessing(input: {
+    olderThanMs: number;
+    limit?: number;
+  }): Promise<PostgresObservationGenerationJob[]> {
+    const result = await this.client.query<JobRow>(
+      `
+        SELECT * FROM observation_generation_jobs
+        WHERE status = 'processing'
+          AND locked_at < now() - ($1::double precision * interval '1 millisecond')
+        ORDER BY locked_at ASC
+        LIMIT $2
+      `,
+      [input.olderThanMs, input.limit ?? 100]
+    );
+    return result.rows.map(mapJobRow);
+  }
+
   async listByStatusForScope(input: {
     status: ObservationGenerationJobStatus;
     projectId: string;
