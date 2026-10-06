@@ -1080,7 +1080,7 @@ export class WorkerService implements WorkerRef {
       // DEBUG, not INFO: this fires on every queue mutation, so when the SDK
       // is stuck (e.g. auth failing with /login required) it logs ~83/s and
       // turns a transient auth gap into a disk-space incident (#4087). The
-      // SSE broadcast above still reaches connected clients; the log line is
+      // SSE broadcast below still reaches connected clients; the log line is
       // only useful when diagnosing status updates themselves.
       logger.debug('WORKER', 'Broadcasting processing status', {
         isProcessing,
