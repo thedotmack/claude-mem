@@ -72,3 +72,20 @@ for (const restart of [false, true]) it(`does not reuse pending metadata from a 
     expect(JSON.parse(readFileSync(state, 'utf8')).pendingTools[file]).toEqual({});
   } finally { first.stop(); second?.stop(); rmSync(root, { recursive: true, force: true }); }
 });
+for (const restart of [false, true]) it(`retires unmatched tools when their transcript is no longer tracked${restart ? ' after restart' : ''}`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-retired-tools-'));
+  const file = join(root, 'session.jsonl'); const state = join(root, 'checkpoint.json');
+  writeFileSync(file, JSON.stringify({ session: 's', type: 'use', id: 't', name: 'Read', input: { token: 'fake-secret' } }) + '\n');
+  const watch = { name: 'retry', path: file, workspace: '/repo', schema };
+  const first = new TranscriptWatcher({ version: 1, watches: [watch] }, state); let second: TranscriptWatcher | undefined;
+  try {
+    await first.start(); await (first as any).tailers.get(file).readTask;
+    expect(JSON.parse(readFileSync(state, 'utf8')).pendingTools[file]['retry:s'].t.toolInput.token).toBe('fake-secret');
+    if (restart) first.stop(); rmSync(file);
+    if (restart) { second = new TranscriptWatcher({ version: 1, watches: [watch] }, state); await second.start(); }
+    else (first as any).handleRootWatchEvent(root, file, watch, schema, 'session.jsonl');
+    const saved = JSON.parse(readFileSync(state, 'utf8'));
+    expect(saved.pendingTools[file]).toBeUndefined(); expect(saved.pendingToolFileIdentities[file]).toBeUndefined();
+    expect(readFileSync(state, 'utf8')).not.toContain('fake-secret');
+  } finally { first.stop(); second?.stop(); rmSync(root, { recursive: true, force: true }); }
+});
