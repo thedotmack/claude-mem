@@ -5,12 +5,14 @@ import { mkdirSync, mkdtempSync, writeFileSync, utimesSync, rmSync } from 'fs';
 import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 import { resolveDbPath } from '../../src/shared/paths.js';
+import type { NormalizedHookInput } from '../../src/cli/types.js';
 
 // Capture the REAL modules BEFORE mocking so afterAll can restore them.
 // bun's `mock.module` is process-global and sticky; `mock.restore()` does NOT
 // undo it, so we must explicitly re-register the real implementations to keep
 // the suite order-independent (otherwise these mocks leak into later files).
 import * as realSettingsDefaultsManager from '../../src/shared/SettingsDefaultsManager.js';
+import * as realHookSettings from '../../src/shared/hook-settings.js';
 import * as realWorkerUtils from '../../src/shared/worker-utils.js';
 import * as realProjectName from '../../src/utils/project-name.js';
 import * as realProjectFilter from '../../src/utils/project-filter.js';
@@ -18,6 +20,7 @@ import * as realProjectFilter from '../../src/utils/project-filter.js';
 // Snapshot the real exports into plain objects NOW, before mock.module mutates
 // the live ESM namespace bindings. These snapshots are re-registered in afterAll.
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
+const realHookSettingsSnapshot = { ...realHookSettings };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const realProjectNameSnapshot = { ...realProjectName };
 const realProjectFilterSnapshot = { ...realProjectFilter };
@@ -33,7 +36,32 @@ mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
   },
 }));
 
+// The File Read Gate reads CLAUDE_MEM_FILE_READ_GATE_ENABLED through
+// loadFromFileOnce. Spread the real module so none of its exports vanish for
+// later test files; keep CLAUDE_MEM_EXCLUDED_PROJECTS for shouldTrackProject.
+let fileReadGateSetting: string | undefined = 'true';
+mock.module('../../src/shared/hook-settings.js', () => ({
+  ...realHookSettingsSnapshot,
+  loadFromFileOnce: () => ({
+    CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+    CLAUDE_MEM_FILE_READ_GATE_ENABLED: fileReadGateSetting,
+  }),
+}));
+
+// Every worker call the handler makes is recorded, then run by the REAL
+// executeWithWorkerFallback, which the fetch spy in each test answers.
+const workerFallbackCalls: Array<{ url: string; method: string; body: unknown; options: unknown }> = [];
+
 mock.module('../../src/shared/worker-utils.js', () => ({
+  executeWithWorkerFallback: (
+    url: string,
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE',
+    body?: unknown,
+    options?: { timeoutMs?: number },
+  ) => {
+    workerFallbackCalls.push({ url, method, body, options });
+    return realWorkerUtilsSnapshot.executeWithWorkerFallback(url, method, body, options);
+  },
   ensureWorkerRunning: () => Promise.resolve(true),
   getWorkerPort: () => 37777,
   workerHttpRequest: (apiPath: string, options?: any) => {
@@ -55,14 +83,27 @@ mock.module('../../src/utils/project-filter.js', () => ({
   isProjectExcluded: () => false,
 }));
 
-import { fileContextHandler } from '../../src/cli/handlers/file-context.js';
+import {
+  fileContextHandler,
+  shouldDenyFullFileRead,
+  FILE_CONTEXT_WORKER_BUDGET_MS,
+} from '../../src/cli/handlers/file-context.js';
 import { claimFileContextInjection } from '../../src/cli/handlers/file-context-dedupe.js';
 import { logger } from '../../src/utils/logger.js';
 
 const PADDING = 'x'.repeat(2_000); 
 
+// A code file smart_outline can outline, over 1,500 bytes, with a known line
+// count (trailing newline included) for the whole-file vs targeted Read cases.
+const GATED_FILE_LINE_COUNT = 120;
+const GATED_FILE_CONTENT = Array.from(
+  { length: GATED_FILE_LINE_COUNT },
+  (_, index) => `export const fixtureValue${index} = ${index}; // read-gate fixture line`,
+).join('\n') + '\n';
+
 let tmpDir: string;
 let testFile: string;
+let gatedFile: string;
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 let fetchSpy: ReturnType<typeof spyOn> | null = null;
 
@@ -90,6 +131,10 @@ beforeEach(() => {
   tmpDir = mkdtempSync(join(tmpdir(), 'file-context-test-'));
   testFile = join(tmpDir, 'test.md');
   writeFileSync(testFile, PADDING);
+  gatedFile = join(tmpDir, 'gated.ts');
+  writeFileSync(gatedFile, GATED_FILE_CONTENT);
+  fileReadGateSetting = 'true';
+  workerFallbackCalls.length = 0;
 
   // #3480 — the per-(session,file) injection gate persists in the SQLite DB
   // under DATA_DIR. Point it at a fresh per-test dir so each test starts with an
@@ -118,6 +163,7 @@ afterEach(() => {
 
 afterAll(() => {
   mock.module('../../src/shared/SettingsDefaultsManager.js', () => realSettingsSnapshot);
+  mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
   mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../src/utils/project-name.js', () => realProjectNameSnapshot);
   mock.module('../../src/utils/project-filter.js', () => realProjectFilterSnapshot);
@@ -189,6 +235,8 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     expect(result.hookSpecificOutput).toBeDefined();
     expect(result.hookSpecificOutput!.additionalContext).toContain('prior observations');
     expect((result.hookSpecificOutput as any).updatedInput).toBeUndefined();
+    // Context only: on a synchronous hook 'allow' would skip the permission prompt.
+    expect(result.hookSpecificOutput!.permissionDecision).toBeUndefined();
   });
 
   it('does not set updatedInput on a targeted Read either', async () => {
@@ -604,5 +652,302 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     });
     expect(second.continue).toBe(true);
     expect(second.hookSpecificOutput).toBeUndefined();
+  });
+});
+
+describe('fileContextHandler — File Read Gate', () => {
+  const GATED_OBSERVATION_ID = 4242;
+
+  function answerWithFileHistory(createdAtEpoch = Date.now() + 60_000): void {
+    // mockImplementation: every call needs a FRESH Response (a body reads once).
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(makeObservationsResponse([
+        { id: GATED_OBSERVATION_ID, created_at_epoch: createdAtEpoch, title: 'Rate table refactor' },
+      ]))
+    );
+  }
+
+  function claudeCodeRead(
+    toolInput: Record<string, unknown>,
+    overrides: Partial<NormalizedHookInput> = {},
+  ): NormalizedHookInput {
+    return {
+      sessionId: 'sess-read-gate',
+      cwd: tmpDir,
+      platform: 'claude-code',
+      toolName: 'Read',
+      toolInput,
+      ...overrides,
+    };
+  }
+
+  function expectContextNotDeny(result: Awaited<ReturnType<typeof fileContextHandler.execute>>): void {
+    expect(result.hookSpecificOutput?.permissionDecision).toBeUndefined();
+    expect(result.hookSpecificOutput?.permissionDecisionReason).toBeUndefined();
+    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
+  }
+
+  it('denies a whole-file Read on Claude Code and routes to the smart tools', async () => {
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    const output = result.hookSpecificOutput!;
+    expect(output.hookEventName).toBe('PreToolUse');
+    expect(output.permissionDecision).toBe('deny');
+    expect(output.additionalContext).toBe('');
+    expect((output as any).updatedInput).toBeUndefined();
+    const reason = output.permissionDecisionReason!;
+    expect(reason).toContain(`Full-file Read blocked by claude-mem: ${gatedFile} has prior observations (listed below).`);
+    expect(reason).toContain(`smart_outline(file_path="${gatedFile}")`);
+    expect(reason).toContain(`smart_unfold(file_path="${gatedFile}", symbol_name="<name>")`);
+    expect(reason).toContain(`get_observations(ids=[${GATED_OBSERVATION_ID}])`);
+    expect(reason).toContain('history from earlier sessions');
+    expect(reason).toMatch(new RegExp(`^${GATED_OBSERVATION_ID} \\S+ \\S+ Rate table refactor$`, 'm'));
+  });
+
+  it('does not deny when CLAUDE_MEM_FILE_READ_GATE_ENABLED is false — the timeline is context', async () => {
+    fileReadGateSetting = 'false';
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    expectContextNotDeny(result);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
+  });
+
+  it('only denies on Claude Code — codex, kimi and an unknown platform get context', async () => {
+    answerWithFileHistory();
+
+    for (const platform of ['codex', 'kimi', undefined]) {
+      const result = await fileContextHandler.execute(
+        claudeCodeRead({ file_path: gatedFile }, { platform, sessionId: `sess-platform-${platform}` })
+      );
+      expectContextNotDeny(result);
+    }
+  });
+
+  it('lets a targeted Read through (offset 40, limit 20) with context', async () => {
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile, offset: 40, limit: 20 }));
+
+    expectContextNotDeny(result);
+  });
+
+  it('denies a Read whose limit covers every line, and passes one line short of that', async () => {
+    answerWithFileHistory();
+
+    const exactLimit = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: gatedFile, limit: GATED_FILE_LINE_COUNT }, { sessionId: 'sess-limit-exact' })
+    );
+    const pastTheEnd = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: gatedFile, limit: GATED_FILE_LINE_COUNT + 500 }, { sessionId: 'sess-limit-past' })
+    );
+    const firstLineWindow = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: gatedFile, offset: 1, limit: GATED_FILE_LINE_COUNT }, { sessionId: 'sess-offset-one' })
+    );
+    const oneLineShort = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: gatedFile, limit: GATED_FILE_LINE_COUNT - 1 }, { sessionId: 'sess-limit-short' })
+    );
+
+    expect(exactLimit.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(pastTheEnd.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(firstLineWindow.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expectContextNotDeny(oneLineShort);
+  });
+
+  it('counts a last line that has no trailing newline', async () => {
+    const unterminatedFile = join(tmpDir, 'unterminated.ts');
+    writeFileSync(unterminatedFile, GATED_FILE_CONTENT.slice(0, -1));
+    answerWithFileHistory();
+
+    const exactLimit = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: unterminatedFile, limit: GATED_FILE_LINE_COUNT }, { sessionId: 'sess-unterminated-exact' })
+    );
+    const oneLineShort = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: unterminatedFile, limit: GATED_FILE_LINE_COUNT - 1 }, { sessionId: 'sess-unterminated-short' })
+    );
+
+    expect(exactLimit.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expectContextNotDeny(oneLineShort);
+  });
+
+  it('never denies markdown, JSON or YAML files', async () => {
+    const jsonFile = join(tmpDir, 'config.json');
+    const yamlFile = join(tmpDir, 'config.yaml');
+    writeFileSync(jsonFile, PADDING);
+    writeFileSync(yamlFile, PADDING);
+    answerWithFileHistory();
+
+    for (const filePath of [testFile, jsonFile, yamlFile]) {
+      const result = await fileContextHandler.execute(
+        claudeCodeRead({ file_path: filePath }, { sessionId: `sess-${filePath}` })
+      );
+      expectContextNotDeny(result);
+    }
+  });
+
+  it('never denies a file outside the session cwd', async () => {
+    const projectDir = join(tmpDir, 'project');
+    mkdirSync(projectDir);
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }, { cwd: projectDir }));
+
+    expectContextNotDeny(result);
+  });
+
+  it('does nothing for a code file under 1,500 bytes', async () => {
+    const smallFile = join(tmpDir, 'small.ts');
+    writeFileSync(smallFile, 'export const small = 1;\n');
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: smallFile }));
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when the file changed after its newest observation (#1719)', async () => {
+    answerWithFileHistory(Date.now() - 3_600_000);
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+  });
+
+  it('does nothing when the worker call falls back', async () => {
+    fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((url: string | URL | Request) =>
+      Promise.resolve(String(url).includes('/api/observations/by-file')
+        ? new Response('unavailable', { status: 503 })
+        : makeObservationsResponse([{ id: GATED_OBSERVATION_ID, created_at_epoch: Date.now() + 60_000 }]))
+    );
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+  });
+
+  it('does nothing for a subagent Read', async () => {
+    answerWithFileHistory();
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }, { agentId: 'subagent-1' }));
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('denies every whole-file Read of a gated file — the dedupe claim opens no free retry', async () => {
+    answerWithFileHistory();
+
+    const first = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+    const second = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    expect(first.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(second.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(second.hookSpecificOutput?.permissionDecisionReason).toContain('Full-file Read blocked by claude-mem');
+  });
+
+  it('does not re-inject the timeline on a targeted Read after a deny (claim recorded by the deny)', async () => {
+    answerWithFileHistory();
+
+    const denied = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+    const targeted = await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile, offset: 40, limit: 20 }));
+    const targetedInFreshSession = await fileContextHandler.execute(
+      claudeCodeRead({ file_path: gatedFile, offset: 40, limit: 20 }, { sessionId: 'sess-read-gate-fresh' })
+    );
+
+    expect(denied.hookSpecificOutput?.permissionDecision).toBe('deny');
+    expect(targeted).toEqual({ continue: true, suppressOutput: true });
+    expectContextNotDeny(targetedInFreshSession);
+  });
+
+  it('bounds the worker lookup with FILE_CONTEXT_WORKER_BUDGET_MS', async () => {
+    answerWithFileHistory();
+
+    await fileContextHandler.execute(claudeCodeRead({ file_path: gatedFile }));
+
+    expect(workerFallbackCalls).toHaveLength(1);
+    expect(workerFallbackCalls[0].url).toStartWith('/api/observations/by-file?');
+    expect(workerFallbackCalls[0].method).toBe('GET');
+    expect(workerFallbackCalls[0].body).toBeUndefined();
+    expect(workerFallbackCalls[0].options).toEqual({ timeoutMs: FILE_CONTEXT_WORKER_BUDGET_MS });
+  });
+});
+
+describe('shouldDenyFullFileRead', () => {
+  function wholeFileRead(overrides: Partial<NormalizedHookInput> = {}): NormalizedHookInput {
+    return {
+      sessionId: 'sess-predicate',
+      cwd: tmpDir,
+      platform: 'claude-code',
+      toolName: 'Read',
+      toolInput: { file_path: gatedFile },
+      ...overrides,
+    };
+  }
+
+  it('denies a whole-file Read without counting lines when no limit is set', () => {
+    const countTotalLines = mock(() => GATED_FILE_LINE_COUNT);
+
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'true', countTotalLines)).toBe(true);
+    expect(countTotalLines).not.toHaveBeenCalled();
+  });
+
+  it('treats an unset setting as on — only an explicit false turns the gate off', () => {
+    const countTotalLines = () => GATED_FILE_LINE_COUNT;
+
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, undefined, countTotalLines)).toBe(true);
+    expect(shouldDenyFullFileRead(wholeFileRead(), { absolutePath: gatedFile }, 'false', countTotalLines)).toBe(false);
+  });
+
+  it('counts lines only after every cheaper condition holds', () => {
+    const countTotalLines = mock(() => GATED_FILE_LINE_COUNT);
+    const limited = { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT };
+    const notGated: Array<[string, NormalizedHookInput, { absolutePath: string } | null, string | undefined]> = [
+      ['codex platform', wholeFileRead({ platform: 'codex', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
+      ['gate off', wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'false'],
+      ['subagent', wholeFileRead({ agentId: 'subagent-1', toolInput: limited }), { absolutePath: gatedFile }, 'true'],
+      ['Codex filePaths', wholeFileRead({ toolInput: { ...limited, filePaths: [gatedFile] } }), { absolutePath: gatedFile }, 'true'],
+      ['no history', wholeFileRead({ toolInput: limited }), null, 'true'],
+      ['markdown', wholeFileRead({ toolInput: limited }), { absolutePath: testFile }, 'true'],
+      ['outside cwd', wholeFileRead({ cwd: join(tmpDir, 'project'), toolInput: limited }), { absolutePath: gatedFile }, 'true'],
+      ['offset 40', wholeFileRead({ toolInput: { ...limited, offset: 40 } }), { absolutePath: gatedFile }, 'true'],
+    ];
+
+    for (const [label, input, fileHistory, setting] of notGated) {
+      expect([label, shouldDenyFullFileRead(input, fileHistory, setting, countTotalLines)]).toEqual([label, false]);
+    }
+    expect(countTotalLines).not.toHaveBeenCalled();
+
+    expect(shouldDenyFullFileRead(wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile }, 'true', countTotalLines)).toBe(true);
+    expect(countTotalLines).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats non-finite or negative offset/limit as absent', () => {
+    const countTotalLines = () => GATED_FILE_LINE_COUNT;
+    const deny = (toolInput: Record<string, unknown>) =>
+      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines);
+
+    for (const unusable of [Number.NaN, Number.POSITIVE_INFINITY, -5, 'not-a-number', null]) {
+      expect([unusable, deny({ offset: unusable })]).toEqual([unusable, true]);
+      expect([unusable, deny({ limit: unusable })]).toEqual([unusable, true]);
+    }
+  });
+
+  it('reads numeric-string offset/limit as numbers so a targeted Read still passes', () => {
+    const countTotalLines = () => GATED_FILE_LINE_COUNT;
+    const deny = (toolInput: Record<string, unknown>) =>
+      shouldDenyFullFileRead(wholeFileRead({ toolInput: { file_path: gatedFile, ...toolInput } }), { absolutePath: gatedFile }, 'true', countTotalLines);
+
+    expect(deny({ offset: '40', limit: '20' })).toBe(false);
+    expect(deny({ limit: String(GATED_FILE_LINE_COUNT) })).toBe(true);
+  });
+
+  it('fails open when the file cannot be read to count its lines', () => {
+    const input = wholeFileRead({ toolInput: { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT } });
+
+    expect(shouldDenyFullFileRead(input, { absolutePath: gatedFile }, 'true', () => null)).toBe(false);
   });
 });

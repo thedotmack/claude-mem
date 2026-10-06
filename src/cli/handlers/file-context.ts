@@ -6,10 +6,12 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
-import { statSync } from 'fs';
+import { readFileSync, statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
 
 const FILE_READ_GATE_MIN_BYTES = 1_500;
@@ -18,6 +20,15 @@ const FETCH_LOOKAHEAD_LIMIT = 40;
 
 const DISPLAY_LIMIT = 15;
 const MAX_FILE_CONTEXT_PATHS = 10;
+
+// The PreToolUse Read hook is synchronous so the File Read Gate can deny, which
+// makes every Read wait on it. One budget covers the whole worker round trip
+// (liveness check + by-file query); a slow or absent worker fails open.
+export const FILE_CONTEXT_WORKER_BUDGET_MS = 3_000;
+
+// smart_outline cannot outline these (unknown) or smart-explore itself says to
+// Read them (markdown, config), so a full-file Read of them is never denied.
+const UNGATED_LANGUAGES = new Set(['unknown', 'markdown', 'yaml', 'toml']);
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -77,45 +88,130 @@ function deduplicateObservations(
   return scored.slice(0, displayLimit).map(s => s.obs);
 }
 
-function formatFileTimeline(
-  observations: ObservationRow[],
-  filePath: string
-): string {
-  const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  const byDay = new Map<string, ObservationRow[]>();
-  for (const obs of observations) {
+interface FileObservationHistory {
+  /** The path as the tool input spelled it; the routing hints quote it back. */
+  filePath: string;
+  /** Canonical absolute path: the dedupe key and the gate's subject. */
+  absolutePath: string;
+  relativePath: string;
+  newestObservationMs: number;
+  /** Deduped and ranked down to DISPLAY_LIMIT, then ordered oldest first for display. */
+  displayedObservations: ObservationRow[];
+}
+
+/** Escapes a path for the quoted tool-call hints (backslashes, quotes, newlines). */
+function escapePathForHint(filePath: string): string {
+  return filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+/**
+ * The day-grouped history both outputs share: `### <day>`, then one
+ * `<id> <time> <icon> <title>` line per observation. Expects oldest-first rows.
+ */
+function formatObservationTimeline(observationsOldestFirst: ObservationRow[]): string[] {
+  const lines: string[] = [];
+  let currentDay: string | null = null;
+  for (const obs of observationsOldestFirst) {
     const day = formatDate(obs.created_at_epoch);
-    if (!byDay.has(day)) {
-      byDay.set(day, []);
+    if (day !== currentDay) {
+      lines.push(`### ${day}`);
+      currentDay = day;
     }
-    byDay.get(day)!.push(obs);
+    const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+    const icon = TYPE_ICONS[obs.type] || '\u2753';
+    const time = compactTime(formatTime(obs.created_at_epoch));
+    lines.push(`${obs.id} ${time} ${icon} ${title}`);
   }
+  return lines;
+}
 
-  const sortedDays = Array.from(byDay.entries()).sort((a, b) => {
-    const aEpoch = Math.min(...a[1].map(o => o.created_at_epoch));
-    const bEpoch = Math.min(...b[1].map(o => o.created_at_epoch));
-    return aEpoch - bEpoch;
-  });
-
-  const lines: string[] = [
+function formatFileContextTimeline(history: FileObservationHistory): string {
+  const safePath = escapePathForHint(history.filePath);
+  return [
     `Current: ${formatHeaderDateTime()}`,
     `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
     `- **Need details on a past observation?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need a structural map first?** smart_outline("${safePath}") — line numbers only, cheaper than re-reading.`,
-  ];
+    ...formatObservationTimeline(history.displayedObservations),
+  ].join('\n');
+}
 
-  for (const [day, dayObservations] of sortedDays) {
-    const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
-    lines.push(`### ${day}`);
-    for (const obs of chronological) {
-      const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-      const icon = TYPE_ICONS[obs.type] || '\u2753';
-      const time = compactTime(formatTime(obs.created_at_epoch));
-      lines.push(`${obs.id} ${time} ${icon} ${title}`);
-    }
+// The `Full-file Read blocked by claude-mem:` line is the read-gate eval's trace
+// anchor (plugin/evals-read-gate) — keep it verbatim.
+function formatFullFileReadDenyReason(history: FileObservationHistory): string {
+  const safePath = escapePathForHint(history.filePath);
+  const displayedIds = history.displayedObservations.map(obs => obs.id).join(', ');
+  return [
+    `Current: ${formatHeaderDateTime()}`,
+    `Full-file Read blocked by claude-mem: ${safePath} has prior observations (listed below). Get what you need without reading the whole file:`,
+    `- Current code: call smart_outline(file_path="${safePath}") for its symbols and line numbers, then smart_unfold(file_path="${safePath}", symbol_name="<name>") for the ones you need (MCP tools mcp__plugin_claude-mem_mcp-search__smart_outline / __smart_unfold; load them with ToolSearch if they are deferred).`,
+    `- Past work: call get_observations(ids=[${displayedIds}]) for the observations below that matter (~300 tokens each).`,
+    `- Exact lines, e.g. before an Edit: call Read on this file again with offset and limit around the lines smart_outline reported. Partial reads are allowed and satisfy Edit's read requirement.`,
+    `The titles below are history from earlier sessions, not the file's current contents.`,
+    ...formatObservationTimeline(history.displayedObservations),
+  ].join('\n');
+}
+
+/** A Read offset/limit as a usable number; anything else counts as absent. */
+function readWindowValue(value: unknown): number | undefined {
+  const numeric = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof numeric === 'number' && Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+/** Lines the Read tool would return: one per `\n`, plus a last line without one. Null when unreadable. */
+function countFileLines(absolutePath: string): number | null {
+  try {
+    const bytes = readFileSync(absolutePath);
+    let newlineCount = 0;
+    for (let at = bytes.indexOf(0x0a); at !== -1; at = bytes.indexOf(0x0a, at + 1)) newlineCount++;
+    const endsWithNewline = bytes.length > 0 && bytes[bytes.length - 1] === 0x0a;
+    return endsWithNewline ? newlineCount : newlineCount + 1;
+  } catch (err) {
+    logger.debug('HOOK', 'Could not count file lines, not gating this Read', {
+      absolutePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
   }
+}
 
-  return lines.join('\n');
+/**
+ * File Read Gate: deny a Read only when ALL hold — Claude Code main session,
+ * gate setting not 'false', a single `file_path` Read of a file smart_outline
+ * can outline, inside the project, with observation history (the lookup
+ * already enforced size >= FILE_READ_GATE_MIN_BYTES and mtime older than the
+ * newest observation), and the Read would return the whole file. Targeted
+ * reads always pass: Edit's read-before-edit rule needs one (#2094).
+ * Conditions run cheapest first; `countTotalLines` is called last, and only
+ * when the Read sets a limit.
+ */
+export function shouldDenyFullFileRead(
+  input: NormalizedHookInput,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath'> | null,
+  fileReadGateSetting: string | undefined,
+  countTotalLines: (absolutePath: string) => number | null,
+): boolean {
+  if (input.platform !== 'claude-code') return false;
+  if (fileReadGateSetting === 'false') return false;
+  if (input.agentId) return false;
+
+  const toolInput = input.toolInput;
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
+  const readInput = toolInput as Record<string, unknown>;
+  if (typeof readInput.file_path !== 'string' || Array.isArray(readInput.filePaths)) return false;
+
+  if (!fileHistory) return false;
+  if (UNGATED_LANGUAGES.has(detectLanguage(fileHistory.absolutePath))) return false;
+
+  if (!input.cwd) return false;
+  const pathFromCwd = path.relative(input.cwd, fileHistory.absolutePath);
+  if (pathFromCwd.startsWith('..') || path.isAbsolute(pathFromCwd)) return false;
+
+  if ((readWindowValue(readInput.offset) ?? 0) > 1) return false;
+  const readLimit = readWindowValue(readInput.limit);
+  if (readLimit === undefined) return true;
+  const totalLines = countTotalLines(fileHistory.absolutePath);
+  return totalLines !== null && readLimit >= totalLines;
 }
 
 export const fileContextHandler: EventHandler = {
@@ -145,14 +241,14 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const timelineResults = await Promise.allSettled(
-      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
+    const lookupResults = await Promise.allSettled(
+      candidatePaths.map(candidatePath => lookupFileObservationHistory(input, candidatePath))
     );
-    const timelines: string[] = [];
+    const histories: FileObservationHistory[] = [];
 
-    timelineResults.forEach((result, index) => {
+    lookupResults.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        if (result.value) timelines.push(result.value);
+        if (result.value) histories.push(result.value);
         return;
       }
       logger.debug('HOOK', 'File context timeline lookup failed, skipping path', {
@@ -161,21 +257,63 @@ export const fileContextHandler: EventHandler = {
       });
     });
 
+    if (
+      histories.length === 1
+      && shouldDenyFullFileRead(input, histories[0], loadFromFileOnce().CLAUDE_MEM_FILE_READ_GATE_ENABLED, countFileLines)
+    ) {
+      const history = histories[0];
+      // Record the claim so a targeted Read that follows this denial does not
+      // re-inject the timeline it already carried. The result is ignored on
+      // purpose: every whole-file Read of a gated file is denied, so the claim
+      // never opens a free retry.
+      claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs);
+      return {
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          additionalContext: '',
+          permissionDecision: 'deny',
+          permissionDecisionReason: formatFullFileReadDenyReason(history),
+        },
+      };
+    }
+
+    const timelines: string[] = [];
+    for (const history of histories) {
+      // #3480 — skip re-injecting the same still-valid timeline for a file already
+      // surfaced this session; re-inject only once a newer observation has landed.
+      // Claimed last, after every other reason to bail out, so a suppressed
+      // injection never burns the claim — and claiming IS recording, so two
+      // concurrent Reads of this file cannot both inject.
+      if (!claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs)) {
+        logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
+          filePath: history.relativePath,
+          sessionId: input.sessionId,
+          newestObservationMs: history.newestObservationMs,
+        });
+        continue;
+      }
+      timelines.push(formatFileContextTimeline(history));
+    }
+
     if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
     }
 
+    // Context only, no permissionDecision: on a synchronous hook 'allow' would
+    // skip the user's permission prompt for this Read.
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: timelines.join('\n\n---\n\n'),
-        permissionDecision: 'allow',
       },
     };
   },
 };
 
-async function buildFileContextTimeline(input: NormalizedHookInput, filePath: string): Promise<string | null> {
+async function lookupFileObservationHistory(
+  input: NormalizedHookInput,
+  filePath: string,
+): Promise<FileObservationHistory | null> {
   let fileMtimeMs = 0;
   try {
     const statPath = path.isAbsolute(filePath)
@@ -225,6 +363,8 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
     `/api/observations/by-file?${queryParams.toString()}`,
     'GET',
+    undefined,
+    { timeoutMs: FILE_CONTEXT_WORKER_BUDGET_MS },
   );
   if (isWorkerFallback(result)) {
     return null;
@@ -253,21 +393,8 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   // Never empty: the `observations.length === 0` guard above already returned,
   // and deduplicateObservations only ever drops same-session duplicates and
   // truncates to DISPLAY_LIMIT, so at least one row always survives.
-  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+  const displayedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT)
+    .sort((a, b) => a.created_at_epoch - b.created_at_epoch);
 
-  // #3480 — skip re-injecting the same still-valid timeline for a file already
-  // surfaced this session; re-inject only once a newer observation has landed.
-  // Claimed last, after every other reason to bail out, so a suppressed
-  // injection never burns the claim — and claiming IS recording, so two
-  // concurrent Reads of this file cannot both inject.
-  if (!claimFileContextInjection(input.sessionId, absolutePath, newestObservationMs)) {
-    logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
-      filePath: relativePath,
-      sessionId: input.sessionId,
-      newestObservationMs,
-    });
-    return null;
-  }
-
-  return formatFileTimeline(dedupedObservations, filePath);
+  return { filePath, absolutePath, relativePath, newestObservationMs, displayedObservations };
 }
