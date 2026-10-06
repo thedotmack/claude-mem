@@ -484,30 +484,35 @@ export class TranscriptWatcher {
   }
 
   private deepestNonGlobAncestor(inputPath: string): string {
-    if (!this.hasGlob(inputPath)) {
-      if (existsSync(inputPath)) {
-        try {
-          const stat = statSync(inputPath);
-          return stat.isDirectory() ? inputPath : resolvePath(inputPath, '..');
-        } catch (error: unknown) {
-          logger.debug('TRANSCRIPT', 'Failed to stat watch path ancestor, falling back to parent directory', { path: inputPath }, error instanceof Error ? error : new Error(String(error)));
-          return resolvePath(inputPath, '..');
-        }
+    let candidate = inputPath;
+    if (this.hasGlob(inputPath)) {
+      const segments = inputPath.split(/[/\\]/);
+      const literalSegments: string[] = [];
+      for (const segment of segments) {
+        if (/[*?[\]{}()]/.test(segment)) break;
+        literalSegments.push(segment);
       }
-      return inputPath;
+      // Do not turn a pattern with no literal root into a filesystem-wide watch.
+      if (literalSegments.length === 0 || (literalSegments.length === 1 && literalSegments[0] === '')) return '';
+      candidate = literalSegments.join(pathSep);
     }
 
-    const segments = inputPath.split(/[/\\]/);
-    const literalSegments: string[] = [];
-    for (const segment of segments) {
-      if (/[*?[\]{}()]/.test(segment)) break;
-      literalSegments.push(segment);
+    // A host may create the configured file (or its parent directories) only
+    // after the watcher starts. Watch the closest existing directory and keep
+    // resolveWatchFiles as the selector so unrelated files are never ingested.
+    const explicitlyConfiguredRoot = resolvePath(candidate, '..') === candidate;
+    while (candidate) {
+      const parent = resolvePath(candidate, '..');
+      if (parent === candidate && !explicitlyConfiguredRoot) return '';
+      try {
+        if (statSync(candidate).isDirectory()) return candidate;
+      } catch {
+        // Missing or inaccessible candidates are retried from their parent.
+      }
+      if (parent === candidate) return '';
+      candidate = parent;
     }
-    if (literalSegments.length === 0) return '';
-    if (literalSegments.length === 1 && literalSegments[0] === '') {
-      return '';
-    }
-    return literalSegments.join(pathSep);
+    return '';
   }
 
   private resolveSchema(watch: WatchTarget): TranscriptSchema | null {
