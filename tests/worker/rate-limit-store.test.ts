@@ -928,6 +928,121 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(store.set(rejected)).toBe(false);
   });
 
+  it('uses a newer unified window instead of an expired high reading', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.95,
+      resetsAt: 1_788_710_400,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.85,
+      resetsAt: 1_788_883_200,
+      unifiedWindows: {
+        five_hour: { utilization: 0.28, resetsAt: 1_788_730_200 },
+        seven_day: { utilization: 0.85, resetsAt: 1_788_883_200 },
+      },
+    });
+
+    expect(shouldAbortForQuota(cliAuth, store, 1_788_720_763_944)).toEqual({ abort: false });
+    expect(store.get('five_hour')?.utilization).toBe(0.28);
+  });
+
+  it('records a fresh zero utilization from a unified window', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt: FIXED_NOW + 2 * 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: {
+        five_hour: { utilization: 0, resetsAt: FIXED_NOW + 5 * 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('five_hour')?.utilization).toBe(0);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
+  });
+
+  it('uses a newer unified reading when the stale sibling reset is still in the future', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt: FIXED_NOW + 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.8,
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: FIXED_NOW + 4 * 60 * 60_000 },
+      },
+    });
+
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
+  });
+
+  it('accepts a unified reading after an explicit rejection has expired', () => {
+    const store = freshStore();
+    const now = Date.now();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: now - 1,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: {
+        five_hour: { utilization: 0.2, resetsAt: now + 5 * 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('five_hour')?.utilization).toBe(0.2);
+    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({ abort: false });
+  });
+
+  // A present but malformed field voids the entry: half of a corrupt snapshot
+  // must not replace a good reading (the old guard refreshed five_hour to 0.2
+  // from an entry whose reset time was the string 'soon').
+  it('ignores malformed unified window data without corrupting existing buckets', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.4,
+      resetsAt: FIXED_NOW + 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: {
+        five_hour: { utilization: 0.2, resetsAt: 'soon' },
+        seven_day_opus: { utilization: Number.NaN, resetsAt: FIXED_NOW + 60_000 },
+        seven_day_sonnet: null,
+        invented_window: { utilization: 1, resetsAt: FIXED_NOW + 60_000 },
+      },
+    } as unknown as RateLimitInfo);
+
+    expect(store.get('five_hour')?.utilization).toBe(0.4);
+    expect(store.get('seven_day_opus')).toBeUndefined();
+    expect(store.get('seven_day_sonnet')).toBeUndefined();
+    expect(store.size).toBe(2);
+  });
+
   it('does not persist unifiedWindows on the stored entry', () => {
     const store = freshStore();
     store.set({ rateLimitType: 'five_hour', unifiedWindows: { seven_day: { utilization: 0.1 } } });
