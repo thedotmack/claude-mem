@@ -10,6 +10,11 @@ interface ContextSettingsModalProps {
   isOpen: boolean;
   onClose: () => void;
   settings: Settings;
+  /** False until GET /api/settings succeeds; `settings` holds defaults until then. */
+  isLoaded: boolean;
+  /** Why the initial GET failed, or null. */
+  loadError: string | null;
+  onRetryLoad: () => void;
   onSave: (settings: Settings) => void;
   isSaving: boolean;
   saveStatus: string;
@@ -128,6 +133,9 @@ export function ContextSettingsModal({
   isOpen,
   onClose,
   settings,
+  isLoaded,
+  loadError,
+  onRetryLoad,
   onSave,
   isSaving,
   saveStatus
@@ -240,8 +248,9 @@ export function ContextSettingsModal({
             </div>
           </div>
 
-          {/* Right column - Settings Panel */}
-          <fieldset className="settings-column" disabled={isSaving}
+          {/* Right column - Settings Panel. Before the initial load the form
+              holds defaults; saving them would overwrite settings.json. */}
+          <fieldset className="settings-column" disabled={isSaving || !isLoaded}
             style={{ border: 0, margin: 0, padding: 0, minWidth: 0 }}>
             {/* Section 1: Loading */}
             <CollapsibleSection
@@ -647,12 +656,21 @@ export function ContextSettingsModal({
         {/* Footer with Save button */}
         <div className="modal-footer">
           <div className="save-status">
-            {saveStatus && <span className={saveStatusClass(saveStatus)}>{saveStatus}</span>}
+            {loadError ? (
+              <span className="error" role="alert">
+                {loadError}{' '}
+                <button type="button" onClick={onRetryLoad}>Retry</button>
+              </span>
+            ) : !isLoaded ? (
+              <span>Loading settings…</span>
+            ) : (
+              saveStatus && <span className={saveStatusClass(saveStatus)}>{saveStatus}</span>
+            )}
           </div>
           <button
             className="save-btn"
             onClick={handleSave}
-            disabled={isSaving}
+            disabled={isSaving || !isLoaded}
           >
             {isSaving ? 'Saving...' : 'Save'}
           </button>
