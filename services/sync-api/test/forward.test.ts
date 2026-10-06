@@ -29,7 +29,8 @@ beforeAll(() => {
 		port: 0,
 		async fetch(request) {
 			const url = new URL(request.url);
-			const bytes = new Uint8Array(await request.arrayBuffer());
+			const wireBytes = new Uint8Array(await request.arrayBuffer());
+			const bytes = request.headers.get("content-encoding") === "gzip" ? Bun.gunzipSync(wireBytes) : wireBytes;
 			capturedUpstreamRequests.push({
 				method: request.method,
 				pathname: url.pathname,
@@ -150,7 +151,7 @@ describe("forward mode: proxy", () => {
 		expect(seen.headers.get("X-Random-Header")).toBeNull();
 	});
 
-	it("streams a large push body through unchanged and passes upstream errors + Retry-After back", async () => {
+	it("gzips a large plain push body on the way up and passes upstream errors + Retry-After back", async () => {
 		capturedUpstreamRequests = [];
 		const chunkBytes = new TextEncoder().encode("a".repeat(1_000_000));
 		const chunkCount = 6;
@@ -180,10 +181,26 @@ describe("forward mode: proxy", () => {
 		const seen = capturedUpstreamRequests[0];
 		expect(seen.method).toBe("POST");
 		expect(seen.headers.get("Content-Type")).toBe("application/json");
+		expect(seen.headers.get("Content-Encoding")).toBe("gzip");
 		expect(seen.bodyByteLength).toBe(chunkBytes.byteLength * chunkCount);
 		expect(seen.bodySha256).toBe(expectedSha);
 		// The proxy re-streams the body (chunked) rather than buffering it to a Content-Length.
 		expect(seen.receivedChunkedOrStreamed).toBe(true);
+	});
+
+	it("passes a push body the client already gzipped through untouched", async () => {
+		capturedUpstreamRequests = [];
+		const plain = JSON.stringify({ protocol_version: 2, ops: [] });
+		const res = await fetch(`${proxy.url}/v1/sync/ops`, {
+			method: "POST",
+			headers: { "Content-Type": "application/json", "Content-Encoding": "gzip", Authorization: "Bearer t" },
+			body: Bun.gzipSync(plain),
+		});
+		expect(res.status).toBe(503);
+		expect(capturedUpstreamRequests).toHaveLength(1);
+		const seen = capturedUpstreamRequests[0];
+		expect(seen.headers.get("Content-Encoding")).toBe("gzip");
+		expect(seen.bodySha256).toBe(new Bun.CryptoHasher("sha256").update(plain).digest("hex"));
 	});
 
 	it("streams a large response body back", async () => {

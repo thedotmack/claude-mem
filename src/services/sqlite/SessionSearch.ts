@@ -136,6 +136,18 @@ export class SessionSearch {
     }
   }
 
+  /** An existing index can still be read when the writable probe is denied. */
+  private canReadFtsIndex(table: 'observations_fts' | 'session_summaries_fts'): boolean {
+    try {
+      // Preparing this read loads the virtual table and checks MATCH support
+      // without creating tables, changing the connection or scanning rows.
+      this.db.prepare(`SELECT rowid FROM ${table} WHERE ${table} MATCH ? LIMIT 0`).all('"fts_read_probe"');
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   private createFTSTablesAndTriggers(createObservations: boolean, createSummaries: boolean): void {
     // Backfill only newly created indexes: reinserting into an existing FTS5
     // external-content index can corrupt its delete/update bookkeeping.
@@ -456,7 +468,7 @@ export class SessionSearch {
       return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
     }
 
-    if (this._fts5Available) {
+    if (this._fts5Available || this.canReadFtsIndex('observations_fts')) {
       const filterClause = this.buildFilterClause(filters, params, 'o');
       const orderClause = this.buildOrderClause(orderBy, true, 'observations_fts');
 
@@ -489,8 +501,7 @@ export class SessionSearch {
       return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
     }
 
-    logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
-    return [];
+    return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
   }
 
   searchSessions(query: string | undefined, options: SearchOptions = {}): SessionSummarySearchResult[] {
@@ -527,7 +538,7 @@ export class SessionSearch {
       return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
     }
 
-    if (this._fts5Available) {
+    if (this._fts5Available || this.canReadFtsIndex('session_summaries_fts')) {
       const filterOptions = { ...filters };
       delete filterOptions.type;
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
@@ -564,8 +575,7 @@ export class SessionSearch {
       return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
     }
 
-    logger.warn('DB', 'Text search unavailable: ChromaDB disabled and FTS5 not available');
-    return [];
+    return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
   }
 
   findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
