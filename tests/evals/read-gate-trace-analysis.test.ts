@@ -4,8 +4,10 @@ import net from 'net';
 import {
   analyzeReadGateTrace,
   CASE_GATE_OFF_ANSWERS,
+  CASE_GATE_OFF_LARGE_FILE,
   CASE_GATE_ON_ANSWERS,
   CASE_GATE_ON_EDITS,
+  CASE_GATE_ON_LARGE_FILE,
   caseNameMatchesGlob,
   countLines,
   decideVerdicts,
@@ -53,7 +55,10 @@ describe('analyzeReadGateTrace', () => {
       toolResult('toolu_observations', [{ type: 'text', text: '#2 Remote-area surcharge applies a percentage' }]),
       toolUse('toolu_read_window', 'Read', { file_path: ABSOLUTE_FIXTURE, offset: 296, limit: 15 }),
       toolResult('toolu_read_window', '296\t * Remote-area surcharge ...'),
-      JSON.stringify({ type: 'result', subtype: 'success', num_turns: 6, total_cost_usd: 0.12 }),
+      JSON.stringify({
+        type: 'result', subtype: 'success', num_turns: 6, total_cost_usd: 0.12,
+        usage: { input_tokens: 10, output_tokens: 1938, cache_creation_input_tokens: 15066, cache_read_input_tokens: 67620, cache_creation: { ephemeral_1h_input_tokens: 7815 } },
+      }),
     ], OPTIONS);
 
     expect(analysis).toEqual({
@@ -68,6 +73,7 @@ describe('analyzeReadGateTrace', () => {
       getObservationsCalls: 1,
       denyMarkerAppeared: true,
       unparsableLines: 0,
+      usage: { inputTokens: 10, outputTokens: 1938, cacheCreationInputTokens: 15066, cacheReadInputTokens: 67620 },
     });
   });
 
@@ -127,11 +133,12 @@ describe('analyzeReadGateTrace', () => {
     expect(analysis.wholeFileReadsSucceeded).toBe(0);
   });
 
-  it('counts a cut-off line instead of throwing', () => {
+  it('counts a cut-off line instead of throwing, and reports no usage without a result event', () => {
     const analysis = analyzeReadGateTrace(['{"type":"assistant","message":{"content":[', ''], OPTIONS);
 
     expect(analysis.unparsableLines).toBe(1);
     expect(analysis.wholeFileReadAttempts).toBe(0);
+    expect(analysis.usage).toBeNull();
   });
 });
 
@@ -166,10 +173,16 @@ describe('countLines', () => {
 describe('decideVerdicts', () => {
   const noActivity: ReadGateTraceAnalysis = analyzeReadGateTrace([], OPTIONS);
 
-  function run(caseName: string, runNumber: number, graders: Record<string, boolean>, analysis: Partial<ReadGateTraceAnalysis>): RunEvidence {
+  function run(
+    caseName: string,
+    runNumber: number,
+    graders: Record<string, boolean>,
+    analysis: Partial<ReadGateTraceAnalysis>,
+    costUsd = 0.1,
+  ): RunEvidence {
     return {
       caseName, runNumber, graders,
-      score: null, turns: 5, costUsd: 0.1, error: null, aborted: null, tracePath: null,
+      score: null, turns: 5, costUsd, error: null, aborted: null, tracePath: null,
       analysis: { ...noActivity, ...analysis },
     };
   }
@@ -185,6 +198,8 @@ describe('decideVerdicts', () => {
       ...[1, 2, 3].map(number => run(CASE_GATE_ON_ANSWERS, number, answered, blocked)),
       ...[1, 2, 3].map(number => run(CASE_GATE_ON_EDITS, number, edited, number === 3 ? {} : blocked)),
       ...[1, 2, 3].map(number => run(CASE_GATE_OFF_ANSWERS, number, answeredOff, readNormally)),
+      ...[1, 2, 3].map(number => run(CASE_GATE_ON_LARGE_FILE, number, answered, blocked, 0.08)),
+      ...[1, 2, 3].map(number => run(CASE_GATE_OFF_LARGE_FILE, number, answeredOff, readNormally, 0.12)),
     ]);
 
     expect(verdicts.map(item => [item.id, item.status])).toEqual([
@@ -196,7 +211,33 @@ describe('decideVerdicts', () => {
       ['gate-off-never-denied', 'pass'],
       ['gate-off-reads-succeed', 'pass'],
       ['gate-off-answers', 'pass'],
+      ['large-file-gate-on-answers', 'pass'],
+      ['large-file-gate-off-answers', 'pass'],
+      ['large-file-gate-off-reads-whole-file', 'pass'],
+      ['large-file-gate-on-cheaper', 'pass'],
     ]);
+    expect(verdicts.at(-1)?.detail).toBe('mean $0.080 gate ON vs $0.120 gate OFF (-33%)');
+  });
+
+  it('fails the large-file comparison when gate ON costs as much, or when gate OFF never read the whole file', () => {
+    const verdicts = decideVerdicts([
+      ...[1, 2, 3].map(number => run(CASE_GATE_ON_LARGE_FILE, number, answered, blocked, 0.12)),
+      ...[1, 2, 3].map(number => run(CASE_GATE_OFF_LARGE_FILE, number, answeredOff, { targetedReads: 1, targetedReadsSucceeded: 1 }, 0.12)),
+    ]);
+    const statusById = Object.fromEntries(verdicts.map(item => [item.id, item.status]));
+
+    expect(statusById['large-file-gate-on-cheaper']).toBe('fail');
+    expect(statusById['large-file-gate-off-reads-whole-file']).toBe('fail');
+    expect(statusById['gate-off-reads-succeed']).toBe('pass');
+  });
+
+  it('does not run the large-file comparison when --case left out one of its arms', () => {
+    const verdicts = decideVerdicts([1, 2, 3].map(number => run(CASE_GATE_ON_LARGE_FILE, number, answered, blocked)));
+    const statusById = Object.fromEntries(verdicts.map(item => [item.id, item.status]));
+
+    expect(statusById['large-file-gate-on-cheaper']).toBe('not-run');
+    expect(statusById['large-file-gate-on-answers']).toBe('pass');
+    expect(statusById['gate-on-deny-exercised']).toBe('pass');
   });
 
   it('fails when a gated run read the whole file, gate off showed the marker, or too few answers passed', () => {
@@ -228,8 +269,11 @@ describe('decideVerdicts', () => {
 
 describe('requestedCaseNames', () => {
   it('requests every case without --case, and the ones the glob selects with it', () => {
-    expect(requestedCaseNames(null)).toEqual([CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS]);
-    expect(requestedCaseNames('gate-on-*')).toEqual([CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS]);
+    expect(requestedCaseNames(null)).toEqual([
+      CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS, CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE,
+    ]);
+    expect(requestedCaseNames('gate-on-*')).toEqual([CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_ON_LARGE_FILE]);
+    expect(requestedCaseNames('*-large-file')).toEqual([CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE]);
     expect(requestedCaseNames(CASE_GATE_ON_EDITS)).toEqual([CASE_GATE_ON_EDITS]);
     expect(requestedCaseNames('*')).toEqual([...EVAL_CASE_NAMES]);
     expect(requestedCaseNames('no-such-case')).toEqual([]);
@@ -294,6 +338,7 @@ describe('findIncompleteCaseRuns', () => {
     expect(findIncompleteCaseRuns(editRunsOnly, requestedCaseNames(CASE_GATE_ON_EDITS), 2)).toEqual([]);
     expect(findIncompleteCaseRuns(editRunsOnly, requestedCaseNames('gate-on-*'), 2)).toEqual([
       `${CASE_GATE_ON_ANSWERS} did not complete its runs: 0 of 2 requested runs in the results`,
+      `${CASE_GATE_ON_LARGE_FILE} did not complete its runs: 0 of 2 requested runs in the results`,
     ]);
   });
 });

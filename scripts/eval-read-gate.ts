@@ -42,12 +42,15 @@ const suiteSourceDirectory = path.join(repoRoot, 'evals', 'read-gate');
 const SUITE_DIRECTORY_NAME = 'evals-read-gate';
 const stagedSuiteDirectory = path.join(pluginDirectory, SUITE_DIRECTORY_NAME);
 const fixtureDirectory = path.join(suiteSourceDirectory, 'fixture');
+/** The large-file cases' project, apart so the other cases never see its file. */
+const largeFixtureDirectory = path.join(suiteSourceDirectory, 'fixture-large');
 const seedObservationsPath = path.join(suiteSourceDirectory, 'seed-observations.json');
 const workerScriptPath = path.join(pluginDirectory, 'scripts', 'worker-service.cjs');
 const bunRunnerPath = path.join(pluginDirectory, 'scripts', 'bun-runner.js');
 const scratchDirectory = path.join(repoRoot, '.scratch', 'read-gate-eval');
 
 export const FIXTURE_RELATIVE_PATH = 'src/shipping/rate-calculator.ts';
+export const LARGE_FIXTURE_RELATIVE_PATH = 'src/shipping/carrier-tariffs.ts';
 /** The gate's deny reason starts with this line; the suite's trace graders match it too. */
 export const READ_GATE_DENY_MARKER = 'Full-file Read blocked by claude-mem';
 const EVAL_PROJECT_NAME = 'read-gate-eval';
@@ -60,8 +63,12 @@ export const GET_OBSERVATIONS_TOOL = `${MCP_SEARCH_TOOL_PREFIX}get_observations`
 export const CASE_GATE_ON_ANSWERS = 'gate-on-answers-question';
 export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
 export const CASE_GATE_OFF_ANSWERS = 'gate-off-reads-normally';
+export const CASE_GATE_ON_LARGE_FILE = 'gate-on-large-file';
+export const CASE_GATE_OFF_LARGE_FILE = 'gate-off-large-file';
 /** Every case in evals/read-gate. */
-export const EVAL_CASE_NAMES: readonly string[] = [CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS];
+export const EVAL_CASE_NAMES: readonly string[] = [
+  CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS, CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE,
+];
 const ANSWER_GRADERS = ['answer-rate', 'answer-minimum'];
 const EDIT_GRADERS = ['edited', 'old-value-gone'];
 
@@ -156,6 +163,14 @@ export interface TraceAnalysisOptions {
   fixtureTotalLines: number;
 }
 
+/** What the run's `result` event reports it used. */
+export interface TokenUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheCreationInputTokens: number;
+  cacheReadInputTokens: number;
+}
+
 export interface ReadGateTraceAnalysis {
   /** Reads of the fixture whose window covers the whole file. */
   wholeFileReadAttempts: number;
@@ -175,6 +190,8 @@ export interface ReadGateTraceAnalysis {
   denyMarkerAppeared: boolean;
   /** Lines that are not JSON, such as the cut-off last line of a killed run. */
   unparsableLines: number;
+  /** Null when the trace has no `result` event, as with a killed run. */
+  usage: TokenUsage | null;
 }
 
 /** Lines as the gate counts them: newline characters, plus a last line that has none. */
@@ -207,6 +224,11 @@ function isFixturePath(filePath: unknown, fixtureRelativePath: string): boolean 
   return normalized === fixtureRelativePath || normalized.endsWith(`/${fixtureRelativePath}`);
 }
 
+function tokenCount(usage: Record<string, unknown>, key: string): number {
+  const value = usage[key];
+  return typeof value === 'number' ? value : 0;
+}
+
 function toolResultText(content: unknown): string {
   if (typeof content === 'string') return content;
   if (!Array.isArray(content)) return '';
@@ -223,7 +245,7 @@ export function analyzeReadGateTrace(traceLines: string[], options: TraceAnalysi
     wholeFileReadAttempts: 0, wholeFileReadsDenied: 0, wholeFileReadsSucceeded: 0,
     targetedReads: 0, targetedReadsSucceeded: 0, targetedReadsDenied: 0,
     smartOutlineCalls: 0, smartUnfoldCalls: 0, getObservationsCalls: 0,
-    denyMarkerAppeared: false, unparsableLines: 0,
+    denyMarkerAppeared: false, unparsableLines: 0, usage: null,
   };
   const toolUses: Array<{ id: string; name: string; input: Record<string, unknown> }> = [];
   const toolResults = new Map<string, { isError: boolean; text: string }>();
@@ -237,6 +259,15 @@ export function analyzeReadGateTrace(traceLines: string[], options: TraceAnalysi
     } catch {
       analysis.unparsableLines += 1;
       continue;
+    }
+    if (isRecord(event) && event.type === 'result' && isRecord(event.usage)) {
+      const usage = event.usage;
+      analysis.usage = {
+        inputTokens: tokenCount(usage, 'input_tokens'),
+        outputTokens: tokenCount(usage, 'output_tokens'),
+        cacheCreationInputTokens: tokenCount(usage, 'cache_creation_input_tokens'),
+        cacheReadInputTokens: tokenCount(usage, 'cache_read_input_tokens'),
+      };
     }
     if (!isRecord(event) || !isRecord(event.message) || !Array.isArray(event.message.content)) continue;
     for (const block of event.message.content) {
@@ -331,8 +362,15 @@ function verdict(
 export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
   const gateOnAnswerRuns = runs.filter(run => run.caseName === CASE_GATE_ON_ANSWERS);
   const gateOnEditRuns = runs.filter(run => run.caseName === CASE_GATE_ON_EDITS);
-  const gateOnRuns = [...gateOnAnswerRuns, ...gateOnEditRuns];
-  const gateOffRuns = runs.filter(run => run.caseName === CASE_GATE_OFF_ANSWERS);
+  const gateOnLargeFileRuns = runs.filter(run => run.caseName === CASE_GATE_ON_LARGE_FILE);
+  const gateOnRuns = [...gateOnAnswerRuns, ...gateOnEditRuns, ...gateOnLargeFileRuns];
+  const gateOffAnswerRuns = runs.filter(run => run.caseName === CASE_GATE_OFF_ANSWERS);
+  const gateOffLargeFileRuns = runs.filter(run => run.caseName === CASE_GATE_OFF_LARGE_FILE);
+  const gateOffRuns = [...gateOffAnswerRuns, ...gateOffLargeFileRuns];
+  // The cost comparison needs both arms; with one of them filtered out by --case it did not run.
+  const largeFileComparisonRuns = gateOnLargeFileRuns.length > 0 && gateOffLargeFileRuns.length > 0
+    ? [...gateOnLargeFileRuns, ...gateOffLargeFileRuns]
+    : [];
 
   return [
     // Without this, gate-ON runs that never try a whole-file Read pass every
@@ -382,9 +420,35 @@ export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
           : `no successful Read in: ${withoutRead.map(runLabel).join(', ')}`,
       };
     }),
-    verdict('gate-off-answers', 'Gate OFF: answer graders pass in at least 2/3 of runs', gateOffRuns,
-      () => passesAtLeastTwoThirds(gateOffRuns, ANSWER_GRADERS)),
+    verdict('gate-off-answers', 'Gate OFF: answer graders pass in at least 2/3 of runs', gateOffAnswerRuns,
+      () => passesAtLeastTwoThirds(gateOffAnswerRuns, ANSWER_GRADERS)),
+    verdict('large-file-gate-on-answers', 'Large file, gate ON: answer graders pass in at least 2/3 of runs', gateOnLargeFileRuns,
+      () => passesAtLeastTwoThirds(gateOnLargeFileRuns, ANSWER_GRADERS)),
+    verdict('large-file-gate-off-answers', 'Large file, gate OFF: answer graders pass in at least 2/3 of runs', gateOffLargeFileRuns,
+      () => passesAtLeastTwoThirds(gateOffLargeFileRuns, ANSWER_GRADERS)),
+    // Without it the cost comparison measures nothing: a gate-OFF run that only
+    // greps and reads a window never pays for the whole file the gate saves.
+    verdict('large-file-gate-off-reads-whole-file', 'Large file, gate OFF: Claude read the whole file in at least 2/3 of runs', gateOffLargeFileRuns, () => {
+      const reading = gateOffLargeFileRuns.filter(run => run.analysis.wholeFileReadsSucceeded > 0).length;
+      return { passed: reading * 3 >= gateOffLargeFileRuns.length * 2, detail: `${reading} of ${gateOffLargeFileRuns.length} runs` };
+    }),
+    verdict('large-file-gate-on-cheaper', 'Large file: gate ON costs less per run than gate OFF', largeFileComparisonRuns, () => {
+      const gateOnCost = mean(gateOnLargeFileRuns.map(run => run.costUsd));
+      const gateOffCost = mean(gateOffLargeFileRuns.map(run => run.costUsd));
+      if (gateOnCost === null || gateOffCost === null) return { passed: false, detail: 'a large-file arm has no run with a cost' };
+      return {
+        passed: gateOnCost < gateOffCost,
+        detail: `mean $${gateOnCost.toFixed(3)} gate ON vs $${gateOffCost.toFixed(3)} gate OFF (${formatChange(gateOnCost, gateOffCost)})`,
+      };
+    }),
   ];
+}
+
+/** `value` against `baseline` as a signed percentage, e.g. "-23%". */
+function formatChange(value: number, baseline: number): string {
+  if (baseline === 0) return 'n/a';
+  const percent = Math.round(((value - baseline) / baseline) * 100);
+  return `${percent > 0 ? '+' : ''}${percent}%`;
 }
 
 /** `claude plugin eval --case <glob>` as the CLI matches it: the whole name, `*` for any characters, `?` for one. */
@@ -1115,7 +1179,28 @@ function keepRunArtifacts(caseName: string, runNumber: number, tracePath: string
   return copiedTracePath;
 }
 
-function collectRunEvidence(aggregate: AggregateResult, reportDirectory: string, fixtureTotalLines: number): RunEvidence[] {
+export interface FixtureInfo {
+  relativePath: string;
+  totalLines: number;
+  bytes: number;
+}
+
+interface EvalFixtures {
+  standard: FixtureInfo;
+  large: FixtureInfo;
+}
+
+function readFixtureInfo(directory: string, relativePath: string): FixtureInfo {
+  const content = fs.readFileSync(path.join(directory, relativePath), 'utf8');
+  return { relativePath, totalLines: countLines(content), bytes: Buffer.byteLength(content) };
+}
+
+/** The file a case's Reads are counted against: the large-file cases have their own. */
+function fixtureOfCase(fixtures: EvalFixtures, caseName: string): FixtureInfo {
+  return caseName === CASE_GATE_ON_LARGE_FILE || caseName === CASE_GATE_OFF_LARGE_FILE ? fixtures.large : fixtures.standard;
+}
+
+function collectRunEvidence(aggregate: AggregateResult, reportDirectory: string, fixtures: EvalFixtures): RunEvidence[] {
   const tracesDirectory = path.join(reportDirectory, 'traces');
   fs.mkdirSync(tracesDirectory, { recursive: true });
   const evidence: RunEvidence[] = [];
@@ -1124,6 +1209,7 @@ function collectRunEvidence(aggregate: AggregateResult, reportDirectory: string,
       const runNumber = index + 1;
       const copiedTracePath = keepRunArtifacts(evalCase.name, runNumber, run.tracePath, tracesDirectory);
       const traceLines = copiedTracePath ? fs.readFileSync(copiedTracePath, 'utf8').split('\n') : [];
+      const fixture = fixtureOfCase(fixtures, evalCase.name);
       evidence.push({
         caseName: evalCase.name,
         runNumber,
@@ -1133,7 +1219,7 @@ function collectRunEvidence(aggregate: AggregateResult, reportDirectory: string,
         error: run.error ?? null,
         aborted: run.aborted ?? null,
         graders: Object.fromEntries((run.graders ?? []).map(grader => [grader.name, grader.passed === true])),
-        analysis: analyzeReadGateTrace(traceLines, { fixtureRelativePath: FIXTURE_RELATIVE_PATH, fixtureTotalLines }),
+        analysis: analyzeReadGateTrace(traceLines, { fixtureRelativePath: fixture.relativePath, fixtureTotalLines: fixture.totalLines }),
         tracePath: copiedTracePath ? path.relative(repoRoot, copiedTracePath) : null,
       });
     });
@@ -1149,6 +1235,18 @@ interface ArmStatistics {
   runs: number;
   meanTurns: number | null;
   meanCostUsd: number | null;
+  meanCacheCreationTokens: number | null;
+  meanCacheReadTokens: number | null;
+  meanOutputTokens: number | null;
+}
+
+/** One question asked with the gate ON and with it OFF. */
+interface QuestionComparison {
+  fixture: FixtureInfo;
+  gateOnCase: string;
+  gateOffCase: string;
+  on: ArmStatistics;
+  off: ArmStatistics;
 }
 
 function mean(values: Array<number | null>): number | null {
@@ -1157,7 +1255,14 @@ function mean(values: Array<number | null>): number | null {
 }
 
 function armStatistics(runs: RunEvidence[]): ArmStatistics {
-  return { runs: runs.length, meanTurns: mean(runs.map(run => run.turns)), meanCostUsd: mean(runs.map(run => run.costUsd)) };
+  return {
+    runs: runs.length,
+    meanTurns: mean(runs.map(run => run.turns)),
+    meanCostUsd: mean(runs.map(run => run.costUsd)),
+    meanCacheCreationTokens: mean(runs.map(run => run.analysis.usage?.cacheCreationInputTokens ?? null)),
+    meanCacheReadTokens: mean(runs.map(run => run.analysis.usage?.cacheReadInputTokens ?? null)),
+    meanOutputTokens: mean(runs.map(run => run.analysis.usage?.outputTokens ?? null)),
+  };
 }
 
 function formatUsd(value: number | null | undefined): string {
@@ -1166,6 +1271,14 @@ function formatUsd(value: number | null | undefined): string {
 
 function formatNumber(value: number | null): string {
   return value === null ? 'n/a' : Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
+function formatTokens(value: number | null | undefined): string {
+  return typeof value === 'number' ? Math.round(value).toLocaleString('en-US') : 'n/a';
+}
+
+function formatFixture(fixture: FixtureInfo): string {
+  return `${fixture.relativePath} (${fixture.totalLines} lines, ${(fixture.bytes / 1024).toFixed(1)} KB)`;
 }
 
 interface Summary {
@@ -1178,13 +1291,13 @@ interface Summary {
   caseFilter: string | null;
   evalExitCode: number;
   evalCostUsd: number | null;
-  fixture: { path: string; totalLines: number };
+  fixtures: FixtureInfo[];
   /** The CLI provisioned for the plugin, and what the built hook resolved in the pre-flight (D9). */
   treeSitter: TreeSitterProvisioning & { resolvedByPlugin: PluginTreeSitterCheck };
   seededObservations: SeededObservation[];
   preflight: PreflightCheck[];
   verdicts: Verdict[];
-  arms: { on: ArmStatistics; off: ArmStatistics };
+  comparisons: QuestionComparison[];
   runs: RunEvidence[];
 }
 
@@ -1192,7 +1305,7 @@ function buildSummary(input: {
   options: RunnerOptions;
   aggregate: AggregateResult;
   evalExitCode: number;
-  fixtureTotalLines: number;
+  fixtures: EvalFixtures;
   treeSitter: Summary['treeSitter'];
   seeded: SeededObservation[];
   preflight: PreflightCheck[];
@@ -1204,7 +1317,10 @@ function buildSummary(input: {
   problems.push(...findIncompleteCaseRuns(input.runs, requestedCaseNames(input.options.caseGlob), input.options.runs));
   if (input.evalExitCode !== 0) problems.push(`claude plugin eval exited ${input.evalExitCode}`);
   if (input.aggregate.partial) problems.push(`the eval stopped early (${input.aggregate.partialReason ?? 'partial'})`);
-  const isGateOnCase = (run: RunEvidence) => run.caseName === CASE_GATE_ON_ANSWERS || run.caseName === CASE_GATE_ON_EDITS;
+  const caseRuns = (caseName: string) => input.runs.filter(run => run.caseName === caseName);
+  const comparison = (fixture: FixtureInfo, gateOnCase: string, gateOffCase: string): QuestionComparison => ({
+    fixture, gateOnCase, gateOffCase, on: armStatistics(caseRuns(gateOnCase)), off: armStatistics(caseRuns(gateOffCase)),
+  });
   return {
     createdAt: new Date().toISOString(),
     passed: problems.length === 0,
@@ -1215,15 +1331,15 @@ function buildSummary(input: {
     caseFilter: input.options.caseGlob,
     evalExitCode: input.evalExitCode,
     evalCostUsd: input.aggregate.costUsd ?? null,
-    fixture: { path: FIXTURE_RELATIVE_PATH, totalLines: input.fixtureTotalLines },
+    fixtures: [input.fixtures.standard, input.fixtures.large],
     treeSitter: input.treeSitter,
     seededObservations: input.seeded,
     preflight: input.preflight,
     verdicts,
-    arms: {
-      on: armStatistics(input.runs.filter(isGateOnCase)),
-      off: armStatistics(input.runs.filter(run => run.caseName === CASE_GATE_OFF_ANSWERS)),
-    },
+    comparisons: [
+      comparison(input.fixtures.standard, CASE_GATE_ON_ANSWERS, CASE_GATE_OFF_ANSWERS),
+      comparison(input.fixtures.large, CASE_GATE_ON_LARGE_FILE, CASE_GATE_OFF_LARGE_FILE),
+    ],
     runs: input.runs,
   };
 }
@@ -1248,10 +1364,11 @@ function renderSummaryMarkdown(summary: Summary, reportDirectory: string): strin
     '',
     '## Runs',
     '',
-    `Whole-file Reads of ${summary.fixture.path} (${summary.fixture.totalLines} lines) are counted as tried / denied by the gate / returned the file.`,
+    `Whole-file Reads of each case's fixture are counted as tried / denied by the gate / returned the file: ${summary.fixtures.map(formatFixture).join('; ')}. `
+      + 'Tokens are the run\'s cache writes / cache reads / output.',
     '',
-    '| Case | Run | Whole-file Reads | Targeted Reads (ok / denied) | smart_outline | smart_unfold | get_observations | Deny marker | Failed graders | Turns | Cost |',
-    '| --- | ---: | --- | --- | ---: | ---: | ---: | --- | --- | ---: | ---: |',
+    '| Case | Run | Whole-file Reads | Targeted Reads (ok / denied) | smart_outline | smart_unfold | get_observations | Deny marker | Failed graders | Turns | Tokens | Cost |',
+    '| --- | ---: | --- | --- | ---: | ---: | ---: | --- | --- | ---: | --- | ---: |',
     ...summary.runs.map(run => {
       const analysis = run.analysis;
       const failedGraders = Object.entries(run.graders).filter(([, passed]) => !passed).map(([name]) => name);
@@ -1268,17 +1385,27 @@ function renderSummaryMarkdown(summary: Summary, reportDirectory: string): strin
         (failedGraders.join(', ') || 'none') + (run.error ? ` (error: ${run.error})` : '')
           + (run.aborted ? ` (aborted by mock ${run.aborted.server}/${run.aborted.tool}: ${run.aborted.reason})` : ''),
         formatNumber(run.turns),
+        analysis.usage
+          ? `${formatTokens(analysis.usage.cacheCreationInputTokens)} / ${formatTokens(analysis.usage.cacheReadInputTokens)} / ${formatTokens(analysis.usage.outputTokens)}`
+          : 'n/a',
         formatUsd(run.costUsd),
         '',
       ].join(' | ').trim();
     }),
     '',
-    '## Per arm (informational)',
+    '## Same question, gate ON vs OFF (informational)',
     '',
-    '| Arm | Runs | Mean turns | Mean cost |',
-    '| --- | ---: | ---: | ---: |',
-    `| Gate ON | ${summary.arms.on.runs} | ${formatNumber(summary.arms.on.meanTurns)} | ${formatUsd(summary.arms.on.meanCostUsd)} |`,
-    `| Gate OFF | ${summary.arms.off.runs} | ${formatNumber(summary.arms.off.meanTurns)} | ${formatUsd(summary.arms.off.meanCostUsd)} |`,
+    'Means per run. The gate saves the cache writes of the file it keeps out of context, and costs a turn for the deny plus one per smart-tool call, each re-reading the whole context.',
+    '',
+    '| Fixture | Arm | Runs | Turns | Cache write | Cache read | Output | Cost |',
+    '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
+    ...summary.comparisons.flatMap(item => [
+      [item.on, 'Gate ON'] as const,
+      [item.off, 'Gate OFF'] as const,
+    ].map(([arm, label]) => `| ${formatFixture(item.fixture)} | ${label} | ${arm.runs} | ${formatNumber(arm.meanTurns)} | `
+      + `${formatTokens(arm.meanCacheCreationTokens)} | ${formatTokens(arm.meanCacheReadTokens)} | ${formatTokens(arm.meanOutputTokens)} | `
+      + `${formatUsd(arm.meanCostUsd)}${label === 'Gate ON' && item.on.meanCostUsd !== null && item.off.meanCostUsd !== null
+        ? ` (${formatChange(item.on.meanCostUsd, item.off.meanCostUsd)})` : ''} |`)),
     '',
     '## Pre-flight and hook latency (informational)',
     '',
@@ -1339,7 +1466,10 @@ async function main(): Promise<number> {
   const runDirectory = path.join(scratchDirectory, timestamp);
   const reportDirectory = path.join(repoRoot, 'reports', 'read-gate', timestamp);
   fs.mkdirSync(reportDirectory, { recursive: true });
-  const fixtureTotalLines = countLines(fs.readFileSync(path.join(fixtureDirectory, FIXTURE_RELATIVE_PATH), 'utf8'));
+  const fixtures: EvalFixtures = {
+    standard: readFixtureInfo(fixtureDirectory, FIXTURE_RELATIVE_PATH),
+    large: readFixtureInfo(largeFixtureDirectory, LARGE_FIXTURE_RELATIVE_PATH),
+  };
   const provisionedTreeSitter = await provisionPluginTreeSitterCli();
   console.log(`tree-sitter CLI for the plugin: ${provisionedTreeSitter.binaryPath} (${provisionedTreeSitter.version})`);
 
@@ -1364,7 +1494,7 @@ async function main(): Promise<number> {
     };
     const preflight = runPreflight(arms, seeded);
     fs.writeFileSync(path.join(reportDirectory, 'preflight.json'), `${JSON.stringify({
-      fixture: { path: FIXTURE_RELATIVE_PATH, totalLines: fixtureTotalLines },
+      fixture: fixtures.standard,
       treeSitter,
       seededObservations: seeded,
       checks: preflight,
@@ -1393,8 +1523,8 @@ async function main(): Promise<number> {
       throw new Error(`claude plugin eval exited ${evalExitCode} without writing ${path.relative(repoRoot, aggregatePath)}`);
     }
     const aggregate = JSON.parse(fs.readFileSync(aggregatePath, 'utf8')) as AggregateResult;
-    const runs = collectRunEvidence(aggregate, reportDirectory, fixtureTotalLines);
-    const summary = buildSummary({ options, aggregate, evalExitCode, fixtureTotalLines, treeSitter, seeded, preflight, runs });
+    const runs = collectRunEvidence(aggregate, reportDirectory, fixtures);
+    const summary = buildSummary({ options, aggregate, evalExitCode, fixtures, treeSitter, seeded, preflight, runs });
     const markdown = renderSummaryMarkdown(summary, reportDirectory);
     fs.writeFileSync(path.join(reportDirectory, 'summary.json'), `${JSON.stringify(summary, null, 2)}\n`);
     fs.writeFileSync(path.join(reportDirectory, 'summary.md'), markdown);

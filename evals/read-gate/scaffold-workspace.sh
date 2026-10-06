@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Scaffold shared by every read-gate case; scaffold-gate-on.sh and
-# scaffold-gate-off.sh call it with their arm. scripts/eval-read-gate.ts starts
+# Scaffold shared by every read-gate case; the scaffold-*gate-on.sh and
+# scaffold-*gate-off.sh scripts call it with their arm and, for the large-file
+# cases, the fixture-large project. scripts/eval-read-gate.ts starts
 # one worker per arm and runs the suite with --scaffold. The harness runs this
 # with the run's empty workspace as cwd and the run's temporary home as HOME.
 # 1. Copies the fixture project into the workspace and dates every file
@@ -11,9 +12,10 @@
 #    and nothing reaches a worker on the default port.
 set -euo pipefail
 arm="${1:-}"
-case "$arm" in
-  on|off) ;;
-  *) echo "usage: scaffold-workspace.sh on|off" >&2; exit 1 ;;
+fixture="${2:-fixture}"
+case "$arm/$fixture" in
+  on/fixture|off/fixture|on/fixture-large|off/fixture-large) ;;
+  *) echo "usage: scaffold-workspace.sh on|off [fixture|fixture-large]" >&2; exit 1 ;;
 esac
 suite_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$suite_dir/../.." && pwd)"
@@ -27,6 +29,6 @@ if [ -e "$HOME/.claude-mem" ] || [ -L "$HOME/.claude-mem" ]; then
   exit 1
 fi
 
-cp -R "$suite_dir/fixture/." .
+cp -R "$suite_dir/$fixture/." .
 find . -type f -exec touch -t 202601010000 {} +
 ln -s "$(cat "$data_dir_file")" "$HOME/.claude-mem"
