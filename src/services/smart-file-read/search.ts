@@ -159,6 +159,13 @@ export async function searchCodebase(
     const checkSymbols = (symbols: typeof parsed.symbols, parent?: string) => {
       for (const sym of symbols) {
         const qualifiedName = qualifySymbolName(sym.name, parent, parsed.language, sym.kind);
+        // A namespace is a scope, not a result. A project's root namespace
+        // repeats in every file, so scoring it would fill a capped search with
+        // folded files that merely declare it. Its members still qualify.
+        if (sym.kind === "namespace") {
+          checkSymbols(sym.children ?? [], qualifiedName);
+          continue;
+        }
         let score = 0;
         let reason = "";
 
