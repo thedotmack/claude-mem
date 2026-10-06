@@ -380,11 +380,11 @@ function assertCodexMarketplaceSupported(spawn: CodexSpawn = codexSpawn): void {
   }
 }
 
-function removeCodexAgentsMdContext(): boolean {
-  if (!existsSync(CODEX_AGENTS_MD_PATH)) return true;
+function removeCodexAgentsMdContext(agentsMdPath = CODEX_AGENTS_MD_PATH): boolean {
+  if (!existsSync(agentsMdPath)) return true;
 
   try {
-    readAndStripContextTags();
+    readAndStripContextTags(agentsMdPath);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -430,7 +430,7 @@ function expandHome(inputPath: string): string {
   return inputPath;
 }
 
-function isLegacyCodexAgentsContext(context: Record<string, unknown>): boolean {
+function isLegacyCodexAgentsContext(context: Record<string, unknown>, agentsMdPath: string): boolean {
   if (context.mode !== 'agents') return false;
 
   const updateOn = context.updateOn;
@@ -440,16 +440,18 @@ function isLegacyCodexAgentsContext(context: Record<string, unknown>): boolean {
     && updateOn.includes('session_end');
   if (!hasLegacyUpdateOn) return false;
 
-  if (context.path === undefined) return true;
+  // Implicit targets belong to the existing CLI migration only. A custom
+  // provider home must not disable a watch that writes a project's AGENTS.md.
+  if (context.path === undefined) return agentsMdPath === CODEX_AGENTS_MD_PATH;
   return typeof context.path === 'string'
-    && path.resolve(expandHome(context.path)) === CODEX_AGENTS_MD_PATH;
+    && path.resolve(expandHome(context.path)) === path.resolve(agentsMdPath);
 }
 
-function disableCodexTranscriptAgentsContext(): boolean {
+function disableCodexTranscriptAgentsContext(agentsMdPath = CODEX_AGENTS_MD_PATH): boolean {
   if (!existsSync(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH)) return true;
 
   try {
-    stripLegacyTranscriptWatchContexts();
+    stripLegacyTranscriptWatchContexts(CODEX_TRANSCRIPT_WATCH_CONFIG_PATH, agentsMdPath);
     return true;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -458,14 +460,17 @@ function disableCodexTranscriptAgentsContext(): boolean {
   }
 }
 
-export function stripLegacyTranscriptWatchContexts(configPath = CODEX_TRANSCRIPT_WATCH_CONFIG_PATH): void {
+export function stripLegacyTranscriptWatchContexts(
+  configPath = CODEX_TRANSCRIPT_WATCH_CONFIG_PATH,
+  agentsMdPath = CODEX_AGENTS_MD_PATH,
+): void {
   const parsed = readJsonFileWithBom<unknown>(configPath);
   if (!isRecord(parsed) || !Array.isArray(parsed.watches)) return;
 
   let changed = false;
   for (const watch of parsed.watches) {
     if (!isRecord(watch) || !isCodexTranscriptWatch(watch)) continue;
-    if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context)) continue;
+    if (!isRecord(watch.context) || !isLegacyCodexAgentsContext(watch.context, agentsMdPath)) continue;
     delete watch.context;
     changed = true;
   }
@@ -508,6 +513,13 @@ export function installCodexPluginForHome(options: {
   registerCodexMarketplace(root, run);
   run(['plugin', 'add', CODEX_PLUGIN_ID]);
   writeCodexPluginConfig(true, path.join(options.homePath, 'config.toml'));
+  const agentsMdPath = path.join(options.homePath, 'AGENTS.md');
+  if (!cleanupLegacyCodexAgentsMdContext(agentsMdPath)) {
+    console.warn(`  Native Codex hooks registered, but failed to remove legacy AGENTS.md context from ${agentsMdPath}.`);
+  }
+  if (!cleanupLegacyCodexTranscriptAgentsContext(agentsMdPath)) {
+    console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context for ${agentsMdPath}.`);
+  }
 }
 
 export function disableCodexPluginForHome(homePath: string): void {
