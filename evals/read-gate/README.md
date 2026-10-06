@@ -84,35 +84,35 @@ Beside it: `summary.json` (the same data, every run included), `preflight.json`,
 
 ## Last run
 
-2026-10-06, Claude Code 2.1.291, tree-sitter 0.26.9. Every verdict passed on both models. Reports: `reports/read-gate/2026-10-06T09-35-55-529Z` (Sonnet) and `reports/read-gate/2026-10-06T09-37-47-324Z` (Opus).
+2026-10-06, Claude Code 2.1.291, tree-sitter 0.26.9, with the 32 KB deny size. Every verdict passed on both models. Reports: `reports/read-gate/2026-10-06T09-54-38-735Z` (Sonnet) and `reports/read-gate/2026-10-06T09-56-10-038Z` (Opus).
 
-**`claude-sonnet-5-5`, 3 runs per case, eval cost $1.21**
-
-| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cache write / read | Mean cost |
-| --- | ---: | --- | ---: | --- | --- | ---: | --- | ---: |
-| `gate-on-answers-question` | 3 | 3 / 3 / 0 | 0 | 3 / 8 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `read-blocked` 3/3 | 6.7 | 12,689 / 68,040 | $0.071 |
-| `gate-on-edits-file` | 3 | 3 / 3 / 0 | 3 | 0 / 0 / 0 | `edited` 3/3, `old-value-gone` 3/3, `read-blocked` 3/3 | 5.0 | 8,694 / 60,080 | $0.051 |
-| `gate-off-reads-normally` | 3 | 3 / 0 / 3 | 0 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 3.3 | 18,104 / 29,624 | $0.076 |
-| `gate-on-large-file` | 3 | 3 / 3 / 0 | 6 | 3 / 6 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `read-blocked` 3/3 | 8.0 | 15,824 / 68,042 | $0.081 |
-| `gate-off-large-file` | 3 | 3 / 0 / 3 | 3 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 3.0 | 35,661 / 58,158 | $0.125 |
-
-**`claude-opus-5-5`, 2 runs per case, eval cost $1.69**
+**`claude-sonnet-5-5`, 3 runs per case, eval cost $1.20**
 
 | Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cache write / read | Mean cost |
 | --- | ---: | --- | ---: | --- | --- | ---: | --- | ---: |
-| `gate-on-answers-question` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.0 | 18,944 / 80,158 | $0.176 |
-| `gate-on-edits-file` | 2 | 2 / 2 / 0 | 2 | 0 / 0 / 0 | `edited` 2/2, `old-value-gone` 2/2, `read-blocked` 2/2 | 5.5 | 8,880 / 72,200 | $0.098 |
-| `gate-off-reads-normally` | 2 | 2 / 0 / 2 | 0 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 2.0 | 18,160 / 19,940 | $0.147 |
-| `gate-on-large-file` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.0 | 19,416 / 67,936 | $0.172 |
-| `gate-off-large-file` | 2 | 2 / 0 / 2 | 2 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 3.0 | 36,412 / 57,312 | $0.252 |
+| `gate-on-large-file` | 3 | 3 / 3 / 0 | 2 | 3 / 8 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `read-blocked` 3/3 | 7.3 | 14,074 / 68,025 | $0.077 |
+| `gate-off-large-file` | 3 | 3 / 0 / 3 | 3 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 3.0 | 35,231 / 58,591 | $0.124 |
+| `gate-on-edits-file` | 3 | 3 / 3 / 0 | 3 | 0 / 0 / 0 | `edited` 3/3, `old-value-gone` 3/3, `read-blocked` 3/3 | 5.0 | 8,868 / 59,767 | $0.052 |
+| `gate-on-small-file` | 3 | 3 / 0 / 3 | 0 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 2.0 | 17,682 / 20,389 | $0.073 |
+| `gate-off-small-file` | 3 | 3 / 0 / 3 | 0 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 2.7 | 17,691 / 25,242 | $0.074 |
+
+**`claude-opus-5-5`, 2 runs per case, eval cost $1.59**
+
+| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cache write / read | Mean cost |
+| --- | ---: | --- | ---: | --- | --- | ---: | --- | ---: |
+| `gate-on-large-file` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.0 | 19,212 / 67,927 | $0.171 |
+| `gate-off-large-file` | 2 | 2 / 0 / 2 | 2 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 3.0 | 35,162 / 58,572 | $0.243 |
+| `gate-on-edits-file` | 2 | 2 / 2 / 0 | 2 | 0 / 0 / 0 | `edited` 2/2, `old-value-gone` 2/2, `read-blocked` 2/2 | 5.0 | 8,814 / 64,618 | $0.095 |
+| `gate-on-small-file` | 2 | 2 / 0 / 2 | 0 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 2.0 | 17,536 / 20,561 | $0.142 |
+| `gate-off-small-file` | 2 | 2 / 0 / 2 | 0 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 2.0 | 17,549 / 20,562 | $0.142 |
 
 **Same question, gate ON against gate OFF (mean cost per run):**
 
-| Fixture | `claude-sonnet-5-5` | `claude-opus-5-5` |
+| File | `claude-sonnet-5-5` | `claude-opus-5-5` |
 | --- | --- | --- |
-| `rate-calculator.ts`, 513 lines, 19 KB | $0.071 vs $0.076 (-6%) | $0.176 vs $0.147 (+20%) |
-| `carrier-tariffs.ts`, 941 lines, 49 KB | $0.081 vs $0.125 (-35%) | $0.172 vs $0.252 (-32%) |
+| `carrier-tariffs.ts`, 941 lines, 49 KB | $0.077 vs $0.124 (-38%) | $0.171 vs $0.243 (-30%) |
+| `rate-calculator.ts`, 513 lines, 19 KB (under the deny size) | $0.073 vs $0.074 (-1%) | $0.142 vs $0.142 (0%) |
 
-The gate saves the cache writes of the file it keeps out of context: about 20,000 tokens for the large file, about 5,500 for the small one. It pays for the deny turn and every smart-tool or targeted-Read turn after it, each re-reading the whole context: gate ON took 7 to 8 turns where gate OFF took 2 to 3. On the large file the saving wins on both models. On the small file it is a wash for Sonnet, which went straight to `smart_outline` and `smart_unfold`. It costs Opus 20% more: Opus ran `smart_outline` once, then read about 70% of the file anyway through three targeted Reads, so it saved almost no cache writes and still paid for the extra turns.
+On the large file the gate keeps about 20,000 tokens of cache writes out of the run and pays for four extra turns, each re-reading the whole context. It comes out about a third cheaper on both models. Sonnet answered from `smart_outline` and `smart_unfold`. Opus ran `smart_outline` and then read the sections it named through targeted Reads, and still saved. Under the deny size the gate stays out of the way, and the small file costs the same with it on or off. Before the deny size existed, the same small-file question cost Opus 20% more with the gate on (`reports/read-gate/2026-10-06T09-37-47-324Z`).
 
-After the deny, every edit run on both models found the line with Grep, read 15 to 40 lines around it, and changed line 304 only.
+After the deny, every edit run on both models found the line with Grep, read the 15 lines around it, and changed line 526 only.
