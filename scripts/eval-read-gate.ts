@@ -2,7 +2,7 @@
 /**
  * File Read Gate eval: gate ON against gate OFF, through real claude-mem
  * workers and real Claude Code. What it proves and how to read the results:
- * plugin/evals-read-gate/README.md.
+ * evals/read-gate/README.md.
  *
  *   npm run eval:read-gate [-- --runs 3 --model claude-sonnet-5-5 -j 3 --max-cost-usd 10 --case <glob> --preflight-only]
  *
@@ -15,7 +15,7 @@
  * 3. Pre-flight, no model: checks the tree-sitter CLI the built hook resolves,
  *    then pipes PreToolUse Read payloads into the real file-context hook
  *    against each worker.
- * 4. Runs plugin/evals-read-gate with `claude plugin eval`, analyzes every
+ * 4. Runs evals/read-gate with `claude plugin eval`, analyzes every
  *    run's trace, writes reports/read-gate/<timestamp>/summary.{md,json} and
  *    exits non-zero when a verdict fails or a requested run did not complete.
  * Both workers are always stopped, and the sandboxes --keep-temp kept are
@@ -32,10 +32,17 @@ import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/servi
 
 const repoRoot = path.resolve(import.meta.dir, '..');
 const pluginDirectory = path.join(repoRoot, 'plugin');
+/**
+ * The suite is tracked outside plugin/ because a marketplace install copies
+ * plugin/ from git and no install needs the eval. `claude plugin eval
+ * --eval-dir` only reads a directory below the plugin, so each run stages a
+ * copy at plugin/evals-read-gate (gitignored) and removes it afterwards.
+ */
+const suiteSourceDirectory = path.join(repoRoot, 'evals', 'read-gate');
 const SUITE_DIRECTORY_NAME = 'evals-read-gate';
-const suiteDirectory = path.join(pluginDirectory, SUITE_DIRECTORY_NAME);
-const fixtureDirectory = path.join(suiteDirectory, 'fixture');
-const seedObservationsPath = path.join(suiteDirectory, 'seed-observations.json');
+const stagedSuiteDirectory = path.join(pluginDirectory, SUITE_DIRECTORY_NAME);
+const fixtureDirectory = path.join(suiteSourceDirectory, 'fixture');
+const seedObservationsPath = path.join(suiteSourceDirectory, 'seed-observations.json');
 const workerScriptPath = path.join(pluginDirectory, 'scripts', 'worker-service.cjs');
 const bunRunnerPath = path.join(pluginDirectory, 'scripts', 'bun-runner.js');
 const scratchDirectory = path.join(repoRoot, '.scratch', 'read-gate-eval');
@@ -53,7 +60,7 @@ export const GET_OBSERVATIONS_TOOL = `${MCP_SEARCH_TOOL_PREFIX}get_observations`
 export const CASE_GATE_ON_ANSWERS = 'gate-on-answers-question';
 export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
 export const CASE_GATE_OFF_ANSWERS = 'gate-off-reads-normally';
-/** Every case in plugin/evals-read-gate. */
+/** Every case in evals/read-gate. */
 export const EVAL_CASE_NAMES: readonly string[] = [CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS];
 const ANSWER_GRADERS = ['answer-rate', 'answer-minimum'];
 const EDIT_GRADERS = ['edited', 'old-value-gone'];
@@ -634,6 +641,16 @@ function removeActiveDataDirectoryFiles(): void {
   if (!activeDataDirectoryFilesWritten) return;
   for (const name of ARM_NAMES) fs.rmSync(activeDataDirectoryFile(name), { force: true });
   activeDataDirectoryFilesWritten = false;
+}
+
+// Symlinks stay verbatim: the cases' scaffolds link to the shared ones beside them.
+function stageSuite(): void {
+  fs.rmSync(stagedSuiteDirectory, { recursive: true, force: true });
+  fs.cpSync(suiteSourceDirectory, stagedSuiteDirectory, { recursive: true, verbatimSymlinks: true });
+}
+
+function removeStagedSuite(): void {
+  fs.rmSync(stagedSuiteDirectory, { recursive: true, force: true });
 }
 
 // ---------------------------------------------------------------------------
@@ -1366,9 +1383,11 @@ async function main(): Promise<number> {
     }
 
     writeActiveDataDirectoryFiles(arms);
+    stageSuite();
     const evalOutputDirectory = path.join(reportDirectory, 'eval');
     const evalExitCode = runPluginEval(options, evalOutputDirectory);
     removeActiveDataDirectoryFiles();
+    removeStagedSuite();
     const aggregatePath = path.join(evalOutputDirectory, 'aggregate-result.json');
     if (!fs.existsSync(aggregatePath)) {
       throw new Error(`claude plugin eval exited ${evalExitCode} without writing ${path.relative(repoRoot, aggregatePath)}`);
@@ -1383,6 +1402,7 @@ async function main(): Promise<number> {
     return summary.passed ? 0 : 1;
   } finally {
     removeActiveDataDirectoryFiles();
+    removeStagedSuite();
     stopStartedWorkers();
   }
 }
@@ -1394,6 +1414,7 @@ if (import.meta.main) {
     for (const signal of ['SIGINT', 'SIGTERM'] as const) {
       process.on(signal, () => {
         removeActiveDataDirectoryFiles();
+        removeStagedSuite();
         stopStartedWorkers();
         process.exit(130);
       });
