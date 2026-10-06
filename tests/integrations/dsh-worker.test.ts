@@ -85,25 +85,15 @@ describe('WorkerClient.getObservations', () => {
     expect(result.items).toMatchObject([{ id: 650, title: 'nine', narrative: 'full' }])
   })
 
-  it('deduplicates identical content (same narrative) when dedupe is true', async () => {
+  it.each([true, false])('returns every requested record even when content matches (dedupe %p)', async (dedupe) => {
     stubFetch([
       { id: 627, title: 'Media prompt', narrative: 'same' },
       { id: 671, title: 'Media prompt', narrative: 'same' },
       { id: 715, title: 'Media prompt', narrative: 'distinct' },
     ])
-    const client = new WorkerClient({ ...limits, dedupe: true })
+    const client = new WorkerClient({ ...limits, dedupe })
     const result = await client.getObservations({ ids: [627, 671, 715] })
-    expect(result.items.map(i => i.id)).toEqual([627, 715])
-  })
-
-  it('keeps raw results when dedupe is disabled', async () => {
-    stubFetch([
-      { id: 627, title: 'Media prompt', narrative: 'same' },
-      { id: 671, title: 'Media prompt', narrative: 'same' },
-    ])
-    const client = new WorkerClient({ ...limits, dedupe: false })
-    const result = await client.getObservations({ ids: [627, 671] })
-    expect(result.items.map(i => i.id)).toEqual([627, 671])
+    expect(result.items.map(i => i.id)).toEqual([627, 671, 715])
   })
 
   it('rejects an empty id list', async () => {
@@ -152,5 +142,16 @@ describe('WorkerClient.getObservations', () => {
     const result = await client.getObservations({ ids: [650] })
     expect(result.items[0].concepts).toEqual([])
     expect(result.items[0].facts).toBeUndefined()
+  })
+})
+
+describe('WorkerClient.context', () => {
+  it('sends the checkout alongside a project override so the worker can apply exclusions', async () => {
+    const fetchMock = mock(async (_url: unknown) => ({ ok: true, status: 200, text: async () => '' }) as Response)
+    stubFetchGlobal(fetchMock)
+    await new WorkerClient(limits).context({ projects: 'override', cwd: '/work/excluded' })
+    const query = new URL(String(fetchMock.mock.calls[0]![0])).searchParams
+    expect(query.get('projects')).toBe('override')
+    expect(query.get('cwd')).toBe('/work/excluded')
   })
 })

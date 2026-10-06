@@ -100,7 +100,9 @@ export class WorkerClient {
     const body: Record<string, unknown> = { ids: request.ids }
     if (request.project !== undefined) body.project = request.project
     const raw: unknown = await this.requestJson<unknown>('/api/observations/batch', { method: 'POST', body }, signal)
-    return { items: this.finalizeItems((Array.isArray(raw) ? raw : []).map(asObservation)) }
+    // Records requested by id are returned as asked: collapsing equal content
+    // here would make a requested id silently disappear.
+    return { items: (Array.isArray(raw) ? raw : []).map(asObservation) }
   }
 
   async save(request: MemSaveRequest, signal?: AbortSignal): Promise<MemSaveResult> {
@@ -118,7 +120,9 @@ export class WorkerClient {
     if (!projects && !cwd) throw new MemError('a project or cwd is required', 'MEM_INVALID_REQUEST')
     const query = new URLSearchParams()
     if (projects) query.set('projects', projects)
-    else if (cwd) query.set('cwd', cwd)
+    // The checkout travels with a project override too, so the worker can
+    // still apply CLAUDE_MEM_EXCLUDED_PROJECTS to it.
+    if (cwd) query.set('cwd', cwd)
     if (request.platformSource !== undefined) query.set('platformSource', request.platformSource)
     if (request.full !== undefined) query.set('full', String(request.full))
     if (request.colors !== undefined) query.set('colors', String(request.colors))
@@ -155,11 +159,6 @@ export class WorkerClient {
         ? { content: dedupeRenderedTable(result.content) }
         : {}),
     }
-  }
-
-  /** Apply dedup (when enabled) to a raw item list. */
-  private finalizeItems(items: readonly MemObservation[]): readonly MemObservation[] {
-    return this.limits.dedupe === false ? items : dedupeObservations(items)
   }
 
   private async requestJson<T>(path: string, options: { method: 'GET' | 'POST'; query?: URLSearchParams; body?: unknown }, signal?: AbortSignal): Promise<T> {
