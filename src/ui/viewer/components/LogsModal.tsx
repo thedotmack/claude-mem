@@ -81,6 +81,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const startHeightRef = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const wasAtBottomRef = useRef(true);
+  const requestSeqRef = useRef(0);
+  const clearingRef = useRef(false);
 
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
     new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
@@ -131,6 +133,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, []);
 
   const fetchLogs = useCallback(async () => {
+    if (clearingRef.current) return;
+    const request = ++requestSeqRef.current;
     wasAtBottomRef.current = checkIfAtBottom();
 
     setIsLoading(true);
@@ -141,11 +145,11 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
       const data = await response.json();
-      setLogs(data.logs || '');
+      if (request === requestSeqRef.current) setLogs(data.logs || '');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setIsLoading(false);
+      if (request === requestSeqRef.current) setIsLoading(false);
     }
   }, [checkIfAtBottom]);
 
@@ -157,6 +161,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     if (!confirm('Are you sure you want to clear all logs?')) {
       return;
     }
+    const request = ++requestSeqRef.current;
+    clearingRef.current = true;
     setIsLoading(true);
     setError(null);
     try {
@@ -164,11 +170,12 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }
-      setLogs('');
+      if (request === requestSeqRef.current) setLogs('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setIsLoading(false);
+      clearingRef.current = false;
+      if (request === requestSeqRef.current) setIsLoading(false);
     }
   }, []);
 
