@@ -45,7 +45,7 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
-import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PRO_TRIAL_LABEL, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
@@ -2132,7 +2132,7 @@ export async function completeCmemTrialPairing(
   }
   pairing.delivered = result;
   clearProFallback();
-  log.success('CMEM Pro Free Trial active.');
+  log.success(`CMEM Pro ${PRO_TRIAL_LABEL} active.`);
   await captureCliEvent('trial_activated', { version });
   return result;
 }
