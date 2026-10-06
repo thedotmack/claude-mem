@@ -619,6 +619,13 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
 
+// Kinds that own nested symbols only in some languages: a PHP enum holds its
+// methods, and a Haskell function holds its `where`/`let` helpers.
+const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
+  php: new Set(["enum"]),
+  haskell: new Set(["function"]),
+};
+
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
   const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
@@ -860,7 +867,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       exported: isExported(name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind) || (language === "haskell" && kind === "function") || (language === "php" && kind === "enum")) {
+    if (CONTAINER_KINDS.has(kind) || LANGUAGE_CONTAINER_KINDS[language]?.has(kind)) {
       sym.children = [];
       containers.push({ sym, range: kindCapture });
     }
