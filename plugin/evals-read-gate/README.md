@@ -86,3 +86,15 @@ Beside it: `summary.json` (the same data, every run included), `preflight.json`,
 | `gate-off-reads-normally` | 3 | 3 / 0 / 3 | 0 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 2.0 | $0.071 |
 
 After the deny, the question runs loaded `smart_outline` / `smart_unfold` with ToolSearch and unfolded `calculateRemoteAreaSurcharge` and `quoteShipment`. The edit runs found the line with Grep, read about 20 lines around it, and changed line 304 only. Pre-flight hook wall time for one call, process start included: deny 663 ms, targeted Read 385 ms, gate off 648 ms.
+
+### Cross-check: claude-opus-5-5
+
+2026-10-06, Claude Code 2.1.291, `claude-opus-5-5`, 2 runs per case, tree-sitter 0.26.9. Eval cost $0.86. Every verdict passed.
+
+| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cost |
+| --- | ---: | --- | ---: | --- | --- | ---: | ---: |
+| `gate-on-answers-question` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.5 | $0.181 |
+| `gate-on-edits-file` | 2 | 2 / 2 / 0 | 2 | 0 / 0 / 0 | `edited` 2/2, `old-value-gone` 2/2, `read-blocked` 2/2 | 5.5 | $0.098 |
+| `gate-off-reads-normally` | 2 | 2 / 0 / 2 | 0 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 2.0 | $0.153 |
+
+After the deny, the question runs loaded the smart tools with ToolSearch and ran `smart_outline`. They then read the sections it pointed to with three targeted Reads, covering 344 and 361 of the 513 lines. The edit runs found the line with Grep, read 30 lines around it, and changed line 304 only. Pre-flight hook wall time: deny 693 ms, targeted Read 289 ms, gate off 593 ms.
