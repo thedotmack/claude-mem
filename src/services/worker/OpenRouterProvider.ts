@@ -165,7 +165,8 @@ export function classifyOpenRouterError(input: {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
   const headers = input.headers;
-  const retryAfterMs = headers ? parseRetryAfterMs(headers.get('retry-after')) : undefined;
+  const retryAfterHeader = headers?.get('retry-after') ?? null;
+  const retryAfterMs = parseRetryAfterMs(retryAfterHeader);
   const envelope = parseUpstreamErrorEnvelope(body);
 
   // Structured taxonomy envelope from the cmem.ai gateway: carry it verbatim.
@@ -178,6 +179,9 @@ export function classifyOpenRouterError(input: {
     const requestId = typeof envelope.request_id === 'string' && envelope.request_id
       ? envelope.request_id
       : input.requestId;
+    // Preserve the gateway default only for an absent hint. An invalid hint
+    // must use ordinary retry backoff rather than reintroducing a full minute.
+    const gatewayRetryAfterMs = retryAfterHeader === null ? 60_000 : retryAfterMs;
     return new ClassifiedProviderError(message, {
       kind,
       cause: input.cause,
@@ -185,7 +189,7 @@ export function classifyOpenRouterError(input: {
       ...(typeof envelope.action === 'string' && envelope.action ? { action: envelope.action } : {}),
       ...(typeof envelope.url === 'string' && envelope.url ? { url: envelope.url } : {}),
       ...(requestId ? { requestId } : {}),
-      ...(kind === 'rate_limit' ? { retryAfterMs: retryAfterMs ?? 60_000 } : {}),
+      ...(kind === 'rate_limit' && gatewayRetryAfterMs !== undefined ? { retryAfterMs: gatewayRetryAfterMs } : {}),
     });
   }
 

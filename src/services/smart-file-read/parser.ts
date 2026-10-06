@@ -1,6 +1,6 @@
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync, openSync, closeSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
@@ -14,11 +14,13 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "section" | "code" | "metadata" | "reference";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference";
   signature: string;
   jsdoc?: string;
   lineStart: number;
   lineEnd: number;
+  /** Disjoint declaration/body ranges when one symbol is not contiguous. */
+  unfoldRanges?: { lineStart: number; lineEnd: number }[];
   parent?: string;
   exported: boolean;
   children?: CodeSymbol[];
@@ -145,7 +147,9 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(public_field_definition name: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -163,7 +167,9 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(field_definition property: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(field_definition property: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -178,7 +184,7 @@ const QUERIES: Record<string, string> = {
 
   go: `
 (function_declaration name: (identifier) @name) @func
-(method_declaration name: (field_identifier) @name) @method
+(method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
 (import_declaration) @imp
 `,
@@ -188,7 +194,7 @@ const QUERIES: Record<string, string> = {
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
-(impl_item type: (type_identifier) @name) @impl_def
+(impl_item type: (_) @name) @impl_def
 (use_declaration) @imp
 `,
 
@@ -227,6 +233,7 @@ const QUERIES: Record<string, string> = {
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(namespace_definition name: (_) @name) @namespace_def
 (preproc_include) @imp
 `,
 
@@ -239,6 +246,11 @@ const QUERIES: Record<string, string> = {
 `,
 
   swift: `
+(init_declaration name: "init" @name) @swift_init
+(init_declaration (parameter) @swift_parameter) @swift_parameters
+(init_declaration (type_parameters) @swift_generics) @swift_header
+(init_declaration (type_constraints) @swift_constraints) @swift_header
+(deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -277,6 +289,9 @@ const QUERIES: Record<string, string> = {
 `,
 
   haskell: `
+(class_declarations (signature name: [(variable) (prefix_id)] @name) @haskell_signature)
+(class_declarations (signature names: (binding_list [(variable) (prefix_id)] @name)) @haskell_signature)
+(class_declarations (function) @haskell_default)
 (function name: (variable) @name) @func
 (type_synomym name: (name) @name) @tdef
 (newtype name: (name) @name) @tdef
@@ -287,7 +302,9 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
-(test_declaration) @func
+(test_declaration (string) @name) @func
+(test_declaration (identifier) @name) @doctest
+(test_declaration . (block)) @func
 `,
 
   css: `
@@ -525,11 +542,21 @@ function runQuery(queryFile: string, sourceFile: string, grammarPath: string, la
 }
 
 function execQuery(execArgs: string[], sourceFileCount: number): string | null {
+  // Native capture output can exceed execFileSync's fixed pipe buffer for a
+  // language batch. Spool stdout to an owned file so valid matches survive.
+  const outputDir = mkdtempSync(join(tmpdir(), "smart-read-query-output-"));
+  const outputPath = join(outputDir, "captures.txt");
+  let outputFd: number | undefined;
   try {
-    return execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+    outputFd = openSync(outputPath, "w");
+    execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", outputFd, "pipe"] });
+    return readFileSync(outputPath, "utf-8");
   } catch (error) {
     logger.debug('WORKER', `tree-sitter query failed for ${sourceFileCount} file(s)`, undefined, error instanceof Error ? error : undefined);
     return null;
+  } finally {
+    if (outputFd !== undefined) closeSync(outputFd);
+    rmSync(outputDir, { recursive: true, force: true });
   }
 }
 
@@ -600,20 +627,31 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   method: "method",
   ctor: "method",
   kotlin_ctor: "method",
+  swift_init: "method",
+  haskell_signature: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
   struct_def: "struct",
   trait_def: "trait",
   impl_def: "impl",
+  namespace_def: "namespace",
   mixin_def: "mixin",
   heading: "section",
   code_block: "code",
   frontmatter: "metadata",
   ref: "reference",
+  doctest: "function",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface", "namespace"]);
+
+// Kinds that own nested symbols only in some languages: a PHP enum holds its
+// methods, and a Haskell function holds its `where`/`let` helpers.
+const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
+  php: new Set(["enum"]),
+  haskell: new Set(["function"]),
+};
 
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
   const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
@@ -720,18 +758,41 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const exportRanges: RawCapture[] = [];
   const singletonScopes: RawCapture[] = [];
   const decoratedRanges = new Map<string, RawCapture>();
+  const swiftParameters = new Map<string, string[]>();
+  const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
+  const haskellSignatures = new Set<CodeSymbol>();
+  const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
     for (const cap of match.captures) {
+      if (cap.tag === "haskell_default") haskellDefaults.push(cap);
       if (cap.tag === "exp") {
         exportRanges.push(cap);
       }
       if (cap.tag === "decorated_outer") {
         const inner = match.captures.find(capture => capture.tag === "decorated_inner");
         if (inner) decoratedRanges.set(`${inner.startRow}:${inner.startCol}`, cap);
+      }
+      if (cap.tag === "swift_header") {
+        const key = `${cap.startRow}:${cap.startCol}`;
+        const header = swiftHeaders.get(key) ?? {};
+        for (const detail of match.captures) {
+          if (detail.tag === "swift_generics") header.generics = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+          if (detail.tag === "swift_constraints") header.constraints = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+        }
+        swiftHeaders.set(key, header);
+      }
+      if (cap.tag === "swift_parameters") {
+        const parameter = match.captures.find(capture => capture.tag === "swift_parameter");
+        if (parameter) {
+          const key = `${cap.startRow}:${cap.startCol}`;
+          const parameters = swiftParameters.get(key) ?? [];
+          parameters.push(captureLines(lines, parameter).join(" ").replace(/\s+/g, " ").trim());
+          swiftParameters.set(key, parameters);
+        }
       }
       if (cap.tag === "singleton_scope") {
         singletonScopes.push(cap);
@@ -792,8 +853,14 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       const parameters = match.captures.find(c => c.tag === "parameters");
       name = "constructor" + (parameters ? captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim() : "");
     }
+    if (kindCapture.tag === "swift_init") {
+      const key = `${startRow}:${kindCapture.startCol}`;
+      const header = swiftHeaders.get(key);
+      name = `init${header?.generics ?? ""}(${(swiftParameters.get(key) ?? []).join(", ")})${header?.constraints ? ` ${header.constraints}` : ""}`;
+    }
     const receiver = match.captures.find(c => c.tag === "receiver");
-    const receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    let receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*\s*/, "");
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
@@ -850,14 +917,15 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       jsdoc: comment || docstring,
       lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
-      exported: isExported(name, startRow, endRow, exportRanges, lines, language),
+      exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind) || (language === "php" && kind === "enum")) {
+    if (CONTAINER_KINDS.has(kind) || LANGUAGE_CONTAINER_KINDS[language]?.has(kind)) {
       sym.children = [];
       containers.push({ sym, range: kindCapture });
     }
 
+    if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
     ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
@@ -887,6 +955,13 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       symbols.length = 0;
       symbols.push(...filtered);
     }
+  }
+
+  // A Zig doctest is named by the declaration it documents (`test add`
+  // documents `fn add`), so its identity keeps the keyword and both stay
+  // unfoldable.
+  if (language === "zig") {
+    for (const sym of symbols) if (ranges.get(sym)?.tag === "doctest") sym.name = `test ${sym.name}`;
   }
 
   // A named typedef can capture both the alias and its same-named struct.
@@ -922,6 +997,49 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
+  // A typeclass signature and its default implementation describe one method:
+  // the default takes the signature's type and comment. An adjacent pair
+  // unfolds as one range. When another declaration sits between them, retain
+  // both narrow ranges so unfolding includes the type without a neighbouring method.
+  // Grouped names (`f, g :: …`) share the signature's range, so they never
+  // count as being between.
+  for (const signature of haskellSignatures) {
+    const signatureRange = ranges.get(signature)!;
+    const owner = containers.find(container => rangeContains(container.range, signatureRange));
+    const implementation = symbols.find(candidate => candidate.kind === "function"
+      && candidate.name === signature.name
+      && haskellDefaults.some(capture => {
+        const range = ranges.get(candidate)!;
+        return capture.startRow === range.startRow && capture.startCol === range.startCol
+          && capture.endRow === range.endRow && capture.endCol === range.endCol;
+      })
+      && containers.find(container => container.sym !== candidate && rangeContains(container.range, ranges.get(candidate)!)) === owner);
+    if (implementation) {
+      const implementationRange = ranges.get(implementation)!;
+      implementation.signature = signature.signature;
+      implementation.jsdoc = signature.jsdoc ?? implementation.jsdoc;
+      duplicateAliases.add(signature);
+      const [earlier, later] = implementationRange.startRow < signatureRange.startRow
+        || (implementationRange.startRow === signatureRange.startRow && implementationRange.startCol <= signatureRange.startCol)
+        ? [implementationRange, signatureRange] : [signatureRange, implementationRange];
+      const separated = symbols.some(sym => {
+        const range = ranges.get(sym)!;
+        return (range.startRow > earlier.endRow || (range.startRow === earlier.endRow && range.startCol >= earlier.endCol))
+          && (range.startRow < later.startRow || (range.startRow === later.startRow && range.startCol < later.startCol));
+      });
+      if (!separated) {
+        implementation.lineStart = earlier.startRow;
+        implementation.lineEnd = later.endRow;
+        ranges.set(implementation, { ...implementationRange, startRow: earlier.startRow, startCol: earlier.startCol,
+          endRow: later.endRow, endCol: later.endCol });
+      } else {
+        implementation.unfoldRanges = [earlier, later].map(range => ({
+          lineStart: range.startRow,
+          lineEnd: range.endRow,
+        }));
+      }
+    }
+  }
   const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
     if (duplicateAliases.has(sym)) continue;
@@ -936,7 +1054,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       sym.kind = "method";
     }
     if (owner) {
-      if (sym.kind === "function") sym.kind = "method";
+      if (sym.kind === "function" && owner.sym.kind !== "namespace" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
       owner.sym.children!.push(sym);
       nested.add(sym);
     }
@@ -1155,7 +1273,7 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
 function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   const icons: Record<string, string> = {
     function: "ƒ", method: "ƒ", class: "◆", interface: "◇",
-    type: "◇", const: "●", variable: "○", export: "→",
+    namespace: "◈", type: "◇", const: "●", variable: "○", export: "→",
     struct: "◆", enum: "▣", trait: "◇", impl: "◈",
     property: "○", getter: "⇢", setter: "⇠", mixin: "◈",
     section: "§", code: "⌘", metadata: "◊", reference: "↗",
@@ -1177,6 +1295,80 @@ export function qualifySymbolName(name: string, parent: string | undefined, lang
   return parent ? `${parent}.${segment}` : segment;
 }
 
+/**
+ * Lookup hints for a failed unfold. Every miss lands in the agent's context,
+ * so the hint stays within 1 KiB: names most like the missed one come first,
+ * and ties keep roots first, then qualified children offered fairly.
+ */
+export function formatAvailableSymbols(file: FoldedFile, missedName: string): string {
+  const marker = "  ... more symbols omitted; use smart_search to narrow the lookup.";
+  const byteBudget = 1024 - Buffer.byteLength(marker) - 1;
+  // Split like a smart_search query, plus owner separators (`Foo::bar`, `Foo#bar`).
+  const missedParts = missedName.toLowerCase().split(/[\s_\-./:#]+/).filter(part => part.length > 0);
+  const candidates: Array<{ line: string; similarity: number }> = [];
+  const groups: Array<{ symbols: CodeSymbol[]; parent: string; index: number }> = [];
+  let omitted = false;
+  const offer = (symbol: CodeSymbol, parent?: string): void => {
+    const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
+    candidates.push({ line: `  - ${name} (${symbol.kind})`, similarity: matchScore(name.toLowerCase(), missedParts) });
+    if (symbol.children?.length) groups.push({ symbols: symbol.children, parent: name, index: 0 });
+  };
+  // Bound traversal separately from the byte budget so roots that still fit
+  // do not disappear merely to reserve visits for their qualified children.
+  const maxVisits = 512;
+  const reservedChildVisits = Math.min(64, file.symbols.slice(0, maxVisits)
+    .reduce((count, symbol) => count + (symbol.children?.length ?? 0), 0));
+  // A large early class must not bury a later top-level entry point.
+  for (const symbol of file.symbols) {
+    if (candidates.length >= maxVisits - reservedChildVisits) { omitted = true; break; }
+    offer(symbol);
+  }
+  // Round-robin owner groups keeps qualified suggestions from multiple roots.
+  while (groups.length && candidates.length < maxVisits) {
+    const group = groups.shift()!;
+    offer(group.symbols[group.index++], group.parent);
+    if (group.index < group.symbols.length) groups.push(group);
+  }
+  if (groups.length) omitted = true;
+  // A stable sort, so equally similar names keep the traversal order above.
+  candidates.sort((a, b) => b.similarity - a.similarity);
+  const available: string[] = [];
+  let bytes = 0;
+  for (const { line } of candidates) {
+    const size = Buffer.byteLength(line) + (available.length ? 1 : 0);
+    if (bytes + size <= byteBudget) { available.push(line); bytes += size; }
+    else omitted = true;
+  }
+  if (omitted) available.push(marker);
+  return available.join("\n");
+}
+
+/** Query relevance shared by smart_search and the unfold hints: exact 10, substring 5, in-order subsequence 1, per part. */
+export function matchScore(text: string, queryParts: string[]): number {
+  let score = 0;
+  for (const part of queryParts) {
+    if (text === part) {
+      score += 10;
+    } else if (text.includes(part)) {
+      score += 5;
+    } else {
+      let ti = 0;
+      let matched = 0;
+      for (const ch of part) {
+        const idx = text.indexOf(ch, ti);
+        if (idx !== -1) {
+          matched++;
+          ti = idx + 1;
+        }
+      }
+      if (matched === part.length) {
+        score += 1;
+      }
+    }
+  }
+  return score;
+}
+
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
@@ -1192,7 +1384,12 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
     return null;
   };
 
-  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false);
+  // Go methods are named with their receiver (`Local.Reset`), so a bare method
+  // name still unfolds the first method with that leaf, as in other languages.
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
+    ?? (file.language === "go"
+      ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null
+      : null);
   if (!symbol) return null;
 
   const lines = content.split("\n");
@@ -1217,6 +1414,13 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
     const extracted = lines.slice(start, end + 1).join("\n");
     return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
+  }
+
+  if (symbol.unfoldRanges) {
+    return symbol.unfoldRanges.map(range => {
+      const extracted = lines.slice(range.lineStart, range.lineEnd + 1).join("\n");
+      return `// 📍 ${filePath} L${range.lineStart + 1}-${range.lineEnd + 1}\n${extracted}`;
+    }).join("\n");
   }
 
   let start = symbol.lineStart;

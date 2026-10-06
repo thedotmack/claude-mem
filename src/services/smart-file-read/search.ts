@@ -1,7 +1,7 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -159,6 +159,13 @@ export async function searchCodebase(
     const checkSymbols = (symbols: typeof parsed.symbols, parent?: string) => {
       for (const sym of symbols) {
         const qualifiedName = qualifySymbolName(sym.name, parent, parsed.language, sym.kind);
+        // A namespace is a scope, not a result. A project's root namespace
+        // repeats in every file, so scoring it would fill a capped search with
+        // folded files that merely declare it. Its members still qualify.
+        if (sym.kind === "namespace") {
+          checkSymbols(sym.children ?? [], qualifiedName);
+          continue;
+        }
         let score = 0;
         let reason = "";
 
@@ -179,8 +186,9 @@ export async function searchCodebase(
           ? (sym.kind === 'method' ? qualifiedRubyScore
             : matchScore(qualifiedName.toLowerCase(), [queryLower]))
           : matchScore(sym.name.toLowerCase(), queryParts);
-        const nameScore = ownNameScore
-          || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
+        const nameScore = parsed.language === "go" && sym.kind === "method"
+          ? scoreGoMethodName(qualifiedName.toLowerCase(), queryLower, queryParts)
+          : ownNameScore || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
@@ -272,29 +280,22 @@ export async function searchCodebase(
   };
 }
 
-function matchScore(text: string, queryParts: string[]): number {
-  let score = 0;
-  for (const part of queryParts) {
-    if (text === part) {
-      score += 10; 
-    } else if (text.includes(part)) {
-      score += 5; 
-    } else {
-      let ti = 0;
-      let matched = 0;
-      for (const ch of part) {
-        const idx = text.indexOf(ch, ti);
-        if (idx !== -1) {
-          matched++;
-          ti = idx + 1;
-        }
-      }
-      if (matched === part.length) {
-        score += 1; 
-      }
-    }
-  }
-  return score;
+/**
+ * Plain type queries score the leaf method name. A qualified query must match
+ * the method part, so `Store.Reset` does not match `Store.Fetch`.
+ * A trailing dot requests that receiver's methods only. Receiver
+ * identity otherwise adds a bonus, which keeps `srv.Reset` (a call copied from
+ * code) matching every `Reset`.
+ */
+function scoreGoMethodName(name: string, query: string, parts: string[]): number {
+  const leaf = name.slice(name.lastIndexOf(".") + 1);
+  if (!query.includes(".")) return matchScore(leaf, parts);
+  const methodQuery = query.slice(query.lastIndexOf(".") + 1);
+  if (!methodQuery) return name.startsWith(query) ? 20 : 0;
+  const leafScore = matchScore(leaf, [methodQuery]);
+  if (leafScore === 0) return 0;
+  if (name === query) return leafScore + 20;
+  return leafScore + (name.startsWith(query) ? 10 : 0);
 }
 
 function countSymbols(file: FoldedFile): number {

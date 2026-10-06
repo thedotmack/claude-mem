@@ -4305,6 +4305,7 @@ export class SessionStore {
     project: string;
     platform_source?: string;
     user_prompt: string;
+    custom_title?: string | null;
     started_at: string;
     started_at_epoch: number;
     completed_at: string | null;
@@ -4321,27 +4322,39 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    const customTitle = session.custom_title ?? null;
+    // Backup values are historical SQLite data, not a newly authored title.
+    // Preserve legacy strings exactly; JSON objects/numbers are not title values.
+    if (customTitle !== null && typeof customTitle !== 'string') {
+      throw new TypeError('Imported custom_title must be a string or null');
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO sdk_sessions (
-        content_session_id, memory_session_id, project, platform_source, user_prompt,
+        content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title,
         started_at, started_at_epoch, completed_at, completed_at_epoch, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-	      session.content_session_id,
-	      session.memory_session_id,
-	      session.project,
-	      normalizedPlatformSource,
-      session.user_prompt,
-      session.started_at,
-      session.started_at_epoch,
-      session.completed_at,
-      session.completed_at_epoch,
-      session.status
-    );
+    return this.db.transaction(() => {
+      const result = stmt.run(
+  	      session.content_session_id,
+  	      session.memory_session_id,
+  	      session.project,
+  	      normalizedPlatformSource,
+        session.user_prompt,
+        customTitle,
+        session.started_at,
+        session.started_at_epoch,
+        session.completed_at,
+        session.completed_at_epoch,
+        session.status
+      );
 
-    return { imported: true, id: result.lastInsertRowid as number };
+      // Backups contain no title mutation clock. Publishing this historical
+      // value as a new set_title op could overwrite a newer replica title.
+      return { imported: true, id: result.lastInsertRowid as number };
+    })();
   }
 
   importSessionSummary(summary: {

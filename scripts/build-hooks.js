@@ -164,7 +164,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
-        // The mcp Node launcher derives its spawn target from requireFile, so
+        // The mcp Node launcher derives its module target from requireFile, so
         // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
