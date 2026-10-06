@@ -133,6 +133,14 @@ describe('analyzeReadGateTrace', () => {
     expect(analysis.wholeFileReadsSucceeded).toBe(0);
   });
 
+  it('reports a token count the result event leaves out as null, not zero', () => {
+    const analysis = analyzeReadGateTrace([
+      JSON.stringify({ type: 'result', usage: { input_tokens: 4, cache_creation_input_tokens: 18363, cache_read_input_tokens: 'n/a' } }),
+    ], OPTIONS);
+
+    expect(analysis.usage).toEqual({ inputTokens: 4, outputTokens: null, cacheCreationInputTokens: 18363, cacheReadInputTokens: null });
+  });
+
   it('counts a cut-off line instead of throwing, and reports no usage without a result event', () => {
     const analysis = analyzeReadGateTrace(['{"type":"assistant","message":{"content":[', ''], OPTIONS);
 
@@ -214,6 +222,7 @@ describe('decideVerdicts', () => {
       ['gate-off-answers', 'pass'],
       ['large-file-gate-on-answers', 'pass'],
       ['large-file-gate-off-answers', 'pass'],
+      ['large-file-gate-on-denied', 'pass'],
       ['large-file-gate-off-reads-whole-file', 'pass'],
       ['large-file-gate-on-cheaper', 'pass'],
     ]);
@@ -230,6 +239,30 @@ describe('decideVerdicts', () => {
     expect(statusById['large-file-gate-on-cheaper']).toBe('fail');
     expect(statusById['large-file-gate-off-reads-whole-file']).toBe('fail');
     expect(statusById['gate-off-reads-succeed']).toBe('pass');
+  });
+
+  it('requires the deny in the large-file gate-ON runs themselves, not only in the other gate-ON cases', () => {
+    const verdicts = decideVerdicts([
+      ...[1, 2, 3, 4, 5, 6].map(number => run(CASE_GATE_ON_EDITS, number, edited, blocked)),
+      ...[1, 2, 3].map(number => run(CASE_GATE_ON_LARGE_FILE, number, answered, { targetedReads: 1, targetedReadsSucceeded: 1 }, 0.08)),
+      ...[1, 2, 3].map(number => run(CASE_GATE_OFF_LARGE_FILE, number, answeredOff, readNormally, 0.12)),
+    ]);
+    const statusById = Object.fromEntries(verdicts.map(item => [item.id, item.status]));
+
+    expect(statusById['gate-on-deny-exercised']).toBe('pass');
+    expect(statusById['large-file-gate-on-denied']).toBe('fail');
+  });
+
+  it('fails the large-file comparison when a compared run has no cost', () => {
+    const verdicts = decideVerdicts([
+      run(CASE_GATE_ON_LARGE_FILE, 1, answered, blocked, 0.08),
+      { ...run(CASE_GATE_ON_LARGE_FILE, 2, answered, blocked), costUsd: null },
+      run(CASE_GATE_OFF_LARGE_FILE, 1, answeredOff, readNormally, 0.12),
+    ]);
+    const comparison = verdicts.find(item => item.id === 'large-file-gate-on-cheaper');
+
+    expect(comparison?.status).toBe('fail');
+    expect(comparison?.detail).toBe(`no cost for ${CASE_GATE_ON_LARGE_FILE} #2`);
   });
 
   it('does not run the large-file comparison when --case left out one of its arms', () => {
