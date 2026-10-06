@@ -53,6 +53,25 @@ function installFetchMock(): void {
 const FAST = { pollIntervalMs: 10, requestTimeoutMs: 100 };
 const DEADLINE_MS = 300;
 
+async function supportsIpv6Loopback(): Promise<boolean> {
+  const probe = http.createServer();
+  return new Promise((resolve, reject) => {
+    probe.once('error', (error: NodeJS.ErrnoException) => {
+      probe.close(() => undefined);
+      if (['EADDRNOTAVAIL', 'EAFNOSUPPORT', 'EPROTONOSUPPORT'].includes(error.code ?? '')) {
+        resolve(false);
+      } else {
+        reject(error);
+      }
+    });
+    probe.listen(0, '::1', () => {
+      probe.close(error => error ? reject(error) : resolve(true));
+    });
+  });
+}
+
+const ipv6LoopbackSupported = await supportsIpv6Loopback();
+
 describe('verifyRestartedWorker — restart must prove itself', () => {
   const originalFetch = global.fetch;
 
@@ -190,7 +209,7 @@ describe('restart verification against an IPv6 worker host', () => {
     server = null;
   });
 
-  it('reads the pid of a worker listening on ::1', async () => {
+  it.skipIf(!ipv6LoopbackSupported)('reads the pid of a worker listening on ::1', async () => {
     server = http.createServer((_req, res) => {
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ pid: OLD_PID, version: EXPECTED_VERSION }));
