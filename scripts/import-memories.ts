@@ -3,13 +3,14 @@
 import { existsSync, readFileSync } from 'fs';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
+import { formatHostForUrl } from '../src/shared/worker-url.js';
 
 const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 // loadFromFile already applies env overrides and normalizes 'localhost' to
 // 127.0.0.1 (#2992); a raw process.env read here would bypass both.
 const WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
 const WORKER_PORT = process.env.CLAUDE_MEM_WORKER_PORT || workerSettings.CLAUDE_MEM_WORKER_PORT;
-const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+const WORKER_URL = `http://${formatHostForUrl(WORKER_HOST)}:${WORKER_PORT}`;
 
 async function importMemories(inputFile: string) {
   if (!existsSync(inputFile)) {

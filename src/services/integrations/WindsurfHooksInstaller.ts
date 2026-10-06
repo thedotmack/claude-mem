@@ -4,7 +4,7 @@ import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
-import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
 import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
@@ -266,7 +266,7 @@ async function fetchWindsurfContextFromWorker(
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const workerUrl = `http://${getWorkerHost()}:${port}`;
+  const workerUrl = `http://${formatHostForUrl(getWorkerHost())}:${port}`;
   const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 

@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { verifyRestartedWorker, getCurrentWorkerPid } from '../../src/services/restart-verify.js';
+import { clearPortCache } from '../../src/shared/worker-utils.js';
 
 // verifyRestartedWorker lives in src/services/restart-verify.ts (not
 // worker-service.ts) precisely so this test can import it without triggering
@@ -172,5 +175,32 @@ describe('getCurrentWorkerPid — old-pid capture before shutdown', () => {
   it('returns null when no worker is reachable', async () => {
     healthResponder = () => 'unreachable';
     expect(await getCurrentWorkerPid(PORT, 100)).toBeNull();
+  });
+});
+
+describe('restart verification against an IPv6 worker host', () => {
+  const originalHost = process.env.CLAUDE_MEM_WORKER_HOST;
+  let server: http.Server | null = null;
+
+  afterEach(async () => {
+    if (originalHost === undefined) delete process.env.CLAUDE_MEM_WORKER_HOST;
+    else process.env.CLAUDE_MEM_WORKER_HOST = originalHost;
+    clearPortCache();
+    await new Promise<void>(resolve => (server ? server.close(() => resolve()) : resolve()));
+    server = null;
+  });
+
+  it('reads the pid of a worker listening on ::1', async () => {
+    server = http.createServer((_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ pid: OLD_PID, version: EXPECTED_VERSION }));
+    });
+    await new Promise<void>(resolve => server!.listen(0, '::1', () => resolve()));
+    const port = (server.address() as AddressInfo).port;
+
+    process.env.CLAUDE_MEM_WORKER_HOST = '::1';
+    clearPortCache();
+
+    expect(await getCurrentWorkerPid(port, 2000)).toBe(OLD_PID);
   });
 });
