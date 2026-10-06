@@ -81,3 +81,20 @@ test('grouped and operator class signatures have independent search and unfold i
   }
  } finally { rmSync(dir, { recursive: true, force: true }); }
 }, 120000);
+
+test('a class signature and its default stay apart when another method sits between them', () => {
+ // Signatures first (the common layout), and a default written before its signature.
+ for (const source of [
+  'class C a where\n f :: a -> Int\n g :: a -> Int\n f _ = 1\n g _ = 2\n',
+  'class C a where\n f _ = 1\n g :: a -> Int\n f :: a -> Int\n g _ = 2\n',
+ ]) {
+  const methods = parseFile(source, 'separated.hs').symbols[0].children!;
+  expect(methods.map(method => [method.name, method.signature])).toEqual([['f', 'f :: a -> Int'], ['g', 'g :: a -> Int']]);
+  const f = unfoldSymbol(source, 'separated.hs', 'C.f');
+  expect(f).toContain('f _ = 1');
+  expect(f).not.toContain('g :: a -> Int');
+  const g = unfoldSymbol(source, 'separated.hs', 'C.g');
+  expect(g).toContain('g _ = 2');
+  expect(g).not.toContain('f _ = 1');
+ }
+}, 120000);

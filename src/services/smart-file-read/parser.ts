@@ -930,8 +930,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
-  // A typeclass signature and its default implementation describe one method.
-  // Keep the type annotation in the outline and both lines when unfolding.
+  // A typeclass signature and its default implementation describe one method:
+  // the default takes the signature's type and comment. An adjacent pair
+  // unfolds as one range. When another declaration sits between them, each
+  // keeps its own lines, so an unfold never pulls in a neighbouring method.
+  // Grouped names (`f, g :: …`) share the signature's range, so they never
+  // count as being between.
   for (const signature of haskellSignatures) {
     const signatureRange = ranges.get(signature)!;
     const owner = containers.find(container => rangeContains(container.range, signatureRange));
@@ -947,17 +951,21 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       const implementationRange = ranges.get(implementation)!;
       implementation.signature = signature.signature;
       implementation.jsdoc = signature.jsdoc ?? implementation.jsdoc;
-      const start = implementationRange.startRow < signatureRange.startRow
-        || (implementationRange.startRow === signatureRange.startRow && implementationRange.startCol <= signatureRange.startCol)
-        ? implementationRange : signatureRange;
-      const end = implementationRange.endRow > signatureRange.endRow
-        || (implementationRange.endRow === signatureRange.endRow && implementationRange.endCol >= signatureRange.endCol)
-        ? implementationRange : signatureRange;
-      implementation.lineStart = start.startRow;
-      implementation.lineEnd = end.endRow;
-      ranges.set(implementation, { ...implementationRange, startRow: start.startRow, startCol: start.startCol,
-        endRow: end.endRow, endCol: end.endCol });
       duplicateAliases.add(signature);
+      const [earlier, later] = implementationRange.startRow < signatureRange.startRow
+        || (implementationRange.startRow === signatureRange.startRow && implementationRange.startCol <= signatureRange.startCol)
+        ? [implementationRange, signatureRange] : [signatureRange, implementationRange];
+      const separated = symbols.some(sym => {
+        const range = ranges.get(sym)!;
+        return (range.startRow > earlier.endRow || (range.startRow === earlier.endRow && range.startCol >= earlier.endCol))
+          && (range.startRow < later.startRow || (range.startRow === later.startRow && range.startCol < later.startCol));
+      });
+      if (!separated) {
+        implementation.lineStart = earlier.startRow;
+        implementation.lineEnd = later.endRow;
+        ranges.set(implementation, { ...implementationRange, startRow: earlier.startRow, startCol: earlier.startCol,
+          endRow: later.endRow, endCol: later.endCol });
+      }
     }
   }
   const nested = new Set<CodeSymbol>(duplicateAliases);
