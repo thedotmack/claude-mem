@@ -16,6 +16,7 @@ dist/
 .claude/worktrees/
 plugin/data/
 plugin/data.backup/
+plugin/evals-read-gate/results/
 package-lock.json
 bun.lock
 !plugin/bun.lock

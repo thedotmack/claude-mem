@@ -6,7 +6,12 @@ import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
 import { resolveDataDir } from "../../shared/paths.js";
-import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
+import { resolveTreeSitterBinPath } from "./tree-sitter-bin-path.js";
+import { detectLanguage } from "./language-map.js";
+
+// Lives in tree-sitter-bin-path.ts so the file-context hook can check for the
+// CLI without bundling the parser; re-exported for existing importers.
+export { resolveTreeSitterBinPath };
 
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
@@ -33,55 +38,6 @@ export interface FoldedFile {
   imports: string[];
   totalLines: number;
   foldedTokenEstimate: number;
-}
-
-const LANG_MAP: Record<string, string> = {
-  ".js": "javascript",
-  ".mjs": "javascript",
-  ".cjs": "javascript",
-  ".jsx": "tsx",
-  ".ts": "typescript",
-  ".mts": "typescript",
-  ".cts": "typescript",
-  ".tsx": "tsx",
-  ".py": "python",
-  ".pyw": "python",
-  ".go": "go",
-  ".rs": "rust",
-  ".rb": "ruby",
-  ".java": "java",
-  ".c": "c",
-  ".h": "c",
-  ".cpp": "cpp",
-  ".cc": "cpp",
-  ".cxx": "cpp",
-  ".hpp": "cpp",
-  ".hh": "cpp",
-  ".kt": "kotlin",
-  ".kts": "kotlin",
-  ".swift": "swift",
-  ".php": "php",
-  ".lua": "lua",
-  ".scala": "scala",
-  ".sc": "scala",
-  ".sh": "bash",
-  ".bash": "bash",
-  ".zsh": "bash",
-  ".hs": "haskell",
-  ".zig": "zig",
-  ".css": "css",
-  ".scss": "scss",
-  ".toml": "toml",
-  ".yml": "yaml",
-  ".yaml": "yaml",
-  ".sql": "sql",
-  ".md": "markdown",
-  ".mdx": "markdown",
-};
-
-function detectLanguage(filePath: string): string {
-  const ext = filePath.slice(filePath.lastIndexOf("."));
-  return LANG_MAP[ext.toLowerCase()] ?? "unknown";
 }
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
@@ -408,27 +364,6 @@ function getQueryFile(queryKey: string): string {
   writeFileSync(filePath, QUERIES[queryKey]);
   queryFileCache.set(queryKey, filePath);
   return filePath;
-}
-
-// tree-sitter-cli installs `tree-sitter.exe` on Windows, not a bare `tree-sitter`
-// (see ChromaMcpManager.resolveUvxCommand for the same platform-suffix idiom).
-// Without the `.exe` suffix the existsSync check below always misses on Windows,
-// silently falling through to a bare `tree-sitter` that may not be on PATH —
-// smart file parsing then returns empty results with no error.
-export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
-  const binName = treeSitterBinaryName(platform);
-
-  try {
-    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), binName);
-    if (existsSync(binPath)) {
-      return binPath;
-    }
-  } catch {
-    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
-  }
-
-  return binName;
 }
 
 let cachedBinPath: string | null = null;

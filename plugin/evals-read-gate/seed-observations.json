@@ -1,0 +1,59 @@
+[
+  {
+    "type": "discovery",
+    "title": "quoteShipment builds a ShippingQuote from zone rates plus one line per surcharge",
+    "subtitle": "rate-calculator.ts prices transportation per parcel, then adds fuel, residential, remote-area, oversize and insurance lines",
+    "facts": [
+      "resolveShippingZone maps the distance between 3-digit ZIP prefixes to zones 2-8; every cross-border shipment is zone 8",
+      "calculateBillableWeight bills the larger of actual and dimensional weight, rounded up to the half pound",
+      "Each surcharge has its own calculate* function that returns a rounded dollar amount",
+      "ShippingQuote.addLine skips zero amounts, so a quote lists only what it bills"
+    ],
+    "narrative": "Traced how a quote is assembled in src/shipping/rate-calculator.ts. quoteShipment validates the request, resolves the zone, bills each parcel at the larger of actual and dimensional weight and sums the transportation charge from ZONE_BASE_RATES and ADDITIONAL_POUND_RATES. Fuel, residential and remote-area surcharges are computed once from that sum; oversize and insurance are per parcel; the volume discount is added last as a negative line.",
+    "concepts": ["how-it-works"],
+    "files_read": ["src/shipping/rate-calculator.ts"],
+    "files_modified": []
+  },
+  {
+    "type": "feature",
+    "title": "Remote-area surcharge applies a percentage with a minimum fee",
+    "subtitle": "calculateRemoteAreaSurcharge charges a share of the transportation charge for partner-network destinations, never less than a fixed floor",
+    "facts": [
+      "isRemoteAreaPostalCode decides eligibility from REMOTE_AREA_POSTAL_PREFIXES: Puerto Rico, Hawaii, Alaska, northern Canada and parts of Mexico",
+      "The percentage and the minimum fee are local constants inside calculateRemoteAreaSurcharge, not entries in the shared rate tables",
+      "The surcharge is computed from the transportation charge, before fuel and the other surcharges"
+    ],
+    "narrative": "Added the remote-area surcharge to quotes. quoteShipment calls calculateRemoteAreaSurcharge with the summed transportation charge and the destination address; it returns 0 unless the destination postal code starts with one of the remote-area prefixes. Finance asked to keep its two numbers next to the formula rather than in the exported tables because they are revised on a different schedule.",
+    "concepts": ["what-changed", "why-it-exists"],
+    "files_read": ["src/shipping/rate-calculator.ts"],
+    "files_modified": ["src/shipping/rate-calculator.ts"]
+  },
+  {
+    "type": "bugfix",
+    "title": "Fuel surcharge steps now counted in whole cents",
+    "subtitle": "calculateFuelSurcharge skipped a step when the diesel index sat exactly on a ten-cent boundary",
+    "facts": [
+      "Dividing the distance above the floor price by a fractional step is inexact in floating point, so Math.floor could land one step short",
+      "The fix rounds the distance above FUEL_INDEX_FLOOR_USD to whole cents before dividing by FUEL_INDEX_STEP_CENTS",
+      "The surcharge percentage is still capped by FUEL_SURCHARGE_CAP_PERCENT"
+    ],
+    "narrative": "A quote at a diesel index exactly on a ten-cent boundary came out one surcharge step low. calculateFuelSurcharge now converts the distance above the floor price to whole cents first, so every boundary lands on its own step.",
+    "concepts": ["problem-solution", "gotcha"],
+    "files_read": ["src/shipping/rate-calculator.ts"],
+    "files_modified": ["src/shipping/rate-calculator.ts"]
+  },
+  {
+    "type": "decision",
+    "title": "Oversize and insurance stay per parcel; the volume discount covers transportation only",
+    "subtitle": "Multi-parcel quotes list oversize handling and coverage once per parcel instead of pooling them",
+    "facts": [
+      "calculateOversizeFee uses length plus girth from the sorted sides and rejects parcels above OVERSIZE_LIMITS.maximumLengthPlusGirthIn",
+      "calculateInsurance includes the first $100 of declared value and charges per started $100 above it, with a minimum charge",
+      "calculateVolumeDiscount applies the first VOLUME_DISCOUNT_TIERS entry the account reaches, to the transportation charge only"
+    ],
+    "narrative": "Kept oversize handling and declared-value coverage as per-parcel quote lines so a multi-parcel quote shows which parcel triggered each charge. Surcharges are never discounted: the volume discount is computed from the transportation charge alone and added as the last line.",
+    "concepts": ["trade-off", "why-it-exists"],
+    "files_read": ["src/shipping/rate-calculator.ts"],
+    "files_modified": []
+  }
+]

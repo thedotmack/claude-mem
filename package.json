@@ -107,6 +107,7 @@
     "test:server": "bun test tests/server/",
     "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "e2e:sync-matrix": "bun scripts/sync-matrix-e2e.ts",
+    "eval:read-gate": "bun scripts/eval-read-gate.ts",
     "check:postinstall-allowlist": "node scripts/check-postinstall-allowlist.js",
     "smoke:clean-room": "node scripts/smoke-clean-room.cjs",
     "prepublishOnly": "npm run build && node scripts/check-postinstall-allowlist.js",
