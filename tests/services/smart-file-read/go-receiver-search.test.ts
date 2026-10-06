@@ -76,3 +76,26 @@ test('matches a qualified method query on the method name, not on the receiver a
   const copied=await searchCodebase(leafRoot,'srv.Reset');
   expect(copied.matchingSymbols.map(s=>s.symbolName).sort()).toEqual(['Other.Reset','Store.Reset']);
 },120000);
+
+const prefixRoot = mkdtempSync(join(tmpdir(), 'cm-go-receiver-prefix-'));
+afterAll(() => rmSync(prefixRoot, { recursive: true, force: true }));
+writeFileSync(join(prefixRoot, 'prefix.go'), `package owned
+ type Store struct {}
+ type Other struct {}
+ func (s Store) Reset() {}
+ func (s Store) Fetch() {}
+ ${Array.from({ length: 12 }, (_, i) => `func (o Other) Distractor${i}() {}`).join('\n')}
+ // LookupHint documents the Store. receiver prefix.
+ func LookupHint() {}`);
+
+test('keeps receiver-prefix methods ahead of text hints in capped results', async () => {
+  const single = await searchCodebase(prefixRoot, 'Store.', { maxResults: 1 });
+  expect(single.matchingSymbols).toHaveLength(1);
+  expect(single.matchingSymbols[0].symbolName.startsWith('Store.')).toBe(true);
+  const pair = await searchCodebase(prefixRoot, 'Store.', { maxResults: 2 });
+  expect(pair.matchingSymbols.map(symbol => symbol.symbolName).sort()).toEqual(['Store.Fetch', 'Store.Reset']);
+  const broad = await searchCodebase(prefixRoot, 'Store.', { maxResults: 8 });
+  expect(broad.matchingSymbols.some(symbol => symbol.symbolName === 'LookupHint')).toBe(true);
+  expect(broad.matchingSymbols.some(symbol => symbol.symbolName.startsWith('Other.'))).toBe(false);
+  expect((await searchCodebase(prefixRoot, 'Store.Reset', { maxResults: 1 })).matchingSymbols[0].symbolName).toBe('Store.Reset');
+}, 120000);
