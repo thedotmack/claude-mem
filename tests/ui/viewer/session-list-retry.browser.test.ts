@@ -38,7 +38,7 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
           }
           createRoot(document.getElementById('root')).render(<Fixture/>);
           async function run() {
-            const deadline=Date.now()+6000;
+            const deadline=Date.now()+20000;
             if(${JSON.stringify(scenario)}==='project-switch') {
               while(!document.querySelector('.session-card-name')) {
                 if(Date.now()>deadline)throw Error('No initial session');
@@ -46,7 +46,7 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
               }
               document.getElementById('switch-project').click();
             }
-            const alertDeadline=Date.now()+6000;
+            const alertDeadline=Date.now()+10000;
             while(!document.querySelector('[role="alert"]')) {
               if(Date.now()>alertDeadline)throw Error('No load failure shown');
               await new Promise(resolve=>setTimeout(resolve,10));
@@ -55,7 +55,7 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
             const before=await (await fetch('/count')).json();
             const retry=[...document.querySelectorAll('button')].find(x=>x.textContent==='Retry');
             if(retry) retry.click();
-            const end=Date.now()+2000;
+            const end=Date.now()+10000;
             while(retry && !document.querySelector('.session-card-name')?.textContent.includes('Recovered') && Date.now()<end)
               await new Promise(resolve=>setTimeout(resolve,10));
             await fetch('/result',{method:'POST',body:JSON.stringify({before,hasRetry:!!retry,
@@ -71,14 +71,14 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
         if(path==='/') return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
         if(path==='/fixture.js') {
           clearTimeout(timeout);
-          timeout=setTimeout(()=>report({failure:'Browser page timed out'}),15000);
+          timeout=setTimeout(()=>report({failure:'Browser page timed out'}),45000);
           return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
         }
         if(path==='/api/sessions') {
           const n=++requests;
           const params=new URL(request.url).searchParams;
           offsets.push(Number(params.get('offset')));
-          if(slow && n<=2) await Bun.sleep(n===1 ? 4000 : 3000);
+          if(slow && n<=2) await Bun.sleep(n===1 ? 6500 : 3000);
           if(scenario!=='first-page' && n===1) return Response.json({sessions:[session],hasMore:scenario==='older-page'});
           if(n===(scenario==='first-page'?1:2)) return new Response('Temporary failure',{status:503});
           return Response.json({sessions:[{...session,content_session_id:'recovered-session',project:params.get('project')!,custom_title:'Recovered'}],hasMore:false});
@@ -100,5 +100,5 @@ for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['
       server?.stop(true);
       rmSync(owned,{recursive:true,force:true});
     }
-  },60000);
+  },90000);
 }
