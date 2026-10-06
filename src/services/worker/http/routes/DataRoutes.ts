@@ -64,6 +64,7 @@ const observationsBatchSchema = z.object({
 
 const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
+  promptIds: z.array(z.number().int().positive().safe()).optional(),
 }).passthrough();
 
 // Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
@@ -386,10 +387,12 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
+    const { memorySessionIds, promptIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
+    const sessions = promptIds === undefined
+      ? store.getSdkSessionsBySessionIds(memorySessionIds)
+      : store.getSdkSessionsBySessionIds(memorySessionIds, promptIds);
     res.json(sessions);
   });
 
