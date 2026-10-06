@@ -4,6 +4,7 @@ import { paths } from '../../shared/paths.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ContextConfig } from './types.js';
+import { parseContextCountValue } from '../../shared/context-count.js';
 
 /** Reinforcement weight; anything non-numeric or negative means off. */
 function parseReinforcementAlpha(raw: string | undefined): number {
@@ -12,11 +13,8 @@ function parseReinforcementAlpha(raw: string | undefined): number {
 }
 
 /** Keep direct file/env settings finite without narrowing valid custom counts. */
-function parseContextCount(raw: string, fallback: string): number {
-  const value = raw.trim() === '' ? NaN : Number(raw);
-  return Number.isSafeInteger(value) && value >= 0
-    ? value
-    : Number(fallback);
+function parseContextCount(raw: unknown, fallback: string): number {
+  return parseContextCountValue(raw) ?? Number(fallback);
 }
 
 function parseCsvSetting(raw: string | undefined): string[] | null {

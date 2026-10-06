@@ -1,3 +1,4 @@
+import { parseContextCountValue } from '../../../../shared/context-count.js';
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
@@ -378,9 +379,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
+      const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
+      if (obsCount === undefined || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
     }
@@ -472,16 +473,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
-      if (isNaN(count) || count < 0 || count > 20) {
+    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT);
+      if (count === undefined || count < 0 || count > 20) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
-      if (isNaN(count) || count < 1 || count > 50) {
+    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
+      if (count === undefined || count < 1 || count > 50) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
       }
     }
