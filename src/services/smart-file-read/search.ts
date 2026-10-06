@@ -1,11 +1,11 @@
 
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
-import { parseFilesBatch, formatFoldedView, qualifySymbolName, type FoldedFile } from "./parser.js";
+import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, type FoldedFile } from "./parser.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
-  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs",
+  ".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs", ".mts", ".cts",
   ".py", ".pyw",
   ".go",
   ".rs",
@@ -87,7 +87,7 @@ async function* walkDir(dir: string, rootDir: string, maxDepth: number = 20): As
       yield* walkDir(fullPath, rootDir, maxDepth - 1);
     } else if (entry.isFile()) {
       const ext = entry.name.slice(entry.name.lastIndexOf("."));
-      if (CODE_EXTENSIONS.has(ext)) {
+      if (CODE_EXTENSIONS.has(ext.toLowerCase())) {
         yield fullPath;
       }
     }
@@ -146,6 +146,7 @@ export async function searchCodebase(
 
   const foldedFiles: FoldedFile[] = [];
   const matchingSymbols: SymbolMatch[] = [];
+  const symbolScores = new Map<SymbolMatch, number>();
   let totalSymbolsFound = 0;
 
   for (const [relPath, parsed] of parsedFiles) {
@@ -162,28 +163,46 @@ export async function searchCodebase(
         let reason = "";
 
         // Score the symbol's own name, so a class or module query does not match
-        // every method under it. The qualified identity counts only as the whole
-        // query: `Counter#reset` has no character that queryParts splits on.
-        const nameScore = matchScore(sym.name.toLowerCase(), queryParts)
+        // every method under it. Qualified Ruby queries retain their owner and
+        // method separator, including a partial method name.
+        const separator = qualifiedName.includes('#')
+          ? qualifiedName.lastIndexOf('#') : qualifiedName.lastIndexOf('.');
+        const ownerPrefix = qualifiedName.slice(0, separator + 1).toLowerCase();
+        // A partial Ruby method query must name its complete owner and method
+        // separator; a class-only query still must not pull in every method.
+        const qualifiedRubyScore = parsed.language === 'ruby' && sym.kind === 'method'
+          && separator >= 0 && queryLower.startsWith(ownerPrefix)
+          && queryLower.length > ownerPrefix.length
+          ? matchScore(qualifiedName.toLowerCase(), [queryLower]) : 0;
+        const rubyQualifiedQuery = parsed.language === 'ruby' && /[#.]/.test(queryLower);
+        const ownNameScore = rubyQualifiedQuery
+          ? (sym.kind === 'method' ? qualifiedRubyScore
+            : matchScore(qualifiedName.toLowerCase(), [queryLower]))
+          : matchScore(sym.name.toLowerCase(), queryParts);
+        const nameScore = ownNameScore
           || (qualifiedName.toLowerCase() === queryLower ? 10 : 0);
         if (nameScore > 0) {
           score += nameScore * 3;
           reason = "name match";
         }
 
-        if (sym.signature.toLowerCase().includes(queryLower)) {
+        // Explicit Ruby ownership is a constraint, including when a comment
+        // or signature mentions a different owner. Unqualified text searches
+        // continue to search both fields.
+        const eligibleForTextMatch = !rubyQualifiedQuery || ownNameScore > 0;
+        if (eligibleForTextMatch && sym.signature.toLowerCase().includes(queryLower)) {
           score += 2;
           reason = reason ? `${reason} + signature` : "signature match";
         }
 
-        if (sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
+        if (eligibleForTextMatch && sym.jsdoc && sym.jsdoc.toLowerCase().includes(queryLower)) {
           score += 1;
           reason = reason ? `${reason} + jsdoc` : "jsdoc match";
         }
 
         if (score > 0) {
           fileHasMatch = true;
-          fileSymbolMatches.push({
+          const match: SymbolMatch = {
             filePath: relPath,
             symbolName: qualifiedName,
             kind: sym.kind,
@@ -192,7 +211,9 @@ export async function searchCodebase(
             lineStart: sym.lineStart,
             lineEnd: sym.lineEnd,
             matchReason: reason,
-          });
+          };
+          fileSymbolMatches.push(match);
+          symbolScores.set(match, score);
         }
 
         if (sym.children) {
@@ -209,11 +230,10 @@ export async function searchCodebase(
     }
   }
 
-  matchingSymbols.sort((a, b) => {
-    const aScore = matchScore(a.symbolName.toLowerCase(), queryParts);
-    const bScore = matchScore(b.symbolName.toLowerCase(), queryParts);
-    return bScore - aScore;
-  });
+  // Computed relevance first. Equal relevance falls back to the qualified
+  // identity, so `Beta.run` keeps Beta's method ahead of `Alpha.run`.
+  const qualifiedRank = (symbol: SymbolMatch): number => matchScore(symbol.symbolName.toLowerCase(), queryParts);
+  matchingSymbols.sort((a, b) => (symbolScores.get(b)! - symbolScores.get(a)!) || (qualifiedRank(b) - qualifiedRank(a)));
 
   const trimmedSymbols = matchingSymbols.slice(0, maxResults);
   const relevantFiles = new Set(trimmedSymbols.map(s => s.filePath));
@@ -252,37 +272,10 @@ export async function searchCodebase(
   };
 }
 
-function matchScore(text: string, queryParts: string[]): number {
-  let score = 0;
-  for (const part of queryParts) {
-    if (text === part) {
-      score += 10; 
-    } else if (text.includes(part)) {
-      score += 5; 
-    } else {
-      let ti = 0;
-      let matched = 0;
-      for (const ch of part) {
-        const idx = text.indexOf(ch, ti);
-        if (idx !== -1) {
-          matched++;
-          ti = idx + 1;
-        }
-      }
-      if (matched === part.length) {
-        score += 1; 
-      }
-    }
-  }
-  return score;
-}
-
 function countSymbols(file: FoldedFile): number {
-  let count = file.symbols.length;
-  for (const sym of file.symbols) {
-    if (sym.children) count += sym.children.length;
-  }
-  return count;
+  const count = (symbols: FoldedFile["symbols"]): number => symbols.reduce(
+    (total, symbol) => total + 1 + (symbol.children ? count(symbol.children) : 0), 0);
+  return count(file.symbols);
 }
 
 export function formatSearchResults(result: SearchResult, query: string): string {

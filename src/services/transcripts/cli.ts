@@ -1,3 +1,4 @@
+import { existsSync } from 'fs';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './config.js';
 import { TranscriptWatcher } from './watcher.js';
 
@@ -5,6 +6,17 @@ function getArgValue(args: string[], name: string): string | null {
   const index = args.indexOf(name);
   if (index === -1) return null;
   return args[index + 1] ?? null;
+}
+
+/**
+ * Only a missing config gets the sample. This checks the file itself, never
+ * the error text: a validation message quotes the config's own keys and path,
+ * so matching "not found" in it could overwrite a real config.
+ */
+function writeSampleConfigIfMissing(configPath: string): void {
+  if (existsSync(expandHomePath(configPath))) return;
+  writeSampleConfig(configPath);
+  console.log(`Created sample config: ${expandHomePath(configPath)}`);
 }
 
 export async function runTranscriptCommand(subcommand: string | undefined, args: string[]): Promise<number> {
@@ -17,18 +29,8 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
     }
     case 'watch': {
       const configPath = getArgValue(args, '--config') ?? DEFAULT_CONFIG_PATH;
-      let config;
-      try {
-        config = loadTranscriptWatchConfig(configPath);
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('not found')) {
-          writeSampleConfig(configPath);
-          console.log(`Created sample config: ${expandHomePath(configPath)}`);
-          config = loadTranscriptWatchConfig(configPath);
-        } else {
-          throw error;
-        }
-      }
+      writeSampleConfigIfMissing(configPath);
+      const config = loadTranscriptWatchConfig(configPath);
       const statePath = expandHomePath(config.stateFile ?? DEFAULT_STATE_PATH);
       const watcher = new TranscriptWatcher(config, statePath);
       await watcher.start();
@@ -44,17 +46,8 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
     }
     case 'validate': {
       const configPath = getArgValue(args, '--config') ?? DEFAULT_CONFIG_PATH;
-      try {
-        loadTranscriptWatchConfig(configPath);
-      } catch (error) {
-        if (error instanceof Error && error.message.includes('not found')) {
-          writeSampleConfig(configPath);
-          console.log(`Created sample config: ${expandHomePath(configPath)}`);
-          loadTranscriptWatchConfig(configPath);
-        } else {
-          throw error;
-        }
-      }
+      writeSampleConfigIfMissing(configPath);
+      loadTranscriptWatchConfig(configPath);
       console.log(`Config OK: ${expandHomePath(configPath)}`);
       return 0;
     }

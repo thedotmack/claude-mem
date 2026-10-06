@@ -265,7 +265,10 @@ describe('TranscriptWatcher startAtEnd', () => {
     await waitForAsyncTail();
 
     const tailer = (watcher as any).tailers.get(filePath);
-    tailer.close();
+    // Detach filesystem notifications, keeping the tailer open for explicit poke calls.
+    // close() is terminal and must not be used to pause an active reader.
+    tailer.watcher?.close();
+    tailer.watcher = null;
     appendFileSync(filePath, `${createUserMessage(sessionId, 'live prompt')}\n`, 'utf8');
 
     tailer.poke();
@@ -345,7 +348,10 @@ describe('TranscriptWatcher startAtEnd', () => {
     await waitForAsyncTail();
 
     const tailer = (watcher as any).tailers.get(filePath);
-    tailer.close();
+    // Detach filesystem notifications, keeping the tailer open for explicit poke calls.
+    // close() is terminal and must not be used to pause an active reader.
+    tailer.watcher?.close();
+    tailer.watcher = null;
     writeFileSync(filePath, `${createUserMessage(sessionId, 'after truncation')}\n`, 'utf8');
 
     tailer.poke();
