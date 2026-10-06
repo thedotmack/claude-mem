@@ -492,6 +492,22 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
       };
     }
 
+    case 't3code': {
+      return {
+        title: 'T3 Code: registering native provider plugins',
+        task: async (message) => {
+          message('Installing hooks and MCP for T3 Code providers…');
+          const { installT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
+          const { result, output } = await bufferConsole(() => installT3Code(marketplaceDirectory()));
+          if (result !== 0) {
+            recordFailure('T3 Code: integration setup failed', output);
+            return `T3 Code: integration setup failed ${styleText('red', 'FAIL')}`;
+          }
+          return `T3 Code: native provider plugins registered ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'codex-cli': {
       return {
         title: 'Codex CLI: registering hooks marketplace',

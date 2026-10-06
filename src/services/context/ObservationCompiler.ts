@@ -245,6 +245,7 @@ export function querySummariesMulti(
       ss.learned,
       ss.completed,
       ss.next_steps,
+      ss.notes,
       ss.created_at,
       ss.created_at_epoch,
       ss.project
@@ -255,13 +256,31 @@ export function querySummariesMulti(
   `).all(...perKeyParams, limit) as LocalSessionSummary[];
 }
 
+/** Claude Code cuts a longer encoded project directory name to this length and appends a hash. */
+const CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH = 200;
+
+/** Claude Code's 32-bit string hash over UTF-16 code units, in base 36: the suffix of a cut name. */
+function claudeProjectDirNameHash(cwd: string): string {
+  let hash = 0;
+  for (let index = 0; index < cwd.length; index++) hash = ((hash << 5) - hash + cwd.charCodeAt(index)) | 0;
+  return Math.abs(hash).toString(36);
+}
+
 export function cwdToDashed(cwd: string): string {
-  // Claude Code encodes a project's transcript directory by replacing BOTH path
-  // separators AND dots with dashes (e.g. `/Users/john.doe/proj` ->
-  // `-Users-john-doe-proj`). Replacing only `/` left a literal `.` in the dir
-  // name, so "Include last message" silently no-opped for any cwd component
-  // containing a dot — Unix usernames like `john.doe`, dotted dirs, etc. (#2401).
-  return cwd.replace(/[/.]/g, '-');
+  // Claude Code encodes a project's transcript directory by replacing EVERY
+  // non-alphanumeric character with a dash, one-for-one (e.g.
+  // `/Users/john.doe/my_project` -> `-Users-john-doe-my-project`, and a real
+  // macOS temp cwd `/var/folders/m8/w_4jf2z.../T` -> `-var-folders-m8-w-4jf2z...-T`).
+  // Replacing only `/` and `.` left other characters — underscores, spaces — in
+  // the dir name, so the built path never matched the on-disk directory and
+  // "Include last message" / memory-dir resolution silently no-opped for those
+  // cwds (follow-up to the dot-only #2401 fix).
+  // One dash per UTF-16 code unit: no `u` flag, so an emoji becomes two dashes,
+  // as in Claude Code. A name longer than 200 characters is cut to 200 and gets
+  // `-<hash of the raw cwd>` (Claude Code 2.1.289).
+  const dashed = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (dashed.length <= CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH) return dashed;
+  return `${dashed.slice(0, CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH)}-${claudeProjectDirNameHash(cwd)}`;
 }
 
 function parseAssistantTextFromLine(line: string): string | null {
