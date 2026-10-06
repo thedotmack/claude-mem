@@ -632,7 +632,7 @@ export class TranscriptWatcher {
 
     // The session's working directory, restored for a watcher that resumes
     // past the line that reported it; saved with the next checkpoint.
-    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath], pendingTools: this.state.pendingTools?.[filePath] };
+    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath], pendingTools: this.state.pendingTools?.[filePath], pendingToolFileIdentity: this.state.pendingToolFileIdentities?.[filePath] };
     // A subagent-only watch learns the rollout's marker from its first line,
     // and a session whose directory is not known yet learns it there too
     // (DeepSeek Harness writes it on that line only; a turn without one is
@@ -643,6 +643,14 @@ export class TranscriptWatcher {
       filePath,
       offset,
       async (line: string) => {
+        const stat = statSync(filePath);
+        const identity = `${stat.dev}:${stat.ino}`;
+        if (fileContext.pendingToolFileIdentity !== undefined && fileContext.pendingToolFileIdentity !== identity) {
+          this.processor.resetFileContext(fileContext);
+          delete this.state.pendingTools?.[filePath];
+          delete this.state.cwds?.[filePath];
+        }
+        fileContext.pendingToolFileIdentity = identity;
         try {
           if (primeFirstLine) {
             primeFirstLine = false;
@@ -650,6 +658,9 @@ export class TranscriptWatcher {
           }
           await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
         } finally {
+          if (fileContext.pendingToolFileIdentity) {
+            (this.state.pendingToolFileIdentities ??= {})[filePath] = fileContext.pendingToolFileIdentity;
+          }
           if (fileContext.pendingTools) {
             (this.state.pendingTools ??= {})[filePath] = fileContext.pendingTools;
           }

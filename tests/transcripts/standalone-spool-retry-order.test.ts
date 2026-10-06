@@ -1,5 +1,5 @@
 import { afterEach, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
@@ -52,4 +52,21 @@ it('keeps same-session summaries behind a declined observation while other sessi
     await spool.drain(entry => { seen.push(entry.payload.contentSessionId + ':' + entry.kind); return true; });
     expect(seen).toEqual(['a:observation', 'a:summarize']);
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+for (const restart of [false, true]) it(`does not spool stale tool metadata after a file replacement${restart ? ' across restart' : ''}`, async () => {
+  const root = mkdtempSync(join(tmpdir(), 'cm-standalone-replaced-')); process.env.CLAUDE_MEM_DATA_DIR = root;
+  const file = join(root, 'session.jsonl'); const state = join(root, 'checkpoint.json');
+  writeFileSync(file, JSON.stringify({ session: 's', type: 'use', id: 't', name: 'Read', input: { path: 'old-long-enough-file-metadata' } }) + '\n');
+  const watch = { name: 'spool', path: file, workspace: '/repo', schema };
+  const first = new TranscriptWatcher({ version: 1, watches: [watch] }, state, 'spool'); let second: TranscriptWatcher | undefined;
+  try {
+    await (first as any).addTailer(file, watch, schema); await (first as any).tailers.get(file).readTask;
+    if (restart) first.stop();
+    const replacement = join(root, 'new.jsonl'); writeFileSync(replacement, JSON.stringify({ session: 's', type: 'result', id: 't', output: 'new' }) + '\n'); renameSync(replacement, file);
+    if (restart) { second = new TranscriptWatcher({ version: 1, watches: [watch] }, state, 'spool'); await (second as any).addTailer(file, watch, schema); await (second as any).tailers.get(file).readTask; }
+    else await (first as any).tailers.get(file).readNewData();
+    const entries: unknown[] = []; await new HookSpool().drain(entry => { entries.push(entry); return true; }); expect(entries).toHaveLength(0);
+    expect(JSON.parse(readFileSync(state, 'utf8')).pendingTools[file]).toEqual({});
+  } finally { first.stop(); second?.stop(); await settleHookSpoolNudges(); rmSync(root, { recursive: true, force: true }); }
 });

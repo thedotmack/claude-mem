@@ -66,6 +66,7 @@ interface SessionState {
  */
 export interface TranscriptFileContext {
   cwd?: string;
+  pendingToolFileIdentity?: string;
   pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
 }
 
@@ -83,6 +84,16 @@ export class TranscriptEventProcessor {
    * outlive the turn state session_end drops. Oldest forgotten first.
    */
   private subagentSessionKeys = new Set<string>();
+
+  /** A replaced transcript cannot lend its outstanding tools to a new file. */
+  resetFileContext(file: TranscriptFileContext): void {
+    for (const key of Object.keys(file.pendingTools ?? {})) {
+      this.sessions.delete(key);
+      this.subagentSessionKeys.delete(key);
+    }
+    file.pendingTools = {};
+    file.cwd = undefined;
+  }
 
   async processEntry(
     entry: unknown,
