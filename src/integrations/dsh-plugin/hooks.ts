@@ -52,7 +52,7 @@ async function seedSessionContext(worker: WorkerClient, agent: Agent, config: Ho
     if (config.startLocalWorker) await createHarnessWorkerClient().ready()
     const cwd = agent.session.header.cwd
     if (!config.project && !cwd) return
-    const text = await worker.context({ ...(config.project ? { projects: config.project } : { cwd }), ...platform(config) })
+    const text = await worker.context({ ...(config.project ? { projects: config.project } : {}), ...(cwd ? { cwd } : {}), ...platform(config) })
     if (text.length === 0) return
     const message: UserMessage = createUserMessage({
       content: [{ type: 'text', text }],
