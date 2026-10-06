@@ -64,8 +64,14 @@ export function uninstallDshTranscriptWatch(): void {
   writeJsonFileAtomic(dshWatchConfigPath(), config);
 }
 
+/** A removal found no dsh executable. Outside the 0-255 range of a real exit status. */
+const DSH_NOT_INSTALLED = -1;
+
 async function runDsh(profile: string, operation: 'add' | 'remove', target: string): Promise<number> {
-  const command = process.platform === 'win32' ? lookupWindowsCommand('dsh') ?? 'dsh.cmd' : 'dsh';
+  // Windows resolves the command up front; elsewhere a missing dsh is the ENOENT below.
+  const windowsCommand = process.platform === 'win32' ? lookupWindowsCommand('dsh') : undefined;
+  if (windowsCommand === null && operation === 'remove') return DSH_NOT_INSTALLED;
+  const command = process.platform === 'win32' ? windowsCommand ?? 'dsh.cmd' : 'dsh';
   const invocation = buildSpawnSyncInvocation(command, ['plugin', '--profile', profile, operation, '--workspace-root', target], {
     encoding: 'utf8', timeout: 120_000,
   });
@@ -75,7 +81,8 @@ async function runDsh(profile: string, operation: 'add' | 'remove', target: stri
     const collect = (chunk: Buffer): void => { output = (output + chunk.toString()).slice(-16_384); };
     child.stdout?.on('data', collect);
     child.stderr?.on('data', collect);
-    child.once('error', error => {
+    child.once('error', (error: NodeJS.ErrnoException) => {
+      if (error.code === 'ENOENT' && operation === 'remove') { resolve(DSH_NOT_INSTALLED); return; }
       console.error('DSH could not run: ' + error.message + '. Install dsh and pnpm, then retry.');
       resolve(1);
     });
@@ -139,7 +146,14 @@ export async function uninstallDeepSeekHarness(): Promise<number> {
   try {
     const state = readInstallState();
     for (const profile of state.profiles) {
-      if (await runDsh(profile, 'remove', PACKAGE_NAME) !== 0) return 1;
+      const status = await runDsh(profile, 'remove', PACKAGE_NAME);
+      if (status === DSH_NOT_INSTALLED) {
+        // No host is left to load the plugin, and uninstalling claude-mem must
+        // not require reinstalling DSH first.
+        console.error('DSH is no longer installed; skipped removing the claude-mem plugin from its profiles.');
+        break;
+      }
+      if (status !== 0) return 1;
     }
     uninstallDshTranscriptWatch();
     rmSync(markerPath(), { force: true });

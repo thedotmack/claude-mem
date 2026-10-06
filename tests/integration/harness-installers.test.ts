@@ -352,4 +352,22 @@ describe('first-party harness installers', () => {
     expect(result.invalid).toBe(1);
     expect(readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n')).toHaveLength(1);
   });
+
+  it.skipIf(process.platform === 'win32')('stops uninstall when DSH refuses removal but finishes once DSH itself is gone', async () => {
+    fakeDsh();
+    writeConfig({ version: 1, watches: [] });
+    const marker = join(dir, 'data', 'integrations', 'dsh.json');
+    const uninstall = `console.log('DSH_RESULT=' + JSON.stringify(await uninstallDeepSeekHarness()));`;
+    expect(runIsolatedDsh(`console.log('DSH_RESULT=' + JSON.stringify(await installDeepSeekHarness('review')));`)).toBe(0);
+
+    process.env.DSH_TEST_FAIL = '1';
+    expect(runIsolatedDsh(uninstall)).toBe(1);
+    expect(existsSync(marker)).toBe(true);
+    expect(readConfig().watches).toHaveLength(1);
+
+    process.env.PATH = join(dir, 'no-dsh-on-this-path');
+    expect(runIsolatedDsh(uninstall)).toBe(0);
+    expect(existsSync(marker)).toBe(false);
+    expect(readConfig().watches).toEqual([]);
+  });
 });

@@ -1,5 +1,6 @@
 import { chmodSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, rmdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join } from 'node:path';
+import { logger } from '../utils/logger.js';
 
 export interface OwnedFile { name: string; contents: Buffer; }
 
@@ -79,7 +80,7 @@ export function replaceOwnedFiles(destination: string, files: OwnedFile[]): void
     if (committed || rollbackComplete) {
       // A cleanup refusal after commit does not turn an installed set into a reported failure.
       try { rmSync(stage, { recursive: true, force: true }); }
-      catch (error) { console.warn('Could not remove installation staging directory ' + stage + ': ' + String(error)); }
+      catch (error) { logger.warn('SYSTEM', 'Could not remove installation staging directory ' + stage + ': ' + String(error)); }
     }
   }
 }

@@ -343,9 +343,9 @@ export class SearchRoutes extends BaseRouteHandler {
     // session that asks, so only then is its id used, and that answer stays live.
     const showLastMessage = this.showLastMessageEnabled();
     const hostSessionId = showLastMessage && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
-    // A host that cannot run the project resolver itself (the OMP hook) sends
-    // its cwd instead: read the keys the CLI context hook sends for that checkout.
-    if (!projectsParam && hostCwd.trim()) {
+    // An excluded checkout receives no context, whether the host names its
+    // projects itself (a DSH project override) or leaves them to the worker.
+    if (hostCwd.trim()) {
       const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
       if (isProjectExcluded(hostCwd, excludedProjects)) {
@@ -353,6 +353,10 @@ export class SearchRoutes extends BaseRouteHandler {
         res.send('');
         return;
       }
+    }
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
       projectsParam = getProjectContext(hostCwd).allProjects.join(',');
     }
     const forHuman = req.query.colors === 'true';
