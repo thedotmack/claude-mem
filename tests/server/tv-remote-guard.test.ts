@@ -21,6 +21,7 @@ import type { Application, Request, Response } from 'express';
 import { logger } from '../../src/utils/logger.js';
 import { Server, type ServerOptions } from '../../src/services/server/Server.js';
 import { decideRemoteAccess, generateTvToken } from '../../src/services/worker/http/middleware.js';
+import { listenOnEphemeralPort } from '../helpers/ephemeral-port.js';
 
 const TOKEN = 'tv-test-secret-token';
 const REMOTE = { 'x-forwarded-for': '203.0.113.5' };
@@ -69,19 +70,10 @@ let emptyTokenPort = 0;
 let spies: ReturnType<typeof spyOn>[] = [];
 
 async function start(options: ServerOptions): Promise<{ server: Server; port: number }> {
-  let lastError: unknown = null;
-  for (let attempt = 0; attempt < 12; attempt++) {
-    const server = new Server(options);
-    const port = 41000 + Math.floor(Math.random() * 9000);
-    try {
-      await server.listen(port, '127.0.0.1');
-      server.registerRoutes(stubRoutes);
-      return { server, port };
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError instanceof Error ? lastError : new Error(String(lastError));
+  const server = new Server(options);
+  const port = await listenOnEphemeralPort(server);
+  server.registerRoutes(stubRoutes);
+  return { server, port };
 }
 
 beforeAll(async () => {

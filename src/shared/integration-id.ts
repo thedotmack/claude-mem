@@ -5,7 +5,8 @@
  * `platform === 'claude-code'` branches) sees one spelling.
  */
 const INTEGRATION_ID_ALIASES: Readonly<Record<string, string>> = {
-  claude: 'claude-code', 'pi-mono': 'pi', 'deepseek-harness': 'dsh',
+  claude: 'claude-code', t3: 't3code', 't3-code': 't3code',
+  'pi-mono': 'pi', 'deepseek-harness': 'dsh',
 };
 
 export function canonicalIntegrationId(id: string): string {

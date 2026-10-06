@@ -7,7 +7,7 @@ import vm from 'node:vm';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
-import { PI_EXTENSION_BUILD_OPTIONS, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
+import { preparePiExtensionBuild, preflightDshAttribution, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -104,6 +104,13 @@ const TRANSCRIPT_WATCHER = {
 // CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS allows up to 14 s) plus hook startup (#3434).
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
 
+// Claude Code's PreToolUse Read timeout (seconds). The hook is synchronous so
+// the File Read Gate can deny a whole-file Read, which makes every Read wait on
+// it: bounded well under the old 60 s, and above the 3 s worker budget
+// (FILE_CONTEXT_WORKER_BUDGET_MS in src/cli/handlers/file-context.ts) plus hook
+// startup.
+const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
+
 function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
@@ -147,7 +154,10 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         // A tool call that fails (e.g. Bash exiting non-zero) is delivered here
         // instead of PostToolUse, so without it memory never sees a failed attempt.
         'PostToolUseFailure.0.0': claudeHook(['hook', 'claude-code', 'observation']),
-        'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
+        'PreToolUse.0.0': {
+          command: claudeHook(['hook', 'claude-code', 'file-context']),
+          timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS,
+        },
         'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
         'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
       },
@@ -165,7 +175,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
-        // The mcp Node launcher derives its spawn target from requireFile, so
+        // The mcp Node launcher derives its module target from requireFile, so
         // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
@@ -299,6 +309,8 @@ async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
   try {
+    const piBuild = preparePiExtensionBuild();
+    preflightDshAttribution();
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
@@ -324,7 +336,12 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.4.3',
-        'tree-sitter-cli': '^0.26.5',
+        // Exact, not a range: the worker only installs a tree-sitter executable
+        // whose SHA-256 is pinned for this version
+        // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
+        // install that ignores bun.lock (npm) would resolve a range to a newer,
+        // unpinned release and leave smart_outline without an executable.
+        'tree-sitter-cli': '0.26.9',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
         'tree-sitter-go': '^0.25.0',
@@ -778,7 +795,8 @@ async function buildHooks() {
     }
 
     fs.mkdirSync('dist/pi-extension', { recursive: true });
-    await build({ ...PI_EXTENSION_BUILD_OPTIONS, outfile: 'dist/pi-extension/index.js' });
+    await build({ ...piBuild.options, outfile: 'dist/pi-extension/index.js' });
+    for (const file of piBuild.attributionFiles) fs.writeFileSync(path.join('dist/pi-extension', file.name), file.contents);
     console.log('✓ Pi memory extension built');
     fs.mkdirSync('dsh/lib', { recursive: true });
     const dshManifest = JSON.parse(fs.readFileSync('dsh/package.json', 'utf8'));

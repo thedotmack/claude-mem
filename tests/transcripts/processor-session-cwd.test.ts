@@ -146,6 +146,51 @@ describe('transcript turns need a known working directory (R5-3)', () => {
     expect(fileEdits).toEqual([{ cwd: PROJECT_DIR }]);
   });
 
+  it('uses the fresh path fallback for headerless captures after replacing a native-session transcript', async () => {
+    const processor = new TranscriptEventProcessor();
+    const file = {};
+    const watch: WatchTarget = { name: 'dsh', path: join(tmpRoot, 'replacement.jsonl'), schema, workspace: PROJECT_DIR };
+
+    await processor.processEntry(sessionLine('retired-native-session'), watch, schema, 'old-path-fallback', file);
+    await processor.processEntry({ type: 'user', text: 'old native turn' }, watch, schema, 'old-path-fallback', file);
+    await processor.processEntry({ type: 'tool', name: 'Bash', output: 'old result' }, watch, schema, 'old-path-fallback', file);
+    expect(capturedSessionIds).toEqual(['retired-native-session']);
+    expect(ingested.map(payload => payload.contentSessionId)).toEqual(['retired-native-session']);
+
+    processor.resetFileContext(file);
+    await processor.processEntry({ type: 'user', text: 'replacement turn' }, watch, schema, 'fresh-path-fallback', file);
+    await processor.processEntry({ type: 'tool', name: 'Bash', output: 'replacement result' }, watch, schema, 'fresh-path-fallback', file);
+
+    expect(capturedSessionIds).toEqual(['retired-native-session', 'fresh-path-fallback']);
+    expect(ingested.map(payload => [payload.contentSessionId, payload.toolResponse])).toEqual([
+      ['retired-native-session', 'old result'],
+      ['fresh-path-fallback', 'replacement result'],
+    ]);
+    expect(captureOrder).toEqual(['prompt', 'observation', 'prompt', 'observation']);
+  });
+
+  it('skips headerless captures without a path fallback after replacing a native-session transcript', async () => {
+    const processor = new TranscriptEventProcessor();
+    const file = {};
+    const watch: WatchTarget = { name: 'dsh', path: join(tmpRoot, 'replacement.jsonl'), schema, workspace: PROJECT_DIR };
+
+    await processor.processEntry(sessionLine('retired-native-session'), watch, schema, 'old-path-fallback', file);
+    await processor.processEntry({ type: 'user', text: 'old native turn' }, watch, schema, 'old-path-fallback', file);
+    await processor.processEntry({ type: 'tool', name: 'Bash', output: 'old result' }, watch, schema, 'old-path-fallback', file);
+    expect(capturedSessionIds).toEqual(['retired-native-session']);
+    expect(ingested.map(payload => payload.contentSessionId)).toEqual(['retired-native-session']);
+
+    processor.resetFileContext(file);
+    await processor.processEntry({ type: 'user', text: 'replacement without identity' }, watch, schema, undefined, file);
+    await processor.processEntry({ type: 'tool', name: 'Bash', output: 'replacement without identity' }, watch, schema, undefined, file);
+
+    expect(capturedSessionIds).toEqual(['retired-native-session']);
+    expect(ingested.map(payload => [payload.contentSessionId, payload.toolResponse])).toEqual([
+      ['retired-native-session', 'old result'],
+    ]);
+    expect(captureOrder).toEqual(['prompt', 'observation']);
+  });
+
   it('sends the session directory with the summarize request only when it is known', async () => {
     const processor = new TranscriptEventProcessor();
     const watch: WatchTarget = { name: 'dsh', path: join(tmpRoot, '*.jsonl'), schema };

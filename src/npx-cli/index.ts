@@ -59,11 +59,12 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
 
 ${styleText('bold', 'IDE Identifiers')}:
   claude-code, cursor, grok-bot, opencode, openclaw, omp, pi, dsh,
-  windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
+  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
@@ -217,6 +218,20 @@ async function main(): Promise<void> {
       if (typeof exitCode === 'number') {
         process.exit(exitCode);
       }
+      break;
+    }
+
+    case 't3':
+    case 't3-code':
+    case 't3code': {
+      const { t3CodeStatus, uninstallT3Code } = await import('../services/integrations/T3CodeInstaller.js');
+      const { values } = parseArgs({ args: args.slice(2), options: { settings: { type: 'string' } } });
+      const options = { settingsPath: values.settings };
+      if (args[1] === 'status') process.exit(t3CodeStatus(options));
+      if (args[1] === 'uninstall') process.exit(uninstallT3Code(options));
+      console.error('Usage: npx claude-mem t3code status|uninstall [--settings <path>]');
+      console.error('Install with: npx claude-mem install --ide t3code');
+      process.exit(1);
       break;
     }
 

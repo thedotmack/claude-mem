@@ -6,6 +6,7 @@ import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemet
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -451,7 +452,8 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             recordFailure('Pi: memory extension installation failed', output);
             return 'Pi: extension installation failed';
           }
-          return 'Pi: memory extension installed';
+          return 'Pi: extension files installed; automatic capture is unverified. Pi 0.79.6 provides manual recall only. ' +
+            'Check your Pi version and update Pi if needed: https://github.com/thedotmack/claude-mem/blob/main/docs/pi-native-capture.md';
         },
       };
     }
@@ -525,6 +527,22 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
             return `OpenClaw: plugin installation failed ${styleText('red', 'FAIL')}`;
           }
           return `OpenClaw: plugin installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
+    case 't3code': {
+      return {
+        title: 'T3 Code: registering native provider plugins',
+        task: async (message) => {
+          message('Installing hooks and MCP for T3 Code providers…');
+          const { installT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
+          const { result, output } = await bufferConsole(() => installT3Code(marketplaceDirectory()));
+          if (result !== 0) {
+            recordFailure('T3 Code: integration setup failed', output);
+            return `T3 Code: integration setup failed ${styleText('red', 'FAIL')}`;
+          }
+          return `T3 Code: native provider plugins registered ${styleText('green', 'OK')}`;
         },
       };
     }
@@ -807,6 +825,7 @@ function copyPluginToMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
   const packageRoot = npmPackageRootDirectory();
 
+  const attribution = readProjectAttribution(packageRoot);
   ensureDirectoryExists(marketplaceDir);
 
   const allowedTopLevelEntries = [
@@ -823,7 +842,6 @@ function copyPluginToMarketplace(): void {
     'pi',
     'dsh',
     'dist',
-    'LICENSE',
     'README.md',
     'CHANGELOG.md',
   ];
@@ -841,6 +859,8 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  replaceOwnedFiles(marketplaceDir, attribution);
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
   writeTrimmedMarketplaceManifest(marketplaceDir);
@@ -1082,7 +1102,14 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
 
 const DEFAULT_SERVER_RUNTIME_BASE_URL = 'http://127.0.0.1:37877';
 
-async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
+function requireSupportedRuntime(selectedIDEs: string[], runtime: RuntimeId): void {
+  if (runtime === 'server' && selectedIDEs.some(id => id === 'pi' || id === 'dsh')) {
+    log.error('Pi and DeepSeek Harness currently require --runtime worker.');
+    process.exit(1);
+  }
+}
+
+async function promptRuntime(options: InstallOptions, selectedIDEs: string[]): Promise<RuntimeId> {
   // #2543 — non-interactive runtime selection via `--runtime`. When the flag is
   // present we never prompt and never fall back to the worker path: we resolve
   // the requested runtime deterministically and, for the server runtime, plan +
@@ -1093,6 +1120,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
       log.error(`Unknown --runtime: ${options.runtime}. Allowed: worker, server`);
       process.exit(1);
     }
+    requireSupportedRuntime(selectedIDEs, requested);
     if (requested === 'server') {
       await setupServerRuntimeNonInteractive(options);
       return 'server';
@@ -1121,6 +1149,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     process.exit(0);
   }
 
+  requireSupportedRuntime(selectedIDEs, selected);
   mergeSettings({
     CLAUDE_MEM_RUNTIME: selected,
   });
@@ -2527,6 +2556,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 }
 
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
+  // Explicit host/runtime incompatibility must refuse before provider getters,
+  // runtime settings persistence, or server API-key bootstrap.
+  if (options.ide && options.runtime !== undefined) {
+    const requested = normalizeRuntimeFlag(options.runtime);
+    if (requested !== null) requireSupportedRuntime([canonicalIntegrationId(options.ide)], requested);
+  }
+
   const installStartedAt = Date.now();
   const version = readPluginVersion();
   validateNonInteractiveProvider(options, summary);
@@ -2616,11 +2652,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options);
-  if (selectedRuntime === 'server' && selectedIDEs.some(id => id === 'pi' || id === 'dsh')) {
-    log.error('Pi and DeepSeek Harness currently require --runtime worker.');
-    process.exit(1);
-  }
+  const selectedRuntime = await promptRuntime(options, selectedIDEs);
 
   let workerStartResult: WorkerStartResult = 'dead';
   // Claude Code consumes the marketplace plugin system directly, so any selection

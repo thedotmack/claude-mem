@@ -72,9 +72,9 @@ describe('native prompt init HTTP contract', () => {
     const active = new Map<number, any>();
     const manager = {
       getSession: (id: number) => active.get(id),
-      initializeSession: (id: number) => {
+      initializeSession: (id: number, _prompt: string, promptNumber: number) => {
         const row = store.getSessionById(id)!;
-        const session = { contentSessionId: row.content_session_id, project: row.project };
+        const session = { contentSessionId: row.content_session_id, project: row.project, lastPromptNumber: promptNumber };
         active.set(id, session); return session;
       },
       getMessageBuffer: () => ({ getPendingCount: () => 0 }),
@@ -94,13 +94,19 @@ describe('native prompt init HTTP contract', () => {
       return { status: response.status, body: await response.json() as any };
     };
     try {
+      const capability = await fetch('http://127.0.0.1:' + address.port + '/api/sessions/native-prompt-capability');
+      expect(capability.status).toBe(200);
+      expect(await capability.json()).toEqual({ nativePromptId: 1 });
+      expect(store.db.query('SELECT COUNT(*) AS count FROM sdk_sessions').get()).toEqual({ count: 0 });
       const base = { contentSessionId: 'real-session', project: 'fixture', prompt: 'repeat me', platformSource: 'hermes' };
       const first = await init({ ...base, nativePromptId: 'native-1' });
       const second = await init({ ...base, nativePromptId: 'native-2' });
       expect(first.body.nativePromptId).toBe('native-1');
+      expect(first.body.nativePromptCurrent).toBe(true);
+      expect(second.body.nativePromptCurrent).toBe(true);
       expect(second.body.promptNumber).toBe(first.body.promptNumber + 1);
       const retry = await init({ ...base, nativePromptId: 'native-1' });
-      expect(retry.body).toMatchObject({ skipped: true, reason: 'duplicate', nativePromptId: 'native-1', promptNumber: first.body.promptNumber });
+      expect(retry.body).toMatchObject({ skipped: true, reason: 'duplicate', nativePromptId: 'native-1', nativePromptCurrent: false, promptNumber: first.body.promptNumber });
       expect((await init({ ...base, nativePromptId: 'native-1', prompt: 'different' })).status).toBe(409);
       for (const nativePromptId of ['', 'white space', 'x'.repeat(257), 'a\u0000']) {
         expect((await init({ ...base, nativePromptId })).status).toBe(400);
@@ -147,7 +153,7 @@ describe('native prompt init HTTP contract', () => {
 
       const retry = await fixture.init('turn-2', ask);
       expect(retry).toMatchObject({ status: 200, body: {
-        skipped: true, reason: 'duplicate', nativePromptId: 'turn-2', promptNumber: 2, contextInjected: true,
+        skipped: true, reason: 'duplicate', nativePromptId: 'turn-2', nativePromptCurrent: true, promptNumber: 2, contextInjected: true,
       } });
       expect(manager.getSession(sid)).toMatchObject({ lastPromptNumber: 2, userPrompt: 'SECOND REAL PROMPT', project: 'fixture' });
       expect(store.getPromptNumberFromUserPrompts('recovery-session', sid)).toBe(2);
@@ -188,7 +194,7 @@ describe('native prompt init HTTP contract', () => {
       let reinitializations = 0;
       manager.initializeSession = (...args) => { reinitializations++; return initialize(...args); };
       const older = await fixture.init('turn-2', 'SECOND REAL PROMPT');
-      expect(older).toMatchObject({ status: 200, body: { reason: 'duplicate', nativePromptId: 'turn-2', promptNumber: 2, contextInjected: true } });
+      expect(older).toMatchObject({ status: 200, body: { reason: 'duplicate', nativePromptId: 'turn-2', nativePromptCurrent: false, promptNumber: 2, contextInjected: true } });
       expect(manager.getSession(sid)).toMatchObject({ lastPromptNumber: 3, userPrompt: 'THIRD REAL PROMPT' });
       expect(reinitializations).toBe(0);
       expect(store.getPromptNumberFromUserPrompts('recovery-session', sid)).toBe(3);
@@ -277,7 +283,7 @@ describe('native prompt init HTTP contract', () => {
       const receipt = store.saveNativeUserPrompt('recovery-session', sid, 'turn-after-exit', 'REAL SAVED PROMPT');
       const retry = await fixture.init('turn-after-exit', 'REAL SAVED PROMPT');
       expect(retry).toMatchObject({ status: 200, body: {
-        reason: 'duplicate', nativePromptId: 'turn-after-exit', promptNumber: receipt.promptNumber, contextInjected: false,
+        reason: 'duplicate', nativePromptId: 'turn-after-exit', nativePromptCurrent: true, promptNumber: receipt.promptNumber, contextInjected: false,
       } });
       expect(manager.getSession(sid)).toBeUndefined();
       expect(starts).toHaveLength(0);

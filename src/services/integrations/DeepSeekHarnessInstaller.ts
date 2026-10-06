@@ -99,6 +99,9 @@ export async function installDeepSeekHarness(profile = 'web'): Promise<number> {
   // Validate user configuration before running DSH or changing its profile.
   let previous: { profiles: string[] };
   try {
+    // Required package inputs must be readable before ownership or native profile changes.
+    for (const file of ['LICENSE', 'NOTICE', 'THIRD-PARTY-LICENSES.txt', 'package.json', 'lib/index.js']) readFileSync(join(packageDir, file));
+    readJsonFileWithBom<TranscriptSchema>(join(packageDir, 'transcript-schema.json'));
     const config = readWatchConfig();
     if (!config.watches.some(watch => watch.schema === 'dsh') && config.watches.some(watch => watch.name === WATCH_NAME)) {
       throw new Error('A different watch already uses the name dsh.');

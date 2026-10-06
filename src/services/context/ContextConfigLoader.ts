@@ -4,11 +4,25 @@ import { paths } from '../../shared/paths.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 import type { ContextConfig } from './types.js';
+import { parseContextCountValue } from '../../shared/context-count.js';
 
 /** Reinforcement weight; anything non-numeric or negative means off. */
 function parseReinforcementAlpha(raw: string | undefined): number {
   const alpha = Number(raw);
   return Number.isFinite(alpha) && alpha > 0 ? alpha : 0;
+}
+
+/**
+ * Keep direct file/env settings finite without narrowing valid custom counts.
+ * Anything else falls back to the default, with a warning that names it.
+ */
+function parseContextCount(key: string, raw: unknown, fallback: string): number {
+  const count = parseContextCountValue(raw);
+  if (count !== undefined) return count;
+  if (raw !== undefined) {
+    logger.warn('CONFIG', `${key} must be a whole number >= 0; using the default`, { value: raw, default: fallback });
+  }
+  return Number(fallback);
 }
 
 function parseCsvSetting(raw: string | undefined): string[] | null {
@@ -54,10 +68,13 @@ export function loadContextConfig(): ContextConfig {
     mode.observation_concepts.map(c => c.id)
   );
 
+  const defaults = SettingsDefaultsManager.getAllDefaults();
+  const count = (key: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS' | 'CLAUDE_MEM_CONTEXT_FULL_COUNT' | 'CLAUDE_MEM_CONTEXT_SESSION_COUNT') =>
+    parseContextCount(key, settings[key], defaults[key]);
   return {
-    totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
-    fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
-    sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
+    totalObservationCount: count('CLAUDE_MEM_CONTEXT_OBSERVATIONS'),
+    fullObservationCount: count('CLAUDE_MEM_CONTEXT_FULL_COUNT'),
+    sessionCount: count('CLAUDE_MEM_CONTEXT_SESSION_COUNT'),
     showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
     showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
     showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',

@@ -10,17 +10,30 @@
 import { Type, type TSchema } from 'typebox';
 import { createHarnessWorkerClient } from '../harness-worker.js';
 
+interface PiMessage {
+  role?: string;
+  content?: unknown;
+  timestamp?: number;
+}
+interface PiSessionEntry {
+  type?: string;
+  id?: string;
+  message?: PiMessage;
+}
 interface PiContext {
   cwd: string;
-  sessionManager: { getSessionId(): string };
+  sessionManager: {
+    getSessionId(): string;
+    getBranch?(): ReadonlyArray<PiSessionEntry>;
+  };
   hasUI?: boolean;
   ui?: { notify(message: string, level: 'warning' | 'info'): void };
 }
 interface PiEvent {
   prompt?: string;
   systemPrompt?: string;
-  message?: { role?: string; content?: unknown };
-  messages?: Array<{ role?: string; content?: unknown }>;
+  message?: PiMessage;
+  messages?: PiMessage[];
   toolName?: string;
   toolCallId?: string;
   input?: unknown;
@@ -52,6 +65,8 @@ interface Session {
   queue: Promise<void>;
   lastAssistant: string;
   needsSummary: boolean;
+  entryId?: string;
+  initialized: boolean;
 }
 
 /** Original text-only extraction from husniadil/pi-mem; image payloads stay out. */
@@ -82,7 +97,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     if (!id || !ctx.cwd) { current = undefined; return; }
     const session: Session = {
       id, cwd: ctx.cwd, memory: '', anchored: false, excluded: false,
-      queue: Promise.resolve(), lastAssistant: '', needsSummary: false,
+      queue: Promise.resolve(), lastAssistant: '', needsSummary: false, initialized: false,
     };
     current = session;
     notificationShown = false;
@@ -98,28 +113,109 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
   pi.on('session_switch', begin);
   pi.on('session_fork', begin);
 
-  pi.on('before_agent_start', async (event, ctx) => {
+  const resetTurn = (_event: PiEvent, ctx: PiContext): Promise<void> | undefined => {
     const session = current;
     if (!session) return;
-    if (event.prompt?.trim()) {
-      await enqueue(session, ctx, async () => {
-        session.anchored = false;
-        session.needsSummary = false;
-        session.lastAssistant = '';
-        const response = await worker.post('/api/sessions/init', {
-          contentSessionId: session.id, cwd: session.cwd, prompt: event.prompt, platformSource: 'pi',
-        });
-        const result = await response.json() as { skipped?: boolean; reason?: string; sessionDbId?: number };
-        // A duplicate acknowledges an already-persisted prompt. Other skips
-        // suppress this turn only: a private prompt must not disable later ones.
-        session.excluded = result.skipped === true && result.reason !== 'duplicate';
-        session.anchored = !session.excluded && typeof result.sessionDbId === 'number';
-        session.needsSummary = session.anchored;
-      });
+    return enqueue(session, ctx, async () => {
+      session.entryId = undefined;
+      session.initialized = false;
+      session.anchored = false;
+      session.excluded = true;
+      session.needsSummary = false;
+      session.lastAssistant = '';
+    });
+  };
+  pi.on('before_agent_start', resetTurn);
+  pi.on('session_tree', resetTurn);
+
+  // Pi 1.0.2/1.0.4 await user persistence before this request-time hook.
+  // sdk.ts transformContext -> ExtensionRunner.emitContext (full system phase):
+  // https://github.com/earendil-works/pi/blob/7c10bd4337495ee613f2224843ecdf349b80d1df/packages/coding-agent/src/core/sdk.ts#L418
+  // before_agent_start and user message_end are too early for a persisted ID.
+  pi.on('context_with_system', async (event, ctx) => {
+    const session = current;
+    const messages = event.messages;
+    if (!session) return;
+    if (!Array.isArray(messages) || messages[0]?.role !== 'system' || typeof messages[0].content !== 'string') {
+      await resetTurn(event, ctx);
+      return;
     }
-    if (session.excluded || !session.memory) return;
-    const base = event.systemPrompt ?? '';
-    return { systemPrompt: base + '\n\n<claude-mem-context>\n' + session.memory + '\n</claude-mem-context>' };
+    const base = messages[0].content;
+    const user = [...messages].reverse().find(message => message.role === 'user');
+    const prompt = extractTextContent(user?.content);
+    // Images never leave Pi; an image-only turn has no automatic text capture.
+    const selectEntry = (): PiSessionEntry | undefined => {
+      if (current !== session || ctx.sessionManager.getSessionId() !== session.id || ctx.cwd !== session.cwd
+        || typeof ctx.sessionManager.getBranch !== 'function') return;
+      const branch = ctx.sessionManager.getBranch();
+      if (!Array.isArray(branch)) return;
+      const entry = [...branch].reverse().find(item => item.type === 'message' && item.message?.role === 'user');
+      // Timestamp/text only validate correspondence with the real request.
+      // The identity always comes from the persisted active-branch entry.id.
+      if (!entry || typeof entry.id !== 'string' || !/^[^\s\x00-\x1f\x7f]{1,256}$/.test(entry.id)
+        || !user || typeof user.timestamp !== 'number' || !Number.isFinite(user.timestamp)
+        || entry.message?.timestamp !== user.timestamp
+        || extractTextContent(entry.message.content) !== prompt) return;
+      return entry;
+    };
+    await enqueue(session, ctx, async () => {
+      try {
+        const entry = selectEntry();
+        if (!entry || !prompt.trim()) {
+          session.anchored = false;
+          session.excluded = true;
+          session.initialized = false;
+          return;
+        }
+        if (session.entryId !== entry.id) {
+          session.entryId = entry.id;
+          session.initialized = false;
+          session.anchored = false;
+          session.excluded = true;
+          session.needsSummary = false;
+          session.lastAssistant = '';
+        }
+        if (session.initialized) return;
+        // A legacy worker ignores unknown init fields. Probe without creating
+        // a prompt/session so it cannot silently admit a text-based turn.
+        const capability = await (await worker.request('/api/sessions/native-prompt-capability')).json() as {
+          nativePromptId?: number;
+        };
+        if (capability.nativePromptId !== 1) throw new Error('Upgrade the worker for native Pi prompt capture.');
+        if (selectEntry()?.id !== entry.id) return;
+        const response = await worker.post('/api/sessions/init', {
+          contentSessionId: session.id, cwd: session.cwd, prompt, platformSource: 'pi', nativePromptId: entry.id,
+        });
+        const result = await response.json() as {
+          skipped?: boolean; reason?: string; sessionDbId?: number;
+          nativePromptId?: string; nativePromptCurrent?: boolean;
+        };
+        if (selectEntry()?.id !== entry.id) return;
+        if (result.skipped === true && result.reason !== 'duplicate') {
+          // The same worker privacy/project gates run before exposing memory.
+          session.initialized = true;
+          session.excluded = true;
+          return;
+        }
+        if (result.nativePromptId !== entry.id || typeof result.sessionDbId !== 'number') {
+          throw new Error('The worker did not acknowledge the persisted Pi user-entry ID.');
+        }
+        session.initialized = true;
+        // Older branch retries must not attach tools to a newer worker turn.
+        session.anchored = result.nativePromptCurrent === true;
+        session.excluded = !session.anchored;
+        session.needsSummary = session.anchored;
+      } catch (error) {
+        session.anchored = false;
+        session.excluded = true;
+        session.initialized = false;
+        throw error;
+      }
+    });
+    if (current !== session || !session.anchored || session.excluded || !session.memory) return;
+    const [head, ...tail] = messages;
+    return { messages: [{ ...head, content: base + '\n\n<claude-mem-context>\n'
+      + session.memory + '\n</claude-mem-context>' }, ...tail] };
   });
 
   pi.on('tool_result', (event, ctx) => {

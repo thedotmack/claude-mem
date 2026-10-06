@@ -381,6 +381,10 @@ export async function runUninstallCommand(): Promise<void> {
   ]);
 
   const ideCleanups: Array<{ label: string; fn: () => Promise<number> | number }> = [
+    { label: 'T3 Code provider plugins', fn: async () => {
+      const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
+      return uninstallT3Code();
+    }},
     { label: 'Pi memory', fn: async () => {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();

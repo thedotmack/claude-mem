@@ -564,6 +564,10 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
+    // Read-only admission probe: older workers must not silently ignore nativePromptId.
+    app.get('/api/sessions/native-prompt-capability', (_req: Request, res: Response) => {
+      res.json({ nativePromptId: 1 });
+    });
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -905,7 +909,9 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber: duplicatePrompt.prompt_number,
         skipped: true,
         reason: 'duplicate',
-        ...(nativePromptId ? { nativePromptId } : {}),
+        ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+          store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === duplicatePrompt.prompt_number
+          && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? duplicatePrompt.prompt_number) === duplicatePrompt.prompt_number } : {}),
         contextInjected
       });
       return;
@@ -1000,7 +1006,9 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       promptNumber,
       skipped: false,
-      ...(nativePromptId ? { nativePromptId } : {}),
+      ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+        store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === promptNumber
+        && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? promptNumber) === promptNumber } : {}),
       contextInjected,
       status: 'initialized'
     });

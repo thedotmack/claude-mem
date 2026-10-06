@@ -38,8 +38,9 @@ import { FIELD_OPTIMIZE_TIMEOUT_MS } from './field-optimizer.js';
 export function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
-  if (!Number.isNaN(seconds) && seconds >= 0) {
-    return Math.floor(seconds * 1000);
+  const milliseconds = seconds * 1000;
+  if (Number.isFinite(milliseconds) && seconds >= 0) {
+    return Math.floor(milliseconds);
   }
   const dateMs = Date.parse(value);
   if (!Number.isNaN(dateMs)) {

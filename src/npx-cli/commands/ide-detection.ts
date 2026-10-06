@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 
 export interface IDEInfo {
   id: string;
@@ -77,6 +78,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
+      id: 't3code',
+      label: 'T3 Code',
+      detected: existsSync(t3CodeSettingsPath()),
+      hint: 'Codex + Claude native hooks and MCP',
+    },
+    {
       id: 'kimi',
       label: 'Kimi Code',
       detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
@@ -116,7 +123,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
       id: 'pi',
       label: 'Pi',
       detected: isCommandInPath('pi') || existsSync(process.env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
-      hint: 'native memory extension',
+      hint: 'manual recall; check automatic capture compatibility',
     },
     {
       id: 'dsh',

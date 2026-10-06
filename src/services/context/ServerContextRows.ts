@@ -146,6 +146,7 @@ export function toLocalObservationShape(
   return {
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
+    content_session_id: asText(pick(row, 'contentSessionId', 'content_session_id')) ?? undefined,
     platform_source: platformSource ?? '',
     type: asText(pick(row, 'kind', 'type')) ?? 'discovery',
     title: asText(pick(row, 'title')) ?? firstLine,
@@ -179,6 +180,7 @@ export function toLocalSummaryShape(
     learned: asText(pick(row, 'learned')),
     completed: asText(pick(row, 'completed')),
     next_steps: asText(pick(row, 'next_steps', 'nextSteps')),
+    notes: asText(pick(row, 'notes')),
     created_at: new Date(epoch).toISOString(),
     created_at_epoch: epoch,
     project: asText(pick(row, 'project')) ?? project,

@@ -64,6 +64,7 @@ const observationsBatchSchema = z.object({
 
 const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
+  promptIds: z.array(z.number().int().positive().safe()).optional(),
 }).passthrough();
 
 // Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
@@ -386,10 +387,12 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
+    const { memorySessionIds, promptIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
+    const sessions = promptIds === undefined
+      ? store.getSdkSessionsBySessionIds(memorySessionIds)
+      : store.getSdkSessionsBySessionIds(memorySessionIds, promptIds);
     res.json(sessions);
   });
 
@@ -694,8 +697,12 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
-    const offset = parseInt(req.query.offset as string, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
+    const requestedOffset = parseInt(req.query.offset as string, 10) || 0;
+    const requestedLimit = parseInt(req.query.limit as string, 10) || 20;
+    const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
+    // SQLite interprets a negative LIMIT as unbounded, including limit + 1
+    // used by PaginationHelper to detect whether another page exists.
+    const limit = Math.min(Math.max(requestedLimit, 1), 100);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const contentSessionId = req.query.contentSessionId as string | undefined;

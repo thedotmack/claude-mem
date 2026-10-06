@@ -17,7 +17,7 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } from '../services/smart-file-read/parser.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -43,6 +43,7 @@ import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
+import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 
 /** This server's checkout (Claude Code starts it in the workspace), resolved once. */
 let workspaceCheckout: ProjectContext | null = null;
@@ -80,56 +81,26 @@ function errorIfWorkerScriptMissing(): void {
   );
 }
 
-async function callWorker(
-  endpoint: string,
-  opts: {
-    query?: Record<string, any>;
-    body?: Record<string, any>;
-    text?: boolean;
-    /** Long corpus work: read the worker's SSE heartbeat stream instead of one JSON reply. */
-    streamCorpusProgress?: boolean;
-  } = {}
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+interface WorkerCallOptions {
+  query?: Record<string, any>;
+  body?: Record<string, any>;
+  text?: boolean;
+  /** Long corpus work: read the worker's SSE heartbeat stream instead of one JSON reply. */
+  streamCorpusProgress?: boolean;
+}
+
+type WorkerToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+
+async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promise<WorkerToolResult> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
-    if (opts.streamCorpusProgress && opts.body) {
-      const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
-      logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-      return { content: [{ type: 'text' as const, text: JSON.stringify(corpusResult, null, 2) }] };
-    }
-
-    let response: Response;
-    if (opts.body) {
-      response = await workerHttpRequest(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts.body)
-      });
-    } else {
-      const searchParams = new URLSearchParams();
-      for (const [key, value] of Object.entries(opts.query ?? {})) {
-        if (value !== undefined && value !== null) {
-          searchParams.append(key, String(value));
-        }
-      }
-      response = await workerHttpRequest(`${endpoint}?${searchParams}`);
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-
-    if (opts.text) {
-      return { content: [{ type: 'text' as const, text: await response.text() }] };
-    }
-    if (opts.body) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
-    }
-    return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+    // The worker can exit while this server runs (idle exit, a crash,
+    // `claude-mem stop`); a refused connection starts it once and resends.
+    return await withWorkerRestartOnRefusedConnection(
+      () => requestWorker(endpoint, opts),
+      startWorkerAfterRefusedConnection,
+    );
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
     return {
@@ -140,6 +111,56 @@ async function callWorker(
       isError: true
     };
   }
+}
+
+async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise<WorkerToolResult> {
+  if (opts.streamCorpusProgress && opts.body) {
+    const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
+    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+    return { content: [{ type: 'text' as const, text: JSON.stringify(corpusResult, null, 2) }] };
+  }
+
+  let response: Response;
+  if (opts.body) {
+    response = await workerHttpRequest(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts.body)
+    });
+  } else {
+    const searchParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts.query ?? {})) {
+      if (value !== undefined && value !== null) {
+        searchParams.append(key, String(value));
+      }
+    }
+    response = await workerHttpRequest(`${endpoint}?${searchParams}`);
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+
+  logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+
+  if (opts.text) {
+    return { content: [{ type: 'text' as const, text: await response.text() }] };
+  }
+  if (opts.body) {
+    return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
+  }
+  return await response.json() as WorkerToolResult;
+}
+
+/**
+ * Start the worker after it refused a tool call. Same rule as startup: with
+ * CLAUDE_MEM_RUNTIME=server the MCP server never starts it, and
+ * ensureWorkerStarted itself honors CLAUDE_MEM_WORKER_AUTOSTART=false.
+ */
+async function startWorkerAfterRefusedConnection(): Promise<boolean> {
+  if (selectRuntime() === 'server') return false;
+  return ensureWorkerConnection();
 }
 
 async function verifyWorkerConnection(): Promise<boolean> {
@@ -462,6 +483,13 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 }
 
+// Plan mode lets an MCP tool run without a prompt only when it declares
+// readOnlyHint (#3483). The File Read Gate sends Claude to smart_outline,
+// smart_unfold and get_observations, so those must work in plan mode too.
+// Tools that write (work_state_write, observation_add, the corpus builders and
+// query_corpus, which appends to the corpus session) keep prompting.
+const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
+
 const tools = [
   {
     name: 'important_workflow',
@@ -475,6 +503,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       type: 'object',
       properties: {}
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async () => ({
       content: [{
         type: 'text' as const,
@@ -521,6 +550,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       // In server-beta runtime the local worker /api/search reads the local SQLite via
       // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
@@ -567,6 +597,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/timeline', { query: args });
     }
@@ -586,6 +617,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
     }
@@ -608,6 +640,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/tool-uses/batch', { body: args });
     }
@@ -644,6 +677,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => callWorker('/api/work-state', {
       query: { cwd: process.cwd(), list: args?.list, includeClosed: args?.includeClosed },
       text: true,
@@ -669,6 +703,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleSessionStartContext(args ?? {}),
   },
   // Phase 8 — observation_* tools backed by server REST core.
@@ -725,6 +760,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationSearch(args ?? {}),
   },
   {
@@ -740,6 +776,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationContext(args ?? {}),
   },
   {
@@ -753,6 +790,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['jobId'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
   },
   {
@@ -780,6 +818,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['query']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
@@ -809,6 +848,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path', 'symbol_name']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
@@ -820,7 +860,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
-        const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
+        const available = formatAvailableSymbols(parsed, args.symbol_name);
         return {
           content: [{
             type: 'text' as const,
@@ -849,6 +889,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
@@ -898,6 +939,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/corpus', { query: args });
     }
@@ -992,7 +1034,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
     tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations
     }))
   };
 });

@@ -7,119 +7,206 @@ description: "How claude-mem intercepts file reads to save tokens using observat
 
 ## What It Is
 
-The File Read Gate is a **PreToolUse hook** that intercepts Claude's `Read` tool calls. When Claude tries to read a file that has prior observations in the database, the gate blocks the read and instead shows a compact timeline of past work on that file. Claude then decides the cheapest path to get the context it needs.
+The File Read Gate stops Claude Code from reading a whole code file that claude-mem already has observations about. Claude gets the file's observation timeline instead, with directions to cheaper sources: `smart_outline` for the file's structure, `smart_unfold` for one symbol, `get_observations` for past work, and a Read with `offset` and `limit` for exact lines.
 
-This is a concrete implementation of [progressive disclosure](/progressive-disclosure) -- show what exists first, let the agent decide what to fetch.
+The gate is **on by default**. See [How to Turn It Off](#how-to-turn-it-off).
+
+This is [progressive disclosure](/progressive-disclosure) applied to file reads: show what exists first, then let Claude fetch only what it needs.
+
+### When It Blocks a Read
+
+All of these must hold:
+
+- **The session is Claude Code** (not Qwen Code), and the Read comes from the main session, not a subagent.
+- **The file is code that `smart_outline` can parse** (see the table below).
+- **The file is inside the project**, meaning under the session's working directory once symlinks are resolved. `smart_outline` and `smart_unfold` apply the same check, so a symlink in the project that points outside it is never blocked: those tools would refuse it.
+- **The file is at least 32 KB.** Smaller files with history get the timeline as context and are never blocked. See [Size Thresholds](#size-thresholds).
+- **The file has observation history**, and it **has not been modified since the newest of those observations**.
+- **The Read would return the whole file.** Reads of part of a file always go through. See [Whole-File vs Targeted Reads](#whole-file-vs-targeted-reads).
+- **The tree-sitter CLI that powers `smart_outline` and `smart_unfold` is installed.** Without it, the Read goes through with the timeline as context, so Claude is never sent to a tool that can't parse the file. Claude Code's plugin install leaves this executable out, so the claude-mem worker downloads it from the tree-sitter GitHub releases in the background each time it starts without one. It only runs or installs a download whose SHA-256 matches the digest claude-mem pins for that tree-sitter version and platform. On a new install the gate turns on a few seconds into the first session. If the download can't reach GitHub, the worker log says so; run `npx claude-mem repair` once the network allows it.
+
+Code files the gate covers:
+
+| Language | Extensions |
+|----------|------------|
+| JavaScript | `.js` `.mjs` `.cjs` `.jsx` |
+| TypeScript | `.ts` `.mts` `.cts` `.tsx` |
+| Python | `.py` `.pyw` |
+| Go | `.go` |
+| Rust | `.rs` |
+| Ruby | `.rb` |
+| Java | `.java` |
+| Kotlin | `.kt` `.kts` |
+| Scala | `.scala` `.sc` |
+| Swift | `.swift` |
+| C and C++ | `.c` `.h` `.cpp` `.cc` `.cxx` `.hpp` `.hh` |
+| PHP | `.php` |
+| Lua | `.lua` |
+| Haskell | `.hs` |
+| Zig | `.zig` |
+| Shell | `.sh` `.bash` `.zsh` |
+| CSS and SCSS | `.css` `.scss` |
+| SQL | `.sql` |
+
+Markdown, YAML, TOML, JSON and every other file type are never blocked. Read is the right tool for them.
+
+Qwen Code runs the Claude Code hooks, and Codex CLI and Kimi run the same hook, but none of them blocks: the hook adds the file's timeline as context and lets the call through. Other hosts don't run this hook.
 
 ---
 
 ## How It Works
 
 ```
-Claude calls Read("src/services/worker-service.ts")
+Claude calls Read(file_path="/Users/you/code/acme-api/src/billing/invoice-service.ts")
          ↓
-   PreToolUse hook fires
+   PreToolUse hook runs (synchronous: the Read waits for it)
          ↓
-   File size < 1,500 bytes? ──→ Allow read (timeline costs more than file)
+   Subagent? ────────────────────────────────→ Read proceeds, nothing added
          ↓ No
-   Project excluded? ──→ Allow read
+   Project excluded? ────────────────────────→ Read proceeds, nothing added
          ↓ No
-   Query worker: GET /api/observations/by-file
+   File under 1,500 bytes? ──────────────────→ Read proceeds, nothing added
+         ↓ No
+   Query worker: GET /api/observations/by-file (3 s budget)
          ↓
-   No observations found? ──→ Allow read
+   Worker slow or down? ─────────────────────→ Read proceeds, nothing added
+         ↓ No
+   No observations? ─────────────────────────→ Read proceeds, nothing added
          ↓ Has observations
-   Deduplicate (1 per session)
-   Rank by specificity
-   Limit to 15
+   File modified since the newest one? ──────→ Read proceeds, nothing added
+         ↓ No
+   Keep 1 per session, rank by specificity, keep up to 15
          ↓
-   DENY read with timeline
+   Claude Code (not Qwen)? ────── No ──┐
+   Gate setting on? ───────────── No ──┤
+   Code file? ─────────────────── No ──┤
+   At least 32 KB? ────────────── No ──┤
+   Inside the project? ────────── No ──┼──→ Read proceeds, timeline added as context
+   Whole-file Read? ───────────── No ──┤    (once per session per file)
+   Tree-sitter CLI installed? ─── No ──┘
+         ↓ Yes to all seven
+   DENY the Read: Claude gets the timeline and where to look instead
 ```
 
-When the gate fires, Claude sees a message like this:
+When a Read isn't blocked but the file has current history, the timeline is added to the Read as context: once per session for each file, and again only after a newer observation of the file lands. Reads that stop earlier in the chart get nothing added.
+
+Every whole-file Read of a gated file is blocked, not only the first one.
+
+---
+
+## What Claude Sees
+
+When the gate blocks a Read, Claude Code cancels it and gives Claude this message in its place. In the transcript it appears as a `PreToolUse:Read hook error`; that is the gate at work, not a failure.
 
 ```
-Current: 2026-04-07 3:25pm PDT
-Read blocked: This file has prior observations. Choose the cheapest path:
-- Already know enough? The timeline below may be all you need (semantic priming).
-- Need details? get_observations([IDs]) -- ~300 tokens each.
-- Need current code? smart_outline("path") for structure (~1-2k tokens),
-  smart_unfold("path", "<symbol>") for a specific function (~400-2k tokens).
-- Need to edit? Use smart tools for line numbers, then sed via Bash.
-
-### Apr 5, 2026
-42301 2:15pm  Fixed database connection pooling
-42298 1:50pm  Refactored worker startup sequence
-
-### Mar 28, 2026
-41890 4:30pm  Added health check endpoint
+Current: 2026-10-05 3:25pm PDT
+Full-file Read blocked by claude-mem: /Users/you/code/acme-api/src/billing/invoice-service.ts has prior observations (listed below). Get what you need without reading the whole file:
+- Current code: call smart_outline(file_path="/Users/you/code/acme-api/src/billing/invoice-service.ts") for its symbols and line numbers, then smart_unfold(file_path="/Users/you/code/acme-api/src/billing/invoice-service.ts", symbol_name="<name>") for the ones you need (MCP tools mcp__plugin_claude-mem_mcp-search__smart_outline / __smart_unfold; load them with ToolSearch if they are deferred).
+- Past work: call get_observations(ids=[41890, 42298, 42301]) for the observations below that matter (~300 tokens each).
+- Exact lines, e.g. before an Edit: call Read on this file again with offset and limit around the lines smart_outline reported. Partial reads are allowed and satisfy Edit's read requirement.
+The titles below are history from earlier sessions, not the file's current contents.
+### Sep 28, 2026
+41890 4:30p 🟣 Added proration for mid-cycle plan changes
+### Oct 3, 2026
+42298 1:50p 🔄 Split invoice totals into calculateSubtotal and applyTaxes
+42301 2:15p 🔴 Fixed rounding error in multi-currency invoice totals
 ```
+
+Each timeline line is `<id> <time> <type> <title>`, grouped by day, oldest first. Type icons: 🔴 bugfix, 🟣 feature, 🔄 refactor, 🔵 discovery, ⚖️ decision, ✅ change.
+
+<Note>
+The block goes to Claude, not to you. There is no approval prompt to click through. To let whole-file Reads through, [turn the gate off](#how-to-turn-it-off).
+</Note>
+
+---
+
+## Whole-File vs Targeted Reads
+
+| Read call | Result |
+|-----------|--------|
+| `Read(file_path)` with no `offset` or `limit` | Blocked |
+| `offset` of 0 or 1 (or none) and a `limit` of at least the file's line count | Blocked: it returns the whole file |
+| `limit` smaller than the file's line count | Allowed |
+| `offset` greater than 1 | Allowed |
+
+Targeted Reads are how Claude gets exact lines for an Edit. Claude Code's Edit tool refuses to change a file that hasn't been Read in the session, and a Read of part of the file satisfies that rule. A typical edit:
+
+1. `Read(file_path)`: blocked. Claude gets the timeline and the directions above.
+2. `smart_outline(file_path)`: every symbol with its line range.
+3. `Read(file_path, offset=120, limit=40)`: allowed. Just the function to change.
+4. `Edit(...)`: works, because step 3 was a Read of the file.
+
+A targeted Read right after a block doesn't repeat the timeline, since the block already showed it.
 
 ---
 
 ## The Decision Tree
 
-Claude has four options after seeing the timeline, ordered from lowest to highest token cost:
+After a block, Claude's options, cheapest first:
 
 | Option | Token Cost | When to Use |
 |--------|-----------|-------------|
-| **Semantic priming** | 0 extra | Timeline titles tell Claude enough to proceed |
-| **get_observations([IDs])** | ~300 each | Need specific details from past work |
-| **smart_outline / smart_unfold** | ~1-2k | Need current code structure or a specific function |
-| **Full file read** | 5k-50k | File has changed significantly since observations |
+| **Timeline only** (semantic priming) | 0 extra | The titles tell Claude enough to proceed |
+| **get_observations(ids=[...])** | ~300 each | Need the details of past work |
+| **smart_outline** | ~1-2k | Need the file's current structure and line numbers |
+| **smart_unfold** | ~400-2k per symbol | Need one function or class in full |
+| **Read with offset and limit** | Only the lines read | Need exact lines, for example before an Edit |
+| **Whole-file Read** | The whole file | Blocked while the gate is on: read the part you need with `offset` and `limit` |
 
-In practice, most file reads resolve at the semantic priming or get_observations level, saving thousands of tokens per interaction.
+The smart tool costs come from the [Smart Explore benchmark](/smart-explore-benchmark).
 
 ---
 
 ## Current Date/Time for Temporal Reasoning
 
-The timeline includes the current date and time as its first line:
+The message starts with the current date and time:
 
 ```
-Current: 2026-04-07 3:25pm PDT
+Current: 2026-10-05 3:25pm PDT
 ```
 
-This lets Claude reason about how recent the observations are relative to now. For example:
+This lets Claude tell how old each observation is. The format matches the SessionStart context header (`YYYY-MM-DD time timezone`), so Claude sees the same temporal markers throughout its session.
 
-- **Observations from today** -- likely still accurate, semantic priming is safe
-- **Observations from last week** -- probably accurate, get_observations for details
-- **Observations from months ago** -- file may have changed, consider smart_outline or full read
-
-The timestamp format matches the session start context header (`YYYY-MM-DD time timezone`), so Claude sees consistent temporal markers throughout its session.
+The gate already steps aside when the file was modified after its newest observation, so a blocked file hasn't changed since that observation. Older titles can still describe earlier versions of the code, which is why the message labels them as history, not the file's current contents.
 
 ---
 
 ## Token Economics
 
-A typical source file costs **5,000-50,000 tokens** to read in full. The File Read Gate replaces that with:
+Reading a large source file in full costs thousands to tens of thousands of tokens. The deny message that replaces it costs:
 
 | Component | Tokens |
 |-----------|--------|
-| Timeline header + instructions | ~120 |
-| 15 observation entries | ~250 |
-| **Total timeline** | **~370** |
+| Header and directions | ~250 (the path appears three times, so long paths add a little) |
+| Each observation line | ~20 |
+| **Whole message at the 15-observation cap** | **~550-600** |
 
-If Claude needs more detail, it fetches individual observations at ~300 tokens each. Even fetching 3 observations totals ~1,270 tokens -- still a **75-97% savings** over reading the full file.
+If Claude needs more detail, each observation costs ~300 tokens through `get_observations`.
 
 ### Real-World Example
 
-Without the gate (reading `worker-service.ts`):
+Changing `WorkerService.shutdown()` in this repository's `src/services/worker-service.ts` (1,932 lines).
+
+Without the gate:
 ```
-Read: 18,000 tokens
+Read (whole file)                           ~22,000 tokens
 ```
 
 With the gate:
 ```
-Timeline:       370 tokens
-+ 2 observations: 600 tokens
-Total:          970 tokens (95% savings)
+Blocked Read: deny message (5 observations)    ~360 tokens
+smart_outline                                ~1,340 tokens
+Read offset=1006 limit=67 (shutdown only)      ~890 tokens
+Total                                        ~2,600 tokens (about 88% less)
 ```
+
+Token counts on this page are estimates at 4 characters per token.
 
 ---
 
 ## Specificity Ranking
 
-Not all observations about a file are equally relevant. The gate scores each observation by how specifically it relates to the target file:
+The worker returns up to 40 observations of the file, newest first. The gate keeps one per session (the newest), scores each by how specifically it concerns this file, and keeps the 15 highest. Ties go to the newer observation.
 
 | Signal | Score Bonus |
 |--------|------------|
@@ -128,19 +215,40 @@ Not all observations about a file are equally relevant. The gate scores each obs
 | Observation covers **4-8** total files | +1 |
 | Observation covers **9+** files (survey-like) | +0 |
 
-Higher-scoring observations appear first in the timeline. An observation where the file was the primary modification target ranks above one where the file was incidentally read alongside 20 others.
+The score decides which observations make the cut. The ones kept are listed oldest first, grouped by day. An observation where this file was the main thing changed beats one where it was read alongside 20 others.
+
+---
+
+## Hook Timing
+
+The `PreToolUse` hook on `Read` is **synchronous**. It has to be, because only a synchronous hook can block a tool call. Every Read waits for it.
+
+- The hook gives the worker at most **3 seconds** for its health check and the observation lookup together. If the worker is slow or not running, the hook stops waiting and the Read goes ahead with nothing added. The gate fails open.
+- Claude Code's timeout for this hook is **15 seconds**, a backstop well above that budget.
+- If the hook fails for any other reason, it returns a no-op. An error never blocks a Read.
 
 ---
 
 ## Configuration
 
-### Small File Bypass
+### Size Thresholds
 
-Files smaller than **1,500 bytes** always pass through the gate without interception. At that size, the timeline (~370 tokens) would cost more than reading the file directly. This threshold is hardcoded in `src/cli/handlers/file-context.ts`.
+- Files under **1,500 bytes** get nothing: no timeline and no block. At that size, reading the file costs about as much as the timeline would.
+- Files from 1,500 bytes up to **32 KB** get the timeline as context, but are never blocked.
+- Code files of **32 KB and up** can be blocked.
+
+A block isn't free. The denied Read is a turn, and so is every `smart_outline`, `smart_unfold` or targeted Read after it, and each turn re-reads the whole conversation. A block saves the file it keeps out of context. That saving outgrows those turns only on larger files. The read-gate eval (`evals/read-gate` in the repository) asked the same walkthrough question with the gate on and off:
+
+| File | `claude-sonnet-5-5` | `claude-opus-5-5` |
+| --- | --- | --- |
+| 513 lines, 19 KB | -6% | +20% |
+| 941 lines, 49 KB | -35% | -32% |
+
+Both thresholds are fixed in `src/cli/handlers/file-context.ts`.
 
 ### Project Exclusions
 
-Projects matching patterns in `CLAUDE_MEM_EXCLUDED_PROJECTS` skip the gate entirely. Configure this in `~/.claude-mem/settings.json`:
+Projects matching patterns in `CLAUDE_MEM_EXCLUDED_PROJECTS` skip the hook entirely: no block, no timeline. Configure this in `~/.claude-mem/settings.json`:
 
 ```json
 {
@@ -148,21 +256,29 @@ Projects matching patterns in `CLAUDE_MEM_EXCLUDED_PROJECTS` skip the gate entir
 }
 ```
 
-### How to Disable the Gate
+### How to Turn It Off
 
-The File Read Gate is implemented as a PreToolUse hook on the `Read` tool matcher. To disable it, remove the `Read` matcher entry from the hooks configuration:
+Any of these turns the gate off:
 
-1. Open your Claude Code settings:
-   ```
-   ~/.claude/settings.json
-   ```
+- **Settings file.** In `~/.claude-mem/settings.json`:
 
-2. Find the claude-mem hooks section under `hooks.PreToolUse` and remove the entry with the `Read` matcher.
+  ```json
+  {
+    "CLAUDE_MEM_FILE_READ_GATE_ENABLED": "false"
+  }
+  ```
 
-Alternatively, if you want to keep the gate installed but bypass it for a specific read, Claude can ask you to allow the read -- the gate's deny decision is presented to the user, who can override it.
+- **Viewer.** Open the settings (gear icon), expand **Advanced**, switch off **Block full-file reads**, and click **Save**.
+- **Environment.** Set `CLAUDE_MEM_FILE_READ_GATE_ENABLED=false` where the hook can see it: export it in your shell before starting Claude Code, or add it under `env` in `~/.claude/settings.json`. It overrides the settings file.
+
+A change made in the settings file or the viewer applies from the next Read, with no restart. Only the value `false` turns the gate off; any other value leaves it on. In `settings.json`, write it as the string `"false"`, as above.
+
+With the gate off, every Read goes through and the file's timeline is still added as context, once per session for each file.
+
+To turn off the whole hook, timeline included, set `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1` in the hook's environment (see [Turning off the tool hooks](/configuration#turning-off-the-tool-hooks)). Claude Code still starts the hook for each Read, but it exits right away.
 
 <Note>
-Disabling the gate means Claude will read full files every time, which increases token usage but ensures it always sees the latest code. This is a reasonable choice for small projects or when observations are sparse.
+With the gate off, Claude reads whole files whenever it chooses. That costs more tokens on large files but saves the extra tool calls, which can be the better trade for small projects or when observations are sparse.
 </Note>
 
 ---
@@ -171,10 +287,10 @@ Disabling the gate means Claude will read full files every time, which increases
 
 The File Read Gate is one piece of claude-mem's layered context strategy:
 
-1. **Session Start**: Inject timeline of recent observations (layer 1 -- metadata)
-2. **File Read Gate**: Intercept reads with observation history (layer 1 -- metadata)
-3. **get_observations**: Fetch specific observation details on demand (layer 2 -- details)
-4. **smart_outline / smart_unfold**: Read current code structure efficiently (layer 3 -- source)
-5. **Full file read**: Last resort when everything else is insufficient
+1. **Session Start**: inject a timeline of recent observations (layer 1: metadata)
+2. **File Read Gate**: answer a whole-file Read of a code file with that file's timeline (layer 1: metadata)
+3. **get_observations**: fetch specific observation details on demand (layer 2: details)
+4. **smart_outline / smart_unfold**: read the current code's structure, or one symbol (layer 3: source)
+5. **Read with offset and limit**: exact lines, for example before an Edit (layer 3: source)
 
-Each layer is progressively more expensive. The gate ensures Claude starts at the cheapest layer and escalates only when needed.
+Each layer costs more than the one before. The gate makes Claude start at the cheapest layer and escalate only when needed. A whole-file Read still happens wherever the gate steps aside: small and non-code files, files changed since their last observation, subagents, other hosts, installs without the tree-sitter CLI, or with the gate turned off.
