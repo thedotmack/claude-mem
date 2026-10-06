@@ -56,3 +56,34 @@ describe('install --runtime server help text (#4131)', () => {
     expect(helpLine).not.toContain('injects the IDE MCP config');
   });
 });
+
+// #4131 — the cmem.ai sign-in the reporter hit comes from the provider, not the
+// runtime: runInstallCommand runs requireInstallerOAuthLogin whenever
+// providerNeedsAccount() is true, unless a non-interactive run keeps the
+// provider already in settings.
+describe('install --provider help text names the cmem.ai sign-in (#4131)', () => {
+  const cli = readFileSync(join(repoRoot, 'src/npx-cli/index.ts'), 'utf-8');
+  const helpLine = cli.split('\n').find(line => line.includes("'npx claude-mem install --provider "));
+
+  it('lists the providers that need a cmem.ai account', async () => {
+    const { providerNeedsAccount } = await import('../../src/npx-cli/commands/install.js');
+    expect(helpLine).toBeDefined();
+    expect(helpLine).toContain('cmem.ai');
+
+    for (const provider of ['codex', 'gemini', 'openrouter'] as const) {
+      expect(providerNeedsAccount(provider)).toBe(true);
+      expect(helpLine).toContain(provider);
+    }
+    for (const provider of ['claude', 'host'] as const) {
+      expect(providerNeedsAccount(provider)).toBe(false);
+    }
+    expect(helpLine).toContain('claude and host need no account');
+  });
+
+  it('says an interactive install without --provider signs in too', async () => {
+    const { providerNeedsAccount } = await import('../../src/npx-cli/commands/install.js');
+    expect(providerNeedsAccount(undefined)).toBe(true);
+
+    expect(helpLine).toContain('interactive install without --provider');
+  });
+});
