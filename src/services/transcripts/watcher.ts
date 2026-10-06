@@ -166,7 +166,8 @@ class FileTailer {
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
     initialPartial = '',
-    initialFrameLinesDone = 0
+    initialFrameLinesDone = 0,
+    private onReset?: () => void
   ) {
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
@@ -231,6 +232,7 @@ class FileTailer {
     }
 
     if (size < this.tailState.readOffset) {
+      this.onReset?.();
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
       this.tailState.partial = '';
@@ -413,6 +415,7 @@ export class TranscriptWatcher {
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
     }
+    if (this.stopped) return;
     let retired = false;
     for (const file of Object.keys(this.state.pendingTools ?? {})) {
       if (!this.tailers.has(file)) { this.retirePendingToolMetadata(file); retired = true; }
@@ -656,6 +659,12 @@ export class TranscriptWatcher {
     // (DeepSeek Harness writes it on that line only; a turn without one is
     // skipped). A tail that resumes past that line reads it once, before the
     // first new one, for its context only.
+    const resetMetadata = () => {
+      this.processor.resetFileContext(fileContext);
+      delete this.state.pendingTools?.[filePath];
+      delete this.state.pendingToolFileIdentities?.[filePath];
+      delete this.state.cwds?.[filePath];
+    };
     let primeFirstLine = offset > 0 && (Boolean(watch.subagentSource) || !fileContext.cwd);
     const tailer = new FileTailer(
       filePath,
@@ -664,9 +673,7 @@ export class TranscriptWatcher {
         const stat = statSync(filePath);
         const identity = `${stat.dev}:${stat.ino}`;
         if (fileContext.pendingToolFileIdentity !== undefined && fileContext.pendingToolFileIdentity !== identity) {
-          this.processor.resetFileContext(fileContext);
-          delete this.state.pendingTools?.[filePath];
-          delete this.state.cwds?.[filePath];
+          resetMetadata();
         }
         fileContext.pendingToolFileIdentity = identity;
         try {
@@ -702,7 +709,8 @@ export class TranscriptWatcher {
         saveWatchState(this.statePath, this.state);
       },
       this.state.partials?.[filePath] ?? '',
-      this.state.frameLines?.[filePath] ?? 0
+      this.state.frameLines?.[filePath] ?? 0,
+      resetMetadata
     );
 
     tailer.start();

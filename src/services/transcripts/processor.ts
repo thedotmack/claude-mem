@@ -46,6 +46,11 @@ export class TranscriptSpoolError extends Error {
   }
 }
 
+interface PendingTool {
+  toolName: string;
+  toolInput?: unknown;
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -53,7 +58,7 @@ interface SessionState {
   project?: string;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
-  pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  pendingTools?: Map<string, PendingTool>;
   isSubagent?: boolean;
 }
 
@@ -78,6 +83,8 @@ export class TranscriptEventProcessor {
   constructor(private observationTransport: 'in-process' | 'spool' = 'in-process') {}
 
   private sessions = new Map<string, SessionState>();
+  /** Ownership is in-memory only; durable snapshots below contain each file's tools. */
+  private pendingToolOwners = new WeakMap<PendingTool, TranscriptFileContext>();
   /**
    * Session keys of confirmed subagent rollouts. Codex ends a session per
    * turn but marks the rollout only on its first line, so the marker has to
@@ -87,9 +94,12 @@ export class TranscriptEventProcessor {
 
   /** A replaced transcript cannot lend its outstanding tools to a new file. */
   resetFileContext(file: TranscriptFileContext): void {
-    for (const key of Object.keys(file.pendingTools ?? {})) {
-      this.sessions.delete(key);
-      this.subagentSessionKeys.delete(key);
+    for (const [key, tools] of Object.entries(file.pendingTools ?? {})) {
+      const session = this.sessions.get(key);
+      for (const [id, tool] of Object.entries(tools)) {
+        if (session?.pendingTools?.get(id) === tool) session.pendingTools.delete(id);
+      }
+      if (session && session.cwd === file.cwd) session.cwd = undefined;
     }
     file.pendingTools = {};
     file.cwd = undefined;
@@ -217,8 +227,12 @@ export class TranscriptEventProcessor {
 
     const session = this.getOrCreateSession(watch, sessionId);
     const sessionKey = this.getSessionKey(watch, sessionId);
-    if (!session.pendingTools && file?.pendingTools?.[sessionKey]) {
-      session.pendingTools = new Map(Object.entries(file.pendingTools[sessionKey]).map(([id, tool]) => [id, { toolName: tool.toolName, toolInput: tool.toolInput }]));
+    if (file?.pendingTools?.[sessionKey]) {
+      session.pendingTools ??= new Map();
+      for (const [id, tool] of Object.entries(file.pendingTools[sessionKey])) {
+        this.pendingToolOwners.set(tool, file);
+        if (!session.pendingTools.has(id)) session.pendingTools.set(id, tool);
+      }
     }
     // After a restart the watcher resumes mid-file, past the line that carried
     // the session's working directory: start from the one saved for the file.
@@ -280,10 +294,10 @@ export class TranscriptEventProcessor {
           session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
           break;
         case 'tool_use':
-          await this.handleToolUse(session, watch, fields);
+          await this.handleToolUse(session, watch, fields, file);
           break;
         case 'tool_result':
-          await this.handleToolResult(session, watch, fields);
+          await this.handleToolResult(session, watch, fields, file);
           break;
         case 'observation':
           await this.sendObservation(session, watch, fields);
@@ -299,7 +313,10 @@ export class TranscriptEventProcessor {
       }
     } finally {
       if (file) {
-        const pending = Object.fromEntries(session.pendingTools ?? []);
+        const pending: Record<string, PendingTool> = event.action === 'session_end' ? {} : { ...file.pendingTools?.[sessionKey] };
+        for (const [id, tool] of session.pendingTools ?? []) {
+          if (this.pendingToolOwners.get(tool) === file) pending[id] = tool;
+        }
         file.pendingTools = { ...file.pendingTools, [sessionKey]: pending };
         if (Object.keys(pending).length === 0) delete file.pendingTools[sessionKey];
       }
@@ -377,7 +394,7 @@ export class TranscriptEventProcessor {
     });
   }
 
-  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, file?: TranscriptFileContext): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -402,23 +419,26 @@ export class TranscriptEventProcessor {
       });
     } else if (toolName && toolId) {
       if (!session.pendingTools) session.pendingTools = new Map();
-      session.pendingTools.set(toolId, { toolName, toolInput });
+      const tool: PendingTool = { toolName, toolInput };
+      if (file) this.pendingToolOwners.set(tool, file);
+      session.pendingTools.set(toolId, tool);
     }
   }
 
-  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, file?: TranscriptFileContext): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     let toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
     let toolInput = this.maybeParseJson(fields.toolInput);
 
-    if (toolId && session.pendingTools) {
-      const pending = session.pendingTools.get(toolId);
-      if (pending) {
-        if (!toolName) toolName = pending.toolName;
-        if (toolInput === undefined) toolInput = pending.toolInput;
-
-      }
+    const fileTools = file?.pendingTools?.[this.getSessionKey(watch, session.sessionId)];
+    const cached = toolId ? session.pendingTools?.get(toolId) : undefined;
+    const pending = file
+      ? (toolId ? fileTools?.[toolId] : undefined) ?? (cached && this.pendingToolOwners.get(cached) === file ? cached : undefined)
+      : cached;
+    if (pending) {
+      if (!toolName) toolName = pending.toolName;
+      if (toolInput === undefined) toolInput = pending.toolInput;
     }
 
     if (toolName) {
@@ -428,7 +448,10 @@ export class TranscriptEventProcessor {
         toolResponse,
         toolUseId: toolId,
       });
-      if (toolId) session.pendingTools?.delete(toolId);
+      if (toolId) {
+        if (session.pendingTools && session.pendingTools.get(toolId) === pending) session.pendingTools.delete(toolId);
+        if (fileTools) delete fileTools[toolId];
+      }
     } else {
       logger.debug('TRANSCRIPT', 'Dropping tool_result with no resolvable toolName', {
         sessionId: session.sessionId,
