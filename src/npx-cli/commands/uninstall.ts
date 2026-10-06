@@ -309,23 +309,28 @@ export async function runUninstallCommand(): Promise<void> {
 
   // DSH may link the local package. Remove it while the marketplace package
   // and its bundle manifest still exist; never leave a dangling host plugin.
+  // A failure here does not stop the unrelated cleanup below. It keeps the DSH
+  // record and the marketplace directory, so a re-run can finish the removal.
+  let deepSeekHarnessCleanupFailed = false;
   try {
     const { uninstallDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
-    if (await uninstallDeepSeekHarness() !== 0) {
-      p.log.error('DeepSeek Harness cleanup failed. Installation files were preserved; repair DSH and re-run uninstall.');
-      process.exitCode = 1;
-      return;
-    }
+    deepSeekHarnessCleanupFailed = await uninstallDeepSeekHarness() !== 0;
   } catch (error) {
-    p.log.error('DeepSeek Harness cleanup failed; installation files were preserved: ' + String(error));
+    deepSeekHarnessCleanupFailed = true;
+    p.log.error('DeepSeek Harness cleanup failed: ' + String(error));
+  }
+  if (deepSeekHarnessCleanupFailed) {
+    p.log.error('DeepSeek Harness cleanup failed. Its plugin record and the marketplace directory were kept; repair DSH and re-run uninstall to finish. Other integrations are still removed.');
     process.exitCode = 1;
-    return;
   }
 
   await p.tasks([
     {
       title: 'Removing marketplace directory',
       task: async () => {
+        if (deepSeekHarnessCleanupFailed) {
+          return `Marketplace directory kept for DeepSeek Harness ${styleText('yellow', '!')}`;
+        }
         const removed = removeMarketplaceDirectory();
         return removed
           ? `Marketplace directory removed ${styleText('green', 'OK')}`
@@ -442,5 +447,7 @@ export async function runUninstallCommand(): Promise<void> {
   // install ID still live in ~/.claude-mem, which uninstall preserves.
   await captureCliEvent('uninstall_completed', {}, { person: true });
 
-  p.outro(styleText('green', 'claude-mem has been uninstalled.'));
+  p.outro(deepSeekHarnessCleanupFailed
+    ? styleText('yellow', 'claude-mem has been uninstalled, except for DeepSeek Harness.')
+    : styleText('green', 'claude-mem has been uninstalled.'));
 }

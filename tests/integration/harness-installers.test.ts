@@ -353,20 +353,36 @@ describe('first-party harness installers', () => {
     expect(readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n')).toHaveLength(1);
   });
 
-  it.skipIf(process.platform === 'win32')('stops uninstall when DSH refuses removal but finishes once DSH itself is gone', async () => {
+  it.skipIf(process.platform === 'win32')('keeps the DSH record while dsh is missing or refuses, then removes every profile once dsh works again', async () => {
     fakeDsh();
+    const pathWithDsh = process.env.PATH;
     writeConfig({ version: 1, watches: [] });
     const marker = join(dir, 'data', 'integrations', 'dsh.json');
     const uninstall = `console.log('DSH_RESULT=' + JSON.stringify(await uninstallDeepSeekHarness()));`;
-    expect(runIsolatedDsh(`console.log('DSH_RESULT=' + JSON.stringify(await installDeepSeekHarness('review')));`)).toBe(0);
-
-    process.env.DSH_TEST_FAIL = '1';
-    expect(runIsolatedDsh(uninstall)).toBe(1);
-    expect(existsSync(marker)).toBe(true);
-    expect(readConfig().watches).toHaveLength(1);
+    expect(runIsolatedDsh(`
+      const results = [await installDeepSeekHarness('review'), await installDeepSeekHarness('web')];
+      console.log('DSH_RESULT=' + JSON.stringify(results));
+    `)).toEqual([0, 0]);
+    const record = readFileSync(marker, 'utf8');
+    const removals = () => readFileSync(process.env.DSH_TEST_LOG!, 'utf8').trim().split('\n')
+      .map(line => JSON.parse(line)).filter(call => call[3] === 'remove').map(call => call[2]);
 
     process.env.PATH = join(dir, 'no-dsh-on-this-path');
+    expect(runIsolatedDsh(uninstall)).toBe(1);
+    expect(readFileSync(marker, 'utf8')).toBe(record);
+    expect(readConfig().watches).toHaveLength(1);
+    expect(removals()).toEqual([]);
+
+    process.env.PATH = pathWithDsh;
+    process.env.DSH_TEST_FAIL = '1';
+    expect(runIsolatedDsh(uninstall)).toBe(1);
+    expect(readFileSync(marker, 'utf8')).toBe(record);
+    expect(readConfig().watches).toHaveLength(1);
+
+    delete process.env.DSH_TEST_FAIL;
+    const removalsBeforeRetry = removals().length;
     expect(runIsolatedDsh(uninstall)).toBe(0);
+    expect(removals().slice(removalsBeforeRetry)).toEqual(['review', 'web']);
     expect(existsSync(marker)).toBe(false);
     expect(readConfig().watches).toEqual([]);
   });
