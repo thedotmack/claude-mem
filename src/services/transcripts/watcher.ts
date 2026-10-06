@@ -44,6 +44,14 @@ const MAX_BYTES_PER_PASS = 4 * 1024 * 1024;
 /** The startAtEnd frame scan of a zstd file walks this many bytes of frames between yields. */
 const RESUME_SCAN_BYTES_PER_STEP = 16 * 1024 * 1024;
 
+/**
+ * A root watch that just started on a missing root's ancestor, or just moved,
+ * is checked once more after this long. fs.watch registers asynchronously on
+ * some platforms (macOS), so a directory or file created in its first few
+ * milliseconds can raise no event on it.
+ */
+const WATCH_ROOT_SETTLE_MS = 100;
+
 // A bulk backfill can walk hundreds of files and tens of thousands of lines on
 // the Bun event loop that also serves the worker's HTTP API. Awaiting line
 // after line back to back starves live hook capture, so dispatch hands a
@@ -392,6 +400,8 @@ export class TranscriptWatcher {
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   private rootWatchers: Array<ReturnType<typeof fsWatch>> = [];
+  /** One-shot re-checks of a root watch on a missing root's ancestor, or one that just moved (WATCH_ROOT_SETTLE_MS). */
+  private rootWatchSettleTimers = new Set<ReturnType<typeof setTimeout>>();
   private startedAtMs = 0;
   private warnedZstdUnsupported = false;
   private startingTailers = new Set<string>();
@@ -420,6 +430,8 @@ export class TranscriptWatcher {
       watcher.close();
     }
     this.rootWatchers = [];
+    for (const timer of this.rootWatchSettleTimers) clearTimeout(timer);
+    this.rootWatchSettleTimers.clear();
   }
 
   private async setupWatch(watch: WatchTarget): Promise<void> {
@@ -439,22 +451,42 @@ export class TranscriptWatcher {
     // The startAtEnd offsets the initial scan chose, in one write.
     if (files.length > 0 && watch.startAtEnd) saveWatchState(this.statePath, this.state);
 
-    const watchRoot = this.deepestNonGlobAncestor(resolvedPath);
-    if (!watchRoot || !existsSync(watchRoot)) {
-      logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, watchRoot });
+    this.watchTranscriptRoot(resolvedPath, watch, schema);
+  }
+
+  /**
+   * Puts the watch's fs.watch on its root. Once the literal prefix exists, that
+   * is the prefix (a literal file: its directory), watched recursively. While
+   * it is missing, the closest existing ancestor is watched non-recursively and
+   * the watch moves down as the host creates each directory: a recursive watch
+   * on a broad ancestor (the home directory, for a tool that is not installed)
+   * registers one inotify watch per subdirectory on Linux, on every start.
+   */
+  private watchTranscriptRoot(resolvedPath: string, watch: WatchTarget, schema: TranscriptSchema, moved = false): void {
+    const target = this.selectWatchRoot(resolvedPath);
+    if (!target) {
+      logger.debug('TRANSCRIPT', 'Watch root does not exist, skipping fs.watch', { watch: watch.name, path: resolvedPath });
       return;
     }
 
+    const { root, recursive } = target;
     try {
-      const watcher = fsWatch(watchRoot, { recursive: true, persistent: true }, (event, name) => {
-        this.handleRootWatchEvent(watchRoot, resolvedPath, watch, schema, name);
+      const watcher: ReturnType<typeof fsWatch> = fsWatch(root, { recursive, persistent: true }, (_event, name) => {
+        if (recursive) {
+          this.handleRootWatchEvent(root, resolvedPath, watch, schema, name);
+        } else {
+          this.handleAncestorWatchEvent(watcher, root, resolvedPath, watch, schema, name);
+        }
       });
       this.rootWatchers.push(watcher);
-      logger.info('TRANSCRIPT', 'Watching transcript root recursively', { watch: watch.name, watchRoot });
+      if (moved || !recursive) this.settleRootWatch(watcher, root, recursive, resolvedPath, watch, schema);
+      logger.info('TRANSCRIPT', recursive
+        ? 'Watching transcript root recursively'
+        : 'Transcript root does not exist yet; watching its closest existing directory', { watch: watch.name, watchRoot: root });
     } catch (error) {
-      logger.warn('TRANSCRIPT', 'Failed to start recursive fs.watch on transcript root', {
+      logger.warn('TRANSCRIPT', 'Failed to start fs.watch on transcript root', {
         watch: watch.name,
-        watchRoot,
+        watchRoot: root,
       }, error instanceof Error ? error : undefined);
     }
   }
@@ -473,19 +505,78 @@ export class TranscriptWatcher {
       existingTailer.poke();
       return;
     }
-    // A missing path may require watching a broad ancestor. Directory creation
-    // on the configured prefix matters, but sibling writes cannot add matches.
-    const prefix = resolvePath(this.literalWatchPrefix(resolvedPath)).replace(/\\/g, '/');
-    if (changed !== prefix && !changed.startsWith(prefix.endsWith('/') ? prefix : prefix + '/') &&
-      !prefix.startsWith(changed.endsWith('/') ? changed : changed + '/')) return;
-    const matches = this.resolveWatchFiles(resolvedPath);
-    for (const filePath of matches) {
+    // Sibling writes (a literal file's directory) cannot add matches.
+    if (!this.touchesLiteralPrefix(changed, resolvedPath)) return;
+    this.addDiscoveredTailers(resolvedPath, watch, schema);
+  }
+
+  /**
+   * An event on the closest existing ancestor of a missing transcript root.
+   * Only a change on the path to the literal prefix can move the watch. When
+   * the closest existing directory changes, this watch is replaced by the next
+   * one, and files the host already created below it are picked up at once.
+   */
+  private handleAncestorWatchEvent(
+    ancestorWatcher: ReturnType<typeof fsWatch>,
+    ancestor: string,
+    resolvedPath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    name: string | null
+  ): void {
+    // A watch already replaced (its late events, its settle check) does nothing.
+    if (this.stopped || !this.rootWatchers.includes(ancestorWatcher)) return;
+    if (name && !this.touchesLiteralPrefix(resolvePath(ancestor, name), resolvedPath)) return;
+    const next = this.selectWatchRoot(resolvedPath);
+    if (next && next.root === ancestor && !next.recursive) return;
+
+    ancestorWatcher.close();
+    this.rootWatchers = this.rootWatchers.filter(watcher => watcher !== ancestorWatcher);
+    this.watchTranscriptRoot(resolvedPath, watch, schema, true);
+    this.addDiscoveredTailers(resolvedPath, watch, schema);
+  }
+
+  /**
+   * Checks a root watch that just started on a missing root's ancestor, or just
+   * moved, once more after WATCH_ROOT_SETTLE_MS: a directory created while it
+   * registered moves it again, and a file created then is picked up.
+   */
+  private settleRootWatch(
+    watcher: ReturnType<typeof fsWatch>,
+    root: string,
+    recursive: boolean,
+    resolvedPath: string,
+    watch: WatchTarget,
+    schema: TranscriptSchema
+  ): void {
+    const timer = setTimeout(() => {
+      this.rootWatchSettleTimers.delete(timer);
+      if (this.stopped || !this.rootWatchers.includes(watcher)) return;
+      if (recursive) {
+        this.addDiscoveredTailers(resolvedPath, watch, schema);
+      } else {
+        this.handleAncestorWatchEvent(watcher, root, resolvedPath, watch, schema, null);
+      }
+    }, WATCH_ROOT_SETTLE_MS);
+    this.rootWatchSettleTimers.add(timer);
+  }
+
+  private addDiscoveredTailers(resolvedPath: string, watch: WatchTarget, schema: TranscriptSchema): void {
+    for (const filePath of this.resolveWatchFiles(resolvedPath)) {
       if (!this.tailers.has(filePath)) {
         void this.addTailer(filePath, watch, schema, true).catch(error => {
           logger.debug('TRANSCRIPT', 'Failed to add transcript tailer', { file: filePath, watch: watch.name }, error instanceof Error ? error : undefined);
         });
       }
     }
+  }
+
+  /** Whether a changed path is the watch's literal prefix, inside it, or one of its ancestors. */
+  private touchesLiteralPrefix(changedPath: string, resolvedPath: string): boolean {
+    const changed = changedPath.replace(/\\/g, '/');
+    const prefix = resolvePath(this.literalWatchPrefix(resolvedPath)).replace(/\\/g, '/');
+    const isInside = (path: string, directory: string) => path.startsWith(directory.endsWith('/') ? directory : directory + '/');
+    return changed === prefix || isInside(changed, prefix) || isInside(prefix, changed);
   }
 
   private literalWatchPrefix(inputPath: string): string {
@@ -504,26 +595,32 @@ export class TranscriptWatcher {
     return candidate;
   }
 
-  private deepestNonGlobAncestor(inputPath: string): string {
-    let candidate = this.literalWatchPrefix(inputPath);
-    if (!candidate) return '';
-
-    // A host may create the configured file (or its parent directories) only
-    // after the watcher starts. Watch the closest existing directory and keep
-    // resolveWatchFiles as the selector so unrelated files are never ingested.
-    const explicitlyConfiguredRoot = resolvePath(candidate, '..') === candidate;
-    while (candidate) {
-      const parent = resolvePath(candidate, '..');
-      if (parent === candidate && !explicitlyConfiguredRoot) return '';
+  /**
+   * Where a watch's fs.watch goes. Once the literal prefix exists: the prefix
+   * (a literal file: its directory), recursively. While it is missing (a host
+   * creates its directories only after the watcher starts): the closest
+   * existing ancestor, non-recursively, and never the filesystem root unless
+   * that root is the prefix. resolveWatchFiles stays the selector, so files
+   * outside the pattern are never ingested. Null for a pattern with no literal
+   * root.
+   */
+  private selectWatchRoot(inputPath: string): { root: string; recursive: boolean } | null {
+    const literalPrefix = this.literalWatchPrefix(inputPath);
+    if (!literalPrefix) return null;
+    const prefix = resolvePath(literalPrefix);
+    try {
+      return { root: statSync(prefix).isDirectory() ? prefix : resolvePath(prefix, '..'), recursive: true };
+    } catch {
+      // Missing or inaccessible: watch the closest existing ancestor below.
+    }
+    for (let candidate = resolvePath(prefix, '..'); resolvePath(candidate, '..') !== candidate; candidate = resolvePath(candidate, '..')) {
       try {
-        if (statSync(candidate).isDirectory()) return candidate;
+        if (statSync(candidate).isDirectory()) return { root: candidate, recursive: false };
       } catch {
         // Missing or inaccessible candidates are retried from their parent.
       }
-      if (parent === candidate) return '';
-      candidate = parent;
     }
-    return '';
+    return null;
   }
 
   private resolveSchema(watch: WatchTarget): TranscriptSchema | null {

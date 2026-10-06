@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import * as fs from 'fs';
 import { mkdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join, relative, resolve } from 'path';
@@ -72,7 +73,7 @@ describe('TranscriptWatcher missing files', () => {
         mkdirSync(join(tmpRoot, 'future', 'sessions'), { recursive: true });
         writeFileSync(join(tmpRoot, 'unrelated.jsonl'), '{}\n');
         writeFileSync(target, JSON.stringify({ session: 'wanted', type: 'edit', path: 'wanted.ts' }) + '\n');
-        const deadline = Date.now() + 2000;
+        const deadline = Date.now() + 5000;
         while (captured.length === 0 && Date.now() < deadline) {
           await new Promise(resolve => setTimeout(resolve, 10));
         }
@@ -98,6 +99,52 @@ describe('TranscriptWatcher missing files', () => {
       (watcher as any).handleRootWatchEvent(tmpRoot, target, watch, schema, 'future/sessions/wanted.jsonl');
       expect(scan).toHaveBeenCalledTimes(2);
     } finally { watcher.stop(); scan.mockRestore(); }
+  });
+
+  it('watches a missing prefix from its closest existing directory, non-recursively, until the prefix exists', async () => {
+    const watchSpy = spyOn(fs, 'watch');
+    // Root watches pass `recursive`; a file tailer's own watch does not.
+    const rootWatches = () => watchSpy.mock.calls
+      .filter(([, options]) => typeof options === 'object' && options !== null && 'recursive' in options)
+      .map(([path, options]) => [resolve(String(path)), (options as { recursive: boolean }).recursive]);
+    const waitForRootWatches = async (count: number) => {
+      const deadline = Date.now() + 5000;
+      while (rootWatches().length < count && Date.now() < deadline) await new Promise(r => setTimeout(r, 10));
+    };
+    const prefix = join(tmpRoot, 'missing', 'sessions');
+    const watch: WatchTarget = { name: 'codex', path: join(prefix, '**', '*.jsonl'), schema };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, join(tmpRoot, 'state.json'));
+    try {
+      await watcher.start();
+      // A recursive watch here would cover every sibling tree (the home
+      // directory, for a tool that is not installed yet).
+      expect(rootWatches()).toEqual([[tmpRoot, false]]);
+
+      mkdirSync(join(tmpRoot, 'missing'));
+      await waitForRootWatches(2);
+      expect(rootWatches()[1]).toEqual([join(tmpRoot, 'missing'), false]);
+
+      mkdirSync(prefix);
+      await waitForRootWatches(3);
+      expect(rootWatches()[2]).toEqual([prefix, true]);
+      // Each move closes the watch it replaces.
+      expect((watcher as any).rootWatchers).toHaveLength(1);
+    } finally { watcher.stop(); watchSpy.mockRestore(); }
+  });
+
+  it('ignores events on a missing prefix\'s ancestor that are off the path to it', () => {
+    const target = join(tmpRoot, 'future', 'sessions', '*.jsonl');
+    const watch: WatchTarget = { name: 'codex', path: target, schema };
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, join(tmpRoot, 'state.json'));
+    const select = spyOn(watcher as any, 'selectWatchRoot');
+    const ancestorWatcher = { close: () => {} };
+    (watcher as any).rootWatchers.push(ancestorWatcher);
+    try {
+      (watcher as any).handleAncestorWatchEvent(ancestorWatcher, tmpRoot, target, watch, schema, 'sibling.jsonl');
+      expect(select).not.toHaveBeenCalled();
+      (watcher as any).handleAncestorWatchEvent(ancestorWatcher, tmpRoot, target, watch, schema, 'future');
+      expect(select).toHaveBeenCalledTimes(1);
+    } finally { watcher.stop(); select.mockRestore(); }
   });
 
   it('does not broaden a missing absolute prefix to a filesystem-root watch', async () => {
