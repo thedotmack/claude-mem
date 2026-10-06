@@ -10,8 +10,8 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for session-list recovery tests');
 
-for (const scenario of ['first-page', 'older-page', 'project-switch'] as const) {
-  (chrome ? it : it.skip)(`session catalog recovers ${scenario} failures by explicit retry`, async () => {
+for (const [scenario, slow] of [['first-page', false], ['older-page', false], ['project-switch', false], ['project-switch', true]] as const) {
+  (chrome ? it : it.skip)(`session catalog recovers ${scenario}${slow ? " after slow responses" : ""} failures by explicit retry`, async () => {
     const owned = mkdtempSync(join(tmpdir(), 'claude-mem-session-retry-'));
     let child: ReturnType<typeof Bun.spawn> | undefined;
     let server: ReturnType<typeof Bun.serve> | undefined;
@@ -46,8 +46,9 @@ for (const scenario of ['first-page', 'older-page', 'project-switch'] as const) 
               }
               document.getElementById('switch-project').click();
             }
+            const alertDeadline=Date.now()+6000;
             while(!document.querySelector('[role="alert"]')) {
-              if(Date.now()>deadline)throw Error('No load failure shown');
+              if(Date.now()>alertDeadline)throw Error('No load failure shown');
               await new Promise(resolve=>setTimeout(resolve,10));
             }
             await new Promise(resolve=>setTimeout(resolve,150));
@@ -77,6 +78,7 @@ for (const scenario of ['first-page', 'older-page', 'project-switch'] as const) 
           const n=++requests;
           const params=new URL(request.url).searchParams;
           offsets.push(Number(params.get('offset')));
+          if(slow && n<=2) await Bun.sleep(n===1 ? 4000 : 3000);
           if(scenario!=='first-page' && n===1) return Response.json({sessions:[session],hasMore:scenario==='older-page'});
           if(n===(scenario==='first-page'?1:2)) return new Response('Temporary failure',{status:503});
           return Response.json({sessions:[{...session,content_session_id:'recovered-session',project:params.get('project')!,custom_title:'Recovered'}],hasMore:false});
