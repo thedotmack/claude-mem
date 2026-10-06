@@ -301,14 +301,20 @@ export function linkToolUsesToObservation(
   const result = db.prepare(`
     UPDATE tool_uses
     SET observation_id = COALESCE(observation_id, ?),
-        memory_session_id = COALESCE(?, memory_session_id)
+        memory_session_id = CASE WHEN observation_id IS NULL
+          THEN COALESCE(?, memory_session_id)
+          ELSE COALESCE(memory_session_id, ?)
+        END
     WHERE content_session_id = ?
       AND tool_use_id IN (${placeholders})
+      AND (observation_id IS NULL OR observation_id = ?)
   `).run(
     params.observationId,
     params.memorySessionId ?? null,
+    params.memorySessionId ?? null,
     params.contentSessionId,
-    ...ids
+    ...ids,
+    params.observationId
   );
 
   return Number(result.changes ?? 0);
