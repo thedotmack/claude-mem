@@ -12,7 +12,7 @@ const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
     ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
 if (process.env.CI && !chrome) throw new Error('CI requires Chrome for restart recovery tests');
 
-for (const stalled of ['post', 'health', 'health-body', 'readiness'] as const) {
+for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-successor'] as const) {
   (chrome ? it : it.skip)(`restart page recovers after a stalled ${stalled} request`, async () => {
     const owned=mkdtempSync(join(tmpdir(),'claude-mem-restart-timeout-'));
     let child:ReturnType<typeof Bun.spawn>|undefined;
@@ -39,7 +39,7 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness'] as const) {
       if(attempt===1 && stalled==='health-body') {
         res.setHeader('Content-Type','application/json');res.write('{"pid":');return;
       }
-      res.json({pid:process.pid+1,status:'ok'});
+      res.json({pid:process.pid+(stalled==='no-successor'?0:1),status:'ok'});
     });
     app.get('/api/readiness',(_req,res)=>{
       if(++readinessRequests===1 && stalled==='readiness')return;
@@ -48,11 +48,12 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness'] as const) {
     app.get('/driver.js',(_req,res)=>res.type('application/javascript').send(`
       (async()=>{
         document.getElementById('go').click();
-        const deadline=Date.now()+9000;
+        const started=Date.now();
+        const deadline=started+${stalled==='no-successor'?65000:9000};
         while(document.getElementById('status').textContent==='Restarting…' && Date.now()<deadline)
           await new Promise(resolve=>setTimeout(resolve,10));
         await fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-          status:document.getElementById('status').textContent,disabled:document.getElementById('go').disabled})});
+          status:document.getElementById('status').textContent,disabled:document.getElementById('go').disabled,elapsed:Date.now()-started})});
       })();
     `));
     app.post('/result',express.json(),(req,res)=>{report(req.body);res.send('received')});
@@ -66,8 +67,17 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness'] as const) {
       child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
         '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,`http://127.0.0.1:${address.port}/restart`],
         {stdout:'ignore',stderr:'ignore'});
-      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser timed out'}),15000)})]);
-      expect(received).toEqual({status:'Memory worker restarted. You can close this tab.',disabled:true});
+      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser timed out'}),(stalled==='no-successor'?75000:15000))})]);
+      const observation=received as {status:string;disabled:boolean;elapsed:number};
+      if(stalled==='no-successor') {
+        expect(observation.status).toContain('doctor');
+        expect(observation.disabled).toBe(false);
+        expect(observation.elapsed).toBeGreaterThanOrEqual(60000);
+        expect(observation.elapsed).toBeLessThan(65000);
+      } else {
+        expect(observation.status).toBe('Memory worker restarted. You can close this tab.');
+        expect(observation.disabled).toBe(true);
+      }
       expect(healthRequests).toBeGreaterThanOrEqual(stalled==='post'?1:2);
     } finally {
       clearTimeout(timer);
@@ -76,5 +86,5 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness'] as const) {
       await new Promise<void>(resolve=>server.close(()=>resolve()));
       rmSync(owned,{recursive:true,force:true});
     }
-  },20000);
+  },stalled==='no-successor'?80000:20000);
 }
