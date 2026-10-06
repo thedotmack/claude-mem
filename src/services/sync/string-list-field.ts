@@ -6,6 +6,9 @@ import { logger } from '../../utils/logger.js';
  * stored as a plain string) become one entry instead of being dropped.
  * Backfill and the replica forward both parse through here, so a revised row
  * gets the same fragments backfill indexed.
+ *
+ * The viewer keeps its own copy in `src/ui/viewer/utils/stored-string-list.ts`
+ * (its tsconfig pins rootDir to the viewer directory). Change both together.
  */
 export function parseStringListField(
   rawValue: string | null | undefined,

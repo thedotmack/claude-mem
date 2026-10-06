@@ -4,6 +4,46 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.31.1] - 2026-10-06
+
+## Cloud sync: uploads no longer blocked by Supabase's firewall
+
+Since the move to Supabase, Supabase's Cloudflare firewall rejected some memory uploads based on their content, answering with an HTML "Attention Required!" page. The worker read that as an invalid token: it paused sync, told users to reconnect (which couldn't help), and left the rest of their upload queue stuck behind the blocked batch.
+
+- **Server side (already live, no update needed):** `sync.cmem.ai` now compresses uploads before forwarding them, and the `cmem-sync` function decodes them, so they get through the firewall.
+- **Worker:** an HTML 401/403 is no longer treated as a bad token. It's an ordinary failure that retries.
+- **Worker:** installs that were given the direct Supabase sync URL during setup are moved back to `https://sync.cmem.ai` on their own.
+
+## Other fixes
+
+- **smart-read:** keeps more symbols across C++, Haskell, Go, Rust, Zig, Swift, Kotlin, Ruby, PHP, Lua, TOML, JS and Python, and recognizes source file extensions regardless of case.
+- **search and smart-search:**
+  - substring reads are kept when FTS probing can't write
+  - observation filters are honored during semantic hydration
+  - multi-category selections survive every search strategy
+  - matches are ranked by their full relevance score
+- **context:**
+  - reads assistant transcript rows that contain only whitespace
+  - encodes every non-alphanumeric character in the cwd
+  - discards renders after a cache variant is torn down
+  - counts retained reinforcements once
+- **viewer and HTTP:**
+  - data feed pagination is bounded before SQLite runs
+  - truncated row identities are rejected
+  - one failed SSE client no longer affects healthy ones
+  - malformed observation metadata is recovered
+  - saved settings are preserved while loading
+- **Reliability:**
+  - non-finite `retry-after` hints are ignored
+  - spool tool ids are namespaced by session and platform
+  - the first observation's session owner is kept
+  - the MCP server loads in the launcher process
+  - plugin roots given as relative paths become absolute at install
+  - log follow reads are bounded
+  - watcher configuration shapes that would break it are rejected
+  - knowledge saves require a successful SDK result
+  - exports keep the last good file when a write partly fails
+
 ## [13.31.0] - 2026-10-05
 
 ## Sessions start without waiting

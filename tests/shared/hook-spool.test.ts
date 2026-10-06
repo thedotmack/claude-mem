@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { basename, join } from 'path';
 import {
   HookSpool,
+  type HookSpoolConsumedMarkers,
   HOOK_SPOOL_RETRY_WINDOW_MS,
   migrateLegacySessionEndReplay,
   resolveHookSpoolDirectory,
@@ -56,7 +57,46 @@ describe('HookSpool', () => {
     expect(spool.directory).toBe(join(dataDir, 'state', 'hook-spool'));
     expect(resolveHookSpoolDirectory()).toBe(spool.directory);
     spool.enqueue('observation', observation('toolu_1'));
-    expect(spoolFiles(spool)).toEqual(['observation-toolu_1.json']);
+    expect(spoolFiles(spool)).toHaveLength(1);
+    expect(spoolFiles(spool)[0]).toMatch(/^observation-[a-f0-9]{64}-toolu_1\.json$/);
+  });
+
+  it('retains identical host tool ids from different sessions and platforms', async () => {
+    const spool = new HookSpool();
+    const first = observation('call_1');
+    spool.enqueue('observation', first);
+    spool.enqueue('observation', { ...first, contentSessionId: 'session-2' });
+    spool.enqueue('observation', { ...first, platformSource: 'codex' });
+    // A repeat within the original scope replaces that event only.
+    spool.enqueue('observation', { ...first, platformSource: 'Claude Code', toolResponse: 'updated' });
+    expect(spoolFiles(spool)).toHaveLength(3);
+    const received: string[] = [];
+    await spool.drain(entry => {
+      received.push(`${entry.payload.contentSessionId}:${entry.payload.platformSource}`);
+      return true;
+    });
+    expect(received.sort()).toEqual(['session-1:claude', 'session-1:codex', 'session-2:claude']);
+  });
+
+  it('keeps an existing legacy handoff marker authoritative during upgrade', async () => {
+    const spool = new HookSpool();
+    mkdirSync(spool.directory, { recursive: true });
+    const legacyPath = join(spool.directory, 'observation-call_1.json');
+    writeFileSync(legacyPath, JSON.stringify({ kind: 'observation', payload: observation('call_1'), enqueuedAtEpochMs: Date.now() }));
+    const consumed = new Set(['observation-call_1']);
+    const markers: HookSpoolConsumedMarkers = {
+      isConsumed: key => consumed.has(key),
+      markConsumed: key => { consumed.add(key); },
+      clearConsumed: key => { consumed.delete(key); },
+      pruneConsumedBefore: () => {},
+    };
+    expect(spool.enqueue('observation', observation('call_1'))).toBe(legacyPath);
+    spool.enqueue('observation', { ...observation('call_1'), contentSessionId: 'other-session' });
+    const received: string[] = [];
+    await spool.drain(entry => { received.push(entry.payload.contentSessionId); return true; }, markers);
+    expect(received).toEqual(['other-session']);
+    expect(spoolFiles(spool)).toEqual([]);
+    expect(consumed.size).toBe(0);
   });
 
   it('drains in enqueue order, across kinds', async () => {
@@ -92,7 +132,9 @@ describe('HookSpool', () => {
     spool.enqueue('observation', observation('toolu_later'), 20_000);
     spool.enqueue('observation', observation('toolu_dup'), 30_000);
 
-    expect(spoolFiles(spool).sort()).toEqual(['observation-toolu_dup.json', 'observation-toolu_later.json']);
+    expect(spoolFiles(spool)).toHaveLength(2);
+    expect(spoolFiles(spool).filter(name => name.endsWith('-toolu_dup.json'))).toHaveLength(1);
+    expect(spoolFiles(spool).filter(name => name.endsWith('-toolu_later.json'))).toHaveLength(1);
     expect(spool.entries().map(entry => (entry.payload as { toolUseId?: string }).toolUseId))
       .toEqual(['toolu_dup', 'toolu_later']);
   });

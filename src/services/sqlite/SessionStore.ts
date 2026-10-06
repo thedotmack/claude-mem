@@ -3158,7 +3158,7 @@ export class SessionStore {
       FROM session_summaries
       WHERE memory_session_id = ?
       ${platformClause}
-      ORDER BY created_at_epoch DESC
+      ORDER BY created_at_epoch DESC, id DESC
       LIMIT 1
     `);
 
@@ -3319,7 +3319,7 @@ export class SessionStore {
     `).run(observedModel || null, observedBilling || null, sessionDbId);
   }
 
-  getSdkSessionsBySessionIds(memorySessionIds: string[]): {
+  getSdkSessionsBySessionIds(memorySessionIds: string[], promptIds: number[] = []): {
     id: number;
     content_session_id: string;
     memory_session_id: string;
@@ -3333,20 +3333,31 @@ export class SessionStore {
     completed_at_epoch: number | null;
     status: string;
   }[] {
-    if (memorySessionIds.length === 0) return [];
+    if (memorySessionIds.length === 0 && promptIds.length === 0) return [];
 
-    const placeholders = memorySessionIds.map(() => '?').join(',');
-    const stmt = this.db.prepare(`
-      SELECT id, content_session_id, memory_session_id, project,
-             COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
-             user_prompt, custom_title,
-             started_at, started_at_epoch, completed_at, completed_at_epoch, status
-      FROM sdk_sessions
-      WHERE memory_session_id IN (${placeholders})
-      ORDER BY started_at_epoch DESC
-    `);
-
-    return stmt.all(...memorySessionIds) as any[];
+    // Memory and prompt references share a 500-binding budget. Deduplicate
+    // both references and returned rows; one parent can span many chunks.
+    const references: Array<string | number> = [...new Set(memorySessionIds), ...new Set(promptIds)];
+    const sessions = new Map<number, ReturnType<SessionStore['getSdkSessionsBySessionIds']>[number]>();
+    for (let offset = 0; offset < references.length; offset += 500) {
+      const batch = references.slice(offset, offset + 500);
+      const memoryIds = batch.filter((id): id is string => typeof id === 'string');
+      const prompts = batch.filter((id): id is number => typeof id === 'number');
+      const conditions: string[] = [];
+      if (memoryIds.length) conditions.push(`memory_session_id IN (${memoryIds.map(() => '?').join(',')})`);
+      if (prompts.length) conditions.push(`id IN (SELECT session_db_id FROM user_prompts WHERE id IN (${prompts.map(() => '?').join(',')}))`);
+      const stmt = this.db.prepare(`
+        SELECT id, content_session_id, memory_session_id, project,
+               COALESCE(platform_source, '${DEFAULT_PLATFORM_SOURCE}') as platform_source,
+               user_prompt, custom_title,
+               started_at, started_at_epoch, completed_at, completed_at_epoch, status
+        FROM sdk_sessions
+        WHERE ${conditions.join(' OR ')}
+        ORDER BY started_at_epoch DESC
+      `);
+      for (const row of stmt.all(...batch) as ReturnType<SessionStore['getSdkSessionsBySessionIds']>) sessions.set(row.id, row);
+    }
+    return [...sessions.values()].sort((a, b) => b.started_at_epoch - a.started_at_epoch);
   }
 
   /**
@@ -4294,6 +4305,7 @@ export class SessionStore {
     project: string;
     platform_source?: string;
     user_prompt: string;
+    custom_title?: string | null;
     started_at: string;
     started_at_epoch: number;
     completed_at: string | null;
@@ -4310,27 +4322,39 @@ export class SessionStore {
       return { imported: false, id: existing.id };
     }
 
+    const customTitle = session.custom_title ?? null;
+    // Backup values are historical SQLite data, not a newly authored title.
+    // Preserve legacy strings exactly; JSON objects/numbers are not title values.
+    if (customTitle !== null && typeof customTitle !== 'string') {
+      throw new TypeError('Imported custom_title must be a string or null');
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO sdk_sessions (
-        content_session_id, memory_session_id, project, platform_source, user_prompt,
+        content_session_id, memory_session_id, project, platform_source, user_prompt, custom_title,
         started_at, started_at_epoch, completed_at, completed_at_epoch, status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-	      session.content_session_id,
-	      session.memory_session_id,
-	      session.project,
-	      normalizedPlatformSource,
-      session.user_prompt,
-      session.started_at,
-      session.started_at_epoch,
-      session.completed_at,
-      session.completed_at_epoch,
-      session.status
-    );
+    return this.db.transaction(() => {
+      const result = stmt.run(
+  	      session.content_session_id,
+  	      session.memory_session_id,
+  	      session.project,
+  	      normalizedPlatformSource,
+        session.user_prompt,
+        customTitle,
+        session.started_at,
+        session.started_at_epoch,
+        session.completed_at,
+        session.completed_at_epoch,
+        session.status
+      );
 
-    return { imported: true, id: result.lastInsertRowid as number };
+      // Backups contain no title mutation clock. Publishing this historical
+      // value as a new set_title op could overwrite a newer replica title.
+      return { imported: true, id: result.lastInsertRowid as number };
+    })();
   }
 
   importSessionSummary(summary: {
@@ -4360,9 +4384,20 @@ export class SessionStore {
       return { imported: false, id: 0 };
     }
 
+    // project and discovery_tokens stay out of the replay match: both are
+    // rewritten after a row is created (cwd remap / remap_project, and
+    // updateDiscoveryTokens), so an earlier export of this row must still match.
     const existing = this.db.prepare(
-      'SELECT id FROM session_summaries WHERE memory_session_id = ?'
-    ).get(summary.memory_session_id) as { id: number } | undefined;
+      `SELECT id FROM session_summaries WHERE memory_session_id = ?
+        AND request IS ? AND investigated IS ? AND learned IS ? AND completed IS ?
+        AND next_steps IS ? AND files_read IS ? AND files_edited IS ? AND notes IS ?
+        AND prompt_number IS ? AND created_at_epoch = ?`
+    ).get(summary.memory_session_id, coerceBindValue(summary.request),
+      coerceBindValue(summary.investigated), coerceBindValue(summary.learned),
+      coerceBindValue(summary.completed), coerceBindValue(summary.next_steps),
+      coerceBindValue(summary.files_read), coerceBindValue(summary.files_edited),
+      coerceBindValue(summary.notes), summary.prompt_number ?? null,
+      summary.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -4430,10 +4465,20 @@ export class SessionStore {
       return { imported: false, id: 0 };
     }
 
+    // Same replay match as importSessionSummary: project and discovery_tokens
+    // are rewritten after a row is created, so they are not part of it.
     const existing = this.db.prepare(`
       SELECT id FROM observations
-      WHERE memory_session_id = ? AND title = ? AND created_at_epoch = ?
-    `).get(obs.memory_session_id, coerceBindValue(obs.title), obs.created_at_epoch) as { id: number } | undefined;
+      WHERE memory_session_id = ? AND text IS ? AND type = ?
+        AND title IS ? AND subtitle IS ? AND facts IS ? AND narrative IS ?
+        AND concepts IS ? AND files_read IS ? AND files_modified IS ?
+        AND prompt_number IS ? AND agent_type IS ?
+        AND agent_id IS ? AND created_at_epoch = ?
+    `).get(obs.memory_session_id, coerceBindValue(obs.text), obs.type,
+      coerceBindValue(obs.title), coerceBindValue(obs.subtitle), coerceBindValue(obs.facts),
+      coerceBindValue(obs.narrative), coerceBindValue(obs.concepts), coerceBindValue(obs.files_read),
+      coerceBindValue(obs.files_modified), obs.prompt_number ?? null,
+      obs.agent_type ?? null, obs.agent_id ?? null, obs.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
