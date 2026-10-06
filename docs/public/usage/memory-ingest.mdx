@@ -12,8 +12,10 @@ Claude Code maintains its own **auto-memory** — markdown it distills for itsel
 ~/.claude/projects/<encoded-cwd>/memory/<topic>.md  (distilled prose, one fact per file)
 ```
 
-`<encoded-cwd>` is the repo's absolute path with every `/` replaced by `-` (e.g.
-`/home/you/code/app` → `-home-you-code-app`).
+`<encoded-cwd>` is the repo's absolute path with every character other than a
+letter or digit replaced by `-` (e.g. `/home/you/code/my_app` →
+`-home-you-code-my-app`). Claude Code cuts a name longer than 200 characters to
+200 and ends it with a short hash.
 
 `claude-mem memory ingest` imports those topic files **directly** into your
 memory database as observations.

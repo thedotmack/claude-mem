@@ -934,10 +934,20 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const { config: transcriptConfig, scoped, removed } = scopeNativeHookBackedCodexWatches(
-      loadTranscriptWatchConfig(configPath),
-      settings,
-    );
+    let loadedConfig: ReturnType<typeof scopeNativeHookBackedCodexWatches>;
+    try {
+      loadedConfig = scopeNativeHookBackedCodexWatches(loadTranscriptWatchConfig(configPath), settings);
+    } catch (error) {
+      // Background init awaits this method, so a throw here would also skip the
+      // Chroma backfill, CloudSync, the pull loop and the MCP self-check for the
+      // worker's lifetime. An unreadable or invalid config turns off transcript
+      // capture only.
+      logger.error('TRANSCRIPT', 'Invalid transcript watch config (continuing without transcript ingestion)', {
+        configPath: resolvedConfigPath
+      }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const { config: transcriptConfig, scoped, removed } = loadedConfig;
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
     if (scoped > 0) {
