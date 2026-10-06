@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nativeTest as test } from './native-prerequisite.js';
 import { searchCodebase } from '../../../src/services/smart-file-read/search.js';
+import { parseFile, unfoldSymbol } from '../../../src/services/smart-file-read/parser.js';
 const root=mkdtempSync(join(tmpdir(),'cm-go-method-search-'));
 afterAll(()=>rmSync(root,{recursive:true,force:true}));
 writeFileSync(join(root,'store.go'),`package owned
@@ -16,6 +17,26 @@ func StoreRemove() {}`);
 test('does not crowd a capped type search with receiver-owned methods', async()=>{
   const result=await searchCodebase(root,'Store',{maxResults:5});
   expect(result.matchingSymbols.map(s=>s.symbolName)).toEqual(['Store','StoreCreate','StoreLoad','StoreUpdate','StoreRemove']);
+},120000);
+
+test('retains a multiline pointer receiver identity through unfold', () => {
+  const source = 'package owned\ntype Store struct {}\nfunc (r *\nStore) Reset() {}\n';
+  const names = parseFile(source, 'multiline.go').symbols.map(symbol => symbol.name);
+  expect(names).toContain('Store.Reset');
+  expect(unfoldSymbol(source, 'multiline.go', 'Store.Reset')).toContain('Reset()');
+},120000);
+
+const trailingRoot=mkdtempSync(join(tmpdir(),'cm-go-trailing-dot-'));
+afterAll(()=>rmSync(trailingRoot,{recursive:true,force:true}));
+writeFileSync(join(trailingRoot,'trailing.go'),`package owned
+type Other struct {}
+${Array.from({length:12},(_,i)=>`func (o Other) Distractor${i}() {}`).join('\n')}
+// LookupHint documents the Store. receiver prefix.
+func LookupHint() {}`);
+test('does not score an empty dotted method fragment against every receiver',async()=>{
+  const result=await searchCodebase(trailingRoot,'Store.',{maxResults:8});
+  expect(result.matchingSymbols.some(symbol=>symbol.symbolName==='LookupHint')).toBe(true);
+  expect(result.matchingSymbols.some(symbol=>symbol.symbolName.startsWith('Other.'))).toBe(false);
 },120000);
 test('keeps explicitly qualified method search available',async()=>{
   const result=await searchCodebase(root,'Store.Method7',{maxResults:5});
@@ -55,3 +76,26 @@ test('matches a qualified method query on the method name, not on the receiver a
   const copied=await searchCodebase(leafRoot,'srv.Reset');
   expect(copied.matchingSymbols.map(s=>s.symbolName).sort()).toEqual(['Other.Reset','Store.Reset']);
 },120000);
+
+const prefixRoot = mkdtempSync(join(tmpdir(), 'cm-go-receiver-prefix-'));
+afterAll(() => rmSync(prefixRoot, { recursive: true, force: true }));
+writeFileSync(join(prefixRoot, 'prefix.go'), `package owned
+ type Store struct {}
+ type Other struct {}
+ func (s Store) Reset() {}
+ func (s Store) Fetch() {}
+ ${Array.from({ length: 12 }, (_, i) => `func (o Other) Distractor${i}() {}`).join('\n')}
+ // LookupHint documents the Store. receiver prefix.
+ func LookupHint() {}`);
+
+test('keeps receiver-prefix methods ahead of text hints in capped results', async () => {
+  const single = await searchCodebase(prefixRoot, 'Store.', { maxResults: 1 });
+  expect(single.matchingSymbols).toHaveLength(1);
+  expect(single.matchingSymbols[0].symbolName.startsWith('Store.')).toBe(true);
+  const pair = await searchCodebase(prefixRoot, 'Store.', { maxResults: 2 });
+  expect(pair.matchingSymbols.map(symbol => symbol.symbolName).sort()).toEqual(['Store.Fetch', 'Store.Reset']);
+  const broad = await searchCodebase(prefixRoot, 'Store.', { maxResults: 8 });
+  expect(broad.matchingSymbols.some(symbol => symbol.symbolName === 'LookupHint')).toBe(true);
+  expect(broad.matchingSymbols.some(symbol => symbol.symbolName.startsWith('Other.'))).toBe(false);
+  expect((await searchCodebase(prefixRoot, 'Store.Reset', { maxResults: 1 })).matchingSymbols[0].symbolName).toBe('Store.Reset');
+}, 120000);

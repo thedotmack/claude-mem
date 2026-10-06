@@ -285,6 +285,9 @@ export class WorkerService implements WorkerRef {
     error?: string;
   } | null = null;
 
+  /** Queue depth of the last processing_status frame; null before the first (broadcastProcessingStatus). */
+  private lastBroadcastQueueDepth: number | null = null;
+
   constructor() {
     this.initializationComplete = new Promise((resolve) => {
       this.resolveInitialization = resolve;
@@ -1071,24 +1074,34 @@ export class WorkerService implements WorkerRef {
     });
   }
 
+  /**
+   * Send viewers a processing_status frame when the queue depth changes.
+   *
+   * Only a change goes out (#4087). Every buffer mutation calls this, and a
+   * claim or a reset leaves the depth as it was (claimed messages still
+   * count), so a signed-out observer cycling one batch re-sent the same frame
+   * about 83 times a second and logged each one at INFO, until the log filled
+   * the disk. The change check is the fix; the log line is DEBUG so that real
+   * changes stay out of the default log too. A viewer that connects later
+   * gets the current status from ViewerRoutes when it connects.
+   */
   broadcastProcessingStatus(): void {
-    void (async () => {
-      const queueDepth = await this.sessionManager.getTotalActiveWork();
-      const isProcessing = queueDepth > 0;
-      const activeSessions = this.sessionManager.getActiveSessionCount();
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    if (queueDepth === this.lastBroadcastQueueDepth) return;
+    this.lastBroadcastQueueDepth = queueDepth;
+    const isProcessing = queueDepth > 0;
 
-      logger.info('WORKER', 'Broadcasting processing status', {
-        isProcessing,
-        queueDepth,
-        activeSessions
-      });
+    logger.debug('WORKER', 'Broadcasting processing status', {
+      isProcessing,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount()
+    });
 
-      this.sseBroadcaster.broadcast({
-        type: 'processing_status',
-        isProcessing,
-        queueDepth
-      });
-    })();
+    this.sseBroadcaster.broadcast({
+      type: 'processing_status',
+      isProcessing,
+      queueDepth
+    });
   }
 
   /**

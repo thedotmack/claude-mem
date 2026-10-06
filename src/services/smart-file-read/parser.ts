@@ -19,7 +19,7 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "section" | "code" | "metadata" | "reference";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference";
   signature: string;
   jsdoc?: string;
   lineStart: number;
@@ -189,6 +189,7 @@ const QUERIES: Record<string, string> = {
 (class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
 (struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
 (enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(namespace_definition name: (_) @name) @namespace_def
 (preproc_include) @imp
 `,
 
@@ -569,6 +570,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   struct_def: "struct",
   trait_def: "trait",
   impl_def: "impl",
+  namespace_def: "namespace",
   mixin_def: "mixin",
   heading: "section",
   code_block: "code",
@@ -577,7 +579,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   doctest: "function",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface", "namespace"]);
 
 // Kinds that own nested symbols only in some languages: a PHP enum holds its
 // methods, and a Haskell function holds its `where`/`let` helpers.
@@ -793,7 +795,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
     const receiver = match.captures.find(c => c.tag === "receiver");
     let receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
-    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*/, "");
+    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*\s*/, "");
     if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
@@ -987,7 +989,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       sym.kind = "method";
     }
     if (owner) {
-      if (sym.kind === "function" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
+      if (sym.kind === "function" && owner.sym.kind !== "namespace" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
       owner.sym.children!.push(sym);
       nested.add(sym);
     }
@@ -1206,7 +1208,7 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
 function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   const icons: Record<string, string> = {
     function: "ƒ", method: "ƒ", class: "◆", interface: "◇",
-    type: "◇", const: "●", variable: "○", export: "→",
+    namespace: "◈", type: "◇", const: "●", variable: "○", export: "→",
     struct: "◆", enum: "▣", trait: "◇", impl: "◈",
     property: "○", getter: "⇢", setter: "⇠", mixin: "◈",
     section: "§", code: "⌘", metadata: "◊", reference: "↗",

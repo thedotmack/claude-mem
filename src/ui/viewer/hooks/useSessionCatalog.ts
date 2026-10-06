@@ -32,6 +32,9 @@ export function useSessionCatalog() {
   // Server offset of the next page: sessions loaded from the server, minus
   // loaded ones deleted since (the server's list moved up by that many).
   const offsetRef = useRef(0);
+  // Retrying a failed refresh must replace from offset zero, including after a
+  // project switch; only a failed older-page fetch should append.
+  const failedModeRef = useRef<'replace' | 'append'>('replace');
   const sessionsRef = useRef(sessions);
   sessionsRef.current = sessions;
   // Live changes made while a page request is in flight, re-applied to its
@@ -81,6 +84,7 @@ export function useSessionCatalog() {
       }
     } catch (error) {
       if (requestSeq === requestSeqRef.current) {
+        failedModeRef.current = mode;
         setLoadError(`Could not load sessions: ${error instanceof Error ? error.message : String(error)}`);
       }
     } finally {
@@ -96,9 +100,9 @@ export function useSessionCatalog() {
 
   /** The next (older) page for the project the list was last loaded for. */
   const loadMore = useCallback(async () => {
-    if (inFlightRef.current || !hasMore) return;
-    await fetchPage(projectRef.current, 'append');
-  }, [fetchPage, hasMore]);
+    if (inFlightRef.current || (!hasMore && !loadError)) return;
+    await fetchPage(projectRef.current, loadError ? failedModeRef.current : 'append');
+  }, [fetchPage, hasMore, loadError]);
 
   /** A live row arrived: bump its session's count, or add a session seen for the first time. */
   const touch = useCallback((item: LiveSessionItem) => {
