@@ -1,7 +1,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
-import { ChromaSync } from '../sync/ChromaSync.js';
+import { ChromaSync, type ChromaQueryProgress } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
 import type { TimelineItem } from './TimelineService.js';
@@ -17,7 +17,7 @@ import {
   SearchOrchestrator,
   SEARCH_CONSTANTS
 } from './search/index.js';
-import type { SearchResults, StrategySearchResult } from './search/index.js';
+import type { SearchResults, StrategySearchResult, DateRange } from './search/index.js';
 import { assertSearchHasQueryOrFilter } from './search/SearchOrchestrator.js';
 import { isCategoryRequested, buildCategoryWhereFilter } from './search/types.js';
 import { ResultFormatter } from './search/ResultFormatter.js';
@@ -69,12 +69,15 @@ export class SearchManager {
   private async queryChroma(
     query: string,
     limit: number,
-    whereFilter?: Record<string, any>
+    whereFilter?: Record<string, any>,
+    progress?: ChromaQueryProgress
   ): Promise<{ ids: number[]; distances: number[]; metadatas: any[] }> {
     if (!this.chromaSync) {
       return { ids: [], distances: [], metadatas: [] };
     }
-    return await this.chromaSync.queryChroma(query, limit, whereFilter);
+    return progress
+      ? await this.chromaSync.queryChroma(query, limit, whereFilter, progress)
+      : await this.chromaSync.queryChroma(query, limit, whereFilter);
   }
 
   /**
@@ -94,38 +97,69 @@ export class SearchManager {
   }
 
   /**
-   * Shared "Chroma semantic match -> 90-day recency filter -> SQLite hydrate"
-   * pipeline for the single-doc-type hybrid searches. Returns the hydrated rows
+   * Shared "Chroma semantic match -> date-window filter -> SQLite hydrate"
+   * pipeline for the single-doc-type hybrid searches. Explicit ranges replace the
+   * default 90-day window. Returns the hydrated rows
    * (empty when Chroma yields nothing recent); callers own their own FTS
    * fallback and formatting so per-caller behavior is preserved exactly.
    */
-  private async hybridSemanticHydrate<T>(
+  private async hybridSemanticHydrate<T extends { id: number }>(
     query: string,
     docType: string,
     project: string | undefined,
     platformSource: string | undefined,
     hydrate: (ids: number[], readKeys: string[]) => T[],
-    projects?: string[]
+    projects?: string[],
+    dateRange?: DateRange,
+    requiredResults?: number,
+    work?: { budgetReached: boolean }
   ): Promise<T[]> {
     const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
-    const chromaResults = await this.queryChroma(query, SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, whereFilter);
-    logger.debug('SEARCH', 'Chroma returned semantic matches', { matchCount: chromaResults?.ids?.length ?? 0 });
+    const startEpoch = dateRange
+      ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
+      : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
+    let candidateLimit: number = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+    // Five ranked windows (100..1600), at most ten Chroma transport calls.
+    // queryChroma caps raw fragment overfetch at 2000 documents per window;
+    // filtered retries add at most 3100, bounding requested raw docs at 13100.
+    const maxCandidates = 1600;
+    const visited = new Set<number>();
+    const hydrated = new Map<number, T>();
 
-    if (chromaResults?.ids && chromaResults.ids.length > 0) {
-      const ninetyDaysAgo = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    while (true) {
+      const progress: ChromaQueryProgress = {};
+      const chromaResults = await this.queryChroma(query, candidateLimit, whereFilter, requiredResults ? progress : undefined);
       const recentIds = chromaResults.ids.filter((_id, idx) => {
         const meta = chromaResults.metadatas[idx];
-        return meta && meta.created_at_epoch > ninetyDaysAgo;
+        return meta && meta.created_at_epoch != null
+          && (startEpoch === undefined || meta.created_at_epoch >= startEpoch)
+          && (endEpoch === undefined || meta.created_at_epoch <= endEpoch);
       });
-
-      logger.debug('SEARCH', 'Results within 90-day window', { count: recentIds.length });
-
-      if (recentIds.length > 0) {
-        return hydrate(recentIds, readKeys);
+      // Repeated ranked prefixes reuse successful and rejected native lookups.
+      // Build results in the current Chroma order, including cached matches.
+      const newIds = recentIds.filter(id => !visited.has(id));
+      for (let offset = 0; offset < newIds.length; offset += 500) {
+        const batch = newIds.slice(offset, offset + 500);
+        for (const id of batch) visited.add(id);
+        for (const row of hydrate(batch, readKeys)) hydrated.set(row.id, row);
       }
+      const rows = recentIds.flatMap(id => {
+        const row = hydrated.get(id);
+        return row ? [row] : [];
+      });
+      if (requiredResults && rows.length >= requiredResults) return rows.slice(0, requiredResults);
+      if (!requiredResults || progress.exhausted
+        || (progress.exhausted === undefined && chromaResults.ids.length < candidateLimit)) return rows;
+      if (candidateLimit >= maxCandidates) {
+        if (work) work.budgetReached = true;
+        return rows;
+      }
+      // Chroma has no offset. Widen only within the work budget; the caller
+      // tries its filtered keyword fallback if this prefix is insufficient.
+      candidateLimit = Math.min(candidateLimit * 2, maxCandidates);
     }
-    return [];
   }
 
   private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
@@ -993,6 +1027,7 @@ export class SearchManager {
     const normalized = this.normalizeParams(args);
     const { query, ...options } = normalized;
     let results: ObservationSearchResult[] = [];
+    const semanticWork = { budgetReached: false };
 
     if (this.chromaSync) {
       logger.debug('SEARCH', 'Using hybrid semantic search (Chroma + SQLite)', {});
@@ -1001,8 +1036,11 @@ export class SearchManager {
         // `projects` comes parsed from the route (#4304); the keyword fallback
         // below already reads it, so Chroma and the hydration must too (#4248).
         results = await this.hybridSemanticHydrate(query, 'observation', options.project, options.platformSource, (ids, readKeys) =>
-          this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit, project: options.project, projects: readKeys, platformSource: options.platformSource }),
-          options.projects
+          this.sessionStore.getObservationsByIds(ids, { ...options, orderBy: 'relevance', limit, projects: readKeys }),
+          options.projects,
+          options.dateRange,
+          options.type || options.concepts || options.files || options.dateRange ? limit : undefined,
+          semanticWork
         );
       } catch (chromaError) {
         const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
@@ -1010,11 +1048,18 @@ export class SearchManager {
       }
     }
 
-    if (results.length === 0) {
+    if (results.length === 0 || semanticWork.budgetReached) {
       try {
         const ftsResults = this.sessionSearch.searchObservations(query, options);
         if (ftsResults.length > 0) {
-          results = ftsResults;
+          // At the work cap, keyword results fill the remaining slots without
+          // discarding valid semantic matches or repeating shared row IDs.
+          const seen = new Set(results.map(row => row.id));
+          results = [...results, ...ftsResults.filter(row => {
+            if (seen.has(row.id)) return false;
+            seen.add(row.id);
+            return true;
+          })].slice(0, options.limit || 20);
         }
       } catch (ftsError) {
         logger.warn('SEARCH', 'FTS fallback failed for observations', {}, ftsError instanceof Error ? ftsError : undefined);
