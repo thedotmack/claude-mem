@@ -81,6 +81,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const startHeightRef = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const wasAtBottomRef = useRef(true);
+  const requestSeqRef = useRef(0);
+  const clearingRef = useRef(false);
 
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
     new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
@@ -131,6 +133,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, []);
 
   const fetchLogs = useCallback(async () => {
+    if (clearingRef.current) return;
+    const request = ++requestSeqRef.current;
     wasAtBottomRef.current = checkIfAtBottom();
 
     setIsLoading(true);
@@ -141,11 +145,11 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
       const data = await response.json();
-      setLogs(data.logs || '');
+      if (request === requestSeqRef.current) setLogs(data.logs || '');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setIsLoading(false);
+      if (request === requestSeqRef.current) setIsLoading(false);
     }
   }, [checkIfAtBottom]);
 
@@ -157,18 +161,47 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     if (!confirm('Are you sure you want to clear all logs?')) {
       return;
     }
+    const request = ++requestSeqRef.current;
+    clearingRef.current = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs/clear', { method: 'POST' });
+      const response = await fetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }
-      setLogs('');
+      if (request === requestSeqRef.current) setLogs('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (controller.signal.aborted) {
+        // Abort only says that the acknowledgment was lost: the worker may
+        // already have cleared the file. Reconcile even with auto-refresh off,
+        // keeping this operation's request ownership and a bounded read.
+        const reconciliation = new AbortController();
+        const reconciliationTimeout = setTimeout(() => reconciliation.abort(), 5000);
+        try {
+          const response = await fetch('/api/logs', { signal: reconciliation.signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          if (request === requestSeqRef.current) {
+            setLogs(data.logs || '');
+            setError('Clear request timed out; its outcome is unknown. Displaying current logs.');
+          }
+        } catch {
+          if (request === requestSeqRef.current) {
+            setError('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.');
+          }
+        } finally {
+          clearTimeout(reconciliationTimeout);
+        }
+      } else if (request === requestSeqRef.current) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
     } finally {
-      setIsLoading(false);
+      clearTimeout(timeout);
+      clearingRef.current = false;
+      if (request === requestSeqRef.current) setIsLoading(false);
     }
   }, []);
 

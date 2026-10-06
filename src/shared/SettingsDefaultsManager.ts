@@ -23,6 +23,12 @@ const LEGACY_TELEGRAM_TRIGGER_TYPES = 'security_alert';
 
 /** Pinned workers.dev hub from the Cloudflare SyncHub era. */
 const LEGACY_CLOUD_SYNC_HUB_HOST = 'sync-hub.black-pond-afbb.workers.dev';
+/**
+ * Production cmem-sync Supabase function, which Connect handed out for a few
+ * hours after the Supabase cutover. Supabase's Cloudflare WAF blocks plain
+ * memory pushes there; the sync.cmem.ai proxy gzips them through.
+ */
+const DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST = 'ziczmqtpmaxbornfghye.supabase.co';
 /** Canonical Pro hub after the Fly cutover. */
 const CANONICAL_CLOUD_SYNC_HUB_URL = 'https://sync.cmem.ai';
 
@@ -130,7 +136,8 @@ function migratedCloudSyncHubUrl(raw: unknown): string | null {
   const trimmed = raw.trim();
   if (trimmed.length === 0) return null;
   try {
-    if (new URL(trimmed).hostname === LEGACY_CLOUD_SYNC_HUB_HOST) {
+    const hostname = new URL(trimmed).hostname;
+    if (hostname === LEGACY_CLOUD_SYNC_HUB_HOST || hostname === DIRECT_SUPABASE_CLOUD_SYNC_HUB_HOST) {
       return CANONICAL_CLOUD_SYNC_HUB_URL;
     }
   } catch {
@@ -727,7 +734,7 @@ export class SettingsDefaultsManager {
             hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
             { mode: 0o600 },
           );
-          console.warn('[SETTINGS] Migrated cloud sync hub URL off the legacy workers.dev host:', settingsPath);
+          console.warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
         } catch (error: unknown) {
           console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
         }
