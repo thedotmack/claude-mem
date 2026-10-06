@@ -6,9 +6,11 @@
 // smart_outline and smart_unfold cannot parse anything (#2910). Dependency-free
 // like tree-sitter-bin-path.ts, so the npx installer and the worker share it.
 import { execFile } from "node:child_process";
-import { existsSync, mkdtempSync, renameSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
+import { pinnedTreeSitterExecutableSha256 } from "./tree-sitter-cli-checksums.js";
 
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
 
@@ -61,16 +63,28 @@ function runInstallScript(
   });
 }
 
+function sha256OfFile(filePath: string): string {
+  return createHash("sha256").update(readFileSync(filePath)).digest("hex");
+}
+
 /**
  * Run tree-sitter-cli's own install.js when the package-local CLI is not
  * usable. The script downloads the executable into its working directory, so
- * it runs in a staging directory inside the package, and the executable is
- * renamed into place only once it answers `--version`. The File Read Gate and
- * the parser only check that the file exists, so a download that fails, times
- * out or dies with its process must never leave a partial executable there.
- * Throws when no working executable results.
+ * it runs in a staging directory inside the package. The executable must match
+ * the SHA-256 pinned for the package's version and this platform before it is
+ * run at all (a replaced release asset never executes), and is renamed into
+ * place only once it then answers `--version`. The File Read Gate and the
+ * parser only check that the file exists, so a download that fails, times out
+ * or dies with its process must never leave a partial executable there.
+ * Throws when no verified, working executable results.
+ *
+ * `pinnedSha256ForVersion` exists for tests; callers pass none.
  */
-export async function ensureTreeSitterCliBinary(pluginRoot: string, installTimeoutMs: number): Promise<void> {
+export async function ensureTreeSitterCliBinary(
+  pluginRoot: string,
+  installTimeoutMs: number,
+  pinnedSha256ForVersion: (version: string) => string | undefined = pinnedTreeSitterExecutableSha256,
+): Promise<void> {
   const cliDir = treeSitterCliPackageDir(pluginRoot);
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
@@ -81,12 +95,27 @@ export async function ensureTreeSitterCliBinary(pluginRoot: string, installTimeo
   if (!existsSync(installScript)) {
     throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
   }
+  const version = String((JSON.parse(readFileSync(join(cliDir, "package.json"), "utf-8")) as { version?: unknown }).version);
+  const pinnedSha256 = pinnedSha256ForVersion(version);
+  if (!pinnedSha256) {
+    throw new Error(
+      `No SHA-256 is pinned for the tree-sitter ${version} executable on ${process.platform}-${process.arch}, `
+      + "so it is not downloaded (src/services/smart-file-read/tree-sitter-cli-checksums.ts)",
+    );
+  }
 
   // Inside the package, so the final rename stays on one filesystem.
   const stagingDir = mkdtempSync(join(cliDir, ".provision-"));
   try {
     const installOutput = await runInstallScript(installScript, stagingDir, installTimeoutMs);
     const stagedExecutable = join(stagingDir, treeSitterBinaryName());
+    const downloadedSha256 = existsSync(stagedExecutable) ? sha256OfFile(stagedExecutable) : "(no file)";
+    if (downloadedSha256 !== pinnedSha256) {
+      throw Object.assign(
+        new Error(`The downloaded tree-sitter ${version} executable has SHA-256 ${downloadedSha256}, not the pinned ${pinnedSha256}; it was not run`),
+        installOutput,
+      );
+    }
     if (!(await answersTreeSitterVersion(stagedExecutable))) {
       throw Object.assign(
         new Error(`tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`),
