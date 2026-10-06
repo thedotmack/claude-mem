@@ -413,6 +413,11 @@ export class TranscriptWatcher {
     for (const watch of this.config.watches) {
       await this.setupWatch(watch);
     }
+    let retired = false;
+    for (const file of Object.keys(this.state.pendingTools ?? {})) {
+      if (!this.tailers.has(file)) { this.retirePendingToolMetadata(file); retired = true; }
+    }
+    if (retired) saveWatchState(this.statePath, this.state);
   }
 
   stop(): void {
@@ -464,6 +469,12 @@ export class TranscriptWatcher {
     }
   }
 
+  private retirePendingToolMetadata(file: string): void {
+    this.processor.resetFileContext({ pendingTools: this.state.pendingTools?.[file] });
+    delete this.state.pendingTools?.[file];
+    delete this.state.pendingToolFileIdentities?.[file];
+  }
+
   private handleRootWatchEvent(
     watchRoot: string,
     resolvedPath: string,
@@ -475,6 +486,13 @@ export class TranscriptWatcher {
     const changed = resolvePath(watchRoot, name).replace(/\\/g, '/');
     const existingTailer = this.tailers.get(changed);
     if (existingTailer) {
+      if (!existsSync(changed)) {
+        existingTailer.close();
+        this.tailers.delete(changed);
+        this.retirePendingToolMetadata(changed);
+        saveWatchState(this.statePath, this.state);
+        return;
+      }
       existingTailer.poke();
       return;
     }
