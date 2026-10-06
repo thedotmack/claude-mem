@@ -37,7 +37,7 @@ Headless or already signed in? See [CMEM Pro (manual / headless)](/cmem-pro-head
 
 ### Memory Provider Options
 
-- **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. Free trial, then subscribe or fall back. Fallback is **event-driven**: `CLAUDE_MEM_PRO_FALLBACK_AT` is set when the gateway stops serving the account (a spent allowance, an inactive subscription, or a refused key), not on the trial end date, and memory then uses your Anthropic plan. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
+- **CMEM Pro / claude-mem observer (pre-selected)** — memory runs off-plan through `https://cmem.ai/api/inference/v1` with model `cmem-observer`. **30 Day Free Trial**, then subscribe or fall back. Fallback is **event-driven**: `CLAUDE_MEM_PRO_FALLBACK_AT` is set when the gateway stops serving the account (a spent allowance, an inactive subscription, or a refused key), not on the trial end date, and memory then uses your Anthropic plan. See [CMEM Pro (manual / headless)](/cmem-pro-headless).
 - **Your OpenRouter key** — memory runs off-plan on your OpenRouter credit. Empty base URL (or `https://openrouter.ai/api/v1`). **Never** send a personal `sk-or-` key to the cmem.ai inference gateway.
 - **Gemini API key** — memory runs off-plan on your Gemini key.
 - **Anthropic plan** (`--provider claude`) — memory shares your Claude plan usage. Skips the sign-in step; local installs contact cmem.ai once, at signup, to create the sign-in link, with a numbers-only usage summary (observation counts and token totals, no prompts, paths, or project names), and nothing else is sent to cmem.ai. Prompts for the Claude model used to compress observations (Haiku / Sonnet / Opus).
