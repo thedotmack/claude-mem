@@ -66,7 +66,7 @@ describe('sync matrix E2E (Supabase cmem-sync) safety contract', () => {
     expect(supabaseScript).not.toMatch(/ALLOWED_REMOTE_HOSTS\s*=\s*\[/);
   });
 
-  it('refuses every non-loopback host when the remote opt-in is unset, names other hosts, or puts the Hub second', async () => {
+  it('refuses every non-loopback host when the remote opt-in is unset, names other hosts, has an empty entry, or puts the Hub second', async () => {
     const run = (env: Record<string, string>) => Bun.spawnSync(['bun', join(root, 'scripts/sync-matrix-e2e-supabase.ts')], {
       env: { PATH: process.env.PATH ?? '', CMEM_SYNC_E2E_USER_ID: 'u', CMEM_SYNC_E2E_TOKEN: 't', ...env },
       stdout: 'pipe', stderr: 'pipe', timeout: 20_000,
@@ -79,6 +79,8 @@ describe('sync matrix E2E (Supabase cmem-sync) safety contract', () => {
       { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: '*.example.test' },
       { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'other.example.test,hub.example.test' },
       { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,*.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,,other.example.test' },
+      { CMEM_SYNC_E2E_HUB_URL: remote, CMEM_SYNC_E2E_ALLOW_REMOTE_HUB: 'hub.example.test,' },
     ]) {
       const result = run(env);
       expect(result.exitCode).not.toBe(0);
