@@ -163,10 +163,12 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     }
     const request = ++requestSeqRef.current;
     clearingRef.current = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs/clear', { method: 'POST' });
+      const response = await fetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }
@@ -174,6 +176,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     } catch (err) {
       if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
+      clearTimeout(timeout);
       clearingRef.current = false;
       if (request === requestSeqRef.current) setIsLoading(false);
     }
