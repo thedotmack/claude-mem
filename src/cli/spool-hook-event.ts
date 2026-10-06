@@ -5,6 +5,7 @@ import { logger } from '../utils/logger.js';
 export const SPOOL_NUDGE_TIMEOUT_MS = 250;
 
 const nudgesInFlight = new Set<Promise<void>>();
+let pendingNudge: Promise<void> | null = null;
 
 /**
  * Best-effort poke so a running worker drains now rather than on its fs.watch
@@ -12,8 +13,13 @@ const nudgesInFlight = new Set<Promise<void>>();
  * is irrelevant: the spool file is already durable. Started as soon as the
  * event is spooled; hookCommand awaits it (bounded by the 250 ms request
  * timeout) before process.exit, which would otherwise cut it off mid-flight.
+ *
+ * A nudge still in flight is shared: a standalone transcript watcher catching
+ * up spools many events in a burst, and the worker's drain (or its fs.watch of
+ * the spool, or its sweep) takes every entry there is.
  */
 export function nudgeWorkerToDrainHookSpool(): Promise<void> {
+  if (pendingNudge) return pendingNudge;
   const nudge = (async () => {
     try {
       const response = await workerHttpRequest('/api/spool/nudge', { method: 'POST', timeoutMs: SPOOL_NUDGE_TIMEOUT_MS });
@@ -24,8 +30,12 @@ export function nudgeWorkerToDrainHookSpool(): Promise<void> {
       });
     }
   })();
+  pendingNudge = nudge;
   nudgesInFlight.add(nudge);
-  void nudge.finally(() => nudgesInFlight.delete(nudge));
+  void nudge.finally(() => {
+    nudgesInFlight.delete(nudge);
+    if (pendingNudge === nudge) pendingNudge = null;
+  });
   return nudge;
 }
 

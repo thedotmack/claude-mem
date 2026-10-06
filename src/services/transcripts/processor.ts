@@ -10,6 +10,7 @@ import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { spoolHookEvent } from '../../cli/spool-hook-event.js';
 import { ingestObservation } from '../worker/http/shared.js';
 
 const AGENT_ID_IN_PATH =
@@ -45,6 +46,27 @@ export class TranscriptObservationError extends Error {
     this.cause = cause;
   }
 }
+
+/**
+ * An event could not be written to the durable hook spool the worker drains:
+ * an observation or summary of the standalone watcher, or any watcher's file
+ * edit. The line is retried from its own position, like a turn whose prompt
+ * was not recorded.
+ */
+export class TranscriptSpoolError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`transcript event not persisted for session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptSpoolError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * How observations and summaries reach the worker. The worker's own watcher
+ * ingests in-process; the standalone `transcript watch` command has no ingest
+ * context, so it writes them to the hook spool the worker drains.
+ */
+export type TranscriptObservationTransport = 'in-process' | 'spool';
 
 interface PendingTool {
   toolName: string;
@@ -89,6 +111,8 @@ const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
 const MAX_PENDING_TOOLS_PER_FILE = 64;
 
 export class TranscriptEventProcessor {
+  constructor(private observationTransport: TranscriptObservationTransport = 'in-process') {}
+
   private sessions = new Map<string, SessionState>();
   /** Ownership is in-memory only; durable snapshots below contain each file's tools. */
   private fileContexts = new Set<TranscriptFileContext>();
@@ -534,18 +558,28 @@ export class TranscriptEventProcessor {
       return;
     }
 
+    const payload = {
+      contentSessionId: session.sessionId,
+      cwd: session.cwd,
+      toolName,
+      toolInput: this.maybeParseJson(fields.toolInput),
+      toolResponse: this.maybeParseJson(fields.toolResponse),
+      platformSource: session.platformSource,
+      toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
+      agentId: resolveWatchAgentId(watch),
+    };
+    if (this.observationTransport === 'spool') {
+      try {
+        spoolHookEvent('observation', payload);
+      } catch (error) {
+        throw new TranscriptSpoolError(session.sessionId, error);
+      }
+      return;
+    }
+
     let accepted = false;
     try {
-      const result = await ingestObservation({
-        contentSessionId: session.sessionId,
-        cwd: session.cwd,
-        toolName,
-        toolInput: this.maybeParseJson(fields.toolInput),
-        toolResponse: this.maybeParseJson(fields.toolResponse),
-        platformSource: session.platformSource,
-        toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
-        agentId: resolveWatchAgentId(watch),
-      }, { markHandedOff: () => { accepted = true; } });
+      const result = await ingestObservation(payload, { markHandedOff: () => { accepted = true; } });
       if (!result.ok) throw new Error(result.reason);
     } catch (error) {
       // A generator kick can fail after queueObservation accepted the event.
@@ -568,13 +602,19 @@ export class TranscriptEventProcessor {
       return;
     }
 
-    await fileEditHandler.execute({
-      sessionId: session.sessionId,
-      cwd: session.cwd,
-      filePath,
-      edits: Array.isArray(fields.edits) ? fields.edits : undefined,
-      platform: session.platformSource
-    });
+    try {
+      await fileEditHandler.execute({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        filePath,
+        edits: Array.isArray(fields.edits) ? fields.edits : undefined,
+        platform: session.platformSource
+      });
+    } catch (error) {
+      // The inputs are checked above, so what throws is the spool write: the
+      // line is retried rather than its edit lost.
+      throw new TranscriptSpoolError(session.sessionId, error);
+    }
   }
 
   private maybeParseJson(value: unknown): unknown {
@@ -626,6 +666,20 @@ export class TranscriptEventProcessor {
   }
 
   private async queueSummary(session: SessionState): Promise<void> {
+    if (this.observationTransport === 'spool') {
+      // Spooled after the session's observations, which the drain hands over first.
+      try {
+        spoolHookEvent('summarize', {
+          contentSessionId: session.sessionId,
+          platformSource: session.platformSource,
+          lastAssistantMessage: session.lastAssistantMessage ?? '',
+          ...(session.cwd ? { cwd: session.cwd } : {}),
+        });
+      } catch (error) {
+        throw new TranscriptSpoolError(session.sessionId, error);
+      }
+      return;
+    }
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) return;
 

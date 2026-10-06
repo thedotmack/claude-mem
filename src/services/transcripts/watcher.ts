@@ -6,7 +6,14 @@ import { logger } from '../../utils/logger.js';
 import { expandHomePath } from './config.js';
 import { loadWatchState, saveWatchState, type TranscriptWatchState } from './state.js';
 import type { TranscriptWatchConfig, TranscriptSchema, WatchTarget } from './types.js';
-import { TranscriptAnchorError, TranscriptEventProcessor, TranscriptObservationError, type TranscriptFileContext } from './processor.js';
+import {
+  TranscriptAnchorError,
+  TranscriptEventProcessor,
+  TranscriptObservationError,
+  TranscriptSpoolError,
+  type TranscriptFileContext,
+  type TranscriptObservationTransport,
+} from './processor.js';
 import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
@@ -503,7 +510,7 @@ class FileTailer {
 }
 
 export class TranscriptWatcher {
-  private processor = new TranscriptEventProcessor();
+  private processor: TranscriptEventProcessor;
   private tailers = new Map<string, FileTailer>();
   private state: TranscriptWatchState;
   /** Each transcript's context (its session's directory, its outstanding tool calls), shared with the processor. */
@@ -521,7 +528,12 @@ export class TranscriptWatcher {
   /** Set by stop(): a tailer still awaiting its start offset then never starts. */
   private stopped = false;
 
-  constructor(private config: TranscriptWatchConfig, private statePath: string) {
+  constructor(
+    private config: TranscriptWatchConfig,
+    private statePath: string,
+    observationTransport: TranscriptObservationTransport = 'in-process'
+  ) {
+    this.processor = new TranscriptEventProcessor(observationTransport);
     this.state = loadWatchState(statePath);
   }
 
@@ -1103,7 +1115,7 @@ export class TranscriptWatcher {
       // A turn whose prompt the worker did not record, or an event it did not
       // accept, stops the pass with the checkpoint at its line (or frame), so
       // it is retried, not misfiled or lost.
-      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError) {
+      if (error instanceof TranscriptAnchorError || error instanceof TranscriptObservationError || error instanceof TranscriptSpoolError) {
         logger.warn('TRANSCRIPT', 'Transcript event not accepted; it is retried from its own line', {
           watch: watch.name,
           file: basename(filePath),
