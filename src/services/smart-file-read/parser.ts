@@ -19,6 +19,8 @@ export interface CodeSymbol {
   jsdoc?: string;
   lineStart: number;
   lineEnd: number;
+  /** Disjoint declaration/body ranges when one symbol is not contiguous. */
+  unfoldRanges?: { lineStart: number; lineEnd: number }[];
   parent?: string;
   exported: boolean;
   children?: CodeSymbol[];
@@ -286,6 +288,9 @@ const QUERIES: Record<string, string> = {
 `,
 
   haskell: `
+(class_declarations (signature name: [(variable) (prefix_id)] @name) @haskell_signature)
+(class_declarations (signature names: (binding_list [(variable) (prefix_id)] @name)) @haskell_signature)
+(class_declarations (function) @haskell_default)
 (function name: (variable) @name) @func
 (type_synomym name: (name) @name) @tdef
 (newtype name: (name) @name) @tdef
@@ -622,6 +627,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   ctor: "method",
   kotlin_ctor: "method",
   swift_init: "method",
+  haskell_signature: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
@@ -637,6 +643,13 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 };
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface"]);
+
+// Kinds that own nested symbols only in some languages: a PHP enum holds its
+// methods, and a Haskell function holds its `where`/`let` helpers.
+const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
+  php: new Set(["enum"]),
+  haskell: new Set(["function"]),
+};
 
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
   const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
@@ -745,12 +758,15 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   const decoratedRanges = new Map<string, RawCapture>();
   const swiftParameters = new Map<string, string[]>();
   const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
+  const haskellSignatures = new Set<CodeSymbol>();
+  const haskellDefaults: RawCapture[] = [];
   const ranges = new Map<CodeSymbol, RawCapture>();
   const aliasedTypes = new Map<CodeSymbol, RawCapture>();
   const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
     for (const cap of match.captures) {
+      if (cap.tag === "haskell_default") haskellDefaults.push(cap);
       if (cap.tag === "exp") {
         exportRanges.push(cap);
       }
@@ -902,11 +918,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind) || (language === "php" && kind === "enum")) {
+    if (CONTAINER_KINDS.has(kind) || LANGUAGE_CONTAINER_KINDS[language]?.has(kind)) {
       sym.children = [];
       containers.push({ sym, range: kindCapture });
     }
 
+    if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
     ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
     const aliasedType = match.captures.find(c => c.tag === "aliased_type");
     if (aliasedType) aliasedTypes.set(sym, aliasedType);
@@ -978,6 +995,49 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
   // class's method is attached once instead of also appearing on every ancestor.
   containers.sort((a, b) => b.range.startRow - a.range.startRow
     || b.range.startCol - a.range.startCol);
+  // A typeclass signature and its default implementation describe one method:
+  // the default takes the signature's type and comment. An adjacent pair
+  // unfolds as one range. When another declaration sits between them, retain
+  // both narrow ranges so unfolding includes the type without a neighbouring method.
+  // Grouped names (`f, g :: …`) share the signature's range, so they never
+  // count as being between.
+  for (const signature of haskellSignatures) {
+    const signatureRange = ranges.get(signature)!;
+    const owner = containers.find(container => rangeContains(container.range, signatureRange));
+    const implementation = symbols.find(candidate => candidate.kind === "function"
+      && candidate.name === signature.name
+      && haskellDefaults.some(capture => {
+        const range = ranges.get(candidate)!;
+        return capture.startRow === range.startRow && capture.startCol === range.startCol
+          && capture.endRow === range.endRow && capture.endCol === range.endCol;
+      })
+      && containers.find(container => container.sym !== candidate && rangeContains(container.range, ranges.get(candidate)!)) === owner);
+    if (implementation) {
+      const implementationRange = ranges.get(implementation)!;
+      implementation.signature = signature.signature;
+      implementation.jsdoc = signature.jsdoc ?? implementation.jsdoc;
+      duplicateAliases.add(signature);
+      const [earlier, later] = implementationRange.startRow < signatureRange.startRow
+        || (implementationRange.startRow === signatureRange.startRow && implementationRange.startCol <= signatureRange.startCol)
+        ? [implementationRange, signatureRange] : [signatureRange, implementationRange];
+      const separated = symbols.some(sym => {
+        const range = ranges.get(sym)!;
+        return (range.startRow > earlier.endRow || (range.startRow === earlier.endRow && range.startCol >= earlier.endCol))
+          && (range.startRow < later.startRow || (range.startRow === later.startRow && range.startCol < later.startCol));
+      });
+      if (!separated) {
+        implementation.lineStart = earlier.startRow;
+        implementation.lineEnd = later.endRow;
+        ranges.set(implementation, { ...implementationRange, startRow: earlier.startRow, startCol: earlier.startCol,
+          endRow: later.endRow, endCol: later.endCol });
+      } else {
+        implementation.unfoldRanges = [earlier, later].map(range => ({
+          lineStart: range.startRow,
+          lineEnd: range.endRow,
+        }));
+      }
+    }
+  }
   const nested = new Set<CodeSymbol>(duplicateAliases);
   for (const sym of symbols) {
     if (duplicateAliases.has(sym)) continue;
@@ -992,7 +1052,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       sym.kind = "method";
     }
     if (owner) {
-      if (sym.kind === "function") sym.kind = "method";
+      if (sym.kind === "function" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
       owner.sym.children!.push(sym);
       nested.add(sym);
     }
@@ -1352,6 +1412,13 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
     const extracted = lines.slice(start, end + 1).join("\n");
     return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
+  }
+
+  if (symbol.unfoldRanges) {
+    return symbol.unfoldRanges.map(range => {
+      const extracted = lines.slice(range.lineStart, range.lineEnd + 1).join("\n");
+      return `// 📍 ${filePath} L${range.lineStart + 1}-${range.lineEnd + 1}\n${extracted}`;
+    }).join("\n");
   }
 
   let start = symbol.lineStart;
