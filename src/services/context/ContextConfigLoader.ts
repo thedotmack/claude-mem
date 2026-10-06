@@ -11,6 +11,14 @@ function parseReinforcementAlpha(raw: string | undefined): number {
   return Number.isFinite(alpha) && alpha > 0 ? alpha : 0;
 }
 
+/** Keep direct file/env settings finite without narrowing valid custom counts. */
+function parseContextCount(raw: string, fallback: string): number {
+  const value = raw.trim() === '' ? NaN : Number(raw);
+  return Number.isSafeInteger(value) && value >= 0
+    ? value
+    : Number(fallback);
+}
+
 function parseCsvSetting(raw: string | undefined): string[] | null {
   const values = (raw ?? '').split(',').map(v => v.trim()).filter(v => v !== '');
   return values.length > 0 ? values : null;
@@ -54,10 +62,11 @@ export function loadContextConfig(): ContextConfig {
     mode.observation_concepts.map(c => c.id)
   );
 
+  const defaults = SettingsDefaultsManager.getAllDefaults();
   return {
-    totalObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10),
-    fullObservationCount: parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10),
-    sessionCount: parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10),
+    totalObservationCount: parseContextCount(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, defaults.CLAUDE_MEM_CONTEXT_OBSERVATIONS),
+    fullObservationCount: parseContextCount(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, defaults.CLAUDE_MEM_CONTEXT_FULL_COUNT),
+    sessionCount: parseContextCount(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, defaults.CLAUDE_MEM_CONTEXT_SESSION_COUNT),
     showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
     showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
     showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
