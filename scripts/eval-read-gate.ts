@@ -17,7 +17,7 @@
  *    against each worker.
  * 4. Runs plugin/evals-read-gate with `claude plugin eval`, analyzes every
  *    run's trace, writes reports/read-gate/<timestamp>/summary.{md,json} and
- *    exits non-zero when a verdict fails.
+ *    exits non-zero when a verdict fails or a requested run did not complete.
  * Both workers are always stopped, and the sandboxes --keep-temp kept are
  * removed once their traces are copied into the report.
  */
@@ -52,6 +52,8 @@ export const GET_OBSERVATIONS_TOOL = `${MCP_SEARCH_TOOL_PREFIX}get_observations`
 export const CASE_GATE_ON_ANSWERS = 'gate-on-answers-question';
 export const CASE_GATE_ON_EDITS = 'gate-on-edits-file';
 export const CASE_GATE_OFF_ANSWERS = 'gate-off-reads-normally';
+/** Every case in plugin/evals-read-gate. */
+export const EVAL_CASE_NAMES: readonly string[] = [CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS];
 const ANSWER_GRADERS = ['answer-rate', 'answer-minimum'];
 const EDIT_GRADERS = ['edited', 'old-value-gone'];
 
@@ -266,6 +268,13 @@ export function analyzeReadGateTrace(traceLines: string[], options: TraceAnalysi
 // Verdicts (pure)
 // ---------------------------------------------------------------------------
 
+/** A run a mock ended early: `aborted` on a run in claude plugin eval's aggregate-result.json. */
+export interface RunAbort {
+  server: string;
+  tool: string;
+  reason: string;
+}
+
 export interface RunEvidence {
   caseName: string;
   runNumber: number;
@@ -273,6 +282,7 @@ export interface RunEvidence {
   turns: number | null;
   costUsd: number | null;
   error: string | null;
+  aborted: RunAbort | null;
   /** Grader name to passed. */
   graders: Record<string, boolean>;
   analysis: ReadGateTraceAnalysis;
@@ -367,6 +377,47 @@ export function decideVerdicts(runs: RunEvidence[]): Verdict[] {
     verdict('gate-off-answers', 'Gate OFF: answer graders pass in at least 2/3 of runs', gateOffRuns,
       () => passesAtLeastTwoThirds(gateOffRuns, ANSWER_GRADERS)),
   ];
+}
+
+/** `claude plugin eval --case <glob>` as the CLI matches it: the whole name, `*` for any characters, `?` for one. */
+export function caseNameMatchesGlob(caseGlob: string, caseName: string): boolean {
+  const pattern = caseGlob.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*').replace(/\?/g, '.');
+  return new RegExp(`^${pattern}$`).test(caseName);
+}
+
+/** The cases a run asked for: all of them, or the ones --case selects. */
+export function requestedCaseNames(caseGlob: string | null): string[] {
+  return EVAL_CASE_NAMES.filter(caseName => caseGlob === null || caseNameMatchesGlob(caseGlob, caseName));
+}
+
+/**
+ * One problem per requested case whose runs did not all complete: fewer (or
+ * more) runs in the results than --runs asked for, as when the eval stopped
+ * before starting some, or a run that ended with an error or that a mock
+ * aborted. Its verdicts then rest on runs that never did the task, which can
+ * pass them vacuously, so any problem here fails the eval.
+ */
+export function findIncompleteCaseRuns(
+  runs: RunEvidence[],
+  caseNames: readonly string[],
+  runsRequestedPerCase: number,
+): string[] {
+  const problems: string[] = [];
+  for (const caseName of caseNames) {
+    const caseRuns = runs.filter(run => run.caseName === caseName);
+    const reasons: string[] = [];
+    if (caseRuns.length !== runsRequestedPerCase) {
+      reasons.push(`${caseRuns.length} of ${runsRequestedPerCase} requested runs in the results`);
+    }
+    for (const run of caseRuns) {
+      if (run.error !== null) reasons.push(`run ${run.runNumber} ended with an error: ${run.error}`);
+      if (run.aborted !== null) {
+        reasons.push(`run ${run.runNumber} was aborted by mock ${run.aborted.server}/${run.aborted.tool}: ${run.aborted.reason}`);
+      }
+    }
+    if (reasons.length > 0) problems.push(`${caseName} did not complete its runs: ${reasons.join('; ')}`);
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------
@@ -968,6 +1019,7 @@ interface AggregateRun {
   turns?: number | null;
   costUsd?: number | null;
   error?: string | null;
+  aborted?: RunAbort;
   tracePath?: string;
   graders?: AggregateGraderResult[];
 }
@@ -1061,6 +1113,7 @@ function collectRunEvidence(aggregate: AggregateResult, reportDirectory: string,
         turns: run.turns ?? null,
         costUsd: run.costUsd ?? null,
         error: run.error ?? null,
+        aborted: run.aborted ?? null,
         graders: Object.fromEntries((run.graders ?? []).map(grader => [grader.name, grader.passed === true])),
         analysis: analyzeReadGateTrace(traceLines, { fixtureRelativePath: FIXTURE_RELATIVE_PATH, fixtureTotalLines }),
         tracePath: copiedTracePath ? path.relative(repoRoot, copiedTracePath) : null,
@@ -1129,11 +1182,10 @@ function buildSummary(input: {
 }): Summary {
   const verdicts = decideVerdicts(input.runs);
   const problems = verdicts.filter(item => item.status === 'fail').map(item => `${item.description}: ${item.detail}`);
+  // Covers a requested case with no runs at all, so its not-run verdicts fail the eval too.
+  problems.push(...findIncompleteCaseRuns(input.runs, requestedCaseNames(input.options.caseGlob), input.options.runs));
   if (input.evalExitCode !== 0) problems.push(`claude plugin eval exited ${input.evalExitCode}`);
   if (input.aggregate.partial) problems.push(`the eval stopped early (${input.aggregate.partialReason ?? 'partial'})`);
-  if (!input.options.caseGlob) {
-    for (const item of verdicts.filter(candidate => candidate.status === 'not-run')) problems.push(`${item.description}: no runs`);
-  }
   const isGateOnCase = (run: RunEvidence) => run.caseName === CASE_GATE_ON_ANSWERS || run.caseName === CASE_GATE_ON_EDITS;
   return {
     createdAt: new Date().toISOString(),
@@ -1195,7 +1247,8 @@ function renderSummaryMarkdown(summary: Summary, reportDirectory: string): strin
         analysis.smartUnfoldCalls,
         analysis.getObservationsCalls,
         analysis.denyMarkerAppeared ? 'yes' : 'no',
-        (failedGraders.join(', ') || 'none') + (run.error ? ` (error: ${run.error})` : ''),
+        (failedGraders.join(', ') || 'none') + (run.error ? ` (error: ${run.error})` : '')
+          + (run.aborted ? ` (aborted by mock ${run.aborted.server}/${run.aborted.tool}: ${run.aborted.reason})` : ''),
         formatNumber(run.turns),
         formatUsd(run.costUsd),
         '',

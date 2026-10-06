@@ -19,7 +19,7 @@ All of these must hold:
 
 - **The session is Claude Code** (not Qwen Code), and the Read comes from the main session, not a subagent.
 - **The file is code that `smart_outline` can parse** (see the table below).
-- **The file is inside the project**, meaning under the session's working directory.
+- **The file is inside the project**, meaning under the session's working directory once symlinks are resolved. `smart_outline` and `smart_unfold` apply the same check, so a symlink in the project that points outside it is never blocked: those tools would refuse it.
 - **The file is at least 1,500 bytes.**
 - **The file has observation history**, and it **has not been modified since the newest of those observations**.
 - **The Read would return the whole file.** Reads of part of a file always go through. See [Whole-File vs Targeted Reads](#whole-file-vs-targeted-reads).

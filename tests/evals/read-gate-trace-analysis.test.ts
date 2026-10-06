@@ -6,12 +6,16 @@ import {
   CASE_GATE_OFF_ANSWERS,
   CASE_GATE_ON_ANSWERS,
   CASE_GATE_ON_EDITS,
+  caseNameMatchesGlob,
   countLines,
   decideVerdicts,
+  EVAL_CASE_NAMES,
+  findIncompleteCaseRuns,
   GET_OBSERVATIONS_TOOL,
   isWholeFileRead,
   processesStillUsingArm,
   READ_GATE_DENY_MARKER,
+  requestedCaseNames,
   SMART_OUTLINE_TOOL,
   SMART_UNFOLD_TOOL,
   type ReadGateTraceAnalysis,
@@ -165,7 +169,7 @@ describe('decideVerdicts', () => {
   function run(caseName: string, runNumber: number, graders: Record<string, boolean>, analysis: Partial<ReadGateTraceAnalysis>): RunEvidence {
     return {
       caseName, runNumber, graders,
-      score: null, turns: 5, costUsd: 0.1, error: null, tracePath: null,
+      score: null, turns: 5, costUsd: 0.1, error: null, aborted: null, tracePath: null,
       analysis: { ...noActivity, ...analysis },
     };
   }
@@ -219,6 +223,78 @@ describe('decideVerdicts', () => {
 
     expect(statusById['gate-on-deny-exercised']).toBe('fail');
     expect(statusById['gate-on-attempts-denied']).toBe('pass');
+  });
+});
+
+describe('requestedCaseNames', () => {
+  it('requests every case without --case, and the ones the glob selects with it', () => {
+    expect(requestedCaseNames(null)).toEqual([CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS, CASE_GATE_OFF_ANSWERS]);
+    expect(requestedCaseNames('gate-on-*')).toEqual([CASE_GATE_ON_ANSWERS, CASE_GATE_ON_EDITS]);
+    expect(requestedCaseNames(CASE_GATE_ON_EDITS)).toEqual([CASE_GATE_ON_EDITS]);
+    expect(requestedCaseNames('*')).toEqual([...EVAL_CASE_NAMES]);
+    expect(requestedCaseNames('no-such-case')).toEqual([]);
+  });
+
+  it('matches names as claude plugin eval --case does: whole name, * and ?, everything else literal', () => {
+    expect(caseNameMatchesGlob('gate-o?-*', CASE_GATE_ON_ANSWERS)).toBe(true);
+    expect(caseNameMatchesGlob('gate-o?-*', CASE_GATE_OFF_ANSWERS)).toBe(false);
+    expect(caseNameMatchesGlob('gate-on', CASE_GATE_ON_ANSWERS)).toBe(false);
+    expect(caseNameMatchesGlob('gate.on.*', CASE_GATE_ON_ANSWERS)).toBe(false);
+    expect(caseNameMatchesGlob('(gate)-on-*', CASE_GATE_ON_ANSWERS)).toBe(false);
+  });
+});
+
+describe('findIncompleteCaseRuns', () => {
+  const noActivity = analyzeReadGateTrace([], OPTIONS);
+
+  function completedRun(caseName: string, runNumber: number, overrides: Partial<RunEvidence> = {}): RunEvidence {
+    return {
+      caseName, runNumber, graders: {}, score: 1, turns: 5, costUsd: 0.1,
+      error: null, aborted: null, tracePath: null, analysis: noActivity, ...overrides,
+    };
+  }
+
+  const threeRunsEach = EVAL_CASE_NAMES.flatMap(caseName => [1, 2, 3].map(number => completedRun(caseName, number)));
+
+  it('finds nothing when every requested case has every requested run, none errored or aborted', () => {
+    expect(findIncompleteCaseRuns(threeRunsEach, EVAL_CASE_NAMES, 3)).toEqual([]);
+  });
+
+  it('names a case with fewer runs in the results than requested, and one with none', () => {
+    const runs = threeRunsEach.filter(run =>
+      !(run.caseName === CASE_GATE_ON_EDITS && run.runNumber === 3) && run.caseName !== CASE_GATE_OFF_ANSWERS);
+
+    expect(findIncompleteCaseRuns(runs, EVAL_CASE_NAMES, 3)).toEqual([
+      `${CASE_GATE_ON_EDITS} did not complete its runs: 2 of 3 requested runs in the results`,
+      `${CASE_GATE_OFF_ANSWERS} did not complete its runs: 0 of 3 requested runs in the results`,
+    ]);
+  });
+
+  it('names runs that ended with an error or that a mock aborted, even when every run is present', () => {
+    const runs = threeRunsEach.map(run => {
+      if (run.caseName === CASE_GATE_ON_ANSWERS && run.runNumber === 2) {
+        return { ...run, error: 'scaffold failed (exit 1): cp: fixture: No such file or directory' };
+      }
+      if (run.caseName === CASE_GATE_ON_ANSWERS && run.runNumber === 3) {
+        return { ...run, aborted: { server: 'mcp-search', tool: 'smart_outline', reason: 'abort_when matched' } };
+      }
+      return run;
+    });
+
+    expect(findIncompleteCaseRuns(runs, EVAL_CASE_NAMES, 3)).toEqual([
+      `${CASE_GATE_ON_ANSWERS} did not complete its runs: `
+        + 'run 2 ended with an error: scaffold failed (exit 1): cp: fixture: No such file or directory; '
+        + 'run 3 was aborted by mock mcp-search/smart_outline: abort_when matched',
+    ]);
+  });
+
+  it('checks only the requested cases, so a --case run is not failed for the cases it skipped', () => {
+    const editRunsOnly = [1, 2].map(number => completedRun(CASE_GATE_ON_EDITS, number));
+
+    expect(findIncompleteCaseRuns(editRunsOnly, requestedCaseNames(CASE_GATE_ON_EDITS), 2)).toEqual([]);
+    expect(findIncompleteCaseRuns(editRunsOnly, requestedCaseNames('gate-on-*'), 2)).toEqual([
+      `${CASE_GATE_ON_ANSWERS} did not complete its runs: 0 of 2 requested runs in the results`,
+    ]);
   });
 });
 

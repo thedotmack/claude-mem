@@ -6,13 +6,14 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
-import { readFileSync, statSync } from 'fs';
+import { closeSync, openSync, readSync, statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { isTreeSitterCliAvailable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
 import { isQwenCodeHookEvent } from './session-init.js';
 
@@ -166,46 +167,84 @@ function readWindowValue(value: unknown): number | undefined {
   return typeof numeric === 'number' && Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
 }
 
-/** Lines the Read tool would return: one per `\n`, plus a last line without one. Null when unreadable. */
-function countFileLines(absolutePath: string): number | null {
-  let bytes: Buffer;
+/** fileHasMoreLinesThan reads this much at a time, so it never holds a whole file. */
+export const LINE_COUNT_CHUNK_BYTES = 64 * 1024;
+
+/** Whether an open file has more lines than `lineCount`, read a chunk at a time until the answer is known. */
+function openFileHasMoreLinesThan(fileDescriptor: number, lineCount: number): boolean {
+  const chunk = Buffer.allocUnsafe(LINE_COUNT_CHUNK_BYTES);
+  let newlineCount = 0;
+  let endsWithNewline = false;
+  for (;;) {
+    const bytesRead = readSync(fileDescriptor, chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    const bytes = chunk.subarray(0, bytesRead);
+    for (let newlineIndex = bytes.indexOf(0x0a); newlineIndex !== -1; newlineIndex = bytes.indexOf(0x0a, newlineIndex + 1)) {
+      newlineCount += 1;
+      // Every newline ends a line, so the file has at least this many: stop here.
+      if (newlineCount > lineCount) return true;
+    }
+    endsWithNewline = bytes[bytesRead - 1] === 0x0a;
+  }
+  return (endsWithNewline ? newlineCount : newlineCount + 1) > lineCount;
+}
+
+/**
+ * Whether the file has more lines than `lineCount`, counting the lines the
+ * Read tool would return: one per `\n`, plus a last line without one (so an
+ * empty file counts as one line). Reads LINE_COUNT_CHUNK_BYTES at a time and
+ * stops as soon as the count passes `lineCount`, so a one-line Read of a huge
+ * file reads one chunk. Null when the file cannot be read: no deny then.
+ */
+export function fileHasMoreLinesThan(absolutePath: string, lineCount: number): boolean | null {
+  let fileDescriptor: number | undefined;
   try {
-    bytes = readFileSync(absolutePath);
+    fileDescriptor = openSync(absolutePath, 'r');
+    return openFileHasMoreLinesThan(fileDescriptor, lineCount);
   } catch (err) {
     logger.debug('HOOK', 'Could not count file lines, not gating this Read', {
       absolutePath,
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
   }
-  let newlineCount = 0;
-  for (
-    let newlineIndex = bytes.indexOf(0x0a);
-    newlineIndex !== -1;
-    newlineIndex = bytes.indexOf(0x0a, newlineIndex + 1)
-  ) newlineCount++;
-  const endsWithNewline = bytes.length > 0 && bytes[bytes.length - 1] === 0x0a;
-  return endsWithNewline ? newlineCount : newlineCount + 1;
 }
 
 /**
- * File Read Gate: deny a Read only when ALL hold — Claude Code main session
- * (not Qwen Code, which runs the same command), gate setting not 'false', a
- * single `file_path` Read of a file smart_outline can outline, inside the
- * project, with observation history whose lookup stat'ed the file (it enforced
- * size >= FILE_READ_GATE_MIN_BYTES and mtime older than the newest
- * observation), the Read would return the whole file, and the smart tools can
- * parse here.
- * Targeted reads always pass: Edit's read-before-edit rule needs one (#2094).
- * Conditions run cheapest first; `countTotalLines` runs only when the Read sets
- * a limit, and `isSmartReadAvailable` runs last.
+ * Whether smart_outline / smart_unfold would accept `filePath` from this cwd:
+ * resolveWithinWorkspace is their own containment check, realpath on both
+ * sides. A symlink in the project that points outside it is outside, and a cwd
+ * that is itself a symlink (macOS /var -> /private/var) still holds its files.
  */
-export function shouldDenyFullFileRead(
+async function fileResolvesInsideWorkspace(filePath: string, workspaceCwd: string): Promise<boolean> {
+  try {
+    await resolveWithinWorkspace(filePath, workspaceCwd);
+    return true;
+  } catch (err) {
+    logger.debug('HOOK', 'File resolves outside the workspace, where the smart tools refuse it: not gating this Read', {
+      filePath,
+      workspaceCwd,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * The File Read Gate's conditions that touch no file system, cheapest first:
+ * Claude Code main session (not Qwen Code, which runs the same command), gate
+ * setting not 'false', a single `file_path` Read of a file smart_outline can
+ * outline, with observation history whose lookup stat'ed the file (it enforced
+ * size >= FILE_READ_GATE_MIN_BYTES and mtime older than the newest
+ * observation), a session cwd, and a Read that starts at line 1. Only a Read
+ * that meets all of them pays for the workspace check, which resolves symlinks.
+ */
+function isFullFileReadGateCandidate(
   input: NormalizedHookInput,
-  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified'> | null,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified'>,
   fileReadGateSetting: string | undefined,
-  countTotalLines: (absolutePath: string) => number | null,
-  isSmartReadAvailable: () => boolean,
 ): boolean {
   if (input.platform !== 'claude-code') return false;
   // Qwen Code runs the same `hook claude-code …` commands: context, never a deny.
@@ -219,19 +258,36 @@ export function shouldDenyFullFileRead(
   if (typeof readInput.file_path !== 'string' || Array.isArray(readInput.filePaths)) return false;
 
   // A failed stat skipped the size and mtime checks; a claude-mem failure must never block a Read.
-  if (!fileHistory || !fileHistory.fileStatVerified) return false;
+  if (!fileHistory.fileStatVerified) return false;
   if (UNGATED_LANGUAGES.has(detectLanguage(fileHistory.absolutePath))) return false;
-
   if (!input.cwd) return false;
-  const pathFromCwd = path.relative(input.cwd, fileHistory.absolutePath);
-  if (pathFromCwd.startsWith('..') || path.isAbsolute(pathFromCwd)) return false;
+  return (readWindowValue(readInput.offset) ?? 0) <= 1;
+}
 
-  if ((readWindowValue(readInput.offset) ?? 0) > 1) return false;
-  const readLimit = readWindowValue(readInput.limit);
-  if (readLimit !== undefined) {
-    const totalLines = countTotalLines(fileHistory.absolutePath);
-    if (totalLines === null || readLimit < totalLines) return false;
-  }
+/**
+ * File Read Gate: deny a Read only when ALL hold — it is a gate candidate
+ * (isFullFileReadGateCandidate), the file resolves inside the workspace by the
+ * rule smart_outline / smart_unfold apply (the deny routes Claude to them, so
+ * a path they refuse is never denied), the Read would return the whole file,
+ * and the smart tools can parse here.
+ * Targeted reads always pass: Edit's read-before-edit rule needs one (#2094).
+ * Conditions run cheapest first; `fileHasMoreLinesThan` runs only when the
+ * Read sets a limit, and `isSmartReadAvailable` runs last.
+ */
+export function shouldDenyFullFileRead(
+  input: NormalizedHookInput,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified'> | null,
+  fileReadGateSetting: string | undefined,
+  fileIsInsideWorkspace: boolean,
+  fileHasMoreLinesThan: (absolutePath: string, lineCount: number) => boolean | null,
+  isSmartReadAvailable: () => boolean,
+): boolean {
+  if (!fileHistory || !isFullFileReadGateCandidate(input, fileHistory, fileReadGateSetting)) return false;
+  if (!fileIsInsideWorkspace) return false;
+
+  const readLimit = readWindowValue((input.toolInput as Record<string, unknown>).limit);
+  // More lines than the limit is a targeted Read; null (unreadable) never denies.
+  if (readLimit !== undefined && fileHasMoreLinesThan(fileHistory.absolutePath, readLimit) !== false) return false;
 
   // An install whose tree-sitter-cli never downloaded its binary answers
   // "Could not parse" to every smart_outline call, so routing Claude there
@@ -282,30 +338,34 @@ export const fileContextHandler: EventHandler = {
       });
     });
 
-    if (
-      histories.length === 1
-      && shouldDenyFullFileRead(
-        input,
-        histories[0],
-        loadFromFileOnce().CLAUDE_MEM_FILE_READ_GATE_ENABLED,
-        countFileLines,
-        isTreeSitterCliAvailable,
-      )
-    ) {
+    if (histories.length === 1) {
       const history = histories[0];
-      // Record the claim so a targeted Read that follows this denial does not
-      // re-inject the timeline it already carried. The result is ignored on
-      // purpose: every whole-file Read of a gated file is denied, so the claim
-      // never opens a free retry.
-      claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs);
-      return {
-        hookSpecificOutput: {
-          hookEventName: 'PreToolUse',
-          additionalContext: '',
-          permissionDecision: 'deny',
-          permissionDecisionReason: formatFullFileReadDenyReason(history),
-        },
-      };
+      const fileReadGateSetting = loadFromFileOnce().CLAUDE_MEM_FILE_READ_GATE_ENABLED;
+      // Resolving symlinks costs syscalls: only a Read every cheaper condition gates pays for it.
+      const fileIsInsideWorkspace = isFullFileReadGateCandidate(input, history, fileReadGateSetting)
+        && await fileResolvesInsideWorkspace(history.filePath, input.cwd);
+      if (shouldDenyFullFileRead(
+        input,
+        history,
+        fileReadGateSetting,
+        fileIsInsideWorkspace,
+        fileHasMoreLinesThan,
+        isTreeSitterCliAvailable,
+      )) {
+        // Record the claim so a targeted Read that follows this denial does not
+        // re-inject the timeline it already carried. The result is ignored on
+        // purpose: every whole-file Read of a gated file is denied, so the claim
+        // never opens a free retry.
+        claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext: '',
+            permissionDecision: 'deny',
+            permissionDecisionReason: formatFullFileReadDenyReason(history),
+          },
+        };
+      }
     }
 
     const timelines: string[] = [];
