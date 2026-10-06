@@ -273,12 +273,19 @@ export async function searchCodebase(
   };
 }
 
-/** Receiver identity matters when explicitly queried; plain type queries use the leaf method name. */
+/**
+ * Plain type queries score the leaf method name. A qualified query must match
+ * the method part, so `Store.Reset` does not match `Store.Fetch`; receiver
+ * identity then only adds a bonus, which keeps `srv.Reset` (a call copied from
+ * code) matching every `Reset`.
+ */
 function scoreGoMethodName(name: string, query: string, parts: string[]): number {
-  if (!query.includes(".")) return matchScore(name.slice(name.lastIndexOf(".") + 1), parts);
-  const score = matchScore(name, parts);
-  if (name === query) return score + 20;
-  return score + (name.startsWith(query) ? 10 : 0);
+  const leaf = name.slice(name.lastIndexOf(".") + 1);
+  if (!query.includes(".")) return matchScore(leaf, parts);
+  const leafScore = matchScore(leaf, [query.slice(query.lastIndexOf(".") + 1)]);
+  if (leafScore === 0) return 0;
+  if (name === query) return leafScore + 20;
+  return leafScore + (name.startsWith(query) ? 10 : 0);
 }
 
 function countSymbols(file: FoldedFile): number {

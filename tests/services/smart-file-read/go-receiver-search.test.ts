@@ -38,3 +38,20 @@ test('prioritizes an exact qualified method over its longer prefix neighbors',as
   const result=await searchCodebase(qualifiedRoot,'Store.Reset',{maxResults:1});
   expect(result.matchingSymbols.map(s=>s.symbolName)).toEqual(['Store.Reset']);
 },120000);
+
+const leafRoot=mkdtempSync(join(tmpdir(),'cm-go-method-leaf-'));
+afterAll(()=>rmSync(leafRoot,{recursive:true,force:true}));
+writeFileSync(join(leafRoot,'leaf.go'),`package owned
+type Store struct {}
+type Other struct {}
+func (s Store) Reset() {}
+func (s Store) Fetch() {}
+func (o Other) Reset() {}`);
+test('matches a qualified method query on the method name, not on the receiver alone',async()=>{
+  const exact=await searchCodebase(leafRoot,'Store.Reset');
+  expect(exact.matchingSymbols[0].symbolName).toBe('Store.Reset');
+  expect(exact.matchingSymbols.map(s=>s.symbolName)).not.toContain('Store.Fetch');
+  // A call copied from code names a variable, not the receiver type.
+  const copied=await searchCodebase(leafRoot,'srv.Reset');
+  expect(copied.matchingSymbols.map(s=>s.symbolName).sort()).toEqual(['Other.Reset','Store.Reset']);
+},120000);
