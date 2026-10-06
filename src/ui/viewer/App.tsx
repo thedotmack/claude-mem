@@ -61,6 +61,7 @@ export function App() {
   const [paginatedSummaries, setPaginatedSummaries] = useState<Summary[]>([]);
   const [paginatedPrompts, setPaginatedPrompts] = useState<UserPrompt[]>([]);
   const [feedLoadError, setFeedLoadError] = useState<string | null>(null);
+  const [sessionDeleteNotice, setSessionDeleteNotice] = useState<string | null>(null);
   const handledDeletionsRef = useRef(new Set<string>());
   // A page started before a session was deleted must not restore its old rows,
   // even if a live row has since re-created that same session identity.
@@ -288,6 +289,7 @@ export function App() {
 
   /** Rejects with a user-facing reason; the card shows it. */
   async function handleDeleteSession(session: SessionRef): Promise<void> {
+    setSessionDeleteNotice(null);
     const key = sessionKey(session);
     const deletionVersion = sessionDeletionVersionsRef.current.get(key) ?? 0;
     const activityVersion = sessionActivityVersionsRef.current.get(key) ?? 0;
@@ -309,22 +311,41 @@ export function App() {
             if (sameSession(sessionRefOf(row), session)) candidates[itemType].add(row.id);
           }
         }
-        const exists = await confirmSessionExists(session);
-        const confirmed = exists ? await confirmSessionRowIds(session, candidates)
-          : { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-        await catalog.refreshLoaded(currentFilter);
-        if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
-        const absent = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
-        for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-          for (const id of candidates[itemType]) {
-            if (!confirmed[itemType].has(id)) absent[itemType].add(id);
+        let exists: boolean | undefined;
+        try {
+          exists = await confirmSessionExists(session);
+          const confirmed = exists ? await confirmSessionRowIds(session, candidates)
+            : { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
+          await catalog.refreshLoaded(currentFilter);
+          if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
+          const absent = { observation: new Set<number>(), summary: new Set<number>(), prompt: new Set<number>() };
+          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+            for (const id of candidates[itemType]) {
+              if (!confirmed[itemType].has(id)) absent[itemType].add(id);
+            }
           }
+          retireLoadedSession(session, absent);
+          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+            for (const id of absent[itemType]) removeLiveItem(itemType, id);
+          }
+          if (exists) return;
+        } catch {
+          // DELETE already succeeded. A failed read cannot turn that fact into
+          // a refused deletion, or send the user to retry a now-absent session.
+          // Retire only the captured provisional rows; later live arrivals and
+          // a recreation actually confirmed by the catalog retain their owner.
+          if ((sessionDeletionVersionsRef.current.get(key) ?? 0) !== acknowledgmentVersion) return;
+          retireLoadedSession(session, candidates);
+          for (const itemType of ['observation', 'summary', 'prompt'] as const) {
+            for (const id of candidates[itemType]) removeLiveItem(itemType, id);
+          }
+          if (exists !== true && (sessionActivityVersionsRef.current.get(key) ?? 0) === currentActivityVersion) {
+            catalog.remove(session);
+          }
+          setSessionDeleteNotice('Session deleted. The current view could not be refreshed; reload to check for newer activity.');
+          void catalog.refreshLoaded(currentFilter);
+          return;
         }
-        retireLoadedSession(session, absent);
-        for (const itemType of ['observation', 'summary', 'prompt'] as const) {
-          for (const id of absent[itemType]) removeLiveItem(itemType, id);
-        }
-        if (exists) return;
         // A live recreation observed while confirming absence belongs to the
         // newer state; its rows were not in the confirmation snapshot.
         if ((sessionActivityVersionsRef.current.get(key) ?? 0) !== currentActivityVersion) return;
@@ -412,6 +433,7 @@ export function App() {
         }}
       />
 
+      {sessionDeleteNotice && <div className="card-delete-error" role="alert">{sessionDeleteNotice}</div>}
       {content}
 
       {!welcomeDismissed && (

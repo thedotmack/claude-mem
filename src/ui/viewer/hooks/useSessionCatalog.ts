@@ -37,6 +37,7 @@ export function useSessionCatalog() {
   // Live changes made while a page request is in flight, re-applied to its
   // response so a refresh never hides a new session or restores a deleted one.
   const journalRef = useRef<CatalogJournal>(emptyCatalogJournal());
+  const removalRevisionRef = useRef(0);
 
   const fetchPage = useCallback(async (project: string, mode: 'replace' | 'append', prefixSize = SESSION_CATALOG_PAGE_SIZE) => {
     const requestSeq = ++requestSeqRef.current;
@@ -54,7 +55,10 @@ export function useSessionCatalog() {
     if (project) params.append('project', project);
     let accepted: SessionCatalogEntry[] | undefined;
     try {
+      let interruptedPrefixes = 0;
       for (;;) {
+        const removalRevision = removalRevisionRef.current;
+        let prefixInterrupted = false;
         const data: { sessions: SessionCatalogEntry[]; hasMore?: boolean } = { sessions: [] };
         do {
           params.set('offset', String(offset + data.sessions.length));
@@ -65,10 +69,21 @@ export function useSessionCatalog() {
           if (!response.ok) throw new Error(`HTTP ${response.status}`);
           const page = await response.json() as { sessions: SessionCatalogEntry[]; hasMore?: boolean };
           if (requestSeq !== requestSeqRef.current) return;
+          if (mode === 'replace' && removalRevision !== removalRevisionRef.current) {
+            prefixInterrupted = true;
+            break;
+          }
           data.sessions.push(...page.sessions);
           data.hasMore = page.hasMore;
           if (!page.sessions.length) break;
         } while (mode === 'replace' && data.hasMore && data.sessions.length < prefixSize);
+        // Offset chunks have no snapshot token. A deletion can shift the next
+        // chunk after an earlier response was captured; start again from zero
+        // rather than committing a stitched prefix with a missing survivor.
+        if (prefixInterrupted || (mode === 'replace' && removalRevision !== removalRevisionRef.current)) {
+          if (++interruptedPrefixes >= 3) throw new Error('Session catalog changed repeatedly. Retry the refresh.');
+          continue;
+        }
         const journal = journalRef.current;
         // A session deleted mid-request that the page still contains moved the
         // server's list up by one more. Deletes of already-loaded sessions made
@@ -160,6 +175,7 @@ export function useSessionCatalog() {
   }, []);
 
   const remove = useCallback((session: SessionRef) => {
+    removalRevisionRef.current++;
     const key = sessionKey(session);
     journalRef.current.removed.add(key);
     journalRef.current.recreated.delete(key);
