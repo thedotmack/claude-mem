@@ -12,9 +12,17 @@ function parseReinforcementAlpha(raw: string | undefined): number {
   return Number.isFinite(alpha) && alpha > 0 ? alpha : 0;
 }
 
-/** Keep direct file/env settings finite without narrowing valid custom counts. */
-function parseContextCount(raw: unknown, fallback: string): number {
-  return parseContextCountValue(raw) ?? Number(fallback);
+/**
+ * Keep direct file/env settings finite without narrowing valid custom counts.
+ * Anything else falls back to the default, with a warning that names it.
+ */
+function parseContextCount(key: string, raw: unknown, fallback: string): number {
+  const count = parseContextCountValue(raw);
+  if (count !== undefined) return count;
+  if (raw !== undefined) {
+    logger.warn('CONFIG', `${key} must be a whole number >= 0; using the default`, { value: raw, default: fallback });
+  }
+  return Number(fallback);
 }
 
 function parseCsvSetting(raw: string | undefined): string[] | null {
@@ -61,10 +69,12 @@ export function loadContextConfig(): ContextConfig {
   );
 
   const defaults = SettingsDefaultsManager.getAllDefaults();
+  const count = (key: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS' | 'CLAUDE_MEM_CONTEXT_FULL_COUNT' | 'CLAUDE_MEM_CONTEXT_SESSION_COUNT') =>
+    parseContextCount(key, settings[key], defaults[key]);
   return {
-    totalObservationCount: parseContextCount(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, defaults.CLAUDE_MEM_CONTEXT_OBSERVATIONS),
-    fullObservationCount: parseContextCount(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, defaults.CLAUDE_MEM_CONTEXT_FULL_COUNT),
-    sessionCount: parseContextCount(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, defaults.CLAUDE_MEM_CONTEXT_SESSION_COUNT),
+    totalObservationCount: count('CLAUDE_MEM_CONTEXT_OBSERVATIONS'),
+    fullObservationCount: count('CLAUDE_MEM_CONTEXT_FULL_COUNT'),
+    sessionCount: count('CLAUDE_MEM_CONTEXT_SESSION_COUNT'),
     showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
     showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
     showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
