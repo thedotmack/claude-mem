@@ -17,12 +17,14 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
     const owned=mkdtempSync(join(tmpdir(),'claude-mem-restart-timeout-'));
     let child:ReturnType<typeof Bun.spawn>|undefined;
     let timer:ReturnType<typeof setTimeout>|undefined;
+    let markReady!:()=>void;
+    const ready=new Promise<void>(resolve=>{markReady=resolve});
     let report!:(result:unknown)=>void;
     const result=new Promise(resolve=>{report=resolve});
     const sockets=new Set<Socket>();
     const app=express();
     // The driver is appended to the real HTTP route's HTML. It does not replace
-    // fetch, clocks, timers, or the restart implementation.
+    // fetch, timers, or the restart implementation.
     app.use((req,res,next)=>{
       if(req.path==='/restart') {
         const send=res.send.bind(res);
@@ -45,17 +47,23 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       if(++readinessRequests===1 && stalled==='readiness')return;
       res.json({ready:true});
     });
+    // no-successor: the click handler fixes its 60 s deadline from the real
+    // clock before its first await. Running the page clock 56 s ahead right
+    // after the click brings that deadline about 4 s of real time away.
     app.get('/driver.js',(_req,res)=>res.type('application/javascript').send(`
       (async()=>{
+        await fetch('/ready');
         document.getElementById('go').click();
-        const started=Date.now();
-        const deadline=started+${stalled==='no-successor'?65000:9000};
-        while(document.getElementById('status').textContent==='Restarting…' && Date.now()<deadline)
+        ${stalled==='no-successor'?'const realNow=Date.now.bind(Date);Date.now=()=>realNow()+56000;':''}
+        const started=performance.now();
+        const deadline=started+${stalled==='no-successor'?15000:9000};
+        while(document.getElementById('status').textContent==='Restarting…' && performance.now()<deadline)
           await new Promise(resolve=>setTimeout(resolve,10));
         await fetch('/result',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({
-          status:document.getElementById('status').textContent,disabled:document.getElementById('go').disabled,elapsed:Date.now()-started})});
+          status:document.getElementById('status').textContent,disabled:document.getElementById('go').disabled,elapsed:performance.now()-started})});
       })();
     `));
+    app.get('/ready',(_req,res)=>{markReady();res.send('ready')});
     app.post('/result',express.json(),(req,res)=>{report(req.body);res.send('received')});
     new ViewerRoutes(null as any,null as any,null as any).setupRoutes(app);
     const server=createServer(app);
@@ -65,15 +73,19 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       const address=server.address();
       if(!address||typeof address==='string')throw Error('No native TCP address');
       child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking',
+        '--disable-background-timer-throttling','--disable-renderer-backgrounding',
         '--no-first-run',`--user-data-dir=${join(owned,'browser')}`,`http://127.0.0.1:${address.port}/restart`],
         {stdout:'ignore',stderr:'ignore'});
-      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser timed out'}),(stalled==='no-successor'?75000:15000))})]);
+      // Chrome's cold start gets its own window; the page's phases start at /ready.
+      await Promise.race([ready,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Restart page did not become ready')),30000)})]);
+      clearTimeout(timer);
+      const received=await Promise.race([result,new Promise(resolve=>{timer=setTimeout(()=>resolve({failure:'Browser timed out'}),25000)})]);
       const observation=received as {status:string;disabled:boolean;elapsed:number};
       if(stalled==='no-successor') {
         expect(observation.status).toContain('doctor');
         expect(observation.disabled).toBe(false);
-        expect(observation.elapsed).toBeGreaterThanOrEqual(60000);
-        expect(observation.elapsed).toBeLessThan(65000);
+        expect(observation.elapsed).toBeGreaterThanOrEqual(3000);
+        expect(observation.elapsed).toBeLessThan(10000);
       } else {
         expect(observation.status).toBe('Memory worker restarted. You can close this tab.');
         expect(observation.disabled).toBe(true);
@@ -86,5 +98,5 @@ for (const stalled of ['post', 'health', 'health-body', 'readiness', 'no-success
       await new Promise<void>(resolve=>server.close(()=>resolve()));
       rmSync(owned,{recursive:true,force:true});
     }
-  },stalled==='no-successor'?80000:20000);
+  },80000);
 }
