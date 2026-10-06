@@ -473,6 +473,11 @@ export class TranscriptWatcher {
       existingTailer.poke();
       return;
     }
+    // A missing path may require watching a broad ancestor. Directory creation
+    // on the configured prefix matters, but sibling writes cannot add matches.
+    const prefix = this.literalWatchPrefix(resolvedPath).replace(/\\/g, '/');
+    if (changed !== prefix && !changed.startsWith(prefix.endsWith('/') ? prefix : prefix + '/') &&
+      !prefix.startsWith(changed.endsWith('/') ? changed : changed + '/')) return;
     const matches = this.resolveWatchFiles(resolvedPath);
     for (const filePath of matches) {
       if (!this.tailers.has(filePath)) {
@@ -483,7 +488,7 @@ export class TranscriptWatcher {
     }
   }
 
-  private deepestNonGlobAncestor(inputPath: string): string {
+  private literalWatchPrefix(inputPath: string): string {
     let candidate = inputPath;
     if (this.hasGlob(inputPath)) {
       const segments = inputPath.split(/[/\\]/);
@@ -496,6 +501,12 @@ export class TranscriptWatcher {
       if (literalSegments.length === 0 || (literalSegments.length === 1 && literalSegments[0] === '')) return '';
       candidate = literalSegments.join(pathSep);
     }
+    return candidate;
+  }
+
+  private deepestNonGlobAncestor(inputPath: string): string {
+    let candidate = this.literalWatchPrefix(inputPath);
+    if (!candidate) return '';
 
     // A host may create the configured file (or its parent directories) only
     // after the watcher starts. Watch the closest existing directory and keep
