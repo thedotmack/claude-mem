@@ -6,6 +6,7 @@ import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemet
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -493,6 +494,22 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
       };
     }
 
+    case 't3code': {
+      return {
+        title: 'T3 Code: registering native provider plugins',
+        task: async (message) => {
+          message('Installing hooks and MCP for T3 Code providers…');
+          const { installT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
+          const { result, output } = await bufferConsole(() => installT3Code(marketplaceDirectory()));
+          if (result !== 0) {
+            recordFailure('T3 Code: integration setup failed', output);
+            return `T3 Code: integration setup failed ${styleText('red', 'FAIL')}`;
+          }
+          return `T3 Code: native provider plugins registered ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'codex-cli': {
       return {
         title: 'Codex CLI: registering hooks marketplace',
@@ -756,6 +773,7 @@ function copyPluginToMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
   const packageRoot = npmPackageRootDirectory();
 
+  const attribution = readProjectAttribution(packageRoot);
   ensureDirectoryExists(marketplaceDir);
 
   const allowedTopLevelEntries = [
@@ -770,7 +788,6 @@ function copyPluginToMarketplace(): void {
     'openclaw',
     'omp',
     'dist',
-    'LICENSE',
     'README.md',
     'CHANGELOG.md',
   ];
@@ -788,6 +805,8 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  replaceOwnedFiles(marketplaceDir, attribution);
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
   writeTrimmedMarketplaceManifest(marketplaceDir);

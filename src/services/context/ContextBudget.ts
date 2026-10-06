@@ -37,9 +37,12 @@ export interface ContextBudgetResult {
  *
  * Full observation narratives go first: they are the largest per-item cost and
  * their titles remain in the timeline either way. The last-session summary
- * block goes next, being a single 1-5K item. Only then do we start losing
- * timeline entries, sessions before observations, because an observation is
- * the smaller unit and the one the timeline is mostly made of.
+ * block goes next, being a single 1-5K item, then the prior session's final
+ * reply ("Include last message"), a single item with no size bound at all:
+ * kept to the end, a long one leaves the block over the limit after every
+ * other reduction. Only then do we start losing timeline entries, sessions
+ * before observations, because an observation is the smaller unit and the one
+ * the timeline is mostly made of.
  */
 function reduceConfig(config: ContextConfig, observationCount: number): { config: ContextConfig; observationCount: number } | null {
   if (config.fullObservationCount > 0) {
@@ -47,6 +50,9 @@ function reduceConfig(config: ContextConfig, observationCount: number): { config
   }
   if (config.showLastSummary) {
     return { config: { ...config, showLastSummary: false }, observationCount };
+  }
+  if (config.showLastMessage) {
+    return { config: { ...config, showLastMessage: false }, observationCount };
   }
   if (config.sessionCount > 0) {
     return { config: { ...config, sessionCount: Math.floor(config.sessionCount / 2) }, observationCount };

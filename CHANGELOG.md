@@ -4,6 +4,108 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.32.0] - 2026-10-06
+
+## The File Read Gate is back, on by default
+
+When Claude Code tries to `Read` a whole code file that claude-mem already has observations about, the Read is now blocked. Claude gets the file's observation timeline instead, along with cheaper ways to get what it needs:
+
+- **Current code:** `smart_outline` for the file's symbols and line numbers, then `smart_unfold` for the ones it needs.
+- **Past work:** `get_observations` for the observations listed.
+- **Exact lines, for example before an Edit:** a targeted `Read` with `offset`/`limit`. Partial reads are always allowed, and they satisfy Edit's read-before-edit rule, so editing never deadlocks.
+
+The block was first built in April, but it never shipped. It broke Edit, so the same day it was softened to "allow + context", and v12.0.0 shipped that version. In July the hook was made asynchronous, and an asynchronous hook can't block anything. This release brings the block back, with the Edit problem solved by letting targeted Reads through. (#4549)
+
+**When it blocks.** Every one of these must hold:
+
+- It's the Claude Code main session (not Codex, Kimi, Qwen Code or subagents).
+- The file is code that `smart_outline` parses (not markdown, YAML, TOML or JSON).
+- The file is inside the workspace, by the same symlink-aware rule the smart tools use.
+- The file is at least 1,500 bytes, and its newest observation is newer than the file.
+- The Read would return the whole file.
+- The tree-sitter CLI that powers the smart tools is installed.
+
+**Turn it off** with `"CLAUDE_MEM_FILE_READ_GATE_ENABLED": "false"` in `~/.claude-mem/settings.json`, the env var of the same name, or the viewer's **Block full-file reads** toggle (Advanced → Save). With the gate off, Reads go through and the timeline is still added as context. `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1` turns off the whole hook.
+
+**Hook changes:**
+
+- The PreToolUse `Read` hook is synchronous again (15 s cap, 3 s worker budget). It fails open: a slow or missing worker never blocks a Read.
+- It no longer answers `allow`, so Claude Code's own permission prompts apply as usual.
+
+**If `smart_outline` says "Could not parse" for every file,** your install's tree-sitter CLI was never provisioned. Run `npx claude-mem repair`. Until then the gate stays dormant rather than sending Claude to tools that can't parse.
+
+**Proof:** `npm run eval:read-gate` runs real Claude Code against two isolated, seeded workers, one with the gate on and one with it off.
+
+- **Gate on:** every whole-file Read was denied and no run ever received the whole file. Answers were correct via `smart_outline`/`smart_unfold`, and edits changed only the intended line.
+- **Gate off:** Reads went through normally.
+- Every verdict passed on both `claude-sonnet-5-5` (3 runs per case) and `claude-opus-5-5` (2 runs per case).
+
+## Also new
+
+- **Opt-in worker idle exit:** set `CLAUDE_MEM_IDLE_EXIT_SEC` to have the worker shut down gracefully after that many seconds with no session activity, queued work, host traffic or AI calls. The next hook starts it again. The default, `0`, keeps today's behavior. (#4524)
+
+## Fixes
+
+- **Worker:** the processing-status broadcast and its log no longer flood when a signed-out observer cycles one batch. (#4525)
+- **Transcripts:**
+  - observations from the standalone watcher are spooled (#4531)
+  - declined observation lines are kept for retry (#4541)
+  - checkpoints reset correctly after an atomic file replacement (#4545)
+  - parents of not-yet-created paths are watched (#4544)
+- **Import:**
+  - distinct summaries are kept and nullable titles deduplicated (#4536)
+  - exported custom session titles are preserved (#4540)
+- **File context:** malformed imported file metadata is isolated. (#4538)
+- **Context:** direct settings counts are validated before querying memory. (#4539)
+- **Smart read:** multiline Go receiver identities and empty-query relevance are preserved. (#4546)
+- **Work state:** state fields named like prototype properties are preserved. (#4535)
+- **Viewer:**
+  - deletions are honored in pending pages and recreations (#4532)
+  - restart recovery requests and response bodies are bounded (#4529)
+  - superseded log responses are discarded after clearing (#4527)
+  - session catalog failures recover through an explicit retry (#4528)
+- **Docs:** the Codex install command uses the valid `--ide codex-cli` flag. (#4548)
+
+## [13.31.1] - 2026-10-06
+
+## Cloud sync: uploads no longer blocked by Supabase's firewall
+
+Since the move to Supabase, Supabase's Cloudflare firewall rejected some memory uploads based on their content, answering with an HTML "Attention Required!" page. The worker read that as an invalid token: it paused sync, told users to reconnect (which couldn't help), and left the rest of their upload queue stuck behind the blocked batch.
+
+- **Server side (already live, no update needed):** `sync.cmem.ai` now compresses uploads before forwarding them, and the `cmem-sync` function decodes them, so they get through the firewall.
+- **Worker:** an HTML 401/403 is no longer treated as a bad token. It's an ordinary failure that retries.
+- **Worker:** installs that were given the direct Supabase sync URL during setup are moved back to `https://sync.cmem.ai` on their own.
+
+## Other fixes
+
+- **smart-read:** keeps more symbols across C++, Haskell, Go, Rust, Zig, Swift, Kotlin, Ruby, PHP, Lua, TOML, JS and Python, and recognizes source file extensions regardless of case.
+- **search and smart-search:**
+  - substring reads are kept when FTS probing can't write
+  - observation filters are honored during semantic hydration
+  - multi-category selections survive every search strategy
+  - matches are ranked by their full relevance score
+- **context:**
+  - reads assistant transcript rows that contain only whitespace
+  - encodes every non-alphanumeric character in the cwd
+  - discards renders after a cache variant is torn down
+  - counts retained reinforcements once
+- **viewer and HTTP:**
+  - data feed pagination is bounded before SQLite runs
+  - truncated row identities are rejected
+  - one failed SSE client no longer affects healthy ones
+  - malformed observation metadata is recovered
+  - saved settings are preserved while loading
+- **Reliability:**
+  - non-finite `retry-after` hints are ignored
+  - spool tool ids are namespaced by session and platform
+  - the first observation's session owner is kept
+  - the MCP server loads in the launcher process
+  - plugin roots given as relative paths become absolute at install
+  - log follow reads are bounded
+  - watcher configuration shapes that would break it are rejected
+  - knowledge saves require a successful SDK result
+  - exports keep the last good file when a write partly fails
+
 ## [13.31.0] - 2026-10-05
 
 ## Sessions start without waiting

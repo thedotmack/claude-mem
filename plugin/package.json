@@ -1,12 +1,12 @@
 {
   "name": "claude-mem-plugin",
-  "version": "13.31.0",
+  "version": "13.32.0",
   "private": true,
   "description": "Runtime dependencies for claude-mem bundled hooks",
   "type": "module",
   "dependencies": {
     "zod": "^4.4.3",
-    "tree-sitter-cli": "^0.26.5",
+    "tree-sitter-cli": "0.26.9",
     "tree-sitter-c": "^0.24.1",
     "tree-sitter-cpp": "^0.23.4",
     "tree-sitter-go": "^0.25.0",

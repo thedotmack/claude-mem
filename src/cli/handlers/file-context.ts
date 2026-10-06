@@ -6,18 +6,43 @@ import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js'
 import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
 import { logger } from '../../utils/logger.js';
 import { parseJsonArray, formatTime, formatDate, formatHeaderDateTime } from '../../shared/timeline-formatting.js';
-import { statSync } from 'fs';
+import { closeSync, openSync, readSync, statSync } from 'fs';
 import path from 'path';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { getProjectContext } from '../../utils/project-name.js';
+import { detectLanguage } from '../../services/smart-file-read/language-map.js';
+import { isTreeSitterCliAvailable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
+import { isQwenCodeHookEvent } from './session-init.js';
 
-const FILE_READ_GATE_MIN_BYTES = 1_500;
+/** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
+const FILE_CONTEXT_MIN_BYTES = 1_500;
+
+/**
+ * The File Read Gate denies a whole-file Read only from this size up; smaller
+ * files get the timeline as context. A deny costs turns: the denied Read and
+ * every smart-tool or targeted Read after it, each re-reading the whole
+ * context, against the file it keeps out. evals/read-gate asked one question
+ * with the gate on and off: on a 19 KB file it cost -6% on Sonnet and +20% on
+ * Opus, on a 49 KB file -35% and -32%.
+ */
+export const FILE_READ_GATE_DENY_MIN_BYTES = 32 * 1024;
 
 const FETCH_LOOKAHEAD_LIMIT = 40;
 
 const DISPLAY_LIMIT = 15;
 const MAX_FILE_CONTEXT_PATHS = 10;
+
+// The PreToolUse Read hook is synchronous so the File Read Gate can deny, which
+// makes every Read wait on it. One budget covers the whole worker round trip
+// (liveness check + by-file query); a slow or absent worker fails open.
+export const FILE_CONTEXT_WORKER_BUDGET_MS = 3_000;
+
+// smart_outline cannot outline these (unknown) or smart-explore itself says to
+// Read them (markdown, config), so a full-file Read of them is never denied.
+const UNGATED_LANGUAGES = new Set(['unknown', 'markdown', 'yaml', 'toml']);
 
 const TYPE_ICONS: Record<string, string> = {
   decision: '\u2696\uFE0F',
@@ -77,45 +102,212 @@ function deduplicateObservations(
   return scored.slice(0, displayLimit).map(s => s.obs);
 }
 
-function formatFileTimeline(
-  observations: ObservationRow[],
-  filePath: string
-): string {
-  const safePath = filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
-  const byDay = new Map<string, ObservationRow[]>();
-  for (const obs of observations) {
+interface FileObservationHistory {
+  /** The path as the tool input spelled it; the routing hints quote it back. */
+  filePath: string;
+  /** Canonical absolute path: the dedupe key and the gate's subject. */
+  absolutePath: string;
+  relativePath: string;
+  newestObservationMs: number;
+  /** Deduped and ranked down to DISPLAY_LIMIT, then ordered oldest first for display. */
+  displayedObservations: ObservationRow[];
+  /**
+   * The lookup stat'ed the file, so its size and mtime checks ran. False when
+   * stat failed with anything but ENOENT: the timeline is still context, but
+   * the gate never denies a Read it could not check.
+   */
+  fileStatVerified: boolean;
+  /** The size the lookup stat'ed; 0 when the stat failed. */
+  fileSizeBytes: number;
+}
+
+/** Escapes a path for the quoted tool-call hints (backslashes, quotes, newlines). */
+function escapePathForHint(filePath: string): string {
+  return filePath.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n');
+}
+
+/**
+ * The day-grouped history both outputs share: `### <day>`, then one
+ * `<id> <time> <icon> <title>` line per observation. Expects oldest-first rows.
+ */
+function formatObservationTimeline(observationsOldestFirst: ObservationRow[]): string[] {
+  const lines: string[] = [];
+  let currentDay: string | null = null;
+  for (const obs of observationsOldestFirst) {
     const day = formatDate(obs.created_at_epoch);
-    if (!byDay.has(day)) {
-      byDay.set(day, []);
+    if (day !== currentDay) {
+      lines.push(`### ${day}`);
+      currentDay = day;
     }
-    byDay.get(day)!.push(obs);
+    const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
+    const icon = TYPE_ICONS[obs.type] || '\u2753';
+    const time = compactTime(formatTime(obs.created_at_epoch));
+    lines.push(`${obs.id} ${time} ${icon} ${title}`);
   }
+  return lines;
+}
 
-  const sortedDays = Array.from(byDay.entries()).sort((a, b) => {
-    const aEpoch = Math.min(...a[1].map(o => o.created_at_epoch));
-    const bEpoch = Math.min(...b[1].map(o => o.created_at_epoch));
-    return aEpoch - bEpoch;
-  });
-
-  const lines: string[] = [
+function formatFileContextTimeline(history: FileObservationHistory): string {
+  const safePath = escapePathForHint(history.filePath);
+  return [
     `Current: ${formatHeaderDateTime()}`,
     `This file has prior observations — supplementary context follows. The Read result below is the full requested section.`,
     `- **Need details on a past observation?** get_observations([IDs]) — ~300 tokens each.`,
     `- **Need a structural map first?** smart_outline("${safePath}") — line numbers only, cheaper than re-reading.`,
-  ];
+    ...formatObservationTimeline(history.displayedObservations),
+  ].join('\n');
+}
 
-  for (const [day, dayObservations] of sortedDays) {
-    const chronological = [...dayObservations].sort((a, b) => a.created_at_epoch - b.created_at_epoch);
-    lines.push(`### ${day}`);
-    for (const obs of chronological) {
-      const title = (obs.title || 'Untitled').replace(/[\r\n\t]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160);
-      const icon = TYPE_ICONS[obs.type] || '\u2753';
-      const time = compactTime(formatTime(obs.created_at_epoch));
-      lines.push(`${obs.id} ${time} ${icon} ${title}`);
+// The `Full-file Read blocked by claude-mem:` line is the read-gate eval's trace
+// anchor (evals/read-gate) — keep it verbatim.
+function formatFullFileReadDenyReason(history: FileObservationHistory): string {
+  const safePath = escapePathForHint(history.filePath);
+  const displayedIds = history.displayedObservations.map(obs => obs.id).join(', ');
+  return [
+    `Current: ${formatHeaderDateTime()}`,
+    `Full-file Read blocked by claude-mem: ${safePath} has prior observations (listed below). Get what you need without reading the whole file:`,
+    `- Current code: call smart_outline(file_path="${safePath}") for its symbols and line numbers, then smart_unfold(file_path="${safePath}", symbol_name="<name>") for the ones you need (MCP tools mcp__plugin_claude-mem_mcp-search__smart_outline / __smart_unfold; load them with ToolSearch if they are deferred).`,
+    `- Past work: call get_observations(ids=[${displayedIds}]) for the observations below that matter (~300 tokens each).`,
+    `- Exact lines, e.g. before an Edit: call Read on this file again with offset and limit around the lines smart_outline reported. Partial reads are allowed and satisfy Edit's read requirement.`,
+    `The titles below are history from earlier sessions, not the file's current contents.`,
+    ...formatObservationTimeline(history.displayedObservations),
+  ].join('\n');
+}
+
+/** A Read offset/limit as a usable number; anything else counts as absent. */
+function readWindowValue(value: unknown): number | undefined {
+  const numeric = typeof value === 'string' && value.trim() !== '' ? Number(value) : value;
+  return typeof numeric === 'number' && Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
+}
+
+/** fileHasMoreLinesThan reads this much at a time, so it never holds a whole file. */
+export const LINE_COUNT_CHUNK_BYTES = 64 * 1024;
+
+/** Whether an open file has more lines than `lineCount`, read a chunk at a time until the answer is known. */
+function openFileHasMoreLinesThan(fileDescriptor: number, lineCount: number): boolean {
+  const chunk = Buffer.allocUnsafe(LINE_COUNT_CHUNK_BYTES);
+  let newlineCount = 0;
+  let endsWithNewline = false;
+  for (;;) {
+    const bytesRead = readSync(fileDescriptor, chunk, 0, chunk.length, null);
+    if (bytesRead === 0) break;
+    const bytes = chunk.subarray(0, bytesRead);
+    for (let newlineIndex = bytes.indexOf(0x0a); newlineIndex !== -1; newlineIndex = bytes.indexOf(0x0a, newlineIndex + 1)) {
+      newlineCount += 1;
+      // Every newline ends a line, so the file has at least this many: stop here.
+      if (newlineCount > lineCount) return true;
     }
+    endsWithNewline = bytes[bytesRead - 1] === 0x0a;
   }
+  return (endsWithNewline ? newlineCount : newlineCount + 1) > lineCount;
+}
 
-  return lines.join('\n');
+/**
+ * Whether the file has more lines than `lineCount`, counting the lines the
+ * Read tool would return: one per `\n`, plus a last line without one (so an
+ * empty file counts as one line). Reads LINE_COUNT_CHUNK_BYTES at a time and
+ * stops as soon as the count passes `lineCount`, so a one-line Read of a huge
+ * file reads one chunk. Null when the file cannot be read: no deny then.
+ */
+export function fileHasMoreLinesThan(absolutePath: string, lineCount: number): boolean | null {
+  let fileDescriptor: number | undefined;
+  try {
+    fileDescriptor = openSync(absolutePath, 'r');
+    return openFileHasMoreLinesThan(fileDescriptor, lineCount);
+  } catch (err) {
+    logger.debug('HOOK', 'Could not count file lines, not gating this Read', {
+      absolutePath,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+  }
+}
+
+/**
+ * Whether smart_outline / smart_unfold would accept `filePath` from this cwd:
+ * resolveWithinWorkspace is their own containment check, realpath on both
+ * sides. A symlink in the project that points outside it is outside, and a cwd
+ * that is itself a symlink (macOS /var -> /private/var) still holds its files.
+ */
+async function fileResolvesInsideWorkspace(filePath: string, workspaceCwd: string): Promise<boolean> {
+  try {
+    await resolveWithinWorkspace(filePath, workspaceCwd);
+    return true;
+  } catch (err) {
+    logger.debug('HOOK', 'File resolves outside the workspace, where the smart tools refuse it: not gating this Read', {
+      filePath,
+      workspaceCwd,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * The File Read Gate's conditions that touch no file system, cheapest first:
+ * Claude Code main session (not Qwen Code, which runs the same command), gate
+ * setting not 'false', a single `file_path` Read of a file smart_outline can
+ * outline, with observation history whose lookup stat'ed the file (it enforced
+ * size >= FILE_CONTEXT_MIN_BYTES and mtime older than the newest
+ * observation), a size of at least FILE_READ_GATE_DENY_MIN_BYTES, a session
+ * cwd, and a Read that starts at line 1. Only a Read
+ * that meets all of them pays for the workspace check, which resolves symlinks.
+ */
+function isFullFileReadGateCandidate(
+  input: NormalizedHookInput,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified' | 'fileSizeBytes'>,
+  fileReadGateSetting: string | undefined,
+): boolean {
+  if (input.platform !== 'claude-code') return false;
+  // Qwen Code runs the same `hook claude-code …` commands: context, never a deny.
+  if (isQwenCodeHookEvent(input.transcriptPath)) return false;
+  if (fileReadGateSetting === 'false') return false;
+  if (input.agentId) return false;
+
+  const toolInput = input.toolInput;
+  if (!toolInput || typeof toolInput !== 'object' || Array.isArray(toolInput)) return false;
+  const readInput = toolInput as Record<string, unknown>;
+  if (typeof readInput.file_path !== 'string' || Array.isArray(readInput.filePaths)) return false;
+
+  // A failed stat skipped the size and mtime checks; a claude-mem failure must never block a Read.
+  if (!fileHistory.fileStatVerified) return false;
+  if (fileHistory.fileSizeBytes < FILE_READ_GATE_DENY_MIN_BYTES) return false;
+  if (UNGATED_LANGUAGES.has(detectLanguage(fileHistory.absolutePath))) return false;
+  if (!input.cwd) return false;
+  return (readWindowValue(readInput.offset) ?? 0) <= 1;
+}
+
+/**
+ * File Read Gate: deny a Read only when ALL hold — it is a gate candidate
+ * (isFullFileReadGateCandidate), the file resolves inside the workspace by the
+ * rule smart_outline / smart_unfold apply (the deny routes Claude to them, so
+ * a path they refuse is never denied), the Read would return the whole file,
+ * and the smart tools can parse here.
+ * Targeted reads always pass: Edit's read-before-edit rule needs one (#2094).
+ * Conditions run cheapest first; `fileHasMoreLinesThan` runs only when the
+ * Read sets a limit, and `isSmartReadAvailable` runs last.
+ */
+export function shouldDenyFullFileRead(
+  input: NormalizedHookInput,
+  fileHistory: Pick<FileObservationHistory, 'absolutePath' | 'fileStatVerified' | 'fileSizeBytes'> | null,
+  fileReadGateSetting: string | undefined,
+  fileIsInsideWorkspace: boolean,
+  fileHasMoreLinesThan: (absolutePath: string, lineCount: number) => boolean | null,
+  isSmartReadAvailable: () => boolean,
+): boolean {
+  if (!fileHistory || !isFullFileReadGateCandidate(input, fileHistory, fileReadGateSetting)) return false;
+  if (!fileIsInsideWorkspace) return false;
+
+  const readLimit = readWindowValue((input.toolInput as Record<string, unknown>).limit);
+  // More lines than the limit is a targeted Read; null (unreadable) never denies.
+  if (readLimit !== undefined && fileHasMoreLinesThan(fileHistory.absolutePath, readLimit) !== false) return false;
+
+  // An install whose tree-sitter-cli never downloaded its binary answers
+  // "Could not parse" to every smart_outline call, so routing Claude there
+  // would strand it; the Read goes through with the timeline as context.
+  return isSmartReadAvailable();
 }
 
 export const fileContextHandler: EventHandler = {
@@ -145,14 +337,14 @@ export const fileContextHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const timelineResults = await Promise.allSettled(
-      candidatePaths.map(candidatePath => buildFileContextTimeline(input, candidatePath))
+    const lookupResults = await Promise.allSettled(
+      candidatePaths.map(candidatePath => lookupFileObservationHistory(input, candidatePath))
     );
-    const timelines: string[] = [];
+    const histories: FileObservationHistory[] = [];
 
-    timelineResults.forEach((result, index) => {
+    lookupResults.forEach((result, index) => {
       if (result.status === 'fulfilled') {
-        if (result.value) timelines.push(result.value);
+        if (result.value) histories.push(result.value);
         return;
       }
       logger.debug('HOOK', 'File context timeline lookup failed, skipping path', {
@@ -161,36 +353,92 @@ export const fileContextHandler: EventHandler = {
       });
     });
 
+    if (histories.length === 1) {
+      const history = histories[0];
+      const fileReadGateSetting = loadFromFileOnce().CLAUDE_MEM_FILE_READ_GATE_ENABLED;
+      // Resolving symlinks costs syscalls: only a Read every cheaper condition gates pays for it.
+      const fileIsInsideWorkspace = isFullFileReadGateCandidate(input, history, fileReadGateSetting)
+        && await fileResolvesInsideWorkspace(history.filePath, input.cwd);
+      if (shouldDenyFullFileRead(
+        input,
+        history,
+        fileReadGateSetting,
+        fileIsInsideWorkspace,
+        fileHasMoreLinesThan,
+        isTreeSitterCliAvailable,
+      )) {
+        // Record the claim so a targeted Read that follows this denial does not
+        // re-inject the timeline it already carried. The result is ignored on
+        // purpose: every whole-file Read of a gated file is denied, so the claim
+        // never opens a free retry.
+        claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs);
+        return {
+          hookSpecificOutput: {
+            hookEventName: 'PreToolUse',
+            additionalContext: '',
+            permissionDecision: 'deny',
+            permissionDecisionReason: formatFullFileReadDenyReason(history),
+          },
+        };
+      }
+    }
+
+    const timelines: string[] = [];
+    for (const history of histories) {
+      // #3480 — skip re-injecting the same still-valid timeline for a file already
+      // surfaced this session; re-inject only once a newer observation has landed.
+      // Claimed last, after every other reason to bail out, so a suppressed
+      // injection never burns the claim — and claiming IS recording, so two
+      // concurrent Reads of this file cannot both inject.
+      if (!claimFileContextInjection(input.sessionId, history.absolutePath, history.newestObservationMs)) {
+        logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
+          filePath: history.relativePath,
+          sessionId: input.sessionId,
+          newestObservationMs: history.newestObservationMs,
+        });
+        continue;
+      }
+      timelines.push(formatFileContextTimeline(history));
+    }
+
     if (timelines.length === 0) {
       return { continue: true, suppressOutput: true };
     }
 
+    // Context only, no permissionDecision: on a synchronous hook 'allow' would
+    // skip the user's permission prompt for this Read.
     return {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         additionalContext: timelines.join('\n\n---\n\n'),
-        permissionDecision: 'allow',
       },
     };
   },
 };
 
-async function buildFileContextTimeline(input: NormalizedHookInput, filePath: string): Promise<string | null> {
+async function lookupFileObservationHistory(
+  input: NormalizedHookInput,
+  filePath: string,
+): Promise<FileObservationHistory | null> {
   let fileMtimeMs = 0;
+  let fileStatVerified = false;
+  let fileSizeBytes = 0;
   try {
     const statPath = path.isAbsolute(filePath)
       ? filePath
       : path.resolve(input.cwd || process.cwd(), filePath);
     const stat = statSync(statPath);
-    if (!stat.isFile() || stat.size < FILE_READ_GATE_MIN_BYTES) {
+    if (!stat.isFile() || stat.size < FILE_CONTEXT_MIN_BYTES) {
       return null;
     }
     fileMtimeMs = stat.mtimeMs;
+    fileStatVerified = true;
+    fileSizeBytes = stat.size;
   } catch (err) {
     if (err instanceof Error && 'code' in err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
       return null;
     }
-    logger.debug('HOOK', 'File stat failed, proceeding with gate', { error: err instanceof Error ? err.message : String(err) });
+    logger.debug('HOOK', 'File stat failed: timeline as context only, the gate will not deny this Read', { error: err instanceof Error ? err.message : String(err) });
   }
 
   const context = getProjectContext(input.cwd);
@@ -225,6 +473,8 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   const result = await executeWithWorkerFallback<{ observations: ObservationRow[]; count: number }>(
     `/api/observations/by-file?${queryParams.toString()}`,
     'GET',
+    undefined,
+    { timeoutMs: FILE_CONTEXT_WORKER_BUDGET_MS },
   );
   if (isWorkerFallback(result)) {
     return null;
@@ -253,21 +503,8 @@ async function buildFileContextTimeline(input: NormalizedHookInput, filePath: st
   // Never empty: the `observations.length === 0` guard above already returned,
   // and deduplicateObservations only ever drops same-session duplicates and
   // truncates to DISPLAY_LIMIT, so at least one row always survives.
-  const dedupedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT);
+  const displayedObservations = deduplicateObservations(data.observations, relativePath, DISPLAY_LIMIT)
+    .sort((a, b) => a.created_at_epoch - b.created_at_epoch);
 
-  // #3480 — skip re-injecting the same still-valid timeline for a file already
-  // surfaced this session; re-inject only once a newer observation has landed.
-  // Claimed last, after every other reason to bail out, so a suppressed
-  // injection never burns the claim — and claiming IS recording, so two
-  // concurrent Reads of this file cannot both inject.
-  if (!claimFileContextInjection(input.sessionId, absolutePath, newestObservationMs)) {
-    logger.debug('HOOK', 'File context already surfaced this session, skipping re-injection', {
-      filePath: relativePath,
-      sessionId: input.sessionId,
-      newestObservationMs,
-    });
-    return null;
-  }
-
-  return formatFileTimeline(dedupedObservations, filePath);
+  return { filePath, absolutePath, relativePath, newestObservationMs, displayedObservations, fileStatVerified, fileSizeBytes };
 }

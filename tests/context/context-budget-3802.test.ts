@@ -87,6 +87,29 @@ describe('context output budget (#3802)', () => {
     expect(result.observationCount).toBe(40);
   });
 
+  it('gives up the prior reply after the last summary, before sessions or observations', () => {
+    // "Include last message" prints the prior session's whole final reply.
+    // Kept to the end, a 12,000-character reply leaves the block over the
+    // limit after every other reduction, and the hook delivers the stub.
+    const withReply = (replyLength: number) => (items: number[], config: ContextConfig) =>
+      render(items, config) + (config.showLastMessage ? 'R'.repeat(replyLength) : '');
+    const config = makeConfig({ fullObservationCount: 0, sessionCount: 2, showLastMessage: true });
+
+    const long = fitContextToBudget(items(20), config, withReply(12_000));
+    expect(long.overBudget).toBe(false);
+    expect(long.text.length).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
+    expect(long.config.showLastSummary).toBe(false);
+    expect(long.config.showLastMessage).toBe(false);
+    expect(long.config.sessionCount).toBe(2);
+    expect(long.observationCount).toBe(20);
+
+    // The summary goes first: dropping it alone makes room for a short reply.
+    const short = fitContextToBudget(items(20), config, withReply(3_000));
+    expect(short.config.showLastSummary).toBe(false);
+    expect(short.config.showLastMessage).toBe(true);
+    expect(short.observationCount).toBe(20);
+  });
+
   it('keeps at least one observation and says so when nothing more can go', () => {
     const huge = (items: number[]) => 'x'.repeat(20_000 + items.length);
     const result = fitContextToBudget(items(10), makeConfig(), huge);
