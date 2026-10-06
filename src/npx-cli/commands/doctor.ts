@@ -9,10 +9,9 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
@@ -322,8 +321,9 @@ export async function runDoctorCommand(): Promise<void> {
   checks.push(marketplaceManifestCheck(marketplaceDir));
 
   // 5. Worker health.
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  // The address the worker binds: settings.json, with env vars overriding it.
+  const workerHost = getWorkerHost();
+  const workerPort = String(getWorkerPort());
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   let chromaChecks: CheckResult[] = [];
