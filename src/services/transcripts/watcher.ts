@@ -547,7 +547,15 @@ export class TranscriptWatcher {
   }
 
   private scanGlob(pattern: string): string[] {
-    return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
+    try {
+      return Array.from(new Bun.Glob(pattern).scanSync({ absolute: true, onlyFiles: true, dot: true }));
+    } catch (error) {
+      // An absent literal prefix is a valid initial state: the parent watch
+      // will discover its files when the host creates the directories.
+      const code = (error as NodeJS.ErrnoException)?.code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return [];
+      throw error;
+    }
   }
 
   private normalizeGlobPattern(inputPath: string): string {

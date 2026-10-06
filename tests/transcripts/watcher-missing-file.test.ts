@@ -52,23 +52,26 @@ describe('TranscriptWatcher missing files', () => {
     watcher.stop();
   });
 
-  it('discovers a literal transcript created under initially missing directories', async () => {
-    const target = join(tmpRoot, 'future', 'sessions', 'wanted.jsonl');
-    const watch: WatchTarget = { name: 'codex', path: target, schema };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, join(tmpRoot, 'state.json'));
-    try {
-      await watcher.start();
-      mkdirSync(join(tmpRoot, 'future', 'sessions'), { recursive: true });
-      writeFileSync(join(tmpRoot, 'unrelated.jsonl'), '{}\n');
-      writeFileSync(target, '{}\n');
-      const deadline = Date.now() + 2000;
-      while (!(watcher as any).tailers.has(target) && Date.now() < deadline) {
-        await new Promise(resolve => setTimeout(resolve, 10));
-      }
-      expect((watcher as any).tailers.has(target)).toBe(true);
-      expect((watcher as any).tailers.has(join(tmpRoot, 'unrelated.jsonl'))).toBe(false);
-    } finally { watcher.stop(); }
-  });
+  for (const glob of [false, true]) {
+    it(`discovers a ${glob ? 'glob' : 'literal'} transcript created under initially missing directories`, async () => {
+      const target = join(tmpRoot, 'future', 'sessions', 'wanted.jsonl');
+      const watch: WatchTarget = { name: 'codex', path: glob ? join(tmpRoot, 'future', 'sessions', '*.jsonl') : target, schema };
+      const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, join(tmpRoot, 'state.json'));
+      try {
+        await watcher.start();
+        mkdirSync(join(tmpRoot, 'future', 'sessions'), { recursive: true });
+        writeFileSync(join(tmpRoot, 'unrelated.jsonl'), '{}\n');
+        writeFileSync(target, '{}\n');
+        const deadline = Date.now() + 2000;
+        while (!(watcher as any).tailers.has(target) && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        expect((watcher as any).tailers.has(target)).toBe(true);
+        expect((watcher as any).tailers.has(join(tmpRoot, 'unrelated.jsonl'))).toBe(false);
+      } finally { watcher.stop(); }
+    });
+
+  }
 
   it('does not broaden a missing absolute prefix to a filesystem-root watch', async () => {
     const watch: WatchTarget = {
