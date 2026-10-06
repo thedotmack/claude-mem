@@ -627,7 +627,7 @@ export class TranscriptWatcher {
 
     // The session's working directory, restored for a watcher that resumes
     // past the line that reported it; saved with the next checkpoint.
-    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath] };
+    const fileContext: TranscriptFileContext = { cwd: this.state.cwds?.[filePath], pendingTools: this.state.pendingTools?.[filePath] };
     // A subagent-only watch learns the rollout's marker from its first line,
     // and a session whose directory is not known yet learns it there too
     // (DeepSeek Harness writes it on that line only; a turn without one is
@@ -645,6 +645,9 @@ export class TranscriptWatcher {
           }
           await this.handleLine(line, watch, schema, filePath, sessionIdOverride, fileContext);
         } finally {
+          if (fileContext.pendingTools) {
+            (this.state.pendingTools ??= {})[filePath] = fileContext.pendingTools;
+          }
           if (fileContext.cwd && fileContext.cwd !== this.state.cwds?.[filePath]) {
             (this.state.cwds ??= {})[filePath] = fileContext.cwd;
           }

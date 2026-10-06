@@ -66,6 +66,7 @@ interface SessionState {
  */
 export interface TranscriptFileContext {
   cwd?: string;
+  pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
 }
 
 /** How many subagent rollouts the processor remembers past their last turn. */
@@ -201,6 +202,10 @@ export class TranscriptEventProcessor {
     }
 
     const session = this.getOrCreateSession(watch, sessionId);
+    const sessionKey = this.getSessionKey(watch, sessionId);
+    if (!session.pendingTools && file?.pendingTools?.[sessionKey]) {
+      session.pendingTools = new Map(Object.entries(file.pendingTools[sessionKey]).map(([id, tool]) => [id, { toolName: tool.toolName, toolInput: tool.toolInput }]));
+    }
     // After a restart the watcher resumes mid-file, past the line that carried
     // the session's working directory: start from the one saved for the file.
     if (!session.cwd && file?.cwd) session.cwd = file.cwd;
@@ -239,43 +244,51 @@ export class TranscriptEventProcessor {
     // Whatever directory the session now has is the file's, for the next restart.
     if (file && session.cwd) file.cwd = session.cwd;
 
-    switch (event.action) {
-      case 'session_context':
-        break;
-      case 'session_init':
-        await this.handleSessionInit(session, fields);
-        if (watch.context?.updateOn?.includes('session_start')) {
-          await this.updateContext(session, watch);
+    try {
+      switch (event.action) {
+        case 'session_context':
+          break;
+        case 'session_init':
+          await this.handleSessionInit(session, fields);
+          if (watch.context?.updateOn?.includes('session_start')) {
+            await this.updateContext(session, watch);
+          }
+          break;
+        case 'user_message': {
+          // A user turn is anchored like a hook-captured prompt. Kept only in
+          // memory, it left the session at prompt 0, so the observer got a
+          // continuation with no user request and the batch was dropped (#3653).
+          const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
+          if (prompt) await this.anchorUserPrompt(session, prompt);
+          break;
         }
-        break;
-      case 'user_message': {
-        // A user turn is anchored like a hook-captured prompt. Kept only in
-        // memory, it left the session at prompt 0, so the observer got a
-        // continuation with no user request and the batch was dropped (#3653).
-        const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
-        if (prompt) await this.anchorUserPrompt(session, prompt);
-        break;
+        case 'assistant_message':
+          session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
+          break;
+        case 'tool_use':
+          await this.handleToolUse(session, watch, fields);
+          break;
+        case 'tool_result':
+          await this.handleToolResult(session, watch, fields);
+          break;
+        case 'observation':
+          await this.sendObservation(session, watch, fields);
+          break;
+        case 'file_edit':
+          await this.sendFileEdit(session, fields);
+          break;
+        case 'session_end':
+          await this.handleSessionEnd(session, watch);
+          break;
+        default:
+          break;
       }
-      case 'assistant_message':
-        session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
-        break;
-      case 'tool_use':
-        await this.handleToolUse(session, watch, fields);
-        break;
-      case 'tool_result':
-        await this.handleToolResult(session, watch, fields);
-        break;
-      case 'observation':
-        await this.sendObservation(session, watch, fields);
-        break;
-      case 'file_edit':
-        await this.sendFileEdit(session, fields);
-        break;
-      case 'session_end':
-        await this.handleSessionEnd(session, watch);
-        break;
-      default:
-        break;
+    } finally {
+      if (file) {
+        const pending = Object.fromEntries(session.pendingTools ?? []);
+        file.pendingTools = { ...file.pendingTools, [sessionKey]: pending };
+        if (Object.keys(pending).length === 0) delete file.pendingTools[sessionKey];
+      }
     }
   }
 
