@@ -322,8 +322,8 @@ export async function runDoctorCommand(): Promise<void> {
 
   // 5. Worker health.
   // The address the worker binds: settings.json, with env vars overriding it.
-  const workerHost = getWorkerHost();
-  const workerPort = String(getWorkerPort());
+  const workerHost = getWorkerHost({ readOnly: true });
+  const workerPort = String(getWorkerPort({ readOnly: true }));
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   let chromaChecks: CheckResult[] = [];

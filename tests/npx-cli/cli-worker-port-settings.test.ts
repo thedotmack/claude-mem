@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join, sep } from 'path';
 import { spawnSync } from 'child_process';
@@ -13,7 +13,9 @@ import { spawnSync } from 'child_process';
 // Sandbox every path these commands touch BEFORE any src module loads:
 // shared/paths.ts freezes the data dir on first import, and the OpenClaw
 // installer resolves its marketplace root from CLAUDE_CONFIG_DIR at import time.
-// So no src module is imported statically in this file. Bun on Linux reads the
+// Keep that frozen path in a separate directory for the entire test process:
+// other test files may use it after this file's afterAll removes its fixtures.
+// Bun on Linux reads the
 // home dir once at startup, so HOME set here does not move os.homedir(): the
 // OpenClaw install, which writes under it, runs in a child process (below).
 const realSettingsPath = join(homedir(), '.claude-mem', 'settings.json');
@@ -28,6 +30,10 @@ for (const key of [
 process.env.HOME = sandbox;
 process.env.USERPROFILE = sandbox;
 process.env.CLAUDE_CONFIG_DIR = join(sandbox, '.claude');
+const sharedPathsSandbox = mkdtempSync(join(tmpdir(), 'claude-mem-shared-paths-'));
+process.env.CLAUDE_MEM_DATA_DIR = sharedPathsSandbox;
+const { USER_SETTINGS_PATH } = await import('../../src/shared/paths.js');
+process.once('exit', () => rmSync(sharedPathsSandbox, { recursive: true, force: true }));
 process.env.CLAUDE_MEM_DATA_DIR = join(sandbox, 'data');
 mkdirSync(process.env.CLAUDE_MEM_DATA_DIR, { recursive: true });
 
@@ -46,7 +52,6 @@ mock.module('../../src/services/install/shutdown-helper.js', () => ({
 }));
 
 const { SettingsDefaultsManager } = await import('../../src/shared/SettingsDefaultsManager.js');
-const { USER_SETTINGS_PATH } = await import('../../src/shared/paths.js');
 const { clearPortCache } = await import('../../src/shared/worker-utils.js');
 
 const FILE_PORT = '38888';
@@ -106,10 +111,11 @@ describe('test isolation', () => {
   });
 
   it('never resolves the real ~/.claude-mem settings file', () => {
-    // Frozen on first import: the sandbox when this file runs first, otherwise
-    // the per-run temp dir tests/preload.ts pins. Never the real one.
+    // Frozen on first import: the shared-paths temp dir when this file runs
+    // first, otherwise the per-run temp dir tests/preload.ts pins.
     expect(USER_SETTINGS_PATH).not.toBe(realSettingsPath);
     expect(USER_SETTINGS_PATH.startsWith(tmpdir())).toBe(true);
+    expect(USER_SETTINGS_PATH.startsWith(sandbox + sep)).toBe(false);
   });
 });
 
@@ -164,6 +170,30 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
     await runDoctor();
 
     expect(requested).toContain(`http://127.0.0.1:${ENV_PORT}/api/health`);
+  }, 30_000);
+
+  it('does not create settings.json during a diagnostic', async () => {
+    rmSync(sandboxSettingsPath(), { force: true });
+
+    await runDoctor();
+
+    expect(existsSync(sandboxSettingsPath())).toBe(false);
+  }, 30_000);
+
+  it('does not rewrite legacy settings or add migration markers', async () => {
+    const raw = JSON.stringify({
+      CLAUDE_MEM_WORKER_PORT: FILE_PORT,
+      CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+      CLAUDE_MEM_LLM_TIMEOUT_MS: '30000',
+    });
+    writeFileSync(sandboxSettingsPath(), raw);
+    const filesBefore = readdirSync(join(sandbox, 'data')).sort();
+
+    await runDoctor();
+
+    expect(readFileSync(sandboxSettingsPath(), 'utf-8')).toBe(raw);
+    expect(readdirSync(join(sandbox, 'data')).sort()).toEqual(filesBefore);
+    expect(requested).toContain(`http://127.0.0.1:${FILE_PORT}/api/health`);
   }, 30_000);
 });
 
