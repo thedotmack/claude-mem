@@ -1,5 +1,14 @@
 import { existsSync } from 'fs';
-import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, loadTranscriptWatchConfig, writeSampleConfig } from './config.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import {
+  DEFAULT_CONFIG_PATH,
+  DEFAULT_STATE_PATH,
+  expandHomePath,
+  loadTranscriptWatchConfig,
+  scopeNativeHookBackedCodexWatches,
+  writeSampleConfig,
+} from './config.js';
 import { TranscriptWatcher } from './watcher.js';
 
 function getArgValue(args: string[], name: string): string | null {
@@ -30,9 +39,25 @@ export async function runTranscriptCommand(subcommand: string | undefined, args:
     case 'watch': {
       const configPath = getArgValue(args, '--config') ?? DEFAULT_CONFIG_PATH;
       writeSampleConfigIfMissing(configPath);
-      const config = loadTranscriptWatchConfig(configPath);
+      // The worker's default-off Codex gate applies here too: native hooks
+      // capture top-level Codex sessions, and capturing subagent rollouts (an
+      // observer request per tool call) is opt-in.
+      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+      const { config, scoped, removed } = scopeNativeHookBackedCodexWatches(loadTranscriptWatchConfig(configPath), settings);
+      if (scoped > 0) {
+        console.log(`Scoped ${scoped} Codex transcript watch(es) to subagent sessions (CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true); native hooks capture top-level sessions.`);
+      }
+      if (removed > 0) {
+        console.log(`Skipped ${removed} Codex transcript watch(es): native hooks capture top-level Codex sessions, and subagent capture is opt-in (CLAUDE_MEM_CODEX_SUBAGENT_INGESTION=true).`);
+      }
+      if (config.watches.length === 0) {
+        console.log(`No active transcript watches in ${expandHomePath(configPath)}; nothing to watch.`);
+        return 1;
+      }
       const statePath = expandHomePath(config.stateFile ?? DEFAULT_STATE_PATH);
-      const watcher = new TranscriptWatcher(config, statePath);
+      // No in-process worker here: observations and summaries go through the
+      // durable hook spool, which the worker drains.
+      const watcher = new TranscriptWatcher(config, statePath, 'spool');
       await watcher.start();
       console.log('Transcript watcher running. Press Ctrl+C to stop.');
 

@@ -727,6 +727,32 @@ export class SessionManager {
   }
 
   /**
+   * True when any in-memory session saw message/generator activity at or
+   * after the cutoff — the idle-exit monitor's session signal.
+   *
+   * Deliberately NOT a session count: a session that merely EXISTS is not
+   * activity. A standing memory seat registered at boot (Grok Bot awareness
+   * registers one), or a session idling between prompts, would hold
+   * `sessions.size` above zero for the life of the worker and make the
+   * worker permanently un-idleable. lastGeneratorActivity is stamped at
+   * session creation and refreshed as the generator drains messages, so this
+   * answers "did any session do work recently?" instead of "are any sessions
+   * registered?". Queued-but-unprocessed work is a separate signal
+   * (getTotalQueueDepth).
+   *
+   * A running generator is activity however old its last message: it may be
+   * waiting on an observer reply with nothing left in the buffer (the
+   * bare-prompt init turn). It cannot pin the worker awake for long, since a
+   * generator with no messages ends after IDLE_TIMEOUT_MS (3 min).
+   */
+  hasSessionActivitySince(cutoffMs: number): boolean {
+    for (const session of this.sessions.values()) {
+      if (session.generatorPromise || session.lastGeneratorActivity >= cutoffMs) return true;
+    }
+    return false;
+  }
+
+  /**
    * Snapshot paused in-memory work without loading sessions or changing the buffer.
    * The automatic sweep resumes only pauses that time heals, each paced or
    * capped where it is armed. A rate-limit pause is retried like a quota pause:

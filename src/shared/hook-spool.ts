@@ -299,6 +299,12 @@ export class HookSpool {
     // A marker outlives its file only when a crash hit between unlink and clear.
     consumedMarkers?.pruneConsumedBefore(Date.now() - HOOK_SPOOL_RETRY_WINDOW_MS);
 
+    // A session's summary and its end wait behind an observation of that
+    // session ingest has not accepted yet, so they never overtake the work they
+    // close. Nothing else waits: observations are what create a session, so
+    // holding them behind a summary kept for an unknown session would keep the
+    // session from ever being created.
+    const sessionsWithRetainedObservations = new Set<string>();
     for (const file of files) {
       const entryKey = file.filename.replace(/\.json$/, '');
       if (consumedMarkers?.isConsumed(entryKey)) {
@@ -313,6 +319,12 @@ export class HookSpool {
         } else {
           retained++;
         }
+        continue;
+      }
+
+      const sessionKey = JSON.stringify([file.entry.payload.contentSessionId, file.entry.payload.platformSource]);
+      if ((file.entry.kind === 'summarize' || file.entry.kind === 'session_end') && sessionsWithRetainedObservations.has(sessionKey)) {
+        retained++;
         continue;
       }
 
@@ -353,6 +365,7 @@ export class HookSpool {
         if (this.expireIfPastRetryWindow(file)) {
           expired++;
         } else {
+          if (file.entry.kind === 'observation' || file.entry.kind === 'file_edit') sessionsWithRetainedObservations.add(sessionKey);
           retained++;
         }
         continue;
