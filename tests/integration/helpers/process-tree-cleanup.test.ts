@@ -79,9 +79,9 @@ describe('ghost fixture descendant cleanup', () => {
 
   it('does not kill an older child under a matching but reused parent PID', () => {
     const rows = [
-      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '20261006210000000000' },
-      { pid: 21, ppid: 20, name: 'old-python.exe', startToken: '20261006200000000000' },
-      { pid: 22, ppid: 20, name: 'new-uv.exe', startToken: '20261006210100000000' },
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '20261006210000.000000' },
+      { pid: 21, ppid: 20, name: 'old-python.exe', startToken: '20261006200000.000000' },
+      { pid: 22, ppid: 20, name: 'new-uv.exe', startToken: '20261006210100.000000' },
     ];
     const killed: number[] = [];
     const discovered = reapOwnedLiveTree(
@@ -89,12 +89,26 @@ describe('ghost fixture descendant cleanup', () => {
     );
     expect(discovered).toEqual([
       { pid: 21, name: 'old-python.exe', startToken: null },
-      { pid: 22, name: 'new-uv.exe', startToken: '20261006210100000000' },
+      { pid: 22, name: 'new-uv.exe', startToken: '20261006210100.000000' },
     ]);
     expect(killed).toEqual([22, 20]);
     expect(survivingProcesses(discovered!, pid => pid === 21, () => null)).toEqual([
       { pid: 21, name: 'old-python.exe', startToken: null },
     ]);
+  });
+
+  it('accepts the exact CIM token format for a chronological Windows chain', () => {
+    const rows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '20261006210000.000001' },
+      { pid: 21, ppid: 20, name: 'uv.exe', startToken: '20261006210000.000002' },
+      { pid: 22, ppid: 21, name: 'python.exe', startToken: '20261006210001.000000' },
+    ];
+    const killed: number[] = [];
+    const discovered = reapOwnedLiveTree(20, rows[0]!.startToken, pid => { killed.push(pid); }, () => true, rows);
+    expect(discovered?.map(entry => entry.startToken)).toEqual([
+      '20261006210000.000002', '20261006210001.000000',
+    ]);
+    expect(killed).toEqual([22, 21, 20]);
   });
 
   it('checks every link so a stale intermediate PID cannot certify a grandchild', () => {
@@ -123,6 +137,16 @@ describe('ghost fixture descendant cleanup', () => {
     ];
     const discovered = snapshotDescendants(20, '100', rows);
     expect(discovered).toEqual([
+      { pid: 21, name: 'uv.exe', startToken: null },
+      { pid: 22, name: 'python.exe', startToken: null },
+    ]);
+
+    const malformedRows = [
+      { pid: 20, ppid: 1, name: 'fixture.exe', startToken: '20261006210000.000001' },
+      { pid: 21, ppid: 20, name: 'uv.exe', startToken: '20261006210000.invalid' },
+      { pid: 22, ppid: 21, name: 'python.exe', startToken: '20261006210001.000000' },
+    ];
+    expect(snapshotDescendants(20, malformedRows[0]!.startToken, malformedRows)).toEqual([
       { pid: 21, name: 'uv.exe', startToken: null },
       { pid: 22, name: 'python.exe', startToken: null },
     ]);

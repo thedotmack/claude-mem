@@ -141,8 +141,15 @@ function isWindowsRunnerNoise(name: string): boolean {
  */
 function childStartedAfterParent(parentToken: string | null, childToken: string | null): boolean {
   if (!parentToken || !childToken) return false;
+  // Get-CimInstance CreationDate.ToString('yyyyMMddHHmmss.ffffff') has a
+  // literal dot between seconds and microseconds. Fixed width makes lexical
+  // order identical to creation-time order without losing precision.
+  const cimToken = /^\d{14}\.\d{6}$/;
+  if (cimToken.test(parentToken) && cimToken.test(childToken)) {
+    return childToken >= parentToken;
+  }
   if (/^\d+$/.test(parentToken) && /^\d+$/.test(childToken)) {
-    // Win32 CreationDate (20 decimal digits) and Linux /proc starttime ticks.
+    // Linux /proc starttime ticks.
     return BigInt(childToken) >= BigInt(parentToken);
   }
   // macOS/BSD ps lstart is forced to the C locale in readProcessTablePosix.

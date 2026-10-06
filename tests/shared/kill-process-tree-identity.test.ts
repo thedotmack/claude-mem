@@ -2,6 +2,7 @@ import { describe, it, expect, afterAll } from 'bun:test';
 import { spawn, spawnSync } from 'child_process';
 import path from 'path';
 import { collectDescendantIdentities } from '../../src/shared/kill-process-tree.js';
+import { snapshotDescendants } from '../integration/helpers/process-tree.js';
 import {
   captureProcessStartToken,
   isSameProcess,
@@ -37,6 +38,26 @@ afterAll(() => {
 });
 
 describe('descendant enumeration agrees with captureProcessStartToken', () => {
+  it.if(process.platform === 'win32')('ghost test helper recognizes real CIM creation times (Windows)', async () => {
+    const command = spawn('cmd.exe', ['/c', 'ping -n 8 127.0.0.1 > NUL'], {
+      stdio: 'ignore', windowsHide: true,
+    });
+    const rootPid = command.pid!;
+    strays.push(rootPid);
+    await settle();
+
+    const rootToken = captureProcessStartToken(rootPid);
+    expect(rootToken).toMatch(/^\d{14}\.\d{6}$/);
+    const descendants = snapshotDescendants(rootPid, rootToken!);
+    expect(descendants.length).toBeGreaterThan(0);
+    const verified = descendants.filter(entry => entry.startToken !== null);
+    expect(verified.length).toBeGreaterThan(0);
+    const reprobed = captureProcessStartToken(verified[0]!.pid);
+    if (reprobed !== null) expect(reprobed).toBe(verified[0]!.startToken);
+
+    try { process.kill(rootPid, 'SIGKILL'); } catch { /* fine */ }
+  }, 30_000);
+
   it('produces tokens identical to an independent re-probe', async () => {
     const command = process.platform === 'win32'
       ? spawn('cmd.exe', ['/c', 'ping -n 60 127.0.0.1 > NUL'], { stdio: 'ignore', windowsHide: true })
