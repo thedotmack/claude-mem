@@ -112,3 +112,40 @@ it('retains distinct nullable-title observation content at the same timestamp', 
     s.close();
   }
 });
+
+it('recognizes a replay after project and discovery_tokens change on the stored rows', () => {
+  const s = seed();
+  try {
+    const row = {
+      ...summary,
+      text: null,
+      type: 'discovery',
+      title: null,
+      subtitle: null,
+      facts: null,
+      narrative: 'stored before the rewrite',
+      concepts: null,
+      files_modified: null,
+    };
+    const firstSummary = s.importSessionSummary(summary);
+    const firstObservation = s.importObservation(row);
+
+    // Both columns change after a row exists, so an export taken earlier still
+    // carries the old values. A turn's real token cost is filled in later...
+    s.updateDiscoveryTokens([firstObservation.id], firstSummary.id, 1234);
+    expect(s.importSessionSummary(summary)).toEqual({ imported: false, id: firstSummary.id });
+    expect(s.importObservation(row)).toEqual({ imported: false, id: firstObservation.id });
+
+    // ...and the cwd remap moves a session's rows to another project.
+    for (const table of ['sdk_sessions', 'observations', 'session_summaries']) {
+      s.db.prepare(`UPDATE ${table} SET project = ? WHERE memory_session_id = ?`).run('renamed', 'memory');
+    }
+    expect(s.importSessionSummary(summary)).toEqual({ imported: false, id: firstSummary.id });
+    expect(s.importObservation(row)).toEqual({ imported: false, id: firstObservation.id });
+
+    expect(s.db.query('SELECT count(*) AS n FROM session_summaries').get()).toEqual({ n: 1 });
+    expect(s.db.query('SELECT count(*) AS n FROM observations').get()).toEqual({ n: 1 });
+  } finally {
+    s.close();
+  }
+});

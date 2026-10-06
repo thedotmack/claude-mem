@@ -4384,17 +4384,20 @@ export class SessionStore {
       return { imported: false, id: 0 };
     }
 
+    // project and discovery_tokens stay out of the replay match: both are
+    // rewritten after a row is created (cwd remap / remap_project, and
+    // updateDiscoveryTokens), so an earlier export of this row must still match.
     const existing = this.db.prepare(
-      `SELECT id FROM session_summaries WHERE memory_session_id = ? AND project = ?
+      `SELECT id FROM session_summaries WHERE memory_session_id = ?
         AND request IS ? AND investigated IS ? AND learned IS ? AND completed IS ?
         AND next_steps IS ? AND files_read IS ? AND files_edited IS ? AND notes IS ?
-        AND prompt_number IS ? AND discovery_tokens = ? AND created_at_epoch = ?`
-    ).get(summary.memory_session_id, summary.project, coerceBindValue(summary.request),
+        AND prompt_number IS ? AND created_at_epoch = ?`
+    ).get(summary.memory_session_id, coerceBindValue(summary.request),
       coerceBindValue(summary.investigated), coerceBindValue(summary.learned),
       coerceBindValue(summary.completed), coerceBindValue(summary.next_steps),
       coerceBindValue(summary.files_read), coerceBindValue(summary.files_edited),
       coerceBindValue(summary.notes), summary.prompt_number ?? null,
-      summary.discovery_tokens || 0, summary.created_at_epoch) as { id: number } | undefined;
+      summary.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -4462,17 +4465,19 @@ export class SessionStore {
       return { imported: false, id: 0 };
     }
 
+    // Same replay match as importSessionSummary: project and discovery_tokens
+    // are rewritten after a row is created, so they are not part of it.
     const existing = this.db.prepare(`
       SELECT id FROM observations
-      WHERE memory_session_id = ? AND project = ? AND text IS ? AND type = ?
+      WHERE memory_session_id = ? AND text IS ? AND type = ?
         AND title IS ? AND subtitle IS ? AND facts IS ? AND narrative IS ?
         AND concepts IS ? AND files_read IS ? AND files_modified IS ?
-        AND prompt_number IS ? AND discovery_tokens = ? AND agent_type IS ?
+        AND prompt_number IS ? AND agent_type IS ?
         AND agent_id IS ? AND created_at_epoch = ?
-    `).get(obs.memory_session_id, obs.project, coerceBindValue(obs.text), obs.type,
+    `).get(obs.memory_session_id, coerceBindValue(obs.text), obs.type,
       coerceBindValue(obs.title), coerceBindValue(obs.subtitle), coerceBindValue(obs.facts),
       coerceBindValue(obs.narrative), coerceBindValue(obs.concepts), coerceBindValue(obs.files_read),
-      coerceBindValue(obs.files_modified), obs.prompt_number ?? null, obs.discovery_tokens || 0,
+      coerceBindValue(obs.files_modified), obs.prompt_number ?? null,
       obs.agent_type ?? null, obs.agent_id ?? null, obs.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
