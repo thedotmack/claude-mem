@@ -146,6 +146,7 @@ export async function searchCodebase(
 
   const foldedFiles: FoldedFile[] = [];
   const matchingSymbols: SymbolMatch[] = [];
+  const symbolScores = new Map<SymbolMatch, number>();
   let totalSymbolsFound = 0;
 
   for (const [relPath, parsed] of parsedFiles) {
@@ -201,7 +202,7 @@ export async function searchCodebase(
 
         if (score > 0) {
           fileHasMatch = true;
-          fileSymbolMatches.push({
+          const match: SymbolMatch = {
             filePath: relPath,
             symbolName: qualifiedName,
             kind: sym.kind,
@@ -210,7 +211,9 @@ export async function searchCodebase(
             lineStart: sym.lineStart,
             lineEnd: sym.lineEnd,
             matchReason: reason,
-          });
+          };
+          fileSymbolMatches.push(match);
+          symbolScores.set(match, score);
         }
 
         if (sym.children) {
@@ -227,11 +230,10 @@ export async function searchCodebase(
     }
   }
 
-  matchingSymbols.sort((a, b) => {
-    const aScore = matchScore(a.symbolName.toLowerCase(), queryParts);
-    const bScore = matchScore(b.symbolName.toLowerCase(), queryParts);
-    return bScore - aScore;
-  });
+  // Computed relevance first. Equal relevance falls back to the qualified
+  // identity, so `Beta.run` keeps Beta's method ahead of `Alpha.run`.
+  const qualifiedRank = (symbol: SymbolMatch): number => matchScore(symbol.symbolName.toLowerCase(), queryParts);
+  matchingSymbols.sort((a, b) => (symbolScores.get(b)! - symbolScores.get(a)!) || (qualifiedRank(b) - qualifiedRank(a)));
 
   const trimmedSymbols = matchingSymbols.slice(0, maxResults);
   const relevantFiles = new Set(trimmedSymbols.map(s => s.filePath));
