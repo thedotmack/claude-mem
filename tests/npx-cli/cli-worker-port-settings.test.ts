@@ -1,10 +1,7 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { tmpdir } from 'os';
-import { join } from 'path';
-import * as realShutdownHelper from '../../src/services/install/shutdown-helper.js';
-
-const realShutdownHelperSnapshot = { ...realShutdownHelper };
+import { homedir, tmpdir } from 'os';
+import { join, sep } from 'path';
 
 // The worker binds the port in ~/.claude-mem/settings.json (getWorkerPort loads
 // the file; an env var of the same name overrides it). doctor, uninstall and the
@@ -12,18 +9,26 @@ const realShutdownHelperSnapshot = { ...realShutdownHelper };
 // sees only the env var and the built-in default, so a port set in the file was
 // probed, stopped and registered at the wrong address.
 
-// Keep every home-relative path these commands touch inside a sandbox. This must
-// happen before the modules below load: the OpenClaw installer resolves its
-// marketplace root from CLAUDE_CONFIG_DIR at import time.
+// Sandbox every path these commands touch BEFORE any src module loads:
+// shared/paths.ts freezes the data dir on first import, and the OpenClaw
+// installer resolves its marketplace root from CLAUDE_CONFIG_DIR at import time.
+// So no src module is imported statically in this file.
+const realSettingsPath = join(homedir(), '.claude-mem', 'settings.json');
 const sandbox = mkdtempSync(join(tmpdir(), 'claude-mem-cli-port-'));
 const savedEnv: Record<string, string | undefined> = {};
-for (const key of ['HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_WORKER_HOST']) {
+for (const key of [
+  'HOME', 'USERPROFILE', 'CLAUDE_CONFIG_DIR', 'CLAUDE_MEM_DATA_DIR',
+  'CLAUDE_MEM_WORKER_PORT', 'CLAUDE_MEM_WORKER_HOST',
+]) {
   savedEnv[key] = process.env[key];
 }
 process.env.HOME = sandbox;
 process.env.USERPROFILE = sandbox;
 process.env.CLAUDE_CONFIG_DIR = join(sandbox, '.claude');
+process.env.CLAUDE_MEM_DATA_DIR = join(sandbox, 'data');
+mkdirSync(process.env.CLAUDE_MEM_DATA_DIR, { recursive: true });
 
+const realShutdownHelperSnapshot = { ...(await import('../../src/services/install/shutdown-helper.js')) };
 const shutdownPorts: Array<number | string> = [];
 let shutdownCalled: () => void = () => {};
 
@@ -37,25 +42,28 @@ mock.module('../../src/services/install/shutdown-helper.js', () => ({
   },
 }));
 
+const { SettingsDefaultsManager } = await import('../../src/shared/SettingsDefaultsManager.js');
 const { USER_SETTINGS_PATH } = await import('../../src/shared/paths.js');
 const { clearPortCache } = await import('../../src/shared/worker-utils.js');
 
 const FILE_PORT = '38888';
 const ENV_PORT = '39999';
 
-function writeSettings(settings: Record<string, string>): void {
-  writeFileSync(USER_SETTINGS_PATH, JSON.stringify(settings));
+/**
+ * The settings file getWorkerPort() reads (CLAUDE_MEM_DATA_DIR/settings.json,
+ * resolved at call time), refused unless it is inside the sandbox.
+ */
+function sandboxSettingsPath(): string {
+  const settingsPath = join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
+  if (!settingsPath.startsWith(sandbox + sep)) {
+    throw new Error(`refusing to touch a settings file outside the test sandbox: ${settingsPath}`);
+  }
+  return settingsPath;
 }
 
-let savedSettings: string | null = null;
-
-beforeAll(() => {
-  try {
-    savedSettings = readFileSync(USER_SETTINGS_PATH, 'utf-8');
-  } catch {
-    savedSettings = null;
-  }
-});
+function writeSettings(settings: Record<string, string>): void {
+  writeFileSync(sandboxSettingsPath(), JSON.stringify(settings));
+}
 
 beforeEach(() => {
   delete process.env.CLAUDE_MEM_WORKER_PORT;
@@ -71,14 +79,35 @@ afterEach(() => {
 
 afterAll(() => {
   mock.module('../../src/services/install/shutdown-helper.js', () => realShutdownHelperSnapshot);
-  if (savedSettings === null) rmSync(USER_SETTINGS_PATH, { force: true });
-  else writeFileSync(USER_SETTINGS_PATH, savedSettings);
   for (const [key, value] of Object.entries(savedEnv)) {
     if (value === undefined) delete process.env[key];
     else process.env[key] = value;
   }
   clearPortCache();
   rmSync(sandbox, { recursive: true, force: true });
+});
+
+describe('test isolation', () => {
+  it('writes its settings fixtures inside the sandbox', () => {
+    expect(sandboxSettingsPath()).toBe(join(sandbox, 'data', 'settings.json'));
+  });
+
+  it('refuses a settings path outside the sandbox', () => {
+    const dataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    process.env.CLAUDE_MEM_DATA_DIR = join(tmpdir(), 'not-the-sandbox');
+    try {
+      expect(() => sandboxSettingsPath()).toThrow('outside the test sandbox');
+    } finally {
+      process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    }
+  });
+
+  it('never resolves the real ~/.claude-mem settings file', () => {
+    // Frozen on first import: the sandbox when this file runs first, otherwise
+    // the per-run temp dir tests/preload.ts pins. Never the real one.
+    expect(USER_SETTINGS_PATH).not.toBe(realSettingsPath);
+    expect(USER_SETTINGS_PATH.startsWith(tmpdir())).toBe(true);
+  });
 });
 
 describe('npx claude-mem doctor probes the worker port from settings.json', () => {
