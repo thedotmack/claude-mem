@@ -4361,8 +4361,8 @@ export class SessionStore {
     }
 
     const existing = this.db.prepare(
-      'SELECT id FROM session_summaries WHERE memory_session_id = ?'
-    ).get(summary.memory_session_id) as { id: number } | undefined;
+      'SELECT id FROM session_summaries WHERE memory_session_id = ? AND request IS ? AND created_at_epoch = ?'
+    ).get(summary.memory_session_id, coerceBindValue(summary.request), summary.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
       return { imported: false, id: existing.id };
@@ -4432,7 +4432,7 @@ export class SessionStore {
 
     const existing = this.db.prepare(`
       SELECT id FROM observations
-      WHERE memory_session_id = ? AND title = ? AND created_at_epoch = ?
+      WHERE memory_session_id = ? AND title IS ? AND created_at_epoch = ?
     `).get(obs.memory_session_id, coerceBindValue(obs.title), obs.created_at_epoch) as { id: number } | undefined;
 
     if (existing) {
