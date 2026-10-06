@@ -72,3 +72,43 @@ it('deduplicates imported legacy observations with nullable titles', () => {
     s.close();
   }
 });
+
+it('retains distinct summary content at the same request and timestamp', () => {
+  const s = seed();
+  try {
+    const first = s.importSessionSummary(summary);
+    const secondRow = { ...summary, notes: 'different notes', prompt_number: 2 };
+    const second = s.importSessionSummary(secondRow);
+    expect(second.imported).toBe(true);
+    expect(second.id).not.toBe(first.id);
+    expect(s.importSessionSummary(secondRow)).toEqual({ imported: false, id: second.id });
+    expect(s.getSummaryForSession('memory')?.notes).toBe('different notes');
+  } finally {
+    s.close();
+  }
+});
+it('retains distinct nullable-title observation content at the same timestamp', () => {
+  const s = seed();
+  try {
+    const row = {
+      ...summary,
+      text: null,
+      type: 'discovery',
+      title: null,
+      subtitle: null,
+      facts: null,
+      narrative: 'first',
+      concepts: null,
+      files_modified: null,
+    };
+    const first = s.importObservation(row);
+    const changed = { ...row, type: 'decision', narrative: 'second', agent_id: 'agent-two' };
+    const second = s.importObservation(changed);
+    expect(second.imported).toBe(true);
+    expect(second.id).not.toBe(first.id);
+    expect(s.importObservation(changed)).toEqual({ imported: false, id: second.id });
+    expect(s.importObservation(row)).toEqual({ imported: false, id: first.id });
+  } finally {
+    s.close();
+  }
+});
