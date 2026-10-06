@@ -145,7 +145,7 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -163,7 +163,7 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
