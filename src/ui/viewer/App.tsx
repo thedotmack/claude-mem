@@ -80,7 +80,10 @@ export function App() {
     onSessionDeleted: removeDeletedSession,
     onLiveItem: catalog.touch,
   });
-  const { settings, saveSettings, isSaving, saveStatus } = useSettings();
+  const {
+    settings, saveSettings, isSaving, saveStatus,
+    isLoaded: settingsLoaded, loadError: settingsLoadError, reload: reloadSettings,
+  } = useSettings();
   const { preference, setThemePreference } = useTheme();
   const pagination = usePagination(feedScope.project, feedScope.session);
 
@@ -188,6 +191,12 @@ export function App() {
     const key = `${itemType}:${id}`;
     if (handledDeletionsRef.current.has(key)) return;
     handledDeletionsRef.current.add(key);
+
+    const liveRows = { observation: observations, summary: summaries, prompt: prompts };
+    const deletedRow = liveRows[itemType].find(row => row.id === id)
+      ?? loadedRowsRef.current[itemType].find(row => row.id === id);
+    const deletedSession = deletedRow ? sessionRefOf(deletedRow) : null;
+    if (deletedSession) catalog.noteItemRemoved(deletedSession);
 
     removeLiveItem(itemType, id);
     if (itemType === 'observation') {
@@ -323,6 +332,9 @@ export function App() {
         isOpen={contextPreviewOpen}
         onClose={toggleContextPreview}
         settings={settings}
+        isLoaded={settingsLoaded}
+        loadError={settingsLoadError}
+        onRetryLoad={reloadSettings}
         onSave={saveSettings}
         isSaving={isSaving}
         saveStatus={saveStatus}

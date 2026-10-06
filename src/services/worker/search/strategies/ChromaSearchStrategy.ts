@@ -1,9 +1,11 @@
 
 import {
   StrategySearchOptions,
+  SearchSelection,
   StrategySearchResult,
   SEARCH_CONSTANTS,
   isCategoryRequested,
+  buildCategoryWhereFilter,
   ChromaMetadata,
   DateRange,
   ObservationSearchResult,
@@ -153,22 +155,11 @@ export class ChromaSearchStrategy {
     };
   }
 
-  private buildWhereFilter(searchType: string, readKeys: string[], platformSource?: string): Record<string, any> | undefined {
+  private buildWhereFilter(searchType: SearchSelection, readKeys: string[], platformSource?: string): Record<string, any> | undefined {
     const filters: Array<Record<string, any>> = [];
 
-    switch (searchType) {
-      case 'observations':
-        filters.push({ doc_type: 'observation' });
-        break;
-      case 'sessions':
-        filters.push({ doc_type: 'session_summary' });
-        break;
-      case 'prompts':
-        filters.push({ doc_type: 'user_prompt' });
-        break;
-      default:
-        break;
-    }
+    const categoryFilter = buildCategoryWhereFilter(searchType);
+    if (categoryFilter) filters.push(categoryFilter);
 
     if (readKeys.length > 0) {
       filters.push(buildProjectWhereFilter(readKeys));
