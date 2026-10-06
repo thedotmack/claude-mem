@@ -32,14 +32,18 @@ The suite lives in `evals/read-gate/`, outside `plugin/`, because marketplace in
 | `gate-on-answers-question` | ON | How does the file price a shipment? Walk me through it, and give the exact rate and minimum fee `calculateRemoteAreaSurcharge` applies | `read-blocked` (deny marker in the trace), `answer-rate`, `answer-minimum` |
 | `gate-on-edits-file` | ON | Look over the file, then change the remote-area minimum fee; nothing else | `read-blocked`, `edited` and `old-value-gone` (the file after the run) |
 | `gate-off-reads-normally` | OFF | Same question as the first case | `not-blocked` (no deny marker), `read-used`, `answer-rate`, `answer-minimum` |
+| `gate-on-large-file` | ON | How does `carrier-tariffs.ts` price a carrier quote? Walk me through it, and give the per-kilogram rate and minimum charge of the lithium battery surcharge | `read-blocked`, `answer-rate`, `answer-minimum` |
+| `gate-off-large-file` | OFF | Same question as `gate-on-large-file` | `not-blocked`, `read-used`, `answer-rate`, `answer-minimum` |
 
 The fixture is one 513-line TypeScript module, `fixture/src/shipping/rate-calculator.ts`. The two numbers the question asks for appear only inside `calculateRemoteAreaSurcharge`. `seed-observations.json` holds four observations about the file whose titles and facts describe its structure but never state those numbers, so a correct answer has to come from the code.
+
+The large-file pair asks the same kind of question of `fixture-large/src/shipping/carrier-tariffs.ts`: 941 lines, 49 KB, seven carriers' tariff tables and surcharge functions with the lithium battery surcharge in the middle. It exists to measure what the gate saves. On the 513-line file a whole-file Read costs about 5K tokens, and the gate's extra turns can cost as much, because each one re-reads the whole context. The large file costs roughly three times as much to read, while its outline (about 2.3K tokens) costs barely more than the small file's. It stays well under the 25,000-token limit of Claude Code's Read tool, beyond which a whole-file Read fails without any gate. It lives in its own project, with its own scaffolds (`scaffold-large-gate-on.sh` / `scaffold-large-gate-off.sh`), so the other cases never see it. Two of the seeded observations are about it.
 
 The prompts ask for a walkthrough of the file, and for a look over it before the edit, because a pointed question never needs a Read. The first version asked only for the two numbers ("What rate and minimum fee does calculateRemoteAreaSurcharge apply?", "change the minimum fee from 4.85 to 5.25"). Claude then answered in 2 to 4 turns with one Grep whose context lines showed the whole 8-line function, and no run in either arm tried a whole-file Read. Grep can't be withheld: `claude plugin eval` always grants the read-only tools (Read, Glob, Grep, Task, ...) whatever a case's `allowed_tools` lists. A question about how the whole file works is what a whole-file Read serves. So the gate-ON runs now meet the deny, and the gate-OFF runs read the file normally.
 
 ## How a run is isolated
 
-`scripts/eval-read-gate.ts` creates two data dirs under `.scratch/read-gate-eval/<timestamp>/{on,off}/data`. Each gets its own free port, a `settings.json` with the gate on or off, and a copy of one database seeded with the four observations, dated a day ago. It then starts a worker for each. Every case's scaffold (`scaffold-gate-on.sh` / `scaffold-gate-off.sh`, both calling `scaffold-workspace.sh`) copies the fixture into the run's workspace, dates it 2026-01-01 so it is older than the observations, and links the run's `~/.claude-mem` to its arm's data dir. Hooks, the MCP server and the worker of a run therefore share one data dir, as in a real install, and your own `~/.claude-mem` and default worker port are never touched. `claude plugin eval` resolves a case's `scaffold_script` inside the case directory, follows the symlink there to the script beside this README, and runs it with the run's workspace as cwd.
+`scripts/eval-read-gate.ts` creates two data dirs under `.scratch/read-gate-eval/<timestamp>/{on,off}/data`. Each gets its own free port, a `settings.json` with the gate on or off, and a copy of one database seeded with the six observations, dated a day ago. It then starts a worker for each. Every case's scaffold (`scaffold-gate-on.sh` / `scaffold-gate-off.sh`, both calling `scaffold-workspace.sh`) copies the fixture into the run's workspace, dates it 2026-01-01 so it is older than the observations, and links the run's `~/.claude-mem` to its arm's data dir. Hooks, the MCP server and the worker of a run therefore share one data dir, as in a real install, and your own `~/.claude-mem` and default worker port are never touched. `claude plugin eval` resolves a case's `scaffold_script` inside the case directory, follows the symlink there to the script beside this README, and runs it with the run's workspace as cwd.
 
 The workers' settings keep the eval to the gate:
 
@@ -66,37 +70,48 @@ Before it starts any worker, the runner provisions that copy the way a real inst
 
 ## Cost
 
-Every grader is `regex` or `tool_used`, so no judge model is called. The spend is the agent runs: 9 by default, 3 cases x 3 runs on `claude-sonnet-5-5`. `--max-cost-usd` caps it, and the summary reports what the eval actually cost.
+Every grader is `regex` or `tool_used`, so no judge model is called. The spend is the agent runs: 15 by default, 5 cases x 3 runs on `claude-sonnet-5-5`. `--max-cost-usd` caps it, and the summary reports what the eval actually cost.
 
 ## Reading `reports/read-gate/<timestamp>/summary.md`
 
-- **Verdicts**: these decide the exit status. Gate ON: Claude tried a whole-file Read and got the deny in at least 2/3 of runs (without this, runs that never try one would pass the other gate-ON verdicts vacuously, and so would a dormant gate); no run read the whole fixture; every run that tried a whole-file Read got the deny; the answer graders pass in at least 2/3 of runs; the edit leaves `5.25` and no `4.85` in at least 2/3 of runs. Gate OFF: no deny marker in any run; at least one successful Read of the fixture per run; the answer graders pass in at least 2/3 of runs. The runner also exits non-zero when `claude plugin eval` exits non-zero or stops early, or when a requested case (every case, or the ones `--case` selects) has fewer runs in the results than `--runs` asked for, or a run that ended with an error or that a mock aborted. **Problems** names each such case and why.
-- **Runs**: one row per run. Whole-file Reads are shown as tried / denied / returned the file. Targeted Reads are shown as succeeded / denied; a denied targeted Read would block Edit. The row also gives calls to `smart_outline`, `smart_unfold` and `get_observations`, whether the deny marker appears, failed graders, turns and cost.
-- **Per arm**: mean turns and cost of the gate-ON runs (both ON cases) and the gate-OFF runs. Informational.
+- **Verdicts**: these decide the exit status. Gate ON: Claude tried a whole-file Read and got the deny in at least 2/3 of runs (without this, runs that never try one would pass the other gate-ON verdicts vacuously, and so would a dormant gate); no run read the whole fixture; every run that tried a whole-file Read got the deny; the answer graders pass in at least 2/3 of runs; the edit leaves `5.25` and no `4.85` in at least 2/3 of runs. Gate OFF: no deny marker in any run; at least one successful Read of the fixture per run; the answer graders pass in at least 2/3 of runs. Large file: the answer graders pass in at least 2/3 of runs in each arm; gate ON got the deny and gate OFF read the whole file, each in at least 2/3 of its runs, without which the comparison measures nothing; and gate ON costs less per run than gate OFF (means over runs that all report a cost; not run when `--case` leaves out an arm). The gate-ON and gate-OFF verdicts above count the large-file runs too, each against its own fixture. The runner also exits non-zero when `claude plugin eval` exits non-zero or stops early, or when a requested case (every case, or the ones `--case` selects) has fewer runs in the results than `--runs` asked for, or a run that ended with an error or that a mock aborted. **Problems** names each such case and why.
+- **Runs**: one row per run. Whole-file Reads are shown as tried / denied / returned the file. Targeted Reads are shown as succeeded / denied; a denied targeted Read would block Edit. The row also gives calls to `smart_outline`, `smart_unfold` and `get_observations`, whether the deny marker appears, failed graders, turns, tokens (cache writes / cache reads / output, from the run's `result` event) and cost.
+- **Same question, gate ON vs OFF**: for each fixture, mean turns, tokens and cost of its gate-ON and gate-OFF question cases, with gate ON's cost change against gate OFF. Informational, except that the large file's comparison is also a verdict.
 - **Pre-flight and hook latency**: the D9 tree-sitter check, then the wall time of each pre-flight hook call, process start included. Informational; every check had to pass for the eval to run. The header line names the tree-sitter version the plugin used.
 
 Beside it: `summary.json` (the same data, every run included), `preflight.json`, `traces/` (each run's trace, plus the edit case's edited file), and `eval/` (`claude plugin eval`'s `aggregate-result.json` and `report.html`).
 
 ## Last run
 
-2026-10-06, Claude Code 2.1.290, `claude-sonnet-5-5`, 3 runs per case, tree-sitter 0.26.9. Eval cost $0.59. Every verdict passed.
+2026-10-06, Claude Code 2.1.291, tree-sitter 0.26.9. Every verdict passed on both models. Reports: `reports/read-gate/2026-10-06T09-35-55-529Z` (Sonnet) and `reports/read-gate/2026-10-06T09-37-47-324Z` (Opus).
 
-| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cost |
-| --- | ---: | --- | ---: | --- | --- | ---: | ---: |
-| `gate-on-answers-question` | 3 | 3 / 3 / 0 | 1 | 3 / 8 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `read-blocked` 3/3 | 7.0 | $0.075 |
-| `gate-on-edits-file` | 3 | 3 / 3 / 0 | 3 | 0 / 0 / 0 | `edited` 3/3, `old-value-gone` 3/3, `read-blocked` 3/3 | 5.0 | $0.051 |
-| `gate-off-reads-normally` | 3 | 3 / 0 / 3 | 0 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 2.0 | $0.071 |
+**`claude-sonnet-5-5`, 3 runs per case, eval cost $1.21**
 
-After the deny, the question runs loaded `smart_outline` / `smart_unfold` with ToolSearch and unfolded `calculateRemoteAreaSurcharge` and `quoteShipment`. The edit runs found the line with Grep, read about 20 lines around it, and changed line 304 only. Pre-flight hook wall time for one call, process start included: deny 663 ms, targeted Read 385 ms, gate off 648 ms.
+| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cache write / read | Mean cost |
+| --- | ---: | --- | ---: | --- | --- | ---: | --- | ---: |
+| `gate-on-answers-question` | 3 | 3 / 3 / 0 | 0 | 3 / 8 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `read-blocked` 3/3 | 6.7 | 12,689 / 68,040 | $0.071 |
+| `gate-on-edits-file` | 3 | 3 / 3 / 0 | 3 | 0 / 0 / 0 | `edited` 3/3, `old-value-gone` 3/3, `read-blocked` 3/3 | 5.0 | 8,694 / 60,080 | $0.051 |
+| `gate-off-reads-normally` | 3 | 3 / 0 / 3 | 0 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 3.3 | 18,104 / 29,624 | $0.076 |
+| `gate-on-large-file` | 3 | 3 / 3 / 0 | 6 | 3 / 6 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `read-blocked` 3/3 | 8.0 | 15,824 / 68,042 | $0.081 |
+| `gate-off-large-file` | 3 | 3 / 0 / 3 | 3 | 0 / 0 / 0 | `answer-rate` 3/3, `answer-minimum` 3/3, `not-blocked` 3/3, `read-used` 3/3 | 3.0 | 35,661 / 58,158 | $0.125 |
 
-### Cross-check: claude-opus-5-5
+**`claude-opus-5-5`, 2 runs per case, eval cost $1.69**
 
-2026-10-06, Claude Code 2.1.291, `claude-opus-5-5`, 2 runs per case, tree-sitter 0.26.9. Eval cost $0.86. Every verdict passed.
+| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cache write / read | Mean cost |
+| --- | ---: | --- | ---: | --- | --- | ---: | --- | ---: |
+| `gate-on-answers-question` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.0 | 18,944 / 80,158 | $0.176 |
+| `gate-on-edits-file` | 2 | 2 / 2 / 0 | 2 | 0 / 0 / 0 | `edited` 2/2, `old-value-gone` 2/2, `read-blocked` 2/2 | 5.5 | 8,880 / 72,200 | $0.098 |
+| `gate-off-reads-normally` | 2 | 2 / 0 / 2 | 0 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 2.0 | 18,160 / 19,940 | $0.147 |
+| `gate-on-large-file` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.0 | 19,416 / 67,936 | $0.172 |
+| `gate-off-large-file` | 2 | 2 / 0 / 2 | 2 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 3.0 | 36,412 / 57,312 | $0.252 |
 
-| Case | Runs | Whole-file Reads tried / denied / returned the file | Targeted Reads | `smart_outline` / `smart_unfold` / `get_observations` | Graders passed | Mean turns | Mean cost |
-| --- | ---: | --- | ---: | --- | --- | ---: | ---: |
-| `gate-on-answers-question` | 2 | 2 / 2 / 0 | 6 | 2 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `read-blocked` 2/2 | 7.5 | $0.181 |
-| `gate-on-edits-file` | 2 | 2 / 2 / 0 | 2 | 0 / 0 / 0 | `edited` 2/2, `old-value-gone` 2/2, `read-blocked` 2/2 | 5.5 | $0.098 |
-| `gate-off-reads-normally` | 2 | 2 / 0 / 2 | 0 | 0 / 0 / 0 | `answer-rate` 2/2, `answer-minimum` 2/2, `not-blocked` 2/2, `read-used` 2/2 | 2.0 | $0.153 |
+**Same question, gate ON against gate OFF (mean cost per run):**
 
-After the deny, the question runs loaded the smart tools with ToolSearch and ran `smart_outline`. They then read the sections it pointed to with three targeted Reads, covering 344 and 361 of the 513 lines. The edit runs found the line with Grep, read 30 lines around it, and changed line 304 only. Pre-flight hook wall time: deny 693 ms, targeted Read 289 ms, gate off 593 ms.
+| Fixture | `claude-sonnet-5-5` | `claude-opus-5-5` |
+| --- | --- | --- |
+| `rate-calculator.ts`, 513 lines, 19 KB | $0.071 vs $0.076 (-6%) | $0.176 vs $0.147 (+20%) |
+| `carrier-tariffs.ts`, 941 lines, 49 KB | $0.081 vs $0.125 (-35%) | $0.172 vs $0.252 (-32%) |
+
+The gate saves the cache writes of the file it keeps out of context: about 20,000 tokens for the large file, about 5,500 for the small one. It pays for the deny turn and every smart-tool or targeted-Read turn after it, each re-reading the whole context: gate ON took 7 to 8 turns where gate OFF took 2 to 3. On the large file the saving wins on both models. On the small file it is a wash for Sonnet, which went straight to `smart_outline` and `smart_unfold`. It costs Opus 20% more: Opus ran `smart_outline` once, then read about 70% of the file anyway through three targeted Reads, so it saved almost no cache writes and still paid for the extra turns.
+
+After the deny, every edit run on both models found the line with Grep, read 15 to 40 lines around it, and changed line 304 only.
