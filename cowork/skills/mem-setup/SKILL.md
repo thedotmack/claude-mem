@@ -4,7 +4,7 @@ description: >
   This skill should be used when the user asks to "set up claude-mem", "pair
   claude-mem", "connect cmem", "add my cmem key", "set up cloud sync in
   Cowork" or in the Claude app, or provides cmem.ai Connect values (sync token,
-  user id, SyncHub URL) for this plugin. Configures the Claude-Mem plugin
+  user id, SyncHub URL) for this plugin. Configures the CMEM Pro plugin
   credentials.
 metadata:
   version: "0.1.0"

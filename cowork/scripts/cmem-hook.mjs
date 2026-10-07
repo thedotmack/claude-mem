@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * Claude-Mem for the Claude app (plugin id claude-mem-cowork) — thin HTTP hook
+ * CMEM Pro for the Claude app (plugin id cmem-pro, formerly claude-mem-cowork) — thin HTTP hook
  * shim for Claude app cloud sessions.
  *
  * Local claude-mem runs a worker service on the user's machine. Claude app cloud
@@ -179,7 +179,7 @@ async function http(method, url, body, timeoutMs, headers = {}) {
         'Authorization': `Bearer ${CFG.apiKey}`,
         'Content-Type': 'application/json',
         'X-CMEM-Platform': 'cowork',
-        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.4',
+        'X-CMEM-Plugin': 'cmem-pro/0.2.0',
         ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {}),
         ...headers
       },
@@ -372,7 +372,7 @@ async function mcpSearch(query, limit, project) {
     const init = await mcpRpc('initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
-      clientInfo: { name: 'claude-mem-cowork', version: '0.1.0' }
+      clientInfo: { name: 'cmem-pro', version: '0.2.0' }
     }, 1);
     if (!init.ok) return null;
     await mcpRpc('notifications/initialized', {}, undefined).catch?.(() => {});
@@ -459,9 +459,10 @@ async function onSessionInit(input) {
 }
 
 // Memory reads are never captured (feedback-loop guard): the Claude memory tool,
-// a connector named cmem*, and the Claude-Mem connector — mcp__Claude-Mem__* in
-// the Claude app, mcp__claude_ai_Claude-Mem__* when Claude Code loads it.
-const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem|mcp__(claude_ai_)?claude-mem__)/i;
+// a connector named cmem*, the Claude-Mem connector — mcp__Claude-Mem__* in the
+// Claude app, mcp__claude_ai_Claude-Mem__* when Claude Code loads it — and this
+// plugin's own cmem.ai connector (.mcp.json), mcp__plugin_cmem-pro_cmem__*.
+const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem|mcp__(claude_ai_)?claude-mem__|mcp__plugin_cmem-pro_)/i;
 
 async function onObservation(input) {
   const tool = input.tool_name || '';

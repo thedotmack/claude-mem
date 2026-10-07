@@ -14,11 +14,14 @@
       "description": "Persistent memory system for Claude Code - context compression across sessions"
     },
     {
-      "name": "claude-mem-cowork",
-      "displayName": "Claude-Mem",
-      "version": "0.1.4",
+      "name": "cmem-pro",
+      "displayName": "CMEM Pro",
+      "version": "0.2.0",
       "source": "./cowork",
-      "description": "Claude-Mem for the Claude app - hooks stream tool use to cmem.ai and inject observations into new sessions and agents"
+      "description": "CMEM Pro for the Claude app - hooks stream tool use to cmem.ai and inject observations into new sessions and agents"
     }
-  ]
+  ],
+  "renames": {
+    "claude-mem-cowork": "cmem-pro"
+  }
 }

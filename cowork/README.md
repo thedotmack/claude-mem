@@ -1,8 +1,9 @@
-# Claude-Mem for the Claude app
+# CMEM Pro for the Claude app
 
-Claude-Mem for the **Claude app** (mobile, web, desktop cloud sessions). It shows
-up as **Claude-Mem** in the app; its plugin id stays `claude-mem-cowork`, so
-existing installs and `/plugin install claude-mem-cowork@thedotmack` keep working.
+Claude-Mem memory for the **Claude app** (mobile, web, desktop cloud sessions),
+powered by CMEM Pro on cmem.ai. Install it with
+`/plugin install cmem-pro@thedotmack`. It was called `claude-mem-cowork`;
+existing installs move to `cmem-pro` automatically on Claude Code 2.1.193+.
 
 Claude app sessions run in ephemeral cloud containers, so the local claude-mem
 worker/SQLite model can't persist there. This plugin replaces the worker with
@@ -24,6 +25,14 @@ are injected back into every new session and every spawned agent.
 
 Plus a **mem-search** skill: progressive Index → Timeline search against
 `/api/mcp memory_search`, available in any session.
+
+## Memory tools (cmem.ai connector)
+
+`.mcp.json` points at the cmem.ai memory server, `https://cmem.ai/api/mcp`. In
+the Claude app it appears on the plugin's **Connectors** tab: connect it and
+sign in with the cmem.ai account that holds your memory. Claude Code connects
+to it directly. Its tools (`memory_search`, `timeline`, `get_observations`,
+`get_summaries`, `list_projects`) only read; nothing is stored in this file.
 
 ## Fail-soft guarantees
 

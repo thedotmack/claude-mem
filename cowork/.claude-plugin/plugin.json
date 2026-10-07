@@ -1,8 +1,8 @@
 {
-  "name": "claude-mem-cowork",
-  "displayName": "Claude-Mem",
-  "version": "0.1.4",
-  "description": "Claude-Mem for the Claude app: captures tool use via hooks, streams fragments to cmem.ai (Pro runs the observer), and injects observations back into new sessions and spawned agents.",
+  "name": "cmem-pro",
+  "displayName": "CMEM Pro",
+  "version": "0.2.0",
+  "description": "CMEM Pro for the Claude app: captures tool use via hooks, streams fragments to cmem.ai (Pro runs the observer), and injects observations back into new sessions and spawned agents.",
   "author": {
     "name": "CMEM, Inc."
   },
