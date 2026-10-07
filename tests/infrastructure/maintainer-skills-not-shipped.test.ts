@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'bun:test';
 import { existsSync, readFileSync, readdirSync } from 'fs';
-import { join } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 
 /**
  * The version-bump skill drives the maintainer's npm token and `npm publish`.
@@ -18,6 +18,19 @@ const SHIPPED_SKILL_ROOTS = [
   'claude-mem-grok-bot/skills',
   'openclaw/skills',
 ];
+
+const MARKETPLACE_MANIFESTS = [
+  '.claude-plugin/marketplace.json',
+  '.agents/plugins/marketplace.json',
+  '.cursor-plugin/marketplace.json',
+];
+
+/** True when shipping `source` (a repo-relative path) would include the skill. */
+function containsMaintainerSkill(source: string): boolean {
+  const target = resolve(PROJECT_ROOT, source);
+  const rel = relative(target, MAINTAINER_SKILL_DIR);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
 
 function shippedSkillFiles(): string[] {
   const files: string[] = [];
@@ -40,18 +53,32 @@ describe('maintainer-only skills are not shipped (#4430)', () => {
     }
   });
 
-  it('npm "files" and marketplace sources do not include .claude/', () => {
+  it('npm "files" entries do not contain the maintainer skill', () => {
     const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf-8'));
     for (const entry of pkg.files as string[]) {
-      expect(entry.startsWith('.claude/') || entry === '.claude').toBe(false);
+      expect({ entry, shipsSkill: containsMaintainerSkill(entry) }).toEqual({
+        entry,
+        shipsSkill: false,
+      });
     }
+  });
 
-    const marketplace = JSON.parse(
-      readFileSync(join(PROJECT_ROOT, '.claude-plugin/marketplace.json'), 'utf-8'),
-    );
-    for (const plugin of marketplace.plugins) {
-      expect(String(plugin.source).replace(/^\.\//, '').startsWith('.claude')).toBe(false);
+  it('no marketplace plugin source contains the maintainer skill', () => {
+    let checked = 0;
+    for (const manifest of MARKETPLACE_MANIFESTS) {
+      const marketplace = JSON.parse(readFileSync(join(PROJECT_ROOT, manifest), 'utf-8'));
+      for (const plugin of marketplace.plugins) {
+        const source = typeof plugin.source === 'string' ? plugin.source : plugin.source?.path;
+        if (typeof source !== 'string') continue; // remote (github/url) sources
+        checked++;
+        expect({ manifest, source, shipsSkill: containsMaintainerSkill(source) }).toEqual({
+          manifest,
+          source,
+          shipsSkill: false,
+        });
+      }
     }
+    expect(checked).toBeGreaterThan(0);
   });
 
   it('no shipped SKILL.md tells an agent to use ~/.npmrc credentials', () => {
@@ -67,10 +94,24 @@ describe('maintainer-only skills are not shipped (#4430)', () => {
 
   it('version-bump keeps its scope check and publish confirmation gate', () => {
     const content = readFileSync(join(MAINTAINER_SKILL_DIR, 'SKILL.md'), 'utf-8');
-    expect(content).toContain('## Scope — check this first');
-    expect(content).toContain('thedotmack/claude-mem');
-    expect(content).toContain('**Confirmation gate.**');
-    expect(content).toContain('npm publish --dry-run');
-    expect(content).toContain('Never read, print, copy, or edit');
+    const required = [
+      // scope check
+      '## Scope — check this first',
+      'git remote get-url origin',
+      'github.com/thedotmack/claude-mem',
+      "require('./package.json').name",
+      'If either check fails, stop',
+      // publish confirmation gate
+      '**Confirmation gate.**',
+      'npm publish --dry-run',
+      'wait for\n    the maintainer to reply with an explicit yes',
+      'A standing instruction to release is not the confirmation',
+      "If `npm whoami` prints anything other than\n    `thedotmack`, stop.",
+      // credential handling
+      'Never read, print, copy, or edit',
+    ];
+    for (const text of required) {
+      expect({ text, present: content.includes(text) }).toEqual({ text, present: true });
+    }
   });
 });
