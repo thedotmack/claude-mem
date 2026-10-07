@@ -50,8 +50,11 @@ function stubCompletedAppServerTurns(provider: any, contents: Array<string | nul
   return methods;
 }
 let savedProvider: string | undefined;
+let savedMaxConcurrentAgents: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
+  savedMaxConcurrentAgents = process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS;
+  process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS = '2';
   process.env.CLAUDE_MEM_PROVIDER = 'codex';
   resetQuotaCooldownsForTesting();
   clearDependencyStatus('codex_cli');
@@ -61,6 +64,8 @@ afterEach(() => {
   clearDependencyStatus('codex_cli');
   if (savedProvider === undefined) delete process.env.CLAUDE_MEM_PROVIDER;
   else process.env.CLAUDE_MEM_PROVIDER = savedProvider;
+  if (savedMaxConcurrentAgents === undefined) delete process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS;
+  else process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS = savedMaxConcurrentAgents;
 });
 
 let nextSessionId = 710;
