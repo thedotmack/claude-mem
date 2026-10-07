@@ -16,6 +16,7 @@ import { isTreeSitterCliAvailable } from '../../services/smart-file-read/tree-si
 import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
 import { isQwenCodeHookEvent } from './session-init.js';
+import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
 
 /** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
 const FILE_CONTEXT_MIN_BYTES = 1_500;
@@ -334,6 +335,14 @@ export const fileContextHandler: EventHandler = {
 
     if (input.cwd && !shouldTrackProject(input.cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping file context', { cwd: input.cwd });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // #4558 — the by-file lookup is a worker-only route, and calling it lazy-spawns
+    // a local worker (and creates its DB). In server runtime there is no local
+    // worker by design, so skip file context like summarize/session-end do.
+    if (resolveRuntimeContext().runtime === 'server') {
+      logger.debug('HOOK', 'Server runtime: skipping worker file-context lookup', { cwd: input.cwd });
       return { continue: true, suppressOutput: true };
     }
 
