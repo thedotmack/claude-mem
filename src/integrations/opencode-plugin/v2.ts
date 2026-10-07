@@ -69,6 +69,13 @@ export interface V2BusEvent {
 /** The slice of the V2 context this adapter uses. Every member is optional so
  * a beta API change degrades to a no-op instead of failing the whole load. */
 export interface OpenCodePluginContextV2 extends CoreContext {
+  /**
+   * V2 moved the checkout out of the context root: V1 read `ctx.directory`,
+   * V2 exposes it as `ctx.location.directory`. Every worker write is keyed by
+   * the checkout, so passing an undefined cwd makes the worker reject the
+   * observation ("Missing cwd when ingesting observation").
+   */
+  location?: { directory?: string; workspaceID?: string };
   tool?: {
     hook?: (
       name: "execute.after",
@@ -150,10 +157,44 @@ async function subscribeToBus(
 }
 
 /**
+ * V2 hands the tool result over as an object, not the string V1's
+ * `output.output` carried. The observed shape is
+ * `{ output: { exit, truncated, output }, content: [{ type: "text", text }] }`,
+ * so the text blocks are the reliable source; `output` is a tool-specific
+ * object for shell and a plain string elsewhere.
+ */
+export function extractResultText(result: unknown): string {
+  if (typeof result === "string") return result;
+  if (!result || typeof result !== "object") return "";
+
+  const shape = result as { output?: unknown; content?: unknown };
+  if (Array.isArray(shape.content)) {
+    const text = (shape.content as Array<{ type?: string; text?: string }>)
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text as string)
+      .join("\n");
+    if (text.trim()) return text;
+  }
+  if (typeof shape.output === "string") return shape.output;
+  if (shape.output && typeof shape.output === "object") {
+    const nested = (shape.output as { output?: unknown }).output;
+    if (typeof nested === "string") return nested;
+  }
+  return "";
+}
+
+/**
  * Registers every claude-mem hook on a V2 context. Returns a cleanup function
  * that disposes every registration, per the V2 lifecycle contract.
  */
-export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promise<void>> {
+export async function setupV2(context: OpenCodePluginContextV2): Promise<() => Promise<void>> {
+  // V1 read `ctx.directory`; V2 nests it under `ctx.location`. Without this the
+  // worker rejects every write with "Missing cwd when ingesting observation".
+  const ctx: CoreContext = {
+    directory: context.location?.directory ?? "",
+    client: context.client,
+  };
+
   console.log(`[claude-mem] OpenCode plugin loading (directory: ${ctx.directory})`);
   const core: ClaudeMemCore = createCore(ctx);
   const registrations: V2Registration[] = [];
@@ -162,9 +203,9 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
   };
 
   // Primary capture path: every tool execution becomes an observation.
-  if (ctx.tool?.hook) {
+  if (context.tool?.hook) {
     await register(
-      ctx.tool.hook("execute.after", async (event) => {
+      context.tool.hook("execute.after", async (event) => {
         const sessionID = event.sessionID;
         const tool = event.tool;
         if (!sessionID || !tool) return;
@@ -175,11 +216,9 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
         // part; v1 received the same string through `output`.
         const result = event.result;
         const output =
-          typeof result === "string"
-            ? result
-            : typeof (result as { output?: unknown })?.output === "string"
-              ? ((result as { output: string }).output)
-              : errorMessage(event.error ?? "");
+          event.status === "error"
+            ? errorMessage(event.error ?? "")
+            : extractResultText(result);
         await core.captureTool({ tool, sessionID, args, output });
       }),
     );
@@ -187,9 +226,9 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
 
   // User prompts: v1 read them off `chat.message`. V2 admits them through the
   // `prompt` hook, which runs once per admitted prompt.
-  if (ctx.session?.hook) {
+  if (context.session?.hook) {
     await register(
-      ctx.session.hook<V2PromptEvent>("prompt", async (event) => {
+      context.session.hook<V2PromptEvent>("prompt", async (event) => {
         const promptText = event?.prompt?.text?.trim();
         if (!event?.sessionID || !promptText) return;
         await core.captureUserPrompt(event.sessionID, promptText);
@@ -199,7 +238,7 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
     // Memory context: v1 pushed a raw string onto `output.system`; v2's system
     // prompt is a list of typed parts, so the context goes in as one text part.
     await register(
-      ctx.session.hook<V2ContextEvent>("context", async (event) => {
+      context.session.hook<V2ContextEvent>("context", async (event) => {
         if (!event?.sessionID) return;
         const memory = await core.memoryContext(event.sessionID);
         if (!memory?.trim()) return;
@@ -211,7 +250,7 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
     // observe and replace the summary; claude-mem only observes and lets the
     // worker write its own summary through the normal request path.
     await register(
-      ctx.session.hook<V2CompactionEvent>("compaction", async (event) => {
+      context.session.hook<V2CompactionEvent>("compaction", async (event) => {
         if (!event?.sessionID) return;
         await core.captureSummary(event.sessionID);
       }),
@@ -219,9 +258,9 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
   }
 
   // Custom tool: v1 returned a `tool` map, v2 registers through a transform.
-  if (ctx.tool?.transform) {
+  if (context.tool?.transform) {
     await register(
-      ctx.tool.transform((editor) => {
+      context.tool.transform((editor) => {
         editor.add({
           name: "claude_mem_search",
           description:
@@ -245,8 +284,8 @@ export async function setupV2(ctx: OpenCodePluginContextV2): Promise<() => Promi
   // a long-lived subscription, so it is driven by an AbortController owned by
   // the plugin cleanup rather than by an awaited hook registration.
   const cleanupController = new AbortController();
-  if (ctx.event?.subscribe) {
-    void subscribeToBus(ctx, core, cleanupController.signal);
+  if (context.event?.subscribe) {
+    void subscribeToBus(context, core, cleanupController.signal);
   }
 
   return async () => {

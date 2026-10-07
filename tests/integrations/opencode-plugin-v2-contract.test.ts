@@ -1,6 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import pluginEntry from "../../src/integrations/opencode-plugin/index";
-import { setupV2, type OpenCodePluginContextV2 } from "../../src/integrations/opencode-plugin/v2";
+import { setupV2, extractResultText, type OpenCodePluginContextV2 } from "../../src/integrations/opencode-plugin/v2";
 import {
   REGISTERED_OPENCODE_HOOKS,
   REGISTERED_OPENCODE_V2_HOOKS,
@@ -179,5 +179,102 @@ describe("OpenCode V2 graceful degradation", () => {
     const cleanup = await setupV2(ctx);
     expect(hooks.length).toBe(0);
     await expect(cleanup()).resolves.toBeUndefined();
+  });
+});
+
+describe("OpenCode V2 checkout resolution", () => {
+  // V1 read `ctx.directory`; V2 nests it under `ctx.location`. Sending an
+  // undefined cwd makes the worker drop every write with "Missing cwd when
+  // ingesting observation" — the session row is still created, so it looks
+  // like it works while nothing is ever recorded.
+  async function captureCheckout(
+    context: Partial<OpenCodePluginContextV2>,
+  ): Promise<string | undefined> {
+    const originalFetch = globalThis.fetch;
+    const posts: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      if (init?.body) posts.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+      return new Response("{}", { status: 200 });
+    }) as typeof fetch;
+    try {
+      const cleanup = await setupV2(context);
+      // Replay a real prompt through the captured hook, so the worker write
+      // (and its `cwd`) actually happens.
+      for (const callback of promptCallbacks) {
+        await callback({ sessionID: "ses_checkout", prompt: { text: "checkout probe" } });
+      }
+      await cleanup();
+      return posts[0]?.cwd as string | undefined;
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  const promptCallbacks: Array<(event: unknown) => Promise<void> | void> = [];
+  const recordingSession = {
+    hook: async (name: string, callback: (event: unknown) => Promise<void> | void) => {
+      if (name === "prompt") promptCallbacks.push(callback);
+      return { dispose: async () => {} };
+    },
+  };
+
+  it("sends the checkout from ctx.location.directory", async () => {
+    promptCallbacks.length = 0;
+    const cwd = await captureCheckout({
+      location: { directory: "C:/repo/sub" },
+      session: recordingSession,
+    });
+    expect(cwd).toBe("C:/repo/sub");
+  });
+
+  it("falls back to an empty string when location is absent, never undefined", async () => {
+    promptCallbacks.length = 0;
+    const cwd = await captureCheckout({ session: recordingSession });
+    expect(cwd).toBe("");
+  });
+
+  it("ignores a top-level ctx.directory, which V2 does not provide", async () => {
+    promptCallbacks.length = 0;
+    const cwd = await captureCheckout({
+      location: { directory: "C:/repo" },
+      directory: "C:/stale-v1-value",
+      session: recordingSession,
+    } as Partial<OpenCodePluginContextV2>);
+    expect(cwd).toBe("C:/repo");
+  });
+});
+
+describe("OpenCode V2 tool result extraction", () => {
+  // Observed on v2.0.22: `result` is an object
+  // `{ output: { exit, truncated, output }, content: [{ type: "text", text }] }`,
+  // where `output` is tool-specific (an object for shell). V1 handed over
+  // `output.output` as a plain string.
+  it("prefers the text content blocks", () => {
+    expect(
+      extractResultText({
+        output: { exit: 0, truncated: false, output: "from output.output" },
+        content: [{ type: "text", text: "from content blocks" }],
+      }),
+    ).toBe("from content blocks");
+  });
+
+  it("falls back to a string output", () => {
+    expect(extractResultText({ output: "plain output" })).toBe("plain output");
+  });
+
+  it("unwraps a nested shell-shaped output", () => {
+    expect(extractResultText({ output: { exit: 0, output: "shell stdout" } })).toBe("shell stdout");
+  });
+
+  it("passes a bare string result through", () => {
+    expect(extractResultText("already text")).toBe("already text");
+  });
+
+  it("returns empty rather than the string 'undefined' for an unusable result", () => {
+    // The pre-fix fallback produced errorMessage(undefined) === "undefined",
+    // which the worker then stored as the tool response verbatim.
+    expect(extractResultText(undefined)).toBe("");
+    expect(extractResultText(null)).toBe("");
+    expect(extractResultText({})).toBe("");
   });
 });
