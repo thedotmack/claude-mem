@@ -60,8 +60,8 @@ node "${CLAUDE_SKILL_DIR}/screenpipe.mjs" save \
 
 Replace `PORT` with the running worker's port (shown on startup; see
 `CLAUDE_MEM_WORKER_PORT` or the configured `settings.json`). Do not guess the port
-or point this at a hosted server. The save is stored through claude-mem's normal
-observation path, including any configured cloud sync. Report success only after
+or point this at a hosted server. The save is stored in claude-mem's local
+observation database. Report success only after
 the helper returns `success: true` and an observation ID. Use `get_observations`
 with that ID to verify readback. A timeout may occur after a write; check existing
 memories before retrying. Do not import an entire desktop history by default.
