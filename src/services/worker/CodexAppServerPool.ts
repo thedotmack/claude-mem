@@ -7,9 +7,10 @@ export function boundedInteger(value: unknown, fallback: number, max: number): n
 }
 
 type Client = Pick<CodexAppServerClient, 'runTurn' | 'close'>;
+type TurnClient = Pick<Client, 'runTurn'>;
 interface Job {
-  options: CodexAppServerTurnOptions;
-  resolve: (result: CodexAppServerTurnResult) => void;
+  signal?: AbortSignal;
+  run: (client: TurnClient, signal: AbortSignal) => Promise<void>;
   reject: (error: unknown) => void;
   cleanup: () => void;
 }
@@ -31,19 +32,25 @@ export class CodexAppServerPool {
   }
 
   runTurn(options: CodexAppServerTurnOptions): Promise<CodexAppServerTurnResult> {
+    return this.withClient((client, signal) => client.runTurn({ ...options, signal }), options.signal);
+  }
+
+  /** Start an operation only after admission, keeping queued cancellation separate from execution deadlines. */
+  withClient<T>(run: (client: TurnClient, signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
     if (this.closed) return Promise.reject(new Error('Codex app-server pool closed'));
-    if (options.signal?.aborted) return Promise.reject(options.signal.reason);
+    if (signal?.aborted) return Promise.reject(signal.reason);
     return new Promise((resolve, reject) => {
       const abort = () => {
         const index = this.queue.indexOf(job);
         if (index < 0) return;
         this.queue.splice(index, 1);
         job.cleanup();
-        reject(options.signal!.reason);
+        reject(signal!.reason);
       };
-      const job: Job = { options, resolve, reject,
-        cleanup: () => options.signal?.removeEventListener('abort', abort) };
-      options.signal?.addEventListener('abort', abort, { once: true });
+      const job: Job = { signal, reject,
+        run: async (client, admittedSignal) => { resolve(await run(client, admittedSignal)); },
+        cleanup: () => signal?.removeEventListener('abort', abort) };
+      signal?.addEventListener('abort', abort, { once: true });
       this.queue.push(job);
       this.drain();
     });
@@ -54,12 +61,12 @@ export class CodexAppServerPool {
       const client = this.idle.shift()!;
       const job = this.queue.shift()!;
       job.cleanup();
-      const signal = job.options.signal
-        ? AbortSignal.any([job.options.signal, this.shutdown.signal]) : this.shutdown.signal;
+      const signal = job.signal
+        ? AbortSignal.any([job.signal, this.shutdown.signal]) : this.shutdown.signal;
       const work = Promise.resolve().then(() => {
         signal.throwIfAborted();
-        return client.runTurn({ ...job.options, signal });
-      }).then(job.resolve, job.reject).finally(() => {
+        return job.run(client, signal);
+      }).catch(job.reject).finally(() => {
         this.active.delete(work);
         this.idle.push(client);
         this.drain();
