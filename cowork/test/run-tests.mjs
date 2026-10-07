@@ -177,6 +177,16 @@ console.log('\n[3] skip guard');
 received = [];
 await run('observation', { session_id: 's1', tool_name: 'mcp__memory__memory_write', tool_use_id: 'tu_3' });
 check('memory tool calls not captured', !received.some(r => r.url.startsWith('/api/hooks/ingest')));
+// the Claude-Mem connector as the Claude app names it, and as Claude Code names it
+for (const tool of ['mcp__Claude-Mem__memory_search', 'mcp__Claude-Mem__timeline', 'mcp__claude_ai_Claude-Mem__get_observations']) {
+  received = [];
+  await run('observation', { session_id: 's1', tool_name: tool, tool_use_id: 'tu_3b' });
+  check(`${tool} not captured`, !received.some(r => r.url.startsWith('/api/hooks/ingest')));
+}
+// a tool that only mentions claude-mem later in its name is still captured
+received = [];
+await run('observation', { session_id: 's1', tool_name: 'mcp__github__search_claude-mem_issues', tool_use_id: 'tu_3c' });
+check('other tools are still captured', received.some(r => r.url.startsWith('/api/hooks/ingest')));
 
 // ---- 4. SessionStart context injection ----
 console.log('\n[4] SessionStart inject');
