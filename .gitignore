@@ -12,7 +12,9 @@ dist/
 .install-version
 .claude/settings.local.json
 .claude/agents/
-.claude/skills/
+.claude/skills/*
+# Maintainer-only release skill: tracked here so it never ships in plugin/ (#4430).
+!.claude/skills/version-bump/
 .claude/plans/
 .claude/worktrees/
 plugin/data/
