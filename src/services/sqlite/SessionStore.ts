@@ -41,7 +41,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
   runDedupScan as runDedupScanAll,
-  type DedupRuntimeConfig,
+  type DedupRuntimeConfig, type DedupCandidateStatus, type DedupCandidateVerdict,
 } from './dedup-store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { isSubagentEvent } from '../../shared/subagent-predicate.js';
@@ -3658,7 +3658,8 @@ export class SessionStore {
   // #3038 — read-only listing of Tier-1 near-duplicate candidates (joined to both titles).
   listDedupCandidates(
     project?: string,
-    limit = 100
+    limit = 100,
+    status?: DedupCandidateStatus
   ): Array<{
     id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
     observation_id: number; observation_title: string | null;
@@ -3670,16 +3671,25 @@ export class SessionStore {
       duplicate_of_id: number; duplicate_of_title: string | null;
     };
     // Two explicit prepared statements — no conditional SQL-fragment interpolation.
+    // An absent status filter binds NULL.
     const select =
       'SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch, ' +
       'c.observation_id, o1.title AS observation_title, c.duplicate_of_id, o2.title AS duplicate_of_title ' +
       'FROM observation_dedup_candidates c ' +
       'JOIN observations o1 ON o1.id = c.observation_id ' +
       'JOIN observations o2 ON o2.id = c.duplicate_of_id ';
+    const statusFilter = '(? IS NULL OR c.status = ?) ';
     const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
+    const statusArg = status ?? null;
     return project
-      ? this.db.prepare(`${select}WHERE c.project = ? ${order}`).all(project, limit) as Row[]
-      : this.db.prepare(`${select}${order}`).all(limit) as Row[];
+      ? this.db.prepare(`${select}WHERE c.project = ? AND ${statusFilter}${order}`).all(project, statusArg, statusArg, limit) as Row[]
+      : this.db.prepare(`${select}WHERE ${statusFilter}${order}`).all(statusArg, statusArg, limit) as Row[];
+  }
+
+  // #3038 — record a reviewer's verdict on a candidate. `merged` is not accepted here:
+  // merging rewrites observation rows and needs its own path. Returns false for an unknown id.
+  resolveDedupCandidate(id: number, status: DedupCandidateVerdict): boolean {
+    return this.db.prepare('UPDATE observation_dedup_candidates SET status = ? WHERE id = ?').run(status, id).changes > 0;
   }
 
   /** #3038 — whether CLAUDE_MEM_DEDUP_ENABLED is on (settings.json or env). */

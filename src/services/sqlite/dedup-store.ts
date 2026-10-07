@@ -18,6 +18,14 @@ import { logger } from '../../utils/logger.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 
+/** Values allowed by the `observation_dedup_candidates.status` CHECK constraint (v56). */
+export const DEDUP_CANDIDATE_STATUSES = ['pending', 'merged', 'distinct', 'dismissed'] as const;
+export type DedupCandidateStatus = typeof DEDUP_CANDIDATE_STATUSES[number];
+
+/** Verdicts a reviewer can record without rewriting observation rows. */
+export const DEDUP_CANDIDATE_VERDICTS = ['distinct', 'dismissed'] as const;
+export type DedupCandidateVerdict = typeof DEDUP_CANDIDATE_VERDICTS[number];
+
 /** Runtime dedup knobs resolved from settings. */
 export interface DedupRuntimeConfig {
   cosineThreshold: number;
