@@ -1,9 +1,26 @@
 ---
 name: version-bump
-description: Automated semantic versioning and release workflow for Claude Code plugins. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation. Ends with the agent running npm publish itself using the maintainer's npm token.
+description: Maintainer-only release workflow for the thedotmack/claude-mem repository. Handles version increments across package.json, marketplace.json, plugin.json manifests, build verification, git tagging, GitHub releases, and changelog generation, then runs npm publish after the maintainer confirms. Does not apply to any other repository or npm package.
 ---
 
 # Version Bump & Release Workflow
+
+## Scope — check this first
+
+This workflow is for **one repository and one npm package**: `thedotmack/claude-mem`,
+published as `claude-mem` by the npm user `thedotmack`. It is not a general
+release recipe. Do not adapt any step of it, especially the npm token and
+publish steps, to another repository, package, or user.
+
+Before doing anything else, run:
+
+```bash
+git remote get-url origin   # must be github.com/thedotmack/claude-mem(.git)
+node -p "require('./package.json').name"   # must print claude-mem
+```
+
+If either check fails, stop and tell the user this skill does not apply here.
+Re-check `npm whoami` before publishing (step 11).
 
 **IMPORTANT:** Plan and write detailed release notes before starting.
 
