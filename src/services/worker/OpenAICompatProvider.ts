@@ -52,6 +52,7 @@ import {
 import {
   OpenAICompatibleProvider,
   assistantText,
+  type ObserverRequestLabel,
   type OpenAIChatMessage,
   type ProviderQueryResult,
 } from './OpenAICompatibleProvider.js';
@@ -481,13 +482,14 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
   ): Promise<ProviderQueryResult> {
     if (!config.apiUrl || !config.model) {
       throw this.missingApiKeyError();
     }
     return withKeyPool(
       { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
-      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget),
+      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
     );
   }
 
@@ -509,8 +511,10 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     clientAttemptId: string,
     attemptSignal: AbortSignal,
     liveness: StreamLiveness | null,
+    sessionId: string | undefined,
   ): Promise<ChatCompletionExchange> {
     const label = config.preset.label;
+    const sessionHeader = config.preset.sessionHeader;
     return sendChatCompletion({
       url: config.apiUrl,
       headers: {
@@ -520,6 +524,9 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         // Local servers accept any token or none; sending an empty bearer to
         // them is worse than sending no header at all.
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        // Per request, from the observed session: one provider instance serves
+        // every session, so this can't be a field on it.
+        ...(sessionHeader && sessionId ? { [sessionHeader]: sessionId } : {}),
       },
       body: {
         model: config.model,
@@ -544,6 +551,8 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
+    /** anonymousSessionId() of the observed session, for preset.sessionHeader. */
+    sessionId?: string,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const label = config.preset.label;
@@ -560,7 +569,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     const streamed = streamsChatCompletion(config.apiUrl);
     const liveness = streamed ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs) : null;
     const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
-      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness);
+      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId);
       const responseData = exchange.body as ChatCompletionResponse;
 
       // Some gateways report failure in a 200 body (the case #3263 hit through

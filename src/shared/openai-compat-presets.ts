@@ -48,6 +48,11 @@ export interface OpenAICompatPreset {
   requiresApiKey: boolean;
   /** One line for the installer/docs. */
   hint: string;
+  /**
+   * Header that carries the observed session's hashed id on every request,
+   * for endpoints that route or cache per conversation.
+   */
+  sessionHeader?: string;
 }
 
 export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
@@ -103,6 +108,8 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     defaultModel: 'kimi-k3',
     requiresApiKey: true,
     hint: 'OpenCode Go subscription key; model ids from opencode.ai/zen/go/v1/models.',
+    // Go answers 400 without it (#4581).
+    sessionHeader: 'x-opencode-session',
   },
   {
     id: 'opencode-zen',
