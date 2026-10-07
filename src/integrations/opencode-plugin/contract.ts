@@ -15,10 +15,21 @@
 /**
  * OpenCode plugin event contract.
  *
- * A plugin is an async function that receives a context object and returns an
- * object whose keys are OpenCode's real hook names. The hooks claude-mem binds
- * to are (authoritative source: plans/08-opencode-integration.md "Fix sequence"
- * step 1, cross-checked against OpenCode's documented plugin API):
+ * OpenCode has two plugin contracts and claude-mem implements both. The mapping
+ * is not mechanical: V2 does not translate a V1 hooks object, so every hook is
+ * re-registered through the imperative `ctx.*.hook()` API.
+ *
+ * | concern              | V1 hook name                         | V2 registration                  |
+ * |----------------------|--------------------------------------|----------------------------------|
+ * | tool capture         | `tool.execute.after`                 | `ctx.tool.hook("execute.after")` |
+ * | user prompt          | `chat.message` (role === "user")     | `ctx.session.hook("prompt")`     |
+ * | memory injection     | `experimental.chat.system.transform` | `ctx.session.hook("context")`    |
+ * | compaction summarize | `experimental.session.compacting`    | `ctx.session.hook("compaction")` |
+ * | idle / deleted       | `event` (`session.idle`/`deleted`)   | `ctx.event.subscribe()`          |
+ * | custom tool          | `tool` map on the return value       | `ctx.tool.transform()`           |
+ *
+ * V1 hook names (authoritative source: plans/08-opencode-integration.md "Fix
+ * sequence" step 1, cross-checked against OpenCode's documented plugin API):
  *
  *   - `tool.execute.after`            (input, output) — fires after every tool run
  *   - `chat.message`                  ({}, output)    — fires on each chat message
@@ -47,7 +58,10 @@ export const REAL_OPENCODE_EVENT_TYPES = [
 
 export type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
 
-/** The hook keys this plugin returns. The contract test asserts these are the real OpenCode hook names. */
+/**
+ * The V1 hook keys the V1 adapter returns. The contract test asserts these are
+ * the real OpenCode hook names.
+ */
 export const REGISTERED_OPENCODE_HOOKS = [
   "tool.execute.after",
   "chat.message",
@@ -55,6 +69,25 @@ export const REGISTERED_OPENCODE_HOOKS = [
   "experimental.session.compacting",
   "experimental.chat.system.transform",
 ] as const;
+
+/**
+ * The V2 registrations as `host domain` + `hook name` pairs. V2's API is
+ * namespaced, so these are not bare hook names.
+ */
+export const REGISTERED_OPENCODE_V2_HOOKS = [
+  { domain: "tool", hook: "execute.after" },
+  { domain: "session", hook: "prompt" },
+  { domain: "session", hook: "context" },
+  { domain: "session", hook: "compaction" },
+  { domain: "event", hook: "subscribe" },
+  { domain: "tool", hook: "transform" },
+] as const;
+
+/**
+ * The default export's plugin id. V2 reads it from the module and requires it;
+ * it is also the handle `opencode.json(c)` uses to disable the plugin.
+ */
+export const OPENCODE_PLUGIN_ID = "claude-mem";
 
 /**
  * The worker returns Claude-style `{ content: [{ type: 'text', text: '...' }] }`
