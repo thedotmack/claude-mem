@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'bun:test';
-import { existsSync, readFileSync, readdirSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { cpSync, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { isAbsolute, join, relative, resolve } from 'path';
 
 /**
@@ -32,6 +34,37 @@ function containsMaintainerSkill(source: string): boolean {
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
 
+/**
+ * Paths npm would put in the tarball for the package in `cwd`. `files` entries
+ * are globs, so ask npm itself rather than treating them as literal paths.
+ */
+function npmPackedFiles(cwd: string): string[] {
+  const result = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], {
+    cwd,
+    encoding: 'utf-8',
+  });
+  if (result.status !== 0) throw new Error(`npm pack failed: ${result.stderr}`);
+  const [pack] = JSON.parse(result.stdout);
+  return pack.files.map((file: { path: string }) => file.path);
+}
+
+function packsMaintainerSkill(paths: string[]): boolean {
+  return paths.some((path) => path.startsWith('.claude/skills/version-bump/'));
+}
+
+/** Pack a throwaway package with the repo's .npmignore, the skill, and `files`. */
+function npmPackedFilesFor(files: string[]): string[] {
+  const dir = mkdtempSync(join(tmpdir(), 'claude-mem-pack-'));
+  try {
+    cpSync(MAINTAINER_SKILL_DIR, join(dir, '.claude/skills/version-bump'), { recursive: true });
+    cpSync(join(PROJECT_ROOT, '.npmignore'), join(dir, '.npmignore'));
+    writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'pack-fixture', version: '0.0.0', files }));
+    return npmPackedFiles(dir);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function shippedSkillFiles(): string[] {
   const files: string[] = [];
   for (const root of SHIPPED_SKILL_ROOTS) {
@@ -53,15 +86,22 @@ describe('maintainer-only skills are not shipped (#4430)', () => {
     }
   });
 
-  it('npm "files" entries do not contain the maintainer skill', () => {
-    const pkg = JSON.parse(readFileSync(join(PROJECT_ROOT, 'package.json'), 'utf-8'));
-    for (const entry of pkg.files as string[]) {
-      expect({ entry, shipsSkill: containsMaintainerSkill(entry) }).toEqual({
+  it('the npm tarball does not contain the maintainer skill', () => {
+    const packed = npmPackedFiles(PROJECT_ROOT);
+    expect(packed.length).toBeGreaterThan(0);
+    expect(packed.filter((path) => path.startsWith('.claude/'))).toEqual([]);
+  }, 30_000);
+
+  it('the npm tarball check catches "files" patterns that pick up the skill', () => {
+    const leaking = ['.claude', '.claude/skills', '.claude/skills/*', '.claude/**', '.claude/skills/version-bump'];
+    for (const entry of leaking) {
+      expect({ entry, shipsSkill: packsMaintainerSkill(npmPackedFilesFor([entry])) }).toEqual({
         entry,
-        shipsSkill: false,
+        shipsSkill: true,
       });
     }
-  });
+    expect(packsMaintainerSkill(npmPackedFilesFor(['plugin/skills']))).toBe(false);
+  }, 60_000);
 
   it('no marketplace plugin source contains the maintainer skill', () => {
     let checked = 0;
