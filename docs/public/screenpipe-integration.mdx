@@ -1,0 +1,71 @@
+---
+title: "Screenpipe Integration"
+description: "Bring selected screen and meeting context into claude-mem with the bundled Screenpipe skill."
+---
+
+[Screenpipe](https://screenpipe.com) records screen text and audio on your computer.
+The bundled `screenpipe` skill lets you recall that context from Claude Code and
+save selected facts into claude-mem for future sessions.
+
+## Setup
+
+1. Install [Screenpipe](https://screenpipe.com), grant its recording permissions,
+   and leave it running on the same computer as Claude Code.
+2. [Install claude-mem](/installation) and restart Claude Code. The skill ships
+   inside the plugin; no additional MCP server or package is required.
+3. Invoke the skill:
+
+```text
+/claude-mem:screenpipe Find the release discussion from my meetings this morning.
+```
+
+To save useful context, include that in your request:
+
+```text
+/claude-mem:screenpipe Find yesterday's API design discussion and remember the decisions in this project.
+```
+
+The skill searches a bounded time window, summarizes matching screen text or audio
+transcripts with source IDs and timestamps, and saves a selected note only when
+asked. Saved notes use the existing local worker observation API and can be
+retrieved with claude-mem's memory search tools.
+
+```text
+Before: claude-mem recalls your agent sessions.
+After:  Screenpipe screen/audio search -> selected context -> claude-mem observation
+```
+
+## Configuration and privacy
+
+The helper requires Node.js 20+ (already required by claude-mem). It defaults to
+Screenpipe at `http://127.0.0.1:3030`. Set `SCREENPIPE_URL` in the agent's environment
+for another local port, and `SCREENPIPE_API_KEY` if Screenpipe requires bearer
+authentication. Keep the API key out of prompts and command arguments.
+
+Searches default to screen text and 20 results per page, with an explicit time
+window. Audio is requested for meeting queries. The helper returns text and
+source metadata, not screenshots or audio files. Long text is marked as truncated.
+
+The HTTP requests go to local services, but **retrieved text enters the agent's
+conversation** and may be sent to its configured AI provider and retained by
+normal claude-mem capture hooks. An explicit save also follows your existing
+claude-mem cloud-sync settings. On-demand search is not a private preview outside
+the normal agent workflow. Choose a narrow topic, app, and time window.
+
+Saving requires claude-mem's running local worker URL, as shown on startup. Hosted
+server mode and remote Screenpipe instances are not supported by this basic
+integration. It does not enable recording, periodically poll, or bulk-sync history.
+
+## Troubleshooting
+
+- **Connection failure or timeout:** check that Screenpipe or the claude-mem
+  worker is running at the configured address. The helper exits with an error;
+  it does not report an empty search or successful import.
+- **HTTP 401/403:** check Screenpipe's API-key settings and `SCREENPIPE_API_KEY`.
+- **No matches:** confirm Screenpipe recorded the requested interval and check
+  the time zone, content type, and app filter.
+- **Unconfirmed save:** keep the selected note and check memory before retrying,
+  since a connection failure can happen after the worker stored it.
+
+For a support report, include the operation and helper error; omit recorded text
+and credentials unless you intend to share them.

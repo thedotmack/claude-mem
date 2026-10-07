@@ -168,6 +168,14 @@ Restart the selected IDE. Context from previous sessions will automatically appe
 
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
+### Screenpipe desktop context
+
+Recall screen text and meeting transcripts from [Screenpipe](https://screenpipe.com)
+with `/claude-mem:screenpipe`, then save selected context into claude-mem when
+requested. The skill is included in the plugin and uses Screenpipe's local API.
+See the [Screenpipe integration guide](docs/public/screenpipe-integration.mdx)
+for setup, examples, and privacy details.
+
 ### 🦞 OpenClaw Gateway
 
 Install claude-mem as a persistent memory plugin on [OpenClaw](https://openclaw.ai) gateways with a single command:
