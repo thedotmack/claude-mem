@@ -11,8 +11,8 @@
 //   2. Find or create a "local-hook" team and project so the api_key has
 //      proper tenant scope.
 //   3. Generate a `cmem_<random>` key, hash with SHA-256, insert into
-//      `api_keys` with the scopes hooks need: events:write, sessions:write,
-//      observations:read, jobs:read.
+//      `api_keys` with the scopes the /v1 routes actually require:
+//      memories:read and memories:write.
 //   4. Persist the plaintext key to ~/.claude-mem/settings.json under
 //      `CLAUDE_MEM_SERVER_API_KEY` (the new canonical key after the
 //      server-beta → server rename). Reads in `runtime-selector.ts`
@@ -36,11 +36,15 @@ const LOCAL_HOOK_TEAM_NAME = 'local-hook-team';
 const LOCAL_HOOK_PROJECT_NAME = 'local-hook-project';
 const LOCAL_HOOK_ACTOR_ID = 'system:local-hook-bootstrap';
 
+// The /v1 routes gate reads on `memories:read` and writes on `memories:write`
+// (see ServerV1PostgresRoutes.ts), and the auth middleware matches scopes by
+// exact membership with no alias or expansion. A bootstrapped hook key must
+// therefore carry both, or every request it authenticates is refused with
+// `403 Forbidden — Invalid API key or insufficient scope`. This mirrors
+// DEFAULT_LOCAL_API_KEY_SCOPES (the SQLite path's equivalent, #2428).
 export const HOOK_API_KEY_SCOPES: readonly string[] = Object.freeze([
-  'events:write',
-  'sessions:write',
-  'observations:read',
-  'jobs:read',
+  'memories:read',
+  'memories:write',
 ]);
 
 export interface BootstrapResult {
