@@ -4,6 +4,7 @@ import { logger } from '../../utils/logger.js';
 import { ChromaSync, type MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { resolveDbPath } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
@@ -112,7 +113,11 @@ export async function mergeProjectInto(opts: {
     db.close();
   }
 
-  if (!dryRun && chromaTargets.length > 0) {
+  if (
+    !dryRun &&
+    chromaTargets.length > 0 &&
+    SettingsDefaultsManager.loadFromFile(path.join(path.dirname(dbPath), 'settings.json')).CLAUDE_MEM_CHROMA_ENABLED !== 'false'
+  ) {
     try {
       await new ChromaSync('claude-mem').updateMergedIntoProject(chromaTargets, into);
       result.chromaUpdates = chromaTargets.length;
