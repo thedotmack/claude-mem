@@ -1978,6 +1978,7 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let totalPatched = 0;
+    let totalAlreadyPatched = 0;
 
     for (const docType of ['observation', 'session_summary'] as const) {
       const sqliteIds = targets
@@ -2001,24 +2002,36 @@ export class ChromaSync {
         const docIds: string[] = existing?.ids ?? [];
         if (docIds.length === 0) continue;
 
-        const metadatas = (existing?.metadatas ?? []).map(m => {
+        // Adoption re-sends rows it already merged on every start, and synced
+        // documents already carry merged_into_project, so only write the ones
+        // whose value would change.
+        const staleIds: string[] = [];
+        const staleMetadatas: Array<Record<string, any>> = [];
+        docIds.forEach((docId, index) => {
+          const current = existing?.metadatas?.[index] ?? {};
+          if (current.merged_into_project === mergedIntoProject) {
+            totalAlreadyPatched++;
+            return;
+          }
           const merged: Record<string, any> = {
-            ...(m ?? {}),
+            ...current,
             merged_into_project: mergedIntoProject
           };
-          return Object.fromEntries(
+          staleIds.push(docId);
+          staleMetadatas.push(Object.fromEntries(
             Object.entries(merged).filter(
               ([, v]) => v !== null && v !== undefined && v !== ''
             )
-          );
+          ));
         });
+        if (staleIds.length === 0) continue;
 
         await chromaMcp.callTool('chroma_update_documents', {
           collection_name: this.collectionName,
-          ids: docIds,
-          metadatas
+          ids: staleIds,
+          metadatas: staleMetadatas
         });
-        totalPatched += docIds.length;
+        totalPatched += staleIds.length;
       }
     }
 
@@ -2026,7 +2039,8 @@ export class ChromaSync {
       collection: this.collectionName,
       mergedIntoProject,
       sqliteIdCount: targets.length,
-      chromaDocsPatched: totalPatched
+      chromaDocsPatched: totalPatched,
+      chromaDocsAlreadyPatched: totalAlreadyPatched
     });
   }
 }
