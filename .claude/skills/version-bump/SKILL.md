@@ -67,24 +67,34 @@ Re-check `npm whoami` before publishing (step 11).
     changes; and ensure its build dependencies are present because
     `prepublishOnly` rebuilds the package. If `npm view claude-mem@X.Y.Z version`
     already resolves, skip the publish and continue with post-publish checks.
-11. **Publish to npm — the agent runs it.** The old "human handoff" rule is
-    obsolete: the maintainer allows agents to publish. The token is a
-    **30-day** granular npm token (read/write on `claude-mem` only, bypass 2FA)
-    in the maintainer's Mac `~/.npmrc`; he issues a new one every month. It is
+11. **Publish to npm — the agent runs it after the maintainer confirms.** The
+    maintainer allows agents to run the publish, using a **30-day** granular
+    npm token (read/write on `claude-mem` only, bypass 2FA) that npm reads from
+    the maintainer's Mac `~/.npmrc`; he issues a new one every month. It is
     deliberately NOT in any backup (grok-bot-backups excludes secrets), so do
-    not go looking for it elsewhere. Publish from a clean worktree of the tag
-    (inside the project's `.scratch/`) so uncommitted edits never ship:
+    not go looking for it elsewhere. Never read, print, copy, or edit
+    `~/.npmrc` yourself — let `npm` use it. Publish from a clean worktree of
+    the tag (inside the project's `.scratch/`) so uncommitted edits never ship:
     ```bash
     git worktree add --detach .scratch/release-X.Y.Z vX.Y.Z
     cd .scratch/release-X.Y.Z && npm install --ignore-scripts
     npm whoami                    # must print thedotmack; 401 = token expired
+    npm publish --dry-run --access public
+    ```
+    **Confirmation gate.** Post the version, tag, and the `--dry-run` file
+    count and size in chat, say that you are about to publish, and wait for
+    the maintainer to reply with an explicit yes. Only then run:
+    ```bash
     npm publish --access public   # prepublishOnly rebuilds the package
     ```
+    A standing instruction to release is not the confirmation; it has to be
+    given for this version. If `npm whoami` prints anything other than
+    `thedotmack`, stop.
     **If `npm whoami` fails, the monthly token has expired.** Finish every other
-    step, then: open https://www.npmjs.com/settings/thedotmack/tokens/granular-access-tokens/new
-    for the maintainer (`open <url>`), replace the token value in `~/.npmrc` with
-    `PASTE_NEW_TOKEN_HERE`, and `open -e ~/.npmrc` so he can paste the new token
-    there. Never ask for the token in chat. Re-run `npm whoami`, then publish.
+    step, then open https://www.npmjs.com/settings/thedotmack/tokens/granular-access-tokens/new
+    for the maintainer (`open <url>`) and tell him to put the new token in
+    `~/.npmrc` himself. Never ask for the token in chat. Re-run `npm whoami`
+    once he says it is done, then go through the confirmation gate again.
     Do not wait on `.github/workflows/npm-publish.yml` — its `NPM_TOKEN` secret
     has failed every tag since v13.26.1 (`E404 ... PUT https://registry.npmjs.org/claude-mem`).
     The publish rebuild rewrites `plugin/scripts/*.cjs` with minifier-name churn
@@ -116,7 +126,7 @@ Re-check `npm whoami` before publishing (step 11).
 - [ ] GitHub release created with notes
 - [ ] `CHANGELOG.md` updated and pushed
 - [ ] Pre-publish audit passed
-- [ ] `npm whoami` succeeded and the agent ran `npm publish --access public`
+- [ ] `npm whoami` printed `thedotmack`, the maintainer confirmed this version in chat, and the agent ran `npm publish --access public`
 - [ ] Exact npm version and `latest` both verified after publishing
 - [ ] Discord notification run from `~/Scripts/claude-mem/` only after npm verification
 - [ ] `git status` shows clean tree
