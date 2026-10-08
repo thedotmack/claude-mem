@@ -13,11 +13,19 @@
  *
  *   v1 `tool.execute.after`              -> ctx.tool.hook("execute.after")
  *   v1 `chat.message` (user)             -> ctx.session.hook("prompt")
- *   v1 `chat.message` (assistant)        -> ctx.event.subscribe("message.updated")
- *   v1 `experimental.session.compacting` -> ctx.session.hook("compaction")
- *   v1 `event` (session.idle/deleted)    -> ctx.event.subscribe()
+ *   v1 `experimental.session.compacting` -> ctx.session.hook("compaction") drops the
+ *                                           cached memory; the bus event
+ *                                           `session.compaction.ended` summarizes
+ *   v1 `event` `session.idle`            -> bus `session.execution.succeeded`
+ *   v1 `event` `session.deleted`         -> bus `session.deleted`
  *   v1 `experimental.chat.system.transform` -> ctx.session.hook("context")
  *   v1 `tool` (custom tool map)          -> ctx.tool.transform()
+ *
+ * The bus is `ctx.event.subscribe()`. Its events are `{ type, data, location }`
+ * envelopes (`@opencode/schema` Event), not V1's `{ type, properties }`, and V2
+ * has no `session.idle`: a finished turn is `session.execution.succeeded`. The
+ * last `session.text.ended` before it carries the assistant reply for the
+ * summary, since V2's context has no V1 `client` to read messages back from.
  *
  * V2's `ctx` is structurally unknown to this package (it ships no dependency on
  * `@opencode-ai/plugin`, to stay bundle-safe), so the surface is typed locally
@@ -58,13 +66,34 @@ export interface V2CompactionEvent {
   messages?: unknown;
 }
 
+/**
+ * One envelope from `ctx.event.subscribe()`. Every session event carries its
+ * session in `data.sessionID`; `session.text.ended` adds the text.
+ */
 export interface V2BusEvent {
   type?: string;
-  properties?: {
+  data?: {
     sessionID?: string;
-    info?: { id?: string };
+    text?: string;
   };
+  /**
+   * Where the event happened. The stream covers every location the server
+   * hosts, and OpenCode 2.0.23 sends `session.execution.*` and
+   * `session.deleted` with `location: null` (found on a live host in #4519).
+   */
+  location?: { directory?: string } | null;
 }
+
+export interface SetupV2Options {
+  /** Wait before subscribing again after the event stream ends or fails. */
+  resubscribeDelayMs?: number;
+}
+
+const RESUBSCRIBE_DELAY_MS = 10_000;
+
+// Bounds the per-session reply cache on a long-lived server, as core.ts
+// bounds its session maps.
+const MAX_TRACKED_SESSIONS = 1000;
 
 /** The slice of the V2 context this adapter uses. Every member is optional so
  * a beta API change degrades to a no-op instead of failing the whole load. */
@@ -108,51 +137,43 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function textOfUnknownParts(value: unknown): string {
-  if (!Array.isArray(value)) return "";
-  return (value as Array<{ type?: string; text?: string }>)
-    .filter((part) => part?.type === "text" && typeof part.text === "string")
-    .map((part) => part.text as string)
-    .join("\n");
+function waitUnlessAborted(milliseconds: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const done = () => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", done);
+      resolve();
+    };
+    const timer = setTimeout(done, milliseconds);
+    // A pending retry must not keep the host process alive.
+    (timer as { unref?: () => void }).unref?.();
+    signal.addEventListener("abort", done, { once: true });
+  });
 }
 
 /**
- * V2 replaced v1's `event` hook with `ctx.event.subscribe()`, an async
- * iterable over the server's public event stream. It has no `status`/`id`
- * envelope, so each event is matched by its own discriminant.
+ * Reads `ctx.event.subscribe()` until the plugin is cleaned up. The stream is
+ * long-lived, so when it ends or fails it is opened again after a delay;
+ * otherwise one dropped connection would stop every later summary.
  */
-async function subscribeToBus(
-  ctx: OpenCodePluginContextV2,
-  core: ClaudeMemCore,
+async function consumeBus(
+  subscribe: (options: { signal: AbortSignal }) => AsyncIterable<V2BusEvent>,
+  onEvent: (event: V2BusEvent) => void,
   signal: AbortSignal,
+  resubscribeDelayMs: number,
 ): Promise<void> {
-  const controller = new AbortController();
-  const onAbort = () => controller.abort();
-  signal.addEventListener("abort", onAbort, { once: true });
-
-  try {
-    for await (const event of ctx.event!.subscribe!({ signal: controller.signal })) {
-      const type = event?.type;
-      const sessionID = event?.properties?.sessionID || event?.properties?.info?.id;
-
-      if (type === "session.idle") {
-        if (sessionID) await core.captureSummary(sessionID);
-        continue;
+  while (!signal.aborted) {
+    try {
+      for await (const event of subscribe({ signal })) {
+        if (signal.aborted) break;
+        onEvent(event);
       }
-      if (type === "session.deleted") {
-        if (sessionID) core.forgetSession(sessionID);
-        continue;
+    } catch (error: unknown) {
+      if (!signal.aborted) {
+        console.warn(`[claude-mem] OpenCode event stream failed: ${errorMessage(error)}`);
       }
-      // v1 observed assistant messages from `chat.message`; V2 has no such
-      // hook, so the assistant text is read back from the session transcript
-      // on idle (see `captureSummary`). Nothing to do for other event types.
     }
-  } catch (error: unknown) {
-    if (!controller.signal.aborted) {
-      console.warn(`[claude-mem] OpenCode event stream ended: ${errorMessage(error)}`);
-    }
-  } finally {
-    signal.removeEventListener("abort", onAbort);
+    if (!signal.aborted) await waitUnlessAborted(resubscribeDelayMs, signal);
   }
 }
 
@@ -187,7 +208,10 @@ export function extractResultText(result: unknown): string {
  * Registers every claude-mem hook on a V2 context. Returns a cleanup function
  * that disposes every registration, per the V2 lifecycle contract.
  */
-export async function setupV2(context: OpenCodePluginContextV2): Promise<() => Promise<void>> {
+export async function setupV2(
+  context: OpenCodePluginContextV2,
+  options: SetupV2Options = {},
+): Promise<() => Promise<void>> {
   // V1 read `ctx.directory`; V2 nests it under `ctx.location`. Without this the
   // worker rejects every write with "Missing cwd when ingesting observation".
   const ctx: CoreContext = {
@@ -198,6 +222,20 @@ export async function setupV2(context: OpenCodePluginContextV2): Promise<() => P
   console.log(`[claude-mem] OpenCode plugin loading (directory: ${ctx.directory})`);
   const core: ClaudeMemCore = createCore(ctx);
   const registrations: V2Registration[] = [];
+
+  // The sessions this plugin captured a prompt or a tool for, each with the
+  // latest assistant text the bus reported. Execution and deletion events can
+  // arrive without a location, so this is how the bus tells this checkout's
+  // sessions from another location's on the same server.
+  const replyBySessionId = new Map<string, string>();
+  const trackSession = (sessionID: string): void => {
+    if (replyBySessionId.has(sessionID)) return;
+    if (replyBySessionId.size >= MAX_TRACKED_SESSIONS) {
+      const oldest = replyBySessionId.keys().next().value;
+      if (oldest !== undefined) replyBySessionId.delete(oldest);
+    }
+    replyBySessionId.set(sessionID, "");
+  };
   const register = async (promise: Promise<V2Registration> | undefined): Promise<void> => {
     if (promise) registrations.push(await promise);
   };
@@ -209,6 +247,7 @@ export async function setupV2(context: OpenCodePluginContextV2): Promise<() => P
         const sessionID = event.sessionID;
         const tool = event.tool;
         if (!sessionID || !tool) return;
+        trackSession(sessionID);
         // v2 names the argument bag `input`; `args` is tolerated because the
         // beta shape has moved before.
         const args = (event.input ?? event.args) as Record<string, unknown> | undefined;
@@ -231,6 +270,7 @@ export async function setupV2(context: OpenCodePluginContextV2): Promise<() => P
       context.session.hook<V2PromptEvent>("prompt", async (event) => {
         const promptText = event?.prompt?.text?.trim();
         if (!event?.sessionID || !promptText) return;
+        trackSession(event.sessionID);
         await core.captureUserPrompt(event.sessionID, promptText);
       }),
     );
@@ -246,14 +286,14 @@ export async function setupV2(context: OpenCodePluginContextV2): Promise<() => P
       }),
     );
 
-    // Compaction: v1's `experimental.session.compacting`. V2 lets a hook both
-    // observe and replace the summary; claude-mem only observes and lets the
-    // worker write its own summary through the normal request path.
+    // Compaction: v1's `experimental.session.compacting`. The hook runs before
+    // the compaction request, so dropping the cached memory here means the
+    // first request after compaction fetches it fresh. The summary is written
+    // when the bus reports `session.compaction.ended` (below), so one
+    // compaction is summarized once.
     await register(
-      context.session.hook<V2CompactionEvent>("compaction", async (event) => {
-        if (!event?.sessionID) return;
-        core.forgetMemoryContext(event.sessionID);
-        await core.captureSummary(event.sessionID);
+      context.session.hook<V2CompactionEvent>("compaction", (event) => {
+        if (event?.sessionID) core.forgetMemoryContext(event.sessionID);
       }),
     );
   }
@@ -281,12 +321,53 @@ export async function setupV2(context: OpenCodePluginContextV2): Promise<() => P
     );
   }
 
-  // Bus events (session.idle summarize, session.deleted cleanup). The stream is
-  // a long-lived subscription, so it is driven by an AbortController owned by
-  // the plugin cleanup rather than by an awaited hook registration.
+  const summarize = (sessionID: string): void => {
+    void core
+      .captureSummary(sessionID, { lastAssistantMessage: replyBySessionId.get(sessionID) ?? "" })
+      .catch((error: unknown) => console.warn(`[claude-mem] OpenCode summary failed: ${errorMessage(error)}`));
+  };
+
+  const onBusEvent = (event: V2BusEvent): void => {
+    const sessionID = event?.data?.sessionID;
+    if (!sessionID) return;
+    // The stream covers every location the server hosts. An event that names
+    // another checkout is not ours; one without a location is matched by the
+    // sessions this plugin has seen.
+    const eventDirectory = event.location?.directory;
+    if (eventDirectory && ctx.directory && eventDirectory !== ctx.directory) return;
+
+    switch (event.type) {
+      case "session.deleted":
+        replyBySessionId.delete(sessionID);
+        core.forgetSession(sessionID);
+        return;
+      case "session.text.ended":
+        if (replyBySessionId.has(sessionID) && typeof event.data?.text === "string") {
+          replyBySessionId.set(sessionID, event.data.text);
+        }
+        return;
+      // V1's session.idle: the turn finished.
+      case "session.execution.succeeded":
+      case "session.compaction.ended":
+        if (replyBySessionId.has(sessionID)) summarize(sessionID);
+        return;
+      default:
+        return;
+    }
+  };
+
+  // The bus is a long-lived subscription, so it is driven by an AbortController
+  // owned by the plugin cleanup rather than by an awaited hook registration.
   const cleanupController = new AbortController();
-  if (context.event?.subscribe) {
-    void subscribeToBus(context, core, cleanupController.signal);
+  const events = context.event;
+  if (events?.subscribe) {
+    void consumeBus(
+      // Called on the domain object, which may rely on `this`.
+      (subscribeOptions) => events.subscribe!(subscribeOptions),
+      onBusEvent,
+      cleanupController.signal,
+      options.resubscribeDelayMs ?? RESUBSCRIBE_DELAY_MS,
+    );
   }
 
   return async () => {

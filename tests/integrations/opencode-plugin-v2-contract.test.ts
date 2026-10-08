@@ -1,10 +1,17 @@
-import { describe, it, expect } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
+import { readFileSync } from "node:fs";
 import pluginEntry from "../../src/integrations/opencode-plugin/index";
-import { setupV2, extractResultText, type OpenCodePluginContextV2 } from "../../src/integrations/opencode-plugin/v2";
+import {
+  setupV2,
+  extractResultText,
+  type OpenCodePluginContextV2,
+  type V2BusEvent,
+} from "../../src/integrations/opencode-plugin/v2";
 import {
   REGISTERED_OPENCODE_HOOKS,
   REGISTERED_OPENCODE_V2_HOOKS,
   REAL_OPENCODE_EVENT_TYPES,
+  REAL_OPENCODE_V2_EVENT_TYPES,
 } from "../../src/integrations/opencode-plugin/contract";
 
 /**
@@ -24,6 +31,76 @@ import {
 interface RegisteredHook {
   domain: string;
   name: string;
+}
+
+/**
+ * A stand-in for `ctx.event.subscribe()` shaped like the host's stream: each
+ * subscription stays pending until an event arrives, finishes when its signal
+ * aborts, and can be ended or failed to exercise the resubscribe path.
+ */
+class FakeEventStream {
+  subscriptions = 0;
+  private pending:
+    | { resolve: (result: IteratorResult<V2BusEvent>) => void; reject: (error: Error) => void }
+    | undefined;
+  private buffered: V2BusEvent[] = [];
+
+  subscribe = (options?: { signal?: AbortSignal }): AsyncIterable<V2BusEvent> => {
+    this.subscriptions++;
+    const signal = options?.signal;
+    let closed = false;
+    const done = (): IteratorResult<V2BusEvent> => ({ done: true, value: undefined });
+    return {
+      [Symbol.asyncIterator]: () => ({
+        next: (): Promise<IteratorResult<V2BusEvent>> => {
+          if (closed || signal?.aborted) return Promise.resolve(done());
+          const event = this.buffered.shift();
+          if (event) return Promise.resolve({ done: false, value: event });
+          return new Promise((resolve, reject) => {
+            this.pending = {
+              resolve: (result) => {
+                if (result.done) closed = true;
+                resolve(result);
+              },
+              reject,
+            };
+            signal?.addEventListener("abort", () => resolve(done()), { once: true });
+          });
+        },
+      }),
+    };
+  };
+
+  send(event: V2BusEvent): void {
+    const pending = this.pending;
+    this.pending = undefined;
+    if (pending) pending.resolve({ done: false, value: event });
+    else this.buffered.push(event);
+  }
+
+  end(): void {
+    const pending = this.pending;
+    this.pending = undefined;
+    pending?.resolve({ done: true, value: undefined });
+  }
+
+  fail(error: Error): void {
+    const pending = this.pending;
+    this.pending = undefined;
+    pending?.reject(error);
+  }
+
+  get waiting(): boolean {
+    return this.pending !== undefined;
+  }
+}
+
+async function until(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error("condition not met in time");
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
 }
 
 function createV2Context(
@@ -63,10 +140,8 @@ function createV2Context(
     event: {
       subscribe: (options?: { signal?: AbortSignal }) => {
         hooks.push({ domain: "event", name: "subscribe" });
-        return (async function* () {
-          // Never yields: the bus consumer is exercised by its own test.
-          void options;
-        })();
+        // Pending until cleanup aborts it; the bus is exercised by its own tests.
+        return new FakeEventStream().subscribe(options);
       },
     },
     ...overrides,
@@ -276,5 +351,219 @@ describe("OpenCode V2 tool result extraction", () => {
     expect(extractResultText(undefined)).toBe("");
     expect(extractResultText(null)).toBe("");
     expect(extractResultText({})).toBe("");
+  });
+});
+
+/**
+ * A V2 host that keeps every callback setupV2 registers, so tests can drive
+ * them with the events OpenCode sends, and records every worker request.
+ */
+interface WorkerRequest {
+  method: string;
+  path: string;
+  url: URL;
+  body: Record<string, any> | null;
+}
+
+type Callback = (event: any) => Promise<void> | void;
+
+function createV2Host(directory = "/work/project") {
+  const callbacks = new Map<string, Callback>();
+  const tools: Array<Record<string, any>> = [];
+  const stream = new FakeEventStream();
+  const ctx: OpenCodePluginContextV2 = {
+    directory: "",
+    location: { directory },
+    tool: {
+      hook: async (name, callback) => {
+        callbacks.set(`tool.${name}`, callback as Callback);
+        return { dispose: async () => {} };
+      },
+      transform: async (callback) => {
+        callback({ add: (tool) => { tools.push(tool as Record<string, any>); } });
+        return { dispose: async () => {} };
+      },
+    },
+    session: {
+      hook: async (name, callback) => {
+        callbacks.set(`session.${name}`, callback as Callback);
+        return { dispose: async () => {} };
+      },
+    },
+    event: { subscribe: stream.subscribe },
+  };
+  const call = async (name: string, event: unknown) => {
+    const callback = callbacks.get(name);
+    if (!callback) throw new Error(`no ${name} callback registered`);
+    await callback(event);
+  };
+  return { ctx, call, stream, tools };
+}
+
+function recordWorkerRequests(contextReply = "# memory context") {
+  const requests: WorkerRequest[] = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = new URL(String(input));
+    requests.push({
+      method: init?.method ?? "GET",
+      path: url.pathname,
+      url,
+      body: init?.body ? JSON.parse(String(init.body)) : null,
+    });
+    if (url.pathname === "/api/context/inject") return new Response(contextReply, { status: 200 });
+    return new Response("{}", { status: 200 });
+  }) as typeof fetch;
+  return {
+    requests,
+    to: (path: string) => requests.filter((request) => request.path === path),
+    restore: () => { globalThis.fetch = originalFetch; },
+  };
+}
+
+// Envelopes as `@opencode/schema` 2.0.22 defines them: `{ type, data, location }`.
+function busEvent(
+  type: string,
+  sessionID: string,
+  data: Record<string, unknown> = {},
+  location: { directory: string } | null = { directory: "/work/project" },
+): V2BusEvent {
+  return { type, data: { sessionID, ...data }, location };
+}
+
+describe("OpenCode V2 event bus", () => {
+  let worker: ReturnType<typeof recordWorkerRequests>;
+  let cleanups: Array<() => Promise<void>>;
+  const originalWarn = console.warn;
+
+  beforeEach(() => {
+    worker = recordWorkerRequests();
+    cleanups = [];
+  });
+
+  afterEach(async () => {
+    for (const cleanup of cleanups) await cleanup();
+    worker.restore();
+    console.warn = originalWarn;
+  });
+
+  async function start(host = createV2Host()) {
+    cleanups.push(await setupV2(host.ctx, { resubscribeDelayMs: 1 }));
+    return host;
+  }
+
+  it("summarizes a finished turn with the reply from session.text.ended, even when the event has no location", async () => {
+    const host = await start();
+    await host.call("session.prompt", { sessionID: "ses_bus_turn", prompt: { text: "Read the parser" } });
+    host.stream.send(busEvent("session.text.ended", "ses_bus_turn", { text: "Parser checked", ordinal: 0 }));
+    // OpenCode 2.0.23 sends session.execution.* with location: null (#4519).
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_turn", {}, null));
+
+    await until(() => worker.to("/api/sessions/summarize").length === 1);
+    const [init] = worker.to("/api/sessions/init");
+    const [summary] = worker.to("/api/sessions/summarize");
+    expect(summary.body).toMatchObject({
+      contentSessionId: init.body!.contentSessionId,
+      last_assistant_message: "Parser checked",
+      cwd: "/work/project",
+      platform_source: "opencode",
+    });
+  });
+
+  it("summarizes when a compaction ends, and never on the deprecated session.idle", async () => {
+    const host = await start();
+    await host.call("session.prompt", { sessionID: "ses_bus_compact", prompt: { text: "Long task" } });
+    host.stream.send(busEvent("session.idle", "ses_bus_compact"));
+    host.stream.send(busEvent("session.compaction.ended", "ses_bus_compact", { text: "compacted" }));
+
+    await until(() => worker.to("/api/sessions/summarize").length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(worker.to("/api/sessions/summarize")).toHaveLength(1);
+  });
+
+  it("ignores another checkout's events and sessions it captured nothing for", async () => {
+    const host = await start();
+    await host.call("session.prompt", { sessionID: "ses_bus_mine", prompt: { text: "Mine" } });
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_mine", {}, { directory: "/work/other" }));
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_unknown", {}, null));
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_mine", {}, null));
+
+    // Events are handled in order, so once the last one summarized the first
+    // two were already skipped.
+    await until(() => worker.to("/api/sessions/summarize").length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(worker.to("/api/sessions/summarize")).toHaveLength(1);
+  });
+
+  it("forgets a deleted session even when the event has no location", async () => {
+    const host = await start();
+    await host.call("session.prompt", { sessionID: "ses_bus_deleted", prompt: { text: "Before delete" } });
+    await host.call("session.prompt", { sessionID: "ses_bus_kept", prompt: { text: "Kept" } });
+    const [deletedInit, keptInit] = worker.to("/api/sessions/init");
+    const before = deletedInit.body!.contentSessionId;
+
+    host.stream.send(busEvent("session.deleted", "ses_bus_deleted", {}, null));
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_deleted", {}, null));
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_kept", {}, null));
+    await until(() => worker.to("/api/sessions/summarize").length === 1);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const summaries = worker.to("/api/sessions/summarize");
+    expect(summaries).toHaveLength(1);
+    expect(summaries[0].body!.contentSessionId).toBe(keptInit.body!.contentSessionId);
+
+    // The session mapping is gone too: a new prompt starts a new content session.
+    await host.call("session.prompt", { sessionID: "ses_bus_deleted", prompt: { text: "After delete" } });
+    const after = worker.to("/api/sessions/init").at(-1)!.body!.contentSessionId;
+    expect(after).not.toBe(before);
+  });
+
+  it("subscribes again after the stream ends or fails", async () => {
+    console.warn = () => {};
+    const host = await start();
+    await host.call("session.prompt", { sessionID: "ses_bus_resubscribe", prompt: { text: "Stay subscribed" } });
+    await until(() => host.stream.waiting);
+
+    host.stream.end();
+    await until(() => host.stream.subscriptions === 2 && host.stream.waiting);
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_resubscribe"));
+    await until(() => worker.to("/api/sessions/summarize").length === 1);
+
+    host.stream.fail(new Error("connection reset"));
+    await until(() => host.stream.subscriptions === 3 && host.stream.waiting);
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_resubscribe"));
+    await until(() => worker.to("/api/sessions/summarize").length === 2);
+  });
+
+  it("stops reading and resubscribing once cleanup runs", async () => {
+    const host = createV2Host();
+    const cleanup = await setupV2(host.ctx, { resubscribeDelayMs: 1 });
+    await until(() => host.stream.waiting);
+
+    await cleanup();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(host.stream.subscriptions).toBe(1);
+  });
+
+  it("keeps the cached memory across a finished turn and drops it on compaction", async () => {
+    const host = await start();
+    const contextEvent = () => ({ sessionID: "ses_bus_cache", system: [] as Array<{ type: string; text?: string }> });
+    const injects = () => worker.to("/api/context/inject").length;
+    await host.call("session.prompt", { sessionID: "ses_bus_cache", prompt: { text: "Cache me" } });
+
+    await host.call("session.context", contextEvent());
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_cache", {}, null));
+    await until(() => worker.to("/api/sessions/summarize").length === 1);
+    await host.call("session.context", contextEvent());
+    expect(injects()).toBe(1);
+
+    await host.call("session.compaction", { sessionID: "ses_bus_cache" });
+    await host.call("session.context", contextEvent());
+    expect(injects()).toBe(2);
+  });
+
+  it("reacts only to the event types in the V2 contract", () => {
+    const source = readFileSync("src/integrations/opencode-plugin/v2.ts", "utf8");
+    const handled = [...source.matchAll(/case "([a-z.]+)":/g)].map((match) => match[1]).sort();
+    expect(handled).toEqual([...REAL_OPENCODE_V2_EVENT_TYPES].sort());
   });
 });

@@ -19,14 +19,19 @@
  * is not mechanical: V2 does not translate a V1 hooks object, so every hook is
  * re-registered through the imperative `ctx.*.hook()` API.
  *
- * | concern              | V1 hook name                         | V2 registration                  |
- * |----------------------|--------------------------------------|----------------------------------|
- * | tool capture         | `tool.execute.after`                 | `ctx.tool.hook("execute.after")` |
- * | user prompt          | `chat.message` (role === "user")     | `ctx.session.hook("prompt")`     |
- * | memory injection     | `experimental.chat.system.transform` | `ctx.session.hook("context")`    |
- * | compaction summarize | `experimental.session.compacting`    | `ctx.session.hook("compaction")` |
- * | idle / deleted       | `event` (`session.idle`/`deleted`)   | `ctx.event.subscribe()`          |
- * | custom tool          | `tool` map on the return value       | `ctx.tool.transform()`           |
+ * | concern              | V1 hook name                         | V2 registration                               |
+ * |----------------------|--------------------------------------|-----------------------------------------------|
+ * | tool capture         | `tool.execute.after`                 | `ctx.tool.hook("execute.after")`              |
+ * | user prompt          | `chat.message` (role === "user")     | `ctx.session.hook("prompt")`                  |
+ * | memory injection     | `experimental.chat.system.transform` | `ctx.session.hook("context")`                 |
+ * | compaction           | `experimental.session.compacting`    | `ctx.session.hook("compaction")` drops the    |
+ * |                      |                                      | cached memory; bus `session.compaction.ended` |
+ * |                      |                                      | summarizes                                    |
+ * | turn finished        | `event` `session.idle`               | bus `session.execution.succeeded`             |
+ * | session deleted      | `event` `session.deleted`            | bus `session.deleted`                         |
+ * | custom tool          | `tool` map on the return value       | `ctx.tool.transform()`                        |
+ *
+ * The V2 bus is `ctx.event.subscribe()`; see REAL_OPENCODE_V2_EVENT_TYPES.
  *
  * V1 hook names (authoritative source: plans/08-opencode-integration.md "Fix
  * sequence" step 1, cross-checked against OpenCode's documented plugin API):
@@ -57,6 +62,19 @@ export const REAL_OPENCODE_EVENT_TYPES = [
 ] as const;
 
 export type RealOpenCodeEventType = (typeof REAL_OPENCODE_EVENT_TYPES)[number];
+
+/**
+ * The V2 bus event types the V2 adapter reacts to, as `@opencode/schema`
+ * 2.0.22 names them. V2 events are `{ type, data, location }` envelopes, and
+ * V2 has no `session.idle`: a finished turn is `session.execution.succeeded`,
+ * and the last `session.text.ended` before it carries the reply.
+ */
+export const REAL_OPENCODE_V2_EVENT_TYPES = [
+  "session.text.ended",
+  "session.execution.succeeded",
+  "session.compaction.ended",
+  "session.deleted",
+] as const;
 
 /**
  * The V1 hook keys the V1 adapter returns. The contract test asserts these are
