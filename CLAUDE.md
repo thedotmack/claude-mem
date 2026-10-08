@@ -31,3 +31,7 @@ npm run build-and-sync        # Build, sync to marketplace, restart worker
 ## Important
 
 No need to edit the changelog ever, it's generated automatically.
+
+## Hosting
+
+No metered Cloudflare compute. New server-side work goes on Fly or Vercel. Cloudflare Workers, Durable Objects, Queues, Workflows, crons or Workers AI need an owner-approved cost comparison first. The `SyncHub` Durable Object ran up a four-figure bill in September 2026. Free Cloudflare services (DNS, R2, Email Routing) are fine.
