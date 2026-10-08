@@ -1218,6 +1218,44 @@ describe('SettingsDefaultsManager', () => {
       expect(readFileSync(settingsPath, 'utf-8')).toBe(content);
     });
   });
+
+  describe('CLAUDE_MEM_CHROMA_UVX_PATH (#4195)', () => {
+    // `pip install uv` puts uvx.exe in a Python Scripts folder that is not one
+    // of uv's own install dirs, so on Windows the setting is the way to pick it.
+    const fileUvx = 'C:\\Users\\Jane Doe\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\uvx.exe';
+    const envUvx = 'D:\\Tools\\uv\\uvx.exe';
+    let originalUvxEnv: string | undefined;
+
+    beforeEach(() => {
+      originalUvxEnv = process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+      delete process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+    });
+
+    afterEach(() => {
+      if (originalUvxEnv === undefined) {
+        delete process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+      } else {
+        process.env.CLAUDE_MEM_CHROMA_UVX_PATH = originalUvxEnv;
+      }
+    });
+
+    it('defaults to empty, so uv\'s usual install folders are searched', () => {
+      expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_UVX_PATH).toBe('');
+    });
+
+    it('reads the path from settings.json, spaces included', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CHROMA_UVX_PATH: fileUvx }));
+
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_CHROMA_UVX_PATH).toBe(fileUvx);
+    });
+
+    it('lets the environment variable override settings.json', () => {
+      writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CHROMA_UVX_PATH: fileUvx }));
+      process.env.CLAUDE_MEM_CHROMA_UVX_PATH = envUvx;
+
+      expect(SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_CHROMA_UVX_PATH).toBe(envUvx);
+    });
+  });
 });
 
 describe('Chroma embedding function default', () => {

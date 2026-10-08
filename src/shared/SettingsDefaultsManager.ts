@@ -258,6 +258,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
+  CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -501,6 +502,7 @@ export class SettingsDefaultsManager {
     // memory text to that vendor. Any other value is rejected. Applies to new
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
+    CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
