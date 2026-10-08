@@ -2,10 +2,8 @@ import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
-import { logger } from '../../../../utils/logger.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
-import '../../../sqlite/manual-session.js';
-import { notifyGrokBotIndex } from '../../../integrations/GrokBotIndexWriter.js';
+import { saveMemory } from '../../../memory/save-memory.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -27,92 +25,6 @@ export class MemoryRoutes extends BaseRouteHandler {
   }
 
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { text, title, project, metadata } = req.body as z.infer<typeof saveMemorySchema>;
-    const explicitProject = typeof project === 'string' && project.trim()
-      ? project.trim()
-      : undefined;
-    const metadataProject = typeof metadata?.project === 'string' && metadata.project.trim()
-      ? metadata.project.trim()
-      : undefined;
-    const metadataPlatformSource = typeof metadata?.platformSource === 'string' && metadata.platformSource.trim()
-      ? metadata.platformSource.trim()
-      : undefined;
-    const targetProject = explicitProject || metadataProject || this.defaultProject;
-
-    const sessionStore = this.dbManager.getSessionStore();
-    const chromaSync = this.dbManager.getChromaSync();
-
-    const memorySessionId = sessionStore.getOrCreateManualSession(targetProject, metadataPlatformSource);
-
-    const observation = {
-      type: 'discovery',  // Use existing valid type
-      // A whitespace-only title is truthy but blank once trimmed; fall back to the text so we
-      // never hand storeObservation an empty title.
-      title: title?.trim() || text.substring(0, 60).trim() + (text.length > 60 ? '...' : ''),
-      subtitle: 'Manual memory',
-      facts: [] as string[],
-      narrative: text,
-      concepts: [] as string[],
-      files_read: [] as string[],
-      files_modified: [] as string[],
-      metadata: metadata ? JSON.stringify(metadata) : null,
-    };
-
-    const result = sessionStore.storeObservation(
-      memorySessionId,
-      targetProject,
-      observation,
-      0,  // promptNumber
-      0   
-    );
-
-    logger.info('HTTP', 'Manual observation saved', {
-      id: result.id,
-      project: targetProject,
-      title: observation.title
-    });
-
-    // Fire-and-forget cloud sync nudge — every local write must nudge
-    // (placed before the chroma branch so the chroma-disabled early return
-    // cannot skip it).
-    this.dbManager.getCloudSync()?.notify();
-    // Manual saves (e.g. Grok Bot seat self-saves) must reach the live INDEX
-    // promptly, not wait for the next SDK observation. Debounced, never throws.
-    notifyGrokBotIndex();
-
-    // A Tier-0 dedup merge (#3038) re-confirmed an existing row: its vector
-    // already matches its stored text, so re-syncing this payload under that id
-    // would overwrite it with different content.
-    if (!chromaSync || result.mergedIntoExisting) {
-      logger.debug('CHROMA', 'ChromaDB sync skipped', { id: result.id, mergedIntoExisting: result.mergedIntoExisting });
-      res.json({
-        success: true,
-        id: result.id,
-        title: observation.title,
-        project: targetProject,
-        message: result.mergedIntoExisting
-          ? `Memory matches existing observation #${result.id} (counted as a repeat)`
-          : `Memory saved as observation #${result.id}`
-      });
-      return;
-    }
-    chromaSync.syncObservation(
-      result.id,
-      memorySessionId,
-      targetProject,
-      observation,
-      0,
-      result.createdAtEpoch
-    ).catch(err => {
-      logger.error('CHROMA', 'ChromaDB sync failed', { id: result.id }, err as Error);
-    });
-
-    res.json({
-      success: true,
-      id: result.id,
-      title: observation.title,
-      project: targetProject,
-      message: `Memory saved as observation #${result.id}`
-    });
+    res.json(saveMemory(this.dbManager, this.defaultProject, req.body));
   });
 }

@@ -25,6 +25,7 @@ let quotaFallbackProvider = '';
 let proFallbackAt = '';
 let openRouterBaseUrl = '';
 let staleReason: string | null = null;
+let memoryInstructions: string | undefined = 'false';
 const outageNoticeRequests: Array<string | undefined> = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
@@ -35,6 +36,7 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: quotaFallbackProvider,
     CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
     CLAUDE_MEM_OPENROUTER_BASE_URL: openRouterBaseUrl,
+    CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: memoryInstructions,
   }),
 }));
 
@@ -75,9 +77,24 @@ beforeEach(() => {
   proFallbackAt = '';
   openRouterBaseUrl = '';
   staleReason = null;
+  memoryInstructions = 'false';
 });
 
 describe('contextHandler SessionStart path', () => {
+  it('steers note-taking to available plugin tools by default and still injects instructions during a worker outage', async () => {
+    memoryInstructions = undefined;
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const input = { sessionId: 'memory-instructions', cwd: '/tmp/repo', platform: 'codex' };
+    const result = await contextHandler.execute(input);
+    expect(result.hookSpecificOutput?.additionalContext).toContain('context from worker');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('hosted read-only connector');
+    workerUnreachable = true;
+    try {
+      const fallback = await contextHandler.execute(input);
+      expect(fallback.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
+    } finally { workerUnreachable = false; }
+  });
   it('skips the model and terminal timeline on Claude resume before contacting the worker', async () => {
     calls.length = 0;
     outageNoticeRequests.length = 0;

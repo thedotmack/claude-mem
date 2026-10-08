@@ -44,6 +44,7 @@ import { getProjectContext, type ProjectContext } from '../utils/project-name.js
 import { withCheckoutProjects } from './checkout-search-scope.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
+import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
 
 /** This server's checkout (Claude Code starts it in the workspace), resolved once. */
 let workspaceCheckout: ProjectContext | null = null;
@@ -492,8 +493,60 @@ const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
 const tools = [
   {
+    name: 'mem_search',
+    description: 'Search memory through enforced progressive disclosure. Guided mode returns mem-search step 1 of 3 (index), then a signed continuation for step 2 (context), then step 3 (selected details). Follow next.arguments and choose only IDs shown in the previous result. Auto mode completes the same bounded pipeline in one call. Use this tool for every memory search.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['guided', 'auto'], description: 'Guided by default; auto completes index, context and filtered details in one call.' },
+        query: { type: 'string', description: 'Search query; required for a new search, up to 500 characters.' },
+        project: { type: 'string', description: 'Optional project filter.' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Index result count, default 20.' },
+        maxDetails: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum full details, default 3.' },
+        depthBefore: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows before each selected anchor, default 2.' },
+        depthAfter: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows after each selected anchor, default 2.' },
+        continuation: { type: 'string', description: 'Signed continuation from the previous mem_search response.' },
+        selectedIds: { type: 'array', items: { type: ['string', 'number'] }, description: 'Only relevant IDs from the previous response.' },
+      },
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => {
+      try {
+        if (selectRuntime() === 'server') {
+          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local mem_search.');
+        }
+        const checkout = currentCheckout();
+        const body = { ...withCheckoutProjects(args ?? {}, checkout), searchScope: checkout.allProjects.join(',') };
+        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/mem-search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        }), startWorkerAfterRefusedConnection);
+        if (!response.ok) throw new Error(`Worker API error (${response.status})`);
+        return await response.json() as WorkerToolResult;
+      } catch (error) {
+        return progressiveSearchToolError(error);
+      }
+    },
+  },
+  {
+    name: 'save_memory',
+    description: 'Save an explicit durable note, decision, correction or handoff into claude-mem. Use this for your own note taking after searching with mem_search for duplicates. Include project when the note belongs to a specific project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Durable memory text.' },
+        title: { type: 'string', description: 'Concise searchable title.' },
+        project: { type: 'string', description: 'Project receiving the note; defaults to the active checkout.' },
+        metadata: { type: 'object', additionalProperties: true, description: 'Optional provenance or source metadata.' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } }),
+  },
+  {
     name: 'important_workflow',
-    description: `LAYERED WORKFLOW (ALWAYS FOLLOW):
+    description: `Use mem_search for all memory search. Guided mode enforces index -> context -> selected details with signed next-step continuations. Auto mode performs the same bounded pipeline. Legacy layered workflow:
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
@@ -509,7 +562,9 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         type: 'text' as const,
         text: `# Memory Search Workflow
 
-**3-Layer Pattern (ALWAYS follow this):**
+Use mem_search for every memory search. Guided mode returns mem-search step 1 of 3 (index), step 2 of 3 (context), then step 3 of 3 (filtered details). Copy next.arguments and add only relevant selectedIds shown in the previous response. Auto mode performs that same bounded progression in one call. Local and remote MCP share this contract.
+
+**Compatibility pattern for older clients or advanced filters:**
 
 1. **Search** - Get index of results with IDs
    \`search(query="...", limit=20, project="...")\`
@@ -533,7 +588,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Legacy index search for advanced filters. Prefer mem_search for enforced progressive disclosure and guided next steps. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
@@ -585,7 +640,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'timeline',
-    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+    description: 'Legacy context lookup. Prefer mem_search continuations for enforced progressive disclosure. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
       properties: {
@@ -604,7 +659,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Legacy detail lookup for IDs already filtered through memory search or the injected session index. Prefer mem_search continuations for enforced progressive disclosure. Params: ids (array of observation IDs, required), orderBy, limit, project',
     inputSchema: {
       type: 'object',
       properties: {

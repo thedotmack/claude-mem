@@ -101,14 +101,40 @@ describe('ingestObservation dual-write to tool_uses', () => {
     expect(row.or_session_id).toBe('job:content-session-1');
   });
 
-  it('does not back up claude-mem\'s own disclosure tools (no recursion)', async () => {
+  it('does not back up or re-observe claude-mem\'s own disclosure tools (no recursion)', async () => {
     await ingestObservation(payload({
       toolName: 'mcp__claude-mem__get_tool_uses',
       toolUseId: 'toolu_recursive',
     }));
 
-    expect(queued).toHaveLength(1);          // observation path is unchanged
+    expect(queued).toHaveLength(0);
     expect(store!.queryToolUses({})).toHaveLength(0);
+  });
+
+  it('does not back up or re-observe new progressive tools under normalized MCP names', async () => {
+    for (const toolName of ['mem_search', 'mcp__mcp_search__mem_search', 'mcp__mcp-search__mem_search', 'mcp__claude_mem_remote__get_summaries']) {
+      const result = await ingestObservation(payload({ toolName }));
+      expect(result).toEqual({ ok: true, status: 'skipped', reason: 'memory_retrieval' });
+    }
+    expect(queued).toHaveLength(0);
+    expect(store!.queryToolUses({})).toHaveLength(0);
+  });
+
+  it('retains save_memory write receipts while suppressing duplicate notes and paid observers', async () => {
+    const generator = mock(async () => {});
+    setIngestContext({
+      sessionManager: { queueObservation: mock(() => { throw new Error('must not re-observe saved notes'); }) } as any,
+      dbManager: { getSessionStore: () => store } as any,
+      eventBroadcaster: { broadcastObservationQueued: mock(() => {}) } as any,
+      ensureGeneratorRunning: generator,
+    });
+    for (const toolName of ['save_memory', 'mcp__mcp_search__save_memory']) {
+      const result = await ingestObservation(payload({ toolName, toolUseId: `write-${toolName}` }));
+      expect(result).toEqual({ ok: true, status: 'skipped', reason: 'explicit_memory_write' });
+    }
+    expect(generator).not.toHaveBeenCalled();
+    expect(store!.queryToolUses({})).toHaveLength(2);
+    expect(store!.db.prepare('SELECT count(*) AS n FROM observations').get()).toEqual({ n: 0 });
   });
 
   it('still backs up another MCP server\'s generic search tool', async () => {
