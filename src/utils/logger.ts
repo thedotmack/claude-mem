@@ -226,6 +226,9 @@ class Logger {
       }
     }
 
+    // A JSON string can represent no arguments just like a direct null input.
+    if (input === null) return toolName;
+
     if (toolName === 'Bash' && input.command) {
       return `${toolName}(${input.command})`;
     }

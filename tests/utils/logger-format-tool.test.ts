@@ -1,65 +1,7 @@
 import { describe, it, expect } from 'bun:test';
 import { logger } from '../../src/utils/logger.js';
 
-function formatTool(toolName: string, toolInput?: any): string {
-  if (!toolInput) return toolName;
-
-  let input = toolInput;
-  if (typeof toolInput === 'string') {
-    try {
-      input = JSON.parse(toolInput);
-    } catch {
-      input = toolInput;
-    }
-  }
-
-  if (toolName === 'Bash' && input.command) {
-    return `${toolName}(${input.command})`;
-  }
-
-  if (input.file_path) {
-    return `${toolName}(${input.file_path})`;
-  }
-
-  if (input.notebook_path) {
-    return `${toolName}(${input.notebook_path})`;
-  }
-
-  if (toolName === 'Glob' && input.pattern) {
-    return `${toolName}(${input.pattern})`;
-  }
-
-  if (toolName === 'Grep' && input.pattern) {
-    return `${toolName}(${input.pattern})`;
-  }
-
-  if (input.url) {
-    return `${toolName}(${input.url})`;
-  }
-
-  if (input.query) {
-    return `${toolName}(${input.query})`;
-  }
-
-  if (toolName === 'Task') {
-    if (input.subagent_type) {
-      return `${toolName}(${input.subagent_type})`;
-    }
-    if (input.description) {
-      return `${toolName}(${input.description})`;
-    }
-  }
-
-  if (toolName === 'Skill' && input.skill) {
-    return `${toolName}(${input.skill})`;
-  }
-
-  if (toolName === 'LSP' && input.operation) {
-    return `${toolName}(${input.operation})`;
-  }
-
-  return toolName;
-}
+const formatTool = (toolName: string, toolInput?: any): string => logger.formatTool(toolName, toolInput);
 
 describe('logger.formatTool()', () => {
   describe('Valid JSON string input', () => {
@@ -452,4 +394,13 @@ describe('logger.safeStringify()', () => {
     expect(out).toContain('[unreadable]');
     expect(out).toContain('"ok":1');
   });
+});
+
+describe('logger.formatTool() parsed null input', () => {
+  for (const toolName of ['Bash', 'Read', 'mcp__fixture__no_args']) {
+    it(`formats JSON null for ${toolName} as no arguments`, () => {
+      expect(formatTool(toolName, 'null')).toBe(toolName);
+      expect(formatTool(toolName, '  null  ')).toBe(toolName);
+    });
+  }
 });
