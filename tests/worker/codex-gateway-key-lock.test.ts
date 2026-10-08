@@ -79,7 +79,7 @@ describe('Codex never carries the cmem gateway key', () => {
     const config = provider.getConfig();
     expect(JSON.stringify(config)).not.toContain(CMEM_KEY);
     const runTurn = mock(async (_options: unknown) => ({ content: 'ok' }));
-    provider.appServer.runTurn = runTurn;
+    for (const client of provider.appServer.clients) client.runTurn = runTurn;
     await provider.query([{ role: 'user', content: 'observe' }], config);
     expect(runTurn).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(runTurn.mock.calls[0][0])).not.toContain(CMEM_KEY);
