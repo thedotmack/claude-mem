@@ -5,6 +5,7 @@ import { promisify } from "util";
 import * as os from "os";
 import { SettingsDefaultsManager } from "../../src/shared/SettingsDefaultsManager.js";
 import { DATA_DIR, USER_SETTINGS_PATH } from "../../src/shared/paths.js";
+import { formatHostForUrl } from "../../src/shared/worker-url.js";
 
 const execAsync = promisify(exec);
 
@@ -110,7 +111,7 @@ async function getOsVersion(): Promise<string> {
 
 async function checkWorkerHealth(host: string, port: number): Promise<any> {
   try {
-    const response = await fetch(`http://${host}:${port}/api/health`, {
+    const response = await fetch(`http://${formatHostForUrl(host)}:${port}/api/health`, {
       signal: AbortSignal.timeout(2000),
     });
     return await response.json();
@@ -121,7 +122,7 @@ async function checkWorkerHealth(host: string, port: number): Promise<any> {
 
 async function getWorkerStats(host: string, port: number): Promise<any> {
   try {
-    const response = await fetch(`http://${host}:${port}/api/stats`, {
+    const response = await fetch(`http://${formatHostForUrl(host)}:${port}/api/stats`, {
       signal: AbortSignal.timeout(2000),
     });
     return await response.json();

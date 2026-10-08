@@ -16,7 +16,7 @@
  * baked __DEFAULT_PACKAGE_VERSION__ constant.
  */
 
-import { getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerHost, fetchWithTimeout } from '../shared/worker-utils.js';
 import { logger } from '../utils/logger.js';
 
 interface HealthSnapshot {
@@ -46,7 +46,7 @@ export type RestartVerifyResult =
     };
 
 async function fetchHealthSnapshot(port: number, timeoutMs: number): Promise<HealthSnapshot> {
-  const url = `http://${getWorkerHost()}:${port}/api/health`;
+  const url = `http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`;
   const response = await fetchWithTimeout(url, {}, timeoutMs);
   // /api/health answers 503 when the queue is degraded but still includes
   // pid/version — a degraded-but-booted worker still proves the restart.
