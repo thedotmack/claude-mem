@@ -17,6 +17,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { shutdownWorkerAndWait, type ShutdownResult } from '../../services/install/shutdown-helper.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 import {
   normalizeRuntimeFlag,
   SERVER_RUNTIME_SETTINGS_KEYS,
@@ -276,7 +277,7 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = getWorkerPort();
   try {
     const notice = uninstallShutdownNotice(await shutdownWorkerAndWait(workerPort, 10000));
     if (notice?.level === 'warn') p.log.warn(notice.message);

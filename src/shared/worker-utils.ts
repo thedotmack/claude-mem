@@ -322,7 +322,12 @@ function getWorkerSettingsPath(): string {
   return path.join(SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR'), 'settings.json');
 }
 
-function getWorkerSettings(): SettingsDefaults {
+function getWorkerSettings(options: { readOnly?: boolean } = {}): SettingsDefaults {
+  // Doctor reports state without seeding settings.json or running migrations.
+  // Do not reuse a cached mutating read for a diagnostic request.
+  if (options.readOnly) {
+    return SettingsDefaultsManager.loadFromFile(getWorkerSettingsPath(), true, options);
+  }
   if (cachedSettings !== null) {
     return cachedSettings;
   }
@@ -372,24 +377,24 @@ function readSettingsBackedTimeout(
   return defaultValue;
 }
 
-export function getWorkerPort(): number {
-  if (cachedPort !== null) {
+export function getWorkerPort(options: { readOnly?: boolean } = {}): number {
+  if (!options.readOnly && cachedPort !== null) {
     return cachedPort;
   }
 
-  const settings = getWorkerSettings();
-  cachedPort = parseInt(settings.CLAUDE_MEM_WORKER_PORT, 10);
-  return cachedPort;
+  const port = parseInt(getWorkerSettings(options).CLAUDE_MEM_WORKER_PORT, 10);
+  if (!options.readOnly) cachedPort = port;
+  return port;
 }
 
-export function getWorkerHost(): string {
-  if (cachedHost !== null) {
+export function getWorkerHost(options: { readOnly?: boolean } = {}): string {
+  if (!options.readOnly && cachedHost !== null) {
     return cachedHost;
   }
 
-  const settings = getWorkerSettings();
-  cachedHost = settings.CLAUDE_MEM_WORKER_HOST;
-  return cachedHost;
+  const host = getWorkerSettings(options).CLAUDE_MEM_WORKER_HOST;
+  if (!options.readOnly) cachedHost = host;
+  return host;
 }
 
 /**
