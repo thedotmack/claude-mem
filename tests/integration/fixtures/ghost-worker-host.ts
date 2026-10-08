@@ -18,7 +18,8 @@
  *
  * Contract with the parent test (stdout redirected to a file, one JSON
  * object per line):
- *   {"event":"ready","pid":N,"port":N,"chromaRootPid":N}
+ *   {"event":"spawned","pid":N,"startToken":"..."}
+ *   {"event":"ready","pid":N,"startToken":"...","port":N,"chromaRootPid":N}
  *   {"event":"progress","stage":"...","elapsedMs":N,"port":N}
  *   {"event":"error","message":"..."}
  */
@@ -29,6 +30,7 @@ import { ChromaMcpManager } from '../../../src/services/sync/ChromaMcpManager.js
 import { getSupervisor } from '../../../src/supervisor/index.js';
 import { getWorkerPort, getWorkerHost } from '../../../src/shared/worker-utils.js';
 import { paths } from '../../../src/shared/paths.js';
+import { captureProcessStartToken } from '../../../src/shared/process-identity.js';
 
 /**
  * Progress is reported through an append-only EVENTS FILE as well as stdout.
@@ -60,6 +62,12 @@ function emit(payload: Record<string, unknown>): void {
 }
 
 async function main(): Promise<void> {
+  // This token comes from the running fixture itself. The parent must not
+  // capture a token from the reported PID later: that PID could be reused.
+  const startToken = captureProcessStartToken(process.pid);
+  if (!startToken) throw new Error('fixture start token unavailable');
+  emit({ event: 'spawned', pid: process.pid, startToken });
+
   const port = getWorkerPort();
   const host = getWorkerHost();
 
@@ -122,7 +130,7 @@ async function main(): Promise<void> {
     'utf-8'
   );
 
-  emit({ event: 'ready', pid: process.pid, port, chromaRootPid: chromaRecord.pid });
+  emit({ event: 'ready', pid: process.pid, startToken, port, chromaRootPid: chromaRecord.pid });
 
   // 3. Idle until the test kills us. No signal handlers on purpose: a handler
   //    here would shut the tree down cleanly and mask the ghost — the point
