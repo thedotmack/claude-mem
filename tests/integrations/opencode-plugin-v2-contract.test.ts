@@ -567,3 +567,46 @@ describe("OpenCode V2 event bus", () => {
     expect(handled).toEqual([...REAL_OPENCODE_V2_EVENT_TYPES].sort());
   });
 });
+
+describe("OpenCode V2 setup failure", () => {
+  function failingHost(failure: "reject" | "throw") {
+    const stream = new FakeEventStream();
+    let registered = 0;
+    let disposed = 0;
+    const ctx: OpenCodePluginContextV2 = {
+      directory: "",
+      location: { directory: "/work/project" },
+      tool: {
+        hook: async () => {
+          registered++;
+          return { dispose: async () => { disposed++; } };
+        },
+      },
+      session: {
+        hook: (name: string) => {
+          // The first session registration (prompt) fails after the tool hook
+          // was already registered.
+          if (name === "prompt") {
+            if (failure === "throw") throw new Error("hook rejected");
+            return Promise.reject(new Error("hook rejected"));
+          }
+          registered++;
+          return Promise.resolve({ dispose: async () => { disposed++; } });
+        },
+      },
+      event: { subscribe: stream.subscribe },
+    };
+    return { ctx, stream, registered: () => registered, disposed: () => disposed };
+  }
+
+  for (const failure of ["reject", "throw"] as const) {
+    it(`disposes the registrations made before a later one fails (${failure})`, async () => {
+      const host = failingHost(failure);
+      await expect(setupV2(host.ctx)).rejects.toThrow("hook rejected");
+      expect(host.registered()).toBe(1);
+      expect(host.disposed()).toBe(1);
+      // Setup failed before it opened the event stream.
+      expect(host.stream.subscriptions).toBe(0);
+    });
+  }
+});

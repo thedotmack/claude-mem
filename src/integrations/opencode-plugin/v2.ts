@@ -236,14 +236,27 @@ export async function setupV2(
     }
     replyBySessionId.set(sessionID, "");
   };
-  const register = async (promise: Promise<V2Registration> | undefined): Promise<void> => {
-    if (promise) registrations.push(await promise);
+  const disposeRegistrations = async (): Promise<void> => {
+    await Promise.allSettled(registrations.map((registration) => registration.dispose()));
+  };
+  const register = async (registerHook: () => Promise<V2Registration>): Promise<void> => {
+    try {
+      registrations.push(await registerHook());
+    } catch (error: unknown) {
+      // A failed setup must not leave the hooks registered before it behind.
+      await disposeRegistrations();
+      throw error;
+    }
   };
 
+  const toolDomain = context.tool;
+  const sessionDomain = context.session;
+
   // Primary capture path: every tool execution becomes an observation.
-  if (context.tool?.hook) {
-    await register(
-      context.tool.hook("execute.after", async (event) => {
+  if (toolDomain?.hook) {
+    const hook = toolDomain.hook.bind(toolDomain);
+    await register(() =>
+      hook("execute.after", async (event) => {
         const sessionID = event.sessionID;
         const tool = event.tool;
         if (!sessionID || !tool) return;
@@ -265,9 +278,10 @@ export async function setupV2(
 
   // User prompts: v1 read them off `chat.message`. V2 admits them through the
   // `prompt` hook, which runs once per admitted prompt.
-  if (context.session?.hook) {
-    await register(
-      context.session.hook<V2PromptEvent>("prompt", async (event) => {
+  if (sessionDomain?.hook) {
+    const hook = sessionDomain.hook.bind(sessionDomain);
+    await register(() =>
+      hook<V2PromptEvent>("prompt", async (event) => {
         const promptText = event?.prompt?.text?.trim();
         if (!event?.sessionID || !promptText) return;
         trackSession(event.sessionID);
@@ -277,8 +291,8 @@ export async function setupV2(
 
     // Memory context: v1 pushed a raw string onto `output.system`; v2's system
     // prompt is a list of typed parts, so the context goes in as one text part.
-    await register(
-      context.session.hook<V2ContextEvent>("context", async (event) => {
+    await register(() =>
+      hook<V2ContextEvent>("context", async (event) => {
         if (!event?.sessionID) return;
         const memory = await core.memoryContext(event.sessionID);
         if (!memory?.trim()) return;
@@ -291,17 +305,18 @@ export async function setupV2(
     // first request after compaction fetches it fresh. The summary is written
     // when the bus reports `session.compaction.ended` (below), so one
     // compaction is summarized once.
-    await register(
-      context.session.hook<V2CompactionEvent>("compaction", (event) => {
+    await register(() =>
+      hook<V2CompactionEvent>("compaction", (event) => {
         if (event?.sessionID) core.forgetMemoryContext(event.sessionID);
       }),
     );
   }
 
   // Custom tool: v1 returned a `tool` map, v2 registers through a transform.
-  if (context.tool?.transform) {
-    await register(
-      context.tool.transform((editor) => {
+  if (toolDomain?.transform) {
+    const transform = toolDomain.transform.bind(toolDomain);
+    await register(() =>
+      transform((editor) => {
         editor.add({
           name: "claude_mem_search",
           description:
@@ -372,6 +387,6 @@ export async function setupV2(
 
   return async () => {
     cleanupController.abort();
-    await Promise.all(registrations.map((r) => r.dispose().catch(() => {})));
+    await disposeRegistrations();
   };
 }
