@@ -110,10 +110,13 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
     },
 
     // Summarize when a session compacts. This is OpenCode's real compaction
-    // hook (the old `session.compacted` bus event never existed).
+    // hook (the old `session.compacted` bus event never existed). Compaction
+    // also drops the cached memory, so the next system prompt carries fresh
+    // context; an idle summary keeps it.
     "experimental.session.compacting": async (
       input: SessionCompactingInput,
     ): Promise<void> => {
+      core.forgetMemoryContext(input.sessionID);
       await core.captureSummary(input.sessionID);
     },
 

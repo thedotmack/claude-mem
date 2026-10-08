@@ -252,6 +252,7 @@ export async function setupV2(context: OpenCodePluginContextV2): Promise<() => P
     await register(
       context.session.hook<V2CompactionEvent>("compaction", async (event) => {
         if (!event?.sessionID) return;
+        core.forgetMemoryContext(event.sessionID);
         await core.captureSummary(event.sessionID);
       }),
     );

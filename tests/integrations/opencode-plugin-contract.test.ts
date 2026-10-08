@@ -941,6 +941,34 @@ describe("OpenCode plugin lifecycle (#3208)", () => {
     }
   });
 
+  it("keeps the cached memory across an idle summary and drops it on compaction", async () => {
+    // Only compaction rewrites the conversation, so only compaction needs a
+    // fresh memory fetch. An idle summary that dropped the cache would add a
+    // context request to every turn and bypass the failed-fetch cooldown.
+    const originalFetch = globalThis.fetch;
+    const requests: Request[] = [];
+    captureRequests(requests, (url) =>
+      url.pathname === "/api/context/inject" ? new Response("# memory context", { status: 200 }) : new Response("{}"));
+    const injects = () => requests.filter((request) => request.url.pathname === "/api/context/inject").length;
+    try {
+      const plugin = await ClaudeMemPlugin.server(pluginCtx);
+      const transform = plugin["experimental.chat.system.transform"];
+
+      await transform({ sessionID: "ses_ctx_idle" }, { system: [] });
+      await plugin.event({ event: { type: "session.idle", properties: { sessionID: "ses_ctx_idle" } } });
+      const afterIdle = { system: [] as string[] };
+      await transform({ sessionID: "ses_ctx_idle" }, afterIdle);
+      expect(afterIdle.system).toEqual(["# memory context"]);
+      expect(injects()).toBe(1);
+
+      await plugin["experimental.session.compacting"]({ sessionID: "ses_ctx_idle" });
+      await transform({ sessionID: "ses_ctx_idle" }, { system: [] });
+      expect(injects()).toBe(2);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
   it("sends the latest completed assistant reply when the session idles or compacts", async () => {
     const originalFetch = globalThis.fetch;
     const requests: Request[] = [];

@@ -259,8 +259,15 @@ export interface ClaudeMemCore {
   captureUserPrompt(sessionID: string, promptText: string): Promise<void>;
   /** Capture an assistant message as an observation. */
   captureAssistantMessage(sessionID: string, messageText: string): Promise<void>;
-  /** Summarize the session (compaction and idle both funnel here). */
-  captureSummary(sessionID: string): Promise<void>;
+  /**
+   * Summarize the session (compaction and idle both funnel here). The cached
+   * memory context is kept: only compaction drops it, through
+   * `forgetMemoryContext`. `lastAssistantMessage` is the reply when the host
+   * reports it; otherwise it is read back from the client's message list.
+   */
+  captureSummary(sessionID: string, options?: { lastAssistantMessage?: string }): Promise<void>;
+  /** Drop the cached memory context so the next system prompt fetches it again (compaction). */
+  forgetMemoryContext(sessionID: string): void;
   /** Forget everything about a session the user deleted. */
   forgetSession(sessionID: string): void;
   /**
@@ -298,13 +305,15 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     return entry.request;
   }
 
-  async function captureSummary(sessionID: string): Promise<void> {
+  async function captureSummary(
+    sessionID: string,
+    options: { lastAssistantMessage?: string } = {},
+  ): Promise<void> {
     const contentSessionId = resolveContentSessionId(sessionID);
-    // Compaction clears the cached context so the next system prompt rebuilds it.
-    contextByOpenCodeSessionId.delete(sessionID);
     await workerPost("/api/sessions/summarize", {
       contentSessionId,
-      last_assistant_message: await latestAssistantText(ctx.client, sessionID, ctx.directory),
+      last_assistant_message:
+        options.lastAssistantMessage ?? await latestAssistantText(ctx.client, sessionID, ctx.directory),
       // The worker skips an excluded checkout; the plugin cannot check it.
       cwd: ctx.directory,
       platform_source: PLATFORM_SOURCE,
@@ -353,6 +362,10 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     },
 
     captureSummary,
+
+    forgetMemoryContext(sessionID) {
+      contextByOpenCodeSessionId.delete(sessionID);
+    },
 
     forgetSession(sessionID) {
       contentSessionIdsByOpenCodeSessionId.delete(sessionID);
