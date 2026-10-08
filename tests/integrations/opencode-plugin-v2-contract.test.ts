@@ -341,6 +341,10 @@ describe("OpenCode V2 tool result extraction", () => {
     expect(extractResultText({ output: { exit: 0, output: "shell stdout" } })).toBe("shell stdout");
   });
 
+  it("reads a plain-string content field", () => {
+    expect(extractResultText({ content: "string content", output: { output: "stdout" } })).toBe("string content");
+  });
+
   it("passes a bare string result through", () => {
     expect(extractResultText("already text")).toBe("already text");
   });
@@ -400,7 +404,7 @@ function createV2Host(directory = "/work/project") {
   return { ctx, call, stream, tools };
 }
 
-function recordWorkerRequests(contextReply = "# memory context") {
+function recordWorkerRequests(reply: (url: URL) => Response | undefined = () => undefined) {
   const requests: WorkerRequest[] = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -411,7 +415,9 @@ function recordWorkerRequests(contextReply = "# memory context") {
       url,
       body: init?.body ? JSON.parse(String(init.body)) : null,
     });
-    if (url.pathname === "/api/context/inject") return new Response(contextReply, { status: 200 });
+    const custom = reply(url);
+    if (custom) return custom;
+    if (url.pathname === "/api/context/inject") return new Response("# memory context", { status: 200 });
     return new Response("{}", { status: 200 });
   }) as typeof fetch;
   return {
@@ -609,4 +615,131 @@ describe("OpenCode V2 setup failure", () => {
       expect(host.stream.subscriptions).toBe(0);
     });
   }
+});
+
+describe("OpenCode V2 callbacks drive the worker", () => {
+  let worker: ReturnType<typeof recordWorkerRequests>;
+  let cleanup: () => Promise<void>;
+
+  beforeEach(() => {
+    worker = recordWorkerRequests();
+    cleanup = async () => {};
+  });
+
+  afterEach(async () => {
+    await cleanup();
+    worker.restore();
+  });
+
+  async function start() {
+    const host = createV2Host();
+    cleanup = await setupV2(host.ctx);
+    return host;
+  }
+
+  // `execute.after` as @opencode/plugin 2.0.22 types it.
+  function toolEvent(sessionID: string, outcome: Record<string, unknown>) {
+    return {
+      tool: "read",
+      sessionID,
+      agent: "build",
+      messageID: "msg_1",
+      id: "call_1",
+      input: { filePath: "src/parser.ts" },
+      ...outcome,
+    };
+  }
+
+  it("records a completed tool with its input, its text result and the checkout", async () => {
+    const host = await start();
+    await host.call("tool.execute.after", toolEvent("ses_cb_tool", {
+      status: "completed",
+      result: { output: "ignored", content: [{ type: "text", text: "export function parse() {}" }] },
+    }));
+
+    const [observation] = worker.to("/api/sessions/observations");
+    expect(observation.body).toMatchObject({
+      tool_name: "Read",
+      tool_input: { filePath: "src/parser.ts" },
+      tool_response: "export function parse() {}",
+      cwd: "/work/project",
+      platform_source: "opencode",
+    });
+    expect(observation.body!.contentSessionId).toStartWith("opencode-ses_cb_tool-");
+  });
+
+  it("records a failed tool's error message, from an Error or a plain object", async () => {
+    const host = await start();
+    await host.call("tool.execute.after", toolEvent("ses_cb_error", {
+      status: "error",
+      error: { _tag: "Tool.Error", message: "ENOENT: src/parser.ts" },
+    }));
+    await host.call("tool.execute.after", toolEvent("ses_cb_error", {
+      status: "error",
+      error: new Error("permission denied"),
+    }));
+
+    expect(worker.to("/api/sessions/observations").map((request) => request.body!.tool_response)).toEqual([
+      "ENOENT: src/parser.ts",
+      "permission denied",
+    ]);
+  });
+
+  it("starts the session with the user's prompt and the checkout", async () => {
+    const host = await start();
+    await host.call("session.prompt", {
+      sessionID: "ses_cb_prompt",
+      messageID: "msg_1",
+      prompt: { text: "  Read the parser  " },
+      delivery: "immediate",
+    });
+
+    const [init] = worker.to("/api/sessions/init");
+    expect(init.body).toMatchObject({
+      prompt: "Read the parser",
+      cwd: "/work/project",
+      platform_source: "opencode",
+    });
+    expect(init.body!.contentSessionId).toStartWith("opencode-ses_cb_prompt-");
+  });
+
+  it("pushes memory onto the system prompt as one tagged text part", async () => {
+    const host = await start();
+    const event = { sessionID: "ses_cb_context", system: [{ type: "text", text: "base prompt" }] };
+    await host.call("session.context", event);
+
+    expect(event.system).toEqual([
+      { type: "text", text: "base prompt" },
+      { type: "text", text: "<claude-mem-context>\n# memory context\n</claude-mem-context>" },
+    ]);
+    const [inject] = worker.to("/api/context/inject");
+    expect(inject.url.searchParams.get("cwd")).toBe("/work/project");
+    expect(inject.url.searchParams.get("platformSource")).toBe("opencode");
+  });
+
+  it("never stacks a second memory block when the same system list is built again", async () => {
+    const host = await start();
+    const event = { sessionID: "ses_cb_stack", system: [{ type: "text", text: "base prompt" }] };
+    await host.call("session.context", event);
+    await host.call("session.context", event);
+    await host.call("session.context", event);
+
+    expect(event.system.filter((part) => part.text?.startsWith("<claude-mem-context>"))).toHaveLength(1);
+    expect(event.system[0]).toEqual({ type: "text", text: "base prompt" });
+  });
+
+  it("answers claude_mem_search through the worker's search endpoint", async () => {
+    worker.restore();
+    worker = recordWorkerRequests((url) =>
+      url.pathname === "/api/search/observations"
+        ? Response.json({ content: [{ type: "text", text: "1 observation" }] })
+        : undefined);
+    const host = await start();
+
+    const result = await host.tools[0].execute({ query: "parser" });
+
+    expect(result).toEqual({ content: "1 observation" });
+    const [search] = worker.to("/api/search/observations");
+    expect(search.url.searchParams.get("query")).toBe("parser");
+  });
 });

@@ -32,6 +32,7 @@
  * and read defensively: the plugin API is still beta and field shapes can move.
  */
 
+import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN } from "../../utils/context-injection.js";
 import { createCore, type ClaudeMemCore, type CoreContext } from "./core.js";
 
 /** The V2 plugin id. Also the handle `opencode.json(c)` uses to disable it. */
@@ -134,7 +135,21 @@ export interface OpenCodePluginContextV2 extends CoreContext {
 }
 
 function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
+  if (error instanceof Error) return error.message;
+  // A V2 Tool.Error that crossed a serialization boundary is a plain object.
+  const message = (error as { message?: unknown } | null)?.message;
+  return typeof message === "string" ? message : String(error);
+}
+
+/**
+ * Removes the memory blocks an earlier context build left in the system
+ * prompt, in place, so the list the host reads back never holds two.
+ */
+function removeMemoryParts(system: Array<{ type: string; text?: string }>): void {
+  for (let index = system.length - 1; index >= 0; index--) {
+    const part = system[index];
+    if (part?.type === "text" && part.text?.startsWith(CONTEXT_TAG_OPEN)) system.splice(index, 1);
+  }
 }
 
 function waitUnlessAborted(milliseconds: number, signal: AbortSignal): Promise<void> {
@@ -189,6 +204,8 @@ export function extractResultText(result: unknown): string {
   if (!result || typeof result !== "object") return "";
 
   const shape = result as { output?: unknown; content?: unknown };
+  // Tool.Result allows `content` as a plain string as well as a block list.
+  if (typeof shape.content === "string" && shape.content.trim()) return shape.content;
   if (Array.isArray(shape.content)) {
     const text = (shape.content as Array<{ type?: string; text?: string }>)
       .filter((block) => block?.type === "text" && typeof block.text === "string")
@@ -290,13 +307,16 @@ export async function setupV2(
     );
 
     // Memory context: v1 pushed a raw string onto `output.system`; v2's system
-    // prompt is a list of typed parts, so the context goes in as one text part.
+    // prompt is a list of typed parts, so the context goes in as one text part,
+    // tagged so the next build can find it. OpenCode runs this hook for every
+    // model request, and a block left by an earlier run is replaced, not stacked.
     await register(() =>
       hook<V2ContextEvent>("context", async (event) => {
-        if (!event?.sessionID) return;
-        const memory = await core.memoryContext(event.sessionID);
-        if (!memory?.trim()) return;
-        event.system.push({ type: "text", text: memory });
+        if (!event?.sessionID || !Array.isArray(event.system)) return;
+        const memory = (await core.memoryContext(event.sessionID))?.trim();
+        if (!memory) return;
+        removeMemoryParts(event.system);
+        event.system.push({ type: "text", text: `${CONTEXT_TAG_OPEN}\n${memory}\n${CONTEXT_TAG_CLOSE}` });
       }),
     );
 
