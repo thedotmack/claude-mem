@@ -455,6 +455,18 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('prewarms with the pydantic cap that chroma-mcp 0.2.6 needs (#4593)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const prewarmArgs = prewarmSpawnCalls[0]!.args;
+    const capIdx = prewarmArgs.indexOf('pydantic<2.14');
+    expect(capIdx).toBeGreaterThan(0);
+    expect(prewarmArgs[capIdx - 1]).toBe('--with');
+    expect(capIdx).toBeLessThan(prewarmArgs.indexOf('--from'));
+    expect(prewarmArgs.at(-1)).toBe('--help');
+  });
+
   it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
     // onclose fires BECAUSE the child died, so killProcessTree's self-capture
     // would read whatever now owns that PID and validate the replacement
@@ -907,6 +919,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       'onnxruntime>=1.20',
       'protobuf<7',
       'chromadb==1.5.9',
+      'pydantic<2.14',
     ]);
     expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
       .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
@@ -1754,7 +1767,7 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.chromaMcpVersion).toBe('0.2.6');
-    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9']);
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9', 'pydantic<2.14']);
     // The engine version is read from the launcher pin, never kept separately.
     expect(record.chromadbVersion).toBe('1.5.9');
     expect(record.depOverrides).toContain(`chromadb==${record.chromadbVersion}`);
