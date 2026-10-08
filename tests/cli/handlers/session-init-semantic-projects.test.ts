@@ -38,6 +38,7 @@ describe('sessionInitHandler semantic injection reads every key of the checkout 
           CLAUDE_MEM_RUNTIME: 'worker',
           CLAUDE_MEM_SEMANTIC_INJECT: 'true',
           CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',
+          CLAUDE_MEM_SEMANTIC_INJECT_FORMAT: 'index',
         }),
         resolveRuntimeContext: () => ({ runtime: 'worker' }),
         shouldTrackProject: () => true,
@@ -57,8 +58,8 @@ describe('sessionInitHandler semantic injection reads every key of the checkout 
         platform: 'claude-code',
         prompt: 'How did we wire the retry budget for the importer last week?',
       });
-      const summary = semanticBodies.map(body => [body.project, body.projects]);
-      const expected = [['acme/api', ['api', 'acme/api']]];
+      const summary = semanticBodies.map(body => [body.project, body.projects, body.format]);
+      const expected = [['acme/api', ['api', 'acme/api'], 'index']];
       if (JSON.stringify(summary) !== JSON.stringify(expected)) {
         throw new Error('semantic bodies mismatch: ' + JSON.stringify(summary));
       }

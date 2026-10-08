@@ -336,7 +336,7 @@ const sessionInit = {
           'POST',
           // Every key this checkout reads, so memory it stored before a re-key
           // (slug, environment, marker) is found too (gate P2-5).
-          { q: prompt, project, projects: projectContext.allProjects, limit, platformSource },
+          { q: prompt, project, projects: projectContext.allProjects, limit, format: settings.CLAUDE_MEM_SEMANTIC_INJECT_FORMAT, platformSource },
           workerSessionInitOptions(platformSource, semanticTimeoutMs),
         );
         if (!dependencies.isWorkerFallback(semanticResult) && semanticResult?.context) {
