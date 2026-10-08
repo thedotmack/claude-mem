@@ -40,6 +40,8 @@ interface RegisteredHook {
  */
 class FakeEventStream {
   subscriptions = 0;
+  /** Subscriptions that finished: ended, failed, or closed by their signal. */
+  closed = 0;
   private pending:
     | { resolve: (result: IteratorResult<V2BusEvent>) => void; reject: (error: Error) => void }
     | undefined;
@@ -48,28 +50,43 @@ class FakeEventStream {
   subscribe = (options?: { signal?: AbortSignal }): AsyncIterable<V2BusEvent> => {
     this.subscriptions++;
     const signal = options?.signal;
-    let closed = false;
-    const done = (): IteratorResult<V2BusEvent> => ({ done: true, value: undefined });
+    let finished = false;
+    const finish = (): IteratorResult<V2BusEvent> => {
+      if (!finished) {
+        finished = true;
+        this.closed++;
+      }
+      return { done: true, value: undefined };
+    };
     return {
       [Symbol.asyncIterator]: () => ({
         next: (): Promise<IteratorResult<V2BusEvent>> => {
-          if (closed || signal?.aborted) return Promise.resolve(done());
+          if (finished || signal?.aborted) return Promise.resolve(finish());
           const event = this.buffered.shift();
           if (event) return Promise.resolve({ done: false, value: event });
           return new Promise((resolve, reject) => {
-            this.pending = {
-              resolve: (result) => {
-                if (result.done) closed = true;
-                resolve(result);
+            const entry = {
+              resolve: (result: IteratorResult<V2BusEvent>) => resolve(result.done ? finish() : result),
+              reject: (error: Error) => {
+                finish();
+                reject(error);
               },
-              reject,
             };
-            signal?.addEventListener("abort", () => resolve(done()), { once: true });
+            this.pending = entry;
+            signal?.addEventListener("abort", () => {
+              if (this.pending === entry) this.pending = undefined;
+              resolve(finish());
+            }, { once: true });
           });
         },
       }),
     };
   };
+
+  /** Subscriptions still open. */
+  get open(): number {
+    return this.subscriptions - this.closed;
+  }
 
   send(event: V2BusEvent): void {
     const pending = this.pending;
@@ -531,23 +548,32 @@ describe("OpenCode V2 event bus", () => {
 
     host.stream.end();
     await until(() => host.stream.subscriptions === 2 && host.stream.waiting);
+    expect(host.stream.open).toBe(1);
     host.stream.send(busEvent("session.execution.succeeded", "ses_bus_resubscribe"));
     await until(() => worker.to("/api/sessions/summarize").length === 1);
 
     host.stream.fail(new Error("connection reset"));
     await until(() => host.stream.subscriptions === 3 && host.stream.waiting);
+    expect(host.stream.open).toBe(1);
     host.stream.send(busEvent("session.execution.succeeded", "ses_bus_resubscribe"));
     await until(() => worker.to("/api/sessions/summarize").length === 2);
   });
 
-  it("stops reading and resubscribing once cleanup runs", async () => {
+  it("closes the stream and stops resubscribing once cleanup runs", async () => {
     const host = createV2Host();
     const cleanup = await setupV2(host.ctx, { resubscribeDelayMs: 1 });
+    await host.call("session.prompt", { sessionID: "ses_bus_cleanup", prompt: { text: "Before cleanup" } });
     await until(() => host.stream.waiting);
+    expect(host.stream.open).toBe(1);
 
     await cleanup();
+    expect(host.stream.open).toBe(0);
+
+    // Nothing reads an event sent after cleanup, and nothing subscribes again.
+    host.stream.send(busEvent("session.execution.succeeded", "ses_bus_cleanup", {}, null));
     await new Promise((resolve) => setTimeout(resolve, 10));
     expect(host.stream.subscriptions).toBe(1);
+    expect(worker.to("/api/sessions/summarize")).toHaveLength(0);
   });
 
   it("keeps the cached memory across a finished turn and drops it on compaction", async () => {
