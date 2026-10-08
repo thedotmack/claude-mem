@@ -28,6 +28,8 @@ export interface ProgressiveBackend {
   search(input: { query: string; project?: string; limit: number }): Promise<MemoryIndexRow[]>;
   timeline(input: { anchor: MemoryIndexRow; depthBefore: number; depthAfter: number }): Promise<MemoryIndexRow[]>;
   fetch(refs: MemoryIndexRow[]): Promise<MemoryDetail[]>;
+  /** Optional setup advice after a true empty result; confirm account emptiness in the adapter. */
+  noResultsGuidance?(): Promise<string | null>;
 }
 interface SearchOptions {
   query: string;
@@ -62,6 +64,7 @@ export interface ProgressiveSearchResult {
   project: string | null;
   complete: boolean;
   reason: string | null;
+  guidance: string | null;
   index: MemoryIndexRow[];
   observations: MemoryDetail[];
   continuation: string | null;
@@ -210,7 +213,7 @@ export class ProgressiveSearch {
     if (!Number.isFinite(state.expiresAt) || state.expiresAt <= this.now()) fail("expired_continuation", "Mem-search continuation expired. Restart with a query.");
     return state;
   }
-  private result(mode: "guided" | "auto", step: 1 | 2 | 3, options: SearchOptions, index: MemoryIndexRow[], trace: SearchTrace[], state?: ContinuationState, observations: MemoryDetail[] = [], reason: string | null = null): ProgressiveSearchResult {
+  private result(mode: "guided" | "auto", step: 1 | 2 | 3, options: SearchOptions, index: MemoryIndexRow[], trace: SearchTrace[], state?: ContinuationState, observations: MemoryDetail[] = [], reason: string | null = null, guidance: string | null = null): ProgressiveSearchResult {
     // State and visible index share the same retained rows. A bounded response
     // may drop tail rows, but never signs undisclosed identities.
     let continuation: string | null = null;
@@ -235,7 +238,7 @@ export class ProgressiveSearch {
     const result: ProgressiveSearchResult = {
       version: "1", mode, strategy: mode === "auto" ? "ranked-lexical" : "caller-selected",
       step, label: `mem-search step ${step} of 3`, query: options.query,
-      project: options.project ?? null, complete: !state, reason, index, observations, continuation, next, trace,
+      project: options.project ?? null, complete: !state, reason, guidance, index, observations, continuation, next, trace,
     };
     // Control characters can expand sixfold in JSON. Enforce the serialized wire
     // size, preserve every selected row's identity, and mark shortened bodies.
@@ -253,6 +256,16 @@ export class ProgressiveSearch {
       largest.truncated = true;
     }
     return result;
+  }
+  private async noResultsGuidance(): Promise<string | null> {
+    // Advice is optional: unavailable account metadata must not turn a valid
+    // empty search into an error or a false setup claim.
+    try {
+      const guidance = await this.backend.noResultsGuidance?.();
+      return typeof guidance === "string" && guidance.trim() ? shortText(guidance.trim(), 2048) : null;
+    } catch {
+      return null;
+    }
   }
   private async context(anchors: MemoryIndexRow[], options: SearchOptions): Promise<MemoryIndexRow[]> {
     const rows: MemoryIndexRow[] = [];
@@ -305,7 +318,7 @@ export class ProgressiveSearch {
       return this.result(mode, 1, options, index, trace, index.length ? {
         version: "1", scope: this.options.scope, expiresAt: this.now() + TTL_MS,
         step: 2, options, eligible: index, trace,
-      } : undefined, [], index.length ? null : "no_results");
+      } : undefined, [], index.length ? null : "no_results", index.length ? null : await this.noResultsGuidance());
     }
     let anchors = ranked(index, options.query, options.maxDetails);
     // One bounded query refinement; no hidden model call or unbounded retries.
@@ -321,7 +334,7 @@ export class ProgressiveSearch {
     if (!anchors.length) return this.result(mode, 1, options, index, trace, index.length ? {
       version: "1", scope: this.options.scope, expiresAt: this.now() + TTL_MS,
       step: 2, options, eligible: index, trace,
-    } : undefined, [], index.length ? "no_relevant_candidates" : "no_results");
+    } : undefined, [], index.length ? "no_relevant_candidates" : "no_results", index.length ? null : await this.noResultsGuidance());
     const context = await this.context(anchors, options);
     trace.push({ step: 2, operation: "timeline", count: context.length });
     const selected = ranked(context, options.query, options.maxDetails);

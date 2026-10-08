@@ -2,6 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { ProgressiveSearch, type ProgressiveSearchInput, type MemoryIndexRow, type MemoryDetail } from '../../shared/progressive-search.js';
 import type { SearchManager } from './SearchManager.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
+import { logger } from '../../utils/logger.js';
 
 type StoredRow = {
   id: number; project: string; title?: string | null; request?: string | null;
@@ -29,7 +30,7 @@ export class ProgressiveMemorySearch {
   constructor(private readonly searchManager: SearchManager, private readonly store: SessionStore) {}
 
   async run(input: ProgressiveSearchInput, scope = 'worker/global', projects?: string[] | string) {
-    return new ProgressiveSearch({
+    const result = await new ProgressiveSearch({
       search: async ({ query, project, limit }) => {
         const result = await this.searchManager.search({ query, project, projects, limit, format: 'json' });
         const terms = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])];
@@ -49,6 +50,11 @@ export class ProgressiveMemorySearch {
       timeline: async ({ anchor, depthBefore, depthAfter }) => this.timeline(anchor, depthBefore, depthAfter),
       fetch: async refs => this.fetch(refs),
     }, { secret: this.secret, scope }).run(input);
+    logger.debug('SEARCH', 'Progressive memory search completed', {
+      mode: result.mode, step: result.step, indexCount: result.index.length,
+      detailCount: result.observations.length, complete: result.complete,
+    });
+    return result;
   }
 
   private timeline(anchor: MemoryIndexRow, before: number, after: number): MemoryIndexRow[] {

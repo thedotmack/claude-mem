@@ -151,5 +151,41 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     const g = fixture(Implementation); const first = await g.engine.run({ query: 'authentication' });
     const stopped = await g.engine.run({ continuation: first.continuation, selectedIds: [] }); assert.equal(stopped.reason, 'caller_stopped');
   });
+  await check(async () => {
+    let probes = 0;
+    const f = fixture(Implementation, { search: async () => [], noResultsGuidance: async () => { probes++; return 'Enable memory sync to fill this account.'; } });
+    for (const mode of ['guided', 'auto'] as const) {
+      const response = await f.engine.run({ query: 'How did we fix authentication', mode });
+      assert.equal(response.reason, 'no_results');
+      assert.equal(response.guidance, 'Enable memory sync to fill this account.');
+      assert.equal(response.continuation, null);
+      assert.equal(response.next, null);
+      assert.equal(response.complete, true);
+    }
+    assert.equal(probes, 2, 'Account advice runs once after each final empty index, not after each refinement');
+  });
+  await check(async () => {
+    let probes = 0;
+    const f = fixture(Implementation, { noResultsGuidance: async () => { probes++; return 'SHOULD_NOT_BE_SHOWN'; } });
+    const complete = await f.engine.run({ query: 'authentication', mode: 'auto' });
+    assert.equal(complete.guidance, null);
+    const semantic = fixture(Implementation, { search: async () => [row('semantic', 'Credentials rotation')], noResultsGuidance: f.backend.noResultsGuidance });
+    const handoff = await semantic.engine.run({ query: 'How did we fix authentication', mode: 'auto' });
+    assert.equal(handoff.reason, 'no_relevant_candidates');
+    assert.equal(handoff.guidance, null);
+    assert.equal(probes, 0, 'Semantic hits must not trigger empty-account setup advice');
+  });
+  await check(async () => {
+    const f = fixture(Implementation, { search: async () => [], noResultsGuidance: async () => { throw new Error('PRIVATE_BACKEND_FAILURE'); } });
+    const response = await f.engine.run({ query: 'nothing' });
+    assert.equal(response.reason, 'no_results');
+    assert.equal(response.guidance, null);
+    assert(!JSON.stringify(response).includes('PRIVATE_BACKEND_FAILURE'));
+  });
+  await check(async () => {
+    const f = fixture(Implementation, { search: async () => [], noResultsGuidance: async () => '😀'.repeat(2000) });
+    const response = await f.engine.run({ query: 'nothing' });
+    assert(Buffer.byteLength(response.guidance!) <= 2048);
+  });
   return { count, guided, auto };
 }

@@ -557,7 +557,11 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     const preToolUseGroup = parsed.hooks.PreToolUse[0];
     const fileContext = preToolUseGroup.hooks[0];
 
-    expect(preToolUseGroup.matcher).toBe('Read');
+    const matcher = new RegExp(preToolUseGroup.matcher);
+    for (const tool of ['Read', 'Grep', 'Glob', 'memory_search', 'memory', 'mcp__native__memory_search']) {
+      expect(matcher.test(tool)).toBe(true);
+    }
+    expect(matcher.test('save_memory')).toBe(false);
     expect(fileContext.command).toContain(' hook claude-code file-context');
     // Claude Code ignores permissionDecision from an async hook, so an async
     // file-context hook could never block a whole-file Read.

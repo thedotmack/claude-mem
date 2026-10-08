@@ -4,6 +4,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { DatabaseManager } from '../../DatabaseManager.js';
 import { saveMemory } from '../../../memory/save-memory.js';
+import { logger } from '../../../../utils/logger.js';
 
 const saveMemorySchema = z.object({
   text: z.string().trim().min(1),
@@ -25,6 +26,8 @@ export class MemoryRoutes extends BaseRouteHandler {
   }
 
   private handleSaveMemory = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    res.json(saveMemory(this.dbManager, this.defaultProject, req.body));
+    const result = saveMemory(this.dbManager, this.defaultProject, req.body);
+    logger.debug('HTTP', 'Explicit memory request completed', { id: result.id });
+    res.json(result);
   });
 }

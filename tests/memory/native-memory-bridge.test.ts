@@ -98,7 +98,10 @@ describe('memory folder watcher', () => {
     writeFileSync(path.join(root, 'MEMORY.md'), '<!-- claude-mem-memory-instructions:start -->\nbridge directions\n<!-- claude-mem-memory-instructions:end -->');
     watcher.scan(300);
     watcher.scan(401);
-    expect(saved.map(note => note.text)).toEqual(['final lesson', 'atomic revision', 'second lesson']);
+    // Directory enumeration order differs across filesystems. Both new notes
+    // must be captured once, while the previously saved lesson stays first.
+    expect(saved[0].text).toBe('final lesson');
+    expect(saved.slice(1).map(note => note.text).sort()).toEqual(['atomic revision', 'second lesson']);
     expect(saved.every(note => note.project === 'p' && note.metadata?.sourceFingerprint)).toBe(true);
     watcher.stop();
     writeFileSync(path.join(root, 'third.md'), 'after stop');

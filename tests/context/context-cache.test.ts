@@ -33,6 +33,7 @@ import { emitContextInvalidation } from '../../src/shared/context-invalidation.j
 import { formatHeaderDateTime } from '../../src/shared/timeline-formatting.js';
 import { describeDuration, recordObserverFailure, recordObserverSuccess } from '../../src/shared/observer-health.js';
 import { writeSyncHealth } from '../../src/shared/sync-health.js';
+import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
 import { ContextCacheService, type ContextVariantRender } from '../../src/services/worker/ContextCacheService.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SyncApply, type SyncOp } from '../../src/services/sync/SyncApply.js';
@@ -527,6 +528,7 @@ mock.module('../../src/shared/hook-settings.js', () => ({
     CLAUDE_MEM_PRO_FALLBACK_AT: '',
     CLAUDE_MEM_PRO_PLAN: '',
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',
+    CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
   }),
 }));
 
@@ -593,20 +595,20 @@ describe('context hook reads the precomputed block', () => {
     writeContextCache(agentKeys, 'A block without the prior reply', Date.now());
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo&sessionId=cache-session']);
-    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(`LIVE CONTEXT\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
   });
 
   it('takes the live path on a miss, including the observed checkout cwd', async () => {
     const result = await runHook();
     expect(workerCalls).toEqual(['/api/context/inject?projects=cache-hook-parent%2Ccache-hook-repo&platformSource=claude&cwd=%2Ftmp%2Fcache-hook-repo']);
-    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(`LIVE CONTEXT\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
   });
 
   it('takes the live path when the cached block is older than 24h', async () => {
     writeContextCache(agentKeys, cachedBody, Date.now() - CONTEXT_CACHE_MAX_AGE_MS - 60_000);
     const result = await runHook();
     expect(workerCalls).toHaveLength(1);
-    expect(result.hookSpecificOutput?.additionalContext).toBe('LIVE CONTEXT');
+    expect(result.hookSpecificOutput?.additionalContext).toBe(`LIVE CONTEXT\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
   });
 
   it('skips the colored fetch too when that variant is cached', async () => {
@@ -752,6 +754,7 @@ describe('precomputed context end to end', () => {
         CLAUDE_MEM_WORKER_PORT: '1',
         CLAUDE_MEM_PROVIDER: 'codex',
         CLAUDE_MEM_CHROMA_ENABLED: 'false',
+        CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
       }));
       const child = Bun.spawn(['bun', '-e', childScript], {
         cwd: process.cwd(),
@@ -784,7 +787,8 @@ describe('precomputed context end to end', () => {
 
       // The hook answered from the cache without any request to the worker.
       expect(result.fetchCalls).toBe(0);
-      expect(result.hookContext).toBe(result.liveAgent.trim());
+      expect(result.hookContext).toBe(`${result.liveAgent.trim()}\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
+      expect(result.liveAgent).not.toContain(MEMORY_PLUGIN_INSTRUCTIONS);
       expect(result.hookSystemMessage).toStartWith(result.liveColors.trim());
 
       // A store write re-rendered the cached block.
