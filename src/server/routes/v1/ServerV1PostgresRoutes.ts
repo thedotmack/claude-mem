@@ -29,7 +29,7 @@ import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-
 import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
@@ -891,6 +891,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
+        generationKey: z.string().min(1).max(200).optional(),
         metadata: z.record(z.string(), z.unknown()).optional(),
       }),
       async (req, res, body) => {
@@ -907,6 +908,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           ...this.sessionLookupPlatformScope(req.body),
         });
         const createInput = {
+          id: randomUUID(),
+          generationKey: body.generationKey,
           projectId: body.projectId,
           teamId,
           serverSessionId: linkedSessionId,
@@ -918,7 +921,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           const repo = new PostgresObservationRepository(this.options.pool);
           const observation = await repo.create(createInput);
           await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
-          res.status(201).json({ memory: serializeObservation(observation) });
+          // A conflict returns the existing row, retaining its original ID.
+          res.status(observation.id === createInput.id ? 201 : 200).json({ memory: serializeObservation(observation) });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'memory.write failed', { requestId: req.requestId ?? null }, err);
