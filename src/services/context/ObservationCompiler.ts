@@ -163,7 +163,7 @@ export function queryObservationsNewest(
   ];
 
   if (projects.length === 0) {
-    return db.db.prepare(`
+    const statement = db.db.prepare(`
       SELECT
         ${OBSERVATION_SELECT}${reinforcementColumn}
       FROM observations o
@@ -171,7 +171,12 @@ export function queryObservationsNewest(
       WHERE ${filterSql}
       ORDER BY o.created_at_epoch DESC
       LIMIT ?
-    `).all(...filterParams, options.limit) as LocalObservation[];
+    `);
+    try {
+      return statement.all(...filterParams, options.limit) as LocalObservation[];
+    } finally {
+      statement.finalize();
+    }
   }
 
   const winnersSql = newestIdsPerProjectKeySql('o', projects.length, keyPredicate => `
@@ -184,14 +189,19 @@ export function queryObservationsNewest(
   const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
     projects.flatMap(project => [project, ...filterParams, options.limit]));
 
-  return db.db.prepare(`
+  const statement = db.db.prepare(`
     SELECT
       ${OBSERVATION_SELECT}${reinforcementColumn}
     FROM (${winnersSql}) w
     JOIN observations o ON o.id = w.id
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     ORDER BY o.created_at_epoch DESC
-  `).all(...perKeyParams, options.limit) as LocalObservation[];
+  `);
+  try {
+    return statement.all(...perKeyParams, options.limit) as LocalObservation[];
+  } finally {
+    statement.finalize();
+  }
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
@@ -235,7 +245,7 @@ export function querySummariesMulti(
   const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
     projects.flatMap(project => [project, ...platformParams, limit]));
 
-  return db.db.prepare(`
+  const statement = db.db.prepare(`
     SELECT
       ss.id,
       ss.memory_session_id,
@@ -253,7 +263,12 @@ export function querySummariesMulti(
     JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
     ORDER BY ss.created_at_epoch DESC
-  `).all(...perKeyParams, limit) as LocalSessionSummary[];
+  `);
+  try {
+    return statement.all(...perKeyParams, limit) as LocalSessionSummary[];
+  } finally {
+    statement.finalize();
+  }
 }
 
 /** Claude Code cuts a longer encoded project directory name to this length and appends a hash. */
