@@ -160,6 +160,8 @@ Or install for OpenCode:
 npx claude-mem install --ide opencode
 ```
 
+This works with OpenCode 1.3.4 or later, including OpenCode 2. Restart OpenCode after installing.
+
 Or install for **T3 Code** (Codex and Claude Code providers):
 
 ```bash
