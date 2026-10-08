@@ -44,11 +44,15 @@ mock.module('../../src/shared/SettingsDefaultsManager.js', () => ({
 // loadFromFileOnce. Spread the real module so none of its exports vanish for
 // later test files; keep CLAUDE_MEM_EXCLUDED_PROJECTS for shouldTrackProject.
 let fileReadGateSetting: string | undefined = 'true';
+// #4558 — runtime-selector reads CLAUDE_MEM_RUNTIME and the server keys
+// through the same loadFromFileOnce; tests flip this to exercise server mode.
+let runtimeSettings: Record<string, string> = {};
 mock.module('../../src/shared/hook-settings.js', () => ({
   ...realHookSettingsSnapshot,
   loadFromFileOnce: () => ({
     CLAUDE_MEM_EXCLUDED_PROJECTS: '',
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: fileReadGateSetting,
+    ...runtimeSettings,
   }),
 }));
 
@@ -165,6 +169,7 @@ beforeEach(() => {
   gatedFile = join(tmpDir, 'gated.ts');
   writeFileSync(gatedFile, GATED_FILE_CONTENT);
   fileReadGateSetting = 'true';
+  runtimeSettings = {};
   treeSitterCliAvailable = true;
   workerFallbackCalls.length = 0;
   workspaceContainmentChecks.length = 0;
@@ -687,6 +692,66 @@ describe('fileContextHandler — #2094 (no Read mutation)', () => {
     });
     expect(second.continue).toBe(true);
     expect(second.hookSpecificOutput).toBeUndefined();
+  });
+});
+
+describe('fileContextHandler — #4558 (server runtime)', () => {
+  const serverSettings = {
+    CLAUDE_MEM_RUNTIME: 'server',
+    CLAUDE_MEM_SERVER_URL: 'https://mem.example.test',
+    CLAUDE_MEM_SERVER_API_KEY: 'test-key',
+    CLAUDE_MEM_SERVER_PROJECT_ID: 'proj-1',
+  };
+
+  it('never calls the worker in server runtime, so no local worker is lazy-spawned', async () => {
+    runtimeSettings = serverSettings;
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(result).toEqual({ continue: true, suppressOutput: true });
+    expect(workerFallbackCalls).toHaveLength(0);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('accepts the legacy server-beta runtime value', async () => {
+    runtimeSettings = { ...serverSettings, CLAUDE_MEM_RUNTIME: 'server-beta' };
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(workerFallbackCalls).toHaveLength(0);
+  });
+
+  it('still queries the worker when server runtime is incomplete and falls back to worker', async () => {
+    runtimeSettings = { CLAUDE_MEM_RUNTIME: 'server' };
+    fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(
+      makeObservationsResponse([{ id: 1, created_at_epoch: Date.now() + 60_000 }])
+    );
+
+    const result = await fileContextHandler.execute({
+      sessionId: 'sess',
+      cwd: tmpDir,
+      toolName: 'Read',
+      toolInput: { file_path: testFile },
+    });
+
+    expect(workerFallbackCalls).toHaveLength(1);
+    expect(result.hookSpecificOutput?.additionalContext).toContain('prior observations');
   });
 });
 
