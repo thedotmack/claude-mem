@@ -23,7 +23,7 @@ const server=Bun.serve({hostname:host,port:0,async fetch(request){
 writeFileSync(join(process.env.CLAUDE_MEM_DATA_DIR!,'settings.json'),JSON.stringify({...SettingsDefaultsManager.getAllDefaults(),CLAUDE_MEM_WORKER_PORT:String(server.port),CLAUDE_MEM_WORKER_HOST:scenario==='env-over-file'?'127.0.0.1':host,CLAUDE_MEM_OBSERVE_BARE_PROMPTS:'false'}));
 try{
  const {default:definition}=await import(process.env.CLAUDE_MEM_OPENCODE_MODULE || '../../../src/integrations/opencode-plugin/index.ts');
- // V1 hosts (1.18.29+) read `server`; V2 reads `id` + `setup`. This fixture
+ // V1 hosts (1.3.4+) read `server`; V2 reads `id` + `setup`. This fixture
  // exercises the V1 hook contract.
  const hooks=await definition.server({client:{},project:{},directory:process.env.CLAUDE_MEM_DATA_DIR!,worktree:process.env.CLAUDE_MEM_DATA_DIR!,serverUrl:new URL('http://127.0.0.1'),$:null});
  await hooks['tool.execute.after']({tool:'ownedTool',sessionID:'owned-endpoint-session',callID:'owned-call',args:{owned:true}},{title:'owned',output:'owned output',metadata:{}});

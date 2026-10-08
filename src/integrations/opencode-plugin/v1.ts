@@ -2,7 +2,7 @@
  * OpenCode V1 plugin adapter.
  *
  * V1 plugins are an async factory that RETURNS a hooks object, keyed by
- * OpenCode's hook names. Kept for OpenCode 1.18.29+, which loads the module's
+ * OpenCode's hook names. Kept for OpenCode 1.3.4+, which loads the module's
  * default export and calls `server()`. V2 reads `id` + `setup()` instead (see
  * ./v2.ts); the entry module serves both.
  */

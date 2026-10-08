@@ -160,7 +160,7 @@ describe("OpenCode V2 plugin definition", () => {
     expect(typeof definition.id).toBe("string");
     expect(definition.id).toBe("claude-mem");
     expect(typeof definition.setup).toBe("function");
-    // V1 (1.18.29+) reads this instead; V2 ignores it.
+    // V1 (1.3.4+) reads this instead; V2 ignores it.
     expect(typeof definition.server).toBe("function");
   });
 });

@@ -47,7 +47,7 @@ try {
  }));
  const pluginPath = process.argv[3] ?? new URL('../../../src/integrations/opencode-plugin/index.js', import.meta.url).href;
  const {default:definition}=await import(pluginPath);
- // V1 hosts (1.18.29+) read `server`; V2 reads `id` + `setup`. This fixture
+ // V1 hosts (1.3.4+) read `server`; V2 reads `id` + `setup`. This fixture
  // exercises the V1 hook contract.
  const hooks=await definition.server({client:{},project:{},directory:cwd,worktree:cwd,serverUrl:new URL('http://127.0.0.1'),$:null});
  await hooks['tool.execute.after']({tool,sessionID:'owned-session',callID:'owned-call',args},{title:'Owned tool',output:readFileSync(join(cwd,newRelative),'utf8'),metadata:{}});

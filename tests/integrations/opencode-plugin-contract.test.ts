@@ -76,7 +76,7 @@ describe("OpenCode plugin event contract", () => {
     // the module with Schema.Struct({ id, effect }) / Schema.Struct({ id,
     // setup }) and rejects a bare plugin factory with "Plugin must export a
     // default definition with an id and an effect or setup function". V1
-    // (1.18.29+) reads `server`, V2 reads `id` + `setup`.
+    // (1.3.4+) reads `server`, V2 reads `id` + `setup`.
     const { buildSync } = await import("esbuild");
     const { OPENCODE_PLUGIN_BUILD_OPTIONS } = await import("../../scripts/opencode-plugin-build-options.js");
     const dir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-bundle-"));
@@ -468,7 +468,7 @@ describe("OpenCode plugin entry-module export contract", () => {
   //
   // That default export is a plugin DEFINITION object, not a factory: OpenCode
   // V2 validates it with Schema.Struct({ id, effect }) / Schema.Struct({ id,
-  // setup }). V1 (1.18.29+) reads `server` and uses the hooks it returns.
+  // setup }). V1 (1.3.4+) reads `server` and uses the hooks it returns.
   it("exports only a default plugin definition (id + server + setup)", () => {
     const exports = Object.entries(pluginEntry);
     expect(exports.length, "the entry module must have exports").toBeGreaterThan(0);
