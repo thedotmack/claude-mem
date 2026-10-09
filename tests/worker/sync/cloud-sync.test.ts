@@ -579,7 +579,7 @@ describe('CloudSync', () => {
     expect(pendingCount('observations')).toBe(0);
 
     const status = sync.status();
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, workState: 0, mutations: 0, tombstones: 0 });
     expect(status.lastFlushAt).not.toBeNull();
     expect(status.lastError).toBeNull();
   });
@@ -674,7 +674,7 @@ describe('CloudSync', () => {
     expect(calls[0].headers.get('X-User-Id')).toBe('user-42');
     expect(calls[0].headers.get('X-Device-Id')).toBe('device-fixture');
     expect(calls[0].headers.get('X-Device-Name')).toBe('test-host');
-    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, mutations: 0, tombstones: 0 });
+    expect(status.pending).toEqual({ observations: 0, summaries: 0, prompts: 0, workState: 0, mutations: 0, tombstones: 0 });
     expect(status.hub).toMatchObject({
       reachable: true,
       epoch: '18446744073709551615',

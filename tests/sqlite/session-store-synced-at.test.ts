@@ -222,6 +222,7 @@ describe('SessionStore SyncHub launch baseline', () => {
         observations: 1,
         summaries: 1,
         prompts: 1,
+        workState: 0,
         mutations: 0,
         tombstones: 0,
       });
