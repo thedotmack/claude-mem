@@ -259,13 +259,10 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
  * `get()` without creating one: doctor is read-only.
  */
 export function workerEndpoint(settingsPath: string): { host: string; port: string } {
-  if (!existsSync(settingsPath)) {
-    return {
-      host: SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST'),
-      port: SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT'),
-    };
-  }
-  const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
+  // Read-only on purpose: loadFromFile creates a missing file and persists
+  // migrations, and a diagnostic must not rewrite the settings it reports
+  // on. A missing file resolves to env/defaults without being created.
+  const settings = SettingsDefaultsManager.loadFromFileReadOnly(settingsPath);
   return { host: settings.CLAUDE_MEM_WORKER_HOST, port: settings.CLAUDE_MEM_WORKER_PORT };
 }
 

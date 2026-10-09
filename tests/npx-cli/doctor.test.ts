@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
@@ -167,6 +167,18 @@ describe('npx doctor worker endpoint (#4609)', () => {
     process.env.CLAUDE_MEM_WORKER_PORT = '47812';
 
     expect(workerEndpoint(settingsPath).port).toBe('47812');
+  });
+
+  it('leaves a legacy nested settings file byte-identical: no migration write, no markers', () => {
+    const settingsPath = join(root, 'settings.json');
+    // The nested { env: ... } schema is one loadFromFile migrates on load;
+    // doctor must read the port from it without performing that migration.
+    const original = JSON.stringify({ env: { CLAUDE_MEM_WORKER_PORT: '47813' } }, null, 2);
+    writeFileSync(settingsPath, original);
+
+    expect(workerEndpoint(settingsPath).port).toBe('47813');
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+    expect(readdirSync(root)).toEqual(['settings.json']);
   });
 
   it('falls back to the defaults without creating a settings file', () => {

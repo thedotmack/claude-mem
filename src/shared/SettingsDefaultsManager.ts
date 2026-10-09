@@ -803,4 +803,63 @@ export class SettingsDefaultsManager {
       return this.finalizeSettings(defaults, applyEnvOverrides);
     }
   }
+
+  /**
+   * The settings a file holds, with the same values loadFromFile returns,
+   * but read-only: it never creates the file, never persists a migration,
+   * and never writes a raised-deadline marker. The value migrations
+   * loadFromFile performs (legacy Telegram triggers, the retired OpenRouter
+   * model, the retired cloud-sync hub, raised deadlines) are applied in
+   * memory only, so the next loadFromFile still performs and persists them.
+   * For callers that only observe — a diagnostic must not rewrite the
+   * settings it reports on.
+   */
+  static loadFromFileReadOnly(settingsPath: string, applyEnvOverrides = true): SettingsDefaults {
+    try {
+      if (!existsSync(settingsPath)) {
+        return this.finalizeSettings(this.getAllDefaults(), applyEnvOverrides);
+      }
+
+      const settings = parseJsonWithBom<Record<string, any>>(readFileSync(settingsPath, 'utf-8'));
+      let flatSettings: Record<string, any> = settingsTarget(settings);
+
+      if (flatSettings.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES === LEGACY_TELEGRAM_TRIGGER_TYPES) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
+        };
+      }
+
+      if (hasRetiredOpenRouterDefault(flatSettings)) {
+        flatSettings = {
+          ...flatSettings,
+          CLAUDE_MEM_OPENROUTER_MODEL: this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL,
+        };
+      }
+
+      const rewrittenHubUrl = migratedCloudSyncHubUrl(flatSettings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL);
+      if (rewrittenHubUrl !== null) {
+        flatSettings = { ...flatSettings, CLAUDE_MEM_CLOUD_SYNC_HUB_URL: rewrittenHubUrl };
+      }
+
+      for (const raised of RAISED_DEADLINE_DEFAULTS) {
+        if (existsSync(raisedDefaultMarkerPath(settingsPath, raised))) continue;
+        if (flatSettings[raised.key] === raised.legacy) {
+          flatSettings = { ...flatSettings, [raised.key]: this.DEFAULTS[raised.key] };
+        }
+      }
+
+      const result: SettingsDefaults = { ...this.DEFAULTS };
+      for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
+        if (flatSettings[key] !== undefined) {
+          result[key] = flatSettings[key];
+        }
+      }
+
+      return this.finalizeSettings(result, applyEnvOverrides);
+    } catch (error: unknown) {
+      console.warn('[SETTINGS] Failed to load settings, using defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+      return this.finalizeSettings(this.getAllDefaults(), applyEnvOverrides);
+    }
+  }
 }
