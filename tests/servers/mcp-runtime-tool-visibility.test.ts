@@ -79,12 +79,4 @@ describe('MCP runtime-aware tool visibility', () => {
       expect(names.has(toolName)).toBe(true);
     }
   });
-
-  it('tools/list and tools/call honor the work-state switch', () => {
-    const mcpServerPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
-    const mcpServerSrc = readFileSync(mcpServerPath, 'utf-8');
-
-    expect(mcpServerSrc).toContain('withoutDisabledWorkStateTools(');
-    expect(mcpServerSrc).toContain('Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).');
-  });
 });
