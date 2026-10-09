@@ -109,6 +109,10 @@ export class ServerJobQueue<TPayload extends object = object> {
     this.workerFactory = options.workerFactory;
   }
 
+  getLockDurationMs(): number {
+    return this.lockDurationMs;
+  }
+
   private getQueue(): NonNullable<typeof this.queue> {
     if (this.queue) {
       return this.queue;
