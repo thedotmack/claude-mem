@@ -455,6 +455,18 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(prewarmSpawnCalls.length).toBe(1);
   });
 
+  it('prewarms with the pydantic cap that chroma-mcp 0.2.6 needs (#4593)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const prewarmArgs = prewarmSpawnCalls[0]!.args;
+    const capIdx = prewarmArgs.indexOf('pydantic<2.14');
+    expect(capIdx).toBeGreaterThan(0);
+    expect(prewarmArgs[capIdx - 1]).toBe('--with');
+    expect(capIdx).toBeLessThan(prewarmArgs.indexOf('--from'));
+    expect(prewarmArgs.at(-1)).toBe('--help');
+  });
+
   it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
     // onclose fires BECAUSE the child died, so killProcessTree's self-capture
     // would read whatever now owns that PID and validate the replacement
