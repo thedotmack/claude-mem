@@ -288,7 +288,7 @@ export class SessionManager {
       }
     }
 
-    this.buffer.dispose(sessionDbId);
+    this.disposeSessionBuffer(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session deleted', {
       sessionId: sessionDbId,
@@ -311,7 +311,7 @@ export class SessionManager {
       session.respawnTimer = undefined;
     }
 
-    this.buffer.dispose(sessionDbId);
+    this.disposeSessionBuffer(sessionDbId);
     this.sessions.delete(sessionDbId);
     logger.info('SESSION', 'Session removed from active sessions', {
       sessionId: sessionDbId,
@@ -319,8 +319,25 @@ export class SessionManager {
     });
   }
 
+  private disposeSessionBuffer(sessionDbId: number): void {
+    const pendingCount = this.buffer.getPendingCount(sessionDbId);
+    if (pendingCount > 0) {
+      logger.warn('SESSION', 'Discarding pending session messages', {
+        sessionId: sessionDbId,
+        pendingCount,
+      });
+    }
+    this.buffer.dispose(sessionDbId);
+  }
+
   async shutdownAll(): Promise<void> {
     const sessionIds = Array.from(this.sessions.keys());
+    const pendingCountAtShutdownStart = sessionIds.reduce((total, id) => total + this.buffer.getPendingCount(id), 0);
+    if (pendingCountAtShutdownStart > 0) {
+      logger.warn('SESSION', 'Worker shutdown starting with pending session messages', {
+        pendingCountAtShutdownStart,
+      });
+    }
     await Promise.all(sessionIds.map(id => this.deleteSession(id)));
   }
 
