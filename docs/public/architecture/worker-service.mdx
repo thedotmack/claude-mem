@@ -17,6 +17,16 @@ The worker service is a long-running HTTP API built with Express.js and managed 
 - **Built Output**: `plugin/scripts/worker-service.cjs`
 - **Model**: Configurable via `CLAUDE_MEM_MODEL` (default: `claude-haiku-4-5-20251001`)
 
+## Session Buffer Teardown
+
+Deleting or immediately removing a session logs a `WARN` with `pendingCount`
+before discarding a nonempty in-memory buffer. Claimed but unconfirmed messages
+still count; confirmed messages are no longer buffered.
+
+Worker shutdown also logs `pendingCountAtShutdownStart`, the total for active
+sessions before cleanup begins. This is a startup snapshot, not the number
+ultimately discarded. Empty buffers do not emit disposal warnings.
+
 ## REST API Endpoints
 
 The worker service exposes 22 HTTP endpoints organized into six categories:
