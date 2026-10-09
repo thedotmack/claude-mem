@@ -14,7 +14,7 @@ import {
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
-import { applySqliteConnectionPragmas } from './connection.js';
+import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, CURRENT_BINARY_VERSION, stampSchemaWriterVersion } from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 import { pageMatchingRows } from './stream-rows.js';
 
@@ -84,6 +84,10 @@ export class SessionSearch {
       this.db = new Database(dbPathOrDb);
     }
 
+    // Refuse before any DDL when the database was last written by a newer
+    // binary (#3609 step 2); a refused open touches nothing.
+    assertSchemaWriterCompatible(this.db, CURRENT_BINARY_VERSION);
+
     applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
@@ -109,6 +113,7 @@ export class SessionSearch {
 
     logger.info('DB', 'Creating FTS5 tables');
 
+    let ftsSchemaCreated = false;
     try {
       this.db.transaction(() => {
         // Another connection may have completed setup after the initial read.
@@ -118,10 +123,19 @@ export class SessionSearch {
         const createSummaries = !currentTables.some(t => t.name === 'session_summaries_fts');
         this.createFTSTablesAndTriggers(createObservations, createSummaries);
       }).immediate();
+      ftsSchemaCreated = true;
       logger.info('DB', 'FTS5 tables created successfully');
     } catch (error) {
       this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
+    }
+
+    // The FTS DDL above is this constructor's only schema write, so it is the
+    // only thing that can name this binary as the last writer (#3609 step 2).
+    // A connection that wrote nothing — FTS tables already present, no FTS5,
+    // read-only fallback — records no writer.
+    if (ftsSchemaCreated) {
+      stampSchemaWriterVersion(this.db, CURRENT_BINARY_VERSION);
     }
   }
 

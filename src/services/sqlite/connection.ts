@@ -4,6 +4,67 @@ import { logger } from '../../utils/logger.js';
 export const SQLITE_BUSY_TIMEOUT_MS = 5000;
 export const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 4194304;
 
+// The running binary's version, from the build-time define (same resolution
+// as worker-service.ts). '0.0.0-dev' when running unbundled, e.g. under
+// `bun test`: databases it writes carry stamp 0 and are never refused, while
+// any positive stamp still refuses the unbundled binary.
+declare const __DEFAULT_PACKAGE_VERSION__: string;
+export const CURRENT_BINARY_VERSION: string =
+  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
+
+/**
+ * #3609 step 2: the database records which binary version last wrote it, so a
+ * binary older than that stamp refuses to run migrations or rebuilds instead
+ * of silently destroying the newer schema (the 13.4.2-over-schema-49 data
+ * loss in the #3609 timeline). The stamp lives in PRAGMA user_version, coded
+ * as major*1_000_000 + minor*1_000 + patch — int32-safe for any plausible
+ * version — with prerelease suffixes compared by their base, matching
+ * parseBase in compareVersionsDescending.
+ */
+export function encodeSchemaWriterVersion(version: string): number {
+  const parts = version.split('-')[0].split('.');
+  return (parseInt(parts[0], 10) || 0) * 1_000_000
+    + (parseInt(parts[1], 10) || 0) * 1_000
+    + (parseInt(parts[2], 10) || 0);
+}
+
+export function decodeSchemaWriterStamp(stamp: number): string {
+  return `${Math.floor(stamp / 1_000_000)}.${Math.floor((stamp % 1_000_000) / 1_000)}.${stamp % 1_000}`;
+}
+
+export function readSchemaWriterStamp(db: Database): number {
+  return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
+}
+
+export class SchemaNewerThanBinaryError extends Error {
+  readonly reason = 'schema_newer_than_binary' as const;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'SchemaNewerThanBinaryError';
+  }
+}
+
+export function assertSchemaWriterCompatible(db: Database, binaryVersion: string): void {
+  const stamp = readSchemaWriterStamp(db);
+  const current = encodeSchemaWriterVersion(binaryVersion);
+  // A stamp of 0 means "never written by a stamping binary" and is adopted,
+  // never refused — the smooth-upgrade path for existing installs.
+  if (stamp <= current) {
+    return;
+  }
+  const writerVersion = decodeSchemaWriterStamp(stamp);
+  throw new SchemaNewerThanBinaryError(
+    `SQLite database was last written by claude-mem ${writerVersion} (user_version ${stamp}); ` +
+    `this binary is ${binaryVersion} (user_version ${current}). ` +
+    `Upgrade claude-mem to ${writerVersion} or newer before opening this database.`,
+  );
+}
+
+export function stampSchemaWriterVersion(db: Database, binaryVersion: string): void {
+  db.run(`PRAGMA user_version = ${encodeSchemaWriterVersion(binaryVersion)}`);
+}
+
 type DatabaseOptions = NonNullable<ConstructorParameters<typeof Database>[1]>;
 
 export interface SqlitePragmaOptions {
