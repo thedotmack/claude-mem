@@ -12,7 +12,7 @@ import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/pa
 import { resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
@@ -249,6 +249,19 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
       };
 }
 
+/**
+ * The worker endpoint doctor should probe: the operator's configured host and
+ * port from settings.json (with env overrides), not the compiled-in default
+ * (#4609). Exported for tests.
+ */
+export function resolveWorkerEndpoint(): { host: string; port: string } {
+  const userSettings = loadFromFileOnce();
+  return {
+    host: userSettings.CLAUDE_MEM_WORKER_HOST,
+    port: userSettings.CLAUDE_MEM_WORKER_PORT,
+  };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -321,9 +334,9 @@ export async function runDoctorCommand(): Promise<void> {
   // shipped (#3424) cache-miss until reinstalled.
   checks.push(marketplaceManifestCheck(marketplaceDir));
 
-  // 5. Worker health.
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  // 5. Worker health. Read the operator's actual settings.json so doctor probes
+  // the port the worker and hooks use, not the compiled-in default (#4609).
+  const { host: workerHost, port: workerPort } = resolveWorkerEndpoint();
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   let chromaChecks: CheckResult[] = [];
