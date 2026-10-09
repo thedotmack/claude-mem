@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cmem-hook.mjs\" session-init",
-            "timeout": 8
+            "timeout": 30
           }
         ]
       }
