@@ -3996,7 +3996,8 @@ export class SessionStore {
     const limit = positiveIntegerRowLimit(options.limit);
     const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
-    const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
+    const direction = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY ss.created_at_epoch ${direction}, ss.id ${direction}`;
     const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];
@@ -4045,7 +4046,8 @@ export class SessionStore {
     const limit = positiveIntegerRowLimit(options.limit);
     const projects = scopedProjects(options);
     const preserveIdOrder = orderBy === 'relevance';
-    const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${orderBy === 'date_asc' ? 'ASC' : 'DESC'}`;
+    const direction = orderBy === 'date_asc' ? 'ASC' : 'DESC';
+    const orderClause = preserveIdOrder ? '' : `ORDER BY up.created_at_epoch ${direction}, up.id ${direction}`;
     const limitClause = limit && !preserveIdOrder ? 'LIMIT ?' : '';
     const placeholders = ids.map(() => '?').join(',');
     const params: any[] = [...ids];

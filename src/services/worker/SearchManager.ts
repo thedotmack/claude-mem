@@ -619,6 +619,7 @@ export class SearchManager {
         const supplemented = await this.orchestrator.supplementEmptyCategories(
           {
             ...candidateOptions,
+            limit: candidateOptions.limit ?? offset + SEARCH_CONSTANTS.DEFAULT_LIMIT,
             query,
             searchType: category ?? 'all',
             obsType: effectiveObsType,

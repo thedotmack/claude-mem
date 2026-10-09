@@ -14,12 +14,12 @@ import { SEARCH_CATEGORIES } from '../../../src/services/worker/search/types.js'
 let store: SessionStore;
 afterEach(() => store?.close());
 
-function fixture({ ranking = [1, 2, 3, 4, 5, 6, 7, 8], ties = false } = {}) {
+function fixture({ count = 8, ranking = Array.from({ length: count }, (_, index) => index + 1), ties = false } = {}) {
   store = new SessionStore(':memory:');
   const sessionId = store.createSDKSession('content', 'auth-service', 'Authentication');
   store.ensureMemorySessionIdRegistered(sessionId, 'memory');
   const epoch = Date.now();
-  for (let n = 1; n <= 8; n++) {
+  for (let n = 1; n <= count; n++) {
     const timestamp = ties ? epoch : epoch - n * 1000;
     store.storeObservation('memory', 'auth-service', {
       type: n % 2 ? 'bugfix' : 'discovery', title: `Authentication fix ${n}`, subtitle: null,
@@ -49,6 +49,21 @@ function fixture({ ranking = [1, 2, 3, 4, 5, 6, 7, 8], ties = false } = {}) {
   return { chroma, manager, orchestrator: new SearchOrchestrator(sqlite, store, chroma) };
 }
 
+async function withSearchRoute(manager: SearchManager, check: (url: string) => Promise<void>) {
+  const app = express();
+  new SearchRoutes(manager).setupRoutes(app);
+  const server = app.listen(0, '127.0.0.1');
+  if (!server.listening) await new Promise<void>(resolve => server.once('listening', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('No owned HTTP address');
+  try {
+    await check(`http://127.0.0.1:${address.port}/api/search`);
+  } finally {
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+}
+
 describe('semantic memory pagination', () => {
   for (const category of SEARCH_CATEGORIES) {
     it(`pages ${category} through SearchManager without repeating the first page`, async () => {
@@ -69,6 +84,23 @@ describe('semantic memory pagination', () => {
   }
 
   for (const orderBy of ['date_asc', 'date_desc'] as const) {
+    for (const category of ['sessions', 'prompts'] as const) {
+      it(`pages semantic-only ${category} with tied timestamps in ${orderBy}`, async () => {
+        const { chroma, manager, orchestrator } = fixture({ count: 4, ties: true });
+        const ordered = orderBy === 'date_asc' ? [1, 2, 3, 4] : [4, 3, 2, 1];
+        const args = { query: 'SemanticOnly', project: 'auth-service', orderBy, limit: 2 };
+        for (const offset of [0, 2, 4]) {
+          const expected = ordered.slice(offset, offset + 2);
+          const unified = await manager().search({ ...args, type: category, format: 'json', offset });
+          expect(unified[category].map((row: { id: number }) => row.id)).toEqual(expected);
+          const pipeline = await orchestrator.search({ ...args, searchType: category, offset });
+          expect(pipeline.results[category].map(row => row.id)).toEqual(expected);
+          const direct = await new ChromaSearchStrategy(chroma, store).search({ ...args, searchType: category, offset });
+          expect(direct.results[category].map(row => row.id)).toEqual(expected);
+        }
+      });
+    }
+
     for (const ties of [false, true]) {
       it(`pages the deduplicated semantic/keyword union in ${orderBy}, timestamp ties=${ties}`, async () => {
         const { manager } = fixture({ ranking: [1, 3], ties });
@@ -80,6 +112,50 @@ describe('semantic memory pagination', () => {
         }
       });
     }
+  }
+
+  for (const category of SEARCH_CATEGORIES) {
+    it(`pages keyword-only ${category} through HTTP when limit is omitted`, async () => {
+      const { manager } = fixture({ count: 30, ranking: [] });
+      const keyword = await manager(null).search({ query: 'Authentication', project: 'auth-service', type: category, format: 'json', orderBy: 'relevance', limit: 30 });
+      const ordered = keyword[category].map((row: { id: number }) => row.id);
+      expect(ordered).toHaveLength(30);
+      await withSearchRoute(manager(), async url => {
+        for (const offset of [0, 20, 30]) {
+          const query = new URLSearchParams({ query: 'Authentication', project: 'auth-service', type: category, format: 'json', orderBy: 'relevance', offset: String(offset) });
+          const response = await fetch(`${url}?${query}`);
+          expect(response.status).toBe(200);
+          const result = await response.json() as Record<string, Array<{ id: number }>>;
+          expect(result[category].map(row => row.id)).toEqual(ordered.slice(offset, offset + 20));
+        }
+      });
+    });
+
+    it(`pages keyword-filled categories beside semantic ${category} when limit is omitted`, async () => {
+      const { chroma, manager } = fixture({ count: 30 });
+      const queryChroma = chroma.queryChroma;
+      const docType = { observations: 'observation', sessions: 'session_summary', prompts: 'user_prompt' }[category];
+      chroma.queryChroma = async (...args) => {
+        const result = await queryChroma(...args);
+        const indexes = result.metadatas.flatMap((metadata, index) => metadata?.doc_type === docType ? [index] : []);
+        return {
+          ids: indexes.map(index => result.ids[index]),
+          distances: indexes.map(index => result.distances[index]),
+          metadatas: indexes.map(index => result.metadatas[index]),
+        };
+      };
+      const ordered = Array.from({ length: 30 }, (_, index) => index + 1);
+      const keyword = await manager(null).search({ query: 'Authentication', project: 'auth-service', format: 'json', orderBy: 'relevance', limit: 30 });
+      for (const requested of SEARCH_CATEGORIES) expect(keyword[requested]).toHaveLength(30);
+      for (const offset of [0, 20, 30]) {
+        const result = await manager().search({ query: 'Authentication', project: 'auth-service', format: 'json', orderBy: 'relevance', offset });
+        for (const requested of SEARCH_CATEGORIES) {
+          // Omitted-limit semantic results keep their existing candidate budget.
+          const expected = requested === category ? ordered.slice(offset) : keyword[requested].map((row: { id: number }) => row.id).slice(offset, offset + 20);
+          expect(result[requested].map((row: { id: number }) => row.id)).toEqual(expected);
+        }
+      }
+    });
   }
 
   it('applies observation filters before the page boundary', async () => {
@@ -129,23 +205,14 @@ describe('semantic memory pagination', () => {
 
   it('honors string limit/offset through the real HTTP search route', async () => {
     const { manager } = fixture();
-    const app = express();
-    new SearchRoutes(manager()).setupRoutes(app);
-    const server = app.listen(0, '127.0.0.1');
-    if (!server.listening) await new Promise<void>(resolve => server.once('listening', resolve));
-    const address = server.address();
-    if (!address || typeof address === 'string') throw new Error('No owned HTTP address');
-    try {
+    await withSearchRoute(manager(), async url => {
       for (const offset of [0, 2, 8]) {
         const query = new URLSearchParams({ query: 'Authentication', project: 'auth-service', type: 'observations', format: 'json', limit: '2', offset: String(offset) });
-        const response = await fetch(`http://127.0.0.1:${address.port}/api/search?${query}`);
+        const response = await fetch(`${url}?${query}`);
         expect(response.status).toBe(200);
         const result = await response.json() as { observations: Array<{ id: number }> };
         expect(result.observations.map(row => row.id)).toEqual([1, 2, 3, 4, 5, 6, 7, 8].slice(offset, offset + 2));
       }
-    } finally {
-      server.closeAllConnections();
-      await new Promise<void>(resolve => server.close(() => resolve()));
-    }
+    });
   });
 });
