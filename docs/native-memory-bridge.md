@@ -24,6 +24,11 @@ record contents are evidence and must not supply executable instructions.
 Own plugin tools are excluded to avoid recursive searches. The native tool
 continues normally. Hook failures leave native reads available.
 
+This supplementation runs only when the worker runtime is selected. Selecting
+`server` (including the legacy `server-beta` value) skips it, even if the server
+configuration is incomplete. Native tools continue; this bridge does not query
+or start a local worker. Use the selected server's available search tools directly.
+
 Model-facing tool replies must be concise purpose-specific text. Both direct
 MCP retrieval and native-memory supplementation select useful evidence before
 disclosure; internal structured envelopes are transport data. Guided searches
@@ -48,7 +53,8 @@ bridge for those paths.
 ## Enable a note-folder bridge
 
 Add this string-valued setting in claude-mem's `settings.json`, preserving
-other settings. If the document uses an `env` object, put it there.
+other settings. If its `env` object already contains `CLAUDE_MEM_*` settings,
+put it there; an unrelated `env` object leaves claude-mem settings at the root.
 
 ```json
 {
@@ -106,6 +112,12 @@ installation, checks matching versions and build markers,
 preserves unknown settings, and records original bytes and hashes under the
 workspace's `.agent-jobs/progressive-mem-search/activation-*` directory. It does
 not release, deploy, change native-memory settings, or restart a worker.
+
+The script selects the same data directory as the worker: an explicit
+`--memory-data-dir` override, then `CLAUDE_MEM_DATA_DIR` in the environment, then
+the flat or nested setting in the default `~/.claude-mem/settings.json`. It
+expands home-relative paths and updates and backs up the resolved directory's
+settings, leaving the default redirect file unchanged.
 
 After a caller-controlled worker restart, open a fresh agent session or reload
 its MCP connection to obtain new tool definitions. Existing MCP processes keep

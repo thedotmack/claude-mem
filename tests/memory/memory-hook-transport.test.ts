@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -10,6 +10,50 @@ const entry = path.resolve(import.meta.dir, '../../src/services/worker-service.t
 
 describe('memory PreToolUse transport and platform output', () => {
   for (const platform of ['claude-code', 'codex']) {
+    for (const selection of ['environment', 'nested settings', 'legacy server-beta'] as const) {
+      it(`leaves ${platform} native memory searches alone for ${selection} server selection`, async () => {
+        const root=mkdtempSync(path.join(tmpdir(),'cmem-memory-hook-server-')); roots.push(root);
+        const data=path.join(root,'data'),project=path.join(root,'project'),notes=path.join(root,'notes');
+        for(const directory of [data,project,notes]) mkdirSync(directory);
+        const requests:string[]=[];
+        server=Bun.serve({hostname:'127.0.0.1',port:0,fetch(request){
+          requests.push(new URL(request.url).pathname);
+          return Response.json({status:'ok',content:[{type:'text',text:'Local notes must not supplement a server lookup.'}]});
+        }});
+        const settings={
+          CLAUDE_MEM_RUNTIME:selection==='environment'?'worker':selection==='legacy server-beta'?'server-beta':'server',
+          CLAUDE_MEM_WORKER_PORT:String(server.port),CLAUDE_MEM_WORKER_HOST:'127.0.0.1',CLAUDE_MEM_WORKER_AUTOSTART:'true',
+          CLAUDE_MEM_MEMORY_WATCH_ROOTS:JSON.stringify([{path:notes,project:'personal'}]),
+          // Server credentials intentionally absent: selected server mode must
+          // never fall back into worker-only memory supplementation.
+          CLAUDE_MEM_SERVER_URL:'',CLAUDE_MEM_SERVER_API_KEY:'',CLAUDE_MEM_SERVER_PROJECT_ID:'',
+        };
+        writeFileSync(path.join(data,'settings.json'),JSON.stringify(selection==='nested settings'?{env:settings}:settings));
+        const env:Record<string,string>={};
+        for(const [key,value] of Object.entries(process.env)) if(value!==undefined&&!key.startsWith('CLAUDE_MEM_')) env[key]=value;
+        env.CLAUDE_MEM_DATA_DIR=data;env.CLAUDE_CONFIG_DIR=path.join(root,'claude');env.DO_NOT_TRACK='1';
+        if(selection==='environment') env.CLAUDE_MEM_RUNTIME=' SERVER ';
+        for(const [index,input] of [
+          {tool_name:'memory_search',tool_input:{query:'previous timeout preference'}},
+          {tool_name:'Bash',tool_input:{command:`rg timeout '${notes.replace(/\\/g,'/')}'`}},
+        ].entries()) {
+          const child=Bun.spawn([process.execPath,entry,'hook',platform,'file-context'],{cwd:project,env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+          child.stdin.write(JSON.stringify({session_id:'memory-server-runtime-test',cwd:project,hook_event_name:'PreToolUse',...input}));child.stdin.end();
+          const [stdout,stderr,status]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
+          expect(status).toBe(0);
+          // The settings loader legitimately migrates a nested document on
+          // first use; no worker or server fallback warnings may appear.
+          expect(stderr).toBe(selection==='nested settings'&&index===0
+            ? `[SETTINGS] Migrated settings file from nested to flat schema: ${path.join(data,'settings.json')}\n` : '');
+          const output=JSON.parse(stdout);
+          expect(output.hookSpecificOutput?.additionalContext).toBeUndefined();
+          expect(output.hookSpecificOutput?.permissionDecision).toBeUndefined();
+        }
+        expect(requests).toEqual([]);
+        expect(existsSync(path.join(data,'worker.pid'))).toBe(false);
+      });
+    }
+
     it(`registers scoped Bash memory reads through the actual ${platform} hook command`, async () => {
       const plugin=path.resolve(import.meta.dir,'../../plugin');
       const registrations=JSON.parse(readFileSync(path.join(plugin,'hooks',platform==='codex'?'codex-hooks.json':'hooks.json'),'utf8')).hooks.PreToolUse;

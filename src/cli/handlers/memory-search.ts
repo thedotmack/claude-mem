@@ -11,6 +11,7 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { expandMemoryPath, isWithinMemoryRoot, parseMemoryWatchRoots } from '../../services/memory/config.js';
 import { logger } from '../../utils/logger.js';
+import { selectRuntime } from '../../services/hooks/runtime-selector.js';
 
 const MAX_CONTEXT_CHARS = 10_000;
 const OWN_TOOLS = /(?:mcp_search|claude[_-]mem|claude_mem)/i;
@@ -87,6 +88,9 @@ export function memorySearchQuery(input: NormalizedHookInput, roots: string[] = 
 
 export const memorySearchHandler: EventHandler = {
   async execute(input) {
+    // mem_search is worker-only. Honor the selected runtime even when its
+    // server configuration is incomplete; never supplement from another corpus.
+    if (selectRuntime() === 'server') return {};
     if (!shouldTrackProject(input.cwd)) return {};
     const settings = loadFromFileOnce();
     if (settings.CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED === 'false') return {};

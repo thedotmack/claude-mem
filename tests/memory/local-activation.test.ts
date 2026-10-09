@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { settingsTarget } from '../../src/shared/settings-document.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -21,14 +22,84 @@ function fixture() {
   write(path.join(root, 'source/src/shared/memory-instructions.ts'), 'export const MEMORY_PLUGIN_INSTRUCTIONS = `use plugin notes`;');
   write(path.join(claude, 'CLAUDE.md'), 'existing Claude instructions\n');
   write(path.join(codex, 'AGENTS.md'), 'existing Codex instructions\n');
-  write(path.join(data, 'settings.json'), JSON.stringify({env:{existing_secret:'fixture secret', unrelated:'keep'}, custom:42}));
+  write(path.join(data, 'settings.json'), JSON.stringify({env:{CLAUDE_MEM_LOG_LEVEL:'INFO', existing_secret:'fixture secret', unrelated:'keep'}, custom:42}));
   mkdirSync(workspace);
-  const args = [script, '--workspace',workspace,'--project','project','--no-restart','--source-plugin',source,'--claude-config-dir',claude,'--codex-dir',codex,'--memory-data-dir',data];
-  const run = (...extra: string[]) => spawnSync('node', [...args, ...extra], {encoding:'utf8'});
-  return {root,source,claude,codex,data,workspace,targets,run};
+  const args = [script, '--workspace',workspace,'--project','project','--no-restart','--source-plugin',source,'--claude-config-dir',claude,'--codex-dir',codex];
+  const env = {...process.env, HOME:root, USERPROFILE:root, CLAUDE_MEM_DATA_DIR:''};
+  const run = (...extra: string[]) => spawnSync('node', [...args, '--memory-data-dir',data, ...extra], {encoding:'utf8',env});
+  const runResolved = (overrides:NodeJS.ProcessEnv = {}, ...extra:string[]) => spawnSync('node', [...args, ...extra], {encoding:'utf8',env:{...env,...overrides}});
+  return {root,source,claude,codex,data,workspace,targets,run,runResolved};
 }
 
 describe('reversible local activation', () => {
+  it('keeps flat settings active when an unrelated env object exists', () => {
+    const f=fixture();
+    const target=path.join(f.data,'settings.json');
+    const original={CLAUDE_MEM_RUNTIME:'worker',CLAUDE_MEM_WORKER_PORT:'39001',env:{existing_secret:'fixture secret',unrelated:'keep'},custom:42};
+    const bytes=JSON.stringify(original);
+    writeFileSync(target,bytes);
+    const apply=f.run('--apply');
+    expect(apply.status,apply.stderr).toBe(0);
+    const saved=JSON.parse(readFileSync(target,'utf8'));
+    expect(saved.env).toEqual(original.env);
+    expect(saved.CLAUDE_MEM_RUNTIME).toBe('worker');
+    expect(saved.CLAUDE_MEM_WORKER_PORT).toBe('39001');
+    expect(saved.custom).toBe(42);
+    // Read through the worker's actual settings-document predicate, rather
+    // than merely verifying that the activation script wrote some JSON.
+    const effective=settingsTarget(saved);
+    expect(effective).toBe(saved);
+    expect(effective.CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED).toBe('true');
+    expect(JSON.parse(effective.CLAUDE_MEM_MEMORY_WATCH_ROOTS as string)).toEqual([{path:path.join(f.workspace,'.claude/memory'),project:'project'}]);
+    const backupRoot=path.join(f.workspace,'.agent-jobs/progressive-mem-search');
+    expect(f.run('--restore',path.join(backupRoot,readdirSync(backupRoot)[0])).status).toBe(0);
+    expect(readFileSync(target,'utf8')).toBe(bytes);
+  });
+
+  for (const selection of ['flat BOM settings', 'nested home-relative settings', 'environment override', 'CLI override'] as const) {
+    it(`updates and rolls back the worker's resolved settings with ${selection}`, () => {
+      const f=fixture();
+      const defaultSettings=path.join(f.root,'.claude-mem/settings.json');
+      const stale=path.join(f.root,'stale-data');
+      const redirect=selection==='flat BOM settings'
+        ? {CLAUDE_MEM_DATA_DIR:f.data, unrelated:'keep redirect metadata'}
+        : {CLAUDE_MEM_DATA_DIR:stale, env:{CLAUDE_MEM_DATA_DIR:selection==='nested home-relative settings'?'~/memory':stale}, unrelated:'keep redirect metadata'};
+      mkdirSync(path.dirname(defaultSettings),{recursive:true});
+      const originalRedirect='\uFEFF'+JSON.stringify(redirect);
+      writeFileSync(defaultSettings,originalRedirect);
+      const target=path.join(f.data,'settings.json');
+      const originalTarget='\uFEFF'+readFileSync(target,'utf8');
+      writeFileSync(target,originalTarget);
+      const nativeSettings=path.join(f.claude,'settings.json');
+      const nativeBytes=JSON.stringify({autoMemoryEnabled:false,unrelated:'preserve native choices'});
+      writeFileSync(nativeSettings,nativeBytes);
+      const overrides=selection==='environment override'?{CLAUDE_MEM_DATA_DIR:'~/memory'}
+        : selection==='CLI override'?{CLAUDE_MEM_DATA_DIR:stale}:{};
+      const extra=selection==='CLI override'?['--memory-data-dir','~/memory']:[];
+      const dry=f.runResolved(overrides,...extra);
+      expect(dry.status,dry.stderr).toBe(0);
+      expect(dry.stdout).toContain(target);
+      expect(readFileSync(defaultSettings,'utf8')).toBe(originalRedirect);
+      expect(readFileSync(target,'utf8')).toBe(originalTarget);
+      const apply=f.runResolved(overrides,...extra,'--apply');
+      expect(apply.status,apply.stderr).toBe(0);
+      const saved=JSON.parse(readFileSync(target,'utf8'));
+      expect(JSON.parse(saved.env.CLAUDE_MEM_MEMORY_WATCH_ROOTS)).toEqual([{path:path.join(f.workspace,'.claude/memory'),project:'project'}]);
+      expect(saved.env.existing_secret).toBe('fixture secret');
+      expect(readFileSync(defaultSettings,'utf8')).toBe(originalRedirect);
+      expect(readFileSync(nativeSettings,'utf8')).toBe(nativeBytes);
+      expect(existsSync(stale)).toBe(false);
+      const backupRoot=path.join(f.workspace,'.agent-jobs/progressive-mem-search');
+      const backup=path.join(backupRoot,readdirSync(backupRoot)[0]);
+      const manifest=JSON.parse(readFileSync(path.join(backup,'manifest.json'),'utf8'));
+      expect(manifest.files.some((entry:{target:string})=>entry.target===target)).toBe(true);
+      expect(manifest.files.some((entry:{target:string})=>entry.target===defaultSettings)).toBe(false);
+      expect(f.runResolved(overrides,'--restore',backup).status).toBe(0);
+      expect(readFileSync(target,'utf8')).toBe(originalTarget);
+      expect(readFileSync(defaultSettings,'utf8')).toBe(originalRedirect);
+    });
+  }
+
   for (const [label, included, platform] of [
     ['Claude marketplace only', [0], 'claude'],
     ['Claude cache only', [1], 'claude'],

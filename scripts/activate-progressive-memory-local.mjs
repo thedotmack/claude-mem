@@ -6,12 +6,13 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, sta
 import { homedir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { resolveDataDir, settingsTarget } from './resolve-data-dir.cjs';
 
 const args = process.argv.slice(2);
 const option = key => { const index = args.indexOf(key); return index < 0 ? null : args[index + 1]; };
 const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const read = file => existsSync(file) ? readFileSync(file) : null;
-const json = file => JSON.parse(readFileSync(file, 'utf8'));
+const json = file => JSON.parse(readFileSync(file, 'utf8').replace(/^\uFEFF/, ''));
 const fail = message => { throw new Error(message); };
 function atomicWrite(file, bytes, mode = 0o600) {
   mkdirSync(path.dirname(file), { recursive: true });
@@ -98,9 +99,13 @@ for (const file of new Set(targets.map(target => target.instructions))) {
   addChange(file, Buffer.from(next));
 }
 
-const settingsFile = path.join(option('--memory-data-dir') || process.env.CLAUDE_MEM_DATA_DIR || path.join(home, '.claude-mem'), 'settings.json');
+// The explicit CLI override wins; otherwise use the worker's tested directory
+// resolver, including flat/nested settings redirects and home-relative paths.
+const explicitDataDir = option('--memory-data-dir');
+if (explicitDataDir) process.env.CLAUDE_MEM_DATA_DIR = explicitDataDir;
+const settingsFile = path.join(resolveDataDir(), 'settings.json');
 const settings = existsSync(settingsFile) ? json(settingsFile) : {};
-const container = settings.env && typeof settings.env === 'object' && !Array.isArray(settings.env) ? settings.env : settings;
+const container = settingsTarget(settings);
 const memoryRoot = path.join(workspace, '.claude/memory');
 const configured = container.CLAUDE_MEM_MEMORY_WATCH_ROOTS;
 const roots = configured ? JSON.parse(configured) : [];
