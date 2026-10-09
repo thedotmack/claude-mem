@@ -742,6 +742,121 @@ describe('SyncApply', () => {
     expect(prompt.sync_rev).toBe('2');
   });
 
+  it('links a prompt whose origin session has no memory id to a content-keyed session, which a later memory id adopts', () => {
+    const apply = makeApply();
+    // The origin's session has a project but no memory id (its memory agent
+    // never started), so no set_prompt_session repair may ever come.
+    apply.applyOps([op(1, 'prompt', '31', promptBody({ memory_session_id: null }))]);
+    const session = db.prepare(`SELECT * FROM sdk_sessions WHERE content_session_id = 'sess-remote-1'`).get() as any;
+    expect(session.project).toBe('proj-remote');
+    expect(session.memory_session_id).toBeNull();
+    // Linked, so the Chroma backfill finds the prompt's project through its session.
+    let prompt = db.prepare(`SELECT session_db_id FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
+    expect(prompt.session_db_id).toBe(session.id);
+
+    // The origin sends project 'unknown' when it has no session at all: still an orphan.
+    apply.applyOps([op(3, 'prompt', '33', promptBody({
+      memory_session_id: null, project: 'unknown', content_session_id: 'sess-remote-9',
+    }))]);
+    const unknownPrompt = db.prepare(`SELECT session_db_id FROM user_prompts WHERE origin_local_id = '33'`).get() as any;
+    expect(unknownPrompt.session_db_id).toBeNull();
+
+    // If the origin does register later, its repair op adopts the same session.
+    apply.applyOps([op(4, 'mutation', 'uuid-repair-1', {
+      op: 'set_prompt_session',
+      target: { origin_device_id: REMOTE, origin_local_id: '31' },
+      fields: { memory_session_id: 'mem-remote-1', project: 'proj-remote', content_session_id: 'sess-remote-1' },
+    }, { rev: 2 })]);
+    const adopted = db.prepare(`SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-remote-1'`).get() as any;
+    expect(adopted.id).toBe(session.id);
+    expect(count('sdk_sessions')).toBe(2); // native seed + the one content-keyed session
+    prompt = db.prepare(`SELECT session_db_id FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
+    expect(prompt.session_db_id).toBe(session.id);
+  });
+
+  it('adopting a session by content id keeps the memory id it already has', () => {
+    const apply = makeApply();
+    apply.applyOps([op(1, 'prompt', '31', promptBody())]); // session sess-remote-1 ↔ mem-remote-1
+    // Another memory id claims the same content id: adopt, but do not overwrite.
+    apply.applyOps([op(2, 'prompt', '32', promptBody({ memory_session_id: 'mem-remote-2', prompt_number: 2 }))]);
+    const sessions = db.prepare(`SELECT memory_session_id FROM sdk_sessions WHERE content_session_id = 'sess-remote-1'`).all() as any[];
+    expect(sessions.map((s) => s.memory_session_id)).toEqual(['mem-remote-1']);
+  });
+
+  it('merges the content-keyed session into the memory session when an observation arrives before the repair', () => {
+    const apply = makeApply();
+    // The prompt arrives before its memory id, then the title (content target).
+    apply.applyOps([
+      op(1, 'prompt', '31', promptBody({ memory_session_id: null })),
+      op(2, 'mutation', 'uuid-title-1', {
+        op: 'set_title',
+        target: { content_session_id: 'sess-remote-1', platform_source: 'claude' },
+        fields: { custom_title: 'Early title' },
+      }),
+    ]);
+    // The origin registers; an observation overtakes the repair op.
+    apply.applyOps([op(3, 'observation', '11', obsBody())]);
+    apply.applyOps([op(4, 'mutation', 'uuid-repair-1', {
+      op: 'set_prompt_session',
+      target: { origin_device_id: REMOTE, origin_local_id: '31' },
+      fields: { memory_session_id: 'mem-remote-1', project: 'proj-remote', content_session_id: 'sess-remote-1' },
+    }, { rev: 2 })]);
+
+    const sessions = db.prepare(`
+      SELECT id, content_session_id, memory_session_id, custom_title FROM sdk_sessions
+      WHERE memory_session_id = 'mem-remote-1' OR content_session_id = 'sess-remote-1'
+    `).all() as any[];
+    expect(sessions).toHaveLength(1); // one logical session, one row
+    expect(sessions[0].content_session_id).toBe('sess-remote-1');
+    expect(sessions[0].custom_title).toBe('Early title');
+    const prompt = db.prepare(`SELECT session_db_id FROM user_prompts WHERE origin_local_id = '31'`).get() as any;
+    expect(prompt.session_db_id).toBe(sessions[0].id);
+  });
+
+  it('the merge moves tool_uses rows, which reference the session without a foreign key', () => {
+    const apply = makeApply();
+    apply.applyOps([op(1, 'prompt', '31', promptBody({ memory_session_id: null }))]);
+    const contentKeyed = db.prepare(`SELECT id FROM sdk_sessions WHERE content_session_id = 'sess-remote-1'`).get() as any;
+    db.prepare(`
+      INSERT INTO tool_uses (tool_use_id, content_session_id, session_db_id, project, tool_name, created_at, created_at_epoch)
+      VALUES ('tu-1', 'sess-remote-1', ?, 'proj-remote', 'Bash', ?, 1751234567892)
+    `).run(contentKeyed.id, ISO);
+
+    apply.applyOps([op(2, 'observation', '11', obsBody())]);
+    apply.applyOps([op(3, 'mutation', 'uuid-repair-1', {
+      op: 'set_prompt_session',
+      target: { origin_device_id: REMOTE, origin_local_id: '31' },
+      fields: { memory_session_id: 'mem-remote-1', project: 'proj-remote', content_session_id: 'sess-remote-1' },
+    }, { rev: 2 })]);
+
+    const merged = db.prepare(`SELECT id FROM sdk_sessions WHERE memory_session_id = 'mem-remote-1'`).get() as any;
+    const tool = db.prepare(`SELECT session_db_id FROM tool_uses WHERE tool_use_id = 'tu-1'`).get() as any;
+    expect(tool.session_db_id).toBe(merged.id);
+  });
+
+  it('the merge keeps the platform of the content-keyed session, so later prompts find it', () => {
+    const apply = makeApply();
+    const codex = { platform_source: 'codex', memory_session_id: null };
+    apply.applyOps([op(1, 'prompt', '31', promptBody(codex))]);
+    apply.applyOps([op(2, 'observation', '11', obsBody())]); // memory-keyed stub, default platform
+    apply.applyOps([op(3, 'mutation', 'uuid-repair-1', {
+      op: 'set_prompt_session',
+      target: { origin_device_id: REMOTE, origin_local_id: '31' },
+      fields: { memory_session_id: 'mem-remote-1', project: 'proj-remote', content_session_id: 'sess-remote-1', platform_source: 'codex' },
+    }, { rev: 2 })]);
+    // A later prompt of the same session, again without a memory id.
+    apply.applyOps([op(4, 'prompt', '32', promptBody({ ...codex, prompt_number: 2 }))]);
+
+    const sessions = db.prepare(`
+      SELECT id, platform_source FROM sdk_sessions
+      WHERE memory_session_id = 'mem-remote-1' OR content_session_id = 'sess-remote-1'
+    `).all() as any[];
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0].platform_source).toBe('codex');
+    const prompts = db.prepare(`SELECT DISTINCT session_db_id FROM user_prompts WHERE origin_local_id IN ('31','32')`).all() as any[];
+    expect(prompts.map((p) => p.session_db_id)).toEqual([sessions[0].id]);
+  });
+
   it('mutations from another device apply to NATIVE rows via the self-origin identity', () => {
     // A native prompt (origin columns NULL — NULL = this device).
     db.prepare(`
