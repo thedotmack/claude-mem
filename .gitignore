@@ -1,6 +1,7 @@
 datasets/
 node_modules
 dist/
+/dsh/lib/
 **/_tree-sitter/
 *.log
 .DS_Store
@@ -16,6 +17,8 @@ dist/
 .claude/worktrees/
 plugin/data/
 plugin/data.backup/
+# Staged per run by scripts/eval-read-gate.ts from evals/read-gate (tracked).
+plugin/evals-read-gate/
 package-lock.json
 bun.lock
 !plugin/bun.lock

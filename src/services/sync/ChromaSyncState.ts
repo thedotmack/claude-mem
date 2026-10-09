@@ -94,6 +94,9 @@ function load(): Record<string, ProjectWatermarks> {
   let parsed: Record<string, Partial<ProjectWatermarks>>;
   try {
     parsed = readJsonFileWithBom<Record<string, Partial<ProjectWatermarks>>>(path);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('checkpoint must be a project-watermark object');
+    }
   } catch (error) {
     // A truncated or corrupt state file must not abort the sync pipeline. Treat
     // it as empty and rebuild from the SQLite watermarks on the next backfill.

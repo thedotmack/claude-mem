@@ -1,3 +1,5 @@
+import { assistantText } from '../../shared/assistant-text.js';
+export { assistantText } from '../../shared/assistant-text.js';
 import { createHash } from 'crypto';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
@@ -13,7 +15,6 @@ import {
   buildContinuationPrompt,
   splitFramingPrompt,
 } from '../../sdk/prompts.js';
-import { pruneProcessedObservationPayloads } from './history-pruning.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
@@ -111,28 +112,13 @@ export interface OpenAIChatMessage {
 /** Sent when every turn is empty, so a request never carries `messages: []`. */
 const EMPTY_HISTORY_FALLBACK = '(context unavailable)';
 
-/**
- * The answer text of an OpenAI-shaped reply's `message.content`. Gateways may
- * send content blocks instead of a string; only text blocks count, and
- * reasoning or tool-call arguments are never substituted for the answer
- * (#4017). Anything else reads as no text.
- */
-export function assistantText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((part): part is { type: 'text'; text: string } =>
-      part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
-    .map(part => part.text)
-    .join('\n');
-}
 
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
  * generation, init/continuation prompt, the observation/summary message loop,
- * cumulative token accounting, abort-aware error handling, and history
- * truncation — is identical between them. Per-provider differences (config
+ * cumulative token accounting, abort-aware error handling, and bounded
+ * generations — is identical between them. Per-provider differences (config
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
  */
@@ -581,10 +567,9 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
     session.conversationHistory.push({ role: 'user', content: turnPrompt });
 
-    // Stub out payloads already converted to stored observations so the
-    // request below stays bounded instead of re-sending every prior tool
-    // dump (see history-pruning.ts).
-    pruneProcessedObservationPayloads(session.conversationHistory);
+    // Keep completed turns unchanged within this bounded generation so every
+    // request preserves the provider's cached prefix. Retire the generation
+    // through the existing budget/overflow paths rather than rewriting it.
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
@@ -642,10 +627,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     };
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-
-    // Same bounding as the observation path: the summary reads the assistant
-    // observations for its narrative, not the raw tool payloads behind them.
-    pruneProcessedObservationPayloads(session.conversationHistory);
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';

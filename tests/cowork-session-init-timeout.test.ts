@@ -14,7 +14,7 @@ const node = Bun.which('node');
 const prompt = 'Keep this submitted prompt for the observer.';
 const input = { session_id: 'cowork-timeout-session', cwd: '/workspace/timeout-fixture', prompt };
 
-describe('Cowork session-init captures prompts asynchronously', () => {
+describe('Cowork session-init completes within its registered deadline', () => {
   let home: string;
   let spool: string;
   let server: Server;
@@ -83,24 +83,24 @@ describe('Cowork session-init captures prompts asynchronously', () => {
           CMEM_SYNC_HUB_URL: apiBase,
         },
         encoding: 'utf8',
-        // Test-only guard against a hung subprocess; the hook has no registered timeout.
-        timeout: subprocessGuardMs,
+        // Exercise the registered host deadline, bounded by a test-only guard.
+        timeout: Math.min(sessionInitHook.timeout * 1000, subprocessGuardMs),
         windowsHide: true,
       }, (error, stdout, stderr) => resolve({ error, stdout, stderr, elapsedMs: Date.now() - startedAt }));
       child.stdin!.end(JSON.stringify(input));
     });
   }
 
-  it('registers session-init as a background command without a hook timeout', () => {
+  it('keeps prompt registration synchronous and budgets delivery plus replay', () => {
     expect(sessionInitHook).toMatchObject({
       type: 'command',
       command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/cmem-hook.mjs" session-init',
-      async: true,
     });
-    expect(sessionInitHook).not.toHaveProperty('timeout');
+    expect(sessionInitHook.async).not.toBe(true);
+    expect(sessionInitHook.timeout).toBeGreaterThan(16); // Two eight-second HTTP deadlines plus overhead.
   });
 
-  it('spools a stalled background ingest when its HTTP request times out', async () => {
+  it('spools a stalled ingest before the registered hook deadline', async () => {
     const result = await runSessionInit();
 
     expect(result.error).toBeNull();
@@ -117,7 +117,7 @@ describe('Cowork session-init captures prompts asynchronously', () => {
     expect(queued[0]).toMatchObject({ event: 'session-init', project: 'cmem_work_timeout-fixture', payload: input });
   }, subprocessGuardMs + 5000);
 
-  it('completes a background ingest and backlog replay that together exceed eight seconds', async () => {
+  it('completes ingest and backlog replay that together exceed eight seconds', async () => {
     responseDelayMs = 4500;
     const backlog = {
       v: 1, platform: 'cowork', event: 'session-init', project: 'cmem_work_timeout-fixture',

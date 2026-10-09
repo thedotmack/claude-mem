@@ -237,7 +237,9 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(content_session_id, tool_use_id) DO UPDATE SET
-      memory_session_id = COALESCE(excluded.memory_session_id, tool_uses.memory_session_id),
+      memory_session_id = CASE WHEN tool_uses.observation_id IS NULL
+        THEN COALESCE(excluded.memory_session_id, tool_uses.memory_session_id)
+        ELSE tool_uses.memory_session_id END,
       session_db_id     = COALESCE(excluded.session_db_id, tool_uses.session_db_id),
       project           = CASE WHEN excluded.project != '' THEN excluded.project ELSE tool_uses.project END,
       platform_source   = excluded.platform_source,
@@ -301,14 +303,20 @@ export function linkToolUsesToObservation(
   const result = db.prepare(`
     UPDATE tool_uses
     SET observation_id = COALESCE(observation_id, ?),
-        memory_session_id = COALESCE(?, memory_session_id)
+        memory_session_id = CASE WHEN observation_id IS NULL
+          THEN COALESCE(?, memory_session_id)
+          ELSE COALESCE(memory_session_id, ?)
+        END
     WHERE content_session_id = ?
       AND tool_use_id IN (${placeholders})
+      AND (observation_id IS NULL OR observation_id = ?)
   `).run(
     params.observationId,
     params.memorySessionId ?? null,
+    params.memorySessionId ?? null,
     params.contentSessionId,
-    ...ids
+    ...ids,
+    params.observationId
   );
 
   return Number(result.changes ?? 0);

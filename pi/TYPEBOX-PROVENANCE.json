@@ -1,0 +1,13 @@
+{
+  "schema": "claude-mem.pi.typebox-attribution.v1",
+  "name": "typebox",
+  "version": "1.1.24",
+  "license": "MIT",
+  "licenseFile": "TYPEBOX-LICENSE.txt",
+  "licenseSha256": "e8a7cc256941a26ba8234f04390165243a4d42f74fd6491934140605bf7eae2d",
+  "packageJsonSha256": "abcd4ed84049ca96fc14169210d4e3e567a10d26a304d206bf666b9f043075aa",
+  "resolvedEntry": "build/index.mjs",
+  "source": "https://github.com/sinclairzx81/typebox/tree/1.1.24",
+  "licenseSource": "https://github.com/sinclairzx81/typebox/blob/1.1.24/license",
+  "buildBinding": "Release build checks the resolved package and license and aliases the Pi import to that same entry."
+}

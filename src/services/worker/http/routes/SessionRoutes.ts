@@ -564,6 +564,10 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
+    // Read-only admission probe: older workers must not silently ignore nativePromptId.
+    app.get('/api/sessions/native-prompt-capability', (_req: Request, res: Response) => {
+      res.json({ nativePromptId: 1 });
+    });
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -608,6 +612,8 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     project: z.string().optional(),
     prompt: z.string().optional(),
+    // A host's real user-turn ID, scoped by platform + content session.
+    nativePromptId: z.string().min(1).max(256).regex(/^[^\s\x00-\x1f\x7f]+$/).optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
     // The checkout `project` was resolved from, and how (gate P1-2).
@@ -831,7 +837,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
-    const promptNumber = currentCount + 1;
+    let promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
@@ -858,15 +864,39 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const duplicatePrompt = store.findRecentDuplicateUserPrompt(
-      contentSessionId,
-      cleanedPrompt,
-      USER_PROMPT_DEDUPE_WINDOW_MS,
-      sessionDbId
-    );
+    const nativePromptId = req.body.nativePromptId as string | undefined;
+    const normalizedSdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
+    // A native slash-only ask is still a real turn. Keep its cleaned text
+    // when SDK normalization would erase it; legacy normalization is unchanged.
+    const sdkPrompt = nativePromptId ? normalizedSdkPrompt || cleanedPrompt : normalizedSdkPrompt;
+    let nativeAnchor: { id: number; promptNumber: number; duplicate: boolean } | undefined;
+    if (nativePromptId) {
+      try {
+        nativeAnchor = store.saveNativeUserPrompt(contentSessionId, sessionDbId, nativePromptId, cleanedPrompt, rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Native prompt identity was reused with different text') {
+          res.status(409).json({ error: error.message });
+          return;
+        }
+        throw error;
+      }
+      promptNumber = nativeAnchor.promptNumber;
+    }
+    // Legacy callers retain same-text retry protection. Native IDs distinguish
+    // intentional repeated prompts without delaying the user's next turn.
+    const duplicatePrompt = nativeAnchor
+      ? (nativeAnchor.duplicate ? { id: nativeAnchor.id, prompt_number: nativeAnchor.promptNumber } : undefined)
+      : store.findRecentDuplicateUserPrompt(contentSessionId, cleanedPrompt, USER_PROMPT_DEDUPE_WINDOW_MS, sessionDbId);
 
     if (duplicatePrompt) {
-      const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+      const activeSession = this.sessionManager.getSession(sessionDbId);
+      // The durable claim can survive an initialization failure. Repair only
+      // a stale live native turn; cold sessions remain lazy and older retries
+      // must never replace a newer prompt's context.
+      if (nativeAnchor && activeSession && activeSession.lastPromptNumber < duplicatePrompt.prompt_number) {
+        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, duplicatePrompt.prompt_number, project);
+      }
+      const contextInjected = activeSession !== undefined;
       logger.debug('SESSION', 'Duplicate user prompt skipped', {
         sessionId: sessionDbId,
         promptNumber: duplicatePrompt.prompt_number,
@@ -879,6 +909,9 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber: duplicatePrompt.prompt_number,
         skipped: true,
         reason: 'duplicate',
+        ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+          store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === duplicatePrompt.prompt_number
+          && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? duplicatePrompt.prompt_number) === duplicatePrompt.prompt_number } : {}),
         contextInjected
       });
       return;
@@ -896,9 +929,13 @@ export class SessionRoutes extends BaseRouteHandler {
     // (#2373). Only this route reopens at all: the observation and summarize
     // routes can carry trailing traffic from the turn that just ended, where
     // 'completed' is the truth.
-    store.reopenCompletedSession(sessionDbId);
-
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    let savedUserPromptId: number;
+    if (nativeAnchor) {
+      savedUserPromptId = nativeAnchor.id;
+    } else {
+      store.reopenCompletedSession(sessionDbId);
+      savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    }
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
     // saved prompt nudges — including cursor sessions, which skip the
@@ -914,45 +951,46 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     if (platformSource !== 'cursor') {
-      const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
+      // The row this request saved, by id. A newest-by-timestamp lookup can
+      // return a neighbouring turn saved in the same millisecond.
+      const savedUserPrompt = store.getUserPromptById(savedUserPromptId);
 
-      if (latestPrompt) {
+      if (savedUserPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
-          id: latestPrompt.id,
-          content_session_id: latestPrompt.content_session_id,
-          project: latestPrompt.project,
-          platform_source: latestPrompt.platform_source,
-          prompt_number: latestPrompt.prompt_number,
-          prompt_text: latestPrompt.prompt_text,
-          created_at_epoch: latestPrompt.created_at_epoch
+          id: savedUserPrompt.id,
+          content_session_id: savedUserPrompt.content_session_id,
+          project: savedUserPrompt.project,
+          platform_source: savedUserPrompt.platform_source,
+          prompt_number: savedUserPrompt.prompt_number,
+          prompt_text: savedUserPrompt.prompt_text,
+          created_at_epoch: savedUserPrompt.created_at_epoch
         });
 
         const chromaStart = Date.now();
-        const promptText = latestPrompt.prompt_text;
+        const promptText = savedUserPrompt.prompt_text;
         this.dbManager.getChromaSync()?.syncUserPrompt(
-          latestPrompt.id,
-          latestPrompt.memory_session_id,
-          latestPrompt.project,
+          savedUserPrompt.id,
+          savedUserPrompt.memory_session_id,
+          savedUserPrompt.project,
           promptText,
-          latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch,
-          latestPrompt.platform_source
+          savedUserPrompt.prompt_number,
+          savedUserPrompt.created_at_epoch,
+          savedUserPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60
             ? promptText.substring(0, 60) + '...'
             : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             duration: `${chromaDuration}ms`,
             prompt: truncatedPrompt
           });
         }).catch((error) => {
           logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);
         });
@@ -964,7 +1002,6 @@ export class SessionRoutes extends BaseRouteHandler {
     } else {
       // Cursor creates its observer lazily, but accepted prompts still update an existing session.
       if (this.sessionManager.getSession(sessionDbId)) {
-        const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
         this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
       }
       logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
@@ -974,6 +1011,9 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       promptNumber,
       skipped: false,
+      ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+        store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === promptNumber
+        && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? promptNumber) === promptNumber } : {}),
       contextInjected,
       status: 'initialized'
     });

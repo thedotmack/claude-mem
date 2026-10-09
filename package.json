@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.31.0",
+  "version": "13.34.2",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -51,7 +51,10 @@
     "plugin/skills",
     "plugin/ui",
     "openclaw",
-    "omp"
+    "omp",
+    "pi",
+    "dsh",
+    "NOTICE"
   ],
   "engines": {
     "node": ">=20.12.0",
@@ -107,6 +110,7 @@
     "test:server": "bun test tests/server/",
     "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "e2e:sync-matrix": "bun scripts/sync-matrix-e2e.ts",
+    "eval:read-gate": "bun scripts/eval-read-gate.ts",
     "check:postinstall-allowlist": "node scripts/check-postinstall-allowlist.js",
     "smoke:clean-room": "node scripts/smoke-clean-room.cjs",
     "prepublishOnly": "npm run build && node scripts/check-postinstall-allowlist.js",
@@ -183,7 +187,8 @@
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "unified": "^11.0.5",
-    "unist-util-visit": "^5.1.0"
+    "unist-util-visit": "^5.1.0",
+    "typebox": "1.1.24"
   },
   "trustedDependencies": [
     "esbuild",

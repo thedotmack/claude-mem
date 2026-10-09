@@ -294,7 +294,7 @@ describe('installer trial-ready contract', () => {
 
   it('uses the exact two-option provider copy', () => {
     expect(buildProviderLabels()).toEqual({
-      cmem: 'CMEM Pro (Free Trial, up to 14 days: Tokens for Observations + Real-Time Cloud Sync '
+      cmem: 'CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud Sync '
         + 'for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)',
       cmemHint: '',
       claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
@@ -310,7 +310,7 @@ describe('installer trial-ready contract', () => {
     const labels = buildProviderLabels();
     expect(labels.cmemHint).toBe('');
     expect(labels.claudeHint).toBe('');
-    expect(labels.cmem).toContain('Free Trial, up to 14 days');
+    expect(labels.cmem).toContain('30 Day Free Trial');
     expect(labels.claude).toContain('no cloud sync');
   });
 

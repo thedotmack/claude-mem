@@ -180,6 +180,22 @@ export function applySecurityHeaders(res: Response): void {
 export class Server {
   readonly app: Application;
   private server: http.Server | null = null;
+  /**
+   * The idle-exit monitor's client-activity signals: when a request last
+   * started or finished (epoch ms; null before the first), and how many
+   * requests are still open.
+   *
+   * Counted per request, deliberately NOT per socket. Under Bun the server's
+   * 'connection' event yields wrapper objects with undefined addresses that
+   * never emit 'close', so a socket tally reads as permanently busy on a Bun
+   * install (the runtime claude-mem ships on) while the OS shows no
+   * connections at all. A request settles on its response's 'finish' or
+   * 'close', or its socket's 'close', the event Bun emits when a streaming
+   * client disconnects (SSEBroadcaster.addClient relies on the same one).
+   * A count that never settles only keeps the worker up, which fails safe.
+   */
+  private lastRequestAt: number | null = null;
+  private inFlightRequests = 0;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
 
@@ -201,6 +217,45 @@ export class Server {
 
   getHttpServer(): http.Server | null {
     return this.server;
+  }
+
+  /**
+   * When a request last started or finished (epoch ms), or null if none has.
+   *
+   * A request that stays open, such as a viewer tab on the SSE stream or a
+   * corpus prime, stamps this only when it starts and when it ends, so the
+   * idle-exit monitor reads it together with getInFlightRequestCount().
+   */
+  getLastRequestAt(): number | null {
+    return this.lastRequestAt;
+  }
+
+  /** Requests that have started and not yet finished or closed. */
+  getInFlightRequestCount(): number {
+    return this.inFlightRequests;
+  }
+
+  /**
+   * Count one request as in flight until its response finishes or its
+   * connection closes, whichever comes first, and stamp both ends.
+   */
+  private trackRequestActivity(res: Response): void {
+    this.lastRequestAt = Date.now();
+    this.inFlightRequests++;
+    const socket = res.socket;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      res.off('finish', settle);
+      res.off('close', settle);
+      socket?.off('close', settle);
+      this.inFlightRequests--;
+      this.lastRequestAt = Date.now();
+    };
+    res.on('finish', settle);
+    res.on('close', settle);
+    socket?.on('close', settle);
   }
 
   async listen(port: number, host: string): Promise<void> {
@@ -260,6 +315,15 @@ export class Server {
   }
 
   private setupMiddleware(): void {
+    // Idle-exit request tracking, ahead of the body parsers and every route
+    // registered from here on. The remote read-only guard, security headers,
+    // host/CORS guards and the /api/auth routes mount before it (position
+    // zero belongs to the read-only guard), so a request that only they
+    // answer is not counted; none of those stays open.
+    this.app.use((_req: Request, res: Response, next: () => void) => {
+      this.trackRequestActivity(res);
+      next();
+    });
     const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
   }

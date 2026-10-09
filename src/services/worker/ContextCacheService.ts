@@ -81,6 +81,7 @@ interface PersistedVariantIndex {
 export class ContextCacheService {
   private readonly variants = new Map<string, KnownVariant>();
   private readonly pendingVariantIds = new Set<string>();
+  private readonly activeVariantIds = new Set<string>();
   private renderTimer: ReturnType<typeof setTimeout> | null = null;
   private renderChain: Promise<void> = Promise.resolve();
   private unsubscribe: (() => void) | null = null;
@@ -127,7 +128,7 @@ export class ContextCacheService {
     // A pending variant's file predates a write (possibly a delete) it will now
     // never re-render for; served until the next worker boots, it could show
     // deleted memory. Remove it so the hook takes the live path instead.
-    for (const variantId of this.pendingVariantIds) {
+    for (const variantId of new Set([...this.pendingVariantIds, ...this.activeVariantIds])) {
       const variant = this.variants.get(variantId);
       if (variant) this.removeFile(variant.keys);
     }
@@ -145,6 +146,7 @@ export class ContextCacheService {
     /** removalGenerationNow() taken before the render began; omitted = no removal check. */
     removalGenerationAtRenderStart?: number,
   ): void {
+    if (this.stopped) return;
     const variantId = contextCacheVariantId(keys);
     if (!this.variants.has(variantId)) {
       this.variants.set(variantId, { keys, learnedAtEpochMs: this.now(), readKeys: new Set() });
@@ -168,6 +170,7 @@ export class ContextCacheService {
    * the render queue, so the hook has it to fall back on while the worker is down.
    */
   warmVariant(keys: ContextCacheKeys): void {
+    if (this.stopped) return;
     const variantId = contextCacheVariantId(keys);
     if (!this.variants.has(variantId)) {
       this.recordLiveRender(keys, { body: '', cacheable: false }, this.now());
@@ -272,9 +275,14 @@ export class ContextCacheService {
       }
       const renderedAtEpochMs = this.now();
       const removalGenerationAtStart = this.removalGeneration;
+      this.activeVariantIds.add(variantId);
       try {
         this.refreshReadKeys(variantId);
         const render = await this.options.renderVariant(variant.keys);
+        // A queued render owns this exact registry entry. Teardown or eviction
+        // can remove it while the renderer awaits, and a later live request
+        // may already have learned a replacement with the same cache key.
+        if (this.stopped || this.variants.get(variantId) !== variant) continue;
         if (removalGenerationAtStart !== this.removalGeneration) {
           this.requeueAfterRemoval(variantId);
           continue;
@@ -284,7 +292,9 @@ export class ContextCacheService {
         // The old file would now be wrong; remove it so the hook takes the live path.
         logger.error('CONTEXT_CACHE', 'Context re-render failed; removing the cached block', { variantId, keys: variant.keys },
           error instanceof Error ? error : new Error(String(error)));
-        this.removeFile(variant.keys);
+        if (this.variants.get(variantId) === variant) this.removeFile(variant.keys);
+      } finally {
+        this.activeVariantIds.delete(variantId);
       }
     }
   }

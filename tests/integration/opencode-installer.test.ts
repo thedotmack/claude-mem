@@ -1,15 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
   addOpenCodeMcpReference,
   addOpenCodePluginReference,
   deregisterOpenCodePluginFromConfig,
+  detectOpenCodeVersion,
+  getInstalledPluginPath,
   getOpenCodeAgentsMdPath,
   getOpenCodeConfigPath,
   installOpenCodeIntegration,
+  installOpenCodePlugin,
   OPENCODE_OLD_CONTEXT_BLOCK_LEFT,
+  parseOpenCodeVersion,
   registerOpenCodePluginInConfig,
   removeOpenCodeMcpReference,
   removeOpenCodePluginReference,
@@ -316,5 +320,115 @@ describe('OpenCode MCP entry host contract (plan-23 step 1)', () => {
     expect(command.length).toBeGreaterThanOrEqual(schema.command.min_items);
     expect(command[0]).toBe(process.execPath);
     expect(command[1]).toBe(getMcpServerAbsolutePath());
+  });
+});
+
+// OpenCode 2 loads plugins/claude-mem.js from its plugin directory itself and
+// drops a configured plugin path that is a file, warning "configured plugin
+// path must be a directory" on every start (#4578). OpenCode 1 keeps the
+// `plugin` entry every install has written.
+describe('OpenCode installer per OpenCode version', () => {
+  let tempDir: string;
+  let previous: Record<string, string | undefined>;
+
+  beforeEach(() => {
+    tempDir = join(tmpdir(), `opencode-version-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    const bundle = join(tempDir, 'claude', 'plugins', 'marketplaces', 'thedotmack', 'dist', 'opencode-plugin', 'index.js');
+    mkdirSync(join(bundle, '..'), { recursive: true });
+    writeFileSync(bundle, 'export default { id: "claude-mem" };\n', 'utf-8');
+    mkdirSync(join(tempDir, 'opencode'), { recursive: true });
+    previous = {
+      OPENCODE_CONFIG_DIR: process.env.OPENCODE_CONFIG_DIR,
+      CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+      PATH: process.env.PATH,
+    };
+    process.env.OPENCODE_CONFIG_DIR = join(tempDir, 'opencode');
+    process.env.CLAUDE_CONFIG_DIR = join(tempDir, 'claude');
+  });
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  const readConfig = () => JSON.parse(readFileSync(getOpenCodeConfigPath(), 'utf-8'));
+
+  it('reads the version lines OpenCode prints', () => {
+    expect(parseOpenCodeVersion('1.18.35\n')).toEqual([1, 18, 35]);
+    expect(parseOpenCodeVersion('2.0.22\n')).toEqual([2, 0, 22]);
+    // 2.0.23 prefixes the version (seen on a live host in #4519).
+    expect(parseOpenCodeVersion('opencode v2.0.23\n')).toEqual([2, 0, 23]);
+    expect(parseOpenCodeVersion('An update is available\nopencode2 2.0.25\n')).toEqual([2, 0, 25]);
+    expect(parseOpenCodeVersion('command not found')).toBeNull();
+  });
+
+  it('installs for OpenCode 2 without a plugin entry and removes the one an earlier install wrote', () => {
+    writeFileSync(getOpenCodeConfigPath(), JSON.stringify({
+      $schema: 'https://opencode.ai/config.json',
+      plugin: ['context-mode', './plugins/claude-mem.js'],
+      plugins: ['./plugins/claude-mem.js', 'another-v2-plugin'],
+    }), 'utf-8');
+
+    expect(installOpenCodePlugin([2, 0, 23])).not.toBe(1);
+
+    expect(readFileSync(getInstalledPluginPath(), 'utf-8')).toContain('claude-mem');
+    const config = readConfig();
+    expect(config.plugin).toEqual(['context-mode']);
+    expect(config.plugins).toEqual(['another-v2-plugin']);
+  });
+
+  it('writes no plugin keys into a new OpenCode 2 config', () => {
+    expect(registerOpenCodePluginInConfig(2)).not.toBe(1);
+
+    const config = readConfig();
+    expect(config.plugin).toBeUndefined();
+    expect(config.plugins).toBeUndefined();
+  });
+
+  it('keeps the plugin entry for OpenCode 1, and when no OpenCode CLI answers', () => {
+    expect(installOpenCodePlugin([1, 18, 35])).not.toBe(1);
+    expect(readConfig().plugin).toEqual(['./plugins/claude-mem.js']);
+
+    rmSync(getOpenCodeConfigPath());
+    expect(installOpenCodePlugin(null)).not.toBe(1);
+    expect(readConfig().plugin).toEqual(['./plugins/claude-mem.js']);
+  });
+
+  it('warns that OpenCode older than 1.3.4 cannot load the plugin', () => {
+    const originalWarn = console.warn;
+    const warnings: string[] = [];
+    console.warn = (...args: unknown[]) => { warnings.push(args.join(' ')); };
+    try {
+      expect(installOpenCodePlugin([1, 3, 3])).not.toBe(1);
+      expect(installOpenCodePlugin([1, 3, 4])).not.toBe(1);
+    } finally {
+      console.warn = originalWarn;
+    }
+    const floorWarnings = warnings.filter((warning) => warning.includes('needs OpenCode 1.3.4 or later'));
+    expect(floorWarnings).toHaveLength(1);
+    expect(floorWarnings[0]).toContain('OpenCode 1.3.3');
+  });
+
+  it.skipIf(process.platform === 'win32')('detects the newest OpenCode CLI on PATH', () => {
+    const bin = join(tempDir, 'bin');
+    mkdirSync(bin);
+    const fakeCli = (name: string, output: string) => {
+      writeFileSync(join(bin, name), `#!/bin/sh\necho "${output}"\n`, 'utf-8');
+      chmodSync(join(bin, name), 0o755);
+    };
+    process.env.PATH = bin;
+
+    expect(detectOpenCodeVersion()).toBeNull();
+
+    fakeCli('opencode', 'opencode v2.0.23');
+    expect(detectOpenCodeVersion()).toEqual([2, 0, 23]);
+
+    // OpenCode 2 installs `opencode2` beside it; the newer CLI decides.
+    fakeCli('opencode', '1.18.35');
+    fakeCli('opencode2', '2.0.22');
+    expect(detectOpenCodeVersion()).toEqual([2, 0, 22]);
   });
 });
