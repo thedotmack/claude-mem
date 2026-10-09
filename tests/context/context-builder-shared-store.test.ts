@@ -116,9 +116,19 @@ describe('the shared store as a row source', () => {
   it('asks for the observation and summary counts, clamped to what the route accepts', async () => {
     await fetchServerContextRows(serverRuntime(), rowsRequest({ config: config(20, 10) }));
     expect(contextCalls[0].limit).toBe(31);
+    expect(contextCalls[0].summaryLimit).toBe(11);
     await fetchServerContextRows(serverRuntime(), rowsRequest({ config: config(999999, 999999) }));
     // The route REFUSES above 200: unclamped this does not degrade, it fails empty.
     expect(contextCalls[1].limit).toBe(200);
+    expect(contextCalls[1].summaryLimit).toBeUndefined();
+  });
+
+  it('preserves the capped mixed recency read when configured totals exceed the route cap', async () => {
+    for (const [observations, summaries] of [[1, 999999], [999999, 1], [0, 999999]]) {
+      await fetchServerContextRows(serverRuntime(), rowsRequest({ config: config(observations, summaries) }));
+      expect(contextCalls.at(-1)!.limit).toBe(200);
+      expect(contextCalls.at(-1)!.summaryLimit).toBeUndefined();
+    }
   });
 
   it('scopes the read to this folder and platform', async () => {
