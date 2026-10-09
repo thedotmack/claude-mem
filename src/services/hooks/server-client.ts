@@ -186,6 +186,8 @@ export interface ServerContextObservationsRequest {
   // and rejects `""` -- so the key must be omitted, never blanked.
   query?: string;
   limit?: number;
+  // In recency mode, reserve this portion of limit for session summaries.
+  summaryLimit?: number;
   platformSource?: string | null;
   // Folder labels (observations.metadata.project) to scope the read to. Omitted
   // or empty means every folder in the server project.
@@ -289,6 +291,7 @@ export class ServerClient {
     const payload: Record<string, unknown> = { projectId: input.projectId };
     if (input.query !== undefined) payload.query = input.query;
     if (input.limit !== undefined) payload.limit = input.limit;
+    if (input.summaryLimit !== undefined) payload.summaryLimit = input.summaryLimit;
     if (input.platformSource !== undefined) {
       payload.platformSource = normalizePlatformSourceField(input.platformSource);
     }
