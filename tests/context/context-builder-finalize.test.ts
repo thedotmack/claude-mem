@@ -35,6 +35,7 @@ const childScript = `
   store.close();
 
   const tracked = new Map();
+  let unfinalizedAtClose = 0;
   const originalPrepare = Database.prototype.prepare;
   Database.prototype.prepare = function (...args) {
     const statement = originalPrepare.apply(this, args);
@@ -48,21 +49,36 @@ const childScript = `
     if (tracked.has(this)) tracked.set(this, true);
     return originalFinalize.call(this);
   };
+  // Finalizing after close() is the bug, not a fix: snapshot how many tracked
+  // statements are still open at the moment any connection closes.
+  const originalClose = Database.prototype.close;
+  Database.prototype.close = function (...args) {
+    unfinalizedAtClose += [...tracked.values()].filter(done => !done).length;
+    return originalClose.apply(this, args);
+  };
 
   const text = await generateContext({ projects: ['finalize-parent'] });
   const leaked = [...tracked.values()].filter(done => !done).length;
   console.log(JSON.stringify({
     created: tracked.size,
     leaked,
+    unfinalizedAtClose,
     hasRecord: text.includes('FINALIZE_PROBE_RECORD'),
   }));
 `;
 
 function runChild(dataDir: string) {
+  // The render must not depend on the caller's context settings: an
+  // inherited CLAUDE_MEM_CONTEXT_OBSERVATIONS=0 would hide the seeded record
+  // even though statement cleanup is fine.
+  const env: Record<string, string | undefined> = { ...process.env };
+  for (const key of Object.keys(env)) {
+    if (key.startsWith('CLAUDE_MEM_CONTEXT_')) delete env[key];
+  }
   const result = Bun.spawnSync(['bun', '-e', childScript], {
     cwd: repoRoot,
     env: {
-      ...process.env,
+      ...env,
       CLAUDE_MEM_DATA_DIR: dataDir,
       CLAUDE_MEM_MODES_DIR: join(repoRoot, 'plugin', 'modes'),
     },
@@ -71,7 +87,7 @@ function runChild(dataDir: string) {
     throw new Error(new TextDecoder().decode(result.stderr));
   }
   const lines = new TextDecoder().decode(result.stdout).trim().split('\n');
-  return JSON.parse(lines[lines.length - 1]) as { created: number; leaked: number; hasRecord: boolean };
+  return JSON.parse(lines[lines.length - 1]) as { created: number; leaked: number; unfinalizedAtClose: number; hasRecord: boolean };
 }
 
 describe('context builder statement lifecycle (#4559)', () => {
@@ -83,6 +99,9 @@ describe('context builder statement lifecycle (#4559)', () => {
       // projectReadKeys + observations + summaries each prepare at least one.
       expect(outcome.created).toBeGreaterThanOrEqual(3);
       expect(outcome.leaked).toBe(0);
+      // And every one of them was finalized before the connection closed,
+      // not merely by the time the render returned.
+      expect(outcome.unfinalizedAtClose).toBe(0);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
