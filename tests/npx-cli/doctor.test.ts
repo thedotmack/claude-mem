@@ -1,9 +1,22 @@
-import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
+import * as realHookSettings from '../../src/shared/hook-settings.js';
+
+import { probeChromaDiagnostics, resolveWorkerEndpoint, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
+
+const realHookSettingsSnapshot = { ...realHookSettings };
+
+mock.module('../../src/shared/hook-settings.js', () => ({
+  ...realHookSettingsSnapshot,
+  loadFromFileOnce: () => ({
+    ...realHookSettingsSnapshot.loadFromFileOnce(),
+    CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_PORT: '37777',
+  }),
+}));
 
 // `npx claude-mem doctor` reads the worker's /api/admin/doctor `health.chroma`
 // block (#3362). These rows are optional: a missing, malformed or unreachable
@@ -129,6 +142,22 @@ describe('npx doctor Chroma diagnostics', () => {
   });
 });
 
+describe('npx doctor worker endpoint (#4609)', () => {
+  it('reads the worker host and port from user settings, not the compiled-in default', () => {
+    const { host, port } = resolveWorkerEndpoint();
+    expect(host).toBe('127.0.0.1');
+    expect(port).toBe('37777');
+  });
+
+  it('does not return the default port when the operator configured a different one', () => {
+    // The default is 37700; the mocked settings say 37777. If doctor used
+    // SettingsDefaultsManager.get() it would return the default and probe the
+    // wrong port — the bug in #4609.
+    const { port } = resolveWorkerEndpoint();
+    expect(port).not.toBe('37700');
+  });
+});
+
 describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', () => {
   let root: string;
 
@@ -154,4 +183,8 @@ describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', 
     expect(row).toMatchObject({ status: 'warn', required: false });
     expect(row.detail).toContain('npx claude-mem repair');
   });
+});
+
+afterAll(() => {
+  mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
 });
