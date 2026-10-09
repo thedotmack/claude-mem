@@ -88,6 +88,8 @@ describe('contextHandler SessionStart path', () => {
     const result = await contextHandler.execute(input);
     expect(result.hookSpecificOutput?.additionalContext).toContain('context from worker');
     expect(result.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('concise purpose-specific text');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('internal metadata out of model context');
     expect(result.hookSpecificOutput?.additionalContext).toContain('hosted read-only connector');
     workerUnreachable = true;
     try {

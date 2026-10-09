@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import type { ProgressiveSearch, ProgressiveBackend, ProgressiveSearchInput, ProgressiveSearchResult, MemoryIndexRow } from '../../src/shared/progressive-search.js';
+import { MemoryProgressiveCursorStore, renderMemoryContent, projectMemoryContent, progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearch, type ProgressiveContinuationState, ProgressiveBackend, ProgressiveSearchInput, ProgressiveSearchResult, MemoryIndexRow } from '../../src/shared/progressive-search.js';
 
 type Engine = typeof ProgressiveSearch;
 const secret = 'progressive-search-fixture-key-32-bytes';
@@ -15,8 +15,16 @@ function fixture(Implementation: Engine, overrides: Partial<ProgressiveBackend> 
     fetch: async (refs) => { calls.push({ operation: 'fetch', ids: refs.map(ref => ref.id) }); return [...refs.map(ref => ({ ...ref, content: `DETAIL_${ref.id}`, truncated: false })), { ...row('injected'), content: 'NEVER_UNSELECTED', truncated: false }]; },
     ...overrides,
   };
-  const engine = new Implementation(backend, { secret, scope: 'fixture-scope', now: () => time });
-  return { engine, backend, calls, expire: () => { time += 15 * 60 * 1000 + 1; } };
+  let cursorId = 0;
+  const backingStore = new MemoryProgressiveCursorStore({ now: () => time });
+  const states: ProgressiveContinuationState[] = [];
+  const cursorStore = {
+    async put(key: string, state: ProgressiveContinuationState) { states.push(structuredClone(state)); await backingStore.put(key, state); },
+    async get(key: string, scope: string) { return backingStore.get(key, scope); },
+  };
+  const newCursor = () => `ms_${String(++cursorId).padStart(24, '0')}`;
+  const engine = new Implementation(backend, { secret, scope: 'fixture-scope', cursorStore, newCursor, now: () => time });
+  return { engine, backend, calls, cursorStore, states, newCursor, expire: () => { time += 15 * 60 * 1000 + 1; } };
 }
 
 /** Shared adversarial cases used by cloud and worker; no live memory or network. */
@@ -63,7 +71,7 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
   });
   await check(async () => {
     const f = fixture(Implementation); const one = await f.engine.run({ query: 'authentication' });
-    const other = new Implementation(f.backend, { secret, scope: 'other-scope', now: () => 1000 });
+    const other = new Implementation(f.backend, { secret, scope: 'other-scope', cursorStore: f.cursorStore, newCursor: f.newCursor, now: () => 1000 });
     await assert.rejects(other.run({ continuation: one.continuation, selectedIds: ['1'] }), /different memory scope/);
   });
   for (const [key, changed] of Object.entries({ query: 'other', project: 'other', limit: 1, maxDetails: 1, depthBefore: 0, depthAfter: 0 })) {
@@ -136,11 +144,11 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     const second = await f.engine.run({ continuation: first.continuation, selectedIds: first.index.slice(0, 5).map((item) => item.id) });
     assert(byteSize(second) <= 64 * 1024); assert(second.index.length <= 35);
     assert.equal(second.trace[1].count, 35);
+    assert.equal(second.continuation!.length, 27);
     assert.equal(second.reason, 'index_truncated');
-    const signed = JSON.parse(Buffer.from(second.continuation!.split('.')[0], 'base64url').toString());
-    assert.deepEqual(signed.eligible.map((item: MemoryIndexRow) => item.id), second.index.map(item => item.id));
     assert(second.index.length < 35);
-    await assert.rejects(f.engine.run({ continuation: second.continuation, selectedIds: ['id-4:6'] }), /not disclosed/);
+    assert.deepEqual(f.states.at(-1)!.eligible.map(item => item.id), second.index.map(item => item.id));
+    await assert.rejects(f.engine.run({ continuation: second.continuation, selectedIds: ['never-disclosed'] }), /not disclosed/);
     const third = await f.engine.run({ continuation: second.continuation, selectedIds: second.index.slice(0, 5).map((item) => item.id) });
     assert(byteSize(third) <= 64 * 1024); assert.equal(third.observations.length, 5);
     assert(third.observations.every((item) => item.truncated));
@@ -186,6 +194,73 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     const f = fixture(Implementation, { search: async () => [], noResultsGuidance: async () => '😀'.repeat(2000) });
     const response = await f.engine.run({ query: 'nothing' });
     assert(Buffer.byteLength(response.guidance!) <= 2048);
+  });
+  await check(async () => {
+    const f = fixture(Implementation);
+    const first = await f.engine.run({ query: 'authentication', project: 'fixture' });
+    assert.match(first.continuation!, /^ms_[A-Za-z0-9_-]{24}$/);
+    assert.equal(first.continuation!.length, 27);
+    const visible = progressiveSearchToolResult(first);
+    assert.equal(Object.hasOwn(visible, 'structuredContent'), false);
+    assert.throws(() => JSON.parse(visible.content[0].text));
+    assert.match(visible.content[0].text, /mem-search step 1 of 3/);
+    assert.match(visible.content[0].text, /\[1\] Authentication fix/);
+    assert.match(visible.content[0].text, /Continue with: ms_/);
+    assert.match(visible.content[0].text, /Next: mem-search step 2 of 3/);
+    for (const hidden of ['expiresAt', 'eligible', 'fixture-scope', 'strategy', 'trace', 'structuredContent', 'NEVER_IN_INDEX']) {
+      assert(!visible.content[0].text.includes(hidden), `Internal ${hidden} must not reach the model`);
+    }
+    const next = await f.engine.run({ continuation: first.continuation, selectedIds: ['1'] });
+    const details = await f.engine.run({ continuation: next.continuation, selectedIds: ['4'] });
+    const text = progressiveSearchToolResult(details).content[0].text;
+    assert.match(text, /mem-search step 3 of 3/);
+    assert.match(text, /DETAIL_4/);
+    assert(!text.includes('DETAIL_1'));
+    assert(!text.includes('Continue with:'));
+  });
+  await check(async () => {
+    const text = renderMemoryContent({ narrative: 'A verified fix.', facts: '["A useful fact"]', learned: 'Keep search bounded.', memory_session_id: 'PRIVATE_SESSION', device_id: 'PRIVATE_DEVICE', unknown: 'PRIVATE_UNKNOWN' });
+    assert.match(text, /A verified fix/);
+    assert.match(text, /A useful fact/);
+    assert.match(text, /Keep search bounded/);
+    assert(!text.includes('PRIVATE_'));
+    assert.equal(renderMemoryContent({ unknown: 'PRIVATE_UNKNOWN' }), '');
+    assert.equal(renderMemoryContent('[Memory note] Keep useful Markdown.'), '[Memory note] Keep useful Markdown.');
+  });
+  await check(async () => {
+    const f = fixture(Implementation);
+    const first = await f.engine.run({ query: 'authentication' });
+    const restarted = new Implementation(f.backend, { secret, scope: 'fixture-scope', cursorStore: f.cursorStore, newCursor: f.newCursor, now: () => 1000 });
+    const next = await restarted.run({ continuation: first.continuation, selectedIds: ['1'] });
+    assert.equal(next.step, 2, 'A new engine instance uses server-side state');
+    const cleared = new Implementation(f.backend, { secret, scope: 'fixture-scope', cursorStore: new MemoryProgressiveCursorStore(), now: () => 1000 });
+    await assert.rejects(cleared.run({ continuation: first.continuation, selectedIds: ['1'] }), /unavailable/);
+  });
+  await check(async () => {
+    const store = new MemoryProgressiveCursorStore({ now: () => 1000, maxEntries: 2 });
+    const f = fixture(Implementation);
+    const engine = new Implementation(f.backend, { secret, scope: 'bounded', cursorStore: store, newCursor: f.newCursor, now: () => 1000 });
+    const first = await engine.run({ query: 'authentication' });
+    const second = await engine.run({ query: 'authentication' });
+    await engine.run({ query: 'authentication' });
+    await assert.rejects(engine.run({ continuation: first.continuation, selectedIds: ['1'] }), /unavailable/);
+    assert.equal((await engine.run({ continuation: second.continuation, selectedIds: ['1'] })).step, 2);
+  });
+  await check(async () => {
+    const result = progressiveSearchToolError(new Error('PRIVATE_BACKEND_SQL_AND_CREDENTIALS'));
+    assert.equal(result.isError, true);
+    assert.throws(() => JSON.parse(result.content[0].text));
+    assert.match(result.content[0].text, /Memory retrieval failed/);
+    assert.match(result.content[0].text, /Next: restart mem_search/);
+    assert(!result.content[0].text.includes('PRIVATE_'));
+  });
+  await check(async () => {
+    const projected = projectMemoryContent({ narrative: 'x'.repeat(40000), facts: Array.from({ length: 13 }, (_, i) => `Fact ${i}`) });
+    assert.equal(projected.truncated, true);
+    assert(Buffer.byteLength(projected.text) < 40000);
+    const ordinary = projectMemoryContent({ narrative: 'Concise factual note.', unknown: 'INTERNAL_METADATA' });
+    assert.equal(ordinary.truncated, false);
+    assert.equal(ordinary.text, 'Concise factual note.');
   });
   return { count, guided, auto };
 }

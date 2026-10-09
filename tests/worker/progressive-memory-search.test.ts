@@ -44,6 +44,7 @@ describe('progressive worker search with real SQLite fixtures', () => {
   it('discloses no narratives until selected context reaches step 3', async () => {
     const first = await progressive.run({ query: 'authentication', project, mode: 'guided' });
     expect(first.step).toBe(1);
+    expect(first.continuation).toMatch(/^ms_[A-Za-z0-9_-]{24}$/);
     expect(first.index.some(row => row.id === authId)).toBe(true);
     expect(first.index.some(row => row.id === unrelatedId)).toBe(false);
     expect(JSON.stringify(first)).not.toContain('PRIVATE_');
@@ -65,7 +66,7 @@ describe('progressive worker search with real SQLite fixtures', () => {
     const first = await progressive.run({ query: 'authentication', project });
     await expect(progressive.run({ continuation: first.continuation!, selectedIds: [unrelatedId] })).rejects.toThrow('not disclosed');
     await expect(progressive.run({ continuation: first.continuation!, selectedIds: [authId] }, 'different-scope')).rejects.toThrow('different memory scope');
-    await expect(progressive.run({ continuation: first.continuation!.slice(0, -5) + 'AAAAA', selectedIds: [authId] })).rejects.toThrow('Invalid mem-search continuation');
+    await expect(progressive.run({ continuation: first.continuation!.slice(0, -5) + 'AAAAA', selectedIds: [authId] })).rejects.toMatchObject({ code: 'invalid_continuation' });
     await expect(progressive.run({ continuation: first.continuation!, selectedIds: [authId], project: 'another-project' })).rejects.toThrow('original search options');
   });
 
@@ -106,7 +107,7 @@ describe('progressive worker search with real SQLite fixtures', () => {
     expect(auto.observations[0].content).toContain('SUMMARY_DETAIL');
   });
 
-  it('returns identical canonical MCP envelope from the HTTP worker route', async () => {
+  it('returns the same curated text from the HTTP worker route without duplicate internal state', async () => {
     const app = express();
     app.use(express.json());
     new SearchRoutes(manager).setupRoutes(app);
@@ -118,15 +119,17 @@ describe('progressive worker search with real SQLite fixtures', () => {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', project, mode: 'auto' }),
       });
       const payload = await response.json() as any;
-      expect(payload).toEqual(progressiveSearchToolResult(payload.structuredContent));
-      expect(payload.structuredContent.step).toBe(3);
-      expect(payload.structuredContent.label).toBe('mem-search step 3 of 3');
+      const expected = await progressive.run({ query: 'authentication', project, mode: 'auto' });
+      expect(payload).toEqual(progressiveSearchToolResult(expected));
+      expect(payload.structuredContent).toBeUndefined();
+      expect(payload.content[0].text).toStartWith('mem-search step 3 of 3');
       const invalid = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', limit: 1000 }),
       });
       const error = await invalid.json() as any;
       expect(error.isError).toBe(true);
-      expect(JSON.parse(error.content[0].text).error.code).toBe('invalid_input');
+      expect(error.content[0].text).toContain('limit must be an integer');
+      expect(() => JSON.parse(error.content[0].text)).toThrow();
     } finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }

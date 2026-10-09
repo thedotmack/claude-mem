@@ -45,6 +45,7 @@ import { withCheckoutProjects } from './checkout-search-scope.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
 import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
+import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 
 /** This server's checkout (Claude Code starts it in the workspace), resolved once. */
 let workspaceCheckout: ProjectContext | null = null;
@@ -92,6 +93,17 @@ interface WorkerCallOptions {
 
 type WorkerToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 
+function workerResultPurpose(endpoint: string, writes: boolean): McpTextPurpose {
+  if (endpoint === '/api/memory/save') return 'save';
+  if (endpoint === '/api/observations/batch') return 'observations';
+  if (endpoint === '/api/tool-uses/batch') return 'tool-uses';
+  if (endpoint === '/api/corpus') return writes ? 'corpus-build' : 'corpus-list';
+  if (/\/corpus\/[^/]+\/(?:prime|reprime)$/.test(endpoint)) return 'corpus-prime';
+  if (/\/corpus\/[^/]+\/rebuild$/.test(endpoint)) return 'corpus-build';
+  if (/\/corpus\/[^/]+\/query$/.test(endpoint)) return 'corpus-query';
+  return endpoint === '/api/search' ? 'search' : 'context';
+}
+
 async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promise<WorkerToolResult> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
@@ -104,13 +116,7 @@ async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promi
     );
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
+    return mcpTextResult(workerFailureText(error instanceof Error ? error.message : ''), true);
   }
 }
 
@@ -118,7 +124,7 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
   if (opts.streamCorpusProgress && opts.body) {
     const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
     logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-    return { content: [{ type: 'text' as const, text: JSON.stringify(corpusResult, null, 2) }] };
+    return formatWorkerMcpResponse(workerResultPurpose(endpoint, true), corpusResult);
   }
 
   let response: Response;
@@ -146,12 +152,9 @@ async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise
   logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
 
   if (opts.text) {
-    return { content: [{ type: 'text' as const, text: await response.text() }] };
+    return mcpTextResult(await response.text());
   }
-  if (opts.body) {
-    return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
-  }
-  return await response.json() as WorkerToolResult;
+  return formatWorkerMcpResponse(workerResultPurpose(endpoint, Boolean(opts.body)), await response.json());
 }
 
 /**
@@ -219,13 +222,9 @@ function resolveServerToolContext(): ServerResolution | null {
 
 function formatToolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   if (isServerClientError(error)) {
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Server error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
-      }],
-      isError: true as const,
-    };
+    const text = error.kind === 'transport' && error.message.includes(' requires CLAUDE_MEM_RUNTIME=server.')
+      ? error.message : serverFailureText(error.kind, error.status);
+    return { content: mcpTextResult(text).content, isError: true };
   }
   return {
     content: [{
@@ -236,21 +235,12 @@ function formatToolError(error: unknown): { content: Array<{ type: 'text'; text:
   };
 }
 
-function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify(payload, null, 2),
-    }],
-  };
-}
-
 function requireServerForObservationTool(toolName: string): ServerAvailable {
   const resolution = resolveServerToolContext();
   if (!resolution) {
     throw new ServerClientError(
       'transport',
-      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use mem_search for worker-mode memory access.`,
     );
   }
   if (!resolution.available) {
@@ -267,8 +257,8 @@ function wrapHandler<Args>(
     try {
       return await execute(args);
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('SYSTEM', `${toolName} failed`, undefined, err);
+      if (isServerClientError(error)) logger.warn('SYSTEM', `${toolName} failed`, { errorKind: error.kind, status: error.status });
+      else logger.warn('SYSTEM', `${toolName} failed`, undefined, error instanceof Error ? error : new Error(String(error)));
       return formatToolError(error);
     }
   };
@@ -300,7 +290,7 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };
   const response = await ctx.client.addObservation(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('observation-add', response);
 });
 
 interface ObservationRecordEventArgs {
@@ -339,7 +329,7 @@ const handleObservationRecordEvent = wrapHandler('observation_record_event', asy
     ...(args.generate !== undefined ? { generate: args.generate } : {}),
   };
   const response = await ctx.client.recordEvent(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('event', response);
 });
 
 interface ObservationSearchArgs {
@@ -362,7 +352,7 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.searchObservations(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('search', response);
 });
 
 interface ObservationContextArgs {
@@ -385,7 +375,7 @@ const handleObservationContext = wrapHandler('observation_context', async (args:
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.contextObservations(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('context', response);
 });
 
 interface ObservationGenerationStatusArgs {
@@ -451,7 +441,7 @@ const handleObservationGenerationStatus = wrapHandler('observation_generation_st
     throw new Error('observation_generation_status: "jobId" is required');
   }
   const response = await ctx.client.getJobStatus(jobId);
-  return formatJsonResult(response);
+  return formatMcpPayload('job', response);
 });
 
 async function ensureWorkerConnection(): Promise<boolean> {
@@ -494,7 +484,7 @@ const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 const tools = [
   {
     name: 'mem_search',
-    description: 'Search memory through enforced progressive disclosure. Guided mode returns mem-search step 1 of 3 (index), then a signed continuation for step 2 (context), then step 3 (selected details). Follow next.arguments and choose only IDs shown in the previous result. Auto mode completes the same bounded pipeline in one call. Use this tool for every memory search.',
+    description: 'Search memory through enforced progressive disclosure. Guided mode returns readable mem-search step 1 of 3 (index), a short continuation for step 2 (context), then step 3 (selected details). Follow the next-call instructions and choose only IDs shown in the previous result. Auto mode completes the same bounded pipeline in one call. Use this tool for every memory search.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -505,7 +495,7 @@ const tools = [
         maxDetails: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum full details, default 3.' },
         depthBefore: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows before each selected anchor, default 2.' },
         depthAfter: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows after each selected anchor, default 2.' },
-        continuation: { type: 'string', description: 'Signed continuation from the previous mem_search response.' },
+        continuation: { type: 'string', minLength: 27, maxLength: 27, pattern: '^ms_[A-Za-z0-9_-]{24}$', description: 'Short opaque continuation from the previous mem_search response.' },
         selectedIds: { type: 'array', items: { type: ['string', 'number'] }, description: 'Only relevant IDs from the previous response.' },
       },
       additionalProperties: false,
@@ -522,7 +512,11 @@ const tools = [
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }), startWorkerAfterRefusedConnection);
         if (!response.ok) throw new Error(`Worker API error (${response.status})`);
-        return await response.json() as WorkerToolResult;
+        const result = await response.json() as WorkerToolResult;
+        return {
+          content: result.content.filter(item => item.type === 'text' && typeof item.text === 'string').map(item => ({ type: 'text' as const, text: item.text })),
+          ...(result.isError ? { isError: true } : {}),
+        };
       } catch (error) {
         return progressiveSearchToolError(error);
       }
@@ -546,7 +540,7 @@ const tools = [
   },
   {
     name: 'important_workflow',
-    description: `Use mem_search for all memory search. Guided mode enforces index -> context -> selected details with signed next-step continuations. Auto mode performs the same bounded pipeline. Legacy layered workflow:
+    description: `Use mem_search for all memory search. Guided mode enforces index -> context -> selected details with short opaque continuations. Auto mode performs the same bounded pipeline. Legacy layered workflow:
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
@@ -562,7 +556,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         type: 'text' as const,
         text: `# Memory Search Workflow
 
-Use mem_search for every memory search. Guided mode returns mem-search step 1 of 3 (index), step 2 of 3 (context), then step 3 of 3 (filtered details). Copy next.arguments and add only relevant selectedIds shown in the previous response. Auto mode performs that same bounded progression in one call. Local and remote MCP share this contract.
+Use mem_search for every memory search. Guided mode returns readable mem-search step 1 of 3 (index), step 2 of 3 (context), then step 3 of 3 (filtered details). Follow the next-call instructions with the short continuation and only relevant selectedIds shown in the previous response. Auto mode performs that same bounded progression in one call. Local and remote MCP share this contract.
 
 **Compatibility pattern for older clients or advanced filters:**
 
@@ -633,7 +627,7 @@ Use mem_search for every memory search. Guided mode returns mem-search step 1 of
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
         };
-        return formatJsonResult(await sb.client.searchObservations(request));
+        return formatMcpPayload('search', await sb.client.searchObservations(request));
       }
       return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
@@ -836,7 +830,7 @@ Use mem_search for every memory search. Guided mode returns mem-search step 1 of
   },
   {
     name: 'observation_generation_status',
-    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
+    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns a concise job receipt.',
     inputSchema: {
       type: 'object',
       properties: {

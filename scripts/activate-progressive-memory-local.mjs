@@ -111,7 +111,7 @@ container.CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED = 'true';
 container.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'true';
 addChange(settingsFile, Buffer.from(JSON.stringify(settings, null, 2) + '\n'));
 
-console.log(JSON.stringify({ dryRun: !args.includes('--apply'), version, filesToChange: changes.map(change => change.target), memoryRoot, project: project.trim(), workerRestart: 'caller-controlled' }, null, 2));
+console.log(`Local progressive memory ${args.includes('--apply') ? 'activation' : 'dry run'}\nVersion: ${version}\nProject: ${project.trim()}\nNote folder: ${memoryRoot}\nWorker restart: caller-controlled\nFiles to change (${changes.length}):\n${changes.map(change => `- ${change.target}`).join('\n') || '- none'}`);
 if (!args.includes('--apply')) process.exit(0);
 if (changes.length === 0) { console.log('Already active; no files changed.'); process.exit(0); }
 

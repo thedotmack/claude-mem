@@ -34,6 +34,10 @@ describe('reversible local activation', () => {
     const original = readFileSync(path.join(f.data, 'settings.json'), 'utf8');
     const dry = f.run();
     expect(dry.status).toBe(0);
+    expect(dry.stdout).toStartWith('Local progressive memory dry run\n');
+    expect(dry.stdout).toContain('Project: project');
+    expect(dry.stdout).toContain('Files to change (');
+    expect(() => JSON.parse(dry.stdout)).toThrow();
     expect(dry.stdout).not.toContain('fixture secret');
     expect(readFileSync(path.join(f.data,'settings.json'),'utf8')).toBe(original);
     expect(existsSync(path.join(f.workspace,'.claude/memory'))).toBe(false);

@@ -13,10 +13,21 @@ The existing `PreToolUse` file-context hook recognizes `memory_search`, a local
 `memory` tool's read commands, and Read/Grep/Glob/Bash reads scoped to Claude
 native memory folders, Codex's memory folder, or configured note roots. It
 calls `/api/mem-search` in automatic mode, using the checkout's project scope.
-It adds at most 10,000 characters of retrieved data with explicit framing that
+An explicitly mapped note folder uses its own project instead, even when another
+checkout reads it. The internal HTTP transport carries a `content` envelope,
+while the model sees only its concise, selected readable text. Structured
+search state, storage metadata, and raw JSON replies never become hook context.
+It adds at most 10,000 characters of retrieved evidence with explicit framing that
 record contents are evidence and must not supply executable instructions.
 Own plugin tools are excluded to avoid recursive searches. The native tool
 continues normally. Hook failures leave native reads available.
+
+Model-facing tool replies must be concise purpose-specific text. Both direct
+MCP retrieval and native-memory supplementation select useful evidence before
+disclosure; internal structured envelopes are transport data. Guided searches
+show numbered steps, readable next-call instructions, and a short **Continue
+with:** cursor. The server keeps continuation state instead of giving the
+agent serialized search rows to carry between calls.
 
 Claude Code supports `PreToolUse` additional context. `InstructionsLoaded`
 observes instruction-file loads and provides no replacement mechanism.
