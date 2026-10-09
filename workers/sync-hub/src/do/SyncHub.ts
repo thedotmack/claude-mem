@@ -29,6 +29,20 @@ export const MAX_DEVICES_PER_USER = 64;
 export const DEVICE_LIMIT_ERROR = "device_limit_exceeded";
 /** 45s Hub abort < 60s Pro platform ceiling < 90s fencing lease. */
 export const PROJECTION_LEASE_MS = 90_000;
+/**
+ * A lease renewal is skipped while at least this much lease remains. A page
+ * within 5s of the last acquire or renewal then skips a billed row write,
+ * and every page still goes out with at least 85s left.
+ */
+export const PROJECTION_LEASE_MIN_REMAINING_MS = PROJECTION_LEASE_MS - 5_000;
+/**
+ * How stale devices.last_seen may get before a pull, push, status call or
+ * WebSocket connect refreshes it. Every SQL row write is billed, and clients
+ * call these all day, so a device row is written only when something changed
+ * or last_seen is this old. Readers of devices.last_seen (getMetadata) can
+ * therefore see a value up to this much older than the device's last request.
+ */
+export const LAST_SEEN_REFRESH_MS = 5 * 60_000;
 const encoder = new TextEncoder();
 
 export type PushOp = CanonicalWireOp;
@@ -487,6 +501,7 @@ export class SyncHub extends DurableObject<Env> {
 		sinceSeq: string,
 		limit = MAX_PAGE,
 		deviceName: string | null = null,
+		now = Date.now(),
 	): ChangesOutcome {
 		if (typeof deviceId !== "string" || deviceId.length === 0) throw invalid("deviceId must be non-empty");
 		const since = assertCanonicalDecimal(sinceSeq);
@@ -496,19 +511,7 @@ export class SyncHub extends DurableObject<Env> {
 		const sql = this.ctx.storage.sql;
 		try {
 			this.ctx.storage.transactionSync(() => {
-				this.touchDevice(deviceId, normalizeDeviceName(deviceName));
-				const existing = sql.exec<{ last_ack_seq: string }>(
-					"SELECT last_ack_seq FROM devices WHERE device_id = ?",
-					deviceId.trim(),
-				).one();
-				const nextAck = compareCanonicalDecimals(existing.last_ack_seq, acknowledged) > 0
-					? existing.last_ack_seq
-					: acknowledged;
-				sql.exec(
-					"UPDATE devices SET last_ack_seq = ? WHERE device_id = ?",
-					nextAck,
-					deviceId.trim(),
-				);
+				this.recordPull(deviceId, normalizeDeviceName(deviceName), acknowledged, now);
 			});
 		} catch (error) {
 			if (isDeviceLimitError(error)) return { refused: true, error: DEVICE_LIMIT_ERROR };
@@ -746,18 +749,21 @@ export class SyncHub extends DurableObject<Env> {
 			if (compareCanonicalDecimals(through, current) < 0 || compareCanonicalDecimals(through, this.headSeq()) > 0) {
 				throw projectionError("invalid projected through_seq");
 			}
+			// No lease extension here: the next getProjectionPage renews when
+			// needed, and a drain that ends releases the lease right after.
 			this.setMeta("projected_seq", through);
-			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 		return this.getProjectionState();
 	}
 
+	/**
+	 * Expire the lease in place instead of deleting its two meta rows. A delete
+	 * and the next acquire's re-insert each cost billed index writes, but two
+	 * updates do not. The released token still fails assertLease, as expired.
+	 */
 	releaseProjectionLease(leaseToken: string): void {
 		if (this.metaOptional("projection_lease_token") !== leaseToken) return;
-		this.ctx.storage.transactionSync(() => {
-			this.deleteMeta("projection_lease_token");
-			this.deleteMeta("projection_lease_expires_at");
-		});
+		this.setMeta("projection_lease_expires_at", "0");
 	}
 
 	getProjectionState(): ProjectionState {
@@ -769,7 +775,8 @@ export class SyncHub extends DurableObject<Env> {
 		};
 	}
 
-	private assertLease(token: string, now: number): void {
+	/** Returns the lease expiry, which renewProjectionLease uses to skip a fresh lease. */
+	private assertLease(token: string, now: number): string {
 		if (typeof token !== "string" || token.length === 0 || this.metaOptional("projection_lease_token") !== token) {
 			throw projectionError("projection lease is not held");
 		}
@@ -777,11 +784,13 @@ export class SyncHub extends DurableObject<Env> {
 		if (!expires || compareCanonicalDecimals(expires, this.leaseNow(now)) <= 0) {
 			throw projectionError("projection lease expired");
 		}
+		return expires;
 	}
 
 	private renewProjectionLease(token: string, now: number): void {
 		this.ctx.storage.transactionSync(() => {
-			this.assertLease(token, now);
+			const expires = this.assertLease(token, now);
+			if (Number(expires) - now >= PROJECTION_LEASE_MIN_REMAINING_MS) return;
 			this.setMeta("projection_lease_expires_at", this.leaseExpiry(this.leaseNow(now)));
 		});
 	}
@@ -893,6 +902,7 @@ export class SyncHub extends DurableObject<Env> {
 
 	private touchDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);
+		if (this.deviceTouchIsRedundant(normalizedId, name, now)) return;
 		const result = this.ctx.storage.sql.exec(
 			`INSERT INTO devices (device_id, name, last_seen)
 			 SELECT ?, ?, ?
@@ -910,8 +920,52 @@ export class SyncHub extends DurableObject<Env> {
 		if (result.rowsWritten === 0) throw deviceLimitError();
 	}
 
+	/**
+	 * Pull bookkeeping: register a new device, or update a known one only when
+	 * its name is still unset, its ack cursor advances, or last_seen is older
+	 * than LAST_SEEN_REFRESH_MS. An idle poll therefore writes no rows.
+	 */
+	private recordPull(deviceId: string, name: string | null, acknowledged: string, now: number): void {
+		const normalizedId = this.normalizeDeviceId(deviceId);
+		const sql = this.ctx.storage.sql;
+		let row = sql.exec<{ name: string | null; last_ack_seq: string; last_seen: number | null }>(
+			"SELECT name, last_ack_seq, last_seen FROM devices WHERE device_id = ?",
+			normalizedId,
+		).toArray()[0];
+		if (!row) {
+			// touchDevice enforces the device limit. The new row starts at the column defaults.
+			this.touchDevice(normalizedId, name, now);
+			row = { name, last_ack_seq: "0", last_seen: now };
+		}
+		const nextName = row.name ?? name;
+		const nextAck = compareCanonicalDecimals(acknowledged, row.last_ack_seq) > 0 ? acknowledged : row.last_ack_seq;
+		if (nextName === row.name && nextAck === row.last_ack_seq && !lastSeenStale(row.last_seen, now)) return;
+		sql.exec(
+			"UPDATE devices SET name = ?, last_ack_seq = ?, last_seen = ? WHERE device_id = ?",
+			nextName,
+			nextAck,
+			now,
+			normalizedId,
+		);
+	}
+
+	/**
+	 * True when a touch would change nothing worth a billed write: the device
+	 * exists, its name needs no fill, and last_seen is still fresh.
+	 */
+	private deviceTouchIsRedundant(normalizedId: string, name: string | null, now: number): boolean {
+		const row = this.ctx.storage.sql.exec<{ name: string | null; last_seen: number | null }>(
+			"SELECT name, last_seen FROM devices WHERE device_id = ?",
+			normalizedId,
+		).toArray()[0];
+		if (!row) return false;
+		const needsNameFill = row.name === null && name !== null;
+		return !needsNameFill && !lastSeenStale(row.last_seen, now);
+	}
+
 	private touchExistingDevice(deviceId: string, name: string | null, now = Date.now()): void {
 		const normalizedId = this.normalizeDeviceId(deviceId);
+		if (this.deviceTouchIsRedundant(normalizedId, name, now)) return;
 		this.ctx.storage.sql.exec(
 			`UPDATE devices
 			 SET name = COALESCE(name, ?), last_seen = ?
@@ -947,10 +1001,10 @@ export class SyncHub extends DurableObject<Env> {
 			value,
 		);
 	}
+}
 
-	private deleteMeta(key: string): void {
-		this.ctx.storage.sql.exec("DELETE FROM meta WHERE k = ?", key);
-	}
+function lastSeenStale(lastSeen: number | null, now: number): boolean {
+	return lastSeen === null || now - lastSeen >= LAST_SEEN_REFRESH_MS;
 }
 
 function normalizeDeviceName(value: string | null): string | null {

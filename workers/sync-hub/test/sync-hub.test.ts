@@ -17,7 +17,9 @@ import {
 } from "../src/canonical-content";
 import {
 	DEVICE_LIMIT_ERROR,
+	LAST_SEEN_REFRESH_MS,
 	MAX_DEVICES_PER_USER,
+	PROJECTION_LEASE_MIN_REMAINING_MS,
 	PROJECTION_LEASE_MS,
 	type ChangesOutcome,
 	type ChangesResult,
@@ -1633,6 +1635,193 @@ describe("fail-soft Durable Object errors", () => {
 			httpStatus: 503,
 			retryable: true,
 			projectedSeq: "0",
+		});
+	});
+});
+
+/** Wrap state.storage.sql.exec to sum rowsWritten. The returned function gives the sum since its last call. */
+function rowsWrittenCounter(state: DurableObjectState): () => number {
+	let rows = 0;
+	const sql = state.storage.sql;
+	const originalExec = sql.exec.bind(sql);
+	(sql as { exec: typeof sql.exec }).exec = ((query: string, ...bindings: unknown[]) => {
+		const cursor = originalExec(query, ...bindings);
+		rows += cursor.rowsWritten;
+		return cursor;
+	}) as typeof sql.exec;
+	return () => {
+		const taken = rows;
+		rows = 0;
+		return taken;
+	};
+}
+
+describe("pull bookkeeping writes", () => {
+	it("an idle pull writes no rows; a cursor advance, a missing name or a stale last_seen writes one", async () => {
+		const stub = hub("pull-idle-writes");
+		ok(await stub.pushOps("dev-a", [await observationOp("1"), await observationOp("2")]));
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			const rowsWritten = rowsWrittenCounter(state);
+			const pull = (since: string, now: number, name: string | null = null) => {
+				rowsWritten();
+				changes(instance.getChanges("dev-reader", since, 20, name, now));
+				return rowsWritten();
+			};
+			const reader = () =>
+				instance.getMetadata("pull-idle-writes").devices.find((d) => d.device_id === "dev-reader")!;
+
+			const t0 = 1_000_000;
+			expect(pull("1", t0)).toBeGreaterThan(0);
+			expect(pull("1", t0 + 1_000)).toBe(0);
+
+			expect(pull("2", t0 + 2_000)).toBe(1);
+			expect(reader().last_ack_seq).toBe("2");
+
+			// An older cursor never moves the ack back, and writes nothing.
+			expect(pull("1", t0 + 3_000)).toBe(0);
+			expect(reader().last_ack_seq).toBe("2");
+
+			expect(pull("2", t0 + 3_000, "Laptop")).toBe(1);
+			expect(reader().name).toBe("Laptop");
+
+			// The name write at t0 + 3_000 also refreshed last_seen.
+			const stale = t0 + 3_000 + LAST_SEEN_REFRESH_MS;
+			expect(pull("2", stale - 1)).toBe(0);
+			expect(pull("2", stale)).toBe(1);
+			expect(reader().last_seen_epoch_ms).toBe(String(stale));
+		});
+	});
+});
+
+describe("device touch writes", () => {
+	it("push and status skip the devices write while last_seen is fresh and the name is set", async () => {
+		const stub = hub("device-touch-throttle");
+		ok(await stub.pushOps("dev-a", [await observationOp("1")], "Laptop"));
+
+		await runInDurableObject(stub, async (instance: SyncHub, state) => {
+			const rowsWritten = rowsWrittenCounter(state);
+			const lastSeen = () => state.storage.sql.exec<{ last_seen: number }>(
+				"SELECT last_seen FROM devices WHERE device_id = 'dev-a'",
+			).one().last_seen;
+			const ageLastSeen = () => state.storage.sql.exec(
+				"UPDATE devices SET last_seen = last_seen - ? WHERE device_id = 'dev-a'",
+				LAST_SEEN_REFRESH_MS,
+			);
+
+			instance.getStatus("dev-a", "Laptop");
+			expect(rowsWritten()).toBe(0);
+
+			ageLastSeen();
+			rowsWritten();
+			instance.getStatus("dev-a", "Laptop");
+			expect(rowsWritten()).toBe(1);
+
+			// A fresh push writes its op rows but not the devices row.
+			const before = lastSeen();
+			ok(await instance.pushOps("dev-a", [await observationOp("2")], "Laptop"));
+			expect(lastSeen()).toBe(before);
+		});
+	});
+
+	it("status still fills a missing name and never admits an unknown device", async () => {
+		const stub = hub("device-touch-name-fill");
+		ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		await stub.getStatus("dev-a", "Desk");
+		await stub.getStatus("dev-unknown", "Ghost");
+		const devices = (await stub.getMetadata("device-touch-name-fill")).devices;
+		expect(devices.find((d) => d.device_id === "dev-a")?.name).toBe("Desk");
+		expect(devices.some((d) => d.device_id === "dev-unknown")).toBe(false);
+	});
+});
+
+describe("projection lease write budget", () => {
+	const leaseExpiry = (state: DurableObjectState) =>
+		state.storage.sql.exec<{ v: string }>(
+			"SELECT v FROM meta WHERE k = 'projection_lease_expires_at'",
+		).one().v;
+
+	it("release expires the lease in place and fences the released token", async () => {
+		const userId = "lease-release-in-place";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const first = await stub.acquireProjectionLease(pushed.head_seq, 1_000);
+		expect(first.acquired).toBe(true);
+		await stub.releaseProjectionLease(first.lease_token!);
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			expect(leaseExpiry(state)).toBe("0");
+			expect(() => instance.getProjectionPage(first.lease_token!, pushed.head_seq, userId, 100, 4_000_000, 1_001))
+				.toThrow(/projection lease expired/);
+			const second = instance.acquireProjectionLease(pushed.head_seq, 1_002);
+			expect(second.acquired).toBe(true);
+			expect(() => instance.advanceProjectionCheckpoint(first.lease_token!, first.epoch, "0", pushed.head_seq, 1_003))
+				.toThrow(/projection lease is not held/);
+		});
+	});
+
+	it("after the first cycle, acquire writes 2 rows and release writes 1", async () => {
+		const stub = hub("lease-write-cost");
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const first = await stub.acquireProjectionLease(pushed.head_seq, 1_000);
+		await stub.releaseProjectionLease(first.lease_token!);
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			const rowsWritten = rowsWrittenCounter(state);
+			const second = instance.acquireProjectionLease(pushed.head_seq, 2_000);
+			expect(rowsWritten()).toBe(2);
+			instance.releaseProjectionLease(second.lease_token!);
+			expect(rowsWritten()).toBe(1);
+		});
+	});
+
+	it("a checkpoint advance leaves the expiry alone; the next page renews only when the lease is no longer fresh", async () => {
+		const userId = "lease-advance-no-extend";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [
+			await observationOp("1"), await observationOp("2"), await observationOp("3"),
+		]));
+		const lease = await stub.acquireProjectionLease(pushed.head_seq, 10_000);
+		const acquiredExpiry = String(10_000 + PROJECTION_LEASE_MS);
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			const step = (pageAt: number, advanceAt: number) => {
+				const page = instance.getProjectionPage(lease.lease_token!, pushed.head_seq, userId, 1, 4_000_000, pageAt);
+				instance.advanceProjectionCheckpoint(
+					lease.lease_token!, page.epoch, page.from_seq_exclusive, page.through_seq, advanceAt,
+				);
+			};
+
+			step(10_000, 12_000);
+			expect(leaseExpiry(state)).toBe(acquiredExpiry);
+
+			// 88s left at this page: still fresh, so no renewal.
+			step(12_000, 30_000);
+			expect(leaseExpiry(state)).toBe(acquiredExpiry);
+
+			// 70s left at this page: it renews.
+			step(30_000, 31_000);
+			expect(leaseExpiry(state)).toBe(String(30_000 + PROJECTION_LEASE_MS));
+		});
+	});
+
+	it("a page renews the lease only when less than PROJECTION_LEASE_MIN_REMAINING_MS remains", async () => {
+		const userId = "lease-renew-threshold";
+		const stub = hub(userId);
+		const pushed = ok(await stub.pushOps("dev-a", [await observationOp("1")]));
+		const lease = await stub.acquireProjectionLease(pushed.head_seq, 10_000);
+		const acquiredExpiry = 10_000 + PROJECTION_LEASE_MS;
+
+		await runInDurableObject(stub, (instance: SyncHub, state) => {
+			const page = (now: number) =>
+				instance.getProjectionPage(lease.lease_token!, pushed.head_seq, userId, 100, 4_000_000, now);
+
+			const lastSkip = acquiredExpiry - PROJECTION_LEASE_MIN_REMAINING_MS;
+			page(lastSkip);
+			expect(leaseExpiry(state)).toBe(String(acquiredExpiry));
+
+			page(lastSkip + 1);
+			expect(leaseExpiry(state)).toBe(String(lastSkip + 1 + PROJECTION_LEASE_MS));
 		});
 	});
 });
