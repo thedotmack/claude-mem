@@ -405,6 +405,28 @@ export function isQuotaFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'quota_exhausted';
 }
 
+/**
+ * True when the current record is claude-mem's own precautionary stop
+ * (RateLimitStore's `quota_guard`): usage crossed a reserve threshold or the
+ * reset buffer while the provider was still accepting requests. Nothing is
+ * exhausted that we know of, so the banner says "paused", not "used up".
+ */
+export function isQuotaGuardPause(state: ObserverHealthState): boolean {
+  return state.lastErrorKind === 'quota_guard';
+}
+
+/**
+ * The one message every quota abort used to be booked under, guard and
+ * refusal alike; the assistant-prose path still is. Such a record cannot say
+ * whether anything was exhausted, so the banner must not claim it was.
+ */
+export const AMBIGUOUS_QUOTA_MESSAGE = 'Provider reported the inference allowance exhausted';
+
+/** True when the record is a quota failure booked without the guard's decision. */
+export function isAmbiguousQuotaRecord(state: ObserverHealthState): boolean {
+  return isQuotaFailure(state) && state.lastErrorMessage === AMBIGUOUS_QUOTA_MESSAGE;
+}
+
 /** True when the current outage is the provider refusing the observer's credential. */
 export function isAuthFailure(state: ObserverHealthState): boolean {
   return state.lastErrorKind === 'auth_invalid';
@@ -454,15 +476,16 @@ function hasOutlivedRecheckWindow(state: ObserverHealthState, nowMs: number): bo
  * allowance reset (#4083: a 63-hour-old error rendered as a live outage while
  * the worker stored observations four minutes later in the same session).
  *
- * Only failures that clear on their own age out: this one and a deadline
- * expiry (isDeadlineFailureStale). A bad key or a missing base URL stays true
- * until someone fixes it, so its banner should keep saying so.
+ * Only failures that clear on their own age out: this one, the guard's
+ * precautionary pause (isQuotaGuardPause, released by the same recheck window)
+ * and a deadline expiry (isDeadlineFailureStale). A bad key or a missing base
+ * URL stays true until someone fixes it, so its banner should keep saying so.
  */
 export function isQuotaFailureStale(
   state: ObserverHealthState,
   nowMs: number = Date.now(),
 ): boolean {
-  return isQuotaFailure(state) && hasOutlivedRecheckWindow(state, nowMs);
+  return (isQuotaFailure(state) || isQuotaGuardPause(state)) && hasOutlivedRecheckWindow(state, nowMs);
 }
 
 /**
@@ -612,11 +635,20 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
   const action = relayedProviderText(state.lastErrorAction) || null;
 
   if (isQuotaFailureStale(state, nowMs)) {
-    return renderLastKnownFailureNote(state, nowMs, action, {
-      failedWith: 'a spent allowance',
-      remedyLabel: 'If it is still spent',
-      recovery: 'Allowances reset on their own',
-    });
+    // A guard pause, or a record that cannot tell the guard from a refusal,
+    // is not evidence that anything was spent.
+    const precautionary = isQuotaGuardPause(state) || isAmbiguousQuotaRecord(state);
+    return renderLastKnownFailureNote(state, nowMs, action, precautionary
+      ? {
+        failedWith: 'a usage-related pause',
+        remedyLabel: 'If it is still paused',
+        recovery: 'Usage pauses release on their own',
+      }
+      : {
+        failedWith: 'a spent allowance',
+        remedyLabel: 'If it is still spent',
+        recovery: 'Allowances reset on their own',
+      });
   }
   if (isDeadlineFailureStale(state, nowMs)) {
     return renderLastKnownFailureNote(state, nowMs, action, {
@@ -626,12 +658,43 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
     });
   }
 
-  // A spent allowance is the one outage a restart cannot clear. Worse, the
-  // restart link is the code path that clears the quota breaker (the process
-  // serving /api/admin/restart is the process holding the cooldown), so
-  // offering it here talks the user into re-opening the per-observation
-  // request storm the breaker exists to stop. Nothing is wedged; the account
-  // is out of allowance. Say that, and relay the provider's own remedy.
+  // claude-mem's own reserve guard stopped capture while the provider was
+  // still accepting requests, or the record was booked without the guard's
+  // decision and cannot tell the two apart. Either way nothing is known to be
+  // exhausted: say "paused", relay the guard's own reason, point at the
+  // provider's usage page, and offer no restart (a restart replenishes
+  // nothing and the breaker it would release is the pause itself).
+  if (isQuotaGuardPause(state) || isAmbiguousQuotaRecord(state)) {
+    const guard = isQuotaGuardPause(state);
+    return [
+      '⚠️ Heads up: claude-mem memory capture is paused.',
+      '',
+      guard
+        ? `Memory capture is paused to preserve your Claude allowance (${sinceText}).`
+        : `The memory observer has a usage-related pause on ${provider} (${sinceText}).`,
+      '',
+      guard
+        ? `Reason: ${relayedProviderText(state.lastErrorMessage) || 'Precautionary usage guard'}`
+        : 'This record cannot tell a precautionary pause from a provider rejection.',
+      '',
+      'Existing memories remain available; new memory generation is paused.',
+      `After the ${OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS / 60_000}-minute cooldown, the next activity can trigger one retry.`,
+      'Capture resumes when usage is below the guard thresholds and the provider accepts requests.',
+      provider === 'claude'
+        ? 'Check Claude Settings → Usage for the current usage and reset time.'
+        : `Check ${provider} usage settings for the current allowance and reset time.`,
+      '',
+      'Restarting does not replenish allowance or clear the persisted cooldown.',
+      '',
+      '(Assistant: tell the user about this pause at the start of your first reply.',
+      'Relay the reason accurately; do not call a precautionary pause provider exhaustion.',
+      'Do NOT restart the worker or change providers to bypass the pause.)',
+    ].join('\n');
+  }
+
+  // A spent allowance is the one outage a restart cannot clear. Nothing is
+  // wedged; the account is out of allowance. Say that, and relay the
+  // provider's own remedy.
   if (isQuotaFailure(state)) {
     return [
       "⚠️ Heads up: claude-mem can't save memories right now.",
@@ -643,10 +706,11 @@ export function renderObserverHealthWarning(state: ObserverHealthState, nowMs: n
       "Until the allowance resets or you add capacity, nothing from this session — or any",
       'other — will be remembered.',
       '',
-      // Deliberately no restart link: nothing is broken to restart, and doing
-      // it disarms the breaker that is currently protecting the account.
-      'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-      'claude-mem from hammering the provider — so please leave the worker alone.',
+      // Deliberately no restart link: nothing is broken to restart, and the
+      // quota breaker is persisted, so a restart revives it rather than
+      // clearing it.
+      'Restarting will NOT help here: it does not replenish the allowance or clear the',
+      'persisted cooldown — so please leave the worker alone.',
       ...(action ? [] : [
         'Switch the observer to another provider in ~/.claude-mem/settings.json if you need',
         'memory capture before the allowance resets.',

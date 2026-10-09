@@ -8,6 +8,7 @@ import {
   extractRateLimitInfo,
   minutesUntilReset,
   buildUsageLimitHitProps,
+  explainQuotaAbort,
   type RateLimitInfo,
   type RateLimitWindow,
 } from '../../src/services/worker/RateLimitStore.js';
@@ -263,7 +264,7 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
       resetsAt: FIXED_NOW + 60_000,
     });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision).toEqual({
+    expect(decision).toMatchObject({
       abort: true,
       window: 'five_hour',
       reason: 'quota:five_hour rejected by provider',
@@ -273,7 +274,7 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   it('still aborts on a rejected entry with no reset time', () => {
     store.set({ rateLimitType: 'five_hour', status: 'rejected' });
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
-    expect(decision).toEqual({
+    expect(decision).toMatchObject({
       abort: true,
       window: 'five_hour',
       reason: 'quota:five_hour rejected by provider',
@@ -401,6 +402,45 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
   it('does not abort with empty store', () => {
     const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
     expect(decision.abort).toBe(false);
+  });
+
+  // The decision says what kind of stop it is (HAR-1103): the provider's own
+  // refusal (`quota_exhausted`) or claude-mem's precautionary guard
+  // (`quota_guard`). The ledger renders the two differently, so the guard must
+  // never be booked as a spent allowance, and a refusal must never be hidden
+  // behind an earlier window's precaution.
+  it('still reports a provider rejection below the weekly reserve threshold as exhausted', () => {
+    store.set({ rateLimitType: 'seven_day', utilization: 0.5, status: 'rejected' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.abort).toBe(true);
+    expect(decision.pause?.kind).toBe('quota_exhausted');
+    expect(decision.pause?.message).toContain('rejected');
+    expect(decision.pause?.message).not.toContain('pause threshold');
+  });
+
+  it('prioritizes a confirmed weekly rejection over a five-hour precautionary guard', () => {
+    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
+    store.set({ rateLimitType: 'seven_day', status: 'rejected' });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.window).toBe('seven_day');
+    expect(decision.pause?.kind).toBe('quota_exhausted');
+  });
+
+  it('reports the five-hour reset buffer as a precautionary pause', () => {
+    store.set({ rateLimitType: 'five_hour', utilization: 0.9, resetsAt: FIXED_NOW + 600_000 });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.pause?.kind).toBe('quota_guard');
+    expect(decision.pause?.message).toContain('10 minutes');
+    expect(decision.pause?.message).not.toContain('exhausted');
+  });
+
+  it('reports a threshold stop as a precautionary pause that names the window and the threshold', () => {
+    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
+    const decision = shouldAbortForQuota(cliAuth, store, FIXED_NOW);
+    expect(decision.pause?.kind).toBe('quota_guard');
+    expect(decision.pause?.message).toContain('five-hour Claude usage is 96.0%');
+    expect(decision.pause?.message).toContain('95% pause threshold');
+    expect(decision.pause?.message).not.toContain('exhausted');
   });
 });
 
@@ -538,7 +578,7 @@ describe('shouldAbortForQuota — configurable thresholds', () => {
     ];
     for (const [window, threshold] of previous) {
       expect(shouldAbortForQuota(cliAuth, storeAt(window, threshold - 0.001), FIXED_NOW)).toEqual({ abort: false });
-      expect(shouldAbortForQuota(cliAuth, storeAt(window, threshold), FIXED_NOW)).toEqual({
+      expect(shouldAbortForQuota(cliAuth, storeAt(window, threshold), FIXED_NOW)).toMatchObject({
         abort: true,
         window,
         reason: `quota:${window} utilization ${(threshold * 100).toFixed(1)}% >= ${(threshold * 100).toFixed(0)}%`,
@@ -561,7 +601,7 @@ describe('shouldAbortForQuota — configurable thresholds', () => {
 
   it("keeps the bounds: '0' stops at any reported utilization, '1' only at full", () => {
     process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '0';
-    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0), FIXED_NOW)).toEqual({
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0), FIXED_NOW)).toMatchObject({
       abort: true,
       window: 'seven_day',
       reason: 'quota:seven_day utilization 0.0% >= 0%',
@@ -599,7 +639,7 @@ describe('shouldAbortForQuota — configurable thresholds', () => {
 
   it('a provider rejection still stops the observer whatever the threshold', () => {
     process.env.CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY = '1';
-    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.5, 'rejected'), FIXED_NOW)).toEqual({
+    expect(shouldAbortForQuota(cliAuth, storeAt('seven_day', 0.5, 'rejected'), FIXED_NOW)).toMatchObject({
       abort: true,
       window: 'seven_day',
       reason: 'quota:seven_day rejected by provider',
@@ -628,6 +668,38 @@ describe('shouldAbortForQuota — configurable thresholds', () => {
       expect(shouldAbortForQuota(cliAuth, storeAt('five_hour', 0.49), FIXED_NOW).abort).toBe(false);
       expect(shouldAbortForQuota(cliAuth, storeAt('five_hour', 0.5), FIXED_NOW).abort).toBe(true);
     });
+  });
+});
+
+// The generator's exit path sees only `quota:<window>` on the abort reason and
+// rebuilds the pause from the snapshot, so the ledger and the cooldown notice
+// carry the guard's own words instead of a generic "allowance exhausted".
+describe('explainQuotaAbort', () => {
+  it('rebuilds the reserve guard behind a quota:<window> abort', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'five_hour', utilization: 0.96 });
+    const pause = explainQuotaAbort('quota:five_hour', store, FIXED_NOW);
+    expect(pause?.kind).toBe('quota_guard');
+    expect(pause?.message).toContain('five-hour Claude usage is 96.0%');
+  });
+
+  it('rebuilds a provider refusal as exhausted', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', utilization: 0.5 });
+    const pause = explainQuotaAbort('quota:seven_day', store, FIXED_NOW);
+    expect(pause?.kind).toBe('quota_exhausted');
+    expect(pause?.message).toContain('weekly usage allowance is exhausted');
+  });
+
+  it('gives nothing for a reason that names no guarded window, another account\'s snapshot, or a stop it cannot explain', () => {
+    const store = freshStore();
+    store.set({ rateLimitType: 'seven_day', status: 'rejected', profile: 'other' });
+    store.set({ rateLimitType: 'five_hour', utilization: 0.1 });
+    expect(explainQuotaAbort('quota:observer_text', store, FIXED_NOW)).toBeUndefined();
+    expect(explainQuotaAbort('quota:quota_exhausted', store, FIXED_NOW)).toBeUndefined();
+    expect(explainQuotaAbort(null, store, FIXED_NOW)).toBeUndefined();
+    expect(explainQuotaAbort('quota:seven_day', store, FIXED_NOW, 'mine')).toBeUndefined();
+    expect(explainQuotaAbort('quota:five_hour', store, FIXED_NOW)).toBeUndefined();
   });
 });
 
@@ -763,7 +835,7 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     });
 
     expect(store.get('seven_day')?.status).toBe('rejected');
-    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({
+    expect(shouldAbortForQuota(cliAuth, store, now)).toMatchObject({
       abort: true,
       window: 'seven_day',
       reason: 'quota:seven_day rejected by provider',
@@ -814,7 +886,7 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     });
 
     expect(store.get('seven_day')?.resetsAt).toBeUndefined();
-    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({
+    expect(shouldAbortForQuota(cliAuth, store, now)).toMatchObject({
       abort: true,
       window: 'seven_day',
       reason: 'quota:seven_day utilization 96.0% >= 93%',
@@ -827,7 +899,7 @@ describe('RateLimitStore.set → unifiedWindows', () => {
       ...fiveHourEvent,
       unifiedWindows: { seven_day: { utilization: 0.97, resetsAt: sevenDayResetsAt } },
     });
-    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toMatchObject({
       abort: true,
       window: 'seven_day',
       reason: 'quota:seven_day utilization 97.0% >= 93%',
@@ -926,6 +998,121 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(store.get('five_hour')?.status).toBeUndefined();
 
     expect(store.set(rejected)).toBe(false);
+  });
+
+  it('uses a newer unified window instead of an expired high reading', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.95,
+      resetsAt: 1_788_710_400,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.85,
+      resetsAt: 1_788_883_200,
+      unifiedWindows: {
+        five_hour: { utilization: 0.28, resetsAt: 1_788_730_200 },
+        seven_day: { utilization: 0.85, resetsAt: 1_788_883_200 },
+      },
+    });
+
+    expect(shouldAbortForQuota(cliAuth, store, 1_788_720_763_944)).toEqual({ abort: false });
+    expect(store.get('five_hour')?.utilization).toBe(0.28);
+  });
+
+  it('records a fresh zero utilization from a unified window', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt: FIXED_NOW + 2 * 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: {
+        five_hour: { utilization: 0, resetsAt: FIXED_NOW + 5 * 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('five_hour')?.utilization).toBe(0);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
+  });
+
+  it('uses a newer unified reading when the stale sibling reset is still in the future', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.96,
+      resetsAt: FIXED_NOW + 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed_warning',
+      utilization: 0.8,
+      unifiedWindows: {
+        five_hour: { utilization: 0.25, resetsAt: FIXED_NOW + 4 * 60 * 60_000 },
+      },
+    });
+
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW)).toEqual({ abort: false });
+  });
+
+  it('accepts a unified reading after an explicit rejection has expired', () => {
+    const store = freshStore();
+    const now = Date.now();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'rejected',
+      utilization: 1,
+      resetsAt: now - 1,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: {
+        five_hour: { utilization: 0.2, resetsAt: now + 5 * 60 * 60_000 },
+      },
+    });
+
+    expect(store.get('five_hour')?.utilization).toBe(0.2);
+    expect(shouldAbortForQuota(cliAuth, store, now)).toEqual({ abort: false });
+  });
+
+  // A present but malformed field voids the entry: half of a corrupt snapshot
+  // must not replace a good reading (the old guard refreshed five_hour to 0.2
+  // from an entry whose reset time was the string 'soon').
+  it('ignores malformed unified window data without corrupting existing buckets', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.4,
+      resetsAt: FIXED_NOW + 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: {
+        five_hour: { utilization: 0.2, resetsAt: 'soon' },
+        seven_day_opus: { utilization: Number.NaN, resetsAt: FIXED_NOW + 60_000 },
+        seven_day_sonnet: null,
+        invented_window: { utilization: 1, resetsAt: FIXED_NOW + 60_000 },
+      },
+    } as unknown as RateLimitInfo);
+
+    expect(store.get('five_hour')?.utilization).toBe(0.4);
+    expect(store.get('seven_day_opus')).toBeUndefined();
+    expect(store.get('seven_day_sonnet')).toBeUndefined();
+    expect(store.size).toBe(2);
   });
 
   it('does not persist unifiedWindows on the stored entry', () => {

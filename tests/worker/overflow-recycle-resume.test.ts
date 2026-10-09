@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
-import { resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
+import { globalRateLimitStore } from '../../src/services/worker/RateLimitStore.js';
+import * as observerHealth from '../../src/shared/observer-health.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const {
@@ -151,6 +153,38 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(1);
+  });
+
+  // The guard aborts with only the window on the reason (ClaudeProvider sets
+  // `quota:<window>`); the exit path rebuilds its decision from the shared
+  // store so the ledger and the cooldown carry the guard's own words, not the
+  // generic "allowance exhausted" that reads as a spent allowance (HAR-1103).
+  it('books a reserve-threshold abort as the guard pause it was, in the ledger and the cooldown', async () => {
+    const session = makeSession();
+    globalRateLimitStore.set({ rateLimitType: 'seven_day', utilization: 0.95 });
+    try {
+      const { routes, stats } = buildRoutes(session, async () => {
+        session.abortReason = 'quota:seven_day';
+        session.abortController.abort();
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+
+      const health = observerHealth.readObserverHealth()!;
+      expect(health.lastErrorKind).toBe('quota_guard');
+      expect(health.lastErrorMessage).toContain('weekly Claude usage is 95.0%');
+      expect(health.lastErrorMessage).toContain('pause threshold');
+      expect(observerHealth.renderObserverHealthWarning(health)).toContain('paused to preserve your Claude allowance');
+      expect(getQuotaCooldown('claude')?.message).toBe(health.lastErrorMessage);
+      expect(getQuotaCooldown('claude')?.window).toBe('seven_day');
+      expect(session.abortReason).toBeNull();
+      expect(stats().finalizeCalls).toBe(0);
+      expect(stats().removed).toBe(0);
+    } finally {
+      // The store is the process singleton: leave the window well under threshold.
+      globalRateLimitStore.set({ rateLimitType: 'seven_day', status: 'allowed', utilization: 0.1 });
+    }
   });
 
   it('does not resume on an auth pause', async () => {

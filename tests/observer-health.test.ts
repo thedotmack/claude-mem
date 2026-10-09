@@ -15,6 +15,9 @@ import {
   renderObserverQuotaCooldownNotice,
   isQuotaFailureStale,
   isDeadlineFailureStale,
+  isQuotaGuardPause,
+  isAmbiguousQuotaRecord,
+  AMBIGUOUS_QUOTA_MESSAGE,
   OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS,
   describeDuration,
   scrubErrorMessage,
@@ -354,7 +357,11 @@ describe('a quota banner that has gone stale (#4083)', () => {
     return unhealthyState({
       lastErrorKind: 'quota_exhausted',
       lastErrorProvider: 'claude',
-      lastErrorMessage: 'Provider reported the inference allowance exhausted',
+      // A confirmed refusal. The generic "Provider reported the inference
+      // allowance exhausted" record is ambiguous (it is what a guard pause
+      // used to be booked as) and renders as a pause, not an outage; see the
+      // precautionary-pause block below.
+      lastErrorMessage: 'Weekly usage allowance exhausted: the provider rejected the request',
       lastErrorAt: ERROR_AT,
       ...overrides,
     });
@@ -433,6 +440,90 @@ describe('a quota banner that has gone stale (#4083)', () => {
     // observer-health, so the other direction would be a cycle). This is what
     // stops the copy drifting.
     expect(OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS).toBe(QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+  });
+});
+
+// A pause is not an outage (HAR-1103). RateLimitStore's guard stops capture
+// at a reserve threshold while the provider still accepts requests and books
+// it as `quota_guard`; the generic record older workers and the
+// assistant-prose path write cannot tell that pause from a refusal. Neither
+// may be rendered as a spent allowance, and neither gets a restart link: a
+// restart replenishes nothing and the breaker it would release is the pause.
+describe('a precautionary pause and the ambiguous quota record', () => {
+  const ERROR_AT = 1_754_700_100_000;
+  const FRESH = ERROR_AT + 60_000;
+
+  it('renders a persisted reserve-threshold pause without claiming the provider allowance is exhausted', () => {
+    recordObserverFailure('claude', {
+      kind: 'quota_guard',
+      message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+    }, healthPath);
+    const warning = renderObserverHealthWarning(readObserverHealth(healthPath)!);
+    expect(warning).toContain('Memory capture is paused to preserve your Claude allowance');
+    expect(warning).toContain('weekly Claude usage is 95.0%');
+    expect(warning).toContain('95% pause threshold');
+    expect(warning).toContain('30-minute cooldown');
+    expect(warning).not.toContain('allowance on claude is used up');
+    expect(warning).not.toContain('nothing from this session');
+    expect(warning).not.toContain('npx claude-mem restart');
+    expect(warning).not.toContain('clears the backoff');
+  });
+
+  it('does not present an ambiguous legacy quota record as a confirmed provider rejection', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorProvider: 'claude',
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: AMBIGUOUS_QUOTA_MESSAGE,
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('usage-related pause');
+    expect(warning).toContain('Claude Settings');
+    expect(warning).not.toContain('allowance on claude is used up');
+    expect(warning).not.toContain('npx claude-mem restart');
+  });
+
+  it('keeps confirmed provider exhaustion distinct from the reserve guard', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: 'Monthly allowance exhausted (status 402)',
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('allowance on openrouter is used up');
+    expect(warning).not.toContain('clears the backoff');
+    expect(warning).not.toContain('npx claude-mem restart');
+  });
+
+  it('directs legacy quota pauses on other providers to their own usage settings', () => {
+    const warning = renderObserverHealthWarning(unhealthyState({
+      lastErrorProvider: 'openrouter',
+      lastErrorKind: 'quota_exhausted',
+      lastErrorMessage: AMBIGUOUS_QUOTA_MESSAGE,
+      lastErrorAt: ERROR_AT,
+    }), FRESH);
+    expect(warning).toContain('openrouter usage settings');
+    expect(warning).not.toContain('Claude Settings');
+  });
+
+  it('the generic record survives the scrubber, so a stored ledger still reads as ambiguous', () => {
+    recordObserverFailure('claude', { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE }, healthPath);
+    const state = readObserverHealth(healthPath)!;
+    expect(isAmbiguousQuotaRecord(state)).toBe(true);
+    expect(isQuotaGuardPause(state)).toBe(false);
+  });
+
+  it('a guard pause ages out on the recheck window like a refusal, and the stale note still calls it a pause', () => {
+    const state = unhealthyState({
+      lastErrorProvider: 'claude',
+      lastErrorKind: 'quota_guard',
+      lastErrorMessage: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.',
+      lastErrorAt: ERROR_AT,
+    });
+    expect(isQuotaFailureStale(state, ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS - 1)).toBe(false);
+    expect(isQuotaFailureStale(state, ERROR_AT + OBSERVER_QUOTA_FAILURE_STALE_AFTER_MS)).toBe(true);
+    const note = renderObserverHealthWarning(state, ERROR_AT + 63 * 60 * 60_000);
+    expect(note).toContain('last failed with a usage-related pause');
+    expect(note).not.toContain('spent allowance');
+    expect(note).not.toContain('at the very start of your first reply');
   });
 });
 

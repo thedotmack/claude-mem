@@ -20,7 +20,8 @@ import {
 } from './response-pacer.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
-import { recordObserverFailure } from '../../../shared/observer-health.js';
+import { AMBIGUOUS_QUOTA_MESSAGE, recordObserverFailure } from '../../../shared/observer-health.js';
+import { explainQuotaAbort, globalRateLimitStore } from '../RateLimitStore.js';
 import {
   CODEX_CLI_SETUP_REMEDIATION,
   recordClaudeSetupRequired,
@@ -372,14 +373,24 @@ export async function startGeneratorWithProvider(
       // is never re-booked here as a spent allowance (a rate limit is not
       // one), nor given a breaker over a cmem fallback's window.
       if (normalizedReason === 'quota' && !failureBooked) {
-        const quotaMessage = 'Provider reported the inference allowance exhausted';
-        recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
+        // Claude's guard aborts with only the window on the reason. Rebuild
+        // its decision from the snapshot so the ledger and the cooldown notice
+        // say whether this was the provider's refusal or claude-mem's own
+        // reserve threshold: the generic record below cannot tell them apart,
+        // and the SessionStart banner must not call a 95% pause a spent
+        // allowance. Other providers' quota aborts (and quota as assistant
+        // prose) keep the generic record, which the banner reads as ambiguous.
+        const pause = (provider === 'claude'
+          ? explainQuotaAbort(reason, globalRateLimitStore, Date.now(), session.observerProfile)
+          : undefined)
+          ?? { kind: 'quota_exhausted' as const, message: AMBIGUOUS_QUOTA_MESSAGE };
+        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile);
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
         // session-start warning is structurally blind to an entire outage
         // class: the allowance is spent, no observation will ever store, and
         // the user is told nothing.
-        recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+        recordObserverFailure(provider, pause);
       }
       // A signed-out Claude observer answers with the CLI's own prose ("Not
       // logged in · Please run /login"). ResponseProcessor resets the batch to
