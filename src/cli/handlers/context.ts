@@ -20,6 +20,7 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
+import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../shared/memory-instructions.js';
 import {
   cmemGatewayRole,
   hasShownProFallbackNotice,
@@ -91,6 +92,8 @@ export const contextHandler: EventHandler = {
     const port = getWorkerPort();
 
     const settings = loadFromFileOnce();
+    const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : MEMORY_PLUGIN_INSTRUCTIONS;
+    emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
     // Codex already receives the timeline through additionalContext. Repeating
     // it as systemMessage can push SessionStart stdout past Codex's hook-output
     // limit, causing Codex to discard the entire payload (including context).
@@ -248,6 +251,7 @@ export const contextHandler: EventHandler = {
     }
 
     const platform = input.platform;
+    additionalContext = [additionalContext, memoryInstructions].filter(Boolean).join('\n\n');
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates

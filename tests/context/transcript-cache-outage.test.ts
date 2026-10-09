@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
 
 // Real handler/worker HTTP/cache files. Autostart is disabled before imports;
 // the only listening endpoint is this child-owned loopback Express fixture.
@@ -83,12 +84,12 @@ describe('prior transcript outages fall back to the cached memory, which never c
   it('asks the worker first, and uses the cached block after the actual health probe fails', () => {
     const result = run('cached-outage');
     expect(result.healthCalls).toBeGreaterThan(0);
-    expect(result.result.hookSpecificOutput.additionalContext).toBe('SHARED MEMORY');
+    expect(result.result.hookSpecificOutput.additionalContext).toBe(`SHARED MEMORY\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
   });
   it('keeps the ordinary shared cache fast path when prior messages are disabled', () => {
     const result = run('default-outage');
     expect(result.healthCalls).toBe(0);
-    expect(result.result.hookSpecificOutput.additionalContext).toBe('SHARED MEMORY');
+    expect(result.result.hookSpecificOutput.additionalContext).toBe(`SHARED MEMORY\n\n${MEMORY_PLUGIN_INSTRUCTIONS}`);
   });
   it('warms one transcript-free variant through the real worker and uses it after shutdown', () => {
     const result = run('producer');
