@@ -582,6 +582,21 @@ export async function processAgentResponse(
     return null;
   }
 
+  // A reply to the init prompt answers the user's request, not a tool call: an
+  // <observation> in it was invented from <user_request> alone and would be
+  // stored as memory for work that never happened. The OpenAI-compatible
+  // providers never hand that reply here; the Claude feed does when it observes
+  // bare prompts, and with the feed paced to one unanswered prompt,
+  // lastGeneratorSource names the prompt this reply answers. The turn is kept
+  // (appended above, so role alternation holds); nothing is stored, no batch is
+  // acknowledged, and no batch state is touched.
+  if (session.lastGeneratorSource === 'init') {
+    logger.debug('PARSER', `${agentName} answered the init prompt with XML; nothing to store before tool evidence`, {
+      sessionId: session.sessionDbId,
+    });
+    return null;
+  }
+
   // Valid parse — clear the invalid-output counter so transient misses don't
   // accumulate toward a respawn across a healthy session, and clear the overflow
   // counter so recycles only ever trip on *consecutive* failures (not on an
