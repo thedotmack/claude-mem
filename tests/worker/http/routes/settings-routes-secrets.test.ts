@@ -51,6 +51,7 @@ const SECRET_ENV_KEYS = [
   'CLAUDE_MEM_CHROMA_API_KEY',
   'CLAUDE_MEM_CLOUD_SYNC_TOKEN',
   'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_WORKER_INGEST_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
@@ -99,6 +100,7 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
       CLAUDE_MEM_CHROMA_API_KEY: 'chroma-secret-abcd',
       CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token-wxyz',
       CLAUDE_MEM_TV_TOKEN: 'tv-token-9999',
+      CLAUDE_MEM_WORKER_INGEST_TOKEN: 'spool-ingest-token-1234',
       CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key-aaaa',
       CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: 'brainbeat-secret-bbbb',
       CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook?token=cccc',
@@ -165,6 +167,13 @@ describe('SettingsRoutes — credential redaction and host bind (#3861)', () => 
     expect(jsonSpy).toHaveBeenCalledWith({ success: true, message: 'Settings updated successfully' });
     const persisted = JSON.parse(readFileSync(settingsPath, 'utf-8'));
     expect(persisted.CLAUDE_MEM_GEMINI_API_KEY).toBe('*new-gemini-secret');
+  });
+
+  it('keeps the ingest token file/env-only when an unauthenticated settings write supplies another value', () => {
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_INGEST_TOKEN: 'original-ingest-token' }));
+    const { res } = createMockRes();
+    handlers.post({ body: { CLAUDE_MEM_WORKER_INGEST_TOKEN: 'replacement-token' }, path: '/api/settings', params: {}, query: {} } as Request, res as Response);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf8')).CLAUDE_MEM_WORKER_INGEST_TOKEN).toBe('original-ingest-token');
   });
 
   it('rejects an arbitrary IPv4 worker host', () => {
