@@ -102,7 +102,7 @@ describe('drainHookSpool', () => {
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(2);
     const sessionDbId = store.findSessionDbIdByContentSessionId('session-a', 'claude');
     expect(sessionDbId).not.toBeNull();
-    expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0);
+    expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0, expect.any(Number));
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledWith(sessionDbId);
     expect(store.getAdvisorCalls(0, 10).items.map(call => call.tool_use_id)).toEqual(['srvtoolu_1']);
     expect(ensureGeneratorRunning).toHaveBeenCalledWith(sessionDbId, 'summarize');
@@ -146,6 +146,7 @@ describe('drainHookSpool', () => {
     expect(await drainHookSpool(spool)).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
     expect(sessionManager.queueObservation.mock.calls[0][1]).toMatchObject({ prompt_number: 1, toolUseId: 'toolu_late_1' });
+    expect(sessionManager.queueObservation.mock.calls[0][2]).toBe(hookSawEventAtEpochMs);
 
     // The HTTP route path (no enqueue time) still means "now".
     await ingestShared.ingestObservation({
@@ -153,6 +154,7 @@ describe('drainHookSpool', () => {
       toolInput: { command: 'pwd' }, toolResponse: { stdout: '/' }, cwd: '/repo', toolUseId: 'toolu_live_1',
     });
     expect(sessionManager.queueObservation.mock.calls[1][1]).toMatchObject({ prompt_number: 3, toolUseId: 'toolu_live_1' });
+    expect(sessionManager.queueObservation.mock.calls[1][2]).toBeUndefined();
   });
 
   it('removes a deliberately skipped entry (it would be skipped again)', async () => {
