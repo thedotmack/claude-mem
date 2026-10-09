@@ -48,7 +48,7 @@ import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
-import { applySqliteConnectionPragmas } from './connection.js';
+import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, CURRENT_BINARY_VERSION, stampSchemaWriterVersion } from './connection.js';
 import { streamRows } from './stream-rows.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
@@ -205,7 +205,21 @@ export class SessionStore {
       this.db = new Database(dbPathOrDb);
     }
 
+    // Refuse before any DDL — pragmas included — when the database was last
+    // written by a newer binary (#3609 step 2); a refused open touches nothing.
+    assertSchemaWriterCompatible(this.db, CURRENT_BINARY_VERSION);
+
     applySqliteConnectionPragmas(this.db);
+
+    // Record this binary as the last writer before the first schema write, not
+    // after the chain: the chain's steps commit separately, so a mid-chain
+    // failure (say the v46 REAL-revision refusal) leaves earlier DDL on disk,
+    // and a stamp deferred to the end would leave that partially-upgraded
+    // database adoptable by an older binary — the exact downgrade the stamp
+    // exists to refuse (#4602 review). Stamping first names this binary on any
+    // state it touched; the idempotent chain re-runs to completion on the next
+    // open by this same or a newer binary.
+    stampSchemaWriterVersion(this.db, CURRENT_BINARY_VERSION);
 
     this.initializeSchema();
 
