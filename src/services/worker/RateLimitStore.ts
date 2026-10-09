@@ -251,12 +251,21 @@ function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSna
     const entry = (raw as Record<string, unknown>)[window];
     if (!entry || typeof entry !== 'object') continue;
     const { utilization, resetsAt } = entry as Record<string, unknown>;
+    // A field that is present but not a finite number voids the whole entry:
+    // the CLI never writes one, so this is a corrupt snapshot, and refreshing
+    // the window from its other half would replace a good reading with half
+    // of a bad one.
+    if (!isAbsentOrFiniteNumber(utilization) || !isAbsentOrFiniteNumber(resetsAt)) continue;
     const snapshot: UnifiedWindowSnapshot = {};
-    if (typeof utilization === 'number' && Number.isFinite(utilization)) snapshot.utilization = utilization;
-    if (typeof resetsAt === 'number' && Number.isFinite(resetsAt)) snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
+    if (typeof utilization === 'number') snapshot.utilization = utilization;
+    if (typeof resetsAt === 'number') snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
     if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
   }
   return out;
+}
+
+function isAbsentOrFiniteNumber(value: unknown): boolean {
+  return value == null || (typeof value === 'number' && Number.isFinite(value));
 }
 
 /** Process-wide singleton. */
