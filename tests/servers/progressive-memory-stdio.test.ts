@@ -37,6 +37,13 @@ describe('built local MCP progressive stdio integration', () => {
       type: 'decision', title: 'Authentication token expiry', subtitle: null, narrative: 'PRIVATE_STDIO_BODY',
       facts: [], concepts: [], files_read: [], files_modified: [],
     }, 1, 0, Date.now());
+    const literals = [
+      { project: 'stdio-json-object', title: 'Configuration timeout example', body: '{"timeoutSeconds":30}' },
+      { project: 'stdio-json-array', title: 'Staging environment example', body: '["use staging"]' },
+    ].map(fixture => ({ ...fixture, id: store.storeObservation(store.getOrCreateManualSession(fixture.project), fixture.project, {
+      type: 'decision', title: fixture.title, subtitle: null, narrative: fixture.body,
+      facts: [], concepts: [], files_read: [], files_modified: [],
+    }, 1, 0, Date.now()).id }));
     const manager = new SearchManager(new SessionSearch(db), store, null, new FormattingService(), new TimelineService());
     const app = express();
     app.use(express.json());
@@ -81,6 +88,17 @@ describe('built local MCP progressive stdio integration', () => {
       const auto = modelText(await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', project, mode: 'auto' } }) as CallToolResult);
       expect(auto).toContain('Automatic search: index → context → selected details.');
       expect(auto).toContain('PRIVATE_STDIO_BODY');
+      for (const fixture of literals) {
+        const index = modelText(await client.callTool({ name: 'mem_search', arguments: { query: fixture.title, project: fixture.project } }) as CallToolResult);
+        expect(index).not.toContain(fixture.body);
+        const context = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(index), selectedIds: [fixture.id] } }) as CallToolResult);
+        expect(context).not.toContain(fixture.body);
+        const selected = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(context), selectedIds: [fixture.id] } }) as CallToolResult);
+        expect(selected).toContain(fixture.body);
+        const automatic = modelText(await client.callTool({ name: 'mem_search', arguments: { query: fixture.title, project: fixture.project, mode: 'auto' } }) as CallToolResult);
+        expect(automatic).toContain(fixture.body);
+        expect(automatic).not.toContain('No readable memory details');
+      }
       const bad = await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', limit: 1000 } }) as CallToolResult;
       expect(bad.isError).toBe(true);
       expect(modelText(bad)).toContain('limit must be an integer');
@@ -119,7 +137,10 @@ describe('built local MCP progressive stdio integration', () => {
     const observation = { id: 'memory-fixture', projectId: 'project-fixture', content: 'PRIVATE_SERVER_NARRATIVE', metadata: { title: 'A server decision', secret: 'PRIVATE_SERVER_METADATA' }, teamId: 'PRIVATE_TEAM', tokenUsage: 12345 };
     app.post('/v1/memories', (_req, res) => res.json({ memory: observation }));
     app.post('/v1/events', (_req, res) => res.json({ event: { id: 'event-fixture', payload: 'PRIVATE_EVENT_PAYLOAD' }, generationJob: { id: 'job-fixture', status: 'queued' } }));
-    app.post('/v1/search', (_req, res) => res.json({ observations: [observation] }));
+    app.post('/v1/search', (_req, res) => res.json({ observations: [observation,
+      { id: 'plain-fixture', projectId: 'project-fixture', content: 'Use staging for deployment rehearsals.', metadata: { secret: 'PRIVATE_NOTE_METADATA' } },
+      { id: 'summary-fixture', projectId: 'project-fixture', content: 'PRIVATE_SUMMARY_BODY', metadata: { request: 'How did we fix login redirects?', secret: 'PRIVATE_SUMMARY_METADATA' } },
+    ] }));
     app.post('/v1/context', (_req, res) => res.json({ observations: [observation], context: 'Selected server context.' }));
     app.get('/v1/jobs/:id', (req, res) => req.params.id === 'bad-fixture'
       ? res.status(502).json({ error: 'PRIVATE_BACKEND_ERROR_BODY' })
@@ -150,6 +171,15 @@ describe('built local MCP progressive stdio integration', () => {
         expect(text).toContain(entry.expected);
         expect(text).not.toContain('PRIVATE_');
         expect(text).not.toContain('12345');
+        if (entry.name === 'search' || entry.name === 'observation_search') {
+          expect(text).toContain('#plain-fixture — Excerpt: Use staging for deployment rehearsals.');
+          expect(text).toContain('#summary-fixture — How did we fix login redirects?');
+          expect(text).toContain('Use observation_context with a focused query and limit');
+          expect(text).not.toContain('Use mem_search');
+          const supported = await client.callTool({ name: 'observation_context', arguments: { query: 'staging', limit: 1 } }) as CallToolResult;
+          expect(supported.isError).not.toBe(true);
+          expect(modelText(supported)).toContain('Selected server context.');
+        }
       }
       const unavailable = await client.callTool({ name: 'mem_search', arguments: { query: 'decision' } }) as CallToolResult;
       expect(unavailable.isError).toBe(true);

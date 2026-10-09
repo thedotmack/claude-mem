@@ -29,6 +29,20 @@ describe('purpose-specific model responses', () => {
     expect(context.content[0].text).toContain('CURATED_CONTEXT');
     expect(JSON.stringify(context)).not.toContain('DUPLICATED_BODY');
   });
+  it('labels untitled server notes with bounded evidence and summaries with their request', () => {
+    const result = formatMcpPayload('server-search', { observations: [
+      { id: 'plain', content: 'Use staging for deployment rehearsals. '.repeat(20), metadata: { secret: 'PRIVATE_METADATA' } },
+      { id: 'summary', content: 'PRIVATE_SUMMARY_BODY', metadata: { request: 'How did we stop login redirects?', secret: 'PRIVATE_METADATA' } },
+    ] });
+    const text = result.content[0].text;
+    expect(text).toContain('#plain — Excerpt: Use staging for deployment rehearsals.');
+    expect(text).toContain('#summary — How did we stop login redirects?');
+    expect(text).toContain('Use observation_context with a focused query and limit');
+    expect(text).not.toContain('Use mem_search');
+    expect(text).not.toContain('PRIVATE_');
+    expect(text.length).toBeLessThan(500);
+    expect(result).not.toHaveProperty('structuredContent');
+  });
   it('discloses selected tool I/O as a bounded readable tree without database columns', () => {
     const result = formatMcpPayload('tool-uses', [{ id: 1, tool_name: 'Read', tool_input: '{"file_path":"src/app.ts"}', tool_response: '{"content":"selected file"}', memory_session_id: 'PRIVATE_SESSION' }]);
     expect(result.content[0].text).toContain('Input:\nfile_path: src/app.ts');

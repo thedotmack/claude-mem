@@ -134,4 +134,33 @@ describe('progressive worker search with real SQLite fixtures', () => {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
   });
+
+  it('preserves JSON examples in selected SQLite narratives and the HTTP text response', async () => {
+    const target = 'literal-json-fixture';
+    const bodies = ['{"timeoutSeconds":30}', '["use staging"]'];
+    const ids = bodies.map((body, index) => seed(target, `Literal JSON example ${index}`, body, epoch + index));
+    const first = await progressive.run({ query: 'Literal JSON', project: target });
+    const second = await progressive.run({ continuation: first.continuation!, selectedIds: ids });
+    const third = await progressive.run({ continuation: second.continuation!, selectedIds: ids });
+    const selected = progressiveSearchToolResult(third).content[0].text;
+    for (const body of bodies) expect(selected).toContain(body);
+    expect(selected).not.toContain('No readable memory details');
+    const app = express(); app.use(express.json()); new SearchRoutes(manager).setupRoutes(app);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    try {
+      const address = server.address() as { port: number };
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'Literal JSON', project: target, mode: 'auto', maxDetails: 2 }),
+      });
+      const payload = await response.json() as { content: Array<{ type: string; text: string }>; structuredContent?: unknown };
+      expect(response.status).toBe(200);
+      expect(payload.structuredContent).toBeUndefined();
+      for (const body of bodies) expect(payload.content[0].text).toContain(body);
+      expect(() => JSON.parse(payload.content[0].text)).toThrow();
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
 });

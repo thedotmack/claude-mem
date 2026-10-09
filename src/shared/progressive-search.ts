@@ -383,14 +383,9 @@ export function projectMemoryContent(payload: unknown): { text: string; truncate
     if (text !== clean) truncated = true;
     return text;
   };
-  if (typeof payload === "string") {
-    const text = payload.trim();
-    if (/^[\[{]/.test(text)) {
-      try { return projectMemoryContent(JSON.parse(text)); }
-      catch { /* Bracketed Markdown and source examples remain ordinary prose. */ }
-    }
-    return { text: read(text), truncated };
-  }
+  // Strings are note prose, including JSON source examples. Only the adapter's
+  // object payload is a stored record; guessing from string syntax loses notes.
+  if (typeof payload === "string") return { text: read(payload), truncated };
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return { text: "", truncated: false };
   const data = payload as Record<string, unknown>;
   const sections: string[] = [];

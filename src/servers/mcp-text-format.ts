@@ -1,7 +1,7 @@
 import { logger } from '../utils/logger.js';
 import { projectMemoryContent } from '../shared/progressive-search.js';
 
-export type McpTextPurpose = 'save' | 'observation-add' | 'event' | 'search' | 'context' | 'job'
+export type McpTextPurpose = 'save' | 'observation-add' | 'event' | 'search' | 'server-search' | 'context' | 'job'
   | 'observations' | 'tool-uses' | 'corpus-list' | 'corpus-build' | 'corpus-prime' | 'corpus-query';
 export type McpTextResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
 const MAX_TEXT_BYTES = 32 * 1024;
@@ -98,14 +98,25 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
       text = `Generation job ${line(job.id, '?')}: ${line(job.status, 'unknown')}.`;
       break;
     }
-    case 'search': {
+    case 'search':
+    case 'server-search': {
+      const server = purpose === 'server-search';
       const results = [...rows(payload, 'observations'), ...rows(payload, 'sessions'), ...rows(payload, 'prompts')];
       text = results.length ? `Memory index (${Math.min(results.length, 20)} of ${results.length} results).\n`
         + results.slice(0, 20).map(value => {
           const row = record(value);
-          const title = row.title ?? row.request ?? row.prompt_text ?? record(row.metadata).title;
+          const metadata = record(row.metadata);
+          let title = [row.title, row.request, row.prompt_text, metadata.title, ...(server ? [metadata.request] : [])]
+            .find(value => typeof value === 'string' && value.trim());
+          if (!title && server) {
+            const prose = projectMemoryContent(row.content ?? row).text;
+            const excerpt = line(prose, '', 160).trim();
+            if (excerpt) title = `Excerpt: ${excerpt}${prose.length > 160 ? '…' : ''}`;
+          }
           return `- ${identity({ ...row, title: title ?? 'Untitled memory' })}`;
-        }).join('\n') + '\nUse mem_search for guided context and selected details.' : 'No matching memories found.';
+        }).join('\n') + (server
+          ? '\nUse observation_context with a focused query and limit to retrieve relevant server evidence.'
+          : '\nUse mem_search for guided context and selected details.') : 'No matching memories found.';
       break;
     }
     case 'context':

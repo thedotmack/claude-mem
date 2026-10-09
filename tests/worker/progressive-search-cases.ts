@@ -265,5 +265,23 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     assert.equal(ordinary.truncated, false);
     assert.equal(ordinary.text, 'Concise factual note.');
   });
+  for (const narrative of ['{"timeoutSeconds":30}', '["use staging"]']) await check(async () => {
+    const projected = projectMemoryContent({ narrative, memory_session_id: 'PRIVATE_SESSION' });
+    assert.equal(projected.text, narrative);
+    assert.equal(renderMemoryContent(projected.text), narrative, 'Selected note prose must survive rendering twice');
+    const f = fixture(Implementation, {
+      fetch: async refs => refs.map(ref => ({ ...ref, content: projected.text, truncated: false })),
+    });
+    const one = await f.engine.run({ query: 'authentication' });
+    const two = await f.engine.run({ continuation: one.continuation, selectedIds: ['1'] });
+    const three = await f.engine.run({ continuation: two.continuation, selectedIds: ['1'] });
+    const automatic = await f.engine.run({ query: 'authentication', mode: 'auto', maxDetails: 1 });
+    for (const result of [three, automatic]) {
+      const visible = progressiveSearchToolResult(result).content[0].text;
+      assert(visible.includes(narrative), 'A selected JSON example is evidence, not a protocol record');
+      assert(!visible.includes('PRIVATE_SESSION'));
+      assert.throws(() => JSON.parse(visible), 'The tool reply remains purpose-specific prose');
+    }
+  });
   return { count, guided, auto };
 }

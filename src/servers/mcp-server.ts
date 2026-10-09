@@ -352,7 +352,7 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.searchObservations(request);
-  return formatMcpPayload('search', response);
+  return formatMcpPayload('server-search', response);
 });
 
 interface ObservationContextArgs {
@@ -630,7 +630,7 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
         };
-        return formatMcpPayload('search', await sb.client.searchObservations(request));
+        return formatMcpPayload('server-search', await sb.client.searchObservations(request));
       }
       return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
