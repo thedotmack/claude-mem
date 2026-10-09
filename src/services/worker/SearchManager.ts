@@ -501,8 +501,10 @@ export class SearchManager {
     scope: { searchObservations: boolean; searchSessions: boolean; searchPrompts: boolean }
   ): SearchResults {
     const limit = options.limit || SEARCH_CONSTANTS.DEFAULT_LIMIT;
-    const byDate = (a: { created_at_epoch: number }, b: { created_at_epoch: number }) =>
-      dateOrder === 'date_desc' ? b.created_at_epoch - a.created_at_epoch : a.created_at_epoch - b.created_at_epoch;
+    const byDate = (a: { id: number; created_at_epoch: number }, b: { id: number; created_at_epoch: number }) =>
+      dateOrder === 'date_desc'
+        ? b.created_at_epoch - a.created_at_epoch || b.id - a.id
+        : a.created_at_epoch - b.created_at_epoch || a.id - b.id;
     const mergeByDate = <T extends { id: number; created_at_epoch: number }>(chromaRows: T[], keywordRows: T[]): T[] => {
       const rowsById = new Map<number, T>();
       for (const row of [...chromaRows, ...keywordRows]) {
@@ -602,14 +604,21 @@ export class SearchManager {
           ? whereFilters[0]
           : { $and: whereFilters };
 
+      // HTTP pagination values can be strings. Keep enough filtered rows to
+      // reach the page, and apply the offset only after supplementation/union.
+      const offset = Number(options.offset || 0);
+      const dateOrdered = options.orderBy === 'date_desc' || options.orderBy === 'date_asc';
+      const limit = options.limit ? Number(options.limit) : (dateOrdered ? SEARCH_CONSTANTS.DEFAULT_LIMIT : undefined);
+      const candidateOptions = { ...options, offset: 0, limit: limit === undefined ? undefined : offset + limit };
+
       try {
-        const chromaResults = await this.performChromaSemanticSearch(query, whereFilter, options, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
+        const chromaResults = await this.performChromaSemanticSearch(query, whereFilter, candidateOptions, { obs_type: effectiveObsType, concepts, files, searchObservations, searchSessions, searchPrompts });
         chromaSucceeded = true;
         // Same fallback policy as the orchestrator pipeline: SQLite refills every requested
         // category Chroma left empty, or answers alone when Chroma left them all empty.
         const supplemented = await this.orchestrator.supplementEmptyCategories(
           {
-            ...options,
+            ...candidateOptions,
             query,
             searchType: category ?? 'all',
             obsType: effectiveObsType,
@@ -653,10 +662,17 @@ export class SearchManager {
           query,
           options.orderBy,
           { observations, sessions, prompts },
-          { ...options, type: effectiveObsType, concepts, files },
-          options,
+          { ...candidateOptions, type: effectiveObsType, concepts, files },
+          candidateOptions,
           { searchObservations, searchSessions, searchPrompts }
         ));
+      }
+
+      if (!chromaFailed) {
+        const end = limit === undefined ? undefined : offset + limit;
+        observations = observations.slice(offset, end);
+        sessions = sessions.slice(offset, end);
+        prompts = prompts.slice(offset, end);
       }
     }
     // PATH 3: FTS5 KEYWORD SEARCH (Chroma not initialized)
