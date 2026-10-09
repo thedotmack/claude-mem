@@ -59,10 +59,11 @@ export function remoteHookSpoolToken(value: unknown): string {
   return token.length <= 1024 && /^[\x20-\x7e]+$/.test(token) ? token : '';
 }
 
-export function usesRemoteHookSpool(host: string, transport: string = 'auto'): boolean {
+export function usesRemoteHookSpool(host: string | undefined, transport: string = 'auto'): boolean {
   transport = transport.trim().toLowerCase();
   if (transport === 'http') return true;
   if (transport === 'filesystem') return false;
+  if (!host) return false;
   let normalized = host.toLowerCase().replace(/^\[|\]$/g, '');
   try { normalized = new URL(`http://${formatHostForUrl(host)}`).hostname.replace(/^\[|\]$/g, ''); } catch {}
   return !(normalized === 'localhost' || normalized.endsWith('.localhost')

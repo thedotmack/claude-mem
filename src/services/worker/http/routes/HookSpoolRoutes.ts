@@ -4,6 +4,7 @@ import { HookSpool, type HookSpoolConsumedMarkers } from '../../../../shared/hoo
 import { normalizeRemoteSpoolEntry, remoteSpoolEnvelopeSchema,
   remoteHookSpoolToken, REMOTE_SPOOL_PROTOCOL_VERSION } from '../../../../shared/hook-spool-remote.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { logger } from '../../../../utils/logger.js';
 
 export class HookSpoolRoutes extends BaseRouteHandler {
   constructor(
@@ -40,6 +41,7 @@ export class HookSpoolRoutes extends BaseRouteHandler {
     }
     const entry = normalizeRemoteSpoolEntry(parsed.data.entry);
     const receipt = this.spool.enqueueRemote(entry, this.consumedMarkers());
+    logger.debug('HTTP', 'Remote hook spool event accepted', { kind: entry.kind, receipt });
     this.requestDrain();
     res.status(202).json({ protocolVersion: REMOTE_SPOOL_PROTOCOL_VERSION, status: 'accepted', receipt });
   };

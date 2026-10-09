@@ -239,6 +239,9 @@ describe('remote hook spool receipts', () => {
 
 describe('worker spool transport selection', () => {
   it('keeps loopback and bind-all workers on filesystem delivery', () => {
+    expect(usesRemoteHookSpool(undefined)).toBe(false);
+    expect(usesRemoteHookSpool('')).toBe(false);
+    expect(usesRemoteHookSpool(undefined, 'http')).toBe(true);
     for (const host of ['localhost', '127.0.0.1', '127.0.0.2', '127.1', '0:0:0:0:0:0:0:1', '::1', '[::1]', '::ffff:127.0.0.1', '::ffff:7f00:1', '0.0.0.0', '::']) {
       expect(usesRemoteHookSpool(host)).toBe(false);
     }
