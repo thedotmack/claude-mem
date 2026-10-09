@@ -26,7 +26,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
-import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
+import { describeNetworkFailure, isConnectionRefused, networkFailureSuffix } from '../../shared/network-failure.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
@@ -323,6 +323,10 @@ export function classifyOpenAICompatError(input: {
     return new ClassifiedProviderError(`${label} network error: ${message}${networkFailureSuffix(network)}`, {
       kind: 'transient',
       cause: input.cause,
+      // A refused connection never sent the request, so it is pre-send: it
+      // must not spend the batch's paid-send budget (#4604). Resets and
+      // timeouts stay ambiguous — they can land after the server took it.
+      ...(isConnectionRefused(network) ? { paidSendOutcome: 'refused_before_work' as const } : {}),
       ...(network.localNetworkHint ? { action: network.localNetworkHint } : {}),
     });
   }

@@ -57,6 +57,15 @@ export function describeNetworkFailure(cause: unknown, requestUrl?: string): Net
   };
 }
 
+/**
+ * True when the failure is a refused connection. The request never left this
+ * machine, so nothing can have been billed for it — unlike a reset or a
+ * timeout, which can land after the server took the request.
+ */
+export function isConnectionRefused(detail: NetworkFailureDetail): boolean {
+  return detail.code === 'ConnectionRefused' || detail.code === 'ECONNREFUSED';
+}
+
 /** " (ConnectionRefused, reaching 192.168.1.20:11434)" for a failure message, or ''. */
 export function networkFailureSuffix(detail: NetworkFailureDetail): string {
   const parts = [detail.code, detail.host ? `reaching ${detail.host}` : undefined].filter(Boolean);

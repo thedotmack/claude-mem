@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { OpenRouterProvider, classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -153,6 +154,25 @@ describe('outcome table: what is retried in place', () => {
     expect(attempts).toBe(1);
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
     expect(budget.spentPaidSends).toBe(1);
+  });
+
+  // #4604: an endpoint that refuses connections never receives the request,
+  // so retries against it are pre-send and the batch keeps its whole budget —
+  // an outage pauses the session instead of parking its work for good.
+  it('refused connection: retried in place, paid-send budget untouched', async () => {
+    const budget = new PaidSendBudget(2);
+    const refused = classifyOpenAICompatError({
+      cause: Object.assign(new Error('Unable to connect'), { code: 'ConnectionRefused' }),
+    });
+    let attempts = 0;
+    const error = await withRetry(async () => {
+      attempts += 1;
+      throw refused;
+    }, { perAttemptTimeoutMs: 5_000, baseDelayMs: 1, maxDelayMs: 2, paidSendBudget: budget }).catch((caught: unknown) => caught);
+    expect(error).toBe(refused);
+    expect(attempts).toBe(3);
+    expect(budget.spentPaidSends).toBe(0);
+    expect(budget.hasRemainingPaidSend()).toBe(true);
   });
 });
 
