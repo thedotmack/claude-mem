@@ -84,6 +84,20 @@ function isSpawnFailure(error: unknown): boolean {
 }
 
 /**
+ * The one error this file throws for the CLI's own auth-failure status line
+ * (#4253) carries this code, so the stream-break release in startSession can
+ * tell it from a transport fault without matching on its message. A refused
+ * credential is left to the runner, which books it in observer health and
+ * finalizes; pausing it on the transport backoff would retry a bad key for
+ * nothing and book nothing.
+ */
+const INVALID_API_KEY_ERROR_CODE = 'claude_invalid_api_key';
+
+function isInvalidApiKeyError(error: unknown): boolean {
+  return (error as { code?: unknown } | null)?.code === INVALID_API_KEY_ERROR_CODE;
+}
+
+/**
  * Classify a ClaudeProvider error (executable spawn failures, SDK errors,
  * Anthropic API errors). Provider-specific because it relies on:
  *   - SDK error class names (e.g. OverloadedError) when present
@@ -618,7 +632,10 @@ export class ClaudeProvider {
             message.error === 'authentication_failed' &&
             /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
           ) {
-            throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
+            throw Object.assign(
+              new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env'),
+              { code: INVALID_API_KEY_ERROR_CODE },
+            );
           }
 
           // The frame names the model that served the turn (an alias such as
@@ -790,6 +807,18 @@ export class ClaudeProvider {
           pacer.answer();
         }
       }
+      // The stream ended on its own: no result-driven exit (quota guard, stall,
+      // ResponseProcessor pause) and no abort (idle, shutdown, recycle, switch)
+      // named a reason. The SDK child exited mid-conversation, so the prompt it
+      // was answering will never be answered. Left here, the exit reaches
+      // GeneratorExitHandler as null and the buffered work is finalized away;
+      // a `transport` reason keeps the session, and releasing the claim lets
+      // the next generation re-send the batch instead of leaving it claimed.
+      // The abort also wakes a generator parked in the message drain between
+      // turns, which pacer.close() alone does not reach.
+      if (!session.abortReason) {
+        await this.releaseClaimedBatchForTransportExit(session, 'transport:sdk_eof');
+      }
     } catch (error) {
       // A missing binary (ENOENT) or a Windows .cmd/.bat shim that cannot be
       // launched without a shell (EINVAL) surfaces here as a raw spawn error.
@@ -799,6 +828,15 @@ export class ClaudeProvider {
       // goes with it, so the recheck gate does not re-run the same file. Any
       // other error keeps its own shape.
       if (isSpawnFailure(error)) this.recordAndThrowClassified(error, claudePath);
+      // The stream broke: the output iterator threw, or response processing
+      // did, with the batch still claimed. A classified error carries its own
+      // pause (setup_required skips finalization), and the Invalid API key
+      // status line above is a refused credential for the runner to book; an
+      // unclassified error from a live stream is a transport fault, and the
+      // batch must outlive it.
+      if (!session.abortReason && !isClassified(error) && !isInvalidApiKeyError(error)) {
+        await this.releaseClaimedBatchForTransportExit(session, 'transport:sdk_stream');
+      }
       throw error;
     } finally {
       // Whatever ended the stream (throw, quota break, abort), nothing will
@@ -826,6 +864,32 @@ export class ClaudeProvider {
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       ...observerUsageLogFields(session)
     });
+  }
+
+  /**
+   * End a generation whose SDK stream ended or broke without a result (#4066
+   * left these two exits unnamed). The `transport` category is one
+   * GeneratorExitHandler preserves, so the session and its buffer survive for
+   * the transport-backoff resume; the abort ends the feed (and wakes a
+   * generator parked in the drain); releasing the claim lets that resume
+   * re-send the batch. A reason already set (quota, auth, overflow, stall,
+   * idle, shutdown) is never overwritten: callers check before calling.
+   */
+  private async releaseClaimedBatchForTransportExit(session: ActiveSession, reason: string): Promise<void> {
+    session.abortReason = reason;
+    logger.warn('SDK', 'SDK stream ended without a result; preserving the claimed batch for the next generation', {
+      sessionId: session.sessionDbId,
+      reason,
+      claimed: session.claimedMessageIds.length,
+    });
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort
+    }
+    if (session.claimedMessageIds.length > 0) {
+      await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+    }
   }
 
   /** One bounded, standalone SDK call on the same Observer provider path. */
