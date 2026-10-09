@@ -994,6 +994,16 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_CLOUD_SYNC_CONTENT_BATCH_SIZE).toBe('40');
       expect(defaults.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS).toBe('90000');
     });
+
+    // #4607 — maintainer-personal Grok-bot/CCS integrations ship off by
+    // default with no hardcoded agent IDs, so they are opt-in.
+    it('Grok-bot/CCS integrations default off with an empty awareness ID list', () => {
+      const defaults = SettingsDefaultsManager.getAllDefaults();
+      expect(defaults.CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED).toBe('false');
+      expect(defaults.CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS).toBe('');
+      expect(defaults.CLAUDE_MEM_GROK_BOT_INJECT_ENABLED).toBe('false');
+      expect(defaults.CLAUDE_MEM_CCS_ALIGN_ENABLED).toBe('false');
+    });
   });
 
   describe('get', () => {
