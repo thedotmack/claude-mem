@@ -52,8 +52,14 @@ export function projectReadKeys(db: Database, projects: string[]): string[] {
     `SELECT project FROM observations WHERE merged_into_project COLLATE NOCASE IN (${placeholders})`,
     `SELECT project FROM session_summaries WHERE merged_into_project COLLATE NOCASE IN (${placeholders})`,
   ];
-  const rows = db.prepare(lookups.join(' UNION ')).all(
-    ...lookups.flatMap(() => requested)
-  ) as Array<{ key: string }>;
+  // Finalized before returning: callers may run this on a throwaway
+  // read-only connection that is closed right after the render (#4559).
+  const statement = db.prepare(lookups.join(' UNION '));
+  let rows: Array<{ key: string }>;
+  try {
+    rows = statement.all(...lookups.flatMap(() => requested)) as Array<{ key: string }>;
+  } finally {
+    statement.finalize();
+  }
   return [...new Set([...requested, ...rows.map(row => row.key)])];
 }
