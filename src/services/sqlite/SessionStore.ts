@@ -211,6 +211,16 @@ export class SessionStore {
 
     applySqliteConnectionPragmas(this.db);
 
+    // Record this binary as the last writer before the first schema write, not
+    // after the chain: the chain's steps commit separately, so a mid-chain
+    // failure (say the v46 REAL-revision refusal) leaves earlier DDL on disk,
+    // and a stamp deferred to the end would leave that partially-upgraded
+    // database adoptable by an older binary — the exact downgrade the stamp
+    // exists to refuse (#4602 review). Stamping first names this binary on any
+    // state it touched; the idempotent chain re-runs to completion on the next
+    // open by this same or a newer binary.
+    stampSchemaWriterVersion(this.db, CURRENT_BINARY_VERSION);
+
     this.initializeSchema();
 
     this.ensureWorkerPortColumn();
@@ -261,9 +271,6 @@ export class SessionStore {
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
-
-    // Every migration above succeeded — record this binary as the last writer.
-    stampSchemaWriterVersion(this.db, CURRENT_BINARY_VERSION);
   }
 
   /** Local host retry identity. Runs after every legacy user_prompts rebuild. */

@@ -4,21 +4,23 @@
 // a 13.4.2 copy inside a Claude Desktop sandbox reopened a schema-49 DB, ran
 // its v7 rebuild, and dropped discovery_tokens, ON UPDATE CASCADE and the
 // three session_summaries FTS triggers — 15 days of silent summary loss.
-// The fix stamps PRAGMA user_version (major*1e6 + minor*1e3 + patch) after the
-// migration chain and refuses — before any DDL, with a typed
+// The fix stamps PRAGMA user_version (major*1e6 + minor*1e3 + patch) before
+// the migration chain and refuses — before any DDL, with a typed
 // schema_newer_than_binary error — when the stamp is newer than the running
 // binary. Same shape as assertChromaStoreCompatible for the chroma data dir.
 //
 // Under `bun test` the build-time __DEFAULT_PACKAGE_VERSION__ define is
-// absent, so CURRENT_BINARY_VERSION resolves to '0.0.0-dev' (stamp 0): the
-// constructor-level "older stamp migrates and raises to current" case is
-// covered at the exported-function level instead, and every positive stamp
-// correctly refuses the test binary.
-import { describe, it, expect, afterEach } from 'bun:test';
+// absent, so CURRENT_BINARY_VERSION resolves to '0.0.0-dev' (stamp 0) — which
+// is indistinguishable from a stamp-less database, so tests here could not
+// catch a removed stampSchemaWriterVersion call (#4602 review). The connection
+// module is therefore re-mocked below with a fixed nonzero version; the
+// refusal cases use 99.0.0, which is newer under any resolution.
+import { describe, it, expect, afterEach, afterAll, mock } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
+import * as connection from '../../src/services/sqlite/connection.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import {
@@ -27,9 +29,24 @@ import {
   assertSchemaWriterCompatible,
   decodeSchemaWriterStamp,
   encodeSchemaWriterVersion,
+  openGuardedSqliteDatabase,
   readSchemaWriterStamp,
   stampSchemaWriterVersion,
 } from '../../src/services/sqlite/connection.js';
+
+// Pin the running version to a nonzero value for the constructor cases: with
+// the unbundled '0.0.0-dev' (stamp 0) a missing stamp write is invisible, so
+// removing either constructor's stampSchemaWriterVersion call would pass
+// silently (#4602 review). Spread-captured first so it can be restored.
+const realConnectionExports = { ...connection };
+mock.module('../../src/services/sqlite/connection.js', () => ({
+  ...realConnectionExports,
+  CURRENT_BINARY_VERSION: '13.34.2',
+}));
+
+afterAll(() => {
+  mock.module('../../src/services/sqlite/connection.js', () => realConnectionExports);
+});
 
 const ISO = '2025-07-01T00:00:00.000Z';
 const EPOCH = 1751328000000;
@@ -180,6 +197,63 @@ describe('schema writer-version stamp', () => {
     second.close();
   });
 
+  it('stamps before the migration chain, so a mid-chain failure still refuses older binaries', () => {
+    const dir = makeTempDir();
+    const dbPath = createLegacyDbFile(dir);
+
+    // Fail a late chain step after earlier steps have committed their DDL.
+    const prototype = SessionStore.prototype as unknown as Record<string, () => void>;
+    const original = prototype.ensureWorkStateTable;
+    prototype.ensureWorkStateTable = function injectedMidChainFailure(): never {
+      throw new Error('injected mid-chain failure');
+    };
+    try {
+      expect(() => new SessionStore(dbPath)).toThrow('injected mid-chain failure');
+    } finally {
+      prototype.ensureWorkStateTable = original;
+    }
+
+    // The partial DDL is on disk and the stamp was written before the chain
+    // ran, so an older binary is refused over the partially-upgraded file.
+    const probe = new Database(dbPath, { readonly: true });
+    expect(readSchemaWriterStamp(probe)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    probe.close();
+    const older = new Database(dbPath);
+    expect(() => assertSchemaWriterCompatible(older, '13.34.1')).toThrow(SchemaNewerThanBinaryError);
+    older.close();
+
+    // The same version reopens and completes the idempotent chain.
+    const retried = new SessionStore(dbPath);
+    expect(readSchemaWriterStamp(retried.db)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    retried.close();
+  });
+
+  it('shared open path refuses before pragmas: a newer-stamped DELETE-mode DB stays DELETE', () => {
+    const dir = makeTempDir();
+    const dbPath = createLegacyDbFile(dir);
+    const raw = new Database(dbPath);
+    raw.run(`PRAGMA user_version = ${encodeSchemaWriterVersion('99.0.0')}`);
+    raw.close();
+    const journalMode = (db: Database): string =>
+      (db.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode;
+    expect(journalMode(new Database(dbPath, { readonly: true }))).toBe('delete');
+
+    const before = snapshotFile(dbPath);
+    expect(() => openGuardedSqliteDatabase(dbPath, CURRENT_BINARY_VERSION)).toThrow(SchemaNewerThanBinaryError);
+
+    expect(snapshotFile(dbPath)).toEqual(before);
+    // The refusal ran before journal_mode = WAL, so the file keeps DELETE mode.
+    expect(journalMode(new Database(dbPath, { readonly: true }))).toBe('delete');
+
+    // The guard ordering does not affect the normal path: a compatible DB is
+    // still pragma-configured by the same helper.
+    const adoptedPath = path.join(dir, 'claude-mem-adopted.db');
+    new Database(adoptedPath).close();
+    const adopted = openGuardedSqliteDatabase(adoptedPath, CURRENT_BINARY_VERSION);
+    expect(journalMode(adopted)).toBe('wal');
+    adopted.close();
+  });
+
   it('stamps after SessionSearch recreates missing FTS tables — the #3609 damage scenario', () => {
     const dir = makeTempDir();
     const dbPath = path.join(dir, 'claude-mem-test.db');
@@ -188,6 +262,12 @@ describe('schema writer-version stamp', () => {
     // The migration chain builds no FTS objects; an older binary (or the
     // 13.4.2 lax probe from #3609) leaves the DB without them.
     expect((store.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%fts%'").all()).length).toBe(0);
+
+    // Reset the stamp to 0 first: an assertion against the value SessionStore
+    // already wrote proves nothing about SessionSearch's own write path, so
+    // only a fresh write from the FTS DDL can satisfy it (#4602 review).
+    store.db.run('PRAGMA user_version = 0');
+    expect(readSchemaWriterStamp(store.db)).toBe(0);
 
     new SessionSearch(store.db);
 

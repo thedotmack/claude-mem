@@ -125,3 +125,17 @@ export function openConfiguredSqliteDatabase(
   applySqliteConnectionPragmas(db, pragmas);
   return db;
 }
+
+/**
+ * Shared-connection open path with the writer guard first (#4602 review):
+ * PRAGMA journal_mode = WAL is itself a persistent change to the database
+ * file, so a database last written by a newer binary must be refused BEFORE
+ * the pragmas run — otherwise a refused open still leaves a DELETE-mode file
+ * converted to WAL.
+ */
+export function openGuardedSqliteDatabase(dbPath: string, binaryVersion: string): Database {
+  const db = new Database(dbPath);
+  assertSchemaWriterCompatible(db, binaryVersion);
+  applySqliteConnectionPragmas(db);
+  return db;
+}
