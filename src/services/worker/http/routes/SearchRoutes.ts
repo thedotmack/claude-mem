@@ -29,6 +29,7 @@ interface ContextInjectRender {
   cacheable: boolean;
 }
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
+import { isWorkStateEnabled } from '../../../../shared/work-state-setting.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -494,14 +495,18 @@ export class SearchRoutes extends BaseRouteHandler {
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to
     // what that leaves of the 10K delivery limit. The terminal preview is for
-    // the human and goes without it.
-    const workStateSection = forHuman
+    // the human and goes without it, and so does a session whose host turned
+    // work state off (CLAUDE_MEM_WORK_STATE_ENABLED=false, #4606).
+    const settings = this.getCachedSettings();
+    const workStateEnabled = isWorkStateEnabled(
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED ?? settings.CLAUDE_MEM_WORK_STATE_ENABLED,
+    );
+    const workStateSection = forHuman || !workStateEnabled
       ? ''
       : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), 'placeholders');
     const withWorkState = (text: string): string =>
       workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
 
-    const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
