@@ -41,6 +41,7 @@ export class ChromaSearchStrategy {
       concepts,
       files,
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
+      offset = 0,
       project,
       projects,
       platformSource,
@@ -66,7 +67,7 @@ export class ChromaSearchStrategy {
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project,
+      obsType, concepts, files, orderBy, limit, offset, project,
       projects: readKeys.length > 0 ? readKeys : undefined,
       platformSource, dateRange, ignoreDefaultRecencyWindow
     });
@@ -84,6 +85,7 @@ export class ChromaSearchStrategy {
       files?: string | string[];
       orderBy: 'relevance' | 'date_desc' | 'date_asc';
       limit: number;
+      offset: number;
       project?: string;
       projects?: string[];
       platformSource?: string;
@@ -113,6 +115,9 @@ export class ChromaSearchStrategy {
     let prompts: UserPromptSearchResult[] = [];
 
     const sqlOrderBy = options.orderBy;
+    const offset = Number(options.offset);
+    const limit = Number(options.limit);
+    const candidateLimit = offset + limit;
 
     if (categorized.obsIds.length > 0) {
       const obsOptions = {
@@ -120,7 +125,7 @@ export class ChromaSearchStrategy {
         concepts: options.concepts,
         files: options.files,
         orderBy: sqlOrderBy,
-        limit: options.limit,
+        limit: candidateLimit,
         project: options.project,
         projects: options.projects,
         platformSource: options.platformSource
@@ -131,7 +136,7 @@ export class ChromaSearchStrategy {
     if (categorized.sessionIds.length > 0) {
       sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
         orderBy: sqlOrderBy,
-        limit: options.limit,
+        limit: candidateLimit,
         project: options.project,
         projects: options.projects,
         platformSource: options.platformSource
@@ -141,7 +146,7 @@ export class ChromaSearchStrategy {
     if (categorized.promptIds.length > 0) {
       prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
         orderBy: sqlOrderBy,
-        limit: options.limit,
+        limit: candidateLimit,
         project: options.project,
         projects: options.projects,
         platformSource: options.platformSource
@@ -149,7 +154,11 @@ export class ChromaSearchStrategy {
     }
 
     return {
-      results: { observations, sessions, prompts },
+      results: {
+        observations: observations.slice(offset, offset + limit),
+        sessions: sessions.slice(offset, offset + limit),
+        prompts: prompts.slice(offset, offset + limit),
+      },
       usedChroma: true,
       strategy: 'chroma'
     };

@@ -13,7 +13,7 @@ import type {
   SearchResults,
   SearchCategory
 } from './types.js';
-import { SEARCH_CATEGORIES, isCategoryRequested } from './types.js';
+import { SEARCH_CATEGORIES, SEARCH_CONSTANTS, isCategoryRequested } from './types.js';
 import { ChromaUnavailableError } from './errors.js';
 import { projectReadKeysFor } from './project-where-filter.js';
 import { AppError } from '../../server/ErrorHandler.js';
@@ -101,9 +101,14 @@ export class SearchOrchestrator {
 
     if (this.chromaStrategy) {
       logger.debug('SEARCH', 'Orchestrator: Using Chroma semantic search', {});
+      // Supplement genuinely empty categories before paging; an exhausted
+      // semantic page must not switch to a different keyword result set.
+      const offset = Number(options.offset ?? 0);
+      const limit = Number(options.limit ?? SEARCH_CONSTANTS.DEFAULT_LIMIT);
+      const candidateOptions = { ...options, offset: 0, limit: offset + limit };
       let chromaResult: StrategySearchResult;
       try {
-        chromaResult = await this.chromaStrategy.search(options);
+        chromaResult = await this.chromaStrategy.search(candidateOptions);
       } catch (error) {
         const errorObj = error instanceof Error ? error : new Error(String(error));
         throw new ChromaUnavailableError(
@@ -111,7 +116,15 @@ export class SearchOrchestrator {
           errorObj
         );
       }
-      return await this.supplementEmptyCategories(options, chromaResult);
+      const supplemented = await this.supplementEmptyCategories(candidateOptions, chromaResult);
+      return {
+        ...supplemented,
+        results: {
+          observations: supplemented.results.observations.slice(offset, offset + limit),
+          sessions: supplemented.results.sessions.slice(offset, offset + limit),
+          prompts: supplemented.results.prompts.slice(offset, offset + limit),
+        },
+      };
     }
 
     // No Chroma strategy: Chroma is turned off (CLAUDE_MEM_CHROMA_ENABLED=false).

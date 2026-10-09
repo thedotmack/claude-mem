@@ -375,9 +375,9 @@ export class SessionSearch {
       case 'relevance':
         return hasFTS ? `ORDER BY ${ftsTable}.rank ASC` : 'ORDER BY o.created_at_epoch DESC';
       case 'date_desc':
-        return 'ORDER BY o.created_at_epoch DESC';
+        return 'ORDER BY o.created_at_epoch DESC, o.id DESC';
       case 'date_asc':
-        return 'ORDER BY o.created_at_epoch ASC';
+        return 'ORDER BY o.created_at_epoch ASC, o.id ASC';
       default:
         return 'ORDER BY o.created_at_epoch DESC';
     }
@@ -423,8 +423,8 @@ export class SessionSearch {
     const filterParams: any[] = [];
     const filterClause = this.buildFilterClause(filterOptions, filterParams, 's');
     const orderClause = orderBy === 'date_asc'
-      ? 'ORDER BY s.created_at_epoch ASC'
-      : 'ORDER BY s.created_at_epoch DESC';
+      ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
+      : 'ORDER BY s.created_at_epoch DESC, s.id DESC';
 
     const sql = `
       SELECT s.*, s.discovery_tokens
@@ -519,8 +519,8 @@ export class SessionSearch {
       }
 
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
-        : 'ORDER BY s.created_at_epoch DESC';
+        ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
+        : 'ORDER BY s.created_at_epoch DESC, s.id DESC';
 
       const sql = `
         SELECT s.*, s.discovery_tokens
@@ -544,9 +544,9 @@ export class SessionSearch {
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
 
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
+        ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
         : orderBy === 'date_desc'
-          ? 'ORDER BY s.created_at_epoch DESC'
+          ? 'ORDER BY s.created_at_epoch DESC, s.id DESC'
           : 'ORDER BY session_summaries_fts.rank ASC';
 
       const sql = `
@@ -833,8 +833,8 @@ export class SessionSearch {
 
       const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY up.created_at_epoch ASC'
-        : 'ORDER BY up.created_at_epoch DESC';
+        ? 'ORDER BY up.created_at_epoch ASC, up.id ASC'
+        : 'ORDER BY up.created_at_epoch DESC, up.id DESC';
 
       const sql = `
         SELECT
@@ -859,8 +859,8 @@ export class SessionSearch {
 
     const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
     const orderClause = orderBy === 'date_asc'
-      ? 'ORDER BY up.created_at_epoch ASC'
-      : 'ORDER BY up.created_at_epoch DESC';
+      ? 'ORDER BY up.created_at_epoch ASC, up.id ASC'
+      : 'ORDER BY up.created_at_epoch DESC, up.id DESC';
 
     const sql = `
       SELECT
