@@ -112,14 +112,14 @@ describe('writeTrimmedMarketplaceManifest', () => {
       name: 'thedotmack',
       plugins: [
         { name: 'claude-mem', source: './plugin' },
-        { name: 'claude-mem-cowork', source: './cowork' },
+        { name: 'cmem-pro', source: './cowork' },
         { name: 'remote', source: { source: 'github', repo: 'someone/else' } },
       ],
     }));
 
     writeTrimmedMarketplaceManifest(marketplaceDir);
 
-    expect(pluginNames()).toEqual(['claude-mem', 'claude-mem-cowork', 'remote']);
+    expect(pluginNames()).toEqual(['claude-mem', 'cmem-pro', 'remote']);
   });
 
   it('does nothing when the manifest is absent', () => {
