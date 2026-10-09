@@ -104,6 +104,9 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     const response = await f.engine.run({ query: 'authentication', mode: 'auto' });
     assert.equal(response.reason, 'no_relevant_candidates');
     assert.equal(response.observations.length, 0);
+    const visible = progressiveSearchToolResult(response).content[0].text;
+    assert.match(visible, /Automatic search: index\./);
+    assert(!visible.includes('Automatic search: index → context → selected details.'));
     assert(!f.calls.some(item => item.operation === 'fetch'));
     const guidedResponse = await f.engine.run({ query: 'authentication', mode: 'guided' });
     assert.equal(guidedResponse.complete, false);

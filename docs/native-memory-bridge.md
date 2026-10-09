@@ -2,7 +2,9 @@
 
 The plugin now supplements supported native memory lookups with its automatic
 progressive search, and its startup instructions ask the agent to use
-`save_memory` for durable preferences, corrections, decisions, and lessons.
+`save_memory` for local-worker durable preferences, corrections, decisions, and
+lessons. Server-runtime notes use `observation_add` for the selected server
+project; `save_memory` refuses server-mode writes before calling the worker.
 The hosted read-only connector may have no write tool; the instructions tell
 agents to use only tools actually available. To-do lists remain in
 `work_state_write` when that tool is exposed.
@@ -95,9 +97,12 @@ node scripts/activate-progressive-memory-local.mjs \
 ```
 
 The default is a read-only plan. Add `--apply` to copy the selected built worker,
-MCP, hooks and mem-search skill into the active marketplace and matching local
-caches, append tagged plugin-note instructions, and enable one dedicated empty
-project note folder. The script checks matching versions and build markers,
+MCP, hooks and mem-search skill into existing supported marketplace or matching
+local cache installations, append tagged plugin-note instructions for their
+platforms, and enable one dedicated empty project note folder. A Claude-only or
+Codex-only installation is sufficient; absent plugin folders and other platform
+instruction files are left alone. The script requires at least one supported
+installation, checks matching versions and build markers,
 preserves unknown settings, and records original bytes and hashes under the
 workspace's `.agent-jobs/progressive-mem-search/activation-*` directory. It does
 not release, deploy, change native-memory settings, or restart a worker.

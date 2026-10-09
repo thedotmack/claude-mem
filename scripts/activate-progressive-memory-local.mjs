@@ -59,10 +59,11 @@ const home = homedir();
 const claudeConfig = option('--claude-config-dir') || process.env.CLAUDE_CONFIG_DIR || path.join(home, '.claude');
 const codexHome = option('--codex-dir') || process.env.CODEX_HOME || path.join(home, '.codex');
 const targets = [
-  path.join(claudeConfig, 'plugins/marketplaces/thedotmack/plugin'),
-  path.join(claudeConfig, `plugins/cache/thedotmack/claude-mem/${version}`),
-  path.join(codexHome, `plugins/cache/claude-mem-local/claude-mem/${version}`),
-];
+  { root: path.join(claudeConfig, 'plugins/marketplaces/thedotmack/plugin'), instructions: path.join(claudeConfig, 'CLAUDE.md') },
+  { root: path.join(claudeConfig, `plugins/cache/thedotmack/claude-mem/${version}`), instructions: path.join(claudeConfig, 'CLAUDE.md') },
+  { root: path.join(codexHome, `plugins/cache/claude-mem-local/claude-mem/${version}`), instructions: path.join(codexHome, 'AGENTS.md') },
+].filter(target => existsSync(target.root));
+if (targets.length === 0) fail('No supported installed claude-mem plugin found for this version');
 const artifacts = ['scripts/worker-service.cjs', 'scripts/mcp-server.cjs', 'hooks/hooks.json', 'hooks/codex-hooks.json', 'skills/mem-search/SKILL.md'];
 const changes = [];
 const addChange = (target, bytes) => {
@@ -71,7 +72,8 @@ const addChange = (target, bytes) => {
   if (original && original.equals(bytes)) return;
   changes.push({ target, bytes, original, mode: original ? statSync(target).mode & 0o777 : 0o600 });
 };
-for (const root of targets) {
+for (const { root } of targets) {
+  if (!statSync(root).isDirectory()) fail(`Plugin target must be a directory: ${root}`);
   const manifest = json(path.join(root, '.claude-plugin/plugin.json'));
   if (manifest.name !== 'claude-mem' || manifest.version !== version) fail(`Plugin/version mismatch: ${root}`);
   for (const artifact of artifacts) {
@@ -88,7 +90,7 @@ const instructionSource = readFileSync(path.resolve(source, '../src/shared/memor
 const instructions = instructionSource.match(/MEMORY_PLUGIN_INSTRUCTIONS = `([\s\S]*?)`;/)?.[1];
 if (!instructions) fail('Could not read the versioned memory instruction text');
 const block = `${start}\n${instructions}\n${end}`;
-for (const file of [path.join(claudeConfig, 'CLAUDE.md'), path.join(codexHome, 'AGENTS.md')]) {
+for (const file of new Set(targets.map(target => target.instructions))) {
   const original = read(file)?.toString('utf8') || '';
   const begin = original.indexOf(start), finish = original.indexOf(end);
   if ((begin < 0) !== (finish < 0) || (begin >= 0 && finish < begin)) fail(`Incomplete instruction block: ${file}`);

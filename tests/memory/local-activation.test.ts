@@ -29,6 +29,50 @@ function fixture() {
 }
 
 describe('reversible local activation', () => {
+  for (const [label, included, platform] of [
+    ['Claude marketplace only', [0], 'claude'],
+    ['Claude cache only', [1], 'claude'],
+    ['Claude marketplace and cache', [0, 1], 'claude'],
+    ['Codex cache only', [2], 'codex'],
+  ] as const) {
+    it(`discovers ${label}, updates only its instructions, and rolls back safely`, () => {
+      const f=fixture();
+      for(let index=0;index<f.targets.length;index++) if(!(included as readonly number[]).includes(index)) rmSync(f.targets[index],{recursive:true});
+      const instruction=path.join(platform==='claude'?f.claude:f.codex, platform==='claude'?'CLAUDE.md':'AGENTS.md');
+      const unusedInstruction=path.join(platform==='claude'?f.codex:f.claude, platform==='claude'?'AGENTS.md':'CLAUDE.md');
+      const originalInstruction=readFileSync(instruction,'utf8');
+      const originalSettings=readFileSync(path.join(f.data,'settings.json'),'utf8');
+      rmSync(unusedInstruction);
+      const apply=f.run('--apply');
+      expect(apply.status).toBe(0);
+      for(const index of included) expect(readFileSync(path.join(f.targets[index],'scripts/worker-service.cjs'),'utf8')).toContain('sourceFingerprint');
+      for(let index=0;index<f.targets.length;index++) if(!(included as readonly number[]).includes(index)) expect(existsSync(f.targets[index])).toBe(false);
+      expect(readFileSync(instruction,'utf8')).toContain('use plugin notes');
+      expect(existsSync(unusedInstruction)).toBe(false);
+      const backupRoot=path.join(f.workspace,'.agent-jobs/progressive-mem-search');
+      const backup=path.join(backupRoot,readdirSync(backupRoot)[0]);
+      const manifest=JSON.parse(readFileSync(path.join(backup,'manifest.json'),'utf8'));
+      expect(manifest.files.some((entry:{target:string})=>entry.target===unusedInstruction)).toBe(false);
+      expect(f.run('--restore',backup).status).toBe(0);
+      expect(readFileSync(instruction,'utf8')).toBe(originalInstruction);
+      expect(readFileSync(path.join(f.data,'settings.json'),'utf8')).toBe(originalSettings);
+      expect(existsSync(unusedInstruction)).toBe(false);
+    });
+  }
+
+  it('refuses activation without an installed target before changing instructions or settings', () => {
+    const f=fixture();
+    for(const target of f.targets) rmSync(target,{recursive:true});
+    const original=readFileSync(path.join(f.data,'settings.json'),'utf8');
+    const result=f.run('--apply');
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('No supported installed claude-mem plugin');
+    expect(readFileSync(path.join(f.data,'settings.json'),'utf8')).toBe(original);
+    expect(readFileSync(path.join(f.claude,'CLAUDE.md'),'utf8')).toBe('existing Claude instructions\n');
+    expect(existsSync(path.join(f.workspace,'.agent-jobs'))).toBe(false);
+    expect(existsSync(path.join(f.workspace,'.claude/memory'))).toBe(false);
+  });
+
   it('defaults to dry run, then applies idempotently and restores original bytes', () => {
     const f = fixture();
     const original = readFileSync(path.join(f.data, 'settings.json'), 'utf8');
@@ -77,5 +121,6 @@ describe('reversible local activation', () => {
     writeFileSync(path.join(f.targets[1],'.claude-plugin/plugin.json'),JSON.stringify({name:'claude-mem',version:'13.35.0'}));
     expect(f.run('--apply').status).not.toBe(0);
     expect(readFileSync(path.join(f.targets[0],'scripts/worker-service.cjs'),'utf8')).toBe('old worker');
+    expect(existsSync(path.join(f.workspace,'.agent-jobs'))).toBe(false);
   });
 });

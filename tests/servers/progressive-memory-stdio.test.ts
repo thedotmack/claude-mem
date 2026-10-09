@@ -114,6 +114,8 @@ describe('built local MCP progressive stdio integration', () => {
 
   it('formats every server-runtime observation handler as readable selected information', async () => {
     const app = express(); app.use(express.json());
+    let localWrites = 0;
+    app.post('/api/memory/save', (_req, res) => { localWrites++; res.json({ success: true, id: 99, title: 'WRONG_DATABASE_WRITE' }); });
     const observation = { id: 'memory-fixture', projectId: 'project-fixture', content: 'PRIVATE_SERVER_NARRATIVE', metadata: { title: 'A server decision', secret: 'PRIVATE_SERVER_METADATA' }, teamId: 'PRIVATE_TEAM', tokenUsage: 12345 };
     app.post('/v1/memories', (_req, res) => res.json({ memory: observation }));
     app.post('/v1/events', (_req, res) => res.json({ event: { id: 'event-fixture', payload: 'PRIVATE_EVENT_PAYLOAD' }, generationJob: { id: 'job-fixture', status: 'queued' } }));
@@ -127,7 +129,7 @@ describe('built local MCP progressive stdio integration', () => {
     const address = server.address() as { port: number };
     const transport = new StdioClientTransport({
       command: 'node', args: [join(process.cwd(), 'plugin/scripts/mcp-server.cjs')], cwd: process.cwd(), stderr: 'pipe',
-      env: { ...process.env, CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${address.port}`, CLAUDE_MEM_SERVER_API_KEY: 'owned-fixture-key', CLAUDE_MEM_SERVER_PROJECT_ID: 'project-fixture', CLAUDE_MEM_WORKER_AUTOSTART: 'false' } as Record<string, string>,
+      env: { ...process.env, CLAUDE_MEM_RUNTIME: 'server', CLAUDE_MEM_SERVER_URL: `http://127.0.0.1:${address.port}`, CLAUDE_MEM_SERVER_API_KEY: 'owned-fixture-key', CLAUDE_MEM_SERVER_PROJECT_ID: 'project-fixture', CLAUDE_MEM_WORKER_PORT: String(address.port), CLAUDE_MEM_WORKER_HOST: '127.0.0.1', CLAUDE_MEM_WORKER_AUTOSTART: 'false' } as Record<string, string>,
     });
     const client = new Client({ name: 'server-model-text-fixture', version: '1' });
     transport.stderr?.on('data', () => {});
@@ -152,6 +154,10 @@ describe('built local MCP progressive stdio integration', () => {
       const unavailable = await client.callTool({ name: 'mem_search', arguments: { query: 'decision' } }) as CallToolResult;
       expect(unavailable.isError).toBe(true);
       expect(modelText(unavailable)).toContain('hosted claude-mem MCP');
+      const note = await client.callTool({ name: 'save_memory', arguments: { text: 'A server-scoped note.' } }) as CallToolResult;
+      expect(note.isError).toBe(true);
+      expect(modelText(note)).toContain('observation_add');
+      expect(localWrites).toBe(0);
       const failure = await client.callTool({ name: 'observation_generation_status', arguments: { jobId: 'bad-fixture' } }) as CallToolResult;
       expect(failure.isError).toBe(true);
       expect(modelText(failure)).toContain('HTTP 502');

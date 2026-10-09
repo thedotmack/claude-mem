@@ -524,7 +524,7 @@ const tools = [
   },
   {
     name: 'save_memory',
-    description: 'Save an explicit durable note, decision, correction or handoff into claude-mem. Use this for your own note taking after searching with mem_search for duplicates. Include project when the note belongs to a specific project.',
+    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching with mem_search for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -536,7 +536,10 @@ const tools = [
       required: ['text'],
       additionalProperties: false,
     },
-    handler: async (args: any) => callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } }),
+    handler: async (args: any) => {
+      if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
+      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } });
+    },
   },
   {
     name: 'important_workflow',

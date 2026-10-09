@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { tmpdir } from 'node:os';
 
@@ -10,6 +10,46 @@ const entry = path.resolve(import.meta.dir, '../../src/services/worker-service.t
 
 describe('memory PreToolUse transport and platform output', () => {
   for (const platform of ['claude-code', 'codex']) {
+    it(`registers scoped Bash memory reads through the actual ${platform} hook command`, async () => {
+      const plugin=path.resolve(import.meta.dir,'../../plugin');
+      const registrations=JSON.parse(readFileSync(path.join(plugin,'hooks',platform==='codex'?'codex-hooks.json':'hooks.json'),'utf8')).hooks.PreToolUse;
+      const matches=registrations.filter((entry:{matcher:string})=>new RegExp(entry.matcher).test('Bash'));
+      expect(matches).toHaveLength(1);
+      const registered=matches[0].hooks.find((entry:{command:string})=>entry.command.includes(`hook ${platform} file-context`));
+      expect(registered).toBeDefined();
+      const root=mkdtempSync(path.join(tmpdir(),'cmem-memory-hook-registration-')); roots.push(root);
+      const data=path.join(root,'data'), project=path.join(root,'project'), notes=path.join(root,'notes with spaces');
+      for(const directory of [data,project,notes]) mkdirSync(directory);
+      writeFileSync(path.join(notes,'feedback.md'),'Prefer a 30 second timeout.');
+      const requests:Record<string,unknown>[]=[];
+      server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
+        if(new URL(request.url).pathname==='/api/mem-search') {
+          requests.push(await request.json() as Record<string,unknown>);
+          return Response.json({content:[{type:'text',text:'mem-search step 3 of 3\n#7 — Timeout preference\nPrefer a 30 second timeout.'}]});
+        }
+        return Response.json({status:'ok'});
+      }});
+      writeFileSync(path.join(data,'settings.json'),JSON.stringify({CLAUDE_MEM_WORKER_PORT:String(server.port),CLAUDE_MEM_WORKER_HOST:'127.0.0.1',CLAUDE_MEM_WORKER_AUTOSTART:'false',CLAUDE_MEM_MEMORY_WATCH_ROOTS:JSON.stringify([{path:notes,project:'personal'}])}));
+      const env:Record<string,string>={};
+      for(const [key,value] of Object.entries(process.env)) if(value!==undefined&&!key.startsWith('CLAUDE_MEM_')) env[key]=value;
+      env.CLAUDE_MEM_DATA_DIR=data; env.CLAUDE_CONFIG_DIR=path.join(root,'claude'); env.CLAUDE_PLUGIN_ROOT=plugin; env.DO_NOT_TRACK='1';
+      const invoke=async (command:string) => {
+        const launch=process.platform==='win32'&&registered.commandWindows?['cmd.exe','/c',registered.commandWindows]:['bash','-c',registered.command];
+        const child=Bun.spawn(launch,{cwd:project,env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
+        child.stdin.write(JSON.stringify({session_id:'memory-registration-test',cwd:project,hook_event_name:'PreToolUse',tool_name:'Bash',tool_input:{command}})); child.stdin.end();
+        const [stdout,stderr,status]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);
+        expect(status).toBe(0); expect(stderr).toBe('');
+        return JSON.parse(stdout);
+      };
+      const output=await invoke(`rg timeout '${notes.replace(/\\/g,'/')}'`);
+      expect(requests).toEqual([{query:'timeout',mode:'auto',project:'personal',projects:'personal',searchScope:'personal',limit:8}]);
+      expect(output.hookSpecificOutput.additionalContext).toContain('Prefer a 30 second timeout');
+      expect(output.hookSpecificOutput.updatedInput).toBeUndefined();
+      const unrelated=await invoke('rg timeout ./src');
+      expect(requests).toHaveLength(1);
+      expect(unrelated.hookSpecificOutput?.additionalContext).toBeUndefined();
+    });
+
     it(`injects bounded automatic retrieval context for ${platform} without changing the native tool`, async () => {
       const root = mkdtempSync(path.join(tmpdir(),'cmem-memory-hook-'));roots.push(root);
       const data = path.join(root,'data'), project=path.join(root,'project'); mkdirSync(data);mkdirSync(project);

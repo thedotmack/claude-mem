@@ -102,7 +102,10 @@ Do not search by disclosing raw bodies or fetch all tool calls in a session.
 
 Search for related decisions with `mem_search` before saving a new note.
 Save useful decisions, corrections, resolved failures, and handoff facts through
-`save_memory(text="...", title="...", project="...")` when that tool is available.
+`save_memory(text="...", title="...", project="...")` for local-worker notes when
+that tool is available. In server runtime, use `observation_add` for the selected
+server project when available; `save_memory` never writes server notes. A hosted
+read-only connector may have no write tool.
 Keep the note factual, concise, and tied to evidence. Do not save secrets or copy
 whole transcripts. Do not use native memory files as the only record when
 claude-mem note taking is enabled; the configured hooks/watcher can capture

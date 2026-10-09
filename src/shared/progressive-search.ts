@@ -443,7 +443,10 @@ function indexLine(row: MemoryIndexRow, includeProject: boolean): string {
 export function renderProgressiveSearchResult(result: ProgressiveSearchResult): string {
   const phase = result.step === 1 ? "index" : result.step === 2 ? "context" : "selected details";
   const lines = [`${result.label} — ${phase}`];
-  if (result.mode === "auto") lines.push("Automatic search: index → context → selected details.");
+  if (result.mode === "auto") {
+    const performed = [...new Set(result.trace.map(item => item.operation === "search" ? "index" : item.operation === "timeline" ? "context" : "selected details"))];
+    lines.push(`Automatic search: ${performed.join(" → ")}.`);
+  }
   const reasons: Record<string, string> = {
     no_results: "No matching memories found.",
     no_relevant_candidates: "These candidates need your relevance judgment. Choose a useful title or refine the query.",
