@@ -519,7 +519,7 @@ describe('checkGrokBotIndexSettings', () => {
 });
 
 describe('loadGrokBotIndexConfig', () => {
-  it('defaults to enabled house-fill for every live seat', () => {
+  it('defaults to disabled with house-fill shape for every live seat', () => {
     const settingsPath = path.join(tempRoot(), 'settings.json');
     writeFileSync(settingsPath, '{}');
     const cfg = loadGrokBotIndexConfig(settingsPath, {
@@ -529,7 +529,7 @@ describe('loadGrokBotIndexConfig', () => {
       CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK: undefined,
       GROK_BOT_AGENT_DATA: '/tmp/agent-data-does-not-need-to-exist',
     });
-    expect(cfg.enabled).toBe(true);
+    expect(cfg.enabled).toBe(false);
     expect(cfg.agentIdsAuto).toBe(true);
     expect(cfg.fallback).toBe('house');
     expect(cfg.window).toBe(80);
