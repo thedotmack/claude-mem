@@ -1,9 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
+import { probeChromaDiagnostics, treeSitterCliCheck, workerEndpoint } from '../../src/npx-cli/commands/doctor.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 // `npx claude-mem doctor` reads the worker's /api/admin/doctor `health.chroma`
 // block (#3362). These rows are optional: a missing, malformed or unreachable
@@ -126,6 +127,69 @@ describe('npx doctor Chroma diagnostics', () => {
 
     workerReportingChroma(undefined);
     expect(await probeChromaDiagnostics(WORKER_URL)).toEqual([]);
+  });
+});
+
+describe('npx doctor worker endpoint (#4609)', () => {
+  let root: string;
+  let savedPort: string | undefined;
+  let savedHost: string | undefined;
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'doctor-endpoint-'));
+    savedPort = process.env.CLAUDE_MEM_WORKER_PORT;
+    savedHost = process.env.CLAUDE_MEM_WORKER_HOST;
+    delete process.env.CLAUDE_MEM_WORKER_PORT;
+    delete process.env.CLAUDE_MEM_WORKER_HOST;
+  });
+
+  afterEach(() => {
+    if (savedPort === undefined) delete process.env.CLAUDE_MEM_WORKER_PORT;
+    else process.env.CLAUDE_MEM_WORKER_PORT = savedPort;
+    if (savedHost === undefined) delete process.env.CLAUDE_MEM_WORKER_HOST;
+    else process.env.CLAUDE_MEM_WORKER_HOST = savedHost;
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('reads host and port from settings.json, not just env and defaults', () => {
+    const settingsPath = join(root, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({
+      CLAUDE_MEM_WORKER_HOST: '127.0.0.2',
+      CLAUDE_MEM_WORKER_PORT: '47811',
+    }));
+
+    expect(workerEndpoint(settingsPath)).toEqual({ host: '127.0.0.2', port: '47811' });
+  });
+
+  it('lets the environment override the settings file, like the worker', () => {
+    const settingsPath = join(root, 'settings.json');
+    writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '47811' }));
+    process.env.CLAUDE_MEM_WORKER_PORT = '47812';
+
+    expect(workerEndpoint(settingsPath).port).toBe('47812');
+  });
+
+  it('leaves a legacy nested settings file byte-identical: no migration write, no markers', () => {
+    const settingsPath = join(root, 'settings.json');
+    // The nested { env: ... } schema is one loadFromFile migrates on load;
+    // doctor must read the port from it without performing that migration.
+    const original = JSON.stringify({ env: { CLAUDE_MEM_WORKER_PORT: '47813' } }, null, 2);
+    writeFileSync(settingsPath, original);
+
+    expect(workerEndpoint(settingsPath).port).toBe('47813');
+    expect(readFileSync(settingsPath, 'utf-8')).toBe(original);
+    expect(readdirSync(root)).toEqual(['settings.json']);
+  });
+
+  it('falls back to the defaults without creating a settings file', () => {
+    const settingsPath = join(root, 'settings.json');
+    const defaults = SettingsDefaultsManager.getAllDefaults();
+
+    expect(workerEndpoint(settingsPath)).toEqual({
+      host: defaults.CLAUDE_MEM_WORKER_HOST,
+      port: defaults.CLAUDE_MEM_WORKER_PORT,
+    });
+    expect(existsSync(settingsPath)).toBe(false);
   });
 });
 

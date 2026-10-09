@@ -249,6 +249,23 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
       };
 }
 
+/**
+ * The worker endpoint doctor should probe: the one the worker itself uses.
+ * `SettingsDefaultsManager.get()` only consults the environment and the
+ * built-in defaults, so a host/port set only in settings.json was ignored
+ * and doctor reported a healthy worker as down (#4609). Load the settings
+ * file the same way the worker does (environment still wins inside
+ * `loadFromFile`). When no settings file exists yet, fall back to
+ * `get()` without creating one: doctor is read-only.
+ */
+export function workerEndpoint(settingsPath: string): { host: string; port: string } {
+  // Read-only on purpose: loadFromFile creates a missing file and persists
+  // migrations, and a diagnostic must not rewrite the settings it reports
+  // on. A missing file resolves to env/defaults without being created.
+  const settings = SettingsDefaultsManager.loadFromFileReadOnly(settingsPath);
+  return { host: settings.CLAUDE_MEM_WORKER_HOST, port: settings.CLAUDE_MEM_WORKER_PORT };
+}
+
 export async function runDoctorCommand(): Promise<void> {
   const checks: CheckResult[] = [];
   const dataDir = resolveDataDir();
@@ -322,8 +339,7 @@ export async function runDoctorCommand(): Promise<void> {
   checks.push(marketplaceManifestCheck(marketplaceDir));
 
   // 5. Worker health.
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  const { host: workerHost, port: workerPort } = workerEndpoint(join(dataDir, 'settings.json'));
   let workerStatus: CheckStatus = 'fail';
   let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
   let chromaChecks: CheckResult[] = [];
