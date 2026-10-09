@@ -3,6 +3,7 @@ import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { describeNetworkFailure, isConnectionRefused } from '../../shared/network-failure.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { estimateTokens } from '../../shared/timeline-formatting.js';
@@ -137,9 +138,16 @@ export function classifyGeminiError(input: {
 
   // Network errors (no status) — treat as transient.
   if (status === undefined) {
+    const network = describeNetworkFailure(input.cause);
     return new ClassifiedProviderError(
       `Gemini network error: ${input.cause instanceof Error ? input.cause.message : String(input.cause)}`,
-      { kind: 'transient', cause: input.cause },
+      {
+        kind: 'transient',
+        cause: input.cause,
+        // A refused connection never sent the request, so it is pre-send and
+        // must not spend the paid-send budget (#4604).
+        ...(isConnectionRefused(network) ? { paidSendOutcome: 'refused_before_work' as const } : {}),
+      },
     );
   }
 

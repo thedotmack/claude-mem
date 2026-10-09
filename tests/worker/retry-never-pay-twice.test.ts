@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { OpenRouterProvider, classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
+import { classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -154,6 +155,25 @@ describe('outcome table: what is retried in place', () => {
     expect(paidSendOutcomeOf(error)).toBe('ambiguous');
     expect(budget.spentPaidSends).toBe(1);
   });
+
+  // #4604: an endpoint that refuses connections never receives the request,
+  // so retries against it are pre-send and the batch keeps its whole budget —
+  // an outage pauses the session instead of parking its work for good.
+  it('refused connection: retried in place, paid-send budget untouched', async () => {
+    const budget = new PaidSendBudget(2);
+    const refused = classifyOpenAICompatError({
+      cause: Object.assign(new Error('Unable to connect'), { code: 'ConnectionRefused' }),
+    });
+    let attempts = 0;
+    const error = await withRetry(async () => {
+      attempts += 1;
+      throw refused;
+    }, { perAttemptTimeoutMs: 5_000, baseDelayMs: 1, maxDelayMs: 2, paidSendBudget: budget }).catch((caught: unknown) => caught);
+    expect(error).toBe(refused);
+    expect(attempts).toBe(3);
+    expect(budget.spentPaidSends).toBe(0);
+    expect(budget.hasRemainingPaidSend()).toBe(true);
+  });
 });
 
 describe('Codex: a completed turn with unusable output is never resent', () => {
@@ -270,6 +290,40 @@ describe('PaidSendBudget: one allowance per claimed batch, shared by withRetry a
     const refusal = await provider().runQuery(firstBudget).catch((caught: unknown) => caught);
     expect(fetch.sends()).toBe(2);
     expect(isClassified(refusal) && refusal.code).toBe(PAID_SEND_BUDGET_EXHAUSTED_CODE);
+  });
+
+  // #4604 end to end: an endpoint that refuses connections spends nothing,
+  // so the batch pauses unparked and goes out when the endpoint returns.
+  it('a refused connection spends nothing: the batch pauses unparked and is sent when the endpoint returns', async () => {
+    const { sessionManager, session, sessionDbId, messageId, timers } = makeSessionManager();
+    const refused = () => { throw Object.assign(new Error('Unable to connect'), { code: 'ConnectionRefused' }); };
+    const fetch = scriptFetch([refused, refused, refused, () => new Response(OK_BODY, { status: 200 })]);
+
+    // Generator 1 claims the batch during the outage: withRetry burns its
+    // in-place retries against the refusing endpoint, all of them pre-send.
+    session.claimedMessageIds = [messageId];
+    const firstBudget = paidSendBudgetForClaimedBatch(session)!;
+    const error = await provider().runQuery(firstBudget).catch((caught: unknown) => caught);
+    expect(paidSendOutcomeOf(error)).toBe('refused_before_work');
+    expect(fetch.sends()).toBe(3);
+    expect(firstBudget.spentPaidSends).toBe(0);
+
+    // The exit pauses on transport with the whole budget left: a resume is
+    // scheduled, nothing is parked, and the message is pending again.
+    await sessionManager.resetProcessingToPending(sessionDbId);
+    sessionManager.scheduleTransportResume(sessionDbId);
+    expect(timers).toHaveLength(1);
+    expect(sessionManager.getMessageBuffer().getParkedMessages(sessionDbId)).toHaveLength(0);
+    expect(sessionManager.getMessageBuffer().getPendingCount(sessionDbId)).toBe(1);
+
+    // The endpoint is back by the time the resume fires: the resumed
+    // generator reuses the same budget and the send succeeds.
+    session.claimedMessageIds = [messageId];
+    const resumedBudget = paidSendBudgetForClaimedBatch(session)!;
+    expect(resumedBudget).toBe(firstBudget);
+    const result = await provider().runQuery(resumedBudget).catch((caught: unknown) => caught);
+    expect(result).not.toBeInstanceOf(Error);
+    expect(fetch.sends()).toBe(4);
   });
 
   it('a 429 refusal costs nothing: it is retried in place without spending the budget', async () => {
