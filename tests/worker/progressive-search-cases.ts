@@ -283,5 +283,15 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
       assert.throws(() => JSON.parse(visible), 'The tool reply remains purpose-specific prose');
     }
   });
+  await check(async () => {
+    const text = renderMemoryContent({
+      completed: 'Updated the memory bridge.',
+      files_edited: '["src/memory-bridge.ts", "tests/memory-bridge.test.ts"]',
+      files_read: ['README.md'], memory_session_id: 'PRIVATE_SESSION',
+    });
+    assert.match(text, /Files changed: src\/memory-bridge\.ts, tests\/memory-bridge\.test\.ts/);
+    assert.match(text, /Files read: README\.md/);
+    assert(!text.includes('PRIVATE_SESSION'));
+  });
   return { count, guided, auto };
 }

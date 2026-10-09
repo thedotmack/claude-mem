@@ -411,7 +411,7 @@ export function projectMemoryContent(payload: unknown): { text: string; truncate
     const text = read(data[key]);
     if (text) sections.push(`${label}: ${text}`);
   }
-  for (const [key, label] of [["files_modified", "Files changed"], ["files_read", "Files read"]] as const) {
+  for (const [key, label] of [["files_modified", "Files changed"], ["files_edited", "Files changed"], ["files_read", "Files read"]] as const) {
     let files = data[key];
     if (typeof files === "string") {
       try { files = JSON.parse(files); } catch { files = [files]; }
