@@ -89,8 +89,22 @@ describe('isQuotaLimitedObserverOutput', () => {
     expect(isQuotaLimitedObserverOutput('credit balance is too low')).toBe(true);
     expect(isQuotaLimitedObserverOutput('Credit balance too low')).toBe(true);
     expect(isQuotaLimitedObserverOutput('Your credit balance is too low to complete this request.')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('API Error: credit balance is too low')).toBe(true);
     expect(isQuotaLimitedObserverOutput('insufficient credit to continue')).toBe(true);
     expect(isQuotaLimitedObserverOutput('insufficient quota')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('API Error: insufficient balance')).toBe(true);
+  });
+
+  it('rejects ordinary narrative mentioning balance/credits from triggering false quota pause (#4680)', () => {
+    expect(
+      isQuotaLimitedObserverOutput('Skipping — insufficient balance handling was already recorded.')
+    ).toBe(false);
+    expect(
+      isQuotaLimitedObserverOutput('The user noted that credit balance is too low in their third-party system.')
+    ).toBe(false);
+    expect(
+      isQuotaLimitedObserverOutput('Documented the fix for insufficient credits error in billing service.')
+    ).toBe(false);
   });
 
   it('does not treat XML that mentions a limit as quota prose', () => {
