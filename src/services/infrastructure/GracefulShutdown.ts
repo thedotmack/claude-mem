@@ -30,29 +30,41 @@ export interface GracefulShutdownConfig {
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
   logger.info('SYSTEM', 'Shutdown initiated');
 
+  const errors: unknown[] = [];
+  async function cleanup(action: () => Promise<void>): Promise<void> {
+    try { await action(); } catch (error) { errors.push(error); }
+  }
+
   if (config.server) {
     await closeHttpServer(config.server);
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
-  await config.sessionManager.shutdownAll();
+  await cleanup(() => config.sessionManager.shutdownAll());
 
   if (config.mcpClient) {
-    await config.mcpClient.close();
-    logger.info('SYSTEM', 'MCP client closed');
+    await cleanup(async () => {
+      await config.mcpClient!.close();
+      logger.info('SYSTEM', 'MCP client closed');
+    });
   }
 
   if (config.chromaMcpManager) {
-    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
-    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    await cleanup(async () => {
+      logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+      await config.chromaMcpManager!.stop();
+      logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    });
   }
 
   if (config.dbManager) {
-    await config.dbManager.close();
+    await cleanup(() => config.dbManager!.close());
   }
 
-  await getSupervisor().stop();
+  await cleanup(() => getSupervisor().stop());
+
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Worker shutdown cleanup failed');
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }
