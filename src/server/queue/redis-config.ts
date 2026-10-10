@@ -69,7 +69,7 @@ function normalizeRedisMode(value: string): RedisMode {
 }
 
 function parseRedisPort(value: string): number {
-  const port = Number.parseInt(value, 10);
+  const port = /^\d+$/.test(value.trim()) ? Number(value.trim()) : NaN;
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     throw new Error(`Invalid CLAUDE_MEM_REDIS_PORT=${value}; expected a TCP port`);
   }
@@ -96,7 +96,7 @@ function connectionFromUrl(rawUrl: string): RedisOptions {
     throw new Error('CLAUDE_MEM_REDIS_URL must use redis:// or rediss://');
   }
   const db = parsed.pathname.length > 1
-    ? Number.parseInt(parsed.pathname.slice(1), 10)
+    ? (/^\d+$/.test(parsed.pathname.slice(1)) ? Number(parsed.pathname.slice(1)) : NaN)
     : undefined;
   if (db !== undefined && (!Number.isInteger(db) || db < 0)) {
     throw new Error(`Invalid Redis database in CLAUDE_MEM_REDIS_URL: ${parsed.pathname}`);
