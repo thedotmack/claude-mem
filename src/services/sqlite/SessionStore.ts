@@ -3371,7 +3371,7 @@ export class SessionStore {
   }
 
   /**
-   * The session's current prompt number (count of its user_prompts rows).
+   * The session's current persisted prompt number, including gaps from partial imports.
    * `createdAtOrBeforeEpochMs` answers "which prompt was current at that
    * moment" instead — for an event that happened earlier than it is being
    * ingested (a hook spool entry drained after an outage).
@@ -3386,13 +3386,13 @@ export class SessionStore {
     const sessionParam = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
     if (createdAtOrBeforeEpochMs !== undefined) {
       const result = this.db.prepare(`
-        SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
+        SELECT COALESCE(MAX(prompt_number), 0) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
       `).get(sessionParam, createdAtOrBeforeEpochMs) as { count: number };
       return result.count;
     }
 
     const result = this.db.prepare(`
-      SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause}
+      SELECT COALESCE(MAX(prompt_number), 0) as count FROM user_prompts WHERE ${sessionClause}
     `).get(sessionParam) as { count: number };
     return result.count;
   }
