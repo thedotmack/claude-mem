@@ -1415,6 +1415,11 @@ export class SessionStore {
       CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `);
 
+    // DROP TABLE above dropped the summaries FTS sync triggers with the table;
+    // recreate them when the index survived the rebuild, or writes would stop
+    // reaching it from here on (#3609).
+    this.recreateFtsTriggersIfIndexed('session_summaries');
+
     this.db.run('COMMIT');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
@@ -1513,11 +1518,33 @@ export class SessionStore {
       CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
     `);
 
+    // Same as the v7 rebuild: DROP TABLE removed the observations FTS sync
+    // triggers, so recreate them when the index survived (#3609).
+    this.recreateFtsTriggersIfIndexed('observations');
+
     this.db.run('COMMIT');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
     logger.debug('DB', 'Successfully made observations.text nullable');
+  }
+
+  /**
+   * DROP TABLE removes every trigger attached to the table, so a rebuild that
+   * keeps its FTS5 index (external content: the index tables survive the base
+   * table rebuild untouched) would otherwise leave every later write unindexed
+   * with no error — MATCH searches silently miss them forever (#3609). Re-run
+   * the sync-trigger SQL whenever the index is still present; the SQL is
+   * CREATE TRIGGER IF NOT EXISTS, so this is idempotent, and it deliberately
+   * never backfills — reinserting into an existing external-content index
+   * corrupts its delete/update bookkeeping (SessionSearch.createFTSTablesAndTriggers).
+   */
+  private recreateFtsTriggersIfIndexed(table: 'observations' | 'session_summaries'): void {
+    const hasFTS = (this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .all(`${table}_fts`) as { name: string }[]).length > 0;
+    if (!hasFTS) return;
+    this.db.run(table === 'observations' ? OBSERVATIONS_FTS_TRIGGERS_SQL : SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
   }
 
   private createUserPromptsTable(): void {
@@ -1772,24 +1799,14 @@ export class SessionStore {
         this.db.run('DROP TRIGGER IF EXISTS observations_ad');
         this.db.run('DROP TRIGGER IF EXISTS observations_au');
         this.db.run('DROP TABLE IF EXISTS observations_new');
-        this.recreateObservationsWithCascade(
-          observationsNewSQL,
-          observationsKnownColumns,
-          observationsIndexesSQL,
-          OBSERVATIONS_FTS_TRIGGERS_SQL
-        );
+        this.recreateObservationsWithCascade(observationsNewSQL, observationsKnownColumns, observationsIndexesSQL);
       }
       if (summariesNeedsCascade) {
         this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
         this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
         this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
         this.db.run('DROP TABLE IF EXISTS session_summaries_new');
-        this.recreateSessionSummariesWithCascade(
-          summariesNewSQL,
-          summariesKnownColumns,
-          summariesIndexesSQL,
-          SESSION_SUMMARIES_FTS_TRIGGERS_SQL
-        );
+        this.recreateSessionSummariesWithCascade(summariesNewSQL, summariesKnownColumns, summariesIndexesSQL);
       }
 
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
@@ -1809,8 +1826,7 @@ export class SessionStore {
   private recreateObservationsWithCascade(
     createSQL: string,
     knownColumns: string[],
-    indexesSQL: string,
-    ftsTriggersSQL: string
+    indexesSQL: string
   ): void {
     this.db.run(createSQL);
     const copyColumns = this.carryLiveColumnsOntoNewTable('observations', 'observations_new', knownColumns);
@@ -1819,18 +1835,13 @@ export class SessionStore {
     this.db.run('DROP TABLE observations');
     this.db.run('ALTER TABLE observations_new RENAME TO observations');
     this.db.run(indexesSQL);
-
-    const hasFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'").all() as { name: string }[]).length > 0;
-    if (hasFTS) {
-      this.db.run(ftsTriggersSQL);
-    }
+    this.recreateFtsTriggersIfIndexed('observations');
   }
 
   private recreateSessionSummariesWithCascade(
     createSQL: string,
     knownColumns: string[],
-    indexesSQL: string,
-    ftsTriggersSQL: string
+    indexesSQL: string
   ): void {
     this.db.run(createSQL);
     const copyColumns = this.carryLiveColumnsOntoNewTable('session_summaries', 'session_summaries_new', knownColumns);
@@ -1839,11 +1850,7 @@ export class SessionStore {
     this.db.run('DROP TABLE session_summaries');
     this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
     this.db.run(indexesSQL);
-
-    const hasSummariesFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'").all() as { name: string }[]).length > 0;
-    if (hasSummariesFTS) {
-      this.db.run(ftsTriggersSQL);
-    }
+    this.recreateFtsTriggersIfIndexed('session_summaries');
   }
 
   private addObservationContentHashColumn(): void {

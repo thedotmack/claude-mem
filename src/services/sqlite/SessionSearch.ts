@@ -27,6 +27,19 @@ const UNSEGMENTED_SCRIPT_RANGES =
   '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
 /**
+ * The sync triggers each external-content index depends on. SQLite drops a
+ * table's triggers along with the table, so any DROP TABLE rebuild (the v7/v9
+ * migrations) removes them while the index itself survives — their presence is
+ * introspected separately from the index tables' (#3609).
+ */
+export const OBSERVATIONS_FTS_TRIGGER_NAMES = ['observations_ai', 'observations_ad', 'observations_au'];
+export const SESSION_SUMMARIES_FTS_TRIGGER_NAMES = [
+  'session_summaries_ai',
+  'session_summaries_ad',
+  'session_summaries_au',
+];
+
+/**
  * Sync triggers for the external-content FTS5 indexes, shared by FTS setup here and by the
  * SessionStore migrations that rebuild these tables. The update triggers fire only when an
  * indexed column is written: an unscoped AFTER UPDATE also fired for bookkeeping writes
@@ -98,7 +111,16 @@ export class SessionSearch {
     const hasObservationsFTS = tables.some(t => t.name === 'observations_fts');
     const hasSummariesFTS = tables.some(t => t.name === 'session_summaries_fts');
 
-    if (hasObservationsFTS && hasSummariesFTS) {
+    // #3609 — the tables alone are not proof of a working index: a DROP TABLE
+    // rebuild (v7/v9) drops the sync triggers with the table while the index
+    // survives, and writes then silently stopped reaching it. Introspect the
+    // triggers too; missing ones are recreated in the transaction below.
+    if (
+      hasObservationsFTS &&
+      hasSummariesFTS &&
+      this.hasAllFtsTriggers(OBSERVATIONS_FTS_TRIGGER_NAMES) &&
+      this.hasAllFtsTriggers(SESSION_SUMMARIES_FTS_TRIGGER_NAMES)
+    ) {
       return;
     }
 
@@ -107,7 +129,8 @@ export class SessionSearch {
       return;
     }
 
-    logger.info('DB', 'Creating FTS5 tables');
+    const repairingTriggersOnly = hasObservationsFTS && hasSummariesFTS;
+    logger.info('DB', repairingTriggersOnly ? 'Recreating missing FTS5 sync triggers' : 'Creating FTS5 tables');
 
     try {
       this.db.transaction(() => {
@@ -116,13 +139,34 @@ export class SessionSearch {
         const currentTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
         const createObservations = !currentTables.some(t => t.name === 'observations_fts');
         const createSummaries = !currentTables.some(t => t.name === 'session_summaries_fts');
+        // Recreate triggers only for indexes that already exist; the backfill
+        // runs solely for a newly created index — reinserting into an existing
+        // external-content index corrupts its delete/update bookkeeping, so a
+        // trigger repair is forward-looking by design (#3609).
+        const repairObservations = !createObservations && !this.hasAllFtsTriggers(OBSERVATIONS_FTS_TRIGGER_NAMES);
+        const repairSummaries = !createSummaries && !this.hasAllFtsTriggers(SESSION_SUMMARIES_FTS_TRIGGER_NAMES);
         this.createFTSTablesAndTriggers(createObservations, createSummaries);
+        if (repairObservations) {
+          this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
+        }
+        if (repairSummaries) {
+          this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
+        }
       }).immediate();
-      logger.info('DB', 'FTS5 tables created successfully');
+      logger.info('DB', repairingTriggersOnly ? 'FTS5 sync triggers recreated' : 'FTS5 tables created successfully');
     } catch (error) {
       this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
     }
+  }
+
+  /** True when every trigger in `names` exists — presence, not its DDL (v54 owns the shape). */
+  private hasAllFtsTriggers(names: string[]): boolean {
+    const placeholders = names.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (${placeholders})`)
+      .all(...names) as { name: string }[];
+    return rows.length === names.length;
   }
 
   private isFts5Available(): boolean {
