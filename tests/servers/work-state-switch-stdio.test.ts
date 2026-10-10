@@ -25,13 +25,17 @@ async function withServer(
   await new Promise<void>(resolve => server.once('listening', resolve));
   const { port } = server.address() as { port: number };
   const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-work-state-'));
+  // A switch exported in the developer's shell must not leak into the child:
+  // each test sets the value it means to check.
+  const inherited = { ...process.env };
+  delete inherited.CLAUDE_MEM_WORK_STATE_ENABLED;
   const transport = new StdioClientTransport({
     command: process.execPath,
     args: [join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts')],
     cwd: process.cwd(),
     stderr: 'pipe',
     env: {
-      ...process.env,
+      ...inherited,
       CLAUDE_MEM_DATA_DIR: dataDir,
       CLAUDE_MEM_WORKER_PORT: String(port),
       CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
