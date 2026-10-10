@@ -410,18 +410,22 @@ export class ServerClient {
       init.body = JSON.stringify(body);
     }
 
+    const transportFailure = (error: unknown): ServerClientError => {
+      const message = error instanceof Error ? error.message : String(error);
+      const isTimeout = /timed out|timeout/i.test(message)
+        || (error instanceof Error && (error.name === 'TimeoutError' || error.name === 'AbortError'));
+      return new ServerClientError(
+        isTimeout ? 'timeout' : 'transport',
+        `Server ${method} ${path} failed: ${message}`,
+        { cause: error },
+      );
+    };
     let response: Response;
     const timeoutMs = options.timeoutMs ?? this.timeoutMs;
     try {
       response = await fetchWithTimeout(url, init, timeoutMs);
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      const isTimeout = /timed out|timeout/i.test(message);
-      throw new ServerClientError(
-        isTimeout ? 'timeout' : 'transport',
-        `Server ${method} ${path} failed: ${message}`,
-        { cause: error },
-      );
+      throw transportFailure(error);
     }
 
     if (!response.ok) {
@@ -433,7 +437,12 @@ export class ServerClient {
       );
     }
 
-    const text = await response.text();
+    let text: string;
+    try {
+      text = await response.text();
+    } catch (error: unknown) {
+      throw transportFailure(error);
+    }
     if (!text || text.length === 0) {
       // Endpoints we call always return JSON; a body-less success is unusual
       // but not fatal — return undefined-shaped object.
