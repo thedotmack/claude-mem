@@ -272,4 +272,26 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
   it('sets cwd to tmpdir() to avoid inheriting project tsconfig.json warnings (#4628)', () => {
     expect(source).toMatch(/cwd:\s*tmpdir\(\)/);
   });
+
+  it('resolves relative script path against process.cwd() before changing cwd (#4679)', () => {
+    expect(source).toMatch(/args\[0\]\s*=\s*resolve\(process\.cwd\(\),\s*args\[0\]\)/);
+  });
+
+  it('runs child with relative script path from arbitrary directory (#4679)', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'bun-runner-test-'));
+    try {
+      const scriptPath = join(tempDir, 'dummy.js');
+      writeFileSync(scriptPath, 'console.log("HELLO_FROM_RUNNER");\n');
+      const res = spawnSync(process.execPath, [BUN_RUNNER_PATH, 'dummy.js'], {
+        cwd: tempDir,
+        input: '{"dummy": true}',
+        encoding: 'utf-8',
+        windowsHide: true,
+      });
+      expect(res.status).toBe(0);
+      expect(res.stdout).toContain('HELLO_FROM_RUNNER');
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });

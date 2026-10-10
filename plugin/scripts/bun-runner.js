@@ -130,6 +130,8 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
+// Resolve relative script path against process.cwd() BEFORE spawning in tmpdir() (issues #4628, #4679)
+args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
 
