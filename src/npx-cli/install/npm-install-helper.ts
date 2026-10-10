@@ -19,6 +19,7 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { IS_WINDOWS } from '../utils/paths.js';
 
 const TIMEOUT_MS = 5 * 60 * 1000;
+const TERMINATION_GRACE_MS = 1000;
 
 export interface NpmResult {
   code: number;
@@ -87,10 +88,13 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
     let stderr = '';
     let timedOut = false;
     let spawnError: Error | null = null;
+    let forceKillTimer: ReturnType<typeof setTimeout> | undefined;
 
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill('SIGTERM');
+      // An installer can ignore SIGTERM; the timeout must still end the wait.
+      forceKillTimer = setTimeout(() => child.kill('SIGKILL'), TERMINATION_GRACE_MS);
     }, resolveInstallTimeoutMs());
 
     child.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); });
@@ -100,8 +104,9 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      if (forceKillTimer !== undefined) clearTimeout(forceKillTimer);
       resolve({
-        code: typeof code === 'number' ? code : (timedOut ? 124 : 1),
+        code: timedOut ? 124 : (typeof code === 'number' ? code : 1),
         stdout,
         stderr: stderr || (spawnError ? String(spawnError.message) : ''),
         timedOut,
