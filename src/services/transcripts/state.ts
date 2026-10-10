@@ -30,6 +30,8 @@ export interface TranscriptWatchState {
    * predate this field and simply have no partials.
    */
   partials?: Record<string, string>;
+  /** Base64 record prefixes ending inside a UTF-8 character; tied to the durable offset. */
+  partialBytes?: Record<string, string>;
   /**
    * zstd files only: how many lines of the frame at the offset were already
    * dispatched when a turn later in that frame failed. The retry, in this
@@ -67,6 +69,9 @@ export function loadWatchState(statePath: string): TranscriptWatchState {
       Object.entries(map).filter(([file]) => Object.hasOwn(state.offsets, file))
     );
     if (parsed.partials !== undefined) state.partials = continuation(normalizeMap(parsed.partials, text));
+    if (parsed.partialBytes !== undefined) state.partialBytes = continuation(normalizeMap(parsed.partialBytes,
+      (value): value is string => typeof value === 'string' && value.length > 0
+        && Buffer.from(value, 'base64').toString('base64') === value));
     if (parsed.frameLines !== undefined) state.frameLines = continuation(normalizeMap(parsed.frameLines, integer));
     if (parsed.fileIdentities !== undefined) state.fileIdentities = continuation(normalizeMap(parsed.fileIdentities, text));
     if (parsed.checkpointFingerprints !== undefined) state.checkpointFingerprints = continuation(normalizeMap(parsed.checkpointFingerprints, text));
