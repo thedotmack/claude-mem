@@ -1,5 +1,5 @@
 import { mkdirSync, watch as fsWatch } from 'fs';
-import { HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
+import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
@@ -8,11 +8,13 @@ const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
 /**
  * Hand one spool entry to the SAME ingest function its HTTP route uses.
- * true = done (accepted or deliberately skipped) → unlink; false = keep.
+ * true = done (accepted or deliberately skipped) → unlink; false = keep;
+ * 'expired' = can never succeed → the drain moves it to expired/ (see
+ * HookSpool.drain).
  * `markHandedOff` goes to ingest, which calls it synchronously at the exact
  * point the entry is irrevocably accepted (see HookSpool.drain).
  */
-async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean> {
+async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
   switch (entry.kind) {
     case 'observation':
     case 'file_edit': {
@@ -34,8 +36,18 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       // unknown_session: init may not have landed yet (it raced the same
       // outage) — keep the entry, exactly like the old SessionEnd replay.
       return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status !== 'unknown_session';
-    case 'session_end':
-      return (await ingestSessionEnd(entry.payload, undefined, { markHandedOff })).status !== 'unknown_session';
+    case 'session_end': {
+      // unknown_session here means the worker is up and its DB has no such
+      // session: a session registers within moments of starting or never, so
+      // past the grace window the end can never succeed and the entry only
+      // clogs the spool until the retry window expires it (issue #4629). The
+      // window itself just covers the init race. A DB outage throws instead
+      // of returning unknown_session, so this cannot retire an entry that an
+      // outage made undeliverable.
+      const outcome = (await ingestSessionEnd(entry.payload, undefined, { markHandedOff })).status;
+      if (outcome !== 'unknown_session') return true;
+      return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
+    }
     case 'advisor_calls':
       ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
       return true;
