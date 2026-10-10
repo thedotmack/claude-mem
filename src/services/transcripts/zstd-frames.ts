@@ -97,7 +97,9 @@ export function scanZstdFramesInFile(
       if (!descriptorByte) return { frames, tornStart: frameStart };
       const descriptor = descriptorByte.readUInt8(0);
       offset += 1;
-      if ((descriptor & 24) !== 0) {
+      // Bit 4 is unused and must be ignored by decoders (RFC 8878).
+      // Bit 3 is reserved and must still be rejected.
+      if ((descriptor & 8) !== 0) {
         throw new Error(`reserved Zstandard frame-header bit at byte ${offset - 1}`);
       }
 
