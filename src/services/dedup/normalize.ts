@@ -10,13 +10,16 @@
  *    `api` look common and break the discriminating-token veto.
  */
 
-/** Lowercase, replace non-alphanumeric (Unicode-aware) with a space, collapse runs, trim. */
+/** Canonicalize case/Unicode, retain letters, numbers and meaningful marks, collapse punctuation/whitespace. */
 export function normalizeTitle(s: string | null | undefined): string {
-  return (s ?? '')
+  const normalized = (s ?? '')
+    .normalize('NFC')
     .toLowerCase()
-    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/[^\p{L}\p{N}\p{M}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim();
+  // Marks alone cannot identify a title, just like punctuation alone.
+  return /[\p{L}\p{N}]/u.test(normalized) ? normalized : '';
 }
 
 /** Whitespace-only split + lowercase; preserves compound identifiers as single tokens. */
