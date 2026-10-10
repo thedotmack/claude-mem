@@ -84,6 +84,15 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects credit balance too low as quota-limited prose (#4632)', () => {
+    expect(isQuotaLimitedObserverOutput('Credit balance is too low')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('credit balance is too low')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Credit balance too low')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('Your credit balance is too low to complete this request.')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('insufficient credit to continue')).toBe(true);
+    expect(isQuotaLimitedObserverOutput('insufficient quota')).toBe(true);
+  });
+
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(

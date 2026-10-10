@@ -157,6 +157,9 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   "You've hit your session limit · resets 5:50pm (America/Los_Angeles)"
     //   "You've reached your Fable 5 limit. Run /usage-credits to continue…"
     //   "You're out of usage credits. Run /usage-credits to keep using…"
+    //   "Credit balance is too low" (#4632)
+    /\bcredit balance (?:is )?too low\b/.test(text) ||
+    /\binsufficient (?:credits?|balance|quota)\b/.test(text) ||
     /\byou'?ve (?:hit|reached) your\b.{0,40}\blimit\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
