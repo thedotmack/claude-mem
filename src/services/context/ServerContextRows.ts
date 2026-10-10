@@ -127,7 +127,13 @@ function asJsonText(value: unknown): string | null {
 }
 
 function createdAtEpoch(row: ServerRow): number {
-  return Number(pick(row, 'createdAtEpoch', 'created_at_epoch')) || Date.now();
+  const value = pick(row, 'createdAtEpoch', 'created_at_epoch');
+  if (typeof value !== 'number' && typeof value !== 'string') return Date.now();
+  if (typeof value === 'string' && !value.trim()) return Date.now();
+  const epoch = Number(value);
+  return Number.isFinite(epoch) && Number.isFinite(new Date(epoch).getTime())
+    ? epoch
+    : Date.now();
 }
 
 // The row shape mirrors the local SELECT field for field. `kind` on the server
