@@ -13,14 +13,18 @@ export async function readCappedErrorBody(response: Response, maxBytes: number =
   const decoder = new TextDecoder();
   let text = '';
   let bytesRead = 0;
-  while (bytesRead < maxBytes) {
-    const { done, value } = await reader.read();
-    if (done) return text + decoder.decode();
-    const remainingBytes = maxBytes - bytesRead;
-    const chunk = value.byteLength > remainingBytes ? value.subarray(0, remainingBytes) : value;
-    bytesRead += chunk.byteLength;
-    text += decoder.decode(chunk, { stream: true });
+  try {
+    while (bytesRead < maxBytes) {
+      const { done, value } = await reader.read();
+      if (done) return text + decoder.decode();
+      const remainingBytes = maxBytes - bytesRead;
+      const chunk = value.byteLength > remainingBytes ? value.subarray(0, remainingBytes) : value;
+      bytesRead += chunk.byteLength;
+      text += decoder.decode(chunk, { stream: true });
+    }
+    await reader.cancel();
+    return text + decoder.decode();
+  } finally {
+    reader.releaseLock();
   }
-  await reader.cancel();
-  return text + decoder.decode();
 }
