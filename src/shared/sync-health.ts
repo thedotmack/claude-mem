@@ -59,7 +59,8 @@ export const SYNC_AUTH_MESSAGES: Record<SyncAuthCode, string> = {
  */
 export function classifySyncAuthFailure(status: number, body: string): SyncAuthFailure | null {
   if (status !== 401 && status !== 403) return null;
-  if (/^\s*<(?:!DOCTYPE|html)/i.test(body)) return null;
+  const bodyStart = body.replace(/^\s*(?:<!--[\s\S]*?-->\s*)*/, '');
+  if (/^<(?:!DOCTYPE|html)/i.test(bodyStart)) return null;
   let code: SyncAuthCode = 'invalid_token';
   let parsedCode: unknown = null;
   try {
