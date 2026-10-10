@@ -28,3 +28,14 @@ describe('resolveDateBound', () => {
     expect(resolveDateBound(value, 'end')).toBe(Date.parse(value));
   });
 });
+
+// Run this suite in a non-UTC TZ as well: padded dates must retain ISO date-only UTC semantics.
+describe('whitespace-padded date bounds', () => {
+  it('normalizes both boundaries before parsing a date-only string', () => {
+    const midnight = Date.parse('2025-01-01T00:00:00.000Z');
+    for (const value of [' 2025-01-01 ', '\t2025-01-01\n']) {
+      expect(resolveDateBound(value, 'start')).toBe(midnight);
+      expect(resolveDateBound(value, 'end')).toBe(midnight + 86_400_000 - 1);
+    }
+  });
+});
