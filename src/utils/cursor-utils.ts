@@ -3,6 +3,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from '
 import { join } from 'path';
 import { logger } from './logger.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { parseJsonWithBom } from '../shared/atomic-json.js';
 
 export interface CursorProjectRegistry {
   [projectName: string]: {
@@ -24,7 +25,7 @@ export interface CursorMcpConfig {
 export function readCursorRegistry(registryFile: string): CursorProjectRegistry {
   try {
     if (!existsSync(registryFile)) return {};
-    return JSON.parse(readFileSync(registryFile, 'utf-8'));
+    return parseJsonWithBom<CursorProjectRegistry>(readFileSync(registryFile, 'utf-8'));
   } catch (error) {
     logger.error('CONFIG', 'Failed to read Cursor registry, using empty registry', {
       file: registryFile,
@@ -94,7 +95,7 @@ export function configureCursorMcp(mcpJsonPath: string, mcpServerScriptPath: str
   let config: CursorMcpConfig = { mcpServers: {} };
   if (existsSync(mcpJsonPath)) {
     try {
-      config = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
+      config = parseJsonWithBom<CursorMcpConfig>(readFileSync(mcpJsonPath, 'utf-8'));
       if (!config.mcpServers) {
         config.mcpServers = {};
       }
