@@ -792,7 +792,8 @@ export class SettingsDefaultsManager {
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+          const val = flatSettings[key];
+          result[key] = typeof val === 'boolean' ? String(val) : val;
         }
       }
 

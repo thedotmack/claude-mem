@@ -279,6 +279,19 @@ describe('SettingsDefaultsManager', () => {
         expect(JSON.parse(readFileSync(settingsPath, 'utf-8'))).toEqual(wrapped);
       });
 
+      it('coerces JSON booleans to strings (#4630)', () => {
+        const settings = {
+          CLAUDE_MEM_CHROMA_ENABLED: false,
+          CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: true,
+        };
+        writeFileSync(settingsPath, JSON.stringify(settings));
+
+        const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+        expect(result.CLAUDE_MEM_CHROMA_ENABLED).toBe('false');
+        expect(result.CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS).toBe('true');
+      });
+
       // The old viewer wrote claude-mem's keys at the ROOT of a wrapped document,
       // secrets as `****` masks. Reading those copies turned sync off (empty
       // CLOUD_SYNC_*) and handed providers a masked key.
