@@ -50,6 +50,52 @@ function customNativeRoots(cwd: string): string[] {
   return roots;
 }
 
+function bashSearchPattern(tokens: string[], start: number): string | undefined {
+  // A value belonging to a search option is not the positional pattern.
+  // Explicit -e/--regexp patterns also make remaining operands file paths.
+  const command = path.basename(tokens[start]);
+  const shortValues = command === 'rg' ? 'ABCEMdefgjmrtT' : 'ABCDdefm';
+  // BSD grep's optional --context argument uses =NUM; its next token is a pattern.
+  const longValues = new Set(['--after-context', '--before-context', '--max-count', '--file', '--regexp',
+    ...(command === 'rg' ? ['--context', '--glob', '--iglob', '--type', '--type-not', '--type-add', '--type-clear', '--encoding',
+      '--max-depth', '--maxdepth', '--max-columns', '--max-filesize', '--threads', '--sort', '--sortr', '--replace', '--color', '--colors', '--path-separator', '--engine',
+      '--regex-size-limit', '--dfa-size-limit', '--ignore-file', '--pre', '--pre-glob', '--context-separator',
+      '--field-context-separator', '--field-match-separator', '--hostname-bin', '--hyperlink-format', '--generate']
+      : ['--directories', '--devices', '--binary-files', '--include', '--exclude', '--exclude-dir', '--exclude-from', '--label'])]);
+  const patterns: string[] = [];
+  let positional: string | undefined;
+  let optionsEnded = false;
+  let patternFile = false;
+  for (let i = start + 1; i < tokens.length; i++) {
+    const token = tokens[i];
+    if (!optionsEnded && token === '--') { optionsEnded = true; continue; }
+    if (!optionsEnded && token.startsWith('--')) {
+      const equals = token.indexOf('=');
+      const flag = equals < 0 ? token : token.slice(0, equals);
+      if (longValues.has(flag)) {
+        const value = equals < 0 ? tokens[++i] : token.slice(equals + 1);
+        if (flag === '--regexp' && value !== undefined) patterns.push(value);
+        if (flag === '--file') patternFile = true;
+      }
+      continue;
+    }
+    if (!optionsEnded && token.startsWith('-') && token !== '-') {
+      for (let j = 1; j < token.length; j++) {
+        if (!shortValues.includes(token[j])) continue;
+        const value = token.slice(j + 1) || tokens[++i];
+        if (token[j] === 'e' && value !== undefined) patterns.push(value);
+        if (token[j] === 'f') patternFile = true;
+        break;
+      }
+      continue;
+    }
+    positional ??= token;
+  }
+  // The supplemental API accepts one query: joining native OR alternatives makes SQLite require all terms.
+  // Keep the previous first-pattern query until the API supports alternatives.
+  return patterns.length ? patterns[0] : patternFile ? undefined : positional;
+}
+
 export function memorySearchLookup(input: NormalizedHookInput, roots: string[] = []): { query: string; memoryPath?: string } | null {
   const tool = input.toolName || '';
   if (OWN_TOOLS.test(tool)) return null;
@@ -70,7 +116,7 @@ export function memorySearchLookup(input: NormalizedHookInput, roots: string[] =
       if (!tokens.some(value => ['rg', 'grep', 'cat', 'head', 'tail', 'sed'].includes(path.basename(value)))) return null;
       candidates.push(...tokens.filter(value => isMemoryPath(value, input.cwd, roots)));
       const searchAt = tokens.findIndex(value => ['rg', 'grep'].includes(path.basename(value)));
-      if (searchAt >= 0) shellPattern = tokens.slice(searchAt + 1).find(value => !value.startsWith('-') && !isMemoryPath(value, input.cwd, roots));
+      if (searchAt >= 0) shellPattern = bashSearchPattern(tokens, searchAt);
     } catch { return null; }
   } else if (!['Read', 'Grep', 'Glob'].includes(tool) && !/^mcp__.+__(read|view|cat)(?:_file|_files)?$/.test(tool)) return null;
   const candidate = candidates.find(value => isMemoryPath(value, input.cwd, roots));
