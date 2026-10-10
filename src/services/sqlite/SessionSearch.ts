@@ -130,7 +130,7 @@ export class SessionSearch {
     }
 
     const repairingTriggersOnly = hasObservationsFTS && hasSummariesFTS;
-    logger.info('DB', repairingTriggersOnly ? 'Recreating missing FTS5 sync triggers' : 'Creating FTS5 tables');
+    logger.info('DB', repairingTriggersOnly ? 'Converging FTS5 indexes and recreating missing sync triggers' : 'Creating FTS5 tables');
 
     try {
       this.db.transaction(() => {
@@ -139,21 +139,24 @@ export class SessionSearch {
         const currentTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
         const createObservations = !currentTables.some(t => t.name === 'observations_fts');
         const createSummaries = !currentTables.some(t => t.name === 'session_summaries_fts');
-        // Recreate triggers only for indexes that already exist; the backfill
-        // runs solely for a newly created index — reinserting into an existing
-        // external-content index corrupts its delete/update bookkeeping, so a
-        // trigger repair is forward-looking by design (#3609).
+        // Recreate triggers only for indexes that already exist, converging
+        // each one first: rows written while the triggers were gone are absent
+        // from the index, and the _ad/_au triggers would fail every
+        // UPDATE/DELETE of those rows with "database disk image is malformed"
+        // once they re-attach and serve their FTS 'delete' commands (#3609).
         const repairObservations = !createObservations && !this.hasAllFtsTriggers(OBSERVATIONS_FTS_TRIGGER_NAMES);
         const repairSummaries = !createSummaries && !this.hasAllFtsTriggers(SESSION_SUMMARIES_FTS_TRIGGER_NAMES);
         this.createFTSTablesAndTriggers(createObservations, createSummaries);
         if (repairObservations) {
+          this.rebuildFtsIndex('observations_fts');
           this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
         }
         if (repairSummaries) {
+          this.rebuildFtsIndex('session_summaries_fts');
           this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
         }
       }).immediate();
-      logger.info('DB', repairingTriggersOnly ? 'FTS5 sync triggers recreated' : 'FTS5 tables created successfully');
+      logger.info('DB', repairingTriggersOnly ? 'FTS5 indexes converged and sync triggers recreated' : 'FTS5 tables created successfully');
     } catch (error) {
       this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
@@ -167,6 +170,22 @@ export class SessionSearch {
       .prepare(`SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (${placeholders})`)
       .all(...names) as { name: string }[];
     return rows.length === names.length;
+  }
+
+  /**
+   * Converge a surviving external-content index with its content table by
+   * re-deriving the whole index from the content table. Rows written while the
+   * sync triggers were gone (the v7/v9 window, #3609) never reached the index,
+   * and the _ad/_au triggers answer every UPDATE/DELETE of such a row with an
+   * FTS 'delete' command — for a rowid the index does not hold, FTS5 fails the
+   * write with SQLITE_CORRUPT, surfaced by Bun SQLite as "database disk image
+   * is malformed". 'rebuild' is the documented, idempotent resync: no drift
+   * detection, no per-row backfill bookkeeping, and a fully consistent index
+   * converges to itself. One-time cost — the repair only runs while triggers
+   * are missing.
+   */
+  private rebuildFtsIndex(ftsTable: 'observations_fts' | 'session_summaries_fts'): void {
+    this.db.run(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`);
   }
 
   private isFts5Available(): boolean {

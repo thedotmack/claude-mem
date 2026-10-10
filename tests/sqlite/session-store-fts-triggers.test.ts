@@ -6,9 +6,13 @@
 // gone through a rebuild. MATCH searches then silently missed every write
 // after the rebuild, forever. Both loops are covered here: the rebuilds must
 // recreate the triggers when the index survived, and ensureFTSTables must
-// detect missing triggers and recreate them (without a backfill — reinserting
-// into an existing external-content index corrupts its delete/update
-// bookkeeping, so repair is forward-looking by design).
+// detect missing triggers and recreate them. In both places the surviving
+// index is converged ('rebuild') before the triggers are re-attached: rows
+// written during a triggerless window are absent from the index, and the
+// _ad/_au triggers serve an FTS 'delete' command for every old row's
+// UPDATE/DELETE — for a rowid the index does not hold, FTS5 answers
+// "database disk image is malformed" and the write fails, so a repair that
+// skips the rebuild would leave old memories unmodifiable.
 import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync, existsSync } from 'fs';
@@ -190,7 +194,7 @@ describe('FTS sync triggers survive table rebuilds and converge when missing (#3
     return path.join(tempDir, 'claude-mem.db');
   }
 
-  it('a drifted database with both indexes but zero triggers self-heals and indexes new writes without backfilling', () => {
+  it('a drifted database with both indexes but zero triggers self-heals, converges the index and indexes new writes', () => {
     const dbPath = makeTempDbPath();
     const db = new Database(dbPath);
     db.run('PRAGMA foreign_keys = OFF');
@@ -221,13 +225,87 @@ describe('FTS sync triggers survive table rebuilds and converge when missing (#3
     expect(search.searchObservations('walrus')).toHaveLength(1);
     expect(search.searchSessions('quokka')).toHaveLength(1);
 
-    // Repair is forward-looking: the pre-existing rows were never backfilled
-    // into the index. MATCH is the probe that counts here — a bare scan of an
-    // external-content table is answered from the base table, the index is not.
-    expect(ftsMatches(store.db, 'observations_fts', 'prehistoric')).toEqual([]);
-    expect(ftsMatches(store.db, 'session_summaries_fts', 'prehistoric')).toEqual([]);
+    // Repair converges the drift: 'rebuild' re-derives the index from the
+    // content table, so the pre-existing rows are searchable again. MATCH is
+    // the probe that counts here — a bare scan of an external-content table is
+    // answered from the base table, the index is not.
+    expect(ftsMatches(store.db, 'observations_fts', 'prehistoric')).toHaveLength(1);
+    expect(ftsMatches(store.db, 'session_summaries_fts', 'prehistoric')).toHaveLength(1);
     expect(ftsMatches(store.db, 'observations_fts', 'walrus')).toHaveLength(1);
     expect(ftsMatches(store.db, 'session_summaries_fts', 'quokka')).toHaveLength(1);
+
+    store.close();
+  });
+
+  it('a repaired drifted index lets pre-existing rows be updated and deleted (no malformed-index writes)', () => {
+    const dbPath = makeTempDbPath();
+    const db = new Database(dbPath);
+    db.run('PRAGMA foreign_keys = OFF');
+    createBaseTables(db);
+    createFtsTables(db);
+    // The post-rebuild drift: both index tables exist, no sync triggers at all,
+    // and the rows below were written while nothing reached the index.
+    stampVersions(db, [4, 11, 21]);
+    seedObservation(db, 'prehistoric mammoth census');
+    seedSummary(db, 'prehistoric sabertooth ledger');
+    db.run('PRAGMA foreign_keys = ON');
+    db.close();
+
+    const store = new SessionStore(dbPath);
+    const search = new SessionSearch(store.db);
+
+    expect(existingFtsTriggers(store.db)).toEqual(ALL_FTS_TRIGGERS);
+
+    // The P1 on #4634: re-attaching the _ad/_au triggers to a drifted index
+    // used to serve FTS 'delete' commands for rowids the index never held, so
+    // Bun SQLite threw "database disk image is malformed" and rejected every
+    // UPDATE/DELETE of an old memory. Repair must converge the index first.
+    store.db.prepare(
+      "UPDATE observations SET text = 'updated mammoth census' WHERE text LIKE 'prehistoric mammoth%'"
+    ).run();
+    store.db.prepare(
+      "DELETE FROM session_summaries WHERE request LIKE 'prehistoric sabertooth%'"
+    ).run();
+
+    expect(ftsMatches(store.db, 'observations_fts', 'updated')).toHaveLength(1);
+    expect(ftsMatches(store.db, 'observations_fts', 'prehistoric')).toEqual([]);
+    expect(ftsMatches(store.db, 'session_summaries_fts', 'sabertooth')).toEqual([]);
+    expect(search.searchObservations('updated mammoth')).toHaveLength(1);
+    expect(search.searchSessions('sabertooth')).toHaveLength(0);
+
+    store.close();
+  });
+
+  it('the v9 rebuild converges rows written during an earlier triggerless window', () => {
+    const dbPath = makeTempDbPath();
+    const db = new Database(dbPath);
+    db.run('PRAGMA foreign_keys = OFF');
+    createBaseTables(db, { observationsTextNotNull: true });
+    createFtsTables(db);
+    createAllFtsTriggers(db);
+    // v9 must be unstamped so the NOT NULL text column actually rebuilds.
+    stampVersions(db, [4, 7, 11, 21]);
+    seedObservation(db, 'pre-rebuild ibex census');
+    // The historical state this PR repairs: a rebuild dropped the triggers and
+    // nothing recreated them, so this later write never reached the index.
+    db.run('DROP TRIGGER observations_ai');
+    db.run('DROP TRIGGER observations_ad');
+    db.run('DROP TRIGGER observations_au');
+    seedObservation(db, 'triggerless mammoth census');
+    db.run('PRAGMA foreign_keys = ON');
+    db.close();
+
+    const store = new SessionStore(dbPath);
+
+    expect(existingFtsTriggers(store.db)).toEqual(ALL_FTS_TRIGGERS);
+    // The rebuild converges the drift instead of re-attaching triggers to a
+    // stale index: the triggerless-window row is searchable and writable again.
+    expect(ftsMatches(store.db, 'observations_fts', 'mammoth')).toHaveLength(1);
+    store.db.prepare(
+      "UPDATE observations SET text = 'updated mammoth census' WHERE text LIKE 'triggerless mammoth%'"
+    ).run();
+    expect(ftsMatches(store.db, 'observations_fts', 'updated')).toHaveLength(1);
+    expect(ftsMatches(store.db, 'observations_fts', 'ibex')).toHaveLength(1);
 
     store.close();
   });

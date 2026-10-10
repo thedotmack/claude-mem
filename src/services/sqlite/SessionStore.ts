@@ -1535,15 +1535,20 @@ export class SessionStore {
    * table rebuild untouched) would otherwise leave every later write unindexed
    * with no error — MATCH searches silently miss them forever (#3609). Re-run
    * the sync-trigger SQL whenever the index is still present; the SQL is
-   * CREATE TRIGGER IF NOT EXISTS, so this is idempotent, and it deliberately
-   * never backfills — reinserting into an existing external-content index
-   * corrupts its delete/update bookkeeping (SessionSearch.createFTSTablesAndTriggers).
+   * CREATE TRIGGER IF NOT EXISTS, so this is idempotent. The index is rebuilt
+   * from the content table first (same convergence as
+   * SessionSearch.ensureFTSTables): a database can arrive at a rebuild with
+   * rows that an earlier triggerless window never indexed, and once the
+   * triggers re-attach, the _ad/_au FTS 'delete' commands for those rowids
+   * fail every UPDATE/DELETE with "database disk image is malformed".
    */
   private recreateFtsTriggersIfIndexed(table: 'observations' | 'session_summaries'): void {
+    const ftsTable = `${table}_fts`;
     const hasFTS = (this.db
       .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
-      .all(`${table}_fts`) as { name: string }[]).length > 0;
+      .all(ftsTable) as { name: string }[]).length > 0;
     if (!hasFTS) return;
+    this.db.run(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`);
     this.db.run(table === 'observations' ? OBSERVATIONS_FTS_TRIGGERS_SQL : SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
   }
 
