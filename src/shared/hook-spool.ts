@@ -186,6 +186,9 @@ function parseHookSpoolEntry(raw: string): HookSpoolEntry | { corruptReason: str
   if (payload === null || typeof payload !== 'object' || !isNonEmptyString(payload.contentSessionId)) {
     return { corruptReason: 'payload missing contentSessionId' };
   }
+  if (payload.platformSource !== undefined && payload.platformSource !== null && typeof payload.platformSource !== 'string') {
+    return { corruptReason: 'payload platformSource is not a string' };
+  }
   const kind = candidate.kind as HookSpoolKind;
   if ((kind === 'observation' || kind === 'file_edit') && !isNonEmptyString(payload.toolName)) {
     return { corruptReason: 'observation payload missing toolName' };
