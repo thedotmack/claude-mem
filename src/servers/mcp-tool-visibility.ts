@@ -27,3 +27,22 @@ export function getAdvertisedMcpToolsForRuntime<T extends { name: string }>(
   });
   return allTools.filter((tool) => !serverBetaOnlyToolNameSet.has(tool.name));
 }
+
+export const WORK_STATE_TOOL_NAMES = ['work_state_write', 'work_state_read'] as const;
+
+const workStateToolNameSet = new Set<string>(WORK_STATE_TOOL_NAMES);
+
+/**
+ * With CLAUDE_MEM_WORK_STATE_ENABLED=false the work_state_* tools are not
+ * advertised: their descriptions ask the agent to use them as its canonical
+ * to-do list, which a host that tracks work its own way does not want (#4606).
+ */
+export function withoutDisabledWorkStateTools<T extends { name: string }>(
+  advertisedTools: readonly T[],
+  workStateEnabled: boolean
+): T[] {
+  if (workStateEnabled) {
+    return [...advertisedTools];
+  }
+  return advertisedTools.filter((tool) => !workStateToolNameSet.has(tool.name));
+}

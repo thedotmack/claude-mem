@@ -4,6 +4,8 @@ import { join } from 'node:path';
 import {
   getAdvertisedMcpToolsForRuntime,
   SERVER_BETA_ONLY_TOOL_NAMES,
+  withoutDisabledWorkStateTools,
+  WORK_STATE_TOOL_NAMES,
 } from '../../src/servers/mcp-tool-visibility.js';
 
 const allTools = [
@@ -19,6 +21,8 @@ const allTools = [
   { name: 'memory_search', description: '', inputSchema: {} },
   { name: 'memory_context', description: '', inputSchema: {} },
   { name: 'smart_search', description: '', inputSchema: {} },
+  { name: 'work_state_write', description: '', inputSchema: {} },
+  { name: 'work_state_read', description: '', inputSchema: {} },
 ];
 
 describe('MCP runtime-aware tool visibility', () => {
@@ -56,5 +60,23 @@ describe('MCP runtime-aware tool visibility', () => {
 
     expect(mcpServerSrc).toContain('getAdvertisedMcpToolsForRuntime(tools, selectRuntime())');
     expect(mcpServerSrc).not.toContain('tools.map(tool => ({');
+  });
+
+  it('hides the work_state tools when CLAUDE_MEM_WORK_STATE_ENABLED=false (#4606)', () => {
+    const names = new Set(withoutDisabledWorkStateTools(getAdvertisedMcpToolsForRuntime(allTools, 'worker'), false).map(tool => tool.name));
+
+    for (const toolName of WORK_STATE_TOOL_NAMES) {
+      expect(names.has(toolName)).toBe(false);
+    }
+    expect(names.has('search')).toBe(true);
+    expect(names.has('smart_search')).toBe(true);
+  });
+
+  it('keeps the work_state tools while work state is on', () => {
+    const names = new Set(withoutDisabledWorkStateTools(getAdvertisedMcpToolsForRuntime(allTools, 'worker'), true).map(tool => tool.name));
+
+    for (const toolName of WORK_STATE_TOOL_NAMES) {
+      expect(names.has(toolName)).toBe(true);
+    }
   });
 });
