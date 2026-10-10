@@ -22,6 +22,13 @@ export function isDirectChild(filePath: string, folderPath: string): boolean {
   const fileDir = fileSegments.slice(0, -1).join('/'); 
   const fileName = fileSegments[fileSegments.length - 1]; 
 
+  // Tool evidence may be absolute while the caller names a project-relative folder.
+  const absolutePath = /^([A-Za-z]:)?\//;
+  if (!absolutePath.test(normFolder) && absolutePath.test(normFile)
+      && normFolder !== '' && fileDir.endsWith('/' + normFolder)) {
+    return fileName !== '';
+  }
+
   if (normFolder.endsWith('/' + fileDir) || normFolder === fileDir) {
     return !fileName.includes('/');
   }
