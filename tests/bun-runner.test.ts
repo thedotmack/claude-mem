@@ -268,4 +268,8 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
     expect(shellAssignments.length).toBe(1);
     expect(source).not.toMatch(/if \(IS_WINDOWS\) \{\s*const quote/);
   });
+
+  it('sets cwd to tmpdir() to avoid inheriting project tsconfig.json warnings (#4628)', () => {
+    expect(source).toMatch(/cwd:\s*tmpdir\(\)/);
+  });
 });

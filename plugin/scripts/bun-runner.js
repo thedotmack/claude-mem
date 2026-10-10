@@ -2,7 +2,7 @@
 import { spawnSync, spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -168,7 +168,8 @@ const stdinData = await collectStdin();
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
-  env: process.env
+  env: process.env,
+  cwd: tmpdir()
 };
 
 let spawnCmd = bunPath;
