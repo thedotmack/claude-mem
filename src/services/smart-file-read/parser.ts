@@ -1281,14 +1281,15 @@ export function matchScore(text: string, queryParts: string[]): number {
     } else {
       let ti = 0;
       let matched = 0;
-      for (const ch of part) {
+      const codePoints = [...part];
+      for (const ch of codePoints) {
         const idx = text.indexOf(ch, ti);
         if (idx !== -1) {
           matched++;
-          ti = idx + 1;
+          ti = idx + ch.length;
         }
       }
-      if (matched === part.length) {
+      if (matched === codePoints.length) {
         score += 1;
       }
     }
