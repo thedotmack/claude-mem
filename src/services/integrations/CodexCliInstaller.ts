@@ -235,10 +235,27 @@ function registerCodexMarketplace(marketplaceRoot: string, run = runCodex): void
   run(['plugin', 'marketplace', 'add', marketplaceRoot]);
 }
 
+/** A header's trailing comment is not part of its name; quoted hashes are. */
+function stripTomlComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (quote !== null) {
+      if (quote === '"' && character === '\\') index++;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '#') {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');
-  const headerIndex = lines.findIndex((line) => line.trim() === header);
+  const headerIndex = lines.findIndex((line) => stripTomlComment(line).trim() === header);
 
   if (headerIndex === -1) {
     const trimmed = content.trimEnd();
@@ -275,7 +292,7 @@ export function setTomlFeatureEnabled(content: string, featureName: string, enab
 }
 
 function normalizeTomlHeader(line: string): string | null {
-  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
+  const match = stripTomlComment(line).trim().match(/^\[([^\]]+)\]\s*$/);
   if (!match) return null;
   return match[1].replace(/\s+/g, '').replace(/"/g, '');
 }
