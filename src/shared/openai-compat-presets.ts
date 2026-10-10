@@ -89,6 +89,16 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     hint: 'EU-hosted gateway. One Opper key for pooled model ids such as claude-haiku-4-5; a provider/model id pins one route.',
   },
   {
+    id: 'atlascloud',
+    label: 'Atlas Cloud (atlascloud.ai)',
+    baseUrl: 'https://api.atlascloud.ai/v1',
+    // A cheap, fast model for the same reason as NVIDIA's default: extraction
+    // is high volume. Ids are vendor-prefixed and passed verbatim.
+    defaultModel: 'deepseek-ai/deepseek-v4-flash',
+    requiresApiKey: true,
+    hint: 'One Atlas Cloud key for vendor-prefixed model ids such as deepseek-ai/deepseek-v4-flash or zai-org/glm-5.3.',
+  },
+  {
     id: 'deepseek',
     label: 'DeepSeek',
     baseUrl: 'https://api.deepseek.com/v1',
