@@ -91,7 +91,9 @@ function bashSearchPattern(tokens: string[], start: number): string | undefined 
     }
     positional ??= token;
   }
-  return patterns.length ? patterns.join(' ') : patternFile ? undefined : positional;
+  // The supplemental API accepts one query: joining native OR alternatives makes SQLite require all terms.
+  // Keep the previous first-pattern query until the API supports alternatives.
+  return patterns.length ? patterns[0] : patternFile ? undefined : positional;
 }
 
 export function memorySearchLookup(input: NormalizedHookInput, roots: string[] = []): { query: string; memoryPath?: string } | null {
