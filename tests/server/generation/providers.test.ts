@@ -238,6 +238,12 @@ describe('buildServerGenerationPrompt', () => {
     expect(result.hadPrivateContent).toBe(true);
   });
 
+  it('renders an object payload as compact JSON, escaping only &, < and >', () => {
+    const { prompt } = buildServerGenerationPrompt(makeContext({ payload: { cmd: 'echo "a<b" && ls', n: 1 } }));
+    expect(prompt).toContain(String.raw`{"cmd":"echo \"a&lt;b\" &amp;&amp; ls","n":1}`);
+    expect(prompt).not.toContain('&quot;');
+  });
+
   it('sends the folder label but none of the ids the model never needs', () => {
     const result = buildServerGenerationPrompt(makeContext({ serverSessionId: 'session-x' }));
     expect(result.prompt).toContain('<project_name>demo</project_name>');
