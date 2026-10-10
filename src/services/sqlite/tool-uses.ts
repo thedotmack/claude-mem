@@ -454,6 +454,26 @@ export function countToolUses(
     conditions.push('content_session_id = ?');
     params.push(filters.contentSessionId);
   }
+  if (filters.memorySessionId) {
+    conditions.push('memory_session_id = ?');
+    params.push(filters.memorySessionId);
+  }
+  if (typeof filters.sessionDbId === 'number') {
+    conditions.push('session_db_id = ?');
+    params.push(filters.sessionDbId);
+  }
+  if (filters.toolName) {
+    const names = Array.isArray(filters.toolName) ? filters.toolName : [filters.toolName];
+    if (names.length > 0) {
+      conditions.push(`tool_name IN (${names.map(() => '?').join(',')})`);
+      params.push(...names);
+    }
+  }
+  const platform = mapPlatformFilter(filters.platformSource);
+  if (platform) {
+    conditions.push(platform.clause);
+    params.push(platform.param);
+  }
   if (filters.agentId) {
     conditions.push('agent_id = ?');
     params.push(filters.agentId);
