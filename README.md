@@ -201,6 +201,17 @@ Or install from the plugin marketplace inside Claude Code:
 
 Restart Claude Code. Context from previous sessions will automatically appear in new sessions.
 
+Or install the native Qoder plugin:
+
+```bash
+qoder plugins marketplace add thedotmack/claude-mem
+qoder plugins install claude-mem@thedotmack
+```
+
+Qoder loads the same memory skills and MCP search server. Its dedicated lifecycle descriptor uses the existing structured hook adapter because Qoder and Codex expose the same event payload and output contract. On the first Qoder session, the SessionStart launcher runs the existing dependency completeness check before starting memory; Bun must already be available as described in System Requirements. Verify a local checkout with `qoder plugins validate .`.
+
+For Qoder IDE, run `git archive --format=zip --output=claude-mem-qoder.zip HEAD` from a built checkout, then import the archive from **Extensions → Plugins → Add Plugins → Upload Plugin**.
+
 > **Note:** Claude-Mem is also published on npm, but `npm install -g claude-mem` installs the **SDK/library only** — it does not register the plugin hooks or set up the worker service. Always install via `npx claude-mem install` or the `/plugin` commands above.
 
 ### 🦞 OpenClaw Gateway
@@ -350,7 +361,7 @@ Make sure Node.js and npm are installed and added to your PATH. Download the lat
 
 Settings are managed in `~/.claude-mem/settings.json` (auto-created with defaults on first run). Configure AI model, worker port, data directory, log level, and context injection settings.
 
-To include observations from every harness in Claude Code and Codex SessionStart context, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in that file, or enable **Include all sources at session start** in the viewer settings. The default is `"false"`, which limits startup context to the current harness. The observation count limit still applies across the selected sources.
+To include observations from every harness in Claude Code and Codex-compatible SessionStart context, including Qoder, set `"CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES": "true"` in that file, or enable **Include all sources at session start** in the viewer settings. The default is `"false"`, which limits startup context to the current hook namespace. The observation count limit still applies across the selected sources.
 
 See the **[Configuration Guide](https://docs.claude-mem.ai/configuration)** for all available settings and examples.
 

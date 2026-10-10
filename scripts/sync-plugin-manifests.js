@@ -10,6 +10,8 @@ const rootDir = path.resolve(__dirname, '..');
 const packageJsonPath = path.join(rootDir, 'package.json');
 const codexPluginPath = path.join(rootDir, '.codex-plugin', 'plugin.json');
 const bundledCodexPluginPath = path.join(rootDir, 'plugin', '.codex-plugin', 'plugin.json');
+const qoderPluginPath = path.join(rootDir, '.qoder-plugin', 'plugin.json');
+const bundledQoderPluginPath = path.join(rootDir, 'plugin', '.qoder-plugin', 'plugin.json');
 const claudePluginPath = path.join(rootDir, '.claude-plugin', 'plugin.json');
 const bundledClaudePluginPath = path.join(rootDir, 'plugin', '.claude-plugin', 'plugin.json');
 const cursorPluginPaths = [
@@ -96,7 +98,7 @@ function normalizeRepositoryUrl(repository) {
 }
 
 function main() {
-  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, claudePluginPath, bundledClaudePluginPath, ...cursorPluginPaths]) {
+  for (const filePath of [packageJsonPath, codexPluginPath, bundledCodexPluginPath, qoderPluginPath, bundledQoderPluginPath, claudePluginPath, bundledClaudePluginPath, ...cursorPluginPaths]) {
     if (!fs.existsSync(filePath)) {
       console.error(`Missing required file: ${filePath}`);
       process.exit(1);
@@ -106,12 +108,16 @@ function main() {
   const pkg = readJson(packageJsonPath);
   const codexPlugin = readJson(codexPluginPath);
   const bundledCodexPlugin = readJson(bundledCodexPluginPath);
+  const qoderPlugin = readJson(qoderPluginPath);
+  const bundledQoderPlugin = readJson(bundledQoderPluginPath);
   const claudePlugin = readJson(claudePluginPath);
   const bundledClaudePlugin = readJson(bundledClaudePluginPath);
   const cursorPlugins = cursorPluginPaths.map(readJson);
 
   writeJson(codexPluginPath, syncCodexPlugin(codexPlugin, pkg));
   writeJson(bundledCodexPluginPath, syncCodexPlugin(bundledCodexPlugin, pkg));
+  writeJson(qoderPluginPath, syncCursorPlugin(qoderPlugin, pkg));
+  writeJson(bundledQoderPluginPath, syncCursorPlugin(bundledQoderPlugin, pkg));
   writeJson(claudePluginPath, syncClaudePlugin(claudePlugin, pkg));
   writeJson(bundledClaudePluginPath, syncClaudePlugin(bundledClaudePlugin, pkg));
   cursorPluginPaths.forEach((filePath, index) => writeJson(filePath, syncCursorPlugin(cursorPlugins[index], pkg)));
