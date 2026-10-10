@@ -1,0 +1,15 @@
+{
+  "name": "claude-mem",
+  "version": "13.35.0",
+  "description": "Persistent memory and context compression for Qoder sessions.",
+  "author": {
+    "name": "Alex Newman",
+    "url": "https://github.com/thedotmack"
+  },
+  "homepage": "https://github.com/thedotmack/claude-mem#readme",
+  "repository": "https://github.com/thedotmack/claude-mem",
+  "license": "Apache-2.0",
+  "skills": "./plugin/skills/",
+  "mcpServers": "./plugin/qoder.mcp.json",
+  "hooks": "./plugin/hooks/qoder-repo-hooks.json"
+}
