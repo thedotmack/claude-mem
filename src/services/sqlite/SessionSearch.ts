@@ -269,8 +269,8 @@ export class SessionSearch {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
       const fileConditions = files.map(() => {
         return `(
-          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ? ESCAPE '\\')
+          EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_modified`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
@@ -605,7 +605,7 @@ export class SessionSearch {
       try {
         const files = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => isDirectChild(f, folderPath));
+          return files.some(f => typeof f === 'string' && isDirectChild(f, folderPath));
         }
       } catch (error) {
         logger.debug('DB', `Failed to parse files JSON for observation ${obs.id}`, undefined, error instanceof Error ? error : undefined);
@@ -622,7 +622,7 @@ export class SessionSearch {
       try {
         const files = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => isDirectChild(f, folderPath));
+          return files.some(f => typeof f === 'string' && isDirectChild(f, folderPath));
         }
       } catch (error) {
         logger.debug('DB', `Failed to parse files JSON for session summary ${session.id}`, undefined, error instanceof Error ? error : undefined);
@@ -663,10 +663,15 @@ export class SessionSearch {
     return patterns;
   }
 
+  /** Invalid persisted file lists are absent evidence, rather than a query-wide JSON error. */
+  private static fileArrayJson(column: string): string {
+    return `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
+  }
+
   /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
   private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
-    const anyPattern = Array.from({ length: patternCount }, () => "value LIKE ? ESCAPE '\\'").join(' OR ');
-    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
+    const anyPattern = Array.from({ length: patternCount }, () => "type = 'text' AND value LIKE ? ESCAPE '\\'").join(' OR ');
+    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(column)}) WHERE ${anyPattern})`).join(' OR ')})`;
   }
 
   findByFile(filePath: string, options: SearchOptions = {}): {
