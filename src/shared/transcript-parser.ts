@@ -170,6 +170,7 @@ function* parseJsonlLinesBackward(content: string): Generator<any> {
       // flood the log with noise for a documented, tolerated condition.
       continue;
     }
+    if (line === null || typeof line !== 'object' || Array.isArray(line)) continue;
     yield line;
   }
 }
