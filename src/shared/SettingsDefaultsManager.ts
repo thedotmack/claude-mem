@@ -45,6 +45,25 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
   'xiaomi/mimo-v2-flash:free',
 ]);
 
+/**
+ * Every SettingsDefaults key is declared `string`, because that is how every
+ * writer seeds it and how every gate reads it: the Chroma gates test
+ * `CLAUDE_MEM_CHROMA_ENABLED !== 'false'`, not `!== false`. settings.json is
+ * hand-editable JSON, though, so a user who writes `"CLAUDE_MEM_CHROMA_ENABLED":
+ * false` (unquoted) puts the JSON boolean there, which is `!== 'false'` and
+ * leaves chroma running with nothing reporting that the setting was ignored
+ * (#4630).
+ *
+ * Render a JSON boolean as the string the key declares so both spellings mean
+ * the same thing to every consumer. Numbers are deliberately left alone: the
+ * deadline migrations treat a hand-written number as the user choosing it, and
+ * anything else is passed through untouched so this never rewrites a value it
+ * does not understand.
+ */
+function coercePersistedSettingValue(value: unknown): unknown {
+  return typeof value === 'boolean' ? String(value) : value;
+}
+
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
   const model = flatSettings.CLAUDE_MEM_OPENROUTER_MODEL;
   if (typeof model !== 'string' || !RETIRED_OPENROUTER_DEFAULT_MODELS.has(model.trim())) {
@@ -792,7 +811,7 @@ export class SettingsDefaultsManager {
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+          result[key] = coercePersistedSettingValue(flatSettings[key]) as string;
         }
       }
 
