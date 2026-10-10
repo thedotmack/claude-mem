@@ -107,7 +107,7 @@ export async function* readSseEvents(
     if (lineBytes.length === 0) {
       const hasEvent = eventName !== null || dataLines !== null;
       const dispatched: SseEvent | null = hasEvent
-        ? { event: eventName ?? 'message', data: (dataLines ?? []).join('\n'), ...(eventId !== undefined ? { id: eventId } : {}) }
+        ? { event: eventName || 'message', data: (dataLines ?? []).join('\n'), ...(eventId !== undefined ? { id: eventId } : {}) }
         : null;
       eventName = null; eventId = undefined; dataLines = null; eventBytes = 0;
       return dispatched;
