@@ -118,10 +118,10 @@ export async function verifyRestartedWorker(
 
   while (Date.now() < deadline) {
     try {
-      const poll = await pollHealthOnce(port, requestTimeoutMs, oldPid, expectedVersion);
+      const poll = await pollHealthOnce(port, Math.max(1, Math.min(requestTimeoutMs, deadline - Date.now())), oldPid, expectedVersion);
       lastObserved = poll.lastObserved;
       lastPollSawHealth = true;
-      if (poll.verified) {
+      if (poll.verified && Date.now() < deadline) {
         return { ok: true, pid: poll.verified.pid, version: poll.verified.version };
       }
     } catch (error) {
@@ -130,7 +130,8 @@ export async function verifyRestartedWorker(
       lastObserved = `connection error: ${err.message}`;
       lastPollSawHealth = false;
     }
-    await new Promise(resolve => setTimeout(resolve, pollIntervalMs));
+    const remainingMs = deadline - Date.now();
+    if (remainingMs > 0) await new Promise(resolve => setTimeout(resolve, Math.min(pollIntervalMs, remainingMs)));
   }
 
   return { ok: false, lastObserved, lastPollSawHealth };
