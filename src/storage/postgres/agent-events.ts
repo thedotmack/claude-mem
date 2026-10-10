@@ -100,7 +100,7 @@ export class PostgresAgentEventsRepository {
         platformSource,
         // Opt-in secret redaction (#2616) for the raw event body, at the one
         // write every ingest path goes through.
-        JSON.stringify(redactJsonStrings(input.payload ?? {})),
+        JSON.stringify(redactJsonStrings(input.payload === undefined ? {} : input.payload)),
         JSON.stringify(input.metadata ?? {}),
         new Date(input.occurredAt)
       ]
@@ -179,7 +179,7 @@ export function buildAgentEventIdempotencyKey(input: {
     input.contentSessionId ?? input.serverSessionId ?? null,
     input.eventType,
     new Date(input.occurredAt).toISOString(),
-    canonicalJson(input.payload ?? {})
+    canonicalJson(input.payload === undefined ? {} : input.payload)
   ])}`;
 }
 

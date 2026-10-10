@@ -58,7 +58,7 @@ export class AgentEventsRepository {
       event.eventType,
       // Raw event bodies are stored as-is, so opt-in secret redaction (#2616)
       // applies here, at the one write every ingest path goes through.
-      JSON.stringify(redactJsonStrings(event.payload ?? {})),
+      JSON.stringify(redactJsonStrings(event.payload === undefined ? {} : event.payload)),
       event.contentSessionId ?? null,
       event.memorySessionId ?? null,
       event.occurredAtEpoch,
