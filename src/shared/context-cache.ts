@@ -152,6 +152,16 @@ export interface CachedContextFile {
   placeholderNonce: string;
 }
 
+function isContextCacheKeys(value: unknown): value is ContextCacheKeys {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const keys = value as Partial<ContextCacheKeys>;
+  return Array.isArray(keys.projects)
+    && keys.projects.every(project => typeof project === 'string')
+    && typeof keys.platformSource === 'string'
+    && typeof keys.colors === 'boolean'
+    && (keys.cwd === undefined || typeof keys.cwd === 'string');
+}
+
 /** `body` must have been rendered in this process (its placeholders carry this process's nonce). */
 export function writeContextCache(keys: ContextCacheKeys, body: string, renderedAtEpochMs: number): void {
   const file: CachedContextFile = { body, renderedAtEpochMs, keys, placeholderNonce: CONTEXT_PLACEHOLDER_NONCE };
@@ -174,13 +184,16 @@ export function readContextCache(keys: ContextCacheKeys, nowEpochMs: number): Ca
   if (!existsSync(filePath)) return null;
   let parsed: Partial<CachedContextFile>;
   try {
-    parsed = JSON.parse(readFileSync(filePath, 'utf-8')) as Partial<CachedContextFile>;
+    const value: unknown = JSON.parse(readFileSync(filePath, 'utf-8'));
+    parsed = value && typeof value === 'object' && !Array.isArray(value)
+      ? value as Partial<CachedContextFile>
+      : {};
   } catch (error) {
     logger.warn('HOOK', 'Context cache file unreadable; using the live path', { filePath },
       error instanceof Error ? error : new Error(String(error)));
     return null;
   }
-  if (typeof parsed.body !== 'string' || typeof parsed.renderedAtEpochMs !== 'number' || !parsed.keys
+  if (typeof parsed.body !== 'string' || typeof parsed.renderedAtEpochMs !== 'number' || !Number.isFinite(parsed.renderedAtEpochMs) || !isContextCacheKeys(parsed.keys)
     || typeof parsed.placeholderNonce !== 'string' || !PLACEHOLDER_NONCE_PATTERN.test(parsed.placeholderNonce)) {
     logger.warn('HOOK', 'Context cache file malformed; using the live path', { filePath });
     return null;
