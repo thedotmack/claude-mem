@@ -39,7 +39,13 @@ export function parseReinforcementDates(raw: string | null | undefined): string[
   try {
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.filter((d): d is string => typeof d === 'string' && d.length > 0);
+    return parsed.filter((d): d is string => {
+      if (typeof d !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(d)) return false;
+      const epoch = Date.parse(d);
+      // Date.parse normalizes impossible days such as February 30. They are
+      // corrupt history, not a fresh presentation with ageDays' fallback age.
+      return Number.isFinite(epoch) && new Date(epoch).toISOString().slice(0, 10) === d;
+    });
   } catch {
     // [ANTI-PATTERN IGNORED]: a hand-edited or corrupt column must not break ranking; an unreadable history ranks as no reinforcement.
     return [];
