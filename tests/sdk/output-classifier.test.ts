@@ -116,6 +116,26 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('Request failed with 403')).toBe(true);
   });
 
+  it('detects the organization-disabled subscription notice (#4677)', () => {
+    // Returned as the whole assistant response when the account's org has
+    // disabled Claude subscription access for Claude Code.
+    const notice =
+      'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+    expect(isAuthFailureObserverOutput(notice)).toBe(true);
+    // Disjoint from the quota and transport detectors: transport defers to
+    // auth, and quota must not claim an account-policy refusal.
+    expect(isQuotaLimitedObserverOutput(notice)).toBe(false);
+    expect(isTransportFailureObserverOutput(notice)).toBe(false);
+  });
+
+  it('does not treat prose narrating an organization policy as an auth failure', () => {
+    expect(
+      isAuthFailureObserverOutput(
+        'The admin explained that your organization has disabled Claude subscription access for Claude Code, so nothing was recorded.',
+      ),
+    ).toBe(false);
+  });
+
   it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {
     expect(isAuthFailureObserverOutput('<observation><title>HTTP 401</title></observation>')).toBe(false);
     expect(isAuthFailureObserverOutput('The request returned 500 and produced no XML.')).toBe(false);

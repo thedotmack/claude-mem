@@ -239,6 +239,15 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     // plus its own /login remediation.
     /^not logged in\b\s*[.!]?\s*$/.test(text) ||
     /^not logged in\b\s*[·|:\-–—]\s*(?:please\s+)?run\s+\/login\b\s*[.!]?\s*$/.test(text) ||
+    // The org-policy refusal, returned as the whole response when the
+    // account's organization has disabled subscription access (#4677):
+    //   "Your organization has disabled Claude subscription access for
+    //    Claude Code · Use an Anthropic API key instead, or ask your admin
+    //    to enable access"
+    // Anchored at the start with both halves required — the organization
+    // subject and the disabled subscription access — so prose that merely
+    // narrates the same policy mid-sentence stays unmatched.
+    /^your organization has disabled\b.{0,40}\bsubscription access\b/.test(text) ||
     // The remediation half of the same line: "<state> · Please run /login".
     // Required to END the response, so it is the CLI telling the user what to
     // do rather than an observation quoting the instruction — the existing
