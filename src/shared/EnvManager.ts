@@ -279,8 +279,9 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   // env is built for; it is the price of keeping transcripts out of the user
   // visible ~/.claude/projects. Migration note: transcripts already written
   // under ~/.claude/projects stay there, so a knowledge corpus session_id
-  // primed before enabling this misses its resume once and recovers via the
-  // existing reprime (fresh session) path; the observer generator never
+  // primed before enabling this misses its resume once — its next query
+  // errors until the corpus is re-primed (the existing reprime action,
+  // fresh session); the observer generator never
   // resumes (fresh start per generation, --no-session-persistence per #2909).
   const sdkTranscriptConfigDir = configDirSettings.CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR;
   if (sdkTranscriptConfigDir?.trim()) {
