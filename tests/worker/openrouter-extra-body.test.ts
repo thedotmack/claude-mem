@@ -173,8 +173,19 @@ describe('resolveOpenRouterConfig reads CLAUDE_MEM_OPENROUTER_EXTRA_BODY from se
     expect(request().temperature).toBe(0);
   });
 
+  it('reads numeric temperatures from the settings file, including zero', () => {
+    for (const temperature of [0.7, 0, 2]) {
+      writeSettings({
+        CLAUDE_MEM_OPENROUTER_BASE_URL: 'http://localhost:1234/v1',
+        CLAUDE_MEM_OPENROUTER_TEMPERATURE: temperature,
+        CLAUDE_MEM_OPENROUTER_EXTRA_BODY: { temperature: 0.9 },
+      });
+      expect(buildOpenRouterRequestBody({ ...resolveOpenRouterConfig(settingsPath), messages: MESSAGES }).temperature).toBe(temperature);
+    }
+  });
+
   it('ignores blank and invalid temperatures, preserving the existing default', () => {
-    for (const temperature of ['', ' ', 'invalid', '-1', '2.1', 'Infinity']) {
+    for (const temperature of ['', ' ', 'invalid', '-1', '2.1', 'Infinity', -0.1, 2.1, true, false, null, [], [0.7], {}, { toString: 0 }, { toString: 0, valueOf: 0 }]) {
       writeSettings({ CLAUDE_MEM_OPENROUTER_TEMPERATURE: temperature });
       expect(buildOpenRouterRequestBody({ ...resolveOpenRouterConfig(settingsPath), messages: MESSAGES }).temperature).toBe(0.3);
     }
