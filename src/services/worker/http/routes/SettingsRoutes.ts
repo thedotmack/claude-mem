@@ -1,4 +1,5 @@
 
+import { parseOpenRouterTemperature } from '../../../../shared/openrouter-temperature.js';
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
 import path from 'path';
@@ -252,6 +253,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OPENROUTER_API_KEY',
       'CLAUDE_MEM_OPENROUTER_API_KEYS',
       'CLAUDE_MEM_OPENROUTER_BASE_URL',
+      'CLAUDE_MEM_OPENROUTER_TEMPERATURE',
       'CLAUDE_MEM_OPENROUTER_MODEL',
       'CLAUDE_MEM_OPENROUTER_SITE_URL',
       'CLAUDE_MEM_OPENROUTER_APP_NAME',
@@ -493,6 +495,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!['narrative', 'facts'].includes(settings.CLAUDE_MEM_CONTEXT_FULL_FIELD)) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_FIELD must be "narrative" or "facts"' };
       }
+    }
+
+    const temperature = settings.CLAUDE_MEM_OPENROUTER_TEMPERATURE;
+    if (temperature !== undefined && temperature !== '' && parseOpenRouterTemperature(temperature) === undefined) {
+      return { valid: false, error: 'CLAUDE_MEM_OPENROUTER_TEMPERATURE must be empty or a number between 0 and 2' };
     }
 
     if (settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT

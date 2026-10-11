@@ -65,6 +65,15 @@ describe('a viewer save is judged on what it changes', () => {
     });
   }
 
+  it('persists the temperature from a viewer save and reads it back', () => {
+    writeFileSync(settingsPath, JSON.stringify({}));
+    const routes = handlers();
+    const saved = call(routes['POST /api/settings'], { CLAUDE_MEM_OPENROUTER_TEMPERATURE: '0.7' });
+    expect(saved.status()).toBe(200);
+    expect(JSON.parse(readFileSync(settingsPath, 'utf-8')).CLAUDE_MEM_OPENROUTER_TEMPERATURE).toBe('0.7');
+    expect(call(routes['GET /api/settings']).payload.CLAUDE_MEM_OPENROUTER_TEMPERATURE).toBe('0.7');
+  });
+
   it('still refuses the same value when this save sets it', () => {
     writeFileSync(settingsPath, JSON.stringify({}));
     const routes = handlers();

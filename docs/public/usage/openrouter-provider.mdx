@@ -79,6 +79,7 @@ All free models support:
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high` | — | Optional: reasoning effort for openrouter.ai models. `none` turns reasoning off, the fix for a model that spends the output budget thinking and answers with nothing. Unset sends nothing. Never sent to custom base URLs or the claude-mem observer |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
+| `CLAUDE_MEM_OPENROUTER_TEMPERATURE` | Number, 0–2 | Unset (0.3) | Sampling temperature for OpenRouter and custom endpoints. Editable in the viewer, settings file, or environment |
 | `CLAUDE_MEM_OPENROUTER_EXTRA_BODY` | JSON object | — | Optional: extra request fields (see [Extra request fields](#extra-request-fields)). Settings file or environment only |
 
 ### Using the Settings UI
@@ -156,6 +157,20 @@ For example, IO Intelligence:
 ```
 
 Model ids are org/name pairs from the [IO Intelligence model list](https://api.intelligence.io.solutions/api/v1/models), for example `deepseek-ai/DeepSeek-R1-0528` or `zai-org/GLM-4.6`. A trailing slash on the base URL is fine; `/chat/completions` is appended automatically.
+
+### Temperature
+
+Set **Temperature** beside **OpenRouter Base URL** in the viewer, or add this to `~/.claude-mem/settings.json`:
+
+```json
+{
+  "CLAUDE_MEM_OPENROUTER_TEMPERATURE": "0.7"
+}
+```
+
+You can also set `CLAUDE_MEM_OPENROUTER_TEMPERATURE=0.7` in the worker environment. The environment overrides the settings file. Restart the worker so active observation sessions use the new configuration.
+
+Values range from `0` to `2`, inclusive. Leaving the setting blank preserves the default `0.3` or an existing `temperature` in `CLAUDE_MEM_OPENROUTER_EXTRA_BODY`. An explicit temperature setting takes precedence over that extra-body field. The settings API rejects invalid values; invalid file or environment values are ignored. The managed claude-mem observer gateway retains its own request policy.
 
 ### Extra request fields
 

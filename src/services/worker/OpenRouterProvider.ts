@@ -1,4 +1,5 @@
 
+import { parseOpenRouterTemperature } from '../../shared/openrouter-temperature.js';
 import { getCredential } from '../../shared/EnvManager.js';
 import { isOpenRouterApiUrl, resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_TITLE } from '../../shared/openrouter-attribution.js';
@@ -680,7 +681,9 @@ export function resolveOpenRouterConfig(
 
   // Off the gateway only: the gateway sets its own request policy on traffic
   // it pays for (the request body itself drops it there too).
-  const extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+  let extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+  const temperature = parseOpenRouterTemperature(settings.CLAUDE_MEM_OPENROUTER_TEMPERATURE);
+  if (temperature !== undefined) extraBody = { ...extraBody, temperature };
   const reasoningEffort = resolveReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
   if (reasoningEffort && extraBody && 'reasoning' in extraBody && !warnedReasoningOverlap) {
     warnedReasoningOverlap = true;
