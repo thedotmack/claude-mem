@@ -21,7 +21,7 @@ let settled = false;
 function identity(pid) {
   const result = childProcess.spawnSync('powershell.exe', ['-NoProfile', '-Command',
     `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p | Select-Object ProcessId,CreationDate,CommandLine | ConvertTo-Json -Compress }`],
-    { encoding: 'utf8', windowsHide: true, timeout: 5000 });
+    { encoding: 'utf8', windowsHide: true, shell: false, timeout: 5000 });
   if (result.status !== 0 || !result.stdout.trim()) return null;
   return JSON.parse(result.stdout);
 }
@@ -37,7 +37,7 @@ function cleanupOwnedFixture() {
   const current = identity(pid);
   if (!current || current.CreationDate !== before.CreationDate || !current.CommandLine?.includes(fixturePath)) return;
   childProcess.spawnSync(taskkillPath, ['/PID', String(pid), '/T', '/F'],
-    { windowsHide: true, timeout: 5000, stdio: 'ignore' });
+    { windowsHide: true, shell: false, timeout: 5000, stdio: 'ignore' });
 }
 
 const oldPath = process.env.PATH;

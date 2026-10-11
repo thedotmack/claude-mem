@@ -14,7 +14,7 @@ for (const mode of ['hang', 'success', 'error', 'kill-failure']) {
       });
       expect(build.success).toBe(true);
       const result = spawnSync('node', [join(import.meta.dir, 'fixtures/npm-timeout-windows-native.mjs'),
-        build.outputs[0].path, mode], { encoding: 'utf8', timeout: 20000, windowsHide: true });
+        build.outputs[0].path, mode], { encoding: 'utf8', timeout: 20000, windowsHide: true, shell: false });
       console.log(result.stdout);
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);

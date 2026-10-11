@@ -105,6 +105,7 @@ export function runNpmStrict(cwd: string, flags: string[]): Promise<NpmResult> {
           execFile('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
             timeout: TERMINATION_GRACE_MS,
             windowsHide: true,
+            shell: false,
             env: sanitizeEnv(process.env),
           }, (error) => {
             if (error && !settled) stderr += `\nFailed to terminate npm process tree: ${error.message}`;
