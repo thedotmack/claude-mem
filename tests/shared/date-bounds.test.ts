@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'bun:test';
+import { fileURLToPath } from 'node:url';
 import { resolveDateBound } from '../../src/shared/date-bounds.js';
 
 describe('resolveDateBound', () => {
@@ -40,9 +41,8 @@ describe('whitespace-padded date bounds', () => {
   });
 });
 
-
 it('retains date-only UTC boundaries in a non-UTC child process', () => {
-  const modulePath = new URL('../../src/shared/date-bounds.ts', import.meta.url).pathname;
+  const modulePath = fileURLToPath(new URL('../../src/shared/date-bounds.ts', import.meta.url));
   const script = `import { resolveDateBound } from ${JSON.stringify(modulePath)};
     console.log(JSON.stringify([resolveDateBound(' 2025-01-01 ', 'start'), resolveDateBound(' 2025-01-01 ', 'end')]));`;
   const child = Bun.spawnSync({ cmd: [process.execPath, '--eval', script], env: { ...process.env, TZ: 'America/New_York' }, stdout: 'pipe', stderr: 'pipe' });
