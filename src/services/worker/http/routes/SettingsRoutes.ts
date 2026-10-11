@@ -269,6 +269,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
+      'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
@@ -455,6 +456,18 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== undefined && settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== '') {
       if (typeof settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR.trim()) {
         return { valid: false, error: 'CLAUDE_MEM_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to use the default' };
+      }
+    }
+
+    // #4689 — same shape guard as CLAUDE_MEM_CLAUDE_CONFIG_DIR: the value is
+    // stamped verbatim onto the SDK subprocess env (EnvManager's
+    // buildIsolatedEnv), so a type-confused payload must not reach the child.
+    if (
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== undefined &&
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== ''
+    ) {
+      if (typeof settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to keep transcripts beside the credential profile' };
       }
     }
 
