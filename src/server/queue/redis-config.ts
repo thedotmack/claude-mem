@@ -117,7 +117,7 @@ function connectionFromUrl(rawUrl: string): RedisOptions {
 function describeUrlHost(rawUrl: string): { host: string; port: number } {
   const parsed = new URL(rawUrl);
   return {
-    host: parsed.hostname.replace(/^\[|\]$/g, '') || '127.0.0.1',
+    host: parsed.hostname || '127.0.0.1',
     port: parsed.port ? Number.parseInt(parsed.port, 10) : 6379,
   };
 }

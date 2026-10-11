@@ -11,9 +11,11 @@ for (const scheme of ['redis', 'rediss']) {
       process.env.CLAUDE_MEM_REDIS_URL = `${scheme}://[::1]:6380/2`;
       const config = getRedisQueueConfig();
       expect(config.connection.host).toBe('::1');
-      expect(config.host).toBe('::1');
+      expect(config.host).toBe('[::1]');
       expect(config.connection.port).toBe(6380);
       expect(config.connection.db).toBe(2);
+      expect(`${config.host}:${config.port}`).toBe('[::1]:6380');
+      expect(config.connection.tls).toEqual(scheme === 'rediss' ? {} : undefined);
     } finally {
       keys.forEach((key, index) => prior[index] === undefined ? delete process.env[key] : process.env[key] = prior[index]);
     }
