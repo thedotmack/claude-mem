@@ -11,6 +11,7 @@ import {
   writeStaleMarker,
   clearStaleMarker,
   resolveClaudeCredentialProfile,
+  resolveEffectiveClaudeConfigDir,
   type ClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
@@ -277,7 +278,14 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     // itself expires, the stale-login marker surfaces it as usual.
     const transcriptConfigDir = configDirSettings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR?.trim();
     if (transcriptConfigDir) {
-      isolatedEnv.CLAUDE_CONFIG_DIR = transcriptConfigDir;
+      // Same normalization the sister setting goes through
+      // (resolveEffectiveClaudeConfigDir): trim → tilde expansion →
+      // trailing-separator strip. A value from the settings file or the
+      // viewer never passes through a shell, so a docs-style
+      // '~/.claude-mem/observer-claude' would otherwise be stamped LITERAL
+      // and the child would create <worker cwd>/~/… — and resume would
+      // break as soon as the worker cwd changed.
+      isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(transcriptConfigDir);
     }
   }
 

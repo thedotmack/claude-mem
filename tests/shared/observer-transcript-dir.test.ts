@@ -33,7 +33,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
 import * as fs from 'fs';
-import { tmpdir } from 'os';
+import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
 
@@ -161,6 +161,34 @@ afterEach(() => {
 describe('#4689 — transcript-only CLAUDE_CONFIG_DIR for the SDK child', () => {
   it('stamps the transcript-only dir onto the child env under the default credential profile', () => {
     stubSettingsFile({ CLAUDE_MEM_CLAUDE_CONFIG_DIR: '', CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR: TRANSCRIPT_DIR });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CONFIG_DIR).toBe(TRANSCRIPT_DIR);
+  });
+
+  it('expands a leading ~ like the sister setting does (settings-file/UI values never pass through a shell)', () => {
+    // The docs example is '~/.claude-mem/observer-claude'. Stamped verbatim,
+    // the literal '~' reaches the child and the CLI creates <worker cwd>/~/…
+    // (verified with the vendored CLI during review) — and resume breaks as
+    // soon as the worker cwd changes. The value must get the same
+    // resolveEffectiveClaudeConfigDir normalization as
+    // CLAUDE_MEM_CLAUDE_CONFIG_DIR: trim → expandTilde → stripTrailingSep.
+    stubSettingsFile({
+      CLAUDE_MEM_CLAUDE_CONFIG_DIR: '',
+      CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR: '~/.claude-mem/observer-claude',
+    });
+
+    const result = buildIsolatedEnv();
+
+    expect(result.CLAUDE_CONFIG_DIR).toBe(join(homedir(), '.claude-mem', 'observer-claude'));
+  });
+
+  it('strips trailing path separators like the sister setting does', () => {
+    stubSettingsFile({
+      CLAUDE_MEM_CLAUDE_CONFIG_DIR: '',
+      CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR: `${TRANSCRIPT_DIR}/`,
+    });
 
     const result = buildIsolatedEnv();
 
