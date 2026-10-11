@@ -155,9 +155,11 @@ function unquote(value: string): string {
  */
 export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; body: string } {
   const lines = raw.split('\n');
-  // The opener must be a complete `---` line: a `----` Markdown horizontal rule
-  // is not frontmatter. The close scan below likewise requires an exact `---`.
-  if (lines[0]?.trim() !== '---') return { frontmatter: {}, body: raw };
+  // The opener must be a complete `---` line at column 0 (a trailing \r is
+  // tolerated for CRLF files): a `----` horizontal rule or an indented `---`
+  // is note text, not frontmatter. The close scan below likewise requires
+  // an exact `---`.
+  if (!/^---\r?$/.test(lines[0] ?? '')) return { frontmatter: {}, body: raw };
 
   // First line is the opening '---'; find the closing one.
   let close = -1;

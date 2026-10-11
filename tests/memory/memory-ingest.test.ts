@@ -66,6 +66,21 @@ describe('parseMemoryFrontmatter', () => {
     expect(body).toBe(raw);
     expect(deriveTitle('deployment.md', frontmatter, body)).toBe('Deployment notes');
   });
+
+  it('does not treat an indented --- line as a frontmatter opener (body preserved)', () => {
+    const raw = ['    ---', '# Deployment notes', '', 'Keep the rollback command.', '', '---', 'Next section'].join('\n');
+    const { frontmatter, body } = parseMemoryFrontmatter(raw);
+    expect(frontmatter).toEqual({});
+    expect(body).toBe(raw);
+    expect(deriveTitle('deployment.md', frontmatter, body)).toBe('Deployment notes');
+  });
+
+  it('still parses frontmatter when the file uses CRLF line endings', () => {
+    const raw = ['---', 'name: crlf-work', '---', '', '## Body'].join('\r\n');
+    const { frontmatter, body } = parseMemoryFrontmatter(raw);
+    expect(frontmatter.name).toBe('crlf-work');
+    expect(body).toContain('## Body');
+  });
 });
 
 describe('deriveTitle', () => {
@@ -322,6 +337,25 @@ describe('ingestMemorySource (fake deps)', () => {
     const obs = stored.find(o => o.title === 'Deployment notes');
     expect(obs?.narrative.startsWith('----\n# Deployment notes')).toBe(true);
     expect(obs?.narrative).toContain('Keep the rollback command.');
+  });
+
+  it('keeps the whole note when a file starts with an indented --- line', async () => {
+    writeFileSync(
+      join(memDir, 'indented.md'),
+      ['    ---', '# Deployment notes', '', 'Keep the rollback command.', '', '---', 'Next section'].join('\n'),
+    );
+    const stored: MemoryObservationToStore[] = [];
+    const report = await ingestMemorySource(memDir, { root }, {
+      storeMemoryObservation: async obs => {
+        stored.push(obs);
+        return { id: stored.length, deduped: false };
+      },
+    });
+    expect(report.stored).toBe(2); // a.md + indented.md (empty.md still skipped)
+    const obs = stored.find(o => o.title === 'Deployment notes');
+    expect(obs?.narrative.startsWith('    ---\n# Deployment notes')).toBe(true);
+    expect(obs?.narrative).toContain('Keep the rollback command.');
+    expect(obs?.narrative).toContain('Next section');
   });
 
   it.skipIf(process.platform === 'win32' || process.getuid?.() === 0)(
