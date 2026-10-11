@@ -2,6 +2,7 @@ import { afterAll, describe, expect, it } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import '../../src/shared/paths.js';
 
 const dataDir = mkdtempSync(join(tmpdir(), 'cmem-cache-shape-'));
 const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
