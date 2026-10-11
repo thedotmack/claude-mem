@@ -5,7 +5,10 @@ import { tmpdir } from 'node:os';
 import { loadTranscriptWatchConfig } from '../../src/services/transcripts/config.js';
 import { matchesRule } from '../../src/services/transcripts/field-utils.js';
 
-for (const match of [{ path: 'type', regex: '[' }, { all: [{ any: [{ path: 'type', regex: '(' }] }] }]) {
+for (const [match, location] of [
+  [{ path: 'type', regex: '[' }, 'schemas.local.events[0].match.regex'],
+  [{ all: [{ any: [{ path: 'type', regex: '(' }] }] }, 'schemas.local.events[0].match.all[0].any[0].regex'],
+] as const) {
   it(`rejects unusable regex rules before starting a watch: ${JSON.stringify(match)}`, () => {
     const root = mkdtempSync(join(tmpdir(), 'cmem-regex-config-'));
     try {
@@ -13,7 +16,7 @@ for (const match of [{ path: 'type', regex: '[' }, { all: [{ any: [{ path: 'type
       writeFileSync(config, JSON.stringify({ version: 1, schemas: { local: { name: 'local', events: [
         { name: 'turn', action: 'user_message', match },
       ] } }, watches: [{ name: 'local', path: 'local.jsonl', schema: 'local' }] }));
-      expect(() => loadTranscriptWatchConfig(config)).toThrow(/regex must be a valid regular expression/);
+      expect(() => loadTranscriptWatchConfig(config)).toThrow(`Invalid transcript watch config: ${config} (${location} must be a valid regular expression)`);
     } finally { rmSync(root, { recursive: true, force: true }); }
   });
 }
