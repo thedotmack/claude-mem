@@ -478,6 +478,79 @@ export function countToolUses(
   `).all(...params) as Array<{ tool_name: string; uses: number }>;
 }
 
+/**
+ * One session whose captured tool I/O never produced an observation (#4580).
+ * While the quota breaker withheld the generator, PostToolUse events still
+ * landed in the RAM-only SessionMessageBuffer; a worker restart disposed that
+ * buffer, and only these durable rows — plus the transcript JSONL — survive.
+ */
+export interface OrphanedToolUseSession {
+  session_db_id: number;
+  content_session_id: string;
+  /** Rows still awaiting their observation link. */
+  orphan_count: number;
+  /** MAX(created_at_epoch) across the session's rows — recency gate input. */
+  last_activity_epoch: number;
+}
+
+export interface OrphanedToolUseSessionQuery {
+  /** Sessions whose last capture is older than this epoch are candidates. */
+  cutoffEpoch: number;
+  /** Upper bound on returned sessions: a recovery round is bounded by design. */
+  limit: number;
+}
+
+/**
+ * Sessions whose EVERY tool_uses row is still unlinked (`observation_id IS
+ * NULL`) — a generator never stored anything for them, so re-feeding their
+ * rows cannot duplicate an observation. A session with even one linked row is
+ * excluded: its generator ran, the unlink rows are the design-discussion
+ * territory the owner flagged on #4580, not wholesale loss. Rows without a
+ * `session_db_id` are excluded too: recovery re-enters through the live
+ * SessionManager, which is keyed on that id.
+ *
+ * Oldest first, so a capped round recovers the longest-lost sessions before
+ * anything else.
+ */
+export function findOrphanedToolUseSessions(
+  db: Database,
+  query: OrphanedToolUseSessionQuery
+): OrphanedToolUseSession[] {
+  return db.prepare(`
+    SELECT session_db_id,
+           content_session_id,
+           COUNT(*) AS orphan_count,
+           MAX(created_at_epoch) AS last_activity_epoch
+    FROM tool_uses
+    WHERE observation_id IS NULL
+      AND session_db_id IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM tool_uses linked
+        WHERE linked.content_session_id = tool_uses.content_session_id
+          AND linked.observation_id IS NOT NULL
+      )
+    GROUP BY session_db_id, content_session_id
+    HAVING MAX(created_at_epoch) <= ?
+    ORDER BY MAX(created_at_epoch) ASC, session_db_id ASC
+    LIMIT ?
+  `).all(query.cutoffEpoch, Math.max(1, Math.floor(query.limit))) as OrphanedToolUseSession[];
+}
+
+/**
+ * The re-feed source for one orphaned session: its still-unlinked rows in
+ * original capture order. `tool_input` / `tool_response` are the already-
+ * cleaned JSON strings ingest stored, so they pass straight back into
+ * `queueObservation` without a second round of stripping.
+ */
+export function getOrphanedToolUseRows(db: Database, contentSessionId: string): ToolUseRow[] {
+  return db.prepare(`
+    SELECT * FROM tool_uses
+    WHERE content_session_id = ?
+      AND observation_id IS NULL
+    ORDER BY created_at_epoch ASC, id ASC
+  `).all(contentSessionId) as ToolUseRow[];
+}
+
 /** Diagnostic helper used by the worker health/stat surfaces. */
 export function toolUsesTableExists(db: Database): boolean {
   const row = db
