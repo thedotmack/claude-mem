@@ -252,10 +252,45 @@ function stripTomlComment(line: string): string {
   return line;
 }
 
+/** Preserve line indices while excluding multiline string contents from table/key recognition. */
+function tomlStructuralLines(lines: string[]): string[] {
+  let multiline: '"""' | "'''" | null = null;
+  return lines.map((line) => {
+    const structural = multiline === null ? stripTomlComment(line) : '';
+    let quote: '"' | "'" | null = null;
+    for (let index = 0; index < line.length; index++) {
+      if (multiline !== null) {
+        if (multiline === '"""' && line[index] === '\\') {
+          index++;
+        } else if (line.startsWith(multiline, index)) {
+          // TOML permits one or two quote characters immediately before the closing delimiter.
+          const character = multiline[0];
+          let count = 3;
+          while (count < 5 && line[index + count] === character) count++;
+          index += count - 1;
+          multiline = null;
+        }
+      } else if (quote !== null) {
+        if (quote === '"' && line[index] === '\\') index++;
+        else if (line[index] === quote) quote = null;
+      } else if (line[index] === '#') {
+        break;
+      } else if (line.startsWith('"""', index) || line.startsWith("'''", index)) {
+        multiline = line.slice(index, index + 3) as '"""' | "'''";
+        index += 2;
+      } else if (line[index] === '"' || line[index] === "'") {
+        quote = line[index] as '"' | "'";
+      }
+    }
+    return structural;
+  });
+}
+
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');
-  const headerIndex = lines.findIndex((line) => stripTomlComment(line).trim() === header);
+  const structuralLines = tomlStructuralLines(lines);
+  const headerIndex = structuralLines.findIndex((line) => line.trim() === header);
 
   if (headerIndex === -1) {
     const trimmed = content.trimEnd();
@@ -263,13 +298,13 @@ export function setTomlBooleanInTable(content: string, header: string, key: stri
   }
 
   let sectionEnd = headerIndex + 1;
-  while (sectionEnd < lines.length && !/^\s*\[/.test(lines[sectionEnd])) {
+  while (sectionEnd < lines.length && !/^\s*\[/.test(structuralLines[sectionEnd])) {
     sectionEnd += 1;
   }
 
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const keyPattern = new RegExp(`^\\s*${escapedKey}\\s*=`);
-  const keyIndex = lines.findIndex(
+  const keyIndex = structuralLines.findIndex(
     (line, index) => index > headerIndex && index < sectionEnd && keyPattern.test(line),
   );
 
@@ -311,12 +346,13 @@ function isClaudeMemMcpSearchBlock(block: string): boolean {
 
 export function removeLegacyCodexMcpSearchConfig(content: string): string {
   const lines = content.split('\n');
+  const structuralLines = tomlStructuralLines(lines);
   const blocks: Array<{ header: string | null; text: string }> = [];
   let currentHeader: string | null = null;
   let currentLines: string[] = [];
 
-  for (const line of lines) {
-    const header = normalizeTomlHeader(line);
+  for (const [index, line] of lines.entries()) {
+    const header = normalizeTomlHeader(structuralLines[index]);
     if (header !== null) {
       blocks.push({ header: currentHeader, text: currentLines.join('\n') });
       currentHeader = header;
