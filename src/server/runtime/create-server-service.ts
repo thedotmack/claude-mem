@@ -16,7 +16,6 @@ import { ClaudeObservationProvider } from '../generation/providers/ClaudeObserva
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
-import { parseOpenRouterTemperature } from '../../shared/openrouter-temperature.js';
 import { parseOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
@@ -414,8 +413,6 @@ export async function instantiateServerGenerationProvider(provider: string): Pro
     const { extraBody, warning } = parseOpenRouterExtraBody(process.env.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
     if (warning) logger.warn('SYSTEM', `server: ${warning}`);
     if (extraBody) opts.extraBody = extraBody;
-    const temperature = parseOpenRouterTemperature(process.env.CLAUDE_MEM_OPENROUTER_TEMPERATURE);
-    if (temperature !== undefined) opts.extraBody = { ...opts.extraBody, temperature };
     return new OpenRouterObservationProvider(opts);
   }
   if (provider === 'custom') {

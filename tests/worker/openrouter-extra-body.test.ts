@@ -128,6 +128,7 @@ describe('resolveOpenRouterConfig reads CLAUDE_MEM_OPENROUTER_EXTRA_BODY from se
     'CLAUDE_MEM_OPENROUTER_BASE_URL',
     'CLAUDE_MEM_OPENROUTER_MODEL',
     'CLAUDE_MEM_OPENROUTER_EXTRA_BODY',
+    'CLAUDE_MEM_OPENROUTER_TEMPERATURE',
     'OPENROUTER_BASE_URL',
     'CLAUDE_MEM_ENV_FILE',
     'CMEM_PRO_ORIGIN',
@@ -159,6 +160,26 @@ describe('resolveOpenRouterConfig reads CLAUDE_MEM_OPENROUTER_EXTRA_BODY from se
   const writeSettings = (settings: Record<string, unknown>) =>
     writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_PROVIDER: 'openrouter', ...settings }));
 
+  it('reads temperature from settings and lets the environment override it, including zero', () => {
+    writeSettings({
+      CLAUDE_MEM_OPENROUTER_BASE_URL: 'http://localhost:1234/v1',
+      CLAUDE_MEM_OPENROUTER_TEMPERATURE: '0.7',
+      CLAUDE_MEM_OPENROUTER_EXTRA_BODY: { temperature: 0.9, top_p: 0.8 },
+    });
+    const request = () => buildOpenRouterRequestBody({ ...resolveOpenRouterConfig(settingsPath), messages: MESSAGES });
+    expect(request().temperature).toBe(0.7);
+    expect(request().top_p).toBe(0.8);
+    process.env.CLAUDE_MEM_OPENROUTER_TEMPERATURE = '0';
+    expect(request().temperature).toBe(0);
+  });
+
+  it('ignores blank and invalid temperatures, preserving the existing default', () => {
+    for (const temperature of ['', ' ', 'invalid', '-1', '2.1', 'Infinity']) {
+      writeSettings({ CLAUDE_MEM_OPENROUTER_TEMPERATURE: temperature });
+      expect(buildOpenRouterRequestBody({ ...resolveOpenRouterConfig(settingsPath), messages: MESSAGES }).temperature).toBe(0.3);
+    }
+  });
+
   it('attaches the parsed object for a personal openrouter.ai key', () => {
     writeSettings({
       CLAUDE_MEM_OPENROUTER_API_KEY: 'sk-or-v1-personal',
@@ -183,6 +204,7 @@ describe('resolveOpenRouterConfig reads CLAUDE_MEM_OPENROUTER_EXTRA_BODY from se
       CLAUDE_MEM_OPENROUTER_API_KEY: 'cm_pro_0123456789abcdef01234567',
       CLAUDE_MEM_OPENROUTER_BASE_URL: 'https://cmem.ai/api/inference/v1',
       CLAUDE_MEM_OPENROUTER_MODEL: 'cmem-observer',
+      CLAUDE_MEM_OPENROUTER_TEMPERATURE: '0.7',
       CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '{"reasoning":{"enabled":false}}',
     });
     const config = resolveOpenRouterConfig(settingsPath);

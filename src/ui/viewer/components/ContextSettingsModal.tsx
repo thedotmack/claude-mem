@@ -483,22 +483,6 @@ export function ContextSettingsModal({
                   </FormField>
                   {!observerManagesBaseUrl && (
                     <FormField
-                      label="Temperature"
-                      tooltip="Sampling temperature from 0 to 2. Leave blank to use 0.3 or your extra request fields."
-                    >
-                      <input
-                        type="number"
-                        min="0"
-                        max="2"
-                        step="any"
-                        value={formState.CLAUDE_MEM_OPENROUTER_TEMPERATURE ?? ''}
-                        onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_TEMPERATURE', e.target.value)}
-                        placeholder="0.3"
-                      />
-                    </FormField>
-                  )}
-                  {!observerManagesBaseUrl && (
-                    <FormField
                       label="Reasoning effort"
                       tooltip="openrouter.ai models only. None turns reasoning off, for models that spend the output budget thinking. Default sends nothing."
                     >
