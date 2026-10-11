@@ -11,6 +11,7 @@ import {
   writeStaleMarker,
   clearStaleMarker,
   resolveClaudeCredentialProfile,
+  resolveEffectiveClaudeConfigDir,
   type ClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
@@ -253,6 +254,37 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
   } else {
     delete isolatedEnv.CLAUDE_CONFIG_DIR;
+  }
+
+  // #4689 — transcript-only override. The SDK child writes session transcripts
+  // under `${CLAUDE_CONFIG_DIR}/projects/<munged-cwd>/`, so under the default
+  // profile above (variable deleted) they land in ~/.claude/projects, where
+  // tools like Codex import them as user chats. CLAUDE_MEM_CLAUDE_CONFIG_DIR
+  // cannot relocate them, because it is the credential IDENTITY setting: the
+  // same profile derives the macOS keychain service name
+  // (deriveMacKeychainServiceName), so pointing it at a fresh dir sends the
+  // child to a suffixed entry no login ever created. This setting splits the
+  // two roles: the child's config ROOT moves (transcripts and CLI state land
+  // under <dir>/), while credential resolution — readClaudeOAuthToken, the
+  // profile label, the quota key — keeps consuming CLAUDE_MEM_CLAUDE_CONFIG_DIR
+  // unchanged, and auth still reaches the child through the spawn-time
+  // CLAUDE_CODE_OAUTH_TOKEN injection in buildIsolatedEnvWithFreshOAuth().
+  //
+  // Accepted trade-off (the #4149 boundary, on purpose): with the variable
+  // SET, the child derives a suffixed keychain service name that does not
+  // exist, so it has NO keychain fallback of its own and cannot refresh an
+  // expired token. If the profile token is expired at spawn, injection is
+  // refused (stale marker) and the SDK spawn fails auth until the next
+  // /login. That is acceptable for the short observer/knowledge batches this
+  // env is built for; it is the price of keeping transcripts out of the user
+  // visible ~/.claude/projects. Migration note: transcripts already written
+  // under ~/.claude/projects stay there, so a knowledge corpus session_id
+  // primed before enabling this misses its resume once and recovers via the
+  // existing reprime (fresh session) path; the observer generator never
+  // resumes (fresh start per generation, --no-session-persistence per #2909).
+  const sdkTranscriptConfigDir = configDirSettings.CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR;
+  if (sdkTranscriptConfigDir?.trim()) {
+    isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(sdkTranscriptConfigDir);
   }
 
   if (includeCredentials) {

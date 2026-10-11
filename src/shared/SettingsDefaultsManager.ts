@@ -205,6 +205,8 @@ export interface SettingsDefaults {
   CLAUDE_CODE_PATH: string;
   /** #2753 — override the effective CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess env only. Empty = fall through to process.env.CLAUDE_CONFIG_DIR / default. Never touches the worker's own MARKETPLACE_ROOT/paths. */
   CLAUDE_MEM_CLAUDE_CONFIG_DIR: string;
+  /** #4689 — transcript-only config dir stamped onto spawned SDK subprocesses (Observer/KnowledgeAgent), so session transcripts land under <dir>/projects instead of polluting ~/.claude/projects. It moves the child's config ROOT, NOT the credential identity: keychain/quota keep resolving from CLAUDE_MEM_CLAUDE_CONFIG_DIR / default, and auth reaches the child via spawn-time CLAUDE_CODE_OAUTH_TOKEN injection. Empty = children keep the default profile's config root. */
+  CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR: string;
   CLAUDE_MEM_MODE: string;
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -443,6 +445,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     CLAUDE_MEM_CLAUDE_CONFIG_DIR: '', // #2753 — override CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess only; empty = fall through to process.env.CLAUDE_CONFIG_DIR/default
+    CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR: '', // #4689 — transcript-only config dir for SDK subprocesses; empty = transcripts stay under the default profile's config root (~/.claude/projects)
     CLAUDE_MEM_MODE: 'code', // Default mode profile
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',

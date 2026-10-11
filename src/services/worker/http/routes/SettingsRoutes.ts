@@ -269,6 +269,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
+      'CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
@@ -455,6 +456,18 @@ export class SettingsRoutes extends BaseRouteHandler {
     if (settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== undefined && settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== '') {
       if (typeof settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR.trim()) {
         return { valid: false, error: 'CLAUDE_MEM_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to use the default' };
+      }
+    }
+
+    // #4689 — CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR relocates where spawned SDK
+    // subprocesses write session transcripts. Unlike
+    // CLAUDE_MEM_CLAUDE_CONFIG_DIR it is a path, not a credential identity:
+    // keychain/quota keep resolving from the credential setting. It still
+    // reaches path normalization downstream, so the same malformed-value
+    // guard applies.
+    if (settings.CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR !== undefined && settings.CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR !== '') {
+      if (typeof settings.CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_SDK_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to keep SDK transcripts under the default config dir' };
       }
     }
 
