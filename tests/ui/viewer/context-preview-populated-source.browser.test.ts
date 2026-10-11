@@ -22,11 +22,10 @@ for (const source of ['codex', 'opencode']) {
         (async () => {
           try {
             const deadline = Date.now() + 5000;
-            while (!current?.sources.includes('${source}')) {
-              if (Date.now() > deadline) throw new Error('Catalog did not load');
+            while (current?.selectedSource !== '${source}' || current?.selectedProject !== 'project' || current?.preview !== 'PREVIEW:${source}:project') {
+              if (Date.now() > deadline) throw new Error('Expected completed preview did not load');
               await new Promise(resolve => setTimeout(resolve, 10));
             }
-            await new Promise(resolve => setTimeout(resolve, 700));
             await fetch('/result', { method: 'POST', body: JSON.stringify({
               source: current.selectedSource, project: current.selectedProject, preview: current.preview,
             }) });
@@ -40,7 +39,10 @@ for (const source of ['codex', 'opencode']) {
       if (url.pathname === '/') return new Response('<div id="root"></div><script src="/fixture.js"></script>', { headers: { 'Content-Type': 'text/html' } });
       if (url.pathname === '/fixture.js') return new Response(bundle.outputFiles[0].text, { headers: { 'Content-Type': 'application/javascript' } });
       if (url.pathname === '/api/projects') return Response.json({ projects: ['project'], sources: [source], projectsBySource: { [source]: ['project'] } });
-      if (url.pathname === '/api/context/preview') return new Response(`PREVIEW:${url.searchParams.get('platformSource')}:${url.searchParams.get('project')}`);
+      if (url.pathname === '/api/context/preview') {
+        await Bun.sleep(650);
+        return new Response(`PREVIEW:${url.searchParams.get('platformSource')}:${url.searchParams.get('project')}`);
+      }
       if (url.pathname === '/result') { report(await request.json()); return new Response('received'); }
       return new Response('Not found', { status: 404 });
     } });
