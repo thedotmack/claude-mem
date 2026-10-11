@@ -4,6 +4,28 @@ import * as realChromaMcpManager from '../../../src/services/sync/ChromaMcpManag
 const calls: Array<{ name: string; args: Record<string, unknown> }> = [];
 const realChromaMcpManagerSnapshot = { ...realChromaMcpManager };
 
+// Corpus with a sqlite_id shared across document types: observation and
+// session_summary ids overlap, and user_prompt reuses them too (#4682). The
+// fake evaluates the where clause it is given, so a doc_type pushed into it
+// would select differently than the client-side filter must.
+const CORPUS: Record<string, Record<string, unknown>> = {
+  'obs_9_narrative': { sqlite_id: 9, doc_type: 'observation' },
+  'summary_7_request': { sqlite_id: 7, doc_type: 'session_summary' },
+  'prompt_7': { sqlite_id: 7, doc_type: 'user_prompt' }
+};
+
+function matches(where: any, meta: Record<string, unknown>): boolean {
+  if (!where) return true;
+  if (where.$and) return where.$and.every((clause: any) => matches(clause, meta));
+  return Object.entries(where).every(([k, v]: [string, any]) => {
+    if (v && typeof v === 'object') {
+      if ('$in' in v) return v.$in.includes(meta[k]);
+      return false;
+    }
+    return meta[k] === v;
+  });
+}
+
 mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
   ChromaMcpManager: {
     getInstance: () => ({
@@ -12,23 +34,10 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
         if (name === 'chroma_create_collection') return {};
 
         if (name === 'chroma_get_documents') {
-          const where = args.where as { $and?: Array<Record<string, unknown>> };
-          const docType = where.$and?.find(condition => condition.doc_type)?.doc_type;
-          if (docType === 'observation') {
-            return {
-              ids: ['obs_9_narrative'],
-              metadatas: [{ sqlite_id: 9, doc_type: 'observation' }]
-            };
-          }
-          if (docType === 'session_summary') {
-            return {
-              ids: ['summary_7_request'],
-              metadatas: [{ sqlite_id: 7, doc_type: 'session_summary' }]
-            };
-          }
+          const ids = Object.keys(CORPUS).filter(id => matches(args.where, CORPUS[id]));
           return {
-            ids: ['prompt_7'],
-            metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt' }]
+            ids,
+            metadatas: ids.map(id => ({ ...CORPUS[id] }))
           };
         }
 
@@ -56,12 +65,7 @@ describe('ChromaSync merged project hydration', () => {
     );
 
     const getCall = calls.find(call => call.name === 'chroma_get_documents');
-    expect(getCall?.args.where).toEqual({
-      $and: [
-        { doc_type: 'session_summary' },
-        { sqlite_id: { $in: [7] } }
-      ]
-    });
+    expect(getCall?.args.where).toEqual({ sqlite_id: { $in: [7] } });
 
     const updateCall = calls.find(call => call.name === 'chroma_update_documents');
     expect(updateCall?.args.ids).toEqual(['summary_7_request']);
@@ -83,19 +87,14 @@ describe('ChromaSync merged project hydration', () => {
       .toEqual(['summary_7_request']);
   });
 
-  it('patches observation documents with an observation-typed lookup', async () => {
+  it('patches observation documents with an observation-typed client filter', async () => {
     await new ChromaSync('claude-mem').updateMergedIntoProject(
       [{ docType: 'observation', sqliteId: 9 }],
       'parent'
     );
 
     const getCall = calls.find(call => call.name === 'chroma_get_documents');
-    expect(getCall?.args.where).toEqual({
-      $and: [
-        { doc_type: 'observation' },
-        { sqlite_id: { $in: [9] } }
-      ]
-    });
+    expect(getCall?.args.where).toEqual({ sqlite_id: { $in: [9] } });
 
     const updateCall = calls.find(call => call.name === 'chroma_update_documents');
     expect(updateCall?.args.ids).toEqual(['obs_9_narrative']);

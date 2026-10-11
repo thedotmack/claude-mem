@@ -839,21 +839,33 @@ export class ChromaSync {
   private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
     await this.ensureCollectionExists();
     const manager = ChromaMcpManager.getInstance();
+    // Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and member over
+    // every document matching it before the selective condition narrows
+    // anything, so a doc_type prefix scanned ~1.2M observation docs per lookup
+    // and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
+    // doc_type still matters — observation and session_summary ids overlap —
+    // so it is filtered client-side below.
     const existing = await manager.callTool('chroma_get_documents', {
       collection_name: this.collectionName,
-      where: { $and: [{ doc_type: docType }, { sqlite_id: sqliteId }] },
-      include: [],
+      where: { sqlite_id: sqliteId },
+      include: ['metadatas'],
     });
     // MCP transport success can still decode to null (empty/non-JSON content).
-    // Only a valid ID list proves which fragments exist; failures must leave
-    // the durable reconciliation flag set for the next backfill.
+    // Only a valid id list paired with same-length metadatas proves which
+    // fragments exist and which are this docType's; failures must leave the
+    // durable reconciliation flag set for the next backfill.
     if (!existing || typeof existing !== 'object' || !('ids' in existing)
       || !Array.isArray(existing.ids)
-      || !existing.ids.every(id => typeof id === 'string' && id.length > 0)) {
-      throw new Error('Chroma fragment lookup did not return a valid document ID list');
+      || !existing.ids.every(id => typeof id === 'string' && id.length > 0)
+      || !('metadatas' in existing)
+      || !Array.isArray(existing.metadatas)
+      || existing.metadatas.length !== existing.ids.length) {
+      throw new Error('Chroma fragment lookup did not return a valid document ID list with metadatas');
     }
     const currentIds = new Set(documents.map(doc => doc.id));
-    const obsolete = (existing.ids as string[]).filter(id => !currentIds.has(id));
+    const obsolete = (existing.ids as string[]).filter((id, k) =>
+      (existing.metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType
+      && !currentIds.has(id));
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
     }
@@ -1987,23 +1999,31 @@ export class ChromaSync {
       for (let i = 0; i < sqliteIds.length; i += this.BATCH_SIZE) {
         const idBatch = sqliteIds.slice(i, i + this.BATCH_SIZE);
 
+        // Query by sqlite_id alone (#4682): chromadb 1.5.9 evaluates an $and
+        // member over every document matching it before the selective
+        // condition or the limit narrows anything, which cost ~33s per call on
+        // a cold page cache and timed out worktree adoption. doc_type still
+        // matters — observation and session_summary ids overlap — so it is
+        // filtered client-side here; without that a sibling type's document
+        // would get stamped with merged_into_project.
         const existing = await chromaMcp.callTool('chroma_get_documents', {
           collection_name: this.collectionName,
-          where: {
-            $and: [
-              { doc_type: docType },
-              { sqlite_id: { $in: idBatch } }
-            ]
-          },
+          where: { sqlite_id: { $in: idBatch } },
           include: ['metadatas']
         }) as { ids?: string[]; metadatas?: Array<Record<string, any> | null> };
 
-        const docIds: string[] = existing?.ids ?? [];
-        if (docIds.length === 0) continue;
+        const allIds = existing?.ids ?? [];
+        const allMetadatas = existing?.metadatas ?? [];
+        const keep: number[] = [];
+        for (let k = 0; k < allIds.length; k++) {
+          if (allMetadatas[k]?.doc_type === docType) keep.push(k);
+        }
+        if (keep.length === 0) continue;
 
-        const metadatas = (existing?.metadatas ?? []).map(m => {
+        const docIds: string[] = keep.map(k => allIds[k]);
+        const metadatas = keep.map(k => {
           const merged: Record<string, any> = {
-            ...(m ?? {}),
+            ...(allMetadatas[k] ?? {}),
             merged_into_project: mergedIntoProject
           };
           return Object.fromEntries(
