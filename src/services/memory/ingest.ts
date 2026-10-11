@@ -154,9 +154,11 @@ function unquote(value: string): string {
  * and the original text as body.
  */
 export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; body: string } {
-  if (!raw.startsWith('---')) return { frontmatter: {}, body: raw };
-
   const lines = raw.split('\n');
+  // The opener must be a complete `---` line: a `----` Markdown horizontal rule
+  // is not frontmatter. The close scan below likewise requires an exact `---`.
+  if (lines[0]?.trim() !== '---') return { frontmatter: {}, body: raw };
+
   // First line is the opening '---'; find the closing one.
   let close = -1;
   for (let i = 1; i < lines.length; i++) {
