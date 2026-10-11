@@ -25,3 +25,12 @@ it('retains decimal ports and database zero', () => {
     expect(config.connection.port).toBe(6379);
   });
 });
+
+
+it('uses the complete trimmed port when no Redis URL overrides it', () => {
+  configured(' 6380 ', '', () => {
+    const config = getRedisQueueConfig();
+    expect(config.connection.port).toBe(6380);
+    expect(config.port).toBe(6380);
+  });
+});
