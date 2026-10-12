@@ -9,9 +9,9 @@
 		"test": "bun test test"
 	},
 	"dependencies": {
-		"postgres": "^3.4.7"
+		"postgres": "^3.4.9"
 	},
 	"devDependencies": {
-		"@types/bun": "^1.3.13"
+		"@types/bun": "^1.4.3"
 	}
 }

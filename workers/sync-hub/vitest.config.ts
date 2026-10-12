@@ -1,6 +1,5 @@
 /**
- * Vitest config — @cloudflare/vitest-pool-workers ≥0.18 Vite-plugin form
- * (plan Phase 0.3; `defineWorkersConfig` was removed in v0.13, do not use it).
+ * Vitest config — Cloudflare's Workers Vitest plugin.
  * Tests import their APIs from "cloudflare:test".
  *
  * Outbound-fetch mocking: 0.18.x removed the old `fetchMock` export from
@@ -36,7 +35,7 @@
  * Everything else falls through to the verify-endpoint mock.
  */
 
-import { cloudflareTest } from "@cloudflare/vitest-pool-workers";
+import { cloudflareTest } from "@cloudflare/vitest-plugin";
 import { defineConfig } from "vitest/config";
 
 /** Once-tokens already consumed by the mock verify endpoint. */

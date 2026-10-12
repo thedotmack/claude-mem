@@ -8,6 +8,7 @@ import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
 export type ObservationQueueEngineName = 'sqlite' | 'bullmq';
 export type RedisMode = 'external' | 'managed' | 'docker';
+type RedisQueueConnectionOptions = Omit<RedisOptions, 'retryStrategy'>;
 
 export interface RedisQueueConfig {
   engine: ObservationQueueEngineName;
@@ -16,7 +17,7 @@ export interface RedisQueueConfig {
   host: string;
   port: number;
   prefix: string;
-  connection: RedisOptions;
+  connection: RedisQueueConnectionOptions;
 }
 
 export function getObservationQueueEngineName(): ObservationQueueEngineName {
@@ -80,7 +81,7 @@ function sanitizePrefix(value: string): string {
   return (value.trim() || 'claude_mem').replace(/[^a-zA-Z0-9_-]/g, '_');
 }
 
-function connectionFromHost(host: string, port: number): RedisOptions {
+function connectionFromHost(host: string, port: number): RedisQueueConnectionOptions {
   return {
     host,
     port,
@@ -90,7 +91,7 @@ function connectionFromHost(host: string, port: number): RedisOptions {
   };
 }
 
-function connectionFromUrl(rawUrl: string): RedisOptions {
+function connectionFromUrl(rawUrl: string): RedisQueueConnectionOptions {
   const parsed = new URL(rawUrl);
   if (parsed.protocol !== 'redis:' && parsed.protocol !== 'rediss:') {
     throw new Error('CLAUDE_MEM_REDIS_URL must use redis:// or rediss://');
