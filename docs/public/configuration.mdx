@@ -263,7 +263,9 @@ Two deterministic tiers:
 
 After enabling on an existing database, run a one-time scan to backfill the IDF model and
 surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
-Review candidates via `GET /api/dedup/candidates?project=<name>`.
+Review candidates via `GET /api/dedup/candidates?project=<name>` (add `&status=pending` to see only
+unreviewed ones), and record a verdict with `POST /api/dedup/candidates/<id>/resolve` and a body of
+`{"status": "distinct"}` or `{"status": "dismissed"}`. A later scan keeps the verdict.
 
 ## Model Configuration
 
