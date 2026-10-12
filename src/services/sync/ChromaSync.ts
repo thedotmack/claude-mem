@@ -854,17 +854,18 @@ export class ChromaSync {
     // Only a valid id list paired with same-length metadatas proves which
     // fragments exist and which are this docType's; failures must leave the
     // durable reconciliation flag set for the next backfill.
-    if (!existing || typeof existing !== 'object' || !('ids' in existing)
-      || !Array.isArray(existing.ids)
-      || !existing.ids.every(id => typeof id === 'string' && id.length > 0)
-      || !('metadatas' in existing)
-      || !Array.isArray(existing.metadatas)
-      || existing.metadatas.length !== existing.ids.length) {
+    const response = (existing && typeof existing === 'object' ? existing : {}) as { ids?: unknown; metadatas?: unknown };
+    const ids = response.ids;
+    const metadatas = response.metadatas;
+    if (!Array.isArray(ids)
+      || !ids.every(id => typeof id === 'string' && id.length > 0)
+      // An empty id list has nothing to delete, with or without metadatas.
+      || (ids.length > 0 && (!Array.isArray(metadatas) || metadatas.length !== ids.length))) {
       throw new Error('Chroma fragment lookup did not return a valid document ID list with metadatas');
     }
     const currentIds = new Set(documents.map(doc => doc.id));
-    const obsolete = (existing.ids as string[]).filter((id, k) =>
-      (existing.metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType
+    const obsolete = (ids as string[]).filter((id, k) =>
+      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType
       && !currentIds.has(id));
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
