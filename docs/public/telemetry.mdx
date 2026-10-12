@@ -72,8 +72,8 @@ Every event property passes through a strict whitelist scrubber — any key not 
 | `install_method` | `npm` | Which package manager launched the CLI: npm / bun / pnpm / yarn |
 | `bun_version` / `uv_version` | `1.3.9` / `0.7.2` | Toolchain versions detected during install |
 | `claude_code_version` | `2.0.14` | Claude Code CLI version, if detectable |
-| `trial_days` | `14` | Assigned CMEM Pro installer offer length: 7, 14, or 30 days |
-| `trial_variant` | `test_14` | Canonical trial experiment arm: control_7 / test_14 / test_30 |
+| `trial_days` | `30` | Assigned CMEM Pro installer offer length: 30 days (older events may report 7 or 14) |
+| `trial_variant` | `test_30` | Trial assignment identifier: control_7 / test_14 / test_30; all current arms grant 30 days |
 | `offer_surface` / `funnel_source` | `installer` / `installer` | Closed source labels on the installer offer exposure event |
 | `stage` | `awaiting_checkout` | Installer trial polling stage: awaiting_login / awaiting_checkout / awaiting_approval |
 | `phase` | `login` | Installer OAuth pairing phase — a closed enum: login / enrollment / deferred |

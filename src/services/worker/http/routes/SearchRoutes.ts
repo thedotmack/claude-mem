@@ -39,6 +39,8 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
+import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -104,6 +106,7 @@ const semanticContextSchema = z.object({
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private progressiveSearch?: ProgressiveMemorySearch;
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
   private cachedSettingsSaveCount = -1;
@@ -196,6 +199,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    app.post('/api/mem-search', this.handleProgressiveSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -219,6 +223,17 @@ export class SearchRoutes extends BaseRouteHandler {
     res.locals.searchTelemetry = searchTelemetry;
     const result = await this.searchManager.search(this.searchArgsFromRequest(req), searchTelemetry);
     res.json(result);
+  });
+
+  private handleProgressiveSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
+    const { searchScope, projects, ...input } = req.body ?? {};
+    const scope = typeof searchScope === 'string' ? `worker/${searchScope}` : 'worker/global';
+    try {
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope, projects)));
+    } catch (error) {
+      res.json(progressiveSearchToolError(error));
+    }
   });
 
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -343,9 +358,9 @@ export class SearchRoutes extends BaseRouteHandler {
     // session that asks, so only then is its id used, and that answer stays live.
     const showLastMessage = this.showLastMessageEnabled();
     const hostSessionId = showLastMessage && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
-    // A host that cannot run the project resolver itself (the OMP hook) sends
-    // its cwd instead: read the keys the CLI context hook sends for that checkout.
-    if (!projectsParam && hostCwd.trim()) {
+    // An excluded checkout receives no context, whether the host names its
+    // projects itself (a DSH project override) or leaves them to the worker.
+    if (hostCwd.trim()) {
       const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
       if (isProjectExcluded(hostCwd, excludedProjects)) {
@@ -353,6 +368,10 @@ export class SearchRoutes extends BaseRouteHandler {
         res.send('');
         return;
       }
+    }
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
       projectsParam = getProjectContext(hostCwd).allProjects.join(',');
     }
     const forHuman = req.query.colors === 'true';

@@ -4,6 +4,207 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.35.0] - 2026-10-09
+
+## New: progressive memory search, curated tool replies, and native memory notes
+
+Claude-Mem 13.35.0 gives agents one memory search tool, `mem_search`, that discloses memory in bounded steps: a compact index, the context around chosen anchors, and then one batch of selected details. The local worker MCP and the hosted cmem.ai MCP run the same search engine and return the same model-facing text. Tool replies are now short, readable text written for the question being answered, so agents no longer receive raw JSON dumps. This release also adds `save_memory` for explicit notes, a hook bridge that supplements Claude Code and Codex native memory lookups, and an opt-in watcher that imports Markdown note folders.
+
+### `mem_search`: guided and automatic progressive disclosure
+
+- **Guided mode** (the default) labels each reply `mem-search step 1 of 3` (index), `step 2 of 3` (context around up to `maxDetails` chosen IDs), and `step 3 of 3` (one detail batch). Each reply ends with a readable next-call instruction and a short **Continue with:** cursor. Agents can stop early when the titles or context already answer the question.
+- **Automatic mode** (`mode: "auto"`) runs the same three bounded stages in one call using ranked lexical retrieval. It picks anchors by how many query terms appear in each index title, ignoring stop words and prompts. If no title matches, it retries once with the stop-word-stripped query. It makes no LLM calls.
+- **Opaque continuations.** A cursor is 27 characters (`ms_` plus 24 URL-safe characters). The search scope, the original options and the set of IDs already disclosed stay in bounded server-side state, which expires after 15 minutes. Agents no longer carry serialized search rows between calls. A cursor cannot be reused with changed options, and `selectedIds` must come from the previous reply. Expired or foreign cursors return a plain-language error that asks for a new query.
+- **Bounds.** `limit` is capped at 20 index rows, `maxDetails` defaults to 3 with a maximum of 5, and `depthBefore`/`depthAfter` default to 2 with a maximum of 3. Queries are limited to 500 characters and 1 KiB of UTF-8.
+- **One contract, local and hosted.** Local and hosted MCP share the same portable engine source and the same model-visible output in both modes. Under `CLAUDE_MEM_RUNTIME=server`, the local `mem_search` points callers to the hosted MCP connection and does not query the local worker.
+- `search`, `timeline` and `get_observations` remain available for older clients and advanced filters. Their descriptions now point agents to `mem_search`, and only `mem_search` enforces the progression.
+
+### Curated, purpose-specific tool replies
+
+- MCP replies for search, context, selected records, raw tool uses, corpus build/list/prime/query, server observations, events and job lookups now return concise readable text: indexes, selected evidence, write receipts and summaries. Internal HTTP data stays available to code. Model-facing replies no longer include pretty-printed JSON envelopes or duplicated `structuredContent`.
+- Authored JSON and code examples inside a memory's own prose are preserved when it is selected. Summary evidence keeps its edited-file references, and untitled server notes get useful labels plus a supported context follow-up.
+- Worker and server errors are short plain-language messages and do not echo raw transport payloads.
+- Retrieval no longer re-observes its own output. Calls to claude-mem's own search and context tools, plus native `memory_*` lookups, are excluded from observation capture, so searching memory does not create new memories about searching. An explicit `save_memory` write keeps its receipt without also generating a second observation of the same note.
+
+### `save_memory` and durable-note instructions
+
+- New `save_memory({ text, title?, project?, metadata? })` MCP tool for worker runtime. It records explicit preferences, corrections, decisions, handoffs and reusable lessons into the active checkout's project unless another project is named, and returns a short write receipt.
+- Under server runtime, `save_memory` refuses before it calls the local worker and points to `observation_add` for the selected server project. Server-mode notes cannot touch the local worker.
+- SessionStart context now includes short memory-use instructions. They tell agents to search with `mem_search` before saving to avoid duplicate or conflicting notes, to keep notes concise and separate verified facts from guesses, to leave out credentials and private material, and to use `work_state_write` for to-do lists when that tool is available. Hosted read-only connections may expose search without write tools, so the instructions say to call only tools that are actually present. Set `CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED=false` to turn them off.
+- The bundled `mem-search` skill has been rewritten around `mem_search` guided and automatic modes.
+
+### Native memory lookup bridge (Claude Code and Codex)
+
+- The `PreToolUse` hook now recognizes native memory lookups: `memory_search`, read commands of a local `memory` tool, and Read/Grep/Glob/Bash (`cat`, `head`, `tail`, `sed`, `grep`, `rg`) reads scoped to Claude Code's per-project `memory` folders, a configured `autoMemoryDirectory`, Codex's `memories` folder, or configured note roots. When one runs, the hook adds an automatic `mem_search` result for the same topic as extra context. The native tool still runs normally and its result follows.
+- Added context is capped at 10,000 characters. It is framed as retrieved data that must not supply instructions, and only curated text is ever injected; JSON-looking replies from an older worker are dropped. claude-mem's own tools are excluded to prevent recursive searches. If the worker is unavailable, the hook steps aside and the native lookup proceeds unchanged.
+- A read inside an explicitly mapped note folder searches that folder's configured project, even when another checkout reads it. Other reads use the checkout's project scope.
+- Hosted connectors' internal memory retrieval and background native-memory generation have no verified plugin interception API, so they are not intercepted. The instructions tell agents to call `mem_search` directly when they need its result.
+- The bridge runs only under worker runtime. When claude-mem settings select `server`, or the legacy `server-beta` value, it steps aside even if the server configuration is incomplete. It never queries or starts a local worker for those sessions, and the native tool continues normally.
+- Disable the bridge with `CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED=false`. Existing native-memory enable/disable choices are not changed.
+
+### Opt-in Markdown note watcher
+
+- Set `CLAUDE_MEM_MEMORY_WATCH_ROOTS` to a JSON string of up to 8 `{ "path", "project", "platformSource"? }` entries, each with an absolute (or `~/`) path and an explicit project. The worker imports Markdown notes from those folders into the mapped project. The default is empty, so nothing is imported, and the watcher never scans all native projects or global Codex memories on its own.
+- The watcher polls, waits for stable contents, and imports nothing until a file has stopped changing. It skips hidden files, symlinks and files over 64 KiB. Each read is bound to the exact file that was checked inside the configured root, so a file outside that root cannot be imported through a link, a move or a swapped parent folder. It never rewrites source files and makes no model calls.
+- Edits are stored as distinct revisions. Exact content fingerprints deduplicate replays across worker restarts and simultaneous processes. Deleting a source note does not delete its archived revisions. Imported notes follow your existing cloud-sync settings.
+- While a watcher is configured, the worker's idle-exit timer stays off so external note changes are still captured.
+- Restart the local worker after changing the setting. See [docs/native-memory-bridge.md](https://github.com/thedotmack/claude-mem/blob/main/docs/native-memory-bridge.md) for configuration details.
+
+### Safety and integration fixes
+
+- **Runtime routing.** `mem_search`, `save_memory` and the native memory bridge honor `CLAUDE_MEM_RUNTIME`, including the legacy `server-beta` value and a runtime selected in claude-mem settings. Worker runtime uses the local worker. Server runtime points searches to the hosted MCP connection and note writes to `observation_add`, and the bridge skips supplementation even when the server configuration is incomplete. None of them fall back to the local worker.
+- **Installation discovery.** The source-checkout activation script (`scripts/activate-progressive-memory-local.mjs`, not shipped in the npm package) discovers the supported Claude Code and Codex installations actually present, including marketplace and matching local cache copies. It respects `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, and a Claude-only or Codex-only machine is enough. It defaults to a read-only plan, records the original bytes and hashes before `--apply`, and `--restore` validates every affected file before rolling any of them back.
+- **Configured data directory.** Activation uses the worker's own data-directory resolver. It checks an explicit `--memory-data-dir` first, then `CLAUDE_MEM_DATA_DIR` in the environment, then the flat or nested `CLAUDE_MEM_DATA_DIR` setting in the default `~/.claude-mem/settings.json`, and it expands home-relative paths. It updates and backs up the resolved directory's settings and leaves the default redirect file unchanged. Settings files that start with a UTF-8 BOM are accepted. A nested `env` object receives the setting only when it already holds `CLAUDE_MEM_*` settings.
+- **Watcher file containment.** Watch roots must be absolute and mapped to an explicit project, and symlinked roots and files are skipped. Each file is opened with `O_NOFOLLOW` after its real path is checked inside the canonical root. The opened descriptor must match the checked file's device, inode, size, modification time and change time. The path's location is verified again before and after reading. The read is limited to the checked size, and the import is discarded if anything changed. This closes a race in which a swapped parent folder could open a file outside the root and then be restored. Change detection now also tracks device and change time.
+- **Chroma vector search starts again on fresh environments** ([#4595](https://github.com/thedotmack/claude-mem/pull/4595), reported in #4593). chroma-mcp 0.2.6 pins `mcp[cli]==1.6.0`, which imports a private pydantic helper that pydantic 2.14.0 removed. Freshly resolved chroma-mcp environments failed on import during prewarm and vector search stayed off. The launcher now caps `pydantic<2.14` alongside its other dependency overrides, for both local and remote Chroma modes.
+- **OpenCode V2 plugin contract** ([#4577](https://github.com/thedotmack/claude-mem/pull/4577)). The OpenCode plugin now exports the dual V1/V2 shape, so one bundle loads on OpenCode V1 (1.18.29+) and V2. On V2 it reads the checkout from `ctx.location.directory`, extracts structured tool results correctly instead of storing the literal string `undefined`, summarizes on finished turns and compactions from the V2 event bus, forgets deleted sessions, resubscribes when the event stream ends, and disposes earlier registrations if setup fails. Cached memory is kept across idle summaries. Verified end to end on OpenCode v2.0.22, and event handling covers the envelopes that OpenCode 2.0.23 sends. Thanks to @XiaTian-AC and @percy-raskova.
+
+### Model and provider behavior
+
+This release does not change observer or default model selection, provider routing, or billing behavior. Automatic `mem_search` is bounded, ranked lexical retrieval and makes no additional LLM calls.
+
+### Validation
+
+- All eight CI jobs passed on the reviewed head, which has the same tree as the merged main commit. They cover typecheck, build, test and bundle size; Linux and Windows Chroma lifecycle and worker-recycle orphan gates; the Windows build; clean-room dependency closure; server-runtime e2e with Postgres and Valkey; sync-api with protocol v2 and matrix e2e; and the sync-hub worker suite.
+- The full suite ran 8,139 tests across 783 files: 8,105 passed, 34 skipped, 0 failed, with 38,212 assertions. OpenClaw passed all 56 of its tests across 3 files.
+- The late fixes add focused tests for the watcher descriptor-identity race, the native hook's server-runtime skip, and the activation data-directory resolver. On the 13.35.0 release tree, the watcher-race, hook-transport, local-activation and progressive-memory stdio files ran 31 tests with 473 assertions, all passing.
+- Local typecheck and build, 219 focused tests and 41 adversarial cases passed against both the local and hosted engines. The shared engine source is byte-identical in both, and guided and automatic model-visible output is identical.
+- Real SQLite, HTTP and SDK stdio fixtures verify three things: server-mode notes cannot touch the local worker, authored JSON examples and summary file evidence survive selected retrieval, and untitled server notes get useful labels with a supported context follow-up. The observer CLI integration verifies the exact 14-tool deny list and `dontAsk` mode across the supported SDK argument forms.
+- On the release tree, root and viewer typechecks, the postinstall allowlist guard, and the version-consistency and plugin-distribution tests (97 tests) passed. `npm run build-and-sync` succeeded, including a verified local worker restart on 13.35.0.
+
+### Upgrade
+
+Run `npx claude-mem@13.35.0 install`, then restart the local worker. To pick up the new `mem_search` and `save_memory` tool definitions, open a fresh agent session or reload the MCP connection, because MCP processes that are already running keep the tools they started with. Platform-managed plugin-hook trust still applies to the expanded `PreToolUse` matcher.
+
+Included changes: [#4596](https://github.com/thedotmack/claude-mem/pull/4596), [#4595](https://github.com/thedotmack/claude-mem/pull/4595), and [#4577](https://github.com/thedotmack/claude-mem/pull/4577).
+
+## [13.34.2] - 2026-10-06
+
+This patch removes a worker regression that broke prompt-cache reuse for observer sessions on the providers that share the OpenAI-compatible HTTP observer loop, such as OpenRouter and Gemini.
+
+## What was wrong
+
+Since v13.29.0 (PR #3151), the worker pruned the observer's conversation history before every request. Once a tool-use exchange fell out of the most recent eight messages, its payload was replaced in place with a short stub marked `pruned="true"`. That kept each request smaller, but it also rewrote messages the provider had already received. From the fifth observation of a session onward, every request changed an earlier message, so the conversation no longer started with the same bytes as the request before it. Providers that cache a prompt by its prefix could not reuse the cached conversation and had to read the rewritten part again as new input.
+
+## What changed
+
+The shared HTTP provider no longer prunes history. The import and both per-turn calls are gone: the one before each observation request and the one before each summary request. Within a generation, a message that has been sent is now sent again unchanged, so each request extends the previous one and the summary request still sees the original tool payloads.
+
+## What stays the same
+
+Requests are still bounded by the limits that were already in place:
+
+- The observer conversation is still recycled into a new generation when it reaches its size budget, which comes from the observer context window (`CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW`) and the last reported context token count.
+- A context-overflow error from a provider still recycles the conversation and continues.
+- The output cap (`CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS`) and the cleanup after a rejected request are unchanged.
+- Model routing, retries, and billing behavior are unchanged.
+
+Because old payloads are no longer shrunk, a generation reaches its size budget in fewer turns than it did in v13.29.0 through v13.34.1, and long sessions recycle more often. The effect on provider cost has not been measured in production, so this release makes no claim about savings.
+
+## Validation
+
+- `tests/history-pruning.test.ts` passes (9 tests). Its two new regression tests keep a deep copy of every request as it was sent. The first runs 40 observations and a summary and checks that each request begins with the previous request's messages, unchanged. The second drains 200 events across several bounded generations, checks the same thing within each generation, and confirms that request size stays under the bound.
+- 880 of the 881 tests in the 63 test files that cover the shared provider, the individual providers, and observer recycling pass. The one failure is a socket-timing assertion in `tests/worker/field-deadline-wire.test.ts`. It fails the same way on unmodified v13.34.1 and exercises the field-compression path, which this release does not change.
+- Root and viewer type checks, the postinstall allowlist guard, and the version-consistency and plugin-distribution tests on the built tree pass. `build-and-sync` succeeded, including a verified local worker restart on v13.34.2, and the built worker bundle no longer contains the pruning code.
+
+## [13.34.1] - 2026-10-06
+
+The CMEM Pro installer and every client promotion now show **30 Day Free Trial**. This restores the public offer to match the cloud's standard 30-day trial and removes the shorter “up to 14 days” wording from provider selection, installer completion, session and context banners, welcome hints, the viewer, and public documentation.
+
+Trial URLs keep their existing source attribution, and the client still uses the trial expiration and account status returned by the cloud. Inference allowances, subscription and fallback behavior, paid billing disclosures, and provider settings are unchanged. The installer order remains the existing flow; the login-first web installation work is tracked separately.
+
+Validation: 58 existing installer OAuth, promotion, and gateway tests and 17 committed bundle/version and agent selection tests passed. Root and viewer typechecking, the postinstall allowlist guard, and build-and-sync passed, including a verified v13.34.1 local worker restart. Built CLI, worker, and viewer copy was checked before publication.
+
+## [13.34.0] - 2026-10-06
+
+## New: Pi and DeepSeek Harness integrations
+
+Claude-Mem 13.34.0 adds first-party memory integrations for Pi and DeepSeek Harness, makes installation follow the agents you actually use, and gives native user turns durable identities so a retry cannot create a second prompt or attach capture to the wrong turn.
+
+### Pi
+
+- Install with `npx claude-mem install --ide pi`, then restart Pi. The self-contained ESM extension installs under `~/.pi/agent/extensions/claude-mem`; `PI_CODING_AGENT_DIR` is respected.
+- Use `mem_search`, `mem_timeline`, and `mem_get_observations` for progressive recall: search for useful IDs, inspect their surrounding timeline, and fetch only the records needed.
+- Compatible hosts capture the persisted user prompt before tool results, retain the real Pi session and tool-call identities, and summarize once per turn. Only text is captured; image payloads stay out of memory.
+- Failed worker requests leave Pi usable. Capture remains disarmed until the worker acknowledges the actual persisted user-entry ID. The extension can recover on that same entry after a temporary outage or unavailable branch data, without requiring a new user turn.
+- Private prompts and excluded projects suppress automatic context and capture. Switching sessions, forking, or changing the session tree clears the prior capture anchor.
+- Installation and `npx claude-mem pi status` confirm extension-file presence; they do not verify the Pi version or automatic capture. Pi 0.79.6 supports manual recall only. Automatic capture compatibility has been source-reviewed for Pi 1.0.2 and 1.0.4; other versions require a compatibility check and capture requires a compatible Claude-Mem worker. See [Pi capture compatibility and update guidance](https://github.com/thedotmack/claude-mem/blob/main/docs/pi-native-capture.md).
+
+### DeepSeek Harness
+
+- Install DSH and `pnpm`, then run `npx claude-mem install --ide dsh --dsh-profile web`. The default profile is `web`; `--dsh-profile` also supports an existing profile such as `tui` on an older host.
+- The bundled `@claude-mem/dsh` package installs through DSH's own profile and workspace commands. Restart DSH and start or restart the Claude-Mem worker after installation.
+- The native plugin injects checkout context before the first turn and provides `mem_search`, `mem_timeline`, `mem_get_observations`, `mem_save`, and `mem_context`.
+- Fetching observations by ID retains every requested record, including records that share the same text. A configured recall project still respects exclusion of the actual checkout.
+- Automatic capture uses one worker-managed transcript watch. Plugin ingestion and summarization stay off by default, preventing a second writer. New managed watches start at the end of existing transcripts rather than unexpectedly importing historical sessions.
+- Capture retains the real session-header ID, matches current and legacy tool-result formats, and restores directory and pending-tool context after a watcher restart. Replaced transcript files cannot borrow the previous file's session ID, directory, or outstanding tool calls.
+- Existing user-managed DSH watches remain authoritative. Installation respects the configured transcript-watch path and `DSH_HOME`, preserves an explicit `CLAUDE_MEM_TRANSCRIPTS_ENABLED=false`, and reports incomplete capture setup separately from successful plugin installation.
+- Pi and DSH use the configured worker address, including persisted settings and environment overrides. DSH recall can target a remote worker with `DSH_MEM_BASE_URL` or plugin configuration without starting a local worker for that remote address.
+
+## Installation improvements
+
+- The interactive installer asks which agents you use and preselects detected agents. Claude Code is the fallback when no supported agent is detected; its host-install prompt appears when Claude Code is selected and missing.
+- Pi and DeepSeek Harness appear in agent detection and CLI selection. Native Pi extension install, status, and uninstall commands are available from `npx claude-mem pi`.
+- Pi and DSH currently require worker runtime. Their combination with server runtime is rejected before package copying begins.
+- Native installers validate required bundle, attribution, and configuration inputs before changing the destination or invoking DSH profile installation. Missing inputs and malformed configuration leave working installations intact.
+- Pi replaces its explicit owned file set with rollback if a replacement fails. Repeat installation refreshes the complete set, and uninstall retains unrelated extension files.
+- DSH installation records managed profiles for later uninstall, restores that ownership record when DSH installation fails, and leaves unrelated watches and host configuration in place.
+- If DSH is missing or refuses profile removal, uninstall continues cleaning other integrations, reports incomplete DSH cleanup, and retains the profile ownership records and package needed to retry.
+- Marketplace installation refreshes the root project `LICENSE` and `NOTICE` together. Pi and DSH packages include their adapted-project attribution and bundled dependency license texts; the build validates Pi's pinned TypeBox version and provenance before writing the native bundles.
+
+## Durable native prompt retries
+
+- Native user-entry IDs are stored atomically with the prompt and scoped to the worker's platform/session identity. Two intentional turns with equal text remain distinct; retrying the same entry returns the existing prompt receipt, including after a worker restart.
+- Prompt broadcasts and vector synchronization use the exact claimed prompt record, so rapid turns saved within the same millisecond cannot sync the preceding turn.
+- Reusing an entry ID for different cleaned prompt text is rejected. Identity checks use the complete cleaned ask, so equal truncated previews cannot hide conflicting retry bodies.
+- If a durable prompt was saved but live session initialization failed, retry repairs the stale live prompt context. An earlier receipt cannot downgrade a newer active turn. Cold retries remain lazy until real observation capture needs the session.
+- Slash-only native asks retain their actual turn context. Legacy callers continue to use the existing same-text retry behavior.
+- The read-only native capability probe prevents an older worker from silently treating a Pi native entry as legacy text capture. Only a matching current-entry acknowledgement enables automatic tool and summary capture.
+
+## Upgrade and credits
+
+Run `npx claude-mem@13.34.0 install`, select your agents, and restart newly configured hosts. See [native harness installation](https://github.com/thedotmack/claude-mem/blob/main/docs/native-harness-integrations.md) for configuration, compatibility, and uninstall details.
+
+The Pi recall design and text extraction build on [husniadil/pi-mem](https://github.com/husniadil/pi-mem), by Husni Adil Makmur, under MIT. The DeepSeek Harness plugin adapts [Bleed00/dsh-claude-mem](https://github.com/Bleed00/dsh-claude-mem), by Bleed00, under Apache-2.0. Their original attribution and required notices ship with the integrations.
+
+Included changes: [#4377](https://github.com/thedotmack/claude-mem/pull/4377), [#4378](https://github.com/thedotmack/claude-mem/pull/4378), and [#4461](https://github.com/thedotmack/claude-mem/pull/4461).
+
+## [13.33.0] - 2026-10-06
+
+## The File Read Gate now works for marketplace installs
+
+v13.32.0 turned the File Read Gate on by default, but it never switched on for anyone who installed claude-mem from the plugin marketplace. The gate only blocks a Read where `smart_outline` can parse the file, and parsing needs the tree-sitter CLI executable that tree-sitter-cli's install script downloads. Claude Code installs a plugin's dependencies with install scripts turned off, and the Setup hook that could have downloaded it doesn't run on install, update or normal startup. So `smart_search`, `smart_outline` and `smart_unfold` answered "Could not parse" for every file, and the gate never blocked anything. (#4551)
+
+- **The worker now downloads the tree-sitter CLI.** Every install starts the worker, so at startup it fetches the executable into its own plugin folder. The download runs in the background, so the worker never waits on it. In a clean-room marketplace install, the executable was in place 5 seconds after the worker started. If the download fails, the worker logs it and tries again on its next start, or you can run `npx claude-mem repair`.
+- **Only a verified executable runs.** `tree-sitter-cli` is pinned to exactly `0.26.9`. A downloaded executable must match the SHA-256 pinned for that version and your platform before it runs at all. It's moved into place only after it answers `--version`, so a failed, killed or timed-out download never leaves a broken executable behind.
+- **Running sessions pick it up.** The MCP server used to remember its first lookup of the executable. A session that started before the download kept answering "Could not parse", even after the gate began blocking Reads and sending Claude to those tools. It now checks again on every call.
+
+## The gate now blocks only code files of 32 KB and up
+
+A whole-file `Read` is now blocked only when the code file is **32 KB or larger**. Code files from 1,500 bytes up still get their observation timeline added as context, as before. (#4553)
+
+Blocking a Read isn't free. Claude saves the tokens of the file it doesn't read, but it takes extra turns to get what it needs, and every turn re-reads the whole context. A new eval case on a 49 KB file measured the same question with the gate on and off (#4552). The table compares the cost of a run with the gate on against the gate off:
+
+| File | Sonnet 5.5 | Opus 5.5 |
+| --- | --- | --- |
+| 49 KB, blocked | **-38%** | **-30%** |
+| 19 KB, blocked (v13.32.0) | -6% | **+20%** |
+| 19 KB, not blocked (this release) | -1% | 0% |
+
+Sonnet 5.5 ran 3 times per case and Opus 5.5 twice. Edits still work after a block: in all 5 edit runs on the 49 KB file, the whole-file Read was blocked, Claude used Grep and a 15-line targeted Read instead, and the Edit changed only the intended line.
+
+The viewer's **Block full-file reads** toggle and the docs (File Read Gate → Size Thresholds) now say "code files of 32 KB and up".
+
+## Fixes
+
+- **Plan mode:** claude-mem's read-only tools now run in plan mode without a permission prompt. Before, `-p` sessions refused them outright. Plan mode skips the prompt only for tools that declare themselves read-only, and these 14 now do: `important_workflow`, `search`, `timeline`, `get_observations`, `get_tool_uses`, `work_state_read`, `session_start_context`, `observation_search`, `observation_context`, `observation_generation_status`, `smart_search`, `smart_outline`, `smart_unfold` and `list_corpora`. That includes every tool the File Read Gate sends Claude to. Tools that write, such as `work_state_write`, still ask. (#4551)
+- **Smaller installs:** the File Read Gate eval suite (cases, graders, scaffold scripts and a 20 KB fixture) no longer ships inside every plugin install. It now lives in `evals/read-gate/` in the repository. (#4551)
+
+## Tests and tooling
+
+- `npm run eval:read-gate` adds a gate-on/gate-off pair on a 49 KB fixture, per-run token and cost accounting, and a "same question, gate ON vs OFF" table for each fixture. (#4552, #4553)
+- The sync e2e script's `CMEM_SYNC_E2E_ALLOW_REMOTE_HUB` now takes a comma-separated list of exact hostnames, so production smoke runs through `sync.cmem.ai` can join Realtime on the Supabase project host (#4484). Empty entries in that list are now refused instead of silently dropped (#4550).
+
 ## [13.32.0] - 2026-10-06
 
 ## The File Read Gate is back, on by default

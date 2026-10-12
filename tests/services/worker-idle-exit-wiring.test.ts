@@ -21,6 +21,7 @@ function fixture(options: { shutdownSettles?: boolean } = {}) {
   Object.assign(worker, {
     idleExitMonitor: null,
     transcriptWatcher: null,
+    memoryFileWatcher: null,
     lastAiInteraction: null,
     sessionManager: { hasSessionActivitySince: () => false, getTotalQueueDepth: () => 0 },
     server: { getLastRequestAt: () => null, getInFlightRequestCount: () => signals.inFlightRequests },
@@ -108,6 +109,15 @@ describe('WorkerService.startIdleExitMonitor', () => {
     h.advance(1_000);
     h.tick();
     expect(h.shutdown).toHaveBeenCalledWith('idle');
+  });
+
+  it('stays off while memory folders are watched, so external notes remain captured', () => {
+    const h = fixture();
+    h.worker.memoryFileWatcher = { stop() {} };
+    h.worker.startIdleExitMonitor(settings());
+    expect(h.worker.idleExitMonitor).toBeNull();
+    expect(h.interval).not.toHaveBeenCalled();
+    expect(warned(h.warn, 'memory-file watches are active')).toBe(true);
   });
 
   it('stays up while a viewer is connected or a request is open, then exits through the idle shutdown', async () => {
