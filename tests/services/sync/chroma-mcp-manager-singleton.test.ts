@@ -99,7 +99,7 @@ class FakeTransport {
   // pokes into via `(this.transport as unknown as { _process })._process`.
   _process: FakeChildProcess;
 
-  constructor(_opts: { command: string; args: string[] }) {
+  constructor(readonly opts: { command: string; args: string[] }) {
     transportCount += 1;
     this._process = new FakeChildProcess();
     transportInstances.push(this);
@@ -453,6 +453,18 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('prewarms with the pydantic cap that chroma-mcp 0.2.6 needs (#4593)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const prewarmArgs = prewarmSpawnCalls[0]!.args;
+    const capIdx = prewarmArgs.indexOf('pydantic<2.14');
+    expect(capIdx).toBeGreaterThan(0);
+    expect(prewarmArgs[capIdx - 1]).toBe('--with');
+    expect(capIdx).toBeLessThan(prewarmArgs.indexOf('--from'));
+    expect(prewarmArgs.at(-1)).toBe('--help');
   });
 
   it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
@@ -907,6 +919,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       'onnxruntime>=1.20',
       'protobuf<7',
       'chromadb==1.5.9',
+      'pydantic<2.14',
     ]);
     expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
       .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
@@ -1143,6 +1156,21 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('keeps the MCP 1.6 Pydantic compatibility bound in prewarm and transport launches', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const prewarmArgs = prewarmSpawnCalls[0].args;
+    const transportArgs = transportInstances[0].opts.args;
+    for (const args of [prewarmArgs, transportArgs]) {
+      expect(args.filter(arg => arg === 'pydantic<2.14')).toHaveLength(1);
+      const compatibilityAt = args.indexOf('pydantic<2.14');
+      expect(args[compatibilityAt - 1]).toBe('--with');
+      expect(compatibilityAt).toBeLessThan(args.indexOf('--from'));
+    }
+    expect(prewarmArgs.slice(0, -1)).toEqual(transportArgs.slice(0, transportArgs.indexOf('chroma-mcp') + 1));
+    expect(prewarmArgs.at(-1)).toBe('--help');
   });
 
   it('stops spawning uvx after a burst of consecutive prewarm failures (#4108)', async () => {
@@ -1754,7 +1782,7 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.chromaMcpVersion).toBe('0.2.6');
-    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9']);
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9', 'pydantic<2.14']);
     // The engine version is read from the launcher pin, never kept separately.
     expect(record.chromadbVersion).toBe('1.5.9');
     expect(record.depOverrides).toContain(`chromadb==${record.chromadbVersion}`);

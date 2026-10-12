@@ -82,6 +82,18 @@ export function bumpTokenDf(db: Database, project: string, title: string | null 
   ).run(project);
 }
 
+/**
+ * The IDF cutoff above which a symmetric-difference token vetoes a near-dup
+ * (see {@link vetoFires}). The documented contract of `idfVetoDf` is that a
+ * token appearing in **<=** `idfVetoDf` records is discriminating. `vetoFires`
+ * uses a strict `idf(t) > theta`, and `idf` is monotonically decreasing in df,
+ * so the cutoff must be the idf of `idfVetoDf + 1` for df == idfVetoDf to still
+ * fire (df <= idfVetoDf  <=>  df < idfVetoDf + 1  <=>  idf(df) > idf(idfVetoDf + 1)).
+ */
+function vetoThetaFor(idfVetoDf: number, docCount: number): number {
+  return idf(idfVetoDf + 1, docCount);
+}
+
 /** Project document count (0 if the project has no dedup_meta row yet). */
 export function getProjectDocCount(db: Database, project: string): number {
   const row = db.prepare('SELECT doc_count FROM dedup_meta WHERE project = ?').get(project) as { doc_count: number } | undefined;
@@ -177,7 +189,7 @@ export function sweepProjectCandidates(db: Database, project: string, cfg: Dedup
   const { idfFn, docCount } = buildProjectIdf(db, project);
   const thresholds: ClassifyThresholds = {
     cosineThreshold: cfg.cosineThreshold,
-    vetoThetaIdf: idf(cfg.idfVetoDf, docCount),
+    vetoThetaIdf: vetoThetaFor(cfg.idfVetoDf, docCount),
     minSharedTokens: cfg.minSharedTokens,
   };
   const tokensPerRow = rows.map(r => new Set(tokenizeWs(r.title)));
@@ -247,7 +259,7 @@ export function recordTier1Candidates(
   const { idfFn, docCount } = buildProjectIdf(db, project);
   const thresholds: ClassifyThresholds = {
     cosineThreshold: cfg.cosineThreshold,
-    vetoThetaIdf: idf(cfg.idfVetoDf, docCount),
+    vetoThetaIdf: vetoThetaFor(cfg.idfVetoDf, docCount),
     minSharedTokens: cfg.minSharedTokens,
   };
   const rows = db.prepare(
