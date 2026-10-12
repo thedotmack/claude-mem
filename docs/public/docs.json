@@ -100,7 +100,8 @@
           "troubleshooting",
           "platform-integration",
           "openclaw-integration",
-          "kimi-integration"
+          "kimi-integration",
+          "screenpipe-integration"
         ]
       },
       {

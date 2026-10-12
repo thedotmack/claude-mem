@@ -47,14 +47,16 @@ window. Audio is requested for meeting queries. The helper returns text and
 source metadata, not screenshots or audio files. Long text is marked as truncated.
 
 The HTTP requests go to local services, but **retrieved text enters the agent's
-conversation** and may be sent to its configured AI provider and retained by
-normal claude-mem capture hooks. Explicit saves store notes in the local
-claude-mem database; they do not automatically appear on other computers.
-Choose a narrow topic, app, and time window.
+conversation** and is sent to its configured AI provider. Search results are
+wrapped in `<private>` so claude-mem's automatic capture doesn't store them; only
+a note you ask to save is stored. Saved notes are stored like any other
+claude-mem memory: in the local database, and in your cloud account if cloud
+sync is on. Choose a narrow topic, app, and time window.
 
-Saving requires claude-mem's running local worker URL, as shown on startup. Hosted
-server mode and remote Screenpipe instances are not supported by this basic
-integration. It does not enable recording, periodically poll, or bulk-sync history.
+Saving uses claude-mem's running local worker, found from `CLAUDE_MEM_WORKER_PORT`
+or `~/.claude-mem/settings.json`. Hosted server mode and remote Screenpipe
+instances are not supported by this basic integration. It does not enable
+recording, periodically poll, or bulk-sync history.
 
 ## Troubleshooting
 

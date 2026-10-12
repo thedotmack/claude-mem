@@ -17,8 +17,10 @@ offsets. Default to screen text (`ocr`, including accessibility-derived text);
 use `audio` for conversations or `all` when both are relevant.
 
 Before the first search, explain that retrieved text enters the agent conversation
-and may be retained by normal claude-mem hooks or sent to configured AI providers.
-This is on-demand retrieval; it does not start recording or background sync.
+and is sent to the agent's AI provider. Search results are wrapped in `<private>`
+so claude-mem's automatic capture doesn't store them; only a note the user asks
+to save is stored. This is on-demand retrieval; it does not start recording or
+background sync.
 
 Run the bundled helper (resolve its path relative to this skill when
 `CLAUDE_SKILL_DIR` is unavailable):
@@ -50,18 +52,20 @@ the relevant facts and their Screenpipe source types, IDs, and timestamps. Use t
 user's project, or the current claude-mem project. If the request was only to
 search, show the answer without making an explicit memory save.
 
-Save the selected note to a local file, then use the existing worker save API:
+Pass the note on stdin (`--file -`) so no file is left in the user's checkout:
 
 ```bash
-node "${CLAUDE_SKILL_DIR}/screenpipe.mjs" save \
-  --file "screenpipe-note.md" --project "my-project" \
-  --title "Screenpipe: release discussion" --worker-url "http://127.0.0.1:PORT"
+node "${CLAUDE_SKILL_DIR}/screenpipe.mjs" save --file - \
+  --project "my-project" --title "Screenpipe: release discussion" <<'NOTE'
+Release discussion (Screenpipe OCR frame 1234, 2026-10-07T09:12:00-07:00): ...
+NOTE
 ```
 
-Replace `PORT` with the running worker's port (shown on startup; see
-`CLAUDE_MEM_WORKER_PORT` or the configured `settings.json`). Do not guess the port
-or point this at a hosted server. The save is stored in claude-mem's local
-observation database. Report success only after
+The helper finds the local worker from `CLAUDE_MEM_WORKER_PORT` or
+`~/.claude-mem/settings.json`; pass `--worker-url` only to override it, and never
+point it at a hosted server. Saved notes are stored like any other claude-mem
+memory: in the local database, and in your cloud account if cloud sync is on.
+Report success only after
 the helper returns `success: true` and an observation ID. Use `get_observations`
 with that ID to verify readback. A timeout may occur after a write; check existing
 memories before retrying. Do not import an entire desktop history by default.

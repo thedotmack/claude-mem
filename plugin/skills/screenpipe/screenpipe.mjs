@@ -1,6 +1,8 @@
 import { parseArgs } from 'node:util';
 import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const HELP = `Screenpipe context for claude-mem (Node.js 20+)
@@ -8,13 +10,37 @@ const HELP = `Screenpipe context for claude-mem (Node.js 20+)
 search --start <ISO timestamp> --end <ISO timestamp>
        [--query <text>] [--app <name>] [--type ocr|audio|all]
        [--limit 1..50] [--offset <number>]
-save   --file <reviewed note> --project <name> --worker-url <local URL>
-       [--title <text>]
+save   --file <reviewed note, or - for stdin> --project <name>
+       [--title <text>] [--worker-url <local URL>]
 
 Search uses SCREENPIPE_URL (default http://127.0.0.1:3030) and optional
-SCREENPIPE_API_KEY. Save writes the note to claude-mem's local worker.
-No automatic import or background sync. Search output can be captured by
-your agent's normal hooks and sent to its configured AI provider.`;
+SCREENPIPE_API_KEY. Search results are wrapped in <private> so claude-mem's
+automatic capture does not store them; they still reach your agent's AI
+provider as part of the conversation. Save writes the reviewed note to
+claude-mem's local worker (found from CLAUDE_MEM_WORKER_PORT or settings.json
+when --worker-url is omitted). No automatic import or background sync.`;
+
+// The local worker's URL, resolved the way claude-mem does: environment first,
+// then ~/.claude-mem/settings.json, then the per-user default port.
+export function defaultWorkerUrl(env = process.env) {
+  let settings = {};
+  try {
+    const dataDir = env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
+    settings = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8')) || {};
+  } catch { /* no settings file: use defaults */ }
+  const host = env.CLAUDE_MEM_WORKER_HOST || settings.CLAUDE_MEM_WORKER_HOST || '127.0.0.1';
+  const port = env.CLAUDE_MEM_WORKER_PORT || settings.CLAUDE_MEM_WORKER_PORT
+    || String(37700 + ((process.getuid?.() ?? 77) % 100));
+  const bracketed = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `http://${bracketed}:${port}`;
+}
+
+async function readNote(file, stdin = process.stdin) {
+  if (file !== '-') return readFile(file, 'utf8');
+  const chunks = [];
+  for await (const chunk of stdin) chunks.push(chunk);
+  return Buffer.concat(chunks.map(c => (typeof c === 'string' ? Buffer.from(c) : c))).toString('utf8');
+}
 
 function localEndpoint(base, path) {
   const url = new URL(base);
@@ -59,11 +85,11 @@ export async function run(args, env = process.env) {
   const { values } = parseArgs({ args: flags, options: Object.fromEntries(options.map(key => [key, { type: 'string' }])) });
 
   if (command === 'save') {
-    if (!values.file || !values.project?.trim() || !values['worker-url']) {
-      throw new Error('save requires --file, --project, and --worker-url.');
+    if (!values.file || !values.project?.trim()) {
+      throw new Error('save requires --file and --project.');
     }
-    const url = localEndpoint(values['worker-url'], '/api/memory/save');
-    const text = (await readFile(values.file, 'utf8')).trim();
+    const url = localEndpoint(values['worker-url'] || defaultWorkerUrl(env), '/api/memory/save');
+    const text = (await readNote(values.file)).trim();
     if (!text || Buffer.byteLength(text) > 64 * 1024) throw new Error('The reviewed note must contain 1..65536 bytes.');
     const saved = await request(url, {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -119,7 +145,11 @@ export async function run(args, env = process.env) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   try {
     const result = await run(process.argv.slice(2));
-    console.log(typeof result === 'string' ? result : JSON.stringify(result, null, 2));
+    if (typeof result === 'string') console.log(result);
+    // Screen text is wrapped in <private> so claude-mem's automatic capture
+    // strips it; only a note the user asks to save is stored.
+    else if (process.argv[2] === 'search') console.log(`<private>\n${JSON.stringify(result, null, 2)}\n</private>`);
+    else console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(`Screenpipe integration: ${error.message}`);
     process.exitCode = 1;
