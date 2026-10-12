@@ -39,6 +39,8 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
+import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -99,11 +101,13 @@ const semanticContextSchema = z.object({
   // Every key the checkout reads (gate P2-5); a list, or comma-separated.
   projects: z.union([z.array(z.string()), z.string()]).optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  format: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private progressiveSearch?: ProgressiveMemorySearch;
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
   private cachedSettingsSaveCount = -1;
@@ -196,6 +200,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    app.post('/api/mem-search', this.handleProgressiveSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -219,6 +224,17 @@ export class SearchRoutes extends BaseRouteHandler {
     res.locals.searchTelemetry = searchTelemetry;
     const result = await this.searchManager.search(this.searchArgsFromRequest(req), searchTelemetry);
     res.json(result);
+  });
+
+  private handleProgressiveSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
+    const { searchScope, projects, ...input } = req.body ?? {};
+    const scope = typeof searchScope === 'string' ? `worker/${searchScope}` : 'worker/global';
+    try {
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope, projects)));
+    } catch (error) {
+      res.json(progressiveSearchToolError(error));
+    }
   });
 
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -343,9 +359,9 @@ export class SearchRoutes extends BaseRouteHandler {
     // session that asks, so only then is its id used, and that answer stays live.
     const showLastMessage = this.showLastMessageEnabled();
     const hostSessionId = showLastMessage && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
-    // A host that cannot run the project resolver itself (the OMP hook) sends
-    // its cwd instead: read the keys the CLI context hook sends for that checkout.
-    if (!projectsParam && hostCwd.trim()) {
+    // An excluded checkout receives no context, whether the host names its
+    // projects itself (a DSH project override) or leaves them to the worker.
+    if (hostCwd.trim()) {
       const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
       if (isProjectExcluded(hostCwd, excludedProjects)) {
@@ -353,6 +369,10 @@ export class SearchRoutes extends BaseRouteHandler {
         res.send('');
         return;
       }
+    }
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
       projectsParam = getProjectContext(hostCwd).allProjects.join(',');
     }
     const forHuman = req.query.colors === 'true';
@@ -560,6 +580,21 @@ export class SearchRoutes extends BaseRouteHandler {
     const observations = result?.observations || [];
     if (!observations.length) {
       res.json({ context: '', count: 0 });
+      return;
+    }
+
+    const format = SearchRoutes.firstString(req.body?.format) ?? SearchRoutes.firstString(req.query.format);
+    if (format === 'index') {
+      // Progressive disclosure: one line per match, expanded on demand. Costs a
+      // fraction of a narrative per match, but a match only becomes content if
+      // the model calls get_observations, which is why narrative is the default.
+      const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+      for (const obs of observations.slice(0, limit)) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`- #${obs.id} ${obs.title || 'Observation'}${obs.subtitle ? ` — ${obs.subtitle}` : ''} (${date})`);
+      }
+      lines.push('', 'Call get_observations with the ids above to read the full details of any that bear on this prompt.');
+      res.json({ context: lines.join('\n'), count: observations.length });
       return;
     }
 

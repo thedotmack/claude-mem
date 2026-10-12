@@ -13,17 +13,28 @@ export interface SubmitSettingsDependencies {
   setStatusTimeout?: (callback: () => void, delay: number) => void;
 }
 
+/**
+ * POST the settings. With `loaded` (what this tab last read or saved), only
+ * the keys that differ from it are sent, so a save from a tab opened earlier
+ * doesn't put back values changed elsewhere since (#4597).
+ */
 export async function submitSettings(
   newSettings: Settings,
   deps: SubmitSettingsDependencies,
+  loaded?: Settings,
 ): Promise<void> {
   // CLAUDE_CODE_PATH is file/env only (spawn binary). Never POST it, even
   // when GET echoed it into local state.
   const { CLAUDE_CODE_PATH: _fileOnly, ...writableSettings } = newSettings;
+  const posted = loaded
+    ? Object.fromEntries(Object.entries(writableSettings).filter(
+      ([key, value]) => value !== loaded[key as keyof Settings],
+    ))
+    : writableSettings;
   const response = await deps.fetchImpl(API_ENDPOINTS.SETTINGS, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(writableSettings)
+    body: JSON.stringify(posted)
   });
 
   if (!response.ok) {
@@ -49,12 +60,13 @@ export async function submitSettings(
 export async function saveSettings(
   newSettings: Settings,
   deps: SubmitSettingsDependencies,
+  loaded?: Settings,
 ): Promise<void> {
   deps.setIsSaving(true);
   deps.setSaveStatus('Saving...');
 
   try {
-    await submitSettings(newSettings, deps);
+    await submitSettings(newSettings, deps, loaded);
   } catch (error) {
     console.error('Failed to save settings:', error);
     deps.setSaveStatus(`✗ Error: ${error instanceof Error ? error.message : 'Network error'}`);
@@ -112,7 +124,7 @@ export function useSettings() {
       setSettings,
       setSaveStatus,
       setIsSaving,
-    }),
+    }, settings),
     isSaving,
     saveStatus,
   };

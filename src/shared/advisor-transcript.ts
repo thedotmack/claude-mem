@@ -94,6 +94,11 @@ function readTail(transcriptPath: string, maxBytes: number): { text: string; sta
     if (start === 0) {
       return { text: buffer.toString('utf-8'), startOffset: 0 };
     }
+    // At an exact line boundary the first entry is complete and must survive.
+    const precedingByte = Buffer.alloc(1);
+    if (readSync(fd, precedingByte, 0, 1, start - 1) === 1 && precedingByte[0] === 0x0a) {
+      return { text: buffer.toString('utf-8'), startOffset: start };
+    }
     // Drop the partial first line: the scan starts at the next whole entry.
     const firstNewline = buffer.indexOf(0x0a);
     if (firstNewline === -1) {
