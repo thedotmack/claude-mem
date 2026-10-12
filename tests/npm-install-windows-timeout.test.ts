@@ -10,7 +10,7 @@ for (const mode of ['hang', 'success', 'error', 'kill-failure']) {
     try {
       const build = await Bun.build({
         entrypoints: [join(import.meta.dir, '../src/npx-cli/install/npm-install-helper.ts')],
-        target: 'node', format: 'esm', outdir: root,
+        target: 'node', format: 'esm', outdir: root, naming: '[name].mjs',
       });
       expect(build.success).toBe(true);
       const result = spawnSync('node', [join(import.meta.dir, 'fixtures/npm-timeout-windows-native.mjs'),
