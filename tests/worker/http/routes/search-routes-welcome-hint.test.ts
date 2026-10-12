@@ -1,3 +1,7 @@
+import { Database } from 'bun:sqlite';
+import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
+import { DataRoutes } from '../../../../src/services/worker/http/routes/DataRoutes.js';
+import { ContextCacheService } from '../../../../src/services/worker/ContextCacheService.js';
 
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
@@ -340,6 +344,58 @@ describe('SearchRoutes Welcome Hint', () => {
     expect(body).toContain('# claude-mem status');
     expect(generateContextStub).not.toHaveBeenCalled();
   });
+
+  for (const count of [1, 2]) {
+  it(`rechecks whether memory remains after deleting one of ${count} observations in the same worker`, async () => {
+    const db = new Database(':memory:');
+    const store = new SessionStore(db);
+    db.prepare(`INSERT INTO sdk_sessions (content_session_id, memory_session_id, project, started_at, started_at_epoch)
+      VALUES ('hint-delete-content', 'hint-delete-session', 'hint-delete-project', '2026-10-12T00:00:00Z', 1)`).run();
+    db.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('hint-delete-session', 'hint-delete-project', 'discovery', 'one memory', '2026-10-12T00:00:00Z', 1)`).run();
+    if (count === 2) db.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('hint-delete-session', 'hint-delete-project', 'discovery', 'other memory', '2026-10-12T00:00:01Z', 2)`).run();
+    const cache = new ContextCacheService({
+      debounceMs: 60_000,
+      expandProjectReadKeys: projects => projects,
+      renderVariant: async () => ({ body: '', cacheable: false }),
+    });
+    cache.start();
+    try {
+      const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => store } as any, cache));
+      const request = { query: { projects: 'hint-delete-project' } } as unknown as Request;
+      const first = createMockRes();
+      handler(request, first as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+      expect(generateContextStub).toHaveBeenCalledTimes(1);
+      expect((first.send as any).mock.calls[0][0]).toContain('CONTEXT_FROM_GENERATOR');
+
+      let remove: ((req: Request, res: Response) => void) | undefined;
+      const dataRoutes = new DataRoutes({} as any,
+        { getSessionStore: () => store, getCloudSync: () => null } as any,
+        {} as any, { broadcast: () => {} } as any, {} as any, Date.now());
+      dataRoutes.setupRoutes({ get: () => {}, post: () => {}, delete: (path: string, fn: typeof remove) => {
+        if (path === '/api/observation/:id') remove = fn;
+      }} as any);
+      const deleted = createMockRes();
+      remove!({ params: { id: '1' } } as unknown as Request, deleted as unknown as Response);
+      expect(deleted.json).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
+      expect((db.prepare('SELECT COUNT(*) AS count FROM observations').get() as {count: number}).count).toBe(count - 1);
+      expect(cache.removalGenerationNow()).toBe(1);
+      generateContextStub.mockClear();
+      const empty = createMockRes();
+      handler(request, empty as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+      if (count === 1) {
+        expect((empty.send as any).mock.calls[0][0]).toContain('This project has no memory yet.');
+        expect(generateContextStub).not.toHaveBeenCalled();
+      } else {
+        expect((empty.send as any).mock.calls[0][0]).toContain('CONTEXT_FROM_GENERATOR');
+        expect(generateContextStub).toHaveBeenCalledTimes(1);
+      }
+    } finally { cache.stop(); db.close(); }
+  });
+  }
 
   it('uses the request-local worker port env override in the welcome hint URL', async () => {
     process.env.CLAUDE_MEM_WORKER_PORT = '43210';
