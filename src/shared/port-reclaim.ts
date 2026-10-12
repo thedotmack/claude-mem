@@ -62,7 +62,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
@@ -118,6 +118,8 @@ export interface WindowsProcessRow {
   startToken: string | null;
   /** Full command line; null when the OS did not expose it. */
   cmdline: string | null;
+  /** Owning uid (POSIX readers only; Windows rows leave it undefined). */
+  uid?: number | null;
 }
 
 /**
@@ -243,6 +245,10 @@ function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
     if (!Number.isFinite(ppid)) continue;
     let name = '';
     let cmdline: string | null = null;
+    let uid: number | null = null;
+    try {
+      uid = statSync(`/proc/${entry}`).uid;
+    } catch { /* exited — an unknown owner is never a target */ }
     try {
       name = readFileSync(`/proc/${entry}/comm`, 'utf-8').trim();
     } catch { /* name is supplementary evidence; the cmdline marker still applies */ }
@@ -254,6 +260,7 @@ function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
       ppid,
       name,
       cmdline,
+      uid,
       startToken: starttime && /^\d+$/.test(starttime) ? starttime : null,
     });
   }
@@ -261,7 +268,7 @@ function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
 }
 
 /**
- * macOS/BSD counterpart: `ps -eo pid=,ppid=,lstart=,command=` is one snapshot
+ * macOS/BSD counterpart: `ps -eo pid=,ppid=,uid=,lstart=,command=` is one snapshot
  * carrying discovery and identity. Its lstart is byte-identical to
  * `ps -p <pid> -o lstart=`, which is what captureProcessStartToken() uses on
  * this platform — the same agreement readProcessTablePosix() in
@@ -272,7 +279,7 @@ function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
 async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[]> {
   let stdout: string;
   try {
-    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart=,command='], {
+    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,uid=,lstart=,command='], {
       timeout: cappedTimeoutMs(10_000, capMs),
       maxBuffer: 32 * 1024 * 1024,
       env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
@@ -293,15 +300,16 @@ async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProc
     // padding ps printed, preserved verbatim so the token byte-matches the
     // later revalidation read. The command line follows it.
     const match = line.trim().match(
-      /^(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
+      /^(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
     );
     if (!match) continue;
     rows.push({
       pid: Number.parseInt(match[1]!, 10),
       ppid: Number.parseInt(match[2]!, 10),
-      name: normalizeProcessName(match[4]!.split(' ')[0] ?? ''),
-      cmdline: match[4]!.trim().length > 0 ? match[4]! : null,
-      startToken: match[3]!.trim(),
+      uid: Number.parseInt(match[3]!, 10),
+      name: normalizeProcessName(match[5]!.split(' ')[0] ?? ''),
+      cmdline: match[5]!.trim().length > 0 ? match[5]! : null,
+      startToken: match[4]!.trim(),
     });
   }
   return rows;
@@ -829,9 +837,51 @@ export async function reclaimGhostListeningPort(
  * CI platform without touching real processes.
  */
 export interface OrphanSweepDeps {
+  /** The exact chroma store this worker holds the writer lock for. Required: no root default. */
+  dataDir: () => string | null;
+  /**
+   * Re-checked after the (possibly slow) table read and before every kill:
+   * false once this connection was cancelled or lost its writer lock, so a
+   * sweep overtaken by stop() can never kill a replacement worker's sidecar.
+   */
+  stillOwnsStore?: () => boolean;
   readTable?: (capMs?: number) => Promise<WindowsProcessRow[] | null>;
   killTree?: (pid: number, options: KillTreeOptions) => Promise<void>;
-  dataDir?: () => string | null;
+  /** Our uid on POSIX, null on Windows (rows there carry no owner). */
+  ownUid?: () => number | null;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Does a command line's --data-dir name EXACTLY this store?
+ *
+ * Stricter than chromaCmdlineMatchesDataDir (which the ghost-port path calls
+ * with the DATA_DIR root and so must accept children): a machine-wide kill
+ * may only target the store whose writer lock we hold. A child directory, or
+ * a path differing only in case on a case-sensitive filesystem (Linux), is a
+ * different store with its own lock.
+ */
+export function chromaCmdlineNamesExactDataDir(
+  cmdline: string | null,
+  dataDir: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!cmdline) return false;
+  const flagIndex = cmdline.indexOf('--data-dir');
+  if (flagIndex < 0) return false;
+  let value = cmdline.slice(flagIndex + '--data-dir'.length).trim();
+  if (value.startsWith('=')) value = value.slice(1);
+  // A value containing spaces is double-quoted by the spawner.
+  if (value.startsWith('"')) {
+    const endQuote = value.indexOf('"', 1);
+    value = endQuote < 0 ? value.slice(1) : value.slice(1, endQuote);
+  }
+  const caseInsensitive = platform === 'win32' || platform === 'darwin';
+  const normalize = (dir: string): string => {
+    const slashed = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+    return caseInsensitive ? slashed.toLowerCase() : slashed;
+  };
+  return normalize(value) === normalize(dataDir);
 }
 
 /**
@@ -852,9 +902,9 @@ export interface OrphanSweepDeps {
  * Call it while holding the chroma writer lock: the lock proves no LIVE
  * worker owns this store, so any process still carrying our --data-dir
  * fingerprint is by definition an orphan of a dead generation. Every kill
- * target is evidence-matched three ways — chroma sidecar by name or by the
- * chroma-mcp entry point in its command line, PLUS our data dir in its
- * command line, PLUS not our own pid — and goes through killProcessTree with
+ * target is evidence-matched four ways — chroma sidecar by name or by the
+ * chroma-mcp entry point in its command line, PLUS exactly our data dir
+ * in its command line, PLUS our uid on POSIX, PLUS not our own pid — and goes through killProcessTree with
  * the start token from the SAME table read that discovered it, so PID reuse
  * between discovery and kill is never signalled.
  *
@@ -863,8 +913,11 @@ export interface OrphanSweepDeps {
  * a ps hiccup into a chroma outage would trade one degradation for another.
  * Graceful teardown (SIGTERM first) leaves uv its builds-scratch cleanup.
  */
-export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps = {}): Promise<{ killedPids: number[] }> {
-  const dataDir = deps.dataDir ?? (() => DATA_DIR);
+export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps): Promise<{ killedPids: number[] }> {
+  const dataDir = deps.dataDir;
+  const stillOwnsStore = deps.stillOwnsStore ?? (() => true);
+  const platform = deps.platform ?? process.platform;
+  const ownUid = (deps.ownUid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : null)))();
   const readTable = deps.readTable ?? readProcessTableWithNames;
   const killTree = deps.killTree ?? ((pid: number, options: KillTreeOptions) => killProcessTree(pid, options));
 
@@ -876,12 +929,20 @@ export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps = 
     logger.warn('PROCESS', 'Cannot enumerate the process table — refusing to guess at chroma orphans');
     return { killedPids: [] };
   }
+  if (!stillOwnsStore()) {
+    logger.debug('PROCESS', 'Chroma connection cancelled during the orphan sweep table read; killing nothing');
+    return { killedPids: [] };
+  }
 
   const targets = table.filter(
     row =>
       row.pid !== process.pid &&
+      // POSIX: only our own uid's processes. A row with an unknown owner is
+      // never a target. Windows rows carry no owner; the exact data-dir match
+      // below binds them to this profile's store.
+      (ownUid === null || row.uid === ownUid) &&
       isChromaSidecarCandidate(row) &&
-      chromaCmdlineMatchesDataDir(row.cmdline, ownDataDir)
+      chromaCmdlineNamesExactDataDir(row.cmdline, ownDataDir, platform)
   );
   if (targets.length === 0) return { killedPids: [] };
 
@@ -892,6 +953,10 @@ export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps = 
 
   const killedPids: number[] = [];
   for (const target of targets) {
+    if (!stillOwnsStore()) {
+      logger.debug('PROCESS', 'Chroma connection cancelled mid-sweep; leaving the remaining targets alone');
+      break;
+    }
     try {
       await killTree(target.pid, {
         // Identity from the discovery read — never re-probed against a

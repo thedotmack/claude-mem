@@ -15,6 +15,7 @@
 
 import { describe, it, expect } from 'bun:test';
 import {
+  chromaCmdlineNamesExactDataDir,
   reclaimOrphanChromaDataDirWriters,
   type WindowsProcessRow,
 } from '../../src/shared/port-reclaim.js';
@@ -30,13 +31,18 @@ interface KillRecord {
 interface SweepDeps {
   table: WindowsProcessRow[] | null;
   dataDir?: string | null;
+  ownUid?: number | null;
+  stillOwnsStore?: () => boolean;
 }
 
-function sweepDeps({ table, dataDir = DATA_DIR }: SweepDeps) {
+function sweepDeps({ table, dataDir = DATA_DIR, ownUid = null, stillOwnsStore }: SweepDeps) {
   const killed: KillRecord[] = [];
   const deps = {
     readTable: async () => table,
     dataDir: () => dataDir,
+    ownUid: () => ownUid,
+    platform: 'linux' as NodeJS.Platform,
+    stillOwnsStore,
     killTree: async (pid: number, options: { expectedStartToken?: string | null; signalMode?: string }) => {
       killed.push({ pid, token: options.expectedStartToken ?? null, signalMode: options.signalMode });
     },
@@ -120,6 +126,8 @@ describe('reclaimOrphanChromaDataDirWriters', () => {
     const result = await reclaimOrphanChromaDataDirWriters({
       readTable: async () => [ORPHAN_LEAF, ORPHAN_UVX],
       dataDir: () => DATA_DIR,
+      ownUid: () => null,
+      platform: 'linux',
       killTree: async (pid, options) => {
         if (pid === 4100) throw new Error('taskkill wedged');
         killed.push({ pid, token: options.expectedStartToken ?? null });
@@ -127,5 +135,72 @@ describe('reclaimOrphanChromaDataDirWriters', () => {
     });
     expect(result.killedPids).toEqual([4098]);
     expect(killed).toEqual([{ pid: 4098, token: 't-uvx' }]);
+  });
+
+  it('never targets a different store: a child dir, or a case-only difference on Linux', async () => {
+    const { deps, killed } = sweepDeps({
+      table: [
+        { ...ORPHAN_LEAF, pid: 4500, cmdline: `chroma-mcp --data-dir ${DATA_DIR}/nested/chroma` },
+        { ...ORPHAN_LEAF, pid: 4501, cmdline: 'chroma-mcp --data-dir /home/u/.CLAUDE-MEM/chroma' },
+      ],
+    });
+    const result = await reclaimOrphanChromaDataDirWriters(deps);
+    expect(result.killedPids).toEqual([]);
+    expect(killed).toEqual([]);
+  });
+
+  it('never targets another user\'s process, or one whose owner is unknown, on POSIX', async () => {
+    const { deps, killed } = sweepDeps({
+      ownUid: 501,
+      table: [
+        { ...ORPHAN_LEAF, pid: 4600, uid: 502 },
+        { ...ORPHAN_LEAF, pid: 4601, uid: null },
+        { ...ORPHAN_LEAF, pid: 4602, uid: 501 },
+      ],
+    });
+    const result = await reclaimOrphanChromaDataDirWriters(deps);
+    expect(result.killedPids).toEqual([4602]);
+    expect(killed.map(entry => entry.pid)).toEqual([4602]);
+  });
+
+  it('kills nothing when stop() overtook the table read (the lock may now be a replacement worker\'s)', async () => {
+    const { deps, killed } = sweepDeps({ table: [ORPHAN_LEAF, ORPHAN_UVX], stillOwnsStore: () => false });
+    const result = await reclaimOrphanChromaDataDirWriters(deps);
+    expect(result.killedPids).toEqual([]);
+    expect(killed).toEqual([]);
+  });
+
+  it('stops between kills once the connection is cancelled', async () => {
+    let owns = true;
+    const killed: number[] = [];
+    const result = await reclaimOrphanChromaDataDirWriters({
+      readTable: async () => [ORPHAN_LEAF, ORPHAN_UVX],
+      dataDir: () => DATA_DIR,
+      ownUid: () => null,
+      platform: 'linux',
+      stillOwnsStore: () => owns,
+      killTree: async pid => { killed.push(pid); owns = false; },
+    });
+    expect(result.killedPids).toEqual([4100]);
+    expect(killed).toEqual([4100]);
+  });
+});
+
+describe('chromaCmdlineNamesExactDataDir', () => {
+  it('matches the exact store, tolerating slash style, quoting and a trailing slash', () => {
+    expect(chromaCmdlineNamesExactDataDir(`chroma-mcp --data-dir ${DATA_DIR}/`, DATA_DIR, 'linux')).toBe(true);
+    expect(chromaCmdlineNamesExactDataDir('chroma-mcp --data-dir "C:/Users/A B/.claude-mem/chroma"', 'C:\\Users\\A B\\.claude-mem\\chroma', 'win32')).toBe(true);
+  });
+
+  it('folds case only on case-insensitive platforms', () => {
+    const cmd = 'chroma-mcp --data-dir /Users/U/.claude-mem/chroma';
+    expect(chromaCmdlineNamesExactDataDir(cmd, '/users/u/.claude-mem/chroma', 'darwin')).toBe(true);
+    expect(chromaCmdlineNamesExactDataDir(cmd, '/users/u/.claude-mem/chroma', 'linux')).toBe(false);
+  });
+
+  it('rejects children, siblings and a missing flag', () => {
+    expect(chromaCmdlineNamesExactDataDir(`chroma-mcp --data-dir ${DATA_DIR}/x`, DATA_DIR, 'linux')).toBe(false);
+    expect(chromaCmdlineNamesExactDataDir(`chroma-mcp --data-dir ${DATA_DIR}-data`, DATA_DIR, 'linux')).toBe(false);
+    expect(chromaCmdlineNamesExactDataDir('chroma-mcp', DATA_DIR, 'linux')).toBe(false);
   });
 });

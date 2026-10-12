@@ -411,7 +411,13 @@ export class ChromaMcpManager {
         // days (110 failed batch adds, 84 transport errors, a store once
         // judged corrupt). Fail-soft: a sweep hiccup never blocks the
         // connection.
-        await reclaimOrphanChromaDataDirWriters({ dataDir: () => localChromaDataDir });
+        await reclaimOrphanChromaDataDirWriters({
+          dataDir: () => localChromaDataDir,
+          // stop() bumps the generation and releases the lock; a sweep it
+          // overtook must not kill the next owner's sidecar.
+          stillOwnsStore: () =>
+            this.connectionGeneration === connectionGeneration && this.chromaWriterLock !== null,
+        });
         this.assertConnectionNotCancelled(connectionGeneration);
         ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
