@@ -232,6 +232,20 @@ export class RateLimitStore {
   get size(): number {
     return this.entries.size;
   }
+
+  /**
+   * Tests only: put a bucket back exactly as it was before a case touched the
+   * process-wide store — the saved entry, or no entry (and no rejection) at all.
+   */
+  restoreForTesting(key: RateLimitBucketKey, entry: RateLimitEntry | undefined): void {
+    this.rejections.delete(key);
+    if (entry) {
+      this.entries.set(key, entry);
+      if (entry.status === 'rejected') this.rejections.set(key, entry);
+    } else {
+      this.entries.delete(key);
+    }
+  }
 }
 
 function sameResetTime(left: number | undefined, right: number | undefined): boolean {

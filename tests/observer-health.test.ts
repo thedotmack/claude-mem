@@ -443,7 +443,7 @@ describe('a quota banner that has gone stale (#4083)', () => {
   });
 });
 
-// A pause is not an outage (HAR-1103). RateLimitStore's guard stops capture
+// A pause is not an outage. RateLimitStore's guard stops capture
 // at a reserve threshold while the provider still accepts requests and books
 // it as `quota_guard`; the generic record older workers and the
 // assistant-prose path write cannot tell that pause from a refusal. Neither
@@ -766,6 +766,33 @@ function expectRelayedSafely(text: string): void {
 }
 
 describe('renderObserverQuotaCooldownNotice', () => {
+  // The first guard pause leaves one failure, under the unhealthy threshold,
+  // so this notice (not the health banner) is what SessionStart shows.
+  it('calls a first reserve-guard pause a preservation pause, never a spent allowance', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 1,
+      lastErrorKind: 'quota_guard',
+      lastErrorProvider: 'claude',
+      quotaCooldown: activeCooldown({ message: 'Memory capture paused: weekly Claude usage is 95.0%, at or above the 95% pause threshold.' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain('to preserve your Claude allowance');
+    expect(notice).toContain('Reason: Memory capture paused: weekly Claude usage is 95.0%');
+    expect(notice).not.toContain('spent allowance');
+    expect(notice).not.toContain('clears the backoff');
+  });
+
+  it('never says a restart clears the persisted backoff', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 1,
+      quotaCooldown: activeCooldown(),
+    }), armedAt + 5 * 60_000);
+    expect(notice).not.toContain('spent allowance');
+    expect(notice).not.toContain('clears the backoff');
+    expect(notice).toContain('persisted cooldown');
+  });
+
   it('says capture continues on the serving provider, and nothing about pausing or restarting', () => {
     const armedAt = 1_754_700_000_000;
     const notice = renderObserverQuotaCooldownNotice(unhealthyState({

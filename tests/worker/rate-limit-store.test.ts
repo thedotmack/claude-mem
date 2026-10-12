@@ -404,7 +404,7 @@ describe('shouldAbortForQuota — cli/oauth auth', () => {
     expect(decision.abort).toBe(false);
   });
 
-  // The decision says what kind of stop it is (HAR-1103): the provider's own
+  // The decision says what kind of stop it is: the provider's own
   // refusal (`quota_exhausted`) or claude-mem's precautionary guard
   // (`quota_guard`). The ledger renders the two differently, so the guard must
   // never be booked as a spent allowance, and a refusal must never be hidden

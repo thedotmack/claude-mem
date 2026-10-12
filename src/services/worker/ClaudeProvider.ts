@@ -504,7 +504,11 @@ export class ClaudeProvider {
               window: decision.window,
               authMethod,
             });
-            session.abortReason = `quota:${decision.window ?? 'unknown'}`;
+            // 'quota:<window>:<kind>': the category stays quota and the window
+            // stays the second field, and the kind travels with the abort so
+            // the runner books what the guard actually decided, whatever the
+            // shared snapshot says by the time the generator exits.
+            session.abortReason = `quota:${decision.window ?? 'unknown'}:${decision.pause?.kind ?? 'quota_exhausted'}`;
             try {
               session.abortController.abort();
             } catch {

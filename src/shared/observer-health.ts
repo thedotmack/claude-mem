@@ -417,8 +417,9 @@ export function isQuotaGuardPause(state: ObserverHealthState): boolean {
 
 /**
  * The one message every quota abort used to be booked under, guard and
- * refusal alike; the assistant-prose path still is. Such a record cannot say
- * whether anything was exhausted, so the banner must not claim it was.
+ * refusal alike. Legacy ledger records, and quota aborts that carry no kind,
+ * still use it. Such a record cannot say whether anything was exhausted, so
+ * the banner must not claim it was.
  */
 export const AMBIGUOUS_QUOTA_MESSAGE = 'Provider reported the inference allowance exhausted';
 
@@ -549,19 +550,27 @@ export function renderObserverQuotaCooldownNotice(
   }
 
   const message = relayedProviderText(cooldown?.message) || null;
+  // The runner books the pause right after arming the cooldown, so the ledger's
+  // kind says whether claude-mem's own reserve guard stopped capture (the
+  // provider was still accepting requests) or the provider refused.
+  const guard = isQuotaGuardPause(state);
 
   return [
     '⚠️ Heads up: claude-mem is paused while a provider quota cooldown is active.',
     '',
-    `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
+    guard
+      ? `Memory capture is paused on ${provider}${windowText} to preserve your Claude allowance, until ${untilText}.`
+      : `The memory observer is waiting out a quota cooldown on ${provider}${windowText} until ${untilText}.`,
     '',
-    ...(message ? [`Latest signal: ${message}`, ''] : []),
-    'This is not a failure. Incoming observations stay queued and will be written',
-    'when the cooldown clears — the worker is intentionally not starting the',
-    'generator so it does not keep spending a spent allowance.',
+    ...(message ? [`${guard ? 'Reason' : 'Latest signal'}: ${message}`, ''] : []),
+    'This is not a failure. Incoming observations stay queued in memory and are written',
+    'when the cooldown clears — the worker is intentionally not starting the generator',
+    guard
+      ? 'so interactive work keeps the remaining allowance.'
+      : 'so it does not keep sending requests the provider is refusing.',
     '',
-    'Restarting will NOT help here, and it clears the backoff that is currently keeping',
-    'claude-mem from hammering the provider — so please leave the worker alone.',
+    'Restarting will NOT help here: it does not replenish the allowance or clear the',
+    'persisted cooldown — so please leave the worker alone.',
     '',
     '(Assistant: tell the user that memory capture is paused for a quota cooldown',
     'at the very start of your first reply. Do NOT restart the worker and do NOT',

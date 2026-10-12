@@ -95,6 +95,37 @@ function recordDeadlineExpiry(
   });
 }
 
+/** Quota prose: the observer's own reply said its allowance is spent. */
+export const OBSERVER_TEXT_QUOTA_MESSAGE = 'The observer replied that its usage allowance is exhausted';
+
+/**
+ * The pause to book for a quota exit.
+ * - 'quota:observer_text': the provider's own refusal, written as the reply
+ *   (any provider), so it is exhausted, not ambiguous.
+ * - Claude's guard: 'quota:<window>:<kind>'. The kind is what the guard
+ *   decided at abort time; the snapshot only supplies the wording, and when it
+ *   no longer explains the stop a kind-appropriate generic message is used.
+ * - Anything else keeps the generic record the banner reads as ambiguous.
+ */
+export function quotaPauseForExit(
+  provider: string,
+  reason: string | null | undefined,
+  profile?: string,
+): { kind: 'quota_guard' | 'quota_exhausted'; message: string } {
+  if (reason === 'quota:observer_text') {
+    return { kind: 'quota_exhausted', message: OBSERVER_TEXT_QUOTA_MESSAGE };
+  }
+  const kind = (reason ?? '').split(':')[2];
+  if (provider === 'claude' && (kind === 'quota_guard' || kind === 'quota_exhausted')) {
+    const explained = explainQuotaAbort(reason, globalRateLimitStore, Date.now(), profile);
+    if (explained?.kind === kind) return explained;
+    return kind === 'quota_guard'
+      ? { kind, message: 'Memory capture paused by the Claude usage reserve guard.' }
+      : { kind, message: 'Claude rejected the request because a usage allowance is exhausted.' };
+  }
+  return { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE };
+}
+
 export async function startGeneratorWithProvider(
   session: ActiveSession | undefined,
   provider: SelectableProvider,
@@ -373,17 +404,10 @@ export async function startGeneratorWithProvider(
       // is never re-booked here as a spent allowance (a rate limit is not
       // one), nor given a breaker over a cmem fallback's window.
       if (normalizedReason === 'quota' && !failureBooked) {
-        // Claude's guard aborts with only the window on the reason. Rebuild
-        // its decision from the snapshot so the ledger and the cooldown notice
-        // say whether this was the provider's refusal or claude-mem's own
-        // reserve threshold: the generic record below cannot tell them apart,
-        // and the SessionStart banner must not call a 95% pause a spent
-        // allowance. Other providers' quota aborts (and quota as assistant
-        // prose) keep the generic record, which the banner reads as ambiguous.
-        const pause = (provider === 'claude'
-          ? explainQuotaAbort(reason, globalRateLimitStore, Date.now(), session.observerProfile)
-          : undefined)
-          ?? { kind: 'quota_exhausted' as const, message: AMBIGUOUS_QUOTA_MESSAGE };
+        // Book what actually stopped the observer (quotaPauseForExit): the
+        // SessionStart banner must not call a 95% reserve pause a spent
+        // allowance, nor a provider's own refusal a precaution.
+        const pause = quotaPauseForExit(provider, reason, session.observerProfile);
         recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile);
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
