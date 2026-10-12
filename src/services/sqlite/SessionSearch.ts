@@ -256,8 +256,14 @@ export class SessionSearch {
 
     if (filters.concepts) {
       const concepts = Array.isArray(filters.concepts) ? filters.concepts : [filters.concepts];
+      const conceptColumn = `${tableAlias}.concepts`;
+      // Legacy concepts can be a plain string or JSON string, matching sync's list reader.
+      const conceptArray = `CASE WHEN json_valid(${conceptColumn}) THEN CASE
+        WHEN json_type(${conceptColumn}) = 'array' THEN ${conceptColumn}
+        WHEN json_type(${conceptColumn}) = 'text' THEN json_array(json_extract(${conceptColumn}, '$'))
+        ELSE json_array(${conceptColumn}) END ELSE json_array(${conceptColumn}) END`;
       const conceptConditions = concepts.map(() => {
-        return `EXISTS (SELECT 1 FROM json_each(${tableAlias}.concepts) WHERE value = ?)`;
+        return `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`;
       });
       if (conceptConditions.length > 0) {
         conditions.push(`(${conceptConditions.join(' OR ')})`);
