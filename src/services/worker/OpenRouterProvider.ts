@@ -391,7 +391,8 @@ export interface OpenRouterConfig {
   /** Per-call output mode for the wrap-up; never a persisted setting. */
   plainText?: boolean;
   /**
-   * CLAUDE_MEM_OPENROUTER_EXTRA_BODY, parsed (src/shared/openrouter-extra-body.ts).
+   * CLAUDE_MEM_OPENROUTER_EXTRA_BODY, parsed (src/shared/openrouter-extra-body.ts),
+   * with a valid CLAUDE_MEM_OPENROUTER_TEMPERATURE merged over it.
    * Never set for the cmem gateway.
    */
   extraBody?: Record<string, unknown>;
@@ -683,7 +684,14 @@ export function resolveOpenRouterConfig(
 
   // Off the gateway only: the gateway sets its own request policy on traffic
   // it pays for (the request body itself drops it there too).
-  const extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+  let extraBody = resolveExtraBody(settings.CLAUDE_MEM_OPENROUTER_EXTRA_BODY);
+  const rawTemperature: unknown = settings.CLAUDE_MEM_OPENROUTER_TEMPERATURE;
+  const temperature = typeof rawTemperature === 'number' ? rawTemperature
+    : typeof rawTemperature === 'string' && rawTemperature.trim() !== '' ? Number(rawTemperature)
+      : NaN;
+  if (Number.isFinite(temperature) && temperature >= 0 && temperature <= 2) {
+    extraBody = { ...extraBody, temperature };
+  }
   const reasoningEffort = resolveReasoningEffort(settings.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT);
   if (reasoningEffort && extraBody && 'reasoning' in extraBody && !warnedReasoningOverlap) {
     warnedReasoningOverlap = true;

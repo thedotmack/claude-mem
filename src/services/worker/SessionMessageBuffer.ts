@@ -62,7 +62,7 @@ export class SessionMessageBuffer {
    * tool_use_id) index: only observations that carry a toolUseId are deduped,
    * and only against others in the same session for this worker's lifetime.
    */
-  enqueue(sessionDbId: number, message: PendingMessage): number {
+  enqueue(sessionDbId: number, message: PendingMessage, enqueuedAt = Date.now()): number {
     const toolUseId = message.toolUseId;
     if (toolUseId) {
       const seen = this.getSeen(sessionDbId);
@@ -73,7 +73,7 @@ export class SessionMessageBuffer {
     }
 
     const id = this.nextId++;
-    this.getList(sessionDbId).push({ id, message, claimed: false, parked: false, enqueuedAt: Date.now() });
+    this.getList(sessionDbId).push({ id, message, claimed: false, parked: false, enqueuedAt });
     this.onMutate?.();
     this.signal(sessionDbId);
     return id;

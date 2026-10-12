@@ -45,6 +45,25 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
   'xiaomi/mimo-v2-flash:free',
 ]);
 
+/**
+ * Every SettingsDefaults key is declared `string`, because that is how every
+ * writer seeds it and how every gate reads it: the Chroma gates test
+ * `CLAUDE_MEM_CHROMA_ENABLED !== 'false'`, not `!== false`. settings.json is
+ * hand-editable JSON, though, so a user who writes `"CLAUDE_MEM_CHROMA_ENABLED":
+ * false` (unquoted) puts the JSON boolean there, which is `!== 'false'` and
+ * leaves chroma running with nothing reporting that the setting was ignored
+ * (#4630).
+ *
+ * Render a JSON boolean as the string the key declares so both spellings mean
+ * the same thing to every consumer. Numbers are deliberately left alone: the
+ * deadline migrations treat a hand-written number as the user choosing it, and
+ * anything else is passed through untouched so this never rewrites a value it
+ * does not understand.
+ */
+function coercePersistedSettingValue(value: unknown): unknown {
+  return typeof value === 'boolean' ? String(value) : value;
+}
+
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
   const model = flatSettings.CLAUDE_MEM_OPENROUTER_MODEL;
   if (typeof model !== 'string' || !RETIRED_OPENROUTER_DEFAULT_MODELS.has(model.trim())) {
@@ -181,6 +200,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENROUTER_API_KEYS: string;
   CLAUDE_MEM_OPENROUTER_MODEL: string;
   CLAUDE_MEM_OPENROUTER_BASE_URL: string;
+  CLAUDE_MEM_OPENROUTER_TEMPERATURE: string;
   CLAUDE_MEM_OPENROUTER_SITE_URL: string;
   CLAUDE_MEM_OPENROUTER_APP_NAME: string;
   CLAUDE_MEM_OPENROUTER_EXTRA_BODY: string;
@@ -205,6 +225,8 @@ export interface SettingsDefaults {
   CLAUDE_CODE_PATH: string;
   /** #2753 — override the effective CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess env only. Empty = fall through to process.env.CLAUDE_CONFIG_DIR / default. Never touches the worker's own MARKETPLACE_ROOT/paths. */
   CLAUDE_MEM_CLAUDE_CONFIG_DIR: string;
+  /** #4689 — transcript-only CLAUDE_CONFIG_DIR for the spawned SDK subprocess (keeps internal session transcripts out of ~/.claude/projects). Credentials stay on the default profile; only honored when CLAUDE_MEM_CLAUDE_CONFIG_DIR is empty. Empty = transcripts follow the credential profile dir. */
+  CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR: string;
   CLAUDE_MEM_MODE: string;
   CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: string;
   CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: string;
@@ -221,6 +243,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_REINFORCE_ALPHA: string;
   CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: string;
   CLAUDE_MEM_WELCOME_HINT_ENABLED: string;
+  CLAUDE_MEM_WORK_STATE_ENABLED: string;
   CLAUDE_MEM_FILE_READ_GATE_ENABLED: string;
   CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: string;
   CLAUDE_MEM_FOLDER_USE_LOCAL_MD: string;  
@@ -262,6 +285,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
+  CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -360,6 +384,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: string;       // cold-start: skip fuzzy Tier-1 below N docs/project (IDF unreliable)
   CLAUDE_MEM_DEDUP_MAX_SCAN: string;               // cap Tier-1 candidate scan per insert (logged when hit)
   CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: string;      // dedup-scan safety valve: skip a project larger than this (avoids OOM)
+  CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
 }
@@ -421,6 +446,7 @@ export class SettingsDefaultsManager {
     // id to RETIRED_OPENROUTER_DEFAULT_MODELS.
     CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
     CLAUDE_MEM_OPENROUTER_BASE_URL: '',  // #2382/#2590/#2622/#2393 — optional OpenAI-compatible base URL (e.g. https://api.deepseek.com, http://localhost:1234/v1). Empty = default OpenRouter endpoint.
+    CLAUDE_MEM_OPENROUTER_TEMPERATURE: '',
     CLAUDE_MEM_OPENROUTER_SITE_URL: '',  // Optional: for OpenRouter analytics
     CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',  // App name for OpenRouter analytics
     // JSON object of provider-specific request fields, e.g. {"reasoning":{"enabled":false}}.
@@ -444,6 +470,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PYTHON_VERSION: '3.13',
     CLAUDE_CODE_PATH: '', // Empty means auto-detect via 'which claude'
     CLAUDE_MEM_CLAUDE_CONFIG_DIR: '', // #2753 — override CLAUDE_CONFIG_DIR for the keychain lookup + SDK subprocess only; empty = fall through to process.env.CLAUDE_CONFIG_DIR/default
+    CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR: '', // #4689 — transcript-only CLAUDE_CONFIG_DIR for the SDK subprocess (out of ~/.claude/projects); credentials stay on the default profile; only honored when CLAUDE_MEM_CLAUDE_CONFIG_DIR is empty
     CLAUDE_MEM_MODE: 'code', // Default mode profile
     CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS: 'false',
     CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS: 'false',
@@ -460,6 +487,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_REINFORCE_ALPHA: '0',  // ACT-R reinforcement weight for SessionStart ranking. 0 = off (the N most recent observations, unchanged); >0 lets re-confirmed older observations climb into the window
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
+    CLAUDE_MEM_WORK_STATE_ENABLED: 'true',  // 'false' = no work-state section at SessionStart and no work_state_* MCP tools, for hosts that track work their own way
     CLAUDE_MEM_FILE_READ_GATE_ENABLED: 'true',  // 'false' = never block a full-file Read; the file's observation timeline is still added as context
     CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED: 'false',
     CLAUDE_MEM_FOLDER_USE_LOCAL_MD: 'false',  // When true, writes to CLAUDE.local.md instead of CLAUDE.md
@@ -510,6 +538,7 @@ export class SettingsDefaultsManager {
     // memory text to that vendor. Any other value is rejected. Applies to new
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
+    CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
@@ -600,6 +629,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_DEDUP_MIN_PROJECT_DOCS: '10',            // cold-start gate: IDF unreliable below ~10 docs/project
     CLAUDE_MEM_DEDUP_MAX_SCAN: '2000',                  // per-insert candidate-scan cap (logged when exceeded)
     CLAUDE_MEM_DEDUP_MAX_BACKFILL_ROWS: '50000',        // dedup-scan skips a project with more rows than this (memory safety)
+    CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
   };
@@ -808,7 +838,7 @@ export class SettingsDefaultsManager {
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+          result[key] = coercePersistedSettingValue(flatSettings[key]) as string;
         }
       }
 

@@ -1736,6 +1736,8 @@ async function main() {
         process.exit(1);
       }
 
+      const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+      restoreHookOriginalCwd();
       const { hookCommand } = await import('../cli/hook-command.js');
       await hookCommand(platform, event);
       break;

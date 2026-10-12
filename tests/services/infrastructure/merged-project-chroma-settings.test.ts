@@ -17,14 +17,15 @@ mock.module('../../../src/services/sync/ChromaMcpManager.js', () => ({
         callTool: async (name: string, args: Record<string, unknown>) => {
           chromaCalls.push({ name, args });
           if (name === 'chroma_get_documents') {
-            const where = args.where as {
-              $and: [{ doc_type: string }, { sqlite_id: { $in: number[] } }];
-            };
-            const docType = where.$and[0].doc_type;
-            const ids = where.$and[1].sqlite_id.$in;
+            // The lookup filters by sqlite_id only (#4682); doc_type is
+            // filtered client-side, so answer with both types per id.
+            const where = args.where as { sqlite_id: { $in: number[] } };
+            const ids = where.sqlite_id.$in;
+            const docs = ['observation', 'session_summary'].flatMap(docType =>
+              ids.map(id => ({ id: `${docType}_${id}`, meta: { doc_type: docType, sqlite_id: id } })));
             return {
-              ids: ids.map(id => `${docType}_${id}`),
-              metadatas: ids.map(id => ({ doc_type: docType, sqlite_id: id }))
+              ids: docs.map(doc => doc.id),
+              metadatas: docs.map(doc => doc.meta)
             };
           }
           return {};

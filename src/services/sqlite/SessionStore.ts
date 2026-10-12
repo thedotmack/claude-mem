@@ -41,14 +41,14 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
   runDedupScan as runDedupScanAll,
-  type DedupRuntimeConfig,
+  type DedupRuntimeConfig, type DedupCandidateStatus, type DedupCandidateVerdict,
 } from './dedup-store.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource, sortPlatformSources } from '../../shared/platform-source.js';
 import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
-import { applySqliteConnectionPragmas } from './connection.js';
+import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, LATEST_SCHEMA_VERSION, stampSchemaWriterVersion } from './connection.js';
 import { streamRows } from './stream-rows.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
@@ -205,7 +205,22 @@ export class SessionStore {
       this.db = new Database(dbPathOrDb);
     }
 
+    // Refuse before any DDL — pragmas included — when the database's schema
+    // is newer than this binary's chain (#3609 step 2); a refused open
+    // touches nothing.
+    assertSchemaWriterCompatible(this.db, LATEST_SCHEMA_VERSION);
+
     applySqliteConnectionPragmas(this.db);
+
+    // Record the highest schema version this binary knows before the first
+    // schema write, not after the chain: the chain's steps commit separately,
+    // so a mid-chain failure (say the v46 REAL-revision refusal) leaves
+    // earlier DDL on disk, and a stamp deferred to the end would leave that
+    // partially-upgraded database adoptable by an older binary — the exact
+    // downgrade the stamp exists to refuse (#4602 review). Stamping first
+    // names this schema on any state it touched; the idempotent chain re-runs
+    // to completion on the next open by this same or a newer-chain binary.
+    stampSchemaWriterVersion(this.db, LATEST_SCHEMA_VERSION);
 
     this.initializeSchema();
 
@@ -1437,6 +1452,11 @@ export class SessionStore {
       CREATE INDEX idx_session_summaries_created ON session_summaries(created_at_epoch DESC);
     `);
 
+    // DROP TABLE above dropped the summaries FTS sync triggers with the table;
+    // recreate them when the index survived the rebuild, or writes would stop
+    // reaching it from here on (#3609).
+    this.recreateFtsTriggersIfIndexed('session_summaries');
+
     this.db.run('COMMIT');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(7, new Date().toISOString());
@@ -1535,11 +1555,38 @@ export class SessionStore {
       CREATE INDEX idx_observations_created ON observations(created_at_epoch DESC);
     `);
 
+    // Same as the v7 rebuild: DROP TABLE removed the observations FTS sync
+    // triggers, so recreate them when the index survived (#3609).
+    this.recreateFtsTriggersIfIndexed('observations');
+
     this.db.run('COMMIT');
 
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(9, new Date().toISOString());
 
     logger.debug('DB', 'Successfully made observations.text nullable');
+  }
+
+  /**
+   * DROP TABLE removes every trigger attached to the table, so a rebuild that
+   * keeps its FTS5 index (external content: the index tables survive the base
+   * table rebuild untouched) would otherwise leave every later write unindexed
+   * with no error — MATCH searches silently miss them forever (#3609). Re-run
+   * the sync-trigger SQL whenever the index is still present; the SQL is
+   * CREATE TRIGGER IF NOT EXISTS, so this is idempotent. The index is rebuilt
+   * from the content table first (same convergence as
+   * SessionSearch.ensureFTSTables): a database can arrive at a rebuild with
+   * rows that an earlier triggerless window never indexed, and once the
+   * triggers re-attach, the _ad/_au FTS 'delete' commands for those rowids
+   * fail every UPDATE/DELETE with "database disk image is malformed".
+   */
+  private recreateFtsTriggersIfIndexed(table: 'observations' | 'session_summaries'): void {
+    const ftsTable = `${table}_fts`;
+    const hasFTS = (this.db
+      .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+      .all(ftsTable) as { name: string }[]).length > 0;
+    if (!hasFTS) return;
+    this.db.run(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`);
+    this.db.run(table === 'observations' ? OBSERVATIONS_FTS_TRIGGERS_SQL : SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
   }
 
   private createUserPromptsTable(): void {
@@ -1794,24 +1841,14 @@ export class SessionStore {
         this.db.run('DROP TRIGGER IF EXISTS observations_ad');
         this.db.run('DROP TRIGGER IF EXISTS observations_au');
         this.db.run('DROP TABLE IF EXISTS observations_new');
-        this.recreateObservationsWithCascade(
-          observationsNewSQL,
-          observationsKnownColumns,
-          observationsIndexesSQL,
-          OBSERVATIONS_FTS_TRIGGERS_SQL
-        );
+        this.recreateObservationsWithCascade(observationsNewSQL, observationsKnownColumns, observationsIndexesSQL);
       }
       if (summariesNeedsCascade) {
         this.db.run('DROP TRIGGER IF EXISTS session_summaries_ai');
         this.db.run('DROP TRIGGER IF EXISTS session_summaries_ad');
         this.db.run('DROP TRIGGER IF EXISTS session_summaries_au');
         this.db.run('DROP TABLE IF EXISTS session_summaries_new');
-        this.recreateSessionSummariesWithCascade(
-          summariesNewSQL,
-          summariesKnownColumns,
-          summariesIndexesSQL,
-          SESSION_SUMMARIES_FTS_TRIGGERS_SQL
-        );
+        this.recreateSessionSummariesWithCascade(summariesNewSQL, summariesKnownColumns, summariesIndexesSQL);
       }
 
       this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(21, new Date().toISOString());
@@ -1831,8 +1868,7 @@ export class SessionStore {
   private recreateObservationsWithCascade(
     createSQL: string,
     knownColumns: string[],
-    indexesSQL: string,
-    ftsTriggersSQL: string
+    indexesSQL: string
   ): void {
     this.db.run(createSQL);
     const copyColumns = this.carryLiveColumnsOntoNewTable('observations', 'observations_new', knownColumns);
@@ -1841,18 +1877,13 @@ export class SessionStore {
     this.db.run('DROP TABLE observations');
     this.db.run('ALTER TABLE observations_new RENAME TO observations');
     this.db.run(indexesSQL);
-
-    const hasFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='observations_fts'").all() as { name: string }[]).length > 0;
-    if (hasFTS) {
-      this.db.run(ftsTriggersSQL);
-    }
+    this.recreateFtsTriggersIfIndexed('observations');
   }
 
   private recreateSessionSummariesWithCascade(
     createSQL: string,
     knownColumns: string[],
-    indexesSQL: string,
-    ftsTriggersSQL: string
+    indexesSQL: string
   ): void {
     this.db.run(createSQL);
     const copyColumns = this.carryLiveColumnsOntoNewTable('session_summaries', 'session_summaries_new', knownColumns);
@@ -1861,11 +1892,7 @@ export class SessionStore {
     this.db.run('DROP TABLE session_summaries');
     this.db.run('ALTER TABLE session_summaries_new RENAME TO session_summaries');
     this.db.run(indexesSQL);
-
-    const hasSummariesFTS = (this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='session_summaries_fts'").all() as { name: string }[]).length > 0;
-    if (hasSummariesFTS) {
-      this.db.run(ftsTriggersSQL);
-    }
+    this.recreateFtsTriggersIfIndexed('session_summaries');
   }
 
   private addObservationContentHashColumn(): void {
@@ -3646,7 +3673,8 @@ export class SessionStore {
   // #3038 — read-only listing of Tier-1 near-duplicate candidates (joined to both titles).
   listDedupCandidates(
     project?: string,
-    limit = 100
+    limit = 100,
+    status?: DedupCandidateStatus
   ): Array<{
     id: number; project: string; method: string; score: number; status: string; created_at_epoch: number;
     observation_id: number; observation_title: string | null;
@@ -3658,16 +3686,25 @@ export class SessionStore {
       duplicate_of_id: number; duplicate_of_title: string | null;
     };
     // Two explicit prepared statements — no conditional SQL-fragment interpolation.
+    // An absent status filter binds NULL.
     const select =
       'SELECT c.id, c.project, c.method, c.score, c.status, c.created_at_epoch, ' +
       'c.observation_id, o1.title AS observation_title, c.duplicate_of_id, o2.title AS duplicate_of_title ' +
       'FROM observation_dedup_candidates c ' +
       'JOIN observations o1 ON o1.id = c.observation_id ' +
       'JOIN observations o2 ON o2.id = c.duplicate_of_id ';
+    const statusFilter = '(? IS NULL OR c.status = ?) ';
     const order = 'ORDER BY c.score DESC, c.id DESC LIMIT ?';
+    const statusArg = status ?? null;
     return project
-      ? this.db.prepare(`${select}WHERE c.project = ? ${order}`).all(project, limit) as Row[]
-      : this.db.prepare(`${select}${order}`).all(limit) as Row[];
+      ? this.db.prepare(`${select}WHERE c.project = ? AND ${statusFilter}${order}`).all(project, statusArg, statusArg, limit) as Row[]
+      : this.db.prepare(`${select}WHERE ${statusFilter}${order}`).all(statusArg, statusArg, limit) as Row[];
+  }
+
+  // #3038 — record a reviewer's verdict on a candidate. `merged` is not accepted here:
+  // merging rewrites observation rows and needs its own path. Returns false for an unknown id.
+  resolveDedupCandidate(id: number, status: DedupCandidateVerdict): boolean {
+    return this.db.prepare('UPDATE observation_dedup_candidates SET status = ? WHERE id = ?').run(status, id).changes > 0;
   }
 
   /** #3038 — whether CLAUDE_MEM_DEDUP_ENABLED is on (settings.json or env). */
@@ -3712,7 +3749,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    options: { skipTitleDedup?: boolean } = {}
   ): { id: number; createdAtEpoch: number; mergedIntoExisting: boolean } {
     // storeObservations skips empty-title rows, which would leave no id to return here.
     // This wrapper stores exactly one observation, so require a title up front rather than
@@ -3729,7 +3767,8 @@ export class SessionStore {
       promptNumber,
       discoveryTokens,
       overrideTimestampEpoch,
-      generatedByModel
+      generatedByModel,
+      options
     );
 
     return {
@@ -3819,7 +3858,8 @@ export class SessionStore {
     promptNumber?: number,
     discoveryTokens: number = 0,
     overrideTimestampEpoch?: number,
-    generatedByModel?: string
+    generatedByModel?: string,
+    options: { skipTitleDedup?: boolean } = {}
   ): {
     observationIds: number[];
     /** Parallel to observationIds: true where a Tier-0 merge reused an existing row (nothing new was stored). */
@@ -3895,7 +3935,9 @@ export class SessionStore {
             continue;
           }
 
-          const canonical = findTier0Canonical(this.db, project, titleNormKey);
+          // Authored note revisions may keep a title while changing their facts.
+          // They still dedupe exact content, but must not collapse by title alone.
+          const canonical = options.skipTitleDedup ? null : findTier0Canonical(this.db, project, titleNormKey);
           if (canonical) {
             this.db.prepare('UPDATE observations SET occurrence_count = occurrence_count + 1 WHERE id = ?').run(canonical.id);
             reinforceObservation(this.db, canonical.id, reconfirmedOn);
