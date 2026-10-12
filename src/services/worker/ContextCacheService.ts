@@ -153,6 +153,10 @@ export class ContextCacheService {
       this.evictOldestVariants();
       this.writeIndex();
       logger.debug('CONTEXT_CACHE', 'Learned a SessionStart context variant', { variantId, keys });
+    } else {
+      // A newer live render owns this existing variant too. Replace its entry
+      // so an older queued render cannot overwrite or remove the live body.
+      this.variants.set(variantId, { ...this.variants.get(variantId)! });
     }
     this.refreshReadKeys(variantId);
     if (removalGenerationAtRenderStart !== undefined && removalGenerationAtRenderStart !== this.removalGeneration) {
