@@ -330,10 +330,11 @@ export class SessionSearch {
 
     if (filters.files) {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
+      const changedFilesColumn = tableAlias === 's' ? 'files_edited' : 'files_modified';
       const fileConditions = files.map(() => {
         return `(
           EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.${changedFilesColumn}) WHERE value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
@@ -710,7 +711,10 @@ export class SessionSearch {
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const patterns = [`%${escape(filePath)}%`];
+    const variants = isFolder
+      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
+      : [filePath];
+    const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
     }

@@ -11,7 +11,7 @@ import {
   unlinkSync,
 } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 
 export function getOpenClawConfigDirectory(): string {
   return path.join(homedir(), '.openclaw');
@@ -205,7 +205,7 @@ function copyPluginFilesAndRegister(
     'utf-8',
   );
 
-  const workerPort = SettingsDefaultsManager.getInt('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = getWorkerPort();
   registerPluginInOpenClawConfig(workerPort);
   console.log(`  Registered in openclaw.json`);
 
