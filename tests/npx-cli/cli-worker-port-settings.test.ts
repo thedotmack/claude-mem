@@ -198,6 +198,22 @@ describe('npx claude-mem doctor probes the worker port from settings.json', () =
 });
 
 describe('npx claude-mem uninstall stops the worker on the port from settings.json', () => {
+  // uninstall asks "Are you sure?" on an interactive stdin before it stops the
+  // worker; pin non-TTY so the test reaches shutdown when run from a terminal.
+  const originalStdinIsTTY = Object.getOwnPropertyDescriptor(process.stdin, 'isTTY');
+
+  beforeAll(() => {
+    Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: false });
+  });
+
+  afterAll(() => {
+    if (originalStdinIsTTY) {
+      Object.defineProperty(process.stdin, 'isTTY', originalStdinIsTTY);
+    } else {
+      delete (process.stdin as { isTTY?: boolean }).isTTY;
+    }
+  });
+
   beforeEach(() => {
     shutdownPorts.length = 0;
   });
