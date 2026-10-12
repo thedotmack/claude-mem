@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { cpSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import { dirname, join, win32 } from 'path';
@@ -267,5 +267,41 @@ describe('bun-runner.js spawn: no cmd.exe for .exe targets (#3196)', () => {
     const shellAssignments = source.match(/spawnOptions\.shell = true/g) ?? [];
     expect(shellAssignments.length).toBe(1);
     expect(source).not.toMatch(/if \(IS_WINDOWS\) \{\s*const quote/);
+  });
+
+  // #4628: Bun reads tsconfig.json from its working directory and prints its
+  // warnings to stderr, which hosts show as hook errors. The child starts in a
+  // neutral directory and learns the launch directory from the environment.
+  it('starts Bun outside the project, resolves a relative script, and passes the launch directory', () => {
+    // Like the real hooks: the script lives outside the project (the plugin
+    // dir), and only the launch directory has the warning-producing tsconfig.
+    const root = mkdtempSync(join(tmpdir(), 'bun-runner-cwd-'));
+    const projectDir = join(root, 'project');
+    const scriptsDir = join(root, 'scripts');
+    try {
+      mkdirSync(projectDir);
+      mkdirSync(scriptsDir);
+      writeFileSync(join(projectDir, 'tsconfig.json'), JSON.stringify({ compilerOptions: { moduleSuffixes: ['.native', ''] } }));
+      writeFileSync(
+        join(scriptsDir, 'report-cwd.js'),
+        'console.log(JSON.stringify({ cwd: process.cwd(), launch: process.env.CLAUDE_MEM_HOOK_ORIGINAL_CWD }));\n',
+      );
+      // Launched with node, as the hooks do: launching the runner itself with
+      // Bun from the project would read that tsconfig before the runner runs.
+      const res = spawnSync('node', [BUN_RUNNER_PATH, join('..', 'scripts', 'report-cwd.js')], {
+        cwd: projectDir,
+        env: { ...process.env, CLAUDE_CONFIG_DIR: projectDir },
+        input: '{"dummy": true}',
+        encoding: 'utf-8',
+        windowsHide: true,
+      });
+      expect(res.status).toBe(0);
+      expect(res.stderr).not.toContain('moduleSuffixes');
+      const reported = JSON.parse(res.stdout.trim().split('\n').pop() as string);
+      expect(realpathSync(reported.cwd)).toBe(realpathSync(tmpdir()));
+      expect(realpathSync(reported.launch)).toBe(realpathSync(projectDir));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
