@@ -155,6 +155,13 @@ function checkMatchRule(value: unknown, location: string): void {
   for (const key of ['path', 'regex', 'contains', 'not_contains', 'starts_with', 'not_starts_with']) {
     checkOptionalString(value[key], `${location}.${key}`);
   }
+  if (typeof value.regex === 'string') {
+    try {
+      new RegExp(value.regex);
+    } catch {
+      check(false, `${location}.regex`, 'must be a valid regular expression');
+    }
+  }
   checkOptionalBoolean(value.exists, `${location}.exists`);
   for (const key of ['in', 'not_in']) {
     check(value[key] === undefined || Array.isArray(value[key]), `${location}.${key}`, 'must be an array');
