@@ -43,7 +43,8 @@ import {
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
-import { ObserverResponsePacer } from './session/response-pacer.js';
+import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
+import { recordObserverFailure } from '../../shared/observer-health.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
@@ -81,20 +82,6 @@ function isSpawnFailure(error: unknown): boolean {
     if (typeof message === 'string' && /\bspawn\b.*\b(ENOENT|EINVAL)\b/.test(message)) return true;
   }
   return false;
-}
-
-/**
- * The one error this file throws for the CLI's own auth-failure status line
- * (#4253) carries this code, so the stream-break release in startSession can
- * tell it from a transport fault without matching on its message. A refused
- * credential is left to the runner, which books it in observer health and
- * finalizes; pausing it on the transport backoff would retry a bad key for
- * nothing and book nothing.
- */
-const INVALID_API_KEY_ERROR_CODE = 'claude_invalid_api_key';
-
-function isInvalidApiKeyError(error: unknown): boolean {
-  return (error as { code?: unknown } | null)?.code === INVALID_API_KEY_ERROR_CODE;
 }
 
 /**
@@ -381,6 +368,10 @@ export class ClaudeProvider {
       session.sessionDbId
     );
 
+    // Set when processAgentResponse itself throws (storage, FK): that is not a
+    // broken stream, so the catch below leaves it to the runner, which books
+    // it in observer health.
+    let responseProcessingThrew = false;
     try {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
       const authMethod = getAuthMethodDescription();
@@ -632,10 +623,7 @@ export class ClaudeProvider {
             message.error === 'authentication_failed' &&
             /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
           ) {
-            throw Object.assign(
-              new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env'),
-              { code: INVALID_API_KEY_ERROR_CODE },
-            );
+            throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
 
           // The frame names the model that served the turn (an alias such as
@@ -665,6 +653,9 @@ export class ClaudeProvider {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
               turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
+          } catch (processingError) {
+            responseProcessingThrew = true;
+            throw processingError;
           } finally {
             pacer.processingFinished();
           }
@@ -788,6 +779,9 @@ export class ClaudeProvider {
                   activeResponseContext.current,
                   turnEmptyOutputReason ?? 'no-content-blocks'
                 );
+              } catch (processingError) {
+                responseProcessingThrew = true;
+                throw processingError;
               } finally {
                 pacer.processingFinished();
               }
@@ -828,13 +822,18 @@ export class ClaudeProvider {
       // goes with it, so the recheck gate does not re-run the same file. Any
       // other error keeps its own shape.
       if (isSpawnFailure(error)) this.recordAndThrowClassified(error, claudePath);
-      // The stream broke: the output iterator threw, or response processing
-      // did, with the batch still claimed. A classified error carries its own
-      // pause (setup_required skips finalization), and the Invalid API key
-      // status line above is a refused credential for the runner to book; an
-      // unclassified error from a live stream is a transport fault, and the
-      // batch must outlive it.
-      if (!session.abortReason && !isClassified(error) && !isInvalidApiKeyError(error)) {
+      // The stream broke with the batch still claimed. Only a transient fault
+      // of the stream itself is released for the transport resume. Anything
+      // classifyClaudeError calls non-transient (a refused credential, a 400,
+      // "Prompt is too long", a quota) and any throw from processAgentResponse
+      // (storage) is rethrown untouched, so the runner books it in observer
+      // health exactly as before instead of resending it on the backoff.
+      if (
+        !session.abortReason &&
+        !responseProcessingThrew &&
+        !isClassified(error) &&
+        classifyClaudeError(error).kind === 'transient'
+      ) {
         await this.releaseClaimedBatchForTransportExit(session, 'transport:sdk_stream');
       }
       throw error;
@@ -889,6 +888,17 @@ export class ClaudeProvider {
     }
     if (session.claimedMessageIds.length > 0) {
       await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+    }
+    // Transport resumes are not bounded off the gateway, so a child that keeps
+    // exiting would stall capture with nothing booked. Tell observer health
+    // once, on the exit that reaches the bound, so SessionStart warns. An
+    // answered queued-work turn resets the count (ResponseProcessor).
+    session.consecutiveSdkStreamExits = (session.consecutiveSdkStreamExits ?? 0) + 1;
+    if (session.consecutiveSdkStreamExits === MAX_CONSECUTIVE_SDK_STREAM_EXITS) {
+      recordObserverFailure('claude', {
+        kind: 'transient',
+        message: `The Claude SDK stream ended ${MAX_CONSECUTIVE_SDK_STREAM_EXITS} times in a row without answering queued work`,
+      });
     }
   }
 

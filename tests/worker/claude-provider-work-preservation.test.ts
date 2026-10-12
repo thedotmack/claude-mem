@@ -2,26 +2,21 @@ import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } fr
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import * as observerHealth from '../../src/shared/observer-health.js';
 
-// Contract 6: buffered work is preserved across stream failure and recycle.
+// Buffered work is preserved across SDK stream failure and recycle.
 //
 // These probes drive the real ClaudeProvider, SessionManager and
 // SessionMessageBuffer against a fake SDK that pulls the prompt stream eagerly
 // (the harness style of claude-provider-response-pacing.test.ts), and then run
 // the real GeneratorExitHandler on the reason the run left behind. Each probe
-// asserts an observable outcome of the contract — claims released, pending
-// count intact, abort reason in a preserved category, the session not
-// finalized, no generator left hanging — never the mechanism (the fork's
-// TurnGate, upstream's pacer) that happens to implement it.
+// asserts an observable outcome — claims released, pending count intact,
+// abort reason in a preserved category, the session not finalized, no
+// generator left hanging — never the mechanism that implements it.
 //
-// On plain upstream v13.32.0 six of these failed: ClaudeProvider named no
-// reason and released no claim when the SDK stream ended or threw, so the exit
-// reached GeneratorExitHandler as null and the buffer was finalized away. The
-// carried fix (releaseClaimedBatchForTransportExit: `transport:sdk_eof` after
-// the loop, `transport:sdk_stream` in the catch) closes five of them; the
-// stream probes below are its regression tests. The two still marked
-// `it.failing` are design divergences left in place, explained inline. The
-// per-probe control mutations are recorded in
-// docs/2026-10-06-contract-6-probes.md.
+// Before releaseClaimedBatchForTransportExit, ClaudeProvider named no reason
+// and released no claim when the SDK stream ended or threw a transient fault,
+// so the exit reached GeneratorExitHandler as null and the buffer was
+// finalized away. A non-transient error and a throw from response processing
+// are left to the runner, which books them in observer health.
 
 const actualAgentSdk = { ...(await import('@anthropic-ai/claude-agent-sdk')) };
 const actualFindClaude = { ...(await import('../../src/shared/find-claude-executable.js')) };
@@ -341,7 +336,7 @@ afterEach(() => {
   else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
 });
 
-describe('contract 6 — a failed result frame', () => {
+describe('work preservation — a failed result frame', () => {
   it('re-queues the claimed batch once and re-sends it, with nothing acknowledged', async () => {
     const h = createHarness(1);
     liveSessions.push(h.session);
@@ -396,7 +391,7 @@ describe('contract 6 — a failed result frame', () => {
   });
 });
 
-describe('contract 6 — the SDK stream ends or breaks', () => {
+describe('work preservation — the SDK stream ends or breaks', () => {
   it('clean EOF mid-batch releases the claim and leaves the session for the next generation', async () => {
     const h = createHarness(1);
     liveSessions.push(h.session);
@@ -429,7 +424,7 @@ describe('contract 6 — the SDK stream ends or breaks', () => {
     expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 1 });
   });
 
-  it('a throw inside response processing surfaces the error and preserves the batch', async () => {
+  it('a throw inside response processing is left to the runner, not paused as transport', async () => {
     const h = createHarness(1);
     liveSessions.push(h.session);
     const { run } = await claimFirstObservation(h);
@@ -438,13 +433,50 @@ describe('contract 6 — the SDK stream ends or breaks', () => {
 
     sdk().answer(SKIP_REPLY);
     await expect(withTimeout(run, 'startSession after processing throw')).rejects.toThrow('storage exploded');
-    await sdk().until(() => sdk().inputFinished, 'generator released after processing throw');
 
-    expect(h.pending()).toBe(1);
-    expect(h.session.claimedMessageIds).toEqual([]);
-    expect(PRESERVED_ABORT_CATEGORIES.has(abortCategoryOf(h.session.abortReason))).toBe(true);
-    const outcome = await h.exit();
-    expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 1 });
+    // No reason named: the runner books it in observer health, as on main,
+    // instead of resending a batch storage keeps refusing.
+    expect(h.session.abortReason ?? null).toBeNull();
+    expect(h.session.consecutiveSdkStreamExits ?? 0).toBe(0);
+  });
+
+  for (const [label, error] of [
+    ['a 401 from the SDK', Object.assign(new Error('Request failed'), { status: 401 })],
+    ['"Prompt is too long"', new Error('Prompt is too long')],
+  ] as const) {
+    it(`a non-transient stream error (${label}) is rethrown for the runner to book, not released`, async () => {
+      const h = createHarness(1);
+      liveSessions.push(h.session);
+      const { run } = await claimFirstObservation(h);
+
+      sdk().fail(error);
+      await expect(withTimeout(run, 'startSession after non-transient throw')).rejects.toBe(error);
+
+      expect(h.session.abortReason ?? null).toBeNull();
+      expect(h.session.consecutiveSdkStreamExits ?? 0).toBe(0);
+    });
+  }
+
+  it('books observer health once when the stream keeps exiting without answering', async () => {
+    const h = createHarness(1);
+    liveSessions.push(h.session);
+    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation(() => {});
+    try {
+      const release = (h.provider as unknown as {
+        releaseClaimedBatchForTransportExit(session: ActiveSession, reason: string): Promise<void>;
+      }).releaseClaimedBatchForTransportExit.bind(h.provider);
+      for (let exit = 0; exit < 4; exit++) {
+        h.session.abortReason = null;
+        await release(h.session, 'transport:sdk_eof');
+      }
+
+      expect(h.session.consecutiveSdkStreamExits).toBe(4);
+      expect(recordFailure).toHaveBeenCalledTimes(1);
+      expect(recordFailure.mock.calls[0][0]).toBe('claude');
+      expect(recordFailure.mock.calls[0][1]).toMatchObject({ kind: 'transient' });
+    } finally {
+      recordFailure.mockRestore();
+    }
   });
 
   it('EOF during the init turn keeps the unclaimed backlog for the next generation', async () => {
@@ -497,7 +529,7 @@ describe('contract 6 — the SDK stream ends or breaks', () => {
   });
 });
 
-describe('contract 6 — ordering and durable state', () => {
+describe('work preservation — ordering and durable state', () => {
   it('claims no later work before each successful result', async () => {
     const h = createHarness(3);
     liveSessions.push(h.session);
@@ -522,26 +554,6 @@ describe('contract 6 — ordering and durable state', () => {
     await withTimeout(run, 'startSession after abort');
   });
 
-  // UPSTREAM GAP (design divergence, not a loss): upstream processes and
-  // acknowledges the batch on the assistant text frame; the result frame only
-  // releases the feed. The fork held acknowledgement until the successful result.
-  it.failing('acknowledges the batch only once the turn\'s result frame has arrived', async () => {
-    const h = createHarness(3);
-    liveSessions.push(h.session);
-    const { run, claimedId } = await claimFirstObservation(h);
-
-    sdk().textFrame(SKIP_REPLY);
-    await settle();
-    expect(h.session.claimedMessageIds).toEqual([claimedId]);
-    expect(h.pending()).toBe(3);
-
-    sdk().result();
-    await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
-    expect(h.pending()).toBe(2);
-
-    h.session.abortController.abort();
-    await withTimeout(run, 'startSession after abort');
-  });
 
   it('carries the actual quota-guard window out of the stream and keeps the claimed batch', async () => {
     const h = createHarness(1);
@@ -639,7 +651,7 @@ describe('contract 6 — ordering and durable state', () => {
   });
 });
 
-describe('contract 6 — a generator that throws, seen from the runner', () => {
+describe('work preservation — a generator that throws, seen from the runner', () => {
   async function buildRoutesWithRealBuffer(sessionDbId: number, startSession: () => Promise<void>) {
     const dbManager = {
       getSessionById: () => ({
@@ -755,7 +767,7 @@ describe('contract 6 — a generator that throws, seen from the runner', () => {
       expect(String(booked[0].args[1])).toContain('Invalid API key');
       expect(booked[0].abortReason).toBeNull();
       expect(booked[0].claimed).toEqual([claimedId]);
-      // Upstream's design for a booked failure: finalized, not re-queued.
+      // A booked failure is finalized, not re-queued.
       expect(finalizeCalls()).toBe(1);
       expect(sessionManager.getSession(session.sessionDbId)).toBeUndefined();
     } finally {
@@ -777,30 +789,6 @@ describe('contract 6 — a generator that throws, seen from the runner', () => {
 
       expect(starts).toBe(1);
       expect(recordFailure).toHaveBeenCalledWith('claude', 'transport exploded');
-    } finally {
-      recordFailure.mockRestore();
-    }
-  });
-
-  // UPSTREAM GAP, kept as a divergence: an unclassified throw that reaches the
-  // runner is booked and then finalized (GeneratorExitHandler: "anything still
-  // buffered is dropped here and recovered ... by replaying the transcript").
-  // With the carried ClaudeProvider fix, SDK-originated failures no longer
-  // reach this branch (they arrive as `transport:` pauses), so only a provider
-  // that throws before its stream opens lands here, and that is upstream's call.
-  it.failing('keeps the real buffered work after an unclassified stream failure', async () => {
-    const recordFailure = spyOn(observerHealth, 'recordObserverFailure').mockImplementation(() => {});
-    try {
-      const { routes, session, sessionManager, finalizeCalls } = await buildRoutesWithRealBuffer(6108, async () => {
-        throw new Error('transport exploded');
-      });
-      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
-      await session.generatorPromise;
-      await settle(5);
-
-      expect(finalizeCalls()).toBe(0);
-      expect(sessionManager.getSession(session.sessionDbId)).toBe(session);
-      expect(sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId)).toBe(1);
     } finally {
       recordFailure.mockRestore();
     }
