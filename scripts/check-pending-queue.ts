@@ -2,6 +2,7 @@
 
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
+import { formatHostForUrl } from '../src/shared/worker-url.js';
 
 const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 const DEFAULT_WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
@@ -29,7 +30,7 @@ function resolveWorkerPort(): string {
 
 const WORKER_HOST = resolveWorkerHost();
 const WORKER_PORT = resolveWorkerPort();
-const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+const WORKER_URL = `http://${formatHostForUrl(WORKER_HOST)}:${WORKER_PORT}`;
 const WORKER_FETCH_TIMEOUT_MS = 10_000;
 
 interface ProcessingStatusResponse {

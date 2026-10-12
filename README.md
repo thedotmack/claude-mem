@@ -59,7 +59,7 @@
     <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License">
   </a>
   <a href="package.json">
-    <img src="https://img.shields.io/badge/version-13.34.2-green.svg" alt="Version">
+    <img src="https://img.shields.io/badge/version-13.35.0-green.svg" alt="Version">
   </a>
   <a href="package.json">
     <img src="https://img.shields.io/badge/node-%3E%3D20.0.0-brightgreen.svg" alt="Node">
@@ -159,6 +159,8 @@ Or install for OpenCode:
 ```bash
 npx claude-mem install --ide opencode
 ```
+
+This works with OpenCode 1.3.4 or later, including OpenCode 2. Restart OpenCode after installing.
 
 Or install for **T3 Code** (Codex and Claude Code providers):
 

@@ -27,7 +27,7 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "^Bash$|^mcp__.+__(read|view|cat)(_file|_files)?$",
+        "matcher": "^Bash$|^mcp__.+__(read|view|cat)(_file|_files)?$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$",
         "hooks": [
           {
             "type": "command",

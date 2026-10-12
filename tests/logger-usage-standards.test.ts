@@ -13,6 +13,7 @@ const EXCLUDED_PATTERNS = [
   /^ui\//,               // UI components (separate logging context)
   /^bin\//,              // CLI utilities (may use console.log for output)
   /index\.ts$/,          // Re-export files
+  /integrations\/opencode-plugin\//,  // OpenCode plugin bundle: must stay free of worker-only imports (logger pulls in settings-document/hook-io), so it logs to the host's console; only the entry index.ts was excluded before the v1/v2 split
   /logger\.ts$/,         // Logger itself
   /hook-response\.ts$/,  // Pure data structure
   /hook-constants\.ts$/, // Pure constants
