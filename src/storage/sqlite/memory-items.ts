@@ -83,7 +83,20 @@ function mapMemorySourceRow(row: MemorySourceRow): MemorySource {
   });
 }
 
-function buildSearchQuery(query: string): { words: string; symbols: Array<{ literal: string; expanded: string }> } {
+// unicode61 indexes these unsegmented runs as a single token. A user term
+// inside a run needs a literal substring predicate, as in worker-local search.
+const UNSEGMENTED_SCRIPT = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}\p{Script=Thai}\p{Script=Lao}\p{Script=Myanmar}\p{Script=Khmer}\p{Script=Bopomofo}]/u;
+export const MAX_MEMORY_SEARCH_TERMS = 64;
+
+function searchTokens(query: string): string[] {
+  return [...new Set(query.match(/[\p{L}\p{N}\p{S}_][\p{L}\p{N}\p{M}\p{S}_]*/gu) ?? [])];
+}
+
+export function isMemorySearchQueryWithinLimit(query: string): boolean {
+  return searchTokens(query).length <= MAX_MEMORY_SEARCH_TERMS;
+}
+
+function buildSearchQuery(query: string): { words: string; symbols: Array<{ literal: string; expanded: string }>; substrings: Array<{ literal: string; words: string }> } {
   const tokenQuery = (text: string): string => text
     .trim()
     .split(/\s+/)
@@ -91,21 +104,27 @@ function buildSearchQuery(query: string): { words: string; symbols: Array<{ lite
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
-  // unicode61 keeps compatibility characters in stored documents. Match each
-  // indexed word in its original or normalized form independently.
-  const tokens = query.match(/[\p{L}\p{N}\p{S}_][\p{L}\p{N}\p{M}\p{S}_]*/gu) ?? [];
-  const words = tokens.filter(token => tokenQuery(token)).map(token => {
-    const alternatives = [...new Set([token, token.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
-    return alternatives.length > 1
-      ? `(${alternatives.map(text => `(${text})`).join(' OR ')})`
-      : alternatives[0] ?? '';
-  }).filter(Boolean).join(' AND ');
-  // Symbol-only compatibility terms have no raw FTS token: ™ expands to TM
-  // and ℀ to a/c. Keep their literal and expanded alternatives as constraints.
-  const symbols = [...new Set(tokens.filter(token => !tokenQuery(token)))]
+  const tokens = searchTokens(query);
+  if (tokens.length > MAX_MEMORY_SEARCH_TERMS) {
+    throw new RangeError(`Memory search supports at most ${MAX_MEMORY_SEARCH_TERMS} distinct terms`);
+  }
+  // Keep each term's existing unicode61 alternatives. Script terms additionally
+  // allow literal substring matches, rather than replacing token matching.
+  const alternatives = (token: string): string => {
+    const forms = [...new Set([token, token.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
+    return forms.length > 1
+      ? `(${forms.map(text => `(${text})`).join(' OR ')})`
+      : forms[0] ?? '';
+  };
+  const unsegmented = (token: string): boolean =>
+    UNSEGMENTED_SCRIPT.test(token) || UNSEGMENTED_SCRIPT.test(token.normalize('NFKC'));
+  const words = tokens.filter(token => tokenQuery(token) && !unsegmented(token))
+    .map(alternatives).filter(Boolean).join(' AND ');
+  const symbols = tokens.filter(token => !tokenQuery(token))
     .map(literal => ({ literal, expanded: tokenQuery(literal.normalize('NFKC')) }))
     .filter(symbol => symbol.expanded);
-  return { words, symbols };
+  return { words, symbols, substrings: tokens.filter(unsegmented)
+    .map(literal => ({ literal, words: alternatives(literal) })) };
 }
 
 export class MemoryItemsRepository {
@@ -258,8 +277,8 @@ export class MemoryItemsRepository {
   }
 
   search(projectId: string, query: string, limit = 20): MemoryItem[] {
-    const { words, symbols } = buildSearchQuery(query);
-    if (!words && symbols.length === 0) return [];
+    const { words, symbols, substrings } = buildSearchQuery(query);
+    if (!words && symbols.length === 0 && substrings.length === 0) return [];
 
     const conditions = ['memory_items.project_id = ?'];
     const parameters: Array<string | number> = [projectId];
@@ -272,6 +291,18 @@ export class MemoryItemsRepository {
       parameters.push(projectId, words);
     }
     const indexedFields = ['title', 'subtitle', 'text', 'narrative', 'facts', 'concepts'];
+    for (const term of substrings) {
+      const alternatives = [...new Set([term.literal, term.literal.normalize('NFKC')])];
+      const clauses = alternatives.flatMap(literal => indexedFields.map(field => {
+        parameters.push(literal);
+        return `instr(lower(COALESCE(memory_items.${field}, '')), lower(?)) > 0`;
+      }));
+      if (term.words) {
+        clauses.push(ftsCondition);
+        parameters.push(projectId, term.words);
+      }
+      conditions.push(`(${clauses.join(' OR ')})`);
+    }
     for (const symbol of symbols) {
       const literalCondition = indexedFields.map(field => `instr(COALESCE(memory_items.${field}, ''), ?) > 0`).join(' OR ');
       // MATCH stays in its own subquery: SQLite cannot always evaluate a

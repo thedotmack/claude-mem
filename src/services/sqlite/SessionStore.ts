@@ -245,6 +245,7 @@ export class SessionStore {
     this.ensureToolUsesTable();
     this.ensureTelegramWrapupsTable();
     this.addDedupTables();
+    this.refreshUnicodeTitleNormKeys();
     this.ensureReinforcementColumns();
     this.ensureSessionCwdColumn();
     this.dropWriteOnlyUserPromptsFtsAndScopeFtsUpdateTriggers();
@@ -268,6 +269,27 @@ export class SessionStore {
       }
       this.db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_user_prompts_native_identity
         ON user_prompts(session_db_id, native_prompt_id) WHERE native_prompt_id IS NOT NULL`);
+    }).immediate();
+  }
+
+  /** v65: normalization now retains meaningful Unicode marks and canonicalizes NFC. */
+  private refreshUnicodeTitleNormKeys(): void {
+    this.db.transaction(() => {
+      if (this.db.query('SELECT version FROM schema_versions WHERE version = 65').get()) return;
+      const rows = this.db.prepare(`SELECT o.id, o.project, o.title, o.agent_id, o.agent_type,
+        s.platform_source FROM observations o LEFT JOIN sdk_sessions s
+        ON s.memory_session_id = o.memory_session_id ORDER BY o.id`);
+      const update = this.db.prepare('UPDATE observations SET title_norm_key = ? WHERE id = ?');
+      try {
+        for (const value of streamRows(rows)) {
+          const row = value as { id: number; project: string; title: string | null;
+            agent_id: string | null; agent_type: string | null; platform_source: string | null };
+          update.run(computeTitleNormKey(row.project, row.platform_source, row.title,
+            isSubagentEvent(row.agent_id, row.agent_type)), row.id);
+        }
+        this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)')
+          .run(65, new Date().toISOString());
+      } finally { rows.finalize(); update.finalize(); }
     }).immediate();
   }
 
@@ -3371,7 +3393,7 @@ export class SessionStore {
   }
 
   /**
-   * The session's current prompt number (count of its user_prompts rows).
+   * The session's current persisted prompt number, including gaps from partial imports.
    * `createdAtOrBeforeEpochMs` answers "which prompt was current at that
    * moment" instead — for an event that happened earlier than it is being
    * ingested (a hook spool entry drained after an outage).
@@ -3386,13 +3408,13 @@ export class SessionStore {
     const sessionParam = resolvedSessionDbId !== null ? resolvedSessionDbId : contentSessionId;
     if (createdAtOrBeforeEpochMs !== undefined) {
       const result = this.db.prepare(`
-        SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
+        SELECT COALESCE(MAX(prompt_number), 0) as count FROM user_prompts WHERE ${sessionClause} AND created_at_epoch <= ?
       `).get(sessionParam, createdAtOrBeforeEpochMs) as { count: number };
       return result.count;
     }
 
     const result = this.db.prepare(`
-      SELECT COUNT(*) as count FROM user_prompts WHERE ${sessionClause}
+      SELECT COALESCE(MAX(prompt_number), 0) as count FROM user_prompts WHERE ${sessionClause}
     `).get(sessionParam) as { count: number };
     return result.count;
   }

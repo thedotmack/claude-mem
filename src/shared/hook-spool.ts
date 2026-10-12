@@ -121,6 +121,17 @@ const EXPIRED_DIRNAME = 'expired';
  * never silently deleted.
  */
 export const HOOK_SPOOL_RETRY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * A `session_end` for a session the worker never registered can never succeed:
+ * `unknown_session` is returned only when the worker is up and its DB has no
+ * such session (a DB outage throws instead, retrying the whole pass), and a
+ * session registers within moments of starting or never. This grace window
+ * covers just the init race — an init and its end can land in the same
+ * instant — past it the drain retires the entry to `expired/` instead of
+ * holding it for the full retry window.
+ */
+export const HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS = 5 * 60 * 1000;
 const LEGACY_SESSION_END_REPLAY_DIRNAME = 'session-end-replay';
 
 export function resolveHookSpoolDirectory(): string {
@@ -288,7 +299,7 @@ export class HookSpool {
    * marker is cleared once the file is gone.
    */
   async drain(
-    accept: (entry: HookSpoolEntry, markHandedOff: () => void) => boolean | Promise<boolean>,
+    accept: (entry: HookSpoolEntry, markHandedOff: () => void) => boolean | 'expired' | Promise<boolean | 'expired'>,
     consumedMarkers?: HookSpoolConsumedMarkers,
   ): Promise<HookSpoolDrainResult> {
     const { files, quarantined } = this.readEntries();
@@ -345,7 +356,7 @@ export class HookSpool {
           }, error instanceof Error ? error : new Error(String(error)));
         }
       };
-      let accepted: boolean;
+      let accepted: boolean | 'expired';
       try {
         accepted = await accept(file.entry, markHandedOff);
       } catch (error) {
@@ -360,9 +371,21 @@ export class HookSpool {
       }
       if (handedOff) accepted = true;
 
+      if (accepted === 'expired') {
+        // Ingest's verdict: this entry can never succeed (it was not handed
+        // off — no marker was written). Retire it the way the retry window
+        // does, to expired/, never silently deleted.
+        if (this.expireIfPastWindow(file, HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, 'unknown-session grace window')) {
+          expired++;
+        } else {
+          retained++;
+        }
+        continue;
+      }
+
       if (!accepted) {
         // Never handed off (no marker was written): the next drain retries it.
-        if (this.expireIfPastRetryWindow(file)) {
+        if (this.expireIfPastWindow(file, HOOK_SPOOL_RETRY_WINDOW_MS, 'retry window')) {
           expired++;
         } else {
           if (file.entry.kind === 'observation' || file.entry.kind === 'file_edit') sessionsWithRetainedObservations.add(sessionKey);
@@ -399,14 +422,15 @@ export class HookSpool {
     }
   }
 
-  /** Moves a retained entry older than HOOK_SPOOL_RETRY_WINDOW_MS to `expired/`. */
-  private expireIfPastRetryWindow(file: HookSpoolFile): boolean {
+  /** Moves an entry older than `windowMs` to `expired/`, with an error log. */
+  private expireIfPastWindow(file: HookSpoolFile, windowMs: number, windowDescription: string): boolean {
     const ageMs = Date.now() - file.entry.enqueuedAtEpochMs;
-    if (ageMs <= HOOK_SPOOL_RETRY_WINDOW_MS) return false;
+    if (ageMs <= windowMs) return false;
 
     const details = {
       kind: file.entry.kind,
       contentSessionId: file.entry.payload.contentSessionId,
+      ageMinutes: Math.round(ageMs / 60_000),
       ageHours: Math.round(ageMs / 3_600_000),
       file: file.filename,
       expiredDirectory: this.expiredDirectory,
@@ -415,11 +439,11 @@ export class HookSpool {
       mkdirSync(this.expiredDirectory, { recursive: true });
       renameSync(file.path, join(this.expiredDirectory, file.filename));
     } catch (error) {
-      logger.error('HOOK', 'Hook spool entry is past its retry window but could not be moved to expired/; keeping it', details,
+      logger.error('HOOK', `Hook spool entry is past its ${windowDescription} but could not be moved to expired/; keeping it`, details,
         error instanceof Error ? error : new Error(String(error)));
       return false;
     }
-    logger.error('HOOK', 'Hook spool entry was never accepted within its retry window; moved to expired/', details);
+    logger.error('HOOK', `Hook spool entry was never accepted within its ${windowDescription}; moved to expired/`, details);
     return true;
   }
 

@@ -14,7 +14,7 @@ import {
   type TranscriptFileContext,
   type TranscriptObservationTransport,
 } from './processor.js';
-import { decompressZstdFrame, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
+import { decompressZstdFrame, decompressZstdFrameBytes, isZstdSupported, scanZstdFramesInFile, type ZstdScanResult } from './zstd-frames.js';
 
 interface TailState {
   /**
@@ -235,6 +235,8 @@ class FileTailer {
    * with the checkpoint.
    */
   private frameLinesDone: number;
+  /** zstd prefix that cannot yet round-trip through UTF-8 (persisted as base64). */
+  private zstdPartialBytes?: Buffer;
   /** The device/inode of the file the checkpoint was taken from. Persisted. */
   private fileIdentity?: string;
   /** sha256 of the up-to-4 KiB before the checkpoint (fingerprintBeforeOffset). Persisted. */
@@ -249,7 +251,8 @@ class FileTailer {
       partial: string,
       frameLinesDone: number,
       fileIdentity?: string,
-      checkpointFingerprint?: string
+      checkpointFingerprint?: string,
+      partialBytes?: string
     ) => void,
     // zstd only: the unterminated JSONL prefix and the lines of the frame at
     // the offset already dispatched, persisted with the frame-aligned offset.
@@ -258,11 +261,13 @@ class FileTailer {
     initialFileIdentity?: string,
     initialCheckpointFingerprint?: string,
     // Called when the file is read again from byte 0 (replaced or truncated).
-    private onReset?: () => void
+    private onReset?: () => void,
+    initialPartialBytes?: string
   ) {
     this.fileIdentity = initialFileIdentity;
     this.checkpointFingerprint = initialCheckpointFingerprint;
     this.isZstd = filePath.endsWith(ZSTD_TRANSCRIPT_SUFFIX);
+    this.zstdPartialBytes = this.isZstd && initialPartialBytes ? Buffer.from(initialPartialBytes, 'base64') : undefined;
     this.tailState = { offset: initialOffset, readOffset: initialOffset, partial: this.isZstd ? initialPartial : '' };
     this.frameLinesDone = this.isZstd ? initialFrameLinesDone : 0;
   }
@@ -349,6 +354,7 @@ class FileTailer {
       this.tailState.offset = 0;
       this.tailState.readOffset = 0;
       this.tailState.partial = '';
+      this.zstdPartialBytes = undefined;
       this.pendingRecord = Buffer.alloc(0);
       this.frameLinesDone = 0;
     }
@@ -367,13 +373,14 @@ class FileTailer {
   }
 
   /** Durable checkpoint: record and persist where the next pass (or a restart) resumes. */
-  private checkpoint(offset: number, partial = ''): void {
+  private checkpoint(offset: number, partial = '', partialBytes = this.zstdPartialBytes): void {
+    this.zstdPartialBytes = partialBytes;
     this.tailState.offset = offset;
     this.tailState.partial = partial;
     this.checkpointFingerprint = this.fileIdentity === undefined
       ? undefined
       : fingerprintBeforeOffset(this.filePath, offset, this.fileIdentity) ?? undefined;
-    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint);
+    this.onOffset(offset, partial, this.frameLinesDone, this.fileIdentity, this.checkpointFingerprint, this.zstdPartialBytes?.toString('base64'));
   }
 
   /**
@@ -465,9 +472,9 @@ class FileTailer {
 
     let dispatched = 0;
     for (const frame of scan.frames) {
-      let plain: string;
+      let plain: Buffer;
       try {
-        plain = decompressZstdFrame(bytes, { start: frame.start - start, end: frame.end - start });
+        plain = decompressZstdFrameBytes(bytes, { start: frame.start - start, end: frame.end - start });
       } catch {
         // decompressZstdFrame logged it; retried on the next change event.
         this.checkpoint(this.tailState.offset, this.tailState.partial);
@@ -475,12 +482,21 @@ class FileTailer {
       }
 
       const partialBefore = this.tailState.partial;
-      const lines = (partialBefore + plain).split('\n');
-      const partialAfter = lines.pop() ?? '';
+      const partialBytesBefore = this.zstdPartialBytes;
+      const combined = Buffer.concat([partialBytesBefore ?? Buffer.from(partialBefore, 'utf8'), plain]);
+      const lines: string[] = [];
+      let lineStart = 0;
+      for (let newline = combined.indexOf(10); newline !== -1; newline = combined.indexOf(10, lineStart)) {
+        lines.push(combined.toString('utf8', lineStart, newline));
+        lineStart = newline + 1;
+      }
+      const remaining = combined.subarray(lineStart);
+      const partialAfter = remaining.toString('utf8');
+      const partialBytesAfter = Buffer.from(partialAfter, 'utf8').equals(remaining) ? undefined : Buffer.from(remaining);
       for (let index = this.frameLinesDone; index < lines.length; index++) {
         if (this.closed) {
           this.frameLinesDone = index;
-          this.checkpoint(frame.start, partialBefore);
+          this.checkpoint(frame.start, partialBefore, partialBytesBefore);
           return;
         }
         const line = lines[index].trim();
@@ -490,7 +506,7 @@ class FileTailer {
         } catch {
           this.frameLinesDone = index;
           this.tailState.readOffset = frame.start;
-          this.checkpoint(frame.start, partialBefore);
+          this.checkpoint(frame.start, partialBefore, partialBytesBefore);
           return;
         }
         if (++dispatched % YIELD_EVERY_N_LINES === 0) await yieldToEventLoop();
@@ -499,7 +515,8 @@ class FileTailer {
       this.frameLinesDone = 0;
       this.tailState.offset = frame.end;
       this.tailState.readOffset = frame.end;
-      this.tailState.partial = partialAfter;
+      this.tailState.partial = partialBytesAfter ? '' : partialAfter;
+      this.zstdPartialBytes = partialBytesAfter;
     }
 
     // A frame can end mid-record, and the offset is resumable only at frame
@@ -982,6 +999,7 @@ export class TranscriptWatcher {
         offset = 0;
         this.state.offsets[filePath] = 0;
         delete this.state.partials?.[filePath];
+        delete this.state.partialBytes?.[filePath];
         delete this.state.frameLines?.[filePath];
         this.forgetReplacedTranscript(filePath, fileContext);
       }
@@ -1032,7 +1050,7 @@ export class TranscriptWatcher {
           }
         }
       },
-      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string) => {
+      (newOffset: number, partial: string, frameLinesDone: number, fileIdentity?: string, checkpointFingerprint?: string, partialBytes?: string) => {
         if (fileIdentity !== undefined) (this.state.fileIdentities ??= {})[filePath] = fileIdentity;
         if (checkpointFingerprint !== undefined) {
           (this.state.checkpointFingerprints ??= {})[filePath] = checkpointFingerprint;
@@ -1045,6 +1063,8 @@ export class TranscriptWatcher {
         } else if (this.state.partials) {
           delete this.state.partials[filePath];
         }
+        if (partialBytes) (this.state.partialBytes ??= {})[filePath] = partialBytes;
+        else if (this.state.partialBytes) delete this.state.partialBytes[filePath];
         if (frameLinesDone > 0) {
           (this.state.frameLines ??= {})[filePath] = frameLinesDone;
         } else if (this.state.frameLines) {
@@ -1056,7 +1076,8 @@ export class TranscriptWatcher {
       this.state.frameLines?.[filePath] ?? 0,
       this.state.fileIdentities?.[filePath],
       this.state.checkpointFingerprints?.[filePath],
-      () => this.forgetReplacedTranscript(filePath, fileContext)
+      () => this.forgetReplacedTranscript(filePath, fileContext),
+      this.state.partialBytes?.[filePath]
     );
 
     tailer.start();

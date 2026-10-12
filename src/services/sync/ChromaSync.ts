@@ -1990,6 +1990,7 @@ export class ChromaSync {
     const chromaMcp = ChromaMcpManager.getInstance();
 
     let totalPatched = 0;
+    let totalAlreadyPatched = 0;
 
     for (const docType of ['observation', 'session_summary'] as const) {
       const sqliteIds = targets
@@ -2012,33 +2013,51 @@ export class ChromaSync {
           include: ['metadatas']
         }) as { ids?: string[]; metadatas?: Array<Record<string, any> | null> };
 
+        // The client-side doc_type filter needs one metadata entry per id; a
+        // short or missing list would silently skip documents while callers
+        // count every requested row as patched, so fail fast instead.
         const allIds = existing?.ids ?? [];
-        const allMetadatas = existing?.metadatas ?? [];
+        const allMetadatas = existing?.metadatas;
+        if (allIds.length > 0 && (!Array.isArray(allMetadatas) || allMetadatas.length !== allIds.length)) {
+          throw new Error('Chroma merged-project lookup did not return metadatas for every document ID');
+        }
         const keep: number[] = [];
         for (let k = 0; k < allIds.length; k++) {
-          if (allMetadatas[k]?.doc_type === docType) keep.push(k);
+          if (allMetadatas?.[k]?.doc_type === docType) keep.push(k);
         }
         if (keep.length === 0) continue;
 
-        const docIds: string[] = keep.map(k => allIds[k]);
-        const metadatas = keep.map(k => {
+        // Adoption re-sends rows it already merged on every start, and synced
+        // documents already carry merged_into_project, so only write the ones
+        // whose value would change.
+        const staleIds: string[] = [];
+        const staleMetadatas: Array<Record<string, any>> = [];
+        keep.forEach(k => {
+          const docId = allIds[k];
+          const current = allMetadatas?.[k] ?? {};
+          if (current.merged_into_project === mergedIntoProject) {
+            totalAlreadyPatched++;
+            return;
+          }
           const merged: Record<string, any> = {
-            ...(allMetadatas[k] ?? {}),
+            ...current,
             merged_into_project: mergedIntoProject
           };
-          return Object.fromEntries(
+          staleIds.push(docId);
+          staleMetadatas.push(Object.fromEntries(
             Object.entries(merged).filter(
               ([, v]) => v !== null && v !== undefined && v !== ''
             )
-          );
+          ));
         });
+        if (staleIds.length === 0) continue;
 
         await chromaMcp.callTool('chroma_update_documents', {
           collection_name: this.collectionName,
-          ids: docIds,
-          metadatas
+          ids: staleIds,
+          metadatas: staleMetadatas
         });
-        totalPatched += docIds.length;
+        totalPatched += staleIds.length;
       }
     }
 
@@ -2046,7 +2065,8 @@ export class ChromaSync {
       collection: this.collectionName,
       mergedIntoProject,
       sqliteIdCount: targets.length,
-      chromaDocsPatched: totalPatched
+      chromaDocsPatched: totalPatched,
+      chromaDocsAlreadyPatched: totalAlreadyPatched
     });
   }
 }
