@@ -107,6 +107,7 @@ describe('SearchRoutes Welcome Hint', () => {
   afterEach(() => {
     loggerSpies.forEach(spy => spy.mockRestore());
     delete process.env.CLAUDE_MEM_WELCOME_HINT_ENABLED;
+    delete process.env.CLAUDE_MEM_WORK_STATE_ENABLED;
     delete process.env.CLAUDE_MEM_WORKER_PORT;
     if (existsSync(observerHealthPath)) rmSync(observerHealthPath, { force: true });
   });
@@ -403,6 +404,39 @@ describe('SearchRoutes Welcome Hint', () => {
       expect(body).toStartWith('# Work state: your to-do lists and working state');
       expect(body).toContain('  - [todo] publish');
       expect(body.indexOf('Still open:')).toBeLessThan(body.indexOf('# claude-mem status'));
+    });
+
+    // #4606: a host that tracks work its own way can turn the section off, so
+    // the agent is not told to use a to-do tool instead of the host's.
+    it('leaves the work state out when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      countQueryStub = mock(() => ({ count: 7 }));
+      prepareStub = mock(() => ({ get: countQueryStub }));
+      mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
+      workStateEntriesStub.mockImplementation(releaseEntries);
+      const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/to/active-project' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      expect(workStateEntriesStub).not.toHaveBeenCalled();
+      expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
+      expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0 }), false);
+    });
+
+    it('leaves the work state out of the welcome hint when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      workStateEntriesStub.mockImplementation(releaseEntries);
+      const handler = captureContextInjectHandler(new SearchRoutes(mockSearchManager));
+      const res = createMockRes();
+
+      handler({ query: { projects: '/path/to/empty-project' } } as unknown as Request, res as unknown as Response);
+      await new Promise(resolve => setImmediate(resolve));
+
+      const body = (res.send as any).mock.calls[0][0] as string;
+      expect(body).toStartWith('# claude-mem status');
+      expect(body).not.toContain('work_state_write');
     });
 
     it('leaves the work state out of the colored terminal preview, which is for the human', async () => {
