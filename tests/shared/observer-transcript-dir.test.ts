@@ -37,6 +37,10 @@ import { tmpdir, homedir } from 'os';
 import { join } from 'path';
 import * as childProcess from 'child_process';
 
+// Captured BEFORE the override below, so afterEach puts the real value back
+// and later files in the same bun process never inherit the temp profile.
+const ORIGINAL_CLAUDE_CONFIG_DIR = process.env.CLAUDE_CONFIG_DIR;
+
 // Must run before any src import freezes paths.CLAUDE_CONFIG_DIR.
 const FROZEN_CONFIG_DIR = join(fs.realpathSync(tmpdir()), 'claude-mem-4689-frozen-config');
 fs.mkdirSync(FROZEN_CONFIG_DIR, { recursive: true });
@@ -90,7 +94,7 @@ let tempDir: string;
 let settingsPath: string;
 
 const ORIGINAL_ENV = {
-  CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR,
+  CLAUDE_CONFIG_DIR: ORIGINAL_CLAUDE_CONFIG_DIR,
   CLAUDE_CODE_OAUTH_TOKEN: process.env.CLAUDE_CODE_OAUTH_TOKEN,
   ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL,
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
