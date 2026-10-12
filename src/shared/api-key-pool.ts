@@ -55,7 +55,7 @@ import { logger } from '../utils/logger.js';
 import { GEMINI_REGION_REFUSAL_CODE } from './gemini-error-details.js';
 
 /** Which pools exist. One per provider that resolves an HTTP API key. */
-export type KeyPoolId = 'gemini' | 'openrouter' | 'openai-compatible';
+export type KeyPoolId = 'gemini' | 'openrouter' | 'openai-compatible' | 'aimlapi';
 
 export const API_KEY_COOLDOWN_FILENAME = 'api-key-cooldown.json';
 

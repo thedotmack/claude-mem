@@ -28,7 +28,7 @@ export interface ActiveSession {
   earliestPendingTimestamp: number | null;  
   claimedMessageIds: number[];
   conversationHistory: ConversationMessage[];  
-  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
+  currentProvider: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'aimlapi' | null;
   /**
    * Claude account (config-dir profile key) the latest Claude generator was
    * spawned under. Its env, and so its billing account, is fixed at spawn, so
@@ -41,7 +41,7 @@ export interface ActiveSession {
    * (the provider fallback), else null/undefined. A stand-in that is refused
    * must not strand the work: the primary takes it back once it recovers.
    */
-  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
+  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'aimlapi' | null;
   consecutiveRestarts: number;
   /**
    * Rejected replies (neither observation/summary XML nor the
@@ -145,8 +145,8 @@ export interface ActiveSession {
   observedModel?: string;
   /** Billing posture of the observed Claude Code session (closed enum, see observed-billing.ts) — telemetry observed_billing. */
   observedBilling?: string;
-  /** Whether the OpenRouter provider targets openrouter.ai or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
-  endpointClass?: 'openrouter' | 'custom';
+  /** Whether the provider targets openrouter.ai, aimlapi.com, or a custom OpenAI-compatible gateway — telemetry endpoint_class. */
+  endpointClass?: 'openrouter' | 'aimlapi' | 'custom';
   /**
    * The observer model's context window in tokens, resolved once per
    * generation at generator start (#3625). The generation budget and the

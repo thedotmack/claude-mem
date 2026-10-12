@@ -210,6 +210,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  CLAUDE_MEM_AIMLAPI_API_KEY: string;
+  CLAUDE_MEM_AIMLAPI_MODEL: string;
+  CLAUDE_MEM_AIMLAPI_BASE_URL: string;
+  CLAUDE_MEM_AIMLAPI_SITE_URL: string;
+  CLAUDE_MEM_AIMLAPI_APP_NAME: string;
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
@@ -458,7 +463,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
-    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
+    CLAUDE_MEM_AIMLAPI_API_KEY: '',  // aimlapi.com key for the aimlapi provider. AIMLAPI_API_KEY (environment or ~/.claude-mem/.env) also works.
+    CLAUDE_MEM_AIMLAPI_MODEL: '',  // aimlapi.com model id, passed verbatim. Empty = AIMLAPI_DEFAULT_MODEL (src/shared/aimlapi-base-url.ts).
+    CLAUDE_MEM_AIMLAPI_BASE_URL: '',  // Optional override; empty = https://api.aimlapi.com/v1. Attribution headers are only sent to aimlapi.com.
+    CLAUDE_MEM_AIMLAPI_SITE_URL: '',  // Optional: HTTP-Referer sent to aimlapi.com. Empty = the claude-mem repo URL.
+    CLAUDE_MEM_AIMLAPI_APP_NAME: '',  // Optional: X-Title sent to aimlapi.com. Empty = Claude-Mem.
+    CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'aimlapi' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
     CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR: '0.95',          // Quota guard (#4230): subscription observer stops at this utilization of the window. A provider rejection always stops it
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY: '0.93',

@@ -14,7 +14,7 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | Setting                       | Default                         | Description                           |
 |-------------------------------|---------------------------------|---------------------------------------|
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
-| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
+| `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, `openai-compatible`, or `aimlapi` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
 | `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for non-streamed observer requests: Gemini, Codex, and the cmem.ai gateway (plus any OpenAI-compatible endpoint that refuses streaming). It exists to catch a hung request; a slow backend just needs a higher value. OpenRouter and OpenAI-compatible requests are streamed and are not bounded by this setting: they end after 90 seconds with no token or keep-alive, with a 300-second cap on the whole request. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS` | `180000` | Deadline (ms, 500–300000) for condensing one oversized tool field before its observation is sent; on expiry the field is truncated instead. It is a request to the same backend as the observer request, so it has the same default. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
@@ -138,11 +138,25 @@ For `CLAUDE_MEM_PROVIDER=openai-compatible`: any endpoint that speaks `/chat/com
 
 See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets and setup.
 
+### aimlapi.com Provider Settings
+
+For `CLAUDE_MEM_PROVIDER=aimlapi`: [aimlapi.com](https://aimlapi.com)'s OpenAI-compatible API, one key for its chat models.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_AIMLAPI_API_KEY` | — | aimlapi.com API key ([get key](https://aimlapi.com/app/keys)). Settings file or environment, or `AIMLAPI_API_KEY` in the environment or `~/.claude-mem/.env`; the viewer cannot set it |
+| `CLAUDE_MEM_AIMLAPI_MODEL` | — | Model id, sent as-is. Empty = `openai/gpt-5.6-terra` |
+| `CLAUDE_MEM_AIMLAPI_BASE_URL` | — | Optional OpenAI-compatible base URL override. Empty = `https://api.aimlapi.com/v1` |
+| `CLAUDE_MEM_AIMLAPI_SITE_URL` | — | Optional: URL sent as `HTTP-Referer` |
+| `CLAUDE_MEM_AIMLAPI_APP_NAME` | — | Optional: app name sent as `X-Title`. Empty = `Claude-Mem` |
+
+Select it with `npx claude-mem install --provider aimlapi`, by picking **aimlapi.com** in the interactive installer, or in the viewer's settings. Requests to aimlapi.com carry `X-AIMLAPI-Source`, `X-AIMLAPI-Partner-ID`, `HTTP-Referer` and `X-Title` headers identifying claude-mem; a base URL on any other host gets none of them.
+
 ### Quota Fallback Settings
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, `aimlapi`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
 
 See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.

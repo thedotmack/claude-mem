@@ -45,6 +45,7 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
+import { resolveAimlapiApiKey } from '../../shared/aimlapi-base-url.js';
 import { PRO_TRIAL_LABEL, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
@@ -1038,13 +1039,13 @@ export function mergeSettings(
   return true;
 }
 
-type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
+type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'aimlapi' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
  * persists CLAUDE_MEM_PROVIDER='openrouter'. The worker only understands 'claude' |
- * 'codex' | 'gemini' | 'openrouter' | 'openai-compatible', so 'cmem' must never
- * reach settings.json.
+ * 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'aimlapi', so 'cmem'
+ * must never reach settings.json.
  */
 type ProviderChoice = ProviderId | 'cmem';
 // Phase 1d: Persisted DB literals (`server_beta_schema_migrations`, job_type
@@ -1303,6 +1304,9 @@ export async function promptProvider(
         options: [
           { value: 'cmem', label: labels.cmem, hint: labels.cmemHint },
           { value: 'claude', label: labels.claude, hint: labels.claudeHint },
+          // A bring-your-own-key option: listed below CMEM Pro and never
+          // pre-selected.
+          { value: 'aimlapi', label: labels.aimlapi },
         ],
         // CMEM Pro pre-selected: it is the recommended path and the one the
         // funnel is built around. Selecting it no longer means "pay now" —
@@ -1398,12 +1402,17 @@ export async function promptProvider(
     throw new Error('The openai-compatible provider is configured in ~/.claude-mem/settings.json, not by the installer.');
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
+  const providerLabel = selectedProvider === 'gemini'
+    ? 'Gemini'
+    : selectedProvider === 'aimlapi' ? 'aimlapi.com' : 'OpenRouter';
   const keyEnvName = selectedProvider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+    : selectedProvider === 'aimlapi' ? 'CLAUDE_MEM_AIMLAPI_API_KEY' : 'CLAUDE_MEM_OPENROUTER_API_KEY';
 
-  const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
+  // aimlapi.com also takes AIMLAPI_API_KEY from the environment or ~/.claude-mem/.env.
+  const existingKey = selectedProvider === 'aimlapi'
+    ? resolveAimlapiApiKey({ CLAUDE_MEM_AIMLAPI_API_KEY: getSetting('CLAUDE_MEM_AIMLAPI_API_KEY') })
+    : getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
     ? String(getSetting('CLAUDE_MEM_OPENROUTER_BASE_URL') ?? '')
     : '';
@@ -2193,7 +2202,7 @@ export interface InstallOptions {
    * `openai-compatible` is never a flag value: it is only ever kept from
    * settings.json by a non-interactive run (`providerSource: 'persisted'`).
    */
-  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
+  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'aimlapi' | 'host';
   /**
    * How `provider` was decided. `flag` for an explicit `--provider` (and the
    * grok-bot implicit cmem default set in index.ts), `default` when a fresh
@@ -2449,7 +2458,16 @@ export function validateNonInteractiveProvider(
     if (
       persistedProvider === 'claude' || persistedProvider === 'codex' || persistedProvider === 'gemini'
       || persistedProvider === 'openrouter' || persistedProvider === 'openai-compatible'
+      || persistedProvider === 'aimlapi'
     ) {
+      if (persistedProvider === 'aimlapi' && !resolveAimlapiApiKey(persisted)) {
+        installerError(ErrorSeverity.ABORT, {
+          component: 'provider-credentials',
+          phase: 'non-interactive-validation',
+          cause: new Error('The configured aimlapi provider has no API key saved or exported, so a non-interactive run cannot keep it.'),
+          remediation: 'Save CLAUDE_MEM_AIMLAPI_API_KEY in ~/.claude-mem/settings.json or export AIMLAPI_API_KEY, pass --provider claude to switch to your Anthropic plan, or run the installer in an interactive terminal.',
+        }, summary);
+      }
       // Codex, like claude, authenticates through a local login rather than a
       // saved key, and openai-compatible may point at a local server that takes
       // no key at all, so there is nothing to validate before keeping them.
@@ -2490,6 +2508,17 @@ export function validateNonInteractiveProvider(
   }
 
   if (options.provider === 'host') return;
+  if (options.provider === 'aimlapi') {
+    if (!resolveAimlapiApiKey({ CLAUDE_MEM_AIMLAPI_API_KEY: getSetting('CLAUDE_MEM_AIMLAPI_API_KEY') })) {
+      installerError(ErrorSeverity.ABORT, {
+        component: 'provider-credentials',
+        phase: 'non-interactive-validation',
+        cause: new Error('aimlapi requires a preconfigured API key when stdin is not interactive.'),
+        remediation: 'Save CLAUDE_MEM_AIMLAPI_API_KEY or export AIMLAPI_API_KEY first, or run the installer in an interactive terminal so it can ask securely.',
+      }, summary);
+    }
+    return;
+  }
   if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;
   const keyName = options.provider === 'gemini'
     ? 'CLAUDE_MEM_GEMINI_API_KEY'

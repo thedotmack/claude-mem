@@ -16,6 +16,8 @@ import { ClaudeObservationProvider } from '../generation/providers/ClaudeObserva
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
 import { OpenRouterObservationProvider } from '../generation/providers/OpenRouterObservationProvider.js';
+import { AimlapiObservationProvider } from '../generation/providers/AimlapiObservationProvider.js';
+import { resolveAimlapiChatCompletionsUrl } from '../../shared/aimlapi-base-url.js';
 import { parseOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
@@ -414,6 +416,23 @@ export async function instantiateServerGenerationProvider(provider: string): Pro
     if (warning) logger.warn('SYSTEM', `server: ${warning}`);
     if (extraBody) opts.extraBody = extraBody;
     return new OpenRouterObservationProvider(opts);
+  }
+  if (provider === 'aimlapi') {
+    const configuredKey = process.env.AIMLAPI_API_KEY ?? process.env.CLAUDE_MEM_AIMLAPI_API_KEY ?? '';
+    // Optional override so the same build can target aimlapi.com's staging backend.
+    const baseUrl = process.env.CLAUDE_MEM_AIMLAPI_BASE_URL ?? process.env.AIMLAPI_BASE_URL;
+    // The shared cmem key lock: a cm_pro_ key is never sent to aimlapi.com.
+    const [apiKey] = keysForEndpoint(resolveAimlapiChatCompletionsUrl(baseUrl), configuredKey ? [configuredKey] : []);
+    if (!apiKey) {
+      if (configuredKey) logger.warn('SYSTEM', 'server: refusing a cmem.ai memory key (cm_pro_) as the aimlapi.com key; it only works on the cmem gateway');
+      return null;
+    }
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    return new AimlapiObservationProvider(opts);
   }
   if (provider === 'custom') {
     return loadCustomServerGenerationProvider();

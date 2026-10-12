@@ -371,6 +371,7 @@ export function ContextSettingsModal({
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
                   <option value="codex">Codex (uses your ChatGPT subscription)</option>
                   <option value="openai-compatible">OpenAI-compatible endpoint (BYOK)</option>
+                  <option value="aimlapi">aimlapi.com (BYOK)</option>
                 </select>
               </FormField>
 
@@ -591,6 +592,27 @@ export function ContextSettingsModal({
                 </>
               )}
 
+              {formState.CLAUDE_MEM_PROVIDER === 'aimlapi' && (
+                <>
+                  <FormField
+                    label="Model"
+                    tooltip="aimlapi.com model id, passed verbatim. Leave blank for the default"
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_AIMLAPI_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_AIMLAPI_MODEL', e.target.value)}
+                      placeholder="openai/gpt-5.6-terra"
+                    />
+                  </FormField>
+                  <span className="toggle-description">
+                    The API key is set outside the viewer: <code>CLAUDE_MEM_AIMLAPI_API_KEY</code> in{' '}
+                    <code>~/.claude-mem/settings.json</code>, or <code>AIMLAPI_API_KEY</code> in the environment or{' '}
+                    <code>~/.claude-mem/.env</code>.
+                  </span>
+                </>
+              )}
+
               <FormField
                 label="Quota Fallback"
                 tooltip="While the selected provider cannot serve (allowance spent, rate limited or over capacity past its retries, unavailable, or repeatedly returning unusable replies), send observation work here until it recovers. Claude (your Anthropic plan) is the default and is used only when a Claude login or key exists. Off: work waits for the provider."
@@ -604,6 +626,7 @@ export function ContextSettingsModal({
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
                   <option value="openai-compatible">OpenAI-compatible endpoint</option>
+                  <option value="aimlapi">aimlapi.com</option>
                 </select>
               </FormField>
 
