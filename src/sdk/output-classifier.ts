@@ -158,6 +158,13 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   "You've reached your Fable 5 limit. Run /usage-credits to continue…"
     //   "You're out of usage credits. Run /usage-credits to keep using…"
     /\byou'?ve (?:hit|reached) your\b.{0,40}\blimit\b/.test(text) ||
+    // The Anthropic API billing notice, returned as the whole assistant
+    // response when an API key's credit balance is exhausted (#4632):
+    //   "Credit balance is too low"
+    //   "Your credit balance is too low to access the Anthropic API. …"
+    // Anchored at the start because the notice IS the response; prose that
+    // merely narrates a low balance mid-sentence stays unmatched.
+    /^(?:your )?credit balance is too low\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||
