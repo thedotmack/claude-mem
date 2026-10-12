@@ -358,6 +358,9 @@ export class SessionSearch {
     return { clause: `(${groups.join(' AND ')})`, params };
   }
 
+  /** Fewest query terms before an AND query with no match is widened to any term (see buildFTSAnyTermQuery). */
+  private static readonly MIN_ANY_TERM_TOKENS = 3;
+
   /**
    * Build an FTS5 query that preserves literal-token safety while allowing multi-word
    * input to behave as an AND of terms instead of an exact phrase.
@@ -366,9 +369,6 @@ export class SessionSearch {
    * nothing for them, so each would become an empty phrase that matches no row and, ANDed
    * in, would zero out the whole query.
    */
-  /** Fewest query terms before an AND query with no match is widened to any term (see buildFTSAnyTermQuery). */
-  private static readonly MIN_ANY_TERM_TOKENS = 3;
-
   private static buildFTSMatchQuery(query: string): string {
     const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
     if (tokens.length === 0) {
