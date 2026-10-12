@@ -84,6 +84,25 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the Anthropic API credit-balance wording returned as assistant text', () => {
+    // #4632: on an API key with no credit, the SDK returns the billing notice
+    // as the whole assistant response instead of raising an error.
+    expect(isQuotaLimitedObserverOutput('Credit balance is too low')).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat prose that merely narrates a low credit balance as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The deploy failed because the credit balance is too low on the staging key; nothing was recorded.',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
