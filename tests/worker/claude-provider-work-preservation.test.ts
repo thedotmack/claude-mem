@@ -565,7 +565,7 @@ describe('work preservation — ordering and durable state', () => {
       await withTimeout(run, 'startSession after quota guard');
       await sdk().until(() => sdk().inputFinished, 'generator released after quota guard');
 
-      expect(h.session.abortReason).toBe('quota:seven_day');
+      expect(h.session.abortReason).toBe('quota:seven_day:quota_guard');
       expect(h.session.abortController.signal.aborted).toBe(true);
       expect(h.pending()).toBe(1);
       const outcome = await h.exit();
