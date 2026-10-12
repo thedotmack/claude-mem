@@ -13,6 +13,7 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
+import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
 
 function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
   spoolHookEvent('observation', {
@@ -35,6 +36,10 @@ export const observationHandler: EventHandler = {
     const platformSource = normalizePlatformSource(input.platform);
 
     if (!toolName) {
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    if (isRecursiveMemoryTool(toolName)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
@@ -64,6 +69,12 @@ export const observationHandler: EventHandler = {
         agentType: input.agentType,
       });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Save echoes go through the worker spool so ingest can retain a write
+    // receipt, without generating a second observation of the explicit note.
+    if (isExplicitMemoryWrite(toolName)) {
+      return spoolObservation(input, platformSource);
     }
 
     const runtime = resolveRuntimeContext();

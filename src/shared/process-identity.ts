@@ -269,10 +269,15 @@ export function isSameProcess(pid: number, snapshotToken: string | null): boolea
   // `taskkill /PID <pid> /T /F`, taking an unrelated process AND its whole
   // descendant tree with it.
   //
-  // The uncached reader is intentionally NOT exported: the only way to obtain
-  // a bypassing read is through this predicate, so a caller cannot acquire a
-  // raw probe and use it somewhere the cache is actually wanted.
+  // The uncached reader is intentionally NOT exported: callers can obtain a
+  // bypassing verdict only through this predicate or the stricter helper
+  // below, not a raw probe that could be used where caching is wanted.
   const currentToken = readStartToken(pid, true);
   if (currentToken === null) return true;
   return currentToken === snapshotToken;
+}
+
+/** A fail-closed identity check for test cleanup of already snapshotted children. */
+export function hasMatchingProcessStartToken(pid: number, snapshotToken: string): boolean {
+  return readStartToken(pid, true) === snapshotToken;
 }

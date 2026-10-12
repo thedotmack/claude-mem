@@ -117,12 +117,20 @@ const CHROMA_MCP_PINNED_VERSION = '0.2.6';
 // and what an unpinned env resolves today; it opens stores written by 1.0.16
 // and by 1.5.9. Raise it only after the same check on both.
 //
+// Why pydantic<2.14: chroma-mcp 0.2.6 pins mcp[cli]==1.6.0, whose
+// fastmcp func_metadata.py imports the private
+// pydantic._internal._typing_extra.eval_type_backport. pydantic 2.14.0
+// removed it, so every fresh env failed prewarm with an ImportError and
+// vector search stayed off (#4593). Lift the cap once a chroma-mcp release
+// ships an mcp newer than 1.6.0.
+//
 // These pins are runtime-only (uvx --with) so we don't have to fork
 // chroma-mcp upstream — they apply only to claude-mem's spawned subprocess.
 const CHROMA_MCP_DEP_OVERRIDES: ReadonlyArray<string> = [
   'onnxruntime>=1.20',
   'protobuf<7',
   'chromadb==1.5.9',
+  'pydantic<2.14',
 ];
 
 // The chromadb version the launcher pins, read from the override list itself
@@ -1966,6 +1974,14 @@ export class ChromaMcpManager {
   }
 
   /**
+   * CLAUDE_MEM_CHROMA_UVX_PATH from settings.json, with the environment
+   * variable taking precedence (loadFromFile applies env overrides).
+   */
+  private static uvxPathSetting(): string {
+    return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CHROMA_UVX_PATH;
+  }
+
+  /**
    * uv installs `uvx` to a per-user bin dir that is often NOT on the PATH the
    * worker inherited (the worker is spawned by the host with a minimal env that
    * predates the user adding uv to PATH). Without it, `uvx`/`cmd /c uvx` dies
@@ -1976,7 +1992,7 @@ export class ChromaMcpManager {
   private static uvBinDirs(): string[] {
     return getUvxBinDirs({
       homedir: os.homedir,
-      override: process.env.CLAUDE_MEM_CHROMA_UVX_PATH,
+      override: ChromaMcpManager.uvxPathSetting(),
       platform: process.platform,
       isFile: dir => {
         try {
@@ -2009,7 +2025,7 @@ export class ChromaMcpManager {
     if (platform !== 'win32') {
       return 'uvx';
     }
-    const override = process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+    const override = ChromaMcpManager.uvxPathSetting();
     if (override) {
       try {
         if (fs.existsSync(override) && fs.statSync(override).isFile()) {

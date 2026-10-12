@@ -37,7 +37,7 @@ import { dirname, join } from 'path';
 const POSIX_ONLY = process.platform === 'win32' ? it.skip : it;
 
 const { mirrorDirectory } = require('../../scripts/mirror-dir.cjs');
-const { getMarketplaceExcludes } = require('../../scripts/sync-marketplace.cjs');
+const { mirrorMarketplace } = require('../../scripts/sync-marketplace.cjs');
 
 describe('mirrorDirectory', () => {
   let root: string;
@@ -303,13 +303,43 @@ describe('marketplace sync excludes', () => {
     mkdirSync(join(dest, 'plugin'), { recursive: true });
     writeFileSync(join(dest, 'plugin', 'removed-in-this-build.cjs'), 'stale');
 
-    mirrorDirectory(source, dest, { exclude: getMarketplaceExcludes(source) });
+    mirrorMarketplace(source, dest);
 
     expect(existsSync(join(dest, '.git', 'HEAD'))).toBe(true);
     expect(existsSync(join(dest, 'node_modules', 'dep', 'index.js'))).toBe(true);
     expect(existsSync(join(dest, 'plugin', 'index.cjs'))).toBe(true);
     expect(existsSync(join(dest, 'plugin', 'removed-in-this-build.cjs'))).toBe(false);
     expect(existsSync(join(dest, 'workers'))).toBe(false);
+  });
+
+  it('refreshes generated native bundles while leaving other ignored dist output alone', () => {
+    writeFileSync(join(source, '.gitignore'), 'node_modules/\ndist/\n/dsh/lib/\n*.log\n');
+    const write = (base: string, relativePath: string, contents: string): void => {
+      const target = join(base, relativePath);
+      mkdirSync(dirname(target), { recursive: true });
+      writeFileSync(target, contents);
+    };
+    write(source, 'dist/pi-extension/index.js', 'new Pi bundle');
+    write(source, 'dist/pi-extension/TYPEBOX-LICENSE.txt', 'Pi attribution');
+    write(source, 'dsh/lib/index.js', 'new DSH bundle');
+    write(source, 'dist/npx-cli/index.js', 'excluded CLI output');
+    write(source, 'dist/pi-extension/node_modules/dep/index.js', 'excluded dependency');
+    write(dest, 'dist/pi-extension/index.js', 'old Pi');
+    write(dest, 'dist/pi-extension/removed.js', 'stale Pi file');
+    write(dest, 'dsh/lib/index.js', 'old DSH');
+    write(dest, 'dsh/lib/removed.js', 'stale DSH file');
+    write(dest, 'dist/other-cache/cached.js', 'preserved ignored cache');
+
+    mirrorMarketplace(source, dest);
+
+    expect(readFileSync(join(dest, 'dist/pi-extension/index.js'), 'utf8')).toBe('new Pi bundle');
+    expect(readFileSync(join(dest, 'dist/pi-extension/TYPEBOX-LICENSE.txt'), 'utf8')).toBe('Pi attribution');
+    expect(readFileSync(join(dest, 'dsh/lib/index.js'), 'utf8')).toBe('new DSH bundle');
+    expect(existsSync(join(dest, 'dist/pi-extension/removed.js'))).toBe(false);
+    expect(existsSync(join(dest, 'dsh/lib/removed.js'))).toBe(false);
+    expect(existsSync(join(dest, 'dist/npx-cli'))).toBe(false);
+    expect(existsSync(join(dest, 'dist/pi-extension/node_modules'))).toBe(false);
+    expect(readFileSync(join(dest, 'dist/other-cache/cached.js'), 'utf8')).toBe('preserved ignored cache');
   });
 
   // Overlapping roots make `--delete` destructive: a source nested inside the

@@ -158,6 +158,13 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   "You've reached your Fable 5 limit. Run /usage-credits to continue…"
     //   "You're out of usage credits. Run /usage-credits to keep using…"
     /\byou'?ve (?:hit|reached) your\b.{0,40}\blimit\b/.test(text) ||
+    // The Anthropic API billing notice, returned as the whole assistant
+    // response when an API key's credit balance is exhausted (#4632):
+    //   "Credit balance is too low"
+    //   "Your credit balance is too low to access the Anthropic API. …"
+    // Anchored at the start because the notice IS the response; prose that
+    // merely narrates a low balance mid-sentence stays unmatched.
+    /^(?:your )?credit balance is too low\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||
@@ -208,6 +215,32 @@ export function isContextOverflowObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect the org-policy refusal Claude Code returns as the whole response when
+ * the account's organization has disabled subscription access (#4677):
+ *   "Your organization has disabled Claude subscription access for Claude
+ *    Code · Use an Anthropic API key instead, or ask your admin to enable
+ *    access"
+ *
+ * Anchored at BOTH ends, like the signed-out wording: the notice alone, or the
+ * notice plus the CLI's own remediation, and nothing else. An observation that
+ * opens with the same words and runs on ("…, so we updated the setup guide")
+ * stays unmatched, because a false match here pauses the generator for an auth
+ * repair nobody needs.
+ *
+ * It is an auth failure (the credential is refused), but /login cannot fix it,
+ * so callers book it with its own remedy.
+ */
+export function isOrgDisabledSubscriptionObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return /^your organization has disabled claude (?:[a-z]+ )?subscription access for claude code\s*(?:[.!]|[·|:\-–—]\s*use an anthropic api key instead,? or ask your admin to enable access\s*[.!]?)?\s*$/.test(text);
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
@@ -239,6 +272,8 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     // plus its own /login remediation.
     /^not logged in\b\s*[.!]?\s*$/.test(text) ||
     /^not logged in\b\s*[·|:\-–—]\s*(?:please\s+)?run\s+\/login\b\s*[.!]?\s*$/.test(text) ||
+    // The org-policy refusal (#4677); see isOrgDisabledSubscriptionObserverOutput.
+    isOrgDisabledSubscriptionObserverOutput(raw) ||
     // The remediation half of the same line: "<state> · Please run /login".
     // Required to END the response, so it is the CLI telling the user what to
     // do rather than an observation quoting the instruction — the existing

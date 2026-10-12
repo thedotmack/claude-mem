@@ -1115,6 +1115,45 @@ describe('RateLimitStore.set → unifiedWindows', () => {
     expect(store.size).toBe(2);
   });
 
+  // The void is for SIBLING refreshes only: the event's own window keeps the
+  // finite half, so a malformed reset time cannot disarm the quota guard.
+  it('keeps the finite half of a malformed entry for the event\'s own window', () => {
+    const cliAuth = 'Claude Code OAuth token (read from system keychain at spawn)';
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      utilization: 0.97,
+      resetsAt: FIXED_NOW + 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed_warning',
+      unifiedWindows: { five_hour: { utilization: 0.97, resetsAt: 'soon' } },
+    } as unknown as RateLimitInfo);
+
+    expect(store.get('five_hour')?.utilization).toBe(0.97);
+    expect(shouldAbortForQuota(cliAuth, store, FIXED_NOW).abort).toBe(true);
+  });
+
+  it('treats an explicit null field as malformed: the sibling reading is left untouched', () => {
+    const store = freshStore();
+    store.set({
+      rateLimitType: 'five_hour',
+      status: 'allowed',
+      utilization: 0.4,
+      resetsAt: FIXED_NOW + 60 * 60_000,
+    });
+    store.set({
+      rateLimitType: 'seven_day',
+      status: 'allowed',
+      utilization: 0.4,
+      unifiedWindows: { five_hour: { utilization: 0.2, resetsAt: null } },
+    } as unknown as RateLimitInfo);
+
+    expect(store.get('five_hour')?.utilization).toBe(0.4);
+  });
+
   it('does not persist unifiedWindows on the stored entry', () => {
     const store = freshStore();
     store.set({ rateLimitType: 'five_hour', unifiedWindows: { seven_day: { utilization: 0.1 } } });

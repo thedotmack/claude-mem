@@ -91,6 +91,7 @@ interface SessionState {
  * line (DeepSeek Harness), so a watcher that resumes mid-file would otherwise
  * never learn it; and a result retried after a restart still needs its tool's
  * name and input. The processor reads both as a fallback and updates them.
+ * The real host session identity is re-read from the header on resume.
  */
 export interface TranscriptFileContext {
   /** False once the path holds another file than the one this context was saved from. */
@@ -98,6 +99,8 @@ export interface TranscriptFileContext {
   cwd?: string;
   /** Outstanding tool calls by session key, then tool id: the file's newest MAX_PENDING_TOOLS_PER_FILE. */
   pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
+  /** Real host identity from the header, including non-UUID session IDs. */
+  sessionId?: string;
 }
 
 /** How many subagent rollouts the processor remembers past their last turn. */
@@ -135,6 +138,7 @@ export class TranscriptEventProcessor {
     }
     this.retireFileContext(file);
     file.cwd = undefined;
+    file.sessionId = undefined;
   }
 
   /** A transcript that is gone: its outstanding tool calls are dropped, and it lends none to other files. */
@@ -269,11 +273,12 @@ export class TranscriptEventProcessor {
     sessionIdOverride?: string,
     file?: TranscriptFileContext
   ): Promise<void> {
-    const sessionId = this.resolveSessionId(entry, watch, schema, event, sessionIdOverride);
+    const sessionId = this.resolveSessionId(entry, watch, schema, event, file?.sessionId ?? sessionIdOverride);
     if (!sessionId) {
       logger.debug('TRANSCRIPT', 'Skipping event without sessionId', { event: event.name, watch: watch.name });
       return;
     }
+    if (file) file.sessionId = sessionId;
 
     const session = this.getOrCreateSession(watch, sessionId);
     const sessionKey = this.getSessionKey(watch, sessionId);

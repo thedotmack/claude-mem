@@ -55,5 +55,34 @@
     "concepts": ["trade-off", "why-it-exists"],
     "files_read": ["src/shipping/rate-calculator.ts"],
     "files_modified": []
+  },
+  {
+    "type": "discovery",
+    "title": "quoteCarrierRate prices a shipment with the carrier's own functions, then the cross-carrier surcharges",
+    "subtitle": "carrier-tariffs.ts keeps one tariff table, fuel schedule and accessorial function per carrier, wired up in CARRIER_PRICING",
+    "facts": [
+      "CARRIER_PRICING maps each CarrierCode to its baseCharge, fuelSurcharge and accessorials functions",
+      "findTariffRow falls back to the heaviest weight band when a shipment is heavier than every band",
+      "Fuel is a percentage of the transportation charge, picked from the carrier's weekly diesel schedule",
+      "cheapestCarrierQuote skips a carrier whose quote throws, such as a Saturday ground delivery"
+    ],
+    "narrative": "Traced src/shipping/carrier-tariffs.ts. quoteCarrierRate looks the carrier up in CARRIER_PRICING, computes transportation from the zone/weight tariff scaled by service level, adds the fuel surcharge and the carrier's accessorials, then the special-handling surcharges every carrier shares. Lines with a zero amount are dropped before the total.",
+    "concepts": ["how-it-works"],
+    "files_read": ["src/shipping/carrier-tariffs.ts"],
+    "files_modified": []
+  },
+  {
+    "type": "feature",
+    "title": "Lithium battery handling surcharge added to every carrier quote",
+    "subtitle": "calculateLithiumBatterySurcharge charges per kilogram of declared battery weight, with a per-shipment minimum",
+    "facts": [
+      "The surcharge applies only when the shipment declares lithium battery weight",
+      "Batteries packed with equipment pay the same rate as batteries shipped alone",
+      "quoteCarrierRate lists it as the LIB line, after dangerous goods handling"
+    ],
+    "narrative": "Added calculateLithiumBatterySurcharge to the cross-carrier special-handling section of src/shipping/carrier-tariffs.ts and wired it into quoteCarrierRate, so every carrier's quote carries the same lithium battery charge.",
+    "concepts": ["what-changed"],
+    "files_read": ["src/shipping/carrier-tariffs.ts"],
+    "files_modified": ["src/shipping/carrier-tariffs.ts"]
   }
 ]
