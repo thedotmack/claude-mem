@@ -4,6 +4,7 @@ import { TerminalPreview } from './TerminalPreview';
 import { useContextPreview } from '../hooks/useContextPreview';
 import { DEFAULT_SETTINGS } from '../constants/settings';
 import { isClaudeMemObserverBaseUrl } from '../utils/observer-endpoint';
+import { claudeProviderOptionLabel } from '../utils/claude-auth-method';
 import { OPENAI_COMPAT_PRESET_OPTIONS, openAICompatPresetOption } from '../constants/openai-compat-presets';
 
 interface ContextSettingsModalProps {
@@ -365,7 +366,7 @@ export function ContextSettingsModal({
                   value={formState.CLAUDE_MEM_PROVIDER || 'claude'}
                   onChange={(e) => updateSetting('CLAUDE_MEM_PROVIDER', e.target.value)}
                 >
-                  <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="claude">{claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD)}</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
                   <option value="codex">Codex (uses your ChatGPT subscription)</option>
@@ -374,19 +375,35 @@ export function ContextSettingsModal({
               </FormField>
 
               {formState.CLAUDE_MEM_PROVIDER === 'claude' && (
-                <FormField
-                  label="Claude Model"
-                  tooltip="Claude model used for generating observations"
-                >
-                  <select
-                    value={formState.CLAUDE_MEM_MODEL || 'haiku'}
-                    onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                <>
+                  <FormField
+                    label="Claude Model"
+                    tooltip="Claude model used for generating observations"
                   >
-                    <option value="haiku">haiku (fastest)</option>
-                    <option value="sonnet">sonnet (balanced)</option>
-                    <option value="opus">opus (highest quality)</option>
-                  </select>
-                </FormField>
+                    <select
+                      value={formState.CLAUDE_MEM_MODEL || 'haiku'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_MODEL', e.target.value)}
+                    >
+                      <option value="haiku">haiku (fastest)</option>
+                      <option value="sonnet">sonnet (balanced)</option>
+                      <option value="opus">opus (highest quality)</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Claude Auth Method"
+                    tooltip="Records which Claude credential this install uses: your Claude account login (subscription), an ANTHROPIC_API_KEY (api-key), a custom ANTHROPIC_BASE_URL endpoint (gateway), or Claude Code's own credentials (cli). The credential itself comes from ~/.claude-mem/.env: an ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY there is used even when this says subscription. Shared with the Quota Fallback Claude option."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD || 'subscription'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CLAUDE_AUTH_METHOD', e.target.value)}
+                    >
+                      <option value="subscription">subscription (Claude account login)</option>
+                      <option value="api-key">api-key (ANTHROPIC_API_KEY)</option>
+                      <option value="gateway">gateway (custom endpoint + token)</option>
+                      <option value="cli">cli (Claude Code credentials)</option>
+                    </select>
+                  </FormField>
+                </>
               )}
 
               {formState.CLAUDE_MEM_PROVIDER === 'codex' && (
@@ -583,7 +600,7 @@ export function ContextSettingsModal({
                   onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER', e.target.value)}
                 >
                   <option value="">Off (wait for the cooldown)</option>
-                  <option value="claude">Claude (uses your Claude account)</option>
+                  <option value="claude">{claudeProviderOptionLabel(formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD)}</option>
                   <option value="gemini">Gemini (uses API key)</option>
                   <option value="openrouter">OpenRouter / claude-mem observer</option>
                   <option value="openai-compatible">OpenAI-compatible endpoint</option>
@@ -591,17 +608,33 @@ export function ContextSettingsModal({
               </FormField>
 
               {formState.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER === 'claude' && (
-                <FormField
-                  label="Fallback Claude Model"
-                  tooltip="Claude model for fallback runs only. Blank uses the Claude Model setting and tier routing."
-                >
-                  <input
-                    type="text"
-                    value={formState.CLAUDE_MEM_QUOTA_FALLBACK_MODEL || ''}
-                    onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_MODEL', e.target.value)}
-                    placeholder="e.g., claude-haiku-4-5-20251001"
-                  />
-                </FormField>
+                <>
+                  <FormField
+                    label="Claude Auth Method"
+                    tooltip="The same CLAUDE_MEM_CLAUDE_AUTH_METHOD setting as the AI Provider's Claude Auth Method. Fallback Claude runs use the same credential, which comes from ~/.claude-mem/.env when an ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY is set there."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD || 'subscription'}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_CLAUDE_AUTH_METHOD', e.target.value)}
+                    >
+                      <option value="subscription">subscription (Claude account login)</option>
+                      <option value="api-key">api-key (ANTHROPIC_API_KEY)</option>
+                      <option value="gateway">gateway (custom endpoint + token)</option>
+                      <option value="cli">cli (Claude Code credentials)</option>
+                    </select>
+                  </FormField>
+                  <FormField
+                    label="Fallback Claude Model"
+                    tooltip="Claude model for fallback runs only. Blank uses the Claude Model setting and tier routing."
+                  >
+                    <input
+                      type="text"
+                      value={formState.CLAUDE_MEM_QUOTA_FALLBACK_MODEL || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_MODEL', e.target.value)}
+                      placeholder="e.g., claude-haiku-4-5-20251001"
+                    />
+                  </FormField>
+                </>
               )}
 
               <FormField
