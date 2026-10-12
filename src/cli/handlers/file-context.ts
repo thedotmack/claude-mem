@@ -15,6 +15,7 @@ import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { isTreeSitterCliAvailable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
+import { memorySearchHandler } from './memory-search.js';
 import { isQwenCodeHookEvent } from './session-init.js';
 
 /** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
@@ -312,6 +313,8 @@ export function shouldDenyFullFileRead(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const memoryContext = await memorySearchHandler.execute(input);
+    if (memoryContext.hookSpecificOutput?.additionalContext) return memoryContext;
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping file context: subagent context detected', {
         sessionId: input.sessionId,
