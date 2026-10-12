@@ -120,6 +120,7 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
+  'CLAUDE_MEM_CHROMA_UVX_PATH',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -232,7 +233,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
-    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH) are also
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH,
+    // CLAUDE_MEM_CHROMA_UVX_PATH) are also
     // file/env only: each value is a binary the worker spawns, so it must not be
     // HTTP-writable.
     const settingKeys = [
