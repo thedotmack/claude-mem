@@ -4,49 +4,31 @@
 // a 13.4.2 copy inside a Claude Desktop sandbox reopened a schema-49 DB, ran
 // its v7 rebuild, and dropped discovery_tokens, ON UPDATE CASCADE and the
 // three session_summaries FTS triggers — 15 days of silent summary loss.
-// The fix stamps PRAGMA user_version (major*1e6 + minor*1e3 + patch) before
-// the migration chain and refuses — before any DDL, with a typed
-// schema_newer_than_binary error — when the stamp is newer than the running
-// binary. Same shape as assertChromaStoreCompatible for the chroma data dir.
 //
-// Under `bun test` the build-time __DEFAULT_PACKAGE_VERSION__ define is
-// absent, so CURRENT_BINARY_VERSION resolves to '0.0.0-dev' (stamp 0) — which
-// is indistinguishable from a stamp-less database, so tests here could not
-// catch a removed stampSchemaWriterVersion call (#4602 review). The connection
-// module is therefore re-mocked below with a fixed nonzero version; the
-// refusal cases use 99.0.0, which is newer under any resolution.
-import { describe, it, expect, afterEach, afterAll, mock } from 'bun:test';
+// The stamp is the highest SessionStore migration version this binary knows
+// (LATEST_SCHEMA_VERSION), not the plugin semver (#4602 review): most
+// releases don't touch the schema, so a semver comparison turned harmless
+// downgrades — one bad patch rolled back, two hosts sharing ~/.claude-mem on
+// different bundled versions, the plan-16 stale-plugin-dir spawn — into full
+// outages. The refusal (#4602 review) fires only when the database's schema
+// is newer than the running binary's chain, before any DDL, with a typed
+// schema_newer_than_binary error. Same shape as assertChromaStoreCompatible
+// for the chroma data dir.
+import { describe, it, expect, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import * as connection from '../../src/services/sqlite/connection.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import {
-  CURRENT_BINARY_VERSION,
+  LATEST_SCHEMA_VERSION,
   SchemaNewerThanBinaryError,
   assertSchemaWriterCompatible,
-  decodeSchemaWriterStamp,
-  encodeSchemaWriterVersion,
   openGuardedSqliteDatabase,
   readSchemaWriterStamp,
   stampSchemaWriterVersion,
 } from '../../src/services/sqlite/connection.js';
-
-// Pin the running version to a nonzero value for the constructor cases: with
-// the unbundled '0.0.0-dev' (stamp 0) a missing stamp write is invisible, so
-// removing either constructor's stampSchemaWriterVersion call would pass
-// silently (#4602 review). Spread-captured first so it can be restored.
-const realConnectionExports = { ...connection };
-mock.module('../../src/services/sqlite/connection.js', () => ({
-  ...realConnectionExports,
-  CURRENT_BINARY_VERSION: '13.34.2',
-}));
-
-afterAll(() => {
-  mock.module('../../src/services/sqlite/connection.js', () => realConnectionExports);
-});
 
 const ISO = '2025-07-01T00:00:00.000Z';
 const EPOCH = 1751328000000;
@@ -126,10 +108,20 @@ function snapshotFile(dbPath: string): { stamp: number; integrity: string; table
 }
 
 describe('schema writer-version stamp', () => {
-  it('refuses a newer-stamped DB at the SessionStore constructor and leaves the file untouched', () => {
+  it('pins LATEST_SCHEMA_VERSION to MAX(version) FROM schema_versions after a fresh open (#4602 review)', () => {
+    const dir = makeTempDir();
+    const dbPath = path.join(dir, 'claude-mem-test.db');
+
+    const store = new SessionStore(dbPath);
+    const maxApplied = store.db.prepare('SELECT MAX(version) AS v FROM schema_versions').get() as { v: number };
+    expect(maxApplied.v).toBe(LATEST_SCHEMA_VERSION);
+    store.close();
+  });
+
+  it('refuses a newer-schema DB at the SessionStore constructor and leaves the file untouched', () => {
     const dir = makeTempDir();
     const dbPath = createLegacyDbFile(dir);
-    const newerStamp = encodeSchemaWriterVersion('99.0.0');
+    const newerStamp = LATEST_SCHEMA_VERSION + 1;
     const raw = new Database(dbPath);
     raw.run(`PRAGMA user_version = ${newerStamp}`);
     raw.close();
@@ -146,19 +138,19 @@ describe('schema writer-version stamp', () => {
     expect(thrown).toBeInstanceOf(SchemaNewerThanBinaryError);
     const typed = thrown as SchemaNewerThanBinaryError;
     expect(typed.reason).toBe('schema_newer_than_binary');
-    expect(typed.message).toContain('99.0.0');
-    expect(typed.message).toContain(CURRENT_BINARY_VERSION);
+    expect(typed.message).toContain(`schema v${newerStamp}`);
+    expect(typed.message).toContain(`knows up to schema v${LATEST_SCHEMA_VERSION}`);
     expect(typed.message).toMatch(/upgrade claude-mem/i);
 
     const after = snapshotFile(dbPath);
     expect(after).toEqual(before);
   });
 
-  it('refuses a newer-stamped DB at the SessionSearch constructor and leaves the file untouched', () => {
+  it('refuses a newer-schema DB at the SessionSearch constructor and leaves the file untouched', () => {
     const dir = makeTempDir();
     const dbPath = createLegacyDbFile(dir);
     const raw = new Database(dbPath);
-    raw.run(`PRAGMA user_version = ${encodeSchemaWriterVersion('99.0.0')}`);
+    raw.run(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION + 1}`);
     raw.close();
 
     const before = snapshotFile(dbPath);
@@ -180,21 +172,56 @@ describe('schema writer-version stamp', () => {
     const fkSql = store.db.prepare("SELECT sql FROM sqlite_master WHERE name = 'observations'").get() as { sql: string };
     expect(fkSql.sql).toContain('ON UPDATE CASCADE');
     expect(() => store.db.prepare('SELECT discovery_tokens FROM observations LIMIT 0').run()).not.toThrow();
-    expect(readSchemaWriterStamp(store.db)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    expect(readSchemaWriterStamp(store.db)).toBe(LATEST_SCHEMA_VERSION);
     store.close();
   });
 
-  it('reopens an equally-stamped DB without refusing', () => {
+  it('plugin semver rollback with an unchanged schema is not an outage: an equally-stamped DB reopens', () => {
     const dir = makeTempDir();
     const dbPath = path.join(dir, 'claude-mem-test.db');
 
+    // "Newer plugin" writes the DB: the stamp names the schema, not the semver.
     const first = new SessionStore(dbPath);
     const stampAfterFirst = readSchemaWriterStamp(first.db);
+    expect(stampAfterFirst).toBe(LATEST_SCHEMA_VERSION);
     first.close();
 
+    // The rollback case from #4602 review: an older bundled plugin whose chain
+    // ends at the same migration reopens the file — only schema versions are
+    // compared, so an equal stamp adopts regardless of either binary's semver.
     const second = new SessionStore(dbPath);
     expect(readSchemaWriterStamp(second.db)).toBe(stampAfterFirst);
     second.close();
+  });
+
+  it('refuses only a schema newer than this binary\'s chain: equal adopts, 0 adopts, older adopts', () => {
+    const db = new Database(':memory:');
+    db.run('CREATE TABLE marker (id INTEGER)');
+
+    stampSchemaWriterVersion(db, LATEST_SCHEMA_VERSION);
+    expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION)).not.toThrow();
+    expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION + 5)).not.toThrow();
+
+    db.run('PRAGMA user_version = 0');
+    expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION)).not.toThrow();
+
+    db.run(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
+    expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION - 1)).toThrow(SchemaNewerThanBinaryError);
+    db.close();
+  });
+
+  it('migrates an older schema stamp up to the current version', () => {
+    const dir = makeTempDir();
+    const db = new Database(path.join(dir, 'claude-mem-test.db'));
+    db.run('CREATE TABLE marker (id INTEGER)');
+    const olderStamp = LATEST_SCHEMA_VERSION - 14;
+    db.run(`PRAGMA user_version = ${olderStamp}`);
+
+    expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION)).not.toThrow();
+    stampSchemaWriterVersion(db, LATEST_SCHEMA_VERSION);
+    expect(readSchemaWriterStamp(db)).toBe(LATEST_SCHEMA_VERSION);
+    expect(readSchemaWriterStamp(db)).toBeGreaterThan(olderStamp);
+    db.close();
   });
 
   it('stamps before the migration chain, so a mid-chain failure still refuses older binaries', () => {
@@ -214,32 +241,33 @@ describe('schema writer-version stamp', () => {
     }
 
     // The partial DDL is on disk and the stamp was written before the chain
-    // ran, so an older binary is refused over the partially-upgraded file.
+    // ran, so a binary whose chain stops below this one is refused over the
+    // partially-upgraded file.
     const probe = new Database(dbPath, { readonly: true });
-    expect(readSchemaWriterStamp(probe)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    expect(readSchemaWriterStamp(probe)).toBe(LATEST_SCHEMA_VERSION);
     probe.close();
     const older = new Database(dbPath);
-    expect(() => assertSchemaWriterCompatible(older, '13.34.1')).toThrow(SchemaNewerThanBinaryError);
+    expect(() => assertSchemaWriterCompatible(older, LATEST_SCHEMA_VERSION - 1)).toThrow(SchemaNewerThanBinaryError);
     older.close();
 
-    // The same version reopens and completes the idempotent chain.
+    // The same-chain version reopens and completes the idempotent chain.
     const retried = new SessionStore(dbPath);
-    expect(readSchemaWriterStamp(retried.db)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    expect(readSchemaWriterStamp(retried.db)).toBe(LATEST_SCHEMA_VERSION);
     retried.close();
   });
 
-  it('shared open path refuses before pragmas: a newer-stamped DELETE-mode DB stays DELETE', () => {
+  it('shared open path refuses before pragmas: a newer-schema DELETE-mode DB stays DELETE', () => {
     const dir = makeTempDir();
     const dbPath = createLegacyDbFile(dir);
     const raw = new Database(dbPath);
-    raw.run(`PRAGMA user_version = ${encodeSchemaWriterVersion('99.0.0')}`);
+    raw.run(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION + 1}`);
     raw.close();
     const journalMode = (db: Database): string =>
       (db.prepare('PRAGMA journal_mode').get() as { journal_mode: string }).journal_mode;
     expect(journalMode(new Database(dbPath, { readonly: true }))).toBe('delete');
 
     const before = snapshotFile(dbPath);
-    expect(() => openGuardedSqliteDatabase(dbPath, CURRENT_BINARY_VERSION)).toThrow(SchemaNewerThanBinaryError);
+    expect(() => openGuardedSqliteDatabase(dbPath)).toThrow(SchemaNewerThanBinaryError);
 
     expect(snapshotFile(dbPath)).toEqual(before);
     // The refusal ran before journal_mode = WAL, so the file keeps DELETE mode.
@@ -249,7 +277,7 @@ describe('schema writer-version stamp', () => {
     // still pragma-configured by the same helper.
     const adoptedPath = path.join(dir, 'claude-mem-adopted.db');
     new Database(adoptedPath).close();
-    const adopted = openGuardedSqliteDatabase(adoptedPath, CURRENT_BINARY_VERSION);
+    const adopted = openGuardedSqliteDatabase(adoptedPath);
     expect(journalMode(adopted)).toBe('wal');
     adopted.close();
   });
@@ -258,7 +286,7 @@ describe('schema writer-version stamp', () => {
     const dir = makeTempDir();
     const dbPath = path.join(dir, 'claude-mem-test.db');
     const store = new SessionStore(dbPath);
-    expect(readSchemaWriterStamp(store.db)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    expect(readSchemaWriterStamp(store.db)).toBe(LATEST_SCHEMA_VERSION);
     // The migration chain builds no FTS objects; an older binary (or the
     // 13.4.2 lax probe from #3609) leaves the DB without them.
     expect((store.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%fts%'").all()).length).toBe(0);
@@ -271,33 +299,9 @@ describe('schema writer-version stamp', () => {
 
     new SessionSearch(store.db);
 
-    expect(readSchemaWriterStamp(store.db)).toBe(encodeSchemaWriterVersion(CURRENT_BINARY_VERSION));
+    expect(readSchemaWriterStamp(store.db)).toBe(LATEST_SCHEMA_VERSION);
     const ftsTables = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%_fts'").all() as { name: string }[];
     expect(ftsTables.map(row => row.name).sort()).toEqual(['observations_fts', 'session_summaries_fts']);
     store.close();
-  });
-
-  it('migrates an older stamp up to the current version', () => {
-    const dir = makeTempDir();
-    const db = new Database(path.join(dir, 'claude-mem-test.db'));
-    db.run('CREATE TABLE marker (id INTEGER)');
-    const olderStamp = encodeSchemaWriterVersion('13.33.0');
-    db.run(`PRAGMA user_version = ${olderStamp}`);
-
-    expect(() => assertSchemaWriterCompatible(db, '13.34.0')).not.toThrow();
-    stampSchemaWriterVersion(db, '13.34.0');
-    expect(readSchemaWriterStamp(db)).toBe(encodeSchemaWriterVersion('13.34.0'));
-    expect(readSchemaWriterStamp(db)).toBeGreaterThan(olderStamp);
-    db.close();
-  });
-
-  it('compares prerelease suffixes by their base, like compareVersionsDescending', () => {
-    expect(encodeSchemaWriterVersion('13.34.2-rc.1')).toBe(encodeSchemaWriterVersion('13.34.2'));
-    expect(decodeSchemaWriterStamp(encodeSchemaWriterVersion('13.34.2'))).toBe('13.34.2');
-
-    const db = new Database(':memory:');
-    db.run(`PRAGMA user_version = ${encodeSchemaWriterVersion('13.34.2')}`);
-    expect(() => assertSchemaWriterCompatible(db, '13.34.2-rc.1')).not.toThrow();
-    db.close();
   });
 });

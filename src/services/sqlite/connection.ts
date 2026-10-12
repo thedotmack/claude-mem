@@ -4,33 +4,19 @@ import { logger } from '../../utils/logger.js';
 export const SQLITE_BUSY_TIMEOUT_MS = 5000;
 export const SQLITE_JOURNAL_SIZE_LIMIT_BYTES = 4194304;
 
-// The running binary's version, from the build-time define (same resolution
-// as worker-service.ts). '0.0.0-dev' when running unbundled, e.g. under
-// `bun test`: databases it writes carry stamp 0 and are never refused, while
-// any positive stamp still refuses the unbundled binary.
-declare const __DEFAULT_PACKAGE_VERSION__: string;
-export const CURRENT_BINARY_VERSION: string =
-  typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
-
 /**
- * #3609 step 2: the database records which binary version last wrote it, so a
- * binary older than that stamp refuses to run migrations or rebuilds instead
- * of silently destroying the newer schema (the 13.4.2-over-schema-49 data
- * loss in the #3609 timeline). The stamp lives in PRAGMA user_version, coded
- * as major*1_000_000 + minor*1_000 + patch — int32-safe for any plausible
- * version — with prerelease suffixes compared by their base, matching
- * parseBase in compareVersionsDescending.
+ * The highest SessionStore migration version this binary's chain knows — the
+ * stamp and the refusal compare schema versions, not the plugin semver
+ * (#4602 review). Most claude-mem releases don't touch the schema, so a
+ * semver comparison refused harmless downgrades as full outages: one bad
+ * patch rolled back, two hosts sharing ~/.claude-mem on different bundled
+ * versions, the plan-16 stale-plugin-dir spawn. Bump this with every new
+ * migration; tests/sqlite/session-store-writer-version.test.ts pins it to
+ * MAX(version) FROM schema_versions after a fresh open, so a new migration
+ * can't land without it. Kept in this leaf module — both SessionStore and
+ * SessionSearch already import from here, and they import each other.
  */
-export function encodeSchemaWriterVersion(version: string): number {
-  const parts = version.split('-')[0].split('.');
-  return (parseInt(parts[0], 10) || 0) * 1_000_000
-    + (parseInt(parts[1], 10) || 0) * 1_000
-    + (parseInt(parts[2], 10) || 0);
-}
-
-export function decodeSchemaWriterStamp(stamp: number): string {
-  return `${Math.floor(stamp / 1_000_000)}.${Math.floor((stamp % 1_000_000) / 1_000)}.${stamp % 1_000}`;
-}
+export const LATEST_SCHEMA_VERSION = 64;
 
 export function readSchemaWriterStamp(db: Database): number {
   return (db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version;
@@ -45,24 +31,29 @@ export class SchemaNewerThanBinaryError extends Error {
   }
 }
 
-export function assertSchemaWriterCompatible(db: Database, binaryVersion: string): void {
+/**
+ * #3609 step 2: the database records the highest schema version its last
+ * writer knew, so a binary whose chain stops below that refuses to run
+ * migrations or rebuilds instead of silently destroying the newer schema
+ * (the 13.4.2-over-schema-49 data loss in the #3609 timeline — an old
+ * binary re-running the v7/v9 rebuilds over migrations it doesn't know).
+ * Refusing only on a schema-newer stamp keeps everyday plugin downgrades
+ * adoptable: an equal or older stamp, and 0 — never written by a stamping
+ * binary, the smooth-upgrade path for existing installs — always passes.
+ */
+export function assertSchemaWriterCompatible(db: Database, latestKnownSchemaVersion: number): void {
   const stamp = readSchemaWriterStamp(db);
-  const current = encodeSchemaWriterVersion(binaryVersion);
-  // A stamp of 0 means "never written by a stamping binary" and is adopted,
-  // never refused — the smooth-upgrade path for existing installs.
-  if (stamp <= current) {
+  if (stamp <= latestKnownSchemaVersion) {
     return;
   }
-  const writerVersion = decodeSchemaWriterStamp(stamp);
   throw new SchemaNewerThanBinaryError(
-    `SQLite database was last written by claude-mem ${writerVersion} (user_version ${stamp}); ` +
-    `this binary is ${binaryVersion} (user_version ${current}). ` +
-    `Upgrade claude-mem to ${writerVersion} or newer before opening this database.`,
+    `SQLite database has schema v${stamp}; this claude-mem knows up to schema v${latestKnownSchemaVersion}. ` +
+    `Upgrade claude-mem before opening this database.`,
   );
 }
 
-export function stampSchemaWriterVersion(db: Database, binaryVersion: string): void {
-  db.run(`PRAGMA user_version = ${encodeSchemaWriterVersion(binaryVersion)}`);
+export function stampSchemaWriterVersion(db: Database, latestKnownSchemaVersion: number): void {
+  db.run(`PRAGMA user_version = ${latestKnownSchemaVersion}`);
 }
 
 type DatabaseOptions = NonNullable<ConstructorParameters<typeof Database>[1]>;
@@ -129,13 +120,13 @@ export function openConfiguredSqliteDatabase(
 /**
  * Shared-connection open path with the writer guard first (#4602 review):
  * PRAGMA journal_mode = WAL is itself a persistent change to the database
- * file, so a database last written by a newer binary must be refused BEFORE
- * the pragmas run — otherwise a refused open still leaves a DELETE-mode file
- * converted to WAL.
+ * file, so a database whose schema is newer than this binary's chain must be
+ * refused BEFORE the pragmas run — otherwise a refused open still leaves a
+ * DELETE-mode file converted to WAL.
  */
-export function openGuardedSqliteDatabase(dbPath: string, binaryVersion: string): Database {
+export function openGuardedSqliteDatabase(dbPath: string): Database {
   const db = new Database(dbPath);
-  assertSchemaWriterCompatible(db, binaryVersion);
+  assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION);
   applySqliteConnectionPragmas(db);
   return db;
 }

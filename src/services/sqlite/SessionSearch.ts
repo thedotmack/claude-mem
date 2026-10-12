@@ -14,7 +14,7 @@ import {
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
-import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, CURRENT_BINARY_VERSION, stampSchemaWriterVersion } from './connection.js';
+import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, LATEST_SCHEMA_VERSION, stampSchemaWriterVersion } from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 import { pageMatchingRows } from './stream-rows.js';
 
@@ -84,9 +84,9 @@ export class SessionSearch {
       this.db = new Database(dbPathOrDb);
     }
 
-    // Refuse before any DDL when the database was last written by a newer
-    // binary (#3609 step 2); a refused open touches nothing.
-    assertSchemaWriterCompatible(this.db, CURRENT_BINARY_VERSION);
+    // Refuse before any DDL when the database's schema is newer than this
+    // binary's chain (#3609 step 2); a refused open touches nothing.
+    assertSchemaWriterCompatible(this.db, LATEST_SCHEMA_VERSION);
 
     applySqliteConnectionPragmas(this.db);
 
@@ -131,11 +131,11 @@ export class SessionSearch {
     }
 
     // The FTS DDL above is this constructor's only schema write, so it is the
-    // only thing that can name this binary as the last writer (#3609 step 2).
-    // A connection that wrote nothing — FTS tables already present, no FTS5,
-    // read-only fallback — records no writer.
+    // only thing that can record the highest schema version this binary knows
+    // (#3609 step 2). A connection that wrote nothing — FTS tables already
+    // present, no FTS5, read-only fallback — records no writer.
     if (ftsSchemaCreated) {
-      stampSchemaWriterVersion(this.db, CURRENT_BINARY_VERSION);
+      stampSchemaWriterVersion(this.db, LATEST_SCHEMA_VERSION);
     }
   }
 
