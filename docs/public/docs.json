@@ -101,6 +101,7 @@
           "platform-integration",
           "openclaw-integration",
           "kimi-integration",
+          "qoder-integration",
           "screenpipe-integration"
         ]
       },
