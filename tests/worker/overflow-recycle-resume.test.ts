@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
 import type { ActiveSession } from '../../src/services/worker-types.js';
-import { resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
+import { getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
+import { globalRateLimitStore } from '../../src/services/worker/RateLimitStore.js';
+import * as observerHealth from '../../src/shared/observer-health.js';
 
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
+const { OBSERVER_TEXT_QUOTA_MESSAGE, quotaPauseForExit } = await import('../../src/services/worker/session/GeneratorRunner.js');
 const {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -151,6 +154,79 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     await nextTick();
 
     expect(starts).toBe(1);
+  });
+
+  // The guard aborts with 'quota:<window>:<kind>' (ClaudeProvider); the exit
+  // path books that kind and takes the guard's own words from the shared
+  // store, so the ledger and the cooldown never call a reserve pause a spent
+  // allowance.
+  it('books a reserve-threshold abort as the guard pause it was, in the ledger and the cooldown', async () => {
+    const session = makeSession();
+    const savedSevenDay = globalRateLimitStore.get('seven_day');
+    globalRateLimitStore.set({ rateLimitType: 'seven_day', utilization: 0.95 });
+    try {
+      const { routes, stats } = buildRoutes(session, async () => {
+        session.abortReason = 'quota:seven_day:quota_guard';
+        session.abortController.abort();
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+
+      const health = observerHealth.readObserverHealth()!;
+      expect(health.lastErrorKind).toBe('quota_guard');
+      expect(health.lastErrorMessage).toContain('weekly Claude usage is 95.0%');
+      expect(health.lastErrorMessage).toContain('pause threshold');
+      expect(observerHealth.renderObserverHealthWarning(health)).toContain('paused to preserve your Claude allowance');
+      expect(getQuotaCooldown('claude')?.message).toBe(health.lastErrorMessage);
+      expect(getQuotaCooldown('claude')?.window).toBe('seven_day');
+      expect(session.abortReason).toBeNull();
+      expect(stats().finalizeCalls).toBe(0);
+      expect(stats().removed).toBe(0);
+    } finally {
+      // The store and the health ledger are process-wide: put both back.
+      globalRateLimitStore.restoreForTesting('seven_day', savedSevenDay);
+      observerHealth.recordObserverSuccess();
+    }
+  });
+
+  // The kind travels on the reason, so a snapshot that changed before the
+  // generator exited cannot reclassify the abort.
+  it('keeps a provider refusal booked as exhausted after the snapshot changed', async () => {
+    const session = makeSession();
+    const savedSevenDay = globalRateLimitStore.get('seven_day');
+    globalRateLimitStore.set({ rateLimitType: 'seven_day', status: 'allowed', utilization: 0.95 });
+    try {
+      const { routes } = buildRoutes(session, async () => {
+        session.abortReason = 'quota:seven_day:quota_exhausted';
+        session.abortController.abort();
+      });
+
+      await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+      await session.generatorPromise;
+
+      const health = observerHealth.readObserverHealth()!;
+      expect(health.lastErrorKind).toBe('quota_exhausted');
+      expect(health.lastErrorMessage).not.toBe(observerHealth.AMBIGUOUS_QUOTA_MESSAGE);
+    } finally {
+      globalRateLimitStore.restoreForTesting('seven_day', savedSevenDay);
+      observerHealth.recordObserverSuccess();
+    }
+  });
+
+  // Quota prose is the provider's own refusal, whichever provider wrote it.
+  it('books quota prose from a non-Claude provider as a spent allowance, not ambiguous', () => {
+    const pause = quotaPauseForExit('openrouter', 'quota:observer_text');
+    expect(pause).toEqual({ kind: 'quota_exhausted', message: OBSERVER_TEXT_QUOTA_MESSAGE });
+    expect(observerHealth.renderObserverHealthWarning({
+      consecutiveFailures: 3,
+      lastErrorKind: pause.kind,
+      lastErrorMessage: pause.message,
+      lastErrorProvider: 'openrouter',
+      failingSinceAt: Date.now(),
+      lastSuccessAt: null,
+      lastErrorAt: Date.now(),
+    } as never)).toContain('used up');
   });
 
   it('does not resume on an auth pause', async () => {
