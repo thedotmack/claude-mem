@@ -18,6 +18,7 @@ import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 interface DependencyPreflightSettings {
   CLAUDE_MEM_PROVIDER?: string;
   CLAUDE_MEM_CHROMA_ENABLED?: string;
+  CLAUDE_MEM_CHROMA_UVX_PATH?: string;
 }
 
 interface ClassifiedClaudeSetupError {
@@ -87,7 +88,7 @@ function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<stri
   const additions = getUvxBinDirs({
     homedir,
     isFile,
-    override: env.CLAUDE_MEM_CHROMA_UVX_PATH,
+    override: options.settings.CLAUDE_MEM_CHROMA_UVX_PATH,
     platform,
   }).filter(dir => {
     if (!pathExists(dir)) return false;
@@ -143,7 +144,7 @@ function resolveUvxCommand(options: WorkerDependencyPreflightOptions): string {
 
   const isFile = options.isFile ?? defaultIsFile;
   const env = effectiveUvxEnv(options);
-  const override = env.CLAUDE_MEM_CHROMA_UVX_PATH;
+  const override = options.settings.CLAUDE_MEM_CHROMA_UVX_PATH;
   if (override && isFile(override)) {
     return override;
   }
