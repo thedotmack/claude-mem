@@ -354,4 +354,35 @@ describe('ServerClient', () => {
       platformSource: 'cursor',
     });
   });
+
+  it('strips <private> sections from every server-bound event payload and session metadata', () => {
+    const client = new ServerClient({ serverBaseUrl: 'http://x', apiKey: 'k' });
+    const eventBody = client.buildEventPayload({
+      projectId: 'p',
+      sourceType: 'hook',
+      eventType: 'tool_use',
+      occurredAtEpoch: 1,
+      payload: {
+        tool_name: 'Bash',
+        tool_input: { command: 'echo hi <private>secret-token-123</private>' },
+        tool_response: { stdout: ['line', '<private>secret-output</private>'] },
+        last_assistant_message: 'done <private>secret-reply</private>',
+        untouched: '  keeps whitespace  ',
+      },
+    });
+    const serialized = JSON.stringify(eventBody);
+    expect(serialized).not.toContain('secret-token-123');
+    expect(serialized).not.toContain('secret-output');
+    expect(serialized).not.toContain('secret-reply');
+    expect((eventBody.payload as Record<string, unknown>).untouched).toBe('  keeps whitespace  ');
+    expect((eventBody.payload as Record<string, any>).tool_input.command).toBe('echo hi');
+
+    const sessionBody = client.buildStartSessionPayload({
+      projectId: 'p',
+      externalSessionId: 'ext',
+      metadata: { project: 'demo', prompt: 'fix the bug <private>my password is hunter2</private>' },
+    });
+    expect(JSON.stringify(sessionBody)).not.toContain('hunter2');
+    expect(sessionBody.metadata).toEqual({ project: 'demo', prompt: 'fix the bug' });
+  });
 });
