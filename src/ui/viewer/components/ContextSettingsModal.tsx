@@ -391,7 +391,7 @@ export function ContextSettingsModal({
                   </FormField>
                   <FormField
                     label="Claude Auth Method"
-                    tooltip="Which credential the Claude provider authenticates with: your Claude account login (subscription), an ANTHROPIC_API_KEY from ~/.claude-mem/.env (api-key), a custom ANTHROPIC_BASE_URL endpoint (gateway), or Claude Code's own credentials (cli). Shared with the Quota Fallback Claude option."
+                    tooltip="Records which Claude credential this install uses: your Claude account login (subscription), an ANTHROPIC_API_KEY (api-key), a custom ANTHROPIC_BASE_URL endpoint (gateway), or Claude Code's own credentials (cli). The credential itself comes from ~/.claude-mem/.env: an ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY there is used even when this says subscription. Shared with the Quota Fallback Claude option."
                   >
                     <select
                       value={formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD || 'subscription'}
@@ -611,7 +611,7 @@ export function ContextSettingsModal({
                 <>
                   <FormField
                     label="Claude Auth Method"
-                    tooltip="Which credential fallback Claude runs authenticate with. This is the same CLAUDE_MEM_CLAUDE_AUTH_METHOD setting as the AI Provider's Claude Auth Method — one credential serves both."
+                    tooltip="The same CLAUDE_MEM_CLAUDE_AUTH_METHOD setting as the AI Provider's Claude Auth Method. Fallback Claude runs use the same credential, which comes from ~/.claude-mem/.env when an ANTHROPIC_BASE_URL or ANTHROPIC_API_KEY is set there."
                   >
                     <select
                       value={formState.CLAUDE_MEM_CLAUDE_AUTH_METHOD || 'subscription'}
