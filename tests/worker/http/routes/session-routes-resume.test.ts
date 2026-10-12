@@ -45,7 +45,7 @@ function postProcessing(
 ): Promise<{ status: number; body: any }> {
   type Handler = (req: Request, res: Response, next: NextFunction) => void;
   let handlers: Handler[] = [];
-  routes.setupRoutes({ post: (path: string, ...registered: Handler[]) => {
+  routes.setupRoutes({ get: () => {}, post: (path: string, ...registered: Handler[]) => {
     if (path === '/api/processing') handlers = registered;
   } } as any);
   expect(handlers.length).toBe(3);

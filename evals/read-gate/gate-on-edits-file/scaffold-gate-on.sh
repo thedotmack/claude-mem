@@ -1,1 +1,0 @@
-../scaffold-gate-on.sh

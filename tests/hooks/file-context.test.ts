@@ -113,19 +113,24 @@ import {
   shouldDenyFullFileRead,
   FILE_CONTEXT_WORKER_BUDGET_MS,
   LINE_COUNT_CHUNK_BYTES,
+  FILE_READ_GATE_DENY_MIN_BYTES,
 } from '../../src/cli/handlers/file-context.js';
 import { claimFileContextInjection } from '../../src/cli/handlers/file-context-dedupe.js';
 import { logger } from '../../src/utils/logger.js';
 
 const PADDING = 'x'.repeat(2_000); 
 
-// A code file smart_outline can outline, over 1,500 bytes, with a known line
-// count (trailing newline included) for the whole-file vs targeted Read cases.
-const GATED_FILE_LINE_COUNT = 120;
+// A code file smart_outline can outline, at least FILE_READ_GATE_DENY_MIN_BYTES,
+// with a known line count (trailing newline included) for the whole-file vs
+// targeted Read cases.
+const GATED_FILE_LINE_COUNT = 600;
 const GATED_FILE_CONTENT = Array.from(
   { length: GATED_FILE_LINE_COUNT },
   (_, index) => `export const fixtureValue${index} = ${index}; // read-gate fixture line`,
 ).join('\n') + '\n';
+if (GATED_FILE_CONTENT.length < FILE_READ_GATE_DENY_MIN_BYTES) {
+  throw new Error(`GATED_FILE_CONTENT is ${GATED_FILE_CONTENT.length} bytes, under the deny threshold`);
+}
 
 let tmpDir: string;
 let testFile: string;
@@ -736,6 +741,18 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(reason).toMatch(new RegExp(`^${GATED_OBSERVATION_ID} \\S+ \\S+ Rate table refactor$`, 'm'));
   });
 
+  it('does not deny a code file under FILE_READ_GATE_DENY_MIN_BYTES — the timeline is context', async () => {
+    answerWithFileHistory();
+    const mediumFile = join(tmpDir, 'medium-rate-table.ts');
+    writeFileSync(mediumFile, GATED_FILE_CONTENT.slice(0, FILE_READ_GATE_DENY_MIN_BYTES - 1));
+    utimesSync(mediumFile, new Date(2026, 0, 1), new Date(2026, 0, 1));
+
+    const result = await fileContextHandler.execute(claudeCodeRead({ file_path: mediumFile }));
+
+    expectContextNotDeny(result);
+    expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
+  });
+
   it('does not deny when CLAUDE_MEM_FILE_READ_GATE_ENABLED is false — the timeline is context', async () => {
     fileReadGateSetting = 'false';
     answerWithFileHistory();
@@ -1060,7 +1077,9 @@ describe('shouldDenyFullFileRead', () => {
   const smartReadAvailable = () => true;
 
   // History whose lookup stat'ed the file: its size and mtime checks ran.
-  const statVerifiedHistory = (absolutePath: string) => ({ absolutePath, fileStatVerified: true });
+  const statVerifiedHistory = (absolutePath: string) => ({
+    absolutePath, fileStatVerified: true, fileSizeBytes: FILE_READ_GATE_DENY_MIN_BYTES,
+  });
 
   // The fixture's answer to fileHasMoreLinesThan, without reading the file.
   const gatedFileHasMoreLinesThan = (_absolutePath: string, lineCount: number) => GATED_FILE_LINE_COUNT > lineCount;
@@ -1085,7 +1104,7 @@ describe('shouldDenyFullFileRead', () => {
     const fileHasMoreLinesThan = mock(gatedFileHasMoreLinesThan);
     const isSmartReadAvailable = mock(() => true);
     const limited = { file_path: gatedFile, limit: GATED_FILE_LINE_COUNT };
-    type NotGatedCase = [string, NormalizedHookInput, { absolutePath: string; fileStatVerified: boolean } | null, string | undefined, boolean];
+    type NotGatedCase = [string, NormalizedHookInput, { absolutePath: string; fileStatVerified: boolean; fileSizeBytes: number } | null, string | undefined, boolean];
     const notGated: NotGatedCase[] = [
       ['codex platform', wholeFileRead({ platform: 'codex', toolInput: limited }), statVerifiedHistory(gatedFile), 'true', true],
       ['Qwen Code transcript', wholeFileRead({ transcriptPath: '/home/dot/.qwen/tmp/abc123/chats/session.json', toolInput: limited }), statVerifiedHistory(gatedFile), 'true', true],
@@ -1093,7 +1112,8 @@ describe('shouldDenyFullFileRead', () => {
       ['subagent', wholeFileRead({ agentId: 'subagent-1', toolInput: limited }), statVerifiedHistory(gatedFile), 'true', true],
       ['Codex filePaths', wholeFileRead({ toolInput: { ...limited, filePaths: [gatedFile] } }), statVerifiedHistory(gatedFile), 'true', true],
       ['no history', wholeFileRead({ toolInput: limited }), null, 'true', true],
-      ['stat failed', wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile, fileStatVerified: false }, 'true', true],
+      ['stat failed', wholeFileRead({ toolInput: limited }), { absolutePath: gatedFile, fileStatVerified: false, fileSizeBytes: 0 }, 'true', true],
+      ['under the deny size', wholeFileRead({ toolInput: limited }), { ...statVerifiedHistory(gatedFile), fileSizeBytes: FILE_READ_GATE_DENY_MIN_BYTES - 1 }, 'true', true],
       ['markdown', wholeFileRead({ toolInput: limited }), statVerifiedHistory(testFile), 'true', true],
       ['no session cwd', wholeFileRead({ cwd: '', toolInput: limited }), statVerifiedHistory(gatedFile), 'true', true],
       ['offset 40', wholeFileRead({ toolInput: { ...limited, offset: 40 } }), statVerifiedHistory(gatedFile), 'true', true],

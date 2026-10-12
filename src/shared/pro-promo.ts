@@ -33,12 +33,13 @@ export type ProPromoSource =
   | 'docs';
 
 /**
- * Longest free trial cmem.ai grants, in days. The server picks each user's
- * actual length (3, 7, or 14 days, by usage tier; new users get 14) at claim
- * time, so client copy only ever promises "up to" this many days and promo
- * links no longer carry a `?trial=` hint (the server ignores it).
+ * The standard free trial cmem.ai grants, in days. The server assigns the
+ * duration at claim time; promo links carry only source attribution.
  */
-export const PRO_TRIAL_MAX_DAYS = 14;
+export const PRO_TRIAL_MAX_DAYS = 30;
+
+/** Public offer label shared by the installer and promotional surfaces. */
+export const PRO_TRIAL_LABEL = `${PRO_TRIAL_MAX_DAYS} Day Free Trial`;
 
 /** Trial landing URL tagged with the surface the user clicked from. */
 export function proTrialUrl(source: ProPromoSource): string {
@@ -52,7 +53,7 @@ export function proTrialUrl(source: ProPromoSource): string {
 export const PLAN_USAGE_GAIN_PERCENT = 100;
 
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan — memory runs off-plan, free for up to ${PRO_TRIAL_MAX_DAYS} days`;
+export const PRO_TRIAL_PITCH = `${PRO_TRIAL_LABEL} — memory runs off-plan. Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan`;
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).
