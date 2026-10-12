@@ -4,7 +4,7 @@ import type { Job } from 'bullmq';
 import { logger } from '../../utils/logger.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import type { PostgresPool } from '../../storage/postgres/pool.js';
-import { ProviderObservationGenerator } from '../generation/ProviderObservationGenerator.js';
+import { DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS, ProviderObservationGenerator } from '../generation/ProviderObservationGenerator.js';
 import { reclaimStaleProcessingJobs } from '../generation/reclaimStaleProcessingJobs.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import type { ServerGenerationJobPayload } from '../jobs/types.js';
@@ -46,6 +46,7 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   private readonly generator: ProviderObservationGenerator;
   private readonly workerId: string;
   private staleSweepTimer: ReturnType<typeof setInterval> | null = null;
+  private staleSweepInFlight = false;
 
   constructor(private readonly options: ActiveServerGenerationWorkerManagerOptions) {
     this.workerId = options.workerId ?? `server-${process.pid}`;
@@ -112,9 +113,16 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   // then BullMQ has long since declared the job stalled, so no live worker
   // still holds it. Sweep once at boot (the case a crash leaves behind) and
   // then every lock duration.
+  //
+  // The threshold also never drops below one full provider call plus a lock
+  // duration, so a live but slow provider.generate() can't be reclaimed even
+  // if the lock duration is tuned down.
   private startStaleSweep(): void {
     const lockDurationMs = this.options.queueManager.getQueue('event').getLockDurationMs();
-    const staleAfterMs = lockDurationMs * STALE_LOCK_MULTIPLIER;
+    const staleAfterMs = Math.max(
+      lockDurationMs * STALE_LOCK_MULTIPLIER,
+      DEFAULT_PROVIDER_GENERATE_TIMEOUT_MS + lockDurationMs,
+    );
     const sweep = () => { void this.sweepStaleJobs(staleAfterMs); };
     sweep();
     this.staleSweepTimer = setInterval(sweep, lockDurationMs);
@@ -122,6 +130,9 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
   }
 
   private async sweepStaleJobs(staleAfterMs: number): Promise<void> {
+    // A slow sweep must not overlap the next tick.
+    if (this.staleSweepInFlight || this.closed) return;
+    this.staleSweepInFlight = true;
     try {
       await reclaimStaleProcessingJobs({
         pool: this.options.pool,
@@ -132,6 +143,8 @@ export class ActiveServerGenerationWorkerManager implements ServerGenerationWork
       logger.warn('SYSTEM', 'stale generation job sweep failed', {
         error: error instanceof Error ? error.message : String(error),
       });
+    } finally {
+      this.staleSweepInFlight = false;
     }
   }
 

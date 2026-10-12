@@ -37,19 +37,28 @@ export async function reclaimStaleProcessingJobs(
   options: ReclaimStaleProcessingJobsOptions,
 ): Promise<ReclaimResult> {
   const repo = new PostgresObservationGenerationJobRepository(options.pool);
-  const stale = await repo.listStaleProcessing({
-    olderThanMs: options.staleAfterMs,
+  // Selected and moved in one lock-checked statement, so two sweepers (or a
+  // worker re-locking the row meanwhile) can't both act on the same row.
+  const reclaimed = await repo.reclaimStaleProcessing({
+    staleAfterMs: options.staleAfterMs,
     limit: options.limit,
   });
   const result: ReclaimResult = { requeued: 0, failed: 0 };
-  for (const job of stale) {
-    const outcome = await reclaimOne(job, repo, options);
-    if (outcome === 'queued') result.requeued += 1;
-    if (outcome === 'failed') result.failed += 1;
+  for (const { job, previousLockedBy, previousLockedAtEpoch } of reclaimed) {
+    const lock = { lockedBy: previousLockedBy, lockedAtEpoch: previousLockedAtEpoch };
+    let target: 'queued' | 'failed' = job.status === 'failed' ? 'failed' : 'queued';
+    // Publish first: an audit-row failure must never leave a queued row with
+    // no BullMQ job behind it.
+    if (target === 'queued' && !(await republish(job, repo, options))) {
+      target = 'failed';
+    }
+    await appendReclaimEvent(job, target, lock, options);
+    if (target === 'queued') result.requeued += 1;
+    else result.failed += 1;
   }
-  if (stale.length > 0) {
+  if (reclaimed.length > 0) {
     logger.warn('SYSTEM', 'reclaimed generation jobs stuck in processing', {
-      found: stale.length,
+      found: reclaimed.length,
       ...result,
       staleAfterMs: options.staleAfterMs,
     });
@@ -57,60 +66,72 @@ export async function reclaimStaleProcessingJobs(
   return result;
 }
 
-async function reclaimOne(
+async function appendReclaimEvent(
+  job: PostgresObservationGenerationJob,
+  target: 'queued' | 'failed',
+  lock: { lockedBy: string | null; lockedAtEpoch: number | null },
+  options: ReclaimStaleProcessingJobsOptions,
+): Promise<void> {
+  try {
+    await new PostgresObservationGenerationJobEventsRepository(options.pool).append({
+      generationJobId: job.id,
+      projectId: job.projectId,
+      teamId: job.teamId,
+      eventType: target,
+      statusAfter: target,
+      attempt: job.attempts,
+      details: { source: 'stale_lock_reclaim', ...lock },
+    });
+  } catch (error) {
+    logger.warn('SYSTEM', 'failed to record reclaimed generation job event', {
+      jobId: job.id,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+// Returns false when the job could not be put back on BullMQ. The row is then
+// moved queued -> failed, which the operator retry route accepts, instead of
+// sitting in `queued` with nothing to deliver it (later sweeps only look at
+// `processing`).
+async function republish(
   job: PostgresObservationGenerationJob,
   repo: PostgresObservationGenerationJobRepository,
   options: ReclaimStaleProcessingJobsOptions,
-): Promise<'queued' | 'failed' | 'skipped'> {
-  const target = job.attempts >= job.maxAttempts ? 'failed' : 'queued';
-  const lock = { lockedBy: job.lockedBy, lockedAtEpoch: job.lockedAtEpoch };
+): Promise<boolean> {
+  const queue = options.resolveQueue(job.sourceType === 'session_summary' ? 'summary' : 'event');
+  let failure: string | null = null;
+  if (!queue || !job.bullmqJobId) {
+    failure = !queue ? 'no queue for lane' : 'job has no bullmq_job_id';
+  } else {
+    try {
+      // The finished or failed BullMQ entry still holds this jobId; adding over
+      // it would be a no-op.
+      try { await queue.remove(job.bullmqJobId); } catch { /* already gone */ }
+      await queue.add(job.bullmqJobId, job.payload as never);
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+  }
+  if (failure === null) return true;
+
+  logger.warn('SYSTEM', 'failed to republish reclaimed generation job; marking it failed', {
+    jobId: job.id,
+    error: failure,
+  });
   try {
     await repo.transitionStatus({
       id: job.id,
       projectId: job.projectId,
       teamId: job.teamId,
-      status: target,
-      lastError: target === 'failed' ? { reason: 'stale_processing_lock', ...lock } : null,
+      status: 'failed',
+      lastError: { reason: 'reclaim_republish_failed', error: failure },
     });
   } catch (error) {
-    // The row left `processing` between the read and the update: a worker
-    // finished it after all. Its own transition stands.
-    logger.debug('SYSTEM', 'stale generation job changed before reclaim; leaving it', {
-      jobId: job.id,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return 'skipped';
-  }
-  await new PostgresObservationGenerationJobEventsRepository(options.pool).append({
-    generationJobId: job.id,
-    projectId: job.projectId,
-    teamId: job.teamId,
-    eventType: target,
-    statusAfter: target,
-    attempt: job.attempts,
-    details: { source: 'stale_lock_reclaim', ...lock },
-  });
-  if (target === 'queued') {
-    await republish(job, options);
-  }
-  return target;
-}
-
-async function republish(
-  job: PostgresObservationGenerationJob,
-  options: ReclaimStaleProcessingJobsOptions,
-): Promise<void> {
-  const queue = options.resolveQueue(job.sourceType === 'session_summary' ? 'summary' : 'event');
-  if (!queue || !job.bullmqJobId) return;
-  try {
-    // The finished or failed BullMQ entry still holds this jobId; adding over
-    // it would be a no-op.
-    try { await queue.remove(job.bullmqJobId); } catch { /* already gone */ }
-    await queue.add(job.bullmqJobId, job.payload as never);
-  } catch (error) {
-    logger.warn('SYSTEM', 'failed to republish reclaimed generation job', {
+    logger.warn('SYSTEM', 'failed to mark unpublished reclaimed generation job failed', {
       jobId: job.id,
       error: error instanceof Error ? error.message : String(error),
     });
   }
+  return false;
 }

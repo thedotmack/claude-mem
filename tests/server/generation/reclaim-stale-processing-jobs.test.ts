@@ -157,6 +157,54 @@ describe('reclaimStaleProcessingJobs', () => {
     expect(published).toEqual([]);
   });
 
+  it('reclaims a stale row exactly once when two sweepers race', async () => {
+    const id = await processingJob(STALE_AFTER_MS + 60_000);
+    const racePool = new pg.Pool({
+      connectionString: testDatabaseUrl,
+      max: 2,
+      options: `-c search_path=${quoteIdentifier(schemaName)}`,
+    });
+    try {
+      const results = await Promise.all([0, 1].map(() => reclaimStaleProcessingJobs({
+        pool: racePool,
+        staleAfterMs: STALE_AFTER_MS,
+        resolveQueue: () => queue,
+      })));
+      expect(results.reduce((sum, r) => sum + r.requeued, 0)).toBe(1);
+    } finally {
+      await racePool.end();
+    }
+    expect((await row(id)).status).toBe('queued');
+    expect(published.filter(p => p.op === 'add')).toHaveLength(1);
+    const events = await client.query(
+      "SELECT count(*)::int AS n FROM observation_generation_job_events WHERE generation_job_id = $1 AND details->>'source' = 'stale_lock_reclaim'",
+      [id],
+    );
+    expect(events.rows[0].n).toBe(1);
+  });
+
+  it('marks a reclaimed job failed when it cannot be republished, and later sweeps leave it', async () => {
+    const id = await processingJob(STALE_AFTER_MS + 60_000);
+    const brokenQueue = {
+      add: async () => { throw new Error('redis down'); },
+      remove: async () => {},
+    };
+
+    expect(await reclaimStaleProcessingJobs({
+      pool: client,
+      staleAfterMs: STALE_AFTER_MS,
+      resolveQueue: () => brokenQueue,
+    })).toEqual({ requeued: 0, failed: 1 });
+
+    const after = await row(id);
+    expect(after.status).toBe('failed');
+    expect(after.last_error.reason).toBe('reclaim_republish_failed');
+
+    expect(await reclaim()).toEqual({ requeued: 0, failed: 0 });
+    expect((await row(id)).status).toBe('failed');
+    expect(published).toEqual([]);
+  });
+
   it('sweeps once when the generation worker starts', async () => {
     const lockDurationMs = 5 * 60 * 1000;
     const id = await processingJob(3 * lockDurationMs + 60_000);
