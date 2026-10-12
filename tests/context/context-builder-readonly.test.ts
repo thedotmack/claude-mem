@@ -38,6 +38,28 @@ const childScript = `
   }
   store.close();
 
+  if (process.env.READONLY_CASE === 'statement-lifecycle') {
+    const statements = [];
+    const prepare = Database.prototype.prepare;
+    Database.prototype.prepare = function (...args) {
+      const statement = prepare.apply(this, args);
+      statements.push(statement);
+      return statement;
+    };
+    try {
+      const renders = [];
+      for (let index = 0; index < 3; index++) {
+        const text = await generateContext({ projects: ['readonly-parent'] });
+        renders.push({ text, queries: statements.length, unfinalized: statements.filter(statement => statement.toString() !== '').length });
+      }
+      console.log(JSON.stringify({ renders }));
+    } finally {
+      Database.prototype.prepare = prepare;
+      for (const statement of statements) statement.finalize();
+    }
+    process.exit(0);
+  }
+
   if (process.env.READONLY_CASE === 'exclusive-lock') {
     const lockReadyPath = process.env.LOCK_READY ?? dbPath + '.lock-ready';
     const lockHolder = Bun.spawn(['bun', '-e', \`
@@ -135,6 +157,22 @@ function runChild(dataDir: string, extraEnv: Record<string, string>): Record<str
 }
 
 describe('context database ownership', () => {
+  it('releases all query statements on repeated read-only context renders', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-'));
+    try {
+      const result = runChild(dataDir, { READONLY_CASE: 'statement-lifecycle' });
+      expect(result.renders).toHaveLength(3);
+      for (const [index, render] of result.renders.entries()) {
+        expect(render.text).toContain('NATIVE_READONLY_RECORD');
+        expect(render.text).toContain('ADOPTED_READONLY_RECORD');
+        expect(render.queries).toBe((index + 1) * 3);
+        expect(render.unfinalized).toBe(0);
+      }
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it('does not create a database for an absent context store', () => {
     const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-context-'));
     try {
