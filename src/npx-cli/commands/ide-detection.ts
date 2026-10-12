@@ -12,6 +12,11 @@ export interface IDEInfo {
   hint?: string;
 }
 
+export function initialIDESelection(ides: IDEInfo[]): string[] {
+  const detected = ides.filter(ide => ide.detected).map(ide => ide.id);
+  return detected.length ? detected : ['claude-code'];
+}
+
 function isCommandInPath(command: string): boolean {
   try {
     if (IS_WINDOWS) {
@@ -118,6 +123,18 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'OMP',
       detected: isCommandInPath('omp') || existsSync(join(home, '.omp')),
       hint: 'native hooks integration',
+    },
+    {
+      id: 'pi',
+      label: 'Pi',
+      detected: isCommandInPath('pi') || existsSync(process.env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
+      hint: 'manual recall; check automatic capture compatibility',
+    },
+    {
+      id: 'dsh',
+      label: 'DeepSeek Harness',
+      detected: isCommandInPath('dsh') || existsSync(process.env.DSH_HOME || join(home, '.dsh')),
+      hint: 'native plugin + transcript capture',
     },
     {
       id: 'goose',

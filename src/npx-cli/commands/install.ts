@@ -6,6 +6,7 @@ import { loadTelemetryConfig, saveTelemetryConfig } from '../../services/telemet
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
 import { buildSpawnSyncInvocation, lookupWindowsCommand, spawnHidden } from '../../shared/spawn.js';
 import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { readProjectAttribution, replaceOwnedFiles } from '../../shared/owned-file-install.js';
 import { homedir, hostname } from 'os';
 import { dirname, join } from 'path';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
@@ -44,7 +45,7 @@ import {
   PROVIDER_PROMPT_MESSAGE,
 } from '../cmem-pro-costs.js';
 import { clearProFallback, isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
-import { PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
+import { PRO_TRIAL_LABEL, PRO_TRIAL_PITCH, proTrialUrl } from '../../shared/pro-promo.js';
 import {
   buildAnthropicMaxLocalSettings,
   buildCmemActivationSettings,
@@ -191,6 +192,7 @@ import { holdSpawnLock, SPAWN_LOCK_STALE_MS } from '../../shared/worker-spawn-ga
 import { readOwnedWorkerPidInfo, type PidInfo } from '../../supervisor/process-registry.js';
 import { isWorkerAutostartDisabled } from '../../shared/worker-autostart.js';
 import { detectInstalledIDEs } from './ide-detection.js';
+import { initialIDESelection } from './ide-detection.js';
 import { canonicalIntegrationId } from '../../shared/integration-id.js';
 import { checkWindowsGitBash } from '../utils/windows-git-bash-preflight.js';
 
@@ -311,7 +313,7 @@ async function resolveClaudeAutoMemoryChoice(
   return choice;
 }
 
-export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescriptor | null {
+export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?: string): TaskDescriptor | null {
   const recordFailure = (label: string, output: string) => {
     // Route every per-IDE failure through the central decision point. A single
     // IDE failure is FAIL_LOUD_PER_IDE (partial install); the summary headline
@@ -441,6 +443,44 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
       };
     }
 
+    case 'pi': {
+      return {
+        title: 'Pi: installing memory extension',
+        task: async () => {
+          const { installPiExtension } = await import('../../services/integrations/PiInstaller.js');
+          const { result, output } = await bufferConsole(async () => installPiExtension());
+          if (result !== 0) {
+            recordFailure('Pi: memory extension installation failed', output);
+            return 'Pi: extension installation failed';
+          }
+          return 'Pi: extension files installed; automatic capture is unverified. Pi 0.79.6 provides manual recall only. ' +
+            'Check your Pi version and update Pi if needed: https://github.com/thedotmack/claude-mem/blob/main/docs/pi-native-capture.md';
+        },
+      };
+    }
+    case 'dsh': {
+      return {
+        title: 'DeepSeek Harness: installing native memory',
+        task: async () => {
+          const { installDeepSeekHarness } = await import('../../services/integrations/DeepSeekHarnessInstaller.js');
+          const { result, output } = await bufferConsole(() => installDeepSeekHarness(dshProfile));
+          if (result === 2) {
+            installerError(ErrorSeverity.WARN_CONTINUE, {
+              component: 'dsh', phase: 'ide-install',
+              cause: new Error('DeepSeek Harness plugin installed, but transcript capture is incomplete.'),
+              remediation: 'Check the transcript config and CLAUDE_MEM_TRANSCRIPTS_ENABLED, then re-run npx claude-mem install --ide dsh --dsh-profile ' + (dshProfile ?? 'web') + '.',
+              details: output,
+            }, summary);
+            return 'DeepSeek Harness: plugin installed; transcript setup incomplete';
+          }
+          if (result !== 0) {
+            recordFailure('DeepSeek Harness: native memory installation failed', output);
+            return 'DeepSeek Harness: installation failed';
+          }
+          return 'DeepSeek Harness: native memory installed';
+        },
+      };
+    }
     case 'omp': {
       return {
         title: 'OMP: installing hooks',
@@ -575,10 +615,10 @@ export function makeIDETask(ideId: string, summary: InstallSummary): TaskDescrip
   }
 }
 
-async function setupIDEs(selectedIDEs: string[], summary: InstallSummary): Promise<string[]> {
+async function setupIDEs(selectedIDEs: string[], summary: InstallSummary, dshProfile?: string): Promise<string[]> {
   const tasks: TaskDescriptor[] = [];
   for (const ideId of selectedIDEs) {
-    const taskDescriptor = makeIDETask(ideId, summary);
+    const taskDescriptor = makeIDETask(ideId, summary, dshProfile);
     if (taskDescriptor) tasks.push(taskDescriptor);
   }
 
@@ -669,10 +709,14 @@ function applyClaudeCodePathSetupIfNeeded(): void {
   process.env.PATH = `${claudeBinDir}:${currentPath}`;
 }
 
-async function installClaudeCode(): Promise<boolean> {
-  const command = IS_WINDOWS
+export function claudeCodeInstallCommand(windows = IS_WINDOWS): string {
+  return windows
     ? 'powershell -ExecutionPolicy ByPass -c "irm https://claude.ai/install.ps1 | iex"'
-    : 'curl -fsSL https://claude.ai/install.sh | bash';
+    : 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash';
+}
+
+async function installClaudeCode(): Promise<boolean> {
+  const command = claudeCodeInstallCommand();
   const installShell = IS_WINDOWS ? (process.env.ComSpec ?? 'cmd.exe') : '/bin/bash';
 
   const spinner = isInteractive ? p.spinner() : null;
@@ -720,31 +764,7 @@ async function installClaudeCode(): Promise<boolean> {
 }
 
 async function promptForIDESelection(): Promise<string[]> {
-  let detectedIDEs = detectInstalledIDEs();
-  const claudeCodeInfo = detectedIDEs.find((ide) => ide.id === 'claude-code');
-
-  if (claudeCodeInfo && !claudeCodeInfo.detected) {
-    log.warn('Claude Code is not installed. Claude-mem works best in Claude Code, but also works with the IDEs below.');
-    const choice = await p.select<'install' | 'skip' | 'cancel'>({
-      message: 'Install Claude Code now?',
-      options: [
-        { value: 'install', label: 'Yes — install Claude Code (recommended)' },
-        { value: 'skip', label: 'No — pick another IDE below' },
-        { value: 'cancel', label: 'Cancel installation' },
-      ],
-      initialValue: 'install',
-    });
-    if (p.isCancel(choice) || choice === 'cancel') {
-      p.cancel('Installation cancelled.');
-      process.exit(0);
-    }
-    if (choice === 'install') {
-      if (await installClaudeCode()) {
-        detectedIDEs = detectInstalledIDEs();
-      }
-    }
-  }
-
+  const detectedIDEs = detectInstalledIDEs();
   const detected = detectedIDEs.filter((ide) => ide.detected);
 
   if (detected.length === 0) {
@@ -760,15 +780,11 @@ async function promptForIDESelection(): Promise<string[]> {
     };
   });
 
-  // Pre-check Claude Code (plus anything else detected). It is the IDE almost
-  // everyone installing claude-mem is running, and an empty multiselect makes
-  // the common case a required chore before the install can continue.
-  const preselected = detectedIDEs
-    .filter((ide) => ide.detected || ide.id === 'claude-code')
-    .map((ide) => ide.id);
+  // Prefer the agents already installed; Claude Code is the fallback when none are detected.
+  const preselected = initialIDESelection(detectedIDEs);
 
   const result = await p.multiselect({
-    message: 'Which IDEs do you use?',
+    message: 'Which agents do you use?',
     options,
     initialValues: preselected,
     required: true,
@@ -779,13 +795,23 @@ async function promptForIDESelection(): Promise<string[]> {
     process.exit(0);
   }
 
-  return result as string[];
+  const selected = result as string[];
+  if (selected.includes('claude-code') && !detectedIDEs.find(ide => ide.id === 'claude-code')?.detected) {
+    const installHost = await p.confirm({ message: 'Install Claude Code now?', initialValue: true });
+    if (p.isCancel(installHost)) { p.cancel('Installation cancelled.'); process.exit(0); }
+    if (installHost && !await installClaudeCode()) {
+      log.warn('Claude Code installation failed. Choose an agent again, or decline the host installation to set it up later.');
+      return promptForIDESelection();
+    }
+  }
+  return selected;
 }
 
 function copyPluginToMarketplace(): void {
   const marketplaceDir = marketplaceDirectory();
   const packageRoot = npmPackageRootDirectory();
 
+  const attribution = readProjectAttribution(packageRoot);
   ensureDirectoryExists(marketplaceDir);
 
   const allowedTopLevelEntries = [
@@ -799,8 +825,9 @@ function copyPluginToMarketplace(): void {
     'package-lock.json',
     'openclaw',
     'omp',
+    'pi',
+    'dsh',
     'dist',
-    'LICENSE',
     'README.md',
     'CHANGELOG.md',
   ];
@@ -818,6 +845,8 @@ function copyPluginToMarketplace(): void {
       force: true,
     });
   }
+
+  replaceOwnedFiles(marketplaceDir, attribution);
 
   writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir);
   writeTrimmedMarketplaceManifest(marketplaceDir);
@@ -1059,7 +1088,14 @@ function resolveClaudeAuthMethod(): 'subscription' | 'api-key' | 'gateway' {
 
 const DEFAULT_SERVER_RUNTIME_BASE_URL = 'http://127.0.0.1:37877';
 
-async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
+function requireSupportedRuntime(selectedIDEs: string[], runtime: RuntimeId): void {
+  if (runtime === 'server' && selectedIDEs.some(id => id === 'pi' || id === 'dsh')) {
+    log.error('Pi and DeepSeek Harness currently require --runtime worker.');
+    process.exit(1);
+  }
+}
+
+async function promptRuntime(options: InstallOptions, selectedIDEs: string[]): Promise<RuntimeId> {
   // #2543 — non-interactive runtime selection via `--runtime`. When the flag is
   // present we never prompt and never fall back to the worker path: we resolve
   // the requested runtime deterministically and, for the server runtime, plan +
@@ -1070,6 +1106,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
       log.error(`Unknown --runtime: ${options.runtime}. Allowed: worker, server`);
       process.exit(1);
     }
+    requireSupportedRuntime(selectedIDEs, requested);
     if (requested === 'server') {
       await setupServerRuntimeNonInteractive(options);
       return 'server';
@@ -1098,6 +1135,7 @@ async function promptRuntime(options: InstallOptions): Promise<RuntimeId> {
     process.exit(0);
   }
 
+  requireSupportedRuntime(selectedIDEs, selected);
   mergeSettings({
     CLAUDE_MEM_RUNTIME: selected,
   });
@@ -2094,7 +2132,7 @@ export async function completeCmemTrialPairing(
   }
   pairing.delivered = result;
   clearProFallback();
-  log.success('CMEM Pro Free Trial active.');
+  log.success(`CMEM Pro ${PRO_TRIAL_LABEL} active.`);
   await captureCliEvent('trial_activated', { version });
   return result;
 }
@@ -2150,6 +2188,7 @@ export function providerNeedsAccount(provider: InstallOptions['provider']): bool
 
 export interface InstallOptions {
   ide?: string;
+  dshProfile?: string;
   /**
    * `openai-compatible` is never a flag value: it is only ever kept from
    * settings.json by a non-interactive run (`providerSource: 'persisted'`).
@@ -2503,6 +2542,13 @@ export async function runInstallCommand(options: InstallOptions = {}): Promise<v
 }
 
 async function runInstallCommandInner(options: InstallOptions, summary: InstallSummary): Promise<void> {
+  // Explicit host/runtime incompatibility must refuse before provider getters,
+  // runtime settings persistence, or server API-key bootstrap.
+  if (options.ide && options.runtime !== undefined) {
+    const requested = normalizeRuntimeFlag(options.runtime);
+    if (requested !== null) requireSupportedRuntime([canonicalIntegrationId(options.ide)], requested);
+  }
+
   const installStartedAt = Date.now();
   const version = readPluginVersion();
   validateNonInteractiveProvider(options, summary);
@@ -2592,7 +2638,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     selectedIDEs = ['claude-code'];
   }
 
-  const selectedRuntime = await promptRuntime(options);
+  const selectedRuntime = await promptRuntime(options, selectedIDEs);
 
   let workerStartResult: WorkerStartResult = 'dead';
   // Claude Code consumes the marketplace plugin system directly, so any selection
@@ -2709,7 +2755,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     }
   }
 
-  const failedIDEs = await setupIDEs(selectedIDEs, summary);
+  const failedIDEs = await setupIDEs(selectedIDEs, summary, options.dshProfile);
 
   // Optionally disable Claude Code's built-in auto-memory (CLAUDE_CODE_DISABLE_AUTO_MEMORY=1)
   // when the user explicitly opts in, either through the interactive prompt or
