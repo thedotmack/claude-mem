@@ -489,3 +489,47 @@ export function toolUsesTableExists(db: Database): boolean {
   }
   return true;
 }
+
+/**
+ * `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` as a whole number of days. 0 means keep
+ * forever, and so does anything that is not a plain non-negative integer: a
+ * typo in a hand-edited settings.json must never turn into a purge.
+ */
+export function resolveToolUsesRetentionDays(raw: string | undefined): number {
+  const trimmed = (raw ?? '').trim();
+  if (!/^\d+$/.test(trimmed)) return 0;
+  const days = Number(trimmed);
+  return Number.isSafeInteger(days) ? days : 0;
+}
+
+/**
+ * Opt-in retention for the raw tool I/O index. Deletes rows older than
+ * `retentionDays` that are already linked to an observation, because the
+ * observation carries the distilled result. Rows with no `observation_id` are
+ * the only copy of that I/O and are never touched. `retentionDays` of 0 keeps
+ * everything. Freed pages are reused by SQLite; returning disk space to the OS
+ * is the job of VACUUM / auto_vacuum, not of this purge.
+ *
+ * Returns the number of rows removed.
+ */
+export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoch: number = Date.now()): number {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays <= 0) return 0;
+  try {
+    if (!toolUsesTableExists(db)) return 0;
+    const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
+    const { changes } = db
+      .prepare('DELETE FROM tool_uses WHERE observation_id IS NOT NULL AND created_at_epoch < ?')
+      .run(cutoffEpoch);
+    if (changes > 0) {
+      logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
+        rows: changes,
+        retentionDays,
+      });
+    }
+    return changes;
+  } catch (error) {
+    logger.debug('DB', 'tool_uses retention purge skipped', {},
+      error instanceof Error ? error : new Error(String(error)));
+    return 0;
+  }
+}
