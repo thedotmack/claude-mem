@@ -742,6 +742,11 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const importedMemorySessionIds = new Map<string, string>();
+    const remapImportedMemorySession = <T extends { memory_session_id: string }>(row: T): T => {
+      const memorySessionId = importedMemorySessionIds.get(row.memory_session_id);
+      return memorySessionId === undefined ? row : { ...row, memory_session_id: memorySessionId };
+    };
     const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
     const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
     const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
@@ -785,6 +790,13 @@ export class DataRoutes extends BaseRouteHandler {
 
     importEachRow('sessions', sessions, (session) => {
       const result = store.importSdkSession(session);
+      if (typeof session.memory_session_id === 'string' && session.memory_session_id.trim() !== '') {
+        // An existing content session may already have a different observer id.
+        // Keep its registered identity and attach the imported children to it;
+        // register the exported id only when the local session has none yet.
+        const memorySessionId = store.ensureMemorySessionIdRegistered(result.id, session.memory_session_id);
+        importedMemorySessionIds.set(session.memory_session_id, memorySessionId);
+      }
       rememberSessionContext(session, result.id);
       if (result.imported) {
         stats.sessionsImported++;
@@ -794,7 +806,7 @@ export class DataRoutes extends BaseRouteHandler {
     });
 
     importEachRow('summaries', summaries, (summary) => {
-      const result = store.importSessionSummary(summary);
+      const result = store.importSessionSummary(remapImportedMemorySession(summary));
       if (result.imported) {
         stats.summariesImported++;
       } else {
@@ -805,10 +817,11 @@ export class DataRoutes extends BaseRouteHandler {
     const importedObservations: Array<{ id: number; obs: any }> = [];
     if (Array.isArray(observations)) {
       importEachRow('observations', observations, (obs) => {
-        const result = store.importObservation(obs);
+        const observation = remapImportedMemorySession(obs);
+        const result = store.importObservation(observation);
         if (result.imported) {
           stats.observationsImported++;
-          importedObservations.push({ id: result.id, obs });
+          importedObservations.push({ id: result.id, obs: observation });
         } else {
           stats.observationsSkipped++;
         }
