@@ -180,7 +180,7 @@ export function shouldRotateKey(err: unknown): boolean {
  */
 export function parseApiKeyList(raw: unknown): string[] {
   const parts: string[] = Array.isArray(raw)
-    ? raw.flatMap(entry => splitKeyString(String(entry)))
+    ? raw.flatMap(entry => typeof entry === 'string' ? splitKeyString(entry) : [])
     : typeof raw === 'string'
       ? splitKeyString(raw)
       : [];
