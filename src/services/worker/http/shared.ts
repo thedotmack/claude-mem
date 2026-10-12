@@ -6,6 +6,7 @@ import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.
 import { stripMemoryTags } from '../../../utils/tag-stripping.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
+import { isToolSkipped } from '../../../shared/is-tool-skipped.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
 import { getProjectContext } from '../../../utils/project-name.js';
@@ -151,13 +152,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
   }
 
-  // Case-insensitive, because hosts spell the same tool differently and
-  // adapters rename some (OpenCode's `read` arrives as `Read`). A user's
-  // `read` or `Read` entry keeps matching either way.
-  const skipTools = new Set(
-    settings.CLAUDE_MEM_SKIP_TOOLS.split(',').map(t => t.trim().toLowerCase()).filter(Boolean)
-  );
-  if (skipTools.has(payload.toolName.toLowerCase())) {
+  if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
     if (payload.toolName === 'Skill') {
       const { skill_id, skill_source } = classifySkillId(
         skillNameFromToolInput(payload.toolName, payload.toolInput),

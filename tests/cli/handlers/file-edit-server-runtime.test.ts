@@ -138,6 +138,18 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
     expect(spooledEntries('file_edit')).toHaveLength(1);
   });
 
+  it('honors CLAUDE_MEM_SKIP_TOOLS in server runtime: an excluded edit never reaches the server', async () => {
+    mockRuntime = serverRuntime();
+    mockSettings = { CLAUDE_MEM_EXCLUDED_PROJECTS: '', CLAUDE_MEM_SKIP_TOOLS: 'TodoWrite, Write_File ' };
+    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
+
+    const result = await fileEditHandler.execute(cursorInput());
+
+    expect(result.continue).toBe(true);
+    expect(recordEventLog).toHaveLength(0);
+    expect(spooledEntries()).toEqual([]);
+  });
+
   it('falls back to the worker spool when the server call is fallback-eligible', async () => {
     const fallbackError = new ServerClientError('transport', 'transport down');
     mockRuntime = {
