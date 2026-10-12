@@ -34,7 +34,15 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      // where.exe writes the console's active code page (e.g. cp949 on ko-KR,
+      // cp932 on ja-JP) but the `encoding: 'utf-8'` above decodes those bytes
+      // as UTF-8, so a non-ASCII profile folder name arrives as U+FFFD and the
+      // reported path does not exist (#4694, #3865). Keep only the lines that
+      // resolve on disk and thread this filtered list through EVERY return
+      // below — re-reading the raw stdout would hand the garbled path back
+      // even after the list was filtered.
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(line => existsSync(line));
       const firstBunPath = bunPaths.find(line => {
         const lowerPath = line.toLowerCase();
         return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
@@ -55,12 +63,16 @@ function findBun() {
       // the resolved absolute path instead of falling through to the bare
       // name: resolving a bare `bun` later relies on the child's PATH, which
       // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      const firstWherePath = bunPaths.find(Boolean);
       if (firstWherePath) {
         return firstWherePath;
       }
+      // Every where hit was garbled or stale (#4694): fall through to the
+      // explicit overrides and well-known install homes below instead of
+      // returning a path that can only fail with ENOENT.
+    } else {
+      return 'bun';
     }
-    return 'bun';
   }
 
   const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';

@@ -82,10 +82,13 @@ describe('bun-runner.js findBun: DEP0190 regression guard (#1503)', () => {
 const windowsDescribe = process.platform === 'win32' ? describe : describe.skip;
 
 function findBunForWhereOutput(stdout: string) {
+  // Paths `where` reported count as existing: these cases exercise ordering and
+  // preference among real hits, not the code-page filter (#4694 covers that).
+  const whereLines = stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
   return createFindBun({
     IS_WINDOWS: true,
     dirname: win32.dirname,
-    existsSync: () => false,
+    existsSync: (p: string) => whereLines.includes(p),
     homedir: () => 'C:\\Users\\fixture',
     join,
     spawnSync: (() => ({
@@ -212,7 +215,7 @@ describe('bun-runner.js findBun: absolute bun.exe resolution (#3196)', () => {
     const result = runFindBun({
       status: 0,
       stdout: 'C:\\Users\\test\\.bun\\bin\\bun.exe\r\n'
-    });
+    }, { existingPaths: ['C:\\Users\\test\\.bun\\bin\\bun.exe'] });
     expect(result).toBe('C:\\Users\\test\\.bun\\bin\\bun.exe');
   });
 
@@ -220,16 +223,18 @@ describe('bun-runner.js findBun: absolute bun.exe resolution (#3196)', () => {
     const result = runFindBun({
       status: 0,
       stdout: 'C:\\npm\\bun.cmd\r\nC:\\Users\\test\\.bun\\bin\\bun.exe\r\n'
-    });
+    }, { existingPaths: ['C:\\npm\\bun.cmd', 'C:\\Users\\test\\.bun\\bin\\bun.exe'] });
     expect(result).toBe('C:\\npm\\bun.cmd');
   });
 
-  it('never returns the bare name when where produced a path', () => {
+  it('never returns the bare name when every where path is nonexistent (#4694)', () => {
+    // All where hits garbled/stale AND no fallback installed: bun-runner must
+    // report Bun-not-found, not hand back a bare 'bun' (or a broken path).
     const result = runFindBun({
       status: 0,
       stdout: 'C:\\some dir with spaces\\bun.exe\r\n'
     });
-    expect(result).not.toBe('bun');
+    expect(result).toBeNull();
   });
 
   it('falls back to ~/.bun/bin/bun.exe when where fails', () => {
@@ -247,6 +252,48 @@ describe('bun-runner.js findBun: absolute bun.exe resolution (#3196)', () => {
       { isWindows: false }
     );
     expect(result).toBe('bun');
+  });
+});
+
+describe('bun-runner.js findBun: code-page-garbled where output (#4694)', () => {
+  // where.exe writes the console's active code page (cp949 on ko-KR) while
+  // findBun decodes its stdout as UTF-8, so a non-ASCII profile folder turns
+  // into U+FFFD and the reported path does not exist.
+  const GARBLED_BUN = 'C:\\Users\\\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\\.bun\\bin\\bun.exe';
+
+  it('does not return a nonexistent where hit; falls through to ~/.bun/bin/bun.exe', () => {
+    const fallback = win32.join('C:\\Users\\test', '.bun', 'bin', 'bun.exe');
+    const result = runFindBun(
+      { status: 0, stdout: `${GARBLED_BUN}\r\n` },
+      { existingPaths: [fallback] }
+    );
+    expect(result).toBe(fallback);
+  });
+
+  it('still returns a where hit that exists on disk (#3196 absolute-path contract)', () => {
+    const existing = 'C:\\Program Files\\bun\\bun.exe';
+    const result = runFindBun(
+      { status: 0, stdout: `${GARBLED_BUN}\r\n${existing}\r\n` },
+      { existingPaths: [existing] }
+    );
+    expect(result).toBe(existing);
+  });
+
+  it('prefers an existing bun.exe over an earlier garbled bun.exe line', () => {
+    const goodExe = 'C:\\Second\\bun.exe';
+    const result = runFindBun(
+      { status: 0, stdout: `${GARBLED_BUN}\r\nC:\\Second\\bun.cmd\r\n${goodExe}\r\n` },
+      { existingPaths: [goodExe] }
+    );
+    // The garbled first line must not anchor the first-directory preference:
+    // after filtering, the only survivors are the real exe (the nonexistent
+    // bun.cmd drops out), and the exe wins.
+    expect(result).toBe(goodExe);
+  });
+
+  it('returns null when every where hit is nonexistent and no fallback exists', () => {
+    const result = runFindBun({ status: 0, stdout: `${GARBLED_BUN}\r\n` });
+    expect(result).toBeNull();
   });
 });
 
