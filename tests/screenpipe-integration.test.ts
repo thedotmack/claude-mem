@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { run } from '../plugin/skills/screenpipe/screenpipe.mjs';
+import { defaultWorkerUrl, run } from '../plugin/skills/screenpipe/screenpipe.mjs';
+import { stripMemoryTags } from '../src/utils/tag-stripping.js';
 
 const searchArgs = ['search', '--start', '2026-10-07T09:00:00-07:00', '--end', '2026-10-07T10:00:00-07:00'];
 const servers: ReturnType<typeof Bun.serve>[] = [];
@@ -92,6 +93,45 @@ describe('packaged Screenpipe integration', () => {
     await expect(run([...args.slice(0, -1), failed])).rejects.toThrow('did not confirm');
     await writeFile(file, '');
     await expect(run(args)).rejects.toThrow('1..65536 bytes');
+  });
+
+  it('wraps CLI search output in <private> so automatic capture strips the screen text', async () => {
+    const url = serve(() => Response.json({ data: [
+      { type: 'OCR', content: { frame_id: 7, timestamp: '2026-10-07T16:30:00Z', text: 'Quarterly numbers draft' } },
+    ], pagination: { total: 1 } }));
+    const proc = Bun.spawn(['node', resolve('plugin/skills/screenpipe/screenpipe.mjs'), ...searchArgs], {
+      env: { ...process.env, SCREENPIPE_URL: url }, stdout: 'pipe', stderr: 'pipe',
+    });
+    const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited]);
+    expect(code).toBe(0);
+    expect(stdout.startsWith('<private>')).toBe(true);
+    expect(stdout).toContain('Quarterly numbers draft');
+    expect(stripMemoryTags(stdout)).not.toContain('Quarterly numbers draft');
+  });
+
+  it('finds the local worker from settings.json and reads the note from stdin', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'screenpipe-settings-'));
+    dirs.push(dir);
+    let received: unknown = null;
+    const url = serve(async req => {
+      received = await req.json();
+      return Response.json({ success: true, id: 7 });
+    });
+    const port = new URL(url).port;
+    await writeFile(join(dir, 'settings.json'), JSON.stringify({ CLAUDE_MEM_WORKER_PORT: port }));
+    const env = { CLAUDE_MEM_DATA_DIR: dir };
+    expect(defaultWorkerUrl(env)).toBe(`http://127.0.0.1:${port}`);
+    expect(defaultWorkerUrl({ ...env, CLAUDE_MEM_WORKER_HOST: '::1' })).toBe(`http://[::1]:${port}`);
+
+    const proc = Bun.spawn(['node', resolve('plugin/skills/screenpipe/screenpipe.mjs'), 'save', '--file', '-', '--project', 'demo'], {
+      env: { ...process.env, CLAUDE_MEM_WORKER_PORT: '', CLAUDE_MEM_WORKER_HOST: '', ...env },
+      stdin: new Blob(['Ship Friday. Source: Screenpipe Audio #20.']), stdout: 'pipe', stderr: 'pipe',
+    });
+    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
+    expect(stderr).toBe('');
+    expect(code).toBe(0);
+    expect(JSON.parse(stdout)).toMatchObject({ success: true, id: 7 });
+    expect(received).toMatchObject({ text: 'Ship Friday. Source: Screenpipe Audio #20.', project: 'demo' });
   });
 
   it('runs under Node and emits actionable CLI errors on stderr with a failing exit code', async () => {
