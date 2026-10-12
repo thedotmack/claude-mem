@@ -24,6 +24,7 @@ function seed(db: Database, toolUseId: string, ageDays: number, observationId: n
   if (id === null) throw new Error('seed row was not written');
   if (observationId !== null) {
     db.prepare('UPDATE tool_uses SET observation_id = ? WHERE id = ?').run(observationId, id);
+    createObservations(db, [observationId]);
   }
   return id;
 }
@@ -31,7 +32,15 @@ function seed(db: Database, toolUseId: string, ageDays: number, observationId: n
 function freshDb(): Database {
   const db = new Database(':memory:');
   createToolUsesSchema(db);
+  // The purge only trusts a link to an observation that still exists.
+  db.run('CREATE TABLE observations (id INTEGER PRIMARY KEY)');
   return db;
+}
+
+/** Make every observation id the seeds link to exist, except the ones listed. */
+function createObservations(db: Database, ids: number[]): void {
+  const insert = db.prepare('INSERT OR IGNORE INTO observations (id) VALUES (?)');
+  for (const id of ids) insert.run(id);
 }
 
 function remainingToolUseIds(db: Database): string[] {
@@ -53,6 +62,17 @@ describe('resolveToolUsesRetentionDays', () => {
 
   it('treats a missing setting as keep-forever', () => {
     expect(resolveToolUsesRetentionDays(undefined)).toBe(0);
+  });
+
+  it('accepts an unquoted JSON number, which hand-edited settings.json can hold', () => {
+    expect(resolveToolUsesRetentionDays(30)).toBe(30);
+    expect(resolveToolUsesRetentionDays(0)).toBe(0);
+  });
+
+  it('never throws on a value that is not a string or number, and keeps everything', () => {
+    for (const raw of [null, true, false, {}, [], [30], 1.5, -3, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolveToolUsesRetentionDays(raw)).toBe(0);
+    }
   });
 });
 
@@ -109,6 +129,16 @@ describe('purgeLinkedToolUses', () => {
 
     expect(purgeLinkedToolUses(db, 30, NOW)).toBe(2);
     expect(remainingToolUseIds(db)).toEqual(['old-unlinked', 'recent-linked', 'recent-unlinked']);
+  });
+
+  it('keeps a row whose observation was deleted: it is then the only copy of that I/O', () => {
+    const db = freshDb();
+    seed(db, 'orphaned', 90, 11);
+    seed(db, 'still-linked', 90, 12);
+    db.prepare('DELETE FROM observations WHERE id = ?').run(11);
+
+    expect(purgeLinkedToolUses(db, 30, NOW)).toBe(1);
+    expect(remainingToolUseIds(db)).toEqual(['orphaned']);
   });
 
   it('makes get_tool_uses on a purged id return the existing not-found shape', () => {
