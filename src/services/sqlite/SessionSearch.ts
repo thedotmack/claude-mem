@@ -14,7 +14,13 @@ import {
 } from './types.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveDateBound } from '../../shared/date-bounds.js';
-import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, LATEST_SCHEMA_VERSION, stampSchemaWriterVersion } from './connection.js';
+import {
+  applySqliteConnectionPragmas,
+  assertSchemaWriterCompatible,
+  checkAndRaiseSchemaWriterStampInTransaction,
+  LATEST_SCHEMA_VERSION,
+  SchemaNewerThanBinaryError,
+} from './connection.js';
 import { projectScopeSql, scopedProjects } from './project-read-keys.js';
 import { pageMatchingRows } from './stream-rows.js';
 
@@ -136,9 +142,16 @@ export class SessionSearch {
     const repairingTriggersOnly = hasObservationsFTS && hasSummariesFTS;
     logger.info('DB', repairingTriggersOnly ? 'Converging FTS5 indexes and recreating missing sync triggers' : 'Creating FTS5 tables');
 
-    let ftsSchemaCreated = false;
     try {
       this.db.transaction(() => {
+        // The FTS DDL below is this constructor's only schema write, so the
+        // writer stamp is re-checked and raised under the same write lock
+        // first (#3609 step 2, #4602 review): a newer worker that stamped
+        // after the constructor's initial check still refuses this one, and
+        // the stamp commits only together with the DDL. A connection that
+        // writes nothing — FTS tables already present, no FTS5 — records no
+        // writer.
+        checkAndRaiseSchemaWriterStampInTransaction(this.db, LATEST_SCHEMA_VERSION);
         // Another connection may have completed setup after the initial read.
         // Hold the writer reservation while deciding which indexes we own.
         const currentTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
@@ -161,19 +174,13 @@ export class SessionSearch {
           this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
         }
       }).immediate();
-      ftsSchemaCreated = true;
       logger.info('DB', repairingTriggersOnly ? 'FTS5 indexes converged and sync triggers recreated' : 'FTS5 tables created successfully');
     } catch (error) {
+      if (error instanceof SchemaNewerThanBinaryError) {
+        throw error;
+      }
       this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
-    }
-
-    // The FTS DDL above is this constructor's only schema write, so it is the
-    // only thing that can record the highest schema version this binary knows
-    // (#3609 step 2). A connection that wrote nothing — FTS tables already
-    // present, no FTS5, read-only fallback — records no writer.
-    if (ftsSchemaCreated) {
-      stampSchemaWriterVersion(this.db, LATEST_SCHEMA_VERSION);
     }
   }
 

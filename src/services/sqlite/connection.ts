@@ -52,8 +52,30 @@ export function assertSchemaWriterCompatible(db: Database, latestKnownSchemaVers
   );
 }
 
-export function stampSchemaWriterVersion(db: Database, latestKnownSchemaVersion: number): void {
-  db.run(`PRAGMA user_version = ${latestKnownSchemaVersion}`);
+/**
+ * Re-read the stamp, refuse a newer schema, and raise (never lower) the stamp
+ * to this binary's version. The caller must already hold the SQLite write
+ * lock (an IMMEDIATE transaction), so no other writer can stamp between the
+ * check and the write.
+ */
+export function checkAndRaiseSchemaWriterStampInTransaction(db: Database, latestKnownSchemaVersion: number): void {
+  assertSchemaWriterCompatible(db, latestKnownSchemaVersion);
+  if (readSchemaWriterStamp(db) < latestKnownSchemaVersion) {
+    db.run(`PRAGMA user_version = ${latestKnownSchemaVersion}`);
+  }
+}
+
+/**
+ * Atomic check-and-stamp, run before the first schema write (#4602 review).
+ * A plain read-then-write let two workers on different schema versions both
+ * pass the check before either stamped: the newer one stamped and migrated,
+ * then the older one overwrote the stamp and ran its chain over the newer
+ * schema. BEGIN IMMEDIATE takes the write lock (waiting up to busy_timeout
+ * for a concurrent opener), so the re-check and the stamp commit together,
+ * and an older binary that read the stamp earlier is refused here.
+ */
+export function claimSchemaWriter(db: Database, latestKnownSchemaVersion: number): void {
+  db.transaction(() => checkAndRaiseSchemaWriterStampInTransaction(db, latestKnownSchemaVersion)).immediate();
 }
 
 type DatabaseOptions = NonNullable<ConstructorParameters<typeof Database>[1]>;

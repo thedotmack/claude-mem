@@ -48,7 +48,7 @@ import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 import { findRecentDuplicateUserPrompt as findRecentDuplicateUserPromptRecord } from './prompts/get.js';
 import { normalizeStoredPromptText, MEDIA_PROMPT_PLACEHOLDER } from './prompt-storage.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
-import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, LATEST_SCHEMA_VERSION, stampSchemaWriterVersion } from './connection.js';
+import { applySqliteConnectionPragmas, assertSchemaWriterCompatible, claimSchemaWriter, LATEST_SCHEMA_VERSION } from './connection.js';
 import { streamRows } from './stream-rows.js';
 import { OBSERVATIONS_FTS_TRIGGERS_SQL, SESSION_SUMMARIES_FTS_TRIGGERS_SQL } from './SessionSearch.js';
 import {
@@ -220,7 +220,9 @@ export class SessionStore {
     // downgrade the stamp exists to refuse (#4602 review). Stamping first
     // names this schema on any state it touched; the idempotent chain re-runs
     // to completion on the next open by this same or a newer-chain binary.
-    stampSchemaWriterVersion(this.db, LATEST_SCHEMA_VERSION);
+    // The re-check and the stamp commit under one write lock, so a newer
+    // worker that stamped after the check above still refuses this one.
+    claimSchemaWriter(this.db, LATEST_SCHEMA_VERSION);
 
     this.initializeSchema();
 

@@ -25,9 +25,9 @@ import {
   LATEST_SCHEMA_VERSION,
   SchemaNewerThanBinaryError,
   assertSchemaWriterCompatible,
+  claimSchemaWriter,
   openGuardedSqliteDatabase,
   readSchemaWriterStamp,
-  stampSchemaWriterVersion,
 } from '../../src/services/sqlite/connection.js';
 
 const ISO = '2025-07-01T00:00:00.000Z';
@@ -198,7 +198,7 @@ describe('schema writer-version stamp', () => {
     const db = new Database(':memory:');
     db.run('CREATE TABLE marker (id INTEGER)');
 
-    stampSchemaWriterVersion(db, LATEST_SCHEMA_VERSION);
+    claimSchemaWriter(db, LATEST_SCHEMA_VERSION);
     expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION)).not.toThrow();
     expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION + 5)).not.toThrow();
 
@@ -217,8 +217,7 @@ describe('schema writer-version stamp', () => {
     const olderStamp = LATEST_SCHEMA_VERSION - 14;
     db.run(`PRAGMA user_version = ${olderStamp}`);
 
-    expect(() => assertSchemaWriterCompatible(db, LATEST_SCHEMA_VERSION)).not.toThrow();
-    stampSchemaWriterVersion(db, LATEST_SCHEMA_VERSION);
+    claimSchemaWriter(db, LATEST_SCHEMA_VERSION);
     expect(readSchemaWriterStamp(db)).toBe(LATEST_SCHEMA_VERSION);
     expect(readSchemaWriterStamp(db)).toBeGreaterThan(olderStamp);
     db.close();
@@ -303,5 +302,102 @@ describe('schema writer-version stamp', () => {
     const ftsTables = store.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE '%_fts'").all() as { name: string }[];
     expect(ftsTables.map(row => row.name).sort()).toEqual(['observations_fts', 'session_summaries_fts']);
     store.close();
+  });
+
+  describe('check-and-stamp is atomic across connections (#4602 review)', () => {
+    /**
+     * A connection that lets another worker stamp the file in the window
+     * after the constructor's first read-only check and before its first
+     * schema write: the pragma step sits exactly there in both constructors.
+     */
+    class ConnectionRacedByNewerWorker extends Database {
+      private raced = false;
+      constructor(dbPath: string, private readonly newerWorkerStamp: number) {
+        super(dbPath);
+      }
+      override run(sql: string, ...bindings: unknown[]): ReturnType<Database['run']> {
+        if (!this.raced && sql.startsWith('PRAGMA journal_mode')) {
+          this.raced = true;
+          const newerWorker = new Database(this.filename);
+          newerWorker.run(`PRAGMA user_version = ${this.newerWorkerStamp}`);
+          newerWorker.close();
+        }
+        return super.run(sql, ...(bindings as []));
+      }
+    }
+
+    it('SessionStore refuses when a newer worker stamps after its first check, and runs no migration', () => {
+      const dir = makeTempDir();
+      const dbPath = createLegacyDbFile(dir);
+      const newerStamp = LATEST_SCHEMA_VERSION + 1;
+      const raced = new ConnectionRacedByNewerWorker(dbPath, newerStamp);
+
+      expect(() => new SessionStore(raced)).toThrow(SchemaNewerThanBinaryError);
+      raced.close();
+
+      const after = snapshotFile(dbPath);
+      // The newer worker's stamp survives, and the legacy file was not migrated.
+      expect(after.stamp).toBe(newerStamp);
+      expect(after.tables).toEqual(['observations', 'schema_versions', 'sdk_sessions']);
+    });
+
+    it('SessionSearch refuses when a newer worker stamps after its first check, and writes no FTS DDL', () => {
+      const dir = makeTempDir();
+      const dbPath = path.join(dir, 'claude-mem-test.db');
+      new SessionStore(dbPath).close();
+      const newerStamp = LATEST_SCHEMA_VERSION + 1;
+      const raced = new ConnectionRacedByNewerWorker(dbPath, newerStamp);
+
+      expect(() => new SessionSearch(raced)).toThrow(SchemaNewerThanBinaryError);
+      raced.close();
+
+      const after = snapshotFile(dbPath);
+      expect(after.stamp).toBe(newerStamp);
+      expect(after.tables.filter(name => name.endsWith('_fts'))).toEqual([]);
+    });
+
+    it('an older connection that read the stamp earlier cannot claim after a newer one stamped', () => {
+      const dir = makeTempDir();
+      const dbPath = createLegacyDbFile(dir);
+      const olderVersion = LATEST_SCHEMA_VERSION - 1;
+
+      const older = new Database(dbPath);
+      expect(() => assertSchemaWriterCompatible(older, olderVersion)).not.toThrow();
+
+      // The newer worker claims, stamps and migrates in between.
+      new SessionStore(dbPath).close();
+
+      expect(() => claimSchemaWriter(older, olderVersion)).toThrow(SchemaNewerThanBinaryError);
+      expect(readSchemaWriterStamp(older)).toBe(LATEST_SCHEMA_VERSION);
+      older.close();
+    });
+
+    it('the claim takes the write lock: it waits on a concurrent writer and re-checks after it commits', () => {
+      const dir = makeTempDir();
+      const dbPath = createLegacyDbFile(dir);
+      const newer = new Database(dbPath);
+      const older = new Database(dbPath);
+      older.run('PRAGMA busy_timeout = 0');
+
+      newer.run('BEGIN IMMEDIATE');
+      expect(() => claimSchemaWriter(older, LATEST_SCHEMA_VERSION - 1)).toThrow(/locked|busy/i);
+      newer.run(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION}`);
+      newer.run('COMMIT');
+
+      expect(() => claimSchemaWriter(older, LATEST_SCHEMA_VERSION - 1)).toThrow(SchemaNewerThanBinaryError);
+      expect(readSchemaWriterStamp(older)).toBe(LATEST_SCHEMA_VERSION);
+      newer.close();
+      older.close();
+    });
+
+    it('the claim raises an older stamp and never lowers an equal one', () => {
+      const db = new Database(':memory:');
+      db.run(`PRAGMA user_version = ${LATEST_SCHEMA_VERSION - 3}`);
+      claimSchemaWriter(db, LATEST_SCHEMA_VERSION);
+      expect(readSchemaWriterStamp(db)).toBe(LATEST_SCHEMA_VERSION);
+      claimSchemaWriter(db, LATEST_SCHEMA_VERSION);
+      expect(readSchemaWriterStamp(db)).toBe(LATEST_SCHEMA_VERSION);
+      db.close();
+    });
   });
 });
