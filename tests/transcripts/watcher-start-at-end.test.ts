@@ -1,25 +1,69 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'fs';
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, utimesSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
-import { join } from 'path';
+import { join, resolve } from 'path';
 import type { NormalizedHookInput } from '../../src/cli/types.js';
 import type { TranscriptSchema, WatchTarget } from '../../src/services/transcripts/types.js';
 
 const sessionInitCalls: NormalizedHookInput[] = [];
 
+// Snapshot the real module BEFORE mock.module mutates the live namespace, then
+// re-register it in afterAll. bun's mock.module is process-global and
+// mock.restore() does NOT undo it, so this partial session-init stub would
+// otherwise leak into other test files in the same `bun test` run.
+import * as realSessionInit from '../../src/cli/handlers/session-init.js';
+const realSessionInitSnapshot = { ...realSessionInit };
+
+const fakeSessionInit = async (input: NormalizedHookInput) => {
+  sessionInitCalls.push(input);
+  return { continue: true, suppressOutput: true };
+};
 mock.module('../../src/cli/handlers/session-init.js', () => ({
-  sessionInitHandler: {
-    execute: async (input: NormalizedHookInput) => {
-      sessionInitCalls.push(input);
-      return { continue: true, suppressOutput: true };
-    },
-  },
+  sessionInitHandler: { execute: fakeSessionInit },
+  recordSessionPrompt: fakeSessionInit,
 }));
+
+afterAll(() => {
+  mock.module('../../src/cli/handlers/session-init.js', () => realSessionInitSnapshot);
+});
 
 import { logger } from '../../src/utils/logger.js';
 import { TranscriptWatcher } from '../../src/services/transcripts/watcher.js';
 
 const waitForAsyncTail = () => new Promise(resolve => setTimeout(resolve, 50));
+
+const createUserMessage = (sessionId: string, prompt: string) => JSON.stringify({
+  type: 'event',
+  payload: {
+    type: 'user_message',
+    session_id: sessionId,
+    cwd: '/tmp/codex-test-project',
+    message: prompt,
+  },
+});
+
+const createSchema = (): TranscriptSchema => ({
+  name: 'codex-test',
+  events: [
+    {
+      name: 'user-message',
+      match: { path: 'payload.type', equals: 'user_message' },
+      action: 'session_init',
+      fields: {
+        sessionId: 'payload.session_id',
+        cwd: 'payload.cwd',
+        prompt: 'payload.message',
+      },
+    },
+  ],
+});
+
+const createWatch = (filePath: string, schema: TranscriptSchema, startAtEnd = false): WatchTarget => ({
+  name: 'codex',
+  path: filePath,
+  schema,
+  startAtEnd,
+});
 
 describe('TranscriptWatcher startAtEnd', () => {
   let tmpRoot: string;
@@ -42,7 +86,30 @@ describe('TranscriptWatcher startAtEnd', () => {
     rmSync(tmpRoot, { recursive: true, force: true });
   });
 
-  it('does not replay history from transcript files discovered after startup', async () => {
+  it('discovers transcripts inside dot-directories', () => {
+    const transcriptPath = join(
+      tmpRoot,
+      'brain',
+      'conversation-id',
+      '.system_generated',
+      'logs',
+      'transcript_full.jsonl',
+    );
+    mkdirSync(join(transcriptPath, '..'), { recursive: true });
+    writeFileSync(transcriptPath, '', 'utf8');
+
+    const watcher = new TranscriptWatcher(
+      { version: 1, watches: [] },
+      join(tmpRoot, 'state.json'),
+    );
+    const pattern = join(tmpRoot, 'brain', '**', '.system_generated', 'logs', 'transcript_full.jsonl');
+
+    const matches = (watcher as any).resolveWatchFiles(pattern) as string[];
+
+    expect(matches.map(match => resolve(match))).toEqual([resolve(transcriptPath)]);
+  });
+
+  it('does not replay history from transcript files present at startup', async () => {
     const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
     const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
@@ -54,6 +121,7 @@ describe('TranscriptWatcher startAtEnd', () => {
         payload: {
           type: 'user_message',
           session_id: sessionId,
+          cwd: '/tmp/codex-test-project',
           message: 'historical prompt that must not be replayed',
         },
       })}\n`,
@@ -69,6 +137,7 @@ describe('TranscriptWatcher startAtEnd', () => {
           action: 'session_init',
           fields: {
             sessionId: 'payload.session_id',
+            cwd: 'payload.cwd',
             prompt: 'payload.message',
           },
         },
@@ -94,6 +163,7 @@ describe('TranscriptWatcher startAtEnd', () => {
         payload: {
           type: 'user_message',
           session_id: sessionId,
+          cwd: '/tmp/codex-test-project',
           message: 'live prompt',
         },
       })}\n`,
@@ -109,137 +179,185 @@ describe('TranscriptWatcher startAtEnd', () => {
     expect(prompts).not.toContain('historical prompt that must not be replayed');
   });
 
-  it('continues from the original offset when a Codex watch uses a custom schema name', async () => {
-    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
-    const fileName = `rollout-${sessionId}.jsonl`;
-    const originalPath = join(tmpRoot, '.codex', 'sessions', '2026', '07', '12', fileName);
-    const archivedPath = join(tmpRoot, '.codex', 'archived_sessions', fileName);
+  it('reads a file discovered by the root watcher from byte 0, keeping its opening turns', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576e';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
-    const historicalEntry = `${JSON.stringify({
-      type: 'event',
-      payload: {
-        type: 'user_message',
-        session_id: sessionId,
-        message: 'historical prompt that was already observed',
-      },
-    })}\n`;
-
-    mkdirSync(join(originalPath, '..'), { recursive: true });
-    mkdirSync(join(archivedPath, '..'), { recursive: true });
-    writeFileSync(originalPath, historicalEntry, 'utf8');
-    writeFileSync(archivedPath, historicalEntry, 'utf8');
-    writeFileSync(statePath, JSON.stringify({ offsets: { [originalPath]: Buffer.byteLength(historicalEntry) + 100 } }), 'utf8');
-
-    const schema: TranscriptSchema = {
-      name: 'custom-codex',
-      events: [
-        {
-          name: 'user-message',
-          match: { path: 'payload.type', equals: 'user_message' },
-          action: 'session_init',
-          fields: {
-            sessionId: 'payload.session_id',
-            prompt: 'payload.message',
-          },
-        },
-      ],
-    };
+    const schema = createSchema();
     const watch: WatchTarget = {
       name: 'codex',
-      path: join(tmpRoot, '.codex', 'archived_sessions', '*.jsonl'),
+      path: join(tmpRoot, '*.jsonl'),
       schema,
-      startAtEnd: false,
+      startAtEnd: true,
     };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
 
-    await (watcher as any).addTailer(archivedPath, watch, schema);
-    await waitForAsyncTail();
+    const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+    await watcher.start();
 
-    expect(sessionInitCalls).toHaveLength(0);
+    // A rollout created after startup. By the time the recursive root watcher
+    // reports it, session_meta and the opening turns are already on disk, so
+    // startAtEnd must not apply to it - jumping to EOF drops the head of the
+    // transcript, including the user prompt (#4211).
+    writeFileSync(filePath, `${createUserMessage(sessionId, 'opening prompt')}\n`, 'utf8');
 
-    appendFileSync(
-      archivedPath,
-      `${JSON.stringify({
-        type: 'event',
-        payload: {
-          type: 'user_message',
-          session_id: sessionId,
-          message: 'new prompt after archive',
-        },
-      })}\n`,
-      'utf8',
-    );
-
+    await (watcher as any).addTailer(filePath, watch, schema, true);
     await waitForAsyncTail();
     watcher.stop();
 
-    const prompts = sessionInitCalls.map(call => call.prompt);
-    expect(prompts).toEqual(['new prompt after archive']);
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['opening prompt']);
   });
 
-  it('preserves a partial JSONL record when Codex archives the session mid-write', async () => {
-    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763a';
-    const fileName = `rollout-${sessionId}.jsonl`;
-    const originalPath = join(tmpRoot, '.codex', 'sessions', '2026', '07', '12', fileName);
-    const archivedPath = join(tmpRoot, '.codex', 'archived_sessions', fileName);
+  it('starts a historical transcript moved in after startup at EOF', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e576f0';
+    const archivedPath = join(tmpRoot, 'archive', `${sessionId}.jsonl`);
+    const sessionsDir = join(tmpRoot, 'sessions');
+    const movedPath = join(sessionsDir, `${sessionId}.jsonl`);
     const statePath = join(tmpRoot, 'state.json');
-    const entry = JSON.stringify({
-      type: 'event',
-      payload: {
-        type: 'user_message',
-        session_id: sessionId,
-        message: 'prompt split across archive move',
-      },
-    });
-    const splitAt = Math.floor(entry.length / 2);
-    const prefix = entry.slice(0, splitAt);
-    const suffix = entry.slice(splitAt);
-
-    mkdirSync(join(originalPath, '..'), { recursive: true });
-    mkdirSync(join(archivedPath, '..'), { recursive: true });
-    writeFileSync(originalPath, prefix, 'utf8');
-
-    const schema: TranscriptSchema = {
+    const schema = createSchema();
+    const watch: WatchTarget = {
       name: 'codex',
-      events: [
-        {
-          name: 'user-message',
-          match: { path: 'payload.type', equals: 'user_message' },
-          action: 'session_init',
-          fields: {
-            sessionId: 'payload.session_id',
-            prompt: 'payload.message',
-          },
-        },
-      ],
-    };
-    const originalWatch: WatchTarget = {
-      name: 'codex-sessions',
-      path: join(tmpRoot, '.codex', 'sessions', '**', '*.jsonl'),
+      path: join(sessionsDir, '*.jsonl'),
       schema,
-      startAtEnd: false,
+      startAtEnd: true,
     };
-    const archivedWatch: WatchTarget = {
-      name: 'codex-archived',
-      path: join(tmpRoot, '.codex', 'archived_sessions', '*.jsonl'),
-      schema,
-      startAtEnd: false,
-    };
-    const watcher = new TranscriptWatcher({ version: 1, watches: [originalWatch, archivedWatch] }, statePath);
 
-    await (watcher as any).addTailer(originalPath, originalWatch, schema);
+    mkdirSync(join(archivedPath, '..'), { recursive: true });
+    mkdirSync(sessionsDir, { recursive: true });
+    writeFileSync(archivedPath, `${createUserMessage(sessionId, 'historical prompt')}\n`, 'utf8');
+    const lastWrittenAnHourAgo = new Date(Date.now() - 60 * 60 * 1000);
+    utimesSync(archivedPath, lastWrittenAnHourAgo, lastWrittenAnHourAgo);
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [] }, statePath);
+    await watcher.start();
+
+    // A rename keeps the old mtime (and bumps ctime), which is what tells this
+    // file apart from a rollout created after startup.
+    renameSync(archivedPath, movedPath);
+    await (watcher as any).addTailer(movedPath, watch, schema, true);
     await waitForAsyncTail();
+
     expect(sessionInitCalls).toHaveLength(0);
 
-    writeFileSync(archivedPath, prefix, 'utf8');
-    await (watcher as any).addTailer(archivedPath, archivedWatch, schema);
-    await waitForAsyncTail();
-
-    appendFileSync(archivedPath, `${suffix}\n`, 'utf8');
-    (watcher as any).tailers.get(archivedPath)?.poke();
+    appendFileSync(movedPath, `${createUserMessage(sessionId, 'live prompt')}\n`, 'utf8');
+    (watcher as any).tailers.get(movedPath)?.poke();
     await waitForAsyncTail();
     watcher.stop();
 
-    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['prompt split across archive move']);
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['live prompt']);
+  });
+
+  it('serializes overlapping poke calls for the same appended data', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763b';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: filePath,
+      schema,
+      startAtEnd: true,
+    };
+
+    writeFileSync(filePath, `${createUserMessage(sessionId, 'historical prompt')}\n`, 'utf8');
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+
+    const tailer = (watcher as any).tailers.get(filePath);
+    // Detach filesystem notifications, keeping the tailer open for explicit poke calls.
+    // close() is terminal and must not be used to pause an active reader.
+    tailer.watcher?.close();
+    tailer.watcher = null;
+    appendFileSync(filePath, `${createUserMessage(sessionId, 'live prompt')}\n`, 'utf8');
+
+    tailer.poke();
+    tailer.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    const livePrompts = sessionInitCalls.filter(call => call.prompt === 'live prompt');
+    expect(livePrompts).toHaveLength(1);
+  });
+
+  it('persists only complete lines so partial records resume after restart', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763d';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch = createWatch(filePath, schema);
+    const firstLine = createUserMessage(sessionId, 'first prompt');
+    const secondLine = createUserMessage(sessionId, 'resumed 日本語 prompt');
+    const splitAt = Math.floor(secondLine.length / 2);
+    writeFileSync(filePath, `${firstLine}\n${secondLine.slice(0, splitAt)}`, 'utf8');
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+    watcher.stop();
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt']);
+    const persisted = JSON.parse(readFileSync(statePath, 'utf8'));
+    expect(persisted.offsets[filePath]).toBe(Buffer.byteLength(`${firstLine}\n`, 'utf8'));
+    appendFileSync(filePath, `${secondLine.slice(splitAt)}\n`, 'utf8');
+    const resumed = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (resumed as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+    resumed.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['first prompt', 'resumed 日本語 prompt']);
+  });
+
+  it('continues a live partial record without rereading its prefix', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763e';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch = createWatch(filePath, schema);
+    const line = createUserMessage(sessionId, 'live resumed 日本語 prompt');
+    const splitAt = Math.floor(line.length / 2);
+    writeFileSync(filePath, line.slice(0, splitAt), 'utf8');
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+
+    expect(sessionInitCalls).toHaveLength(0);
+
+    appendFileSync(filePath, `${line.slice(splitAt)}\n`, 'utf8');
+    (watcher as any).tailers.get(filePath)?.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['live resumed 日本語 prompt']);
+
+  });
+
+  it('discards a buffered partial line when the file is truncated', async () => {
+    const sessionId = '019e050e-7ae0-71b2-b19f-6cc428e5763c';
+    const filePath = join(tmpRoot, `${sessionId}.jsonl`);
+    const statePath = join(tmpRoot, 'state.json');
+    const schema = createSchema();
+    const watch: WatchTarget = {
+      name: 'codex',
+      path: filePath,
+      schema,
+    };
+
+    writeFileSync(filePath, `{"incomplete":"${'x'.repeat(1024)}`, 'utf8');
+
+    const watcher = new TranscriptWatcher({ version: 1, watches: [watch] }, statePath);
+    await (watcher as any).addTailer(filePath, watch, schema);
+    await waitForAsyncTail();
+
+    const tailer = (watcher as any).tailers.get(filePath);
+    // Detach filesystem notifications, keeping the tailer open for explicit poke calls.
+    // close() is terminal and must not be used to pause an active reader.
+    tailer.watcher?.close();
+    tailer.watcher = null;
+    writeFileSync(filePath, `${createUserMessage(sessionId, 'after truncation')}\n`, 'utf8');
+
+    tailer.poke();
+    await waitForAsyncTail();
+    watcher.stop();
+
+    expect(sessionInitCalls.map(call => call.prompt)).toEqual(['after truncation']);
   });
 });

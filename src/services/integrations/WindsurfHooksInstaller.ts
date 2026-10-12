@@ -3,14 +3,16 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync, renameSync } from 'fs';
 import { logger } from '../../utils/logger.js';
-import { getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { getProjectContext } from '../../utils/project-name.js';
+import { formatHostForUrl, getWorkerHost, getWorkerPort } from '../../shared/worker-utils.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { getBunAbsolutePath as findBunPath, getWorkerServiceAbsolutePath as findWorkerServicePath } from './install-paths.js';
 
 interface WindsurfHookEntry {
   command: string;
   show_output: boolean;
-  working_directory: string;
+  working_directory?: string;
 }
 
 interface WindsurfHooksJson {
@@ -115,20 +117,20 @@ function buildHookCommand(bunPath: string, workerServicePath: string, eventName:
 
   const hookCommand = eventToCommand[eventName] ?? 'observation';
 
-  return `"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
+  const callOperator = process.platform === 'win32' ? '& ' : '';
+  return `${callOperator}"${bunPath}" "${workerServicePath}" hook windsurf ${hookCommand}`;
 }
 
 function mergeAndWriteHooksJson(
   bunPath: string,
   workerServicePath: string,
-  workingDirectory: string,
 ): void {
   mkdirSync(WINDSURF_HOOKS_DIR, { recursive: true });
 
   let existingConfig: WindsurfHooksJson = { hooks: {} };
   if (existsSync(WINDSURF_HOOKS_JSON_PATH)) {
     try {
-      existingConfig = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+      existingConfig = parseJsonWithBom<WindsurfHooksJson>(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
       if (!existingConfig.hooks) {
         existingConfig.hooks = {};
       }
@@ -145,10 +147,11 @@ function mergeAndWriteHooksJson(
   for (const eventName of WINDSURF_HOOK_EVENTS) {
     const command = buildHookCommand(bunPath, workerServicePath, eventName);
 
+    // Windsurf defaults to the active workspace. Hook payloads other than
+    // post_run_command omit cwd, so the adapter must inherit that directory.
     const hookEntry: WindsurfHookEntry = {
       command,
       show_output: false,
-      working_directory: workingDirectory,
     };
 
     const existingHooks = (existingConfig.hooks[eventName] ?? []).filter(
@@ -178,15 +181,13 @@ export async function installWindsurfHooks(): Promise<number> {
     return 1;
   }
 
-  const workingDirectory = path.dirname(workerServicePath);
-
   console.log(`  Using Bun runtime: ${bunPath}`);
   console.log(`  Worker service: ${workerServicePath}`);
 
   const workspaceRoot = process.cwd();
 
   try {
-    await writeWindsurfHooksAndSetupContext(bunPath, workerServicePath, workingDirectory, workspaceRoot);
+    await writeWindsurfHooksAndSetupContext(bunPath, workerServicePath, workspaceRoot);
     return 0;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -198,10 +199,9 @@ export async function installWindsurfHooks(): Promise<number> {
 async function writeWindsurfHooksAndSetupContext(
   bunPath: string,
   workerServicePath: string,
-  workingDirectory: string,
   workspaceRoot: string,
 ): Promise<void> {
-  mergeAndWriteHooksJson(bunPath, workerServicePath, workingDirectory);
+  mergeAndWriteHooksJson(bunPath, workerServicePath);
   console.log(`  Created/merged hooks.json`);
 
   await setupWindsurfProjectContext(workspaceRoot);
@@ -228,7 +228,7 @@ Next steps:
 
 async function setupWindsurfProjectContext(workspaceRoot: string): Promise<void> {
   const port = getWorkerPort();
-  const projectName = path.basename(workspaceRoot);
+  const projectName = getProjectContext(workspaceRoot).primary;
   let contextGenerated = false;
 
   console.log(`  Generating initial context...`);
@@ -266,7 +266,7 @@ async function fetchWindsurfContextFromWorker(
   projectName: string,
   workspaceRoot: string,
 ): Promise<boolean> {
-  const workerUrl = `http://${getWorkerHost()}:${port}`;
+  const workerUrl = `http://${formatHostForUrl(getWorkerHost())}:${port}`;
   const healthResponse = await fetch(`${workerUrl}/api/readiness`);
   if (!healthResponse.ok) return false;
 
@@ -315,7 +315,7 @@ export function uninstallWindsurfHooks(): number {
 }
 
 function removeClaudeMemHookEntries(): void {
-  const parsed = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8')) as Partial<WindsurfHooksJson>;
+  const parsed = parseJsonWithBom<Partial<WindsurfHooksJson>>(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
   const config: WindsurfHooksJson = { hooks: parsed.hooks ?? {} };
 
   for (const eventName of WINDSURF_HOOK_EVENTS) {
@@ -362,7 +362,7 @@ export function checkWindsurfHooksStatus(): number {
 
     let parsedConfig: Partial<WindsurfHooksJson> | null = null;
     try {
-      parsedConfig = JSON.parse(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
+      parsedConfig = parseJsonWithBom(readFileSync(WINDSURF_HOOKS_JSON_PATH, 'utf-8'));
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
       logger.error('WORKER', 'Unable to parse hooks.json', { path: WINDSURF_HOOKS_JSON_PATH }, normalizedError);

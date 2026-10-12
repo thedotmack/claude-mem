@@ -1,9 +1,35 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
+  readAndStripContextTags,
   removeLegacyCodexMcpSearchConfig,
   setTomlFeatureEnabled,
   setTomlPluginEnabled,
 } from '../../src/services/integrations/CodexCliInstaller.js';
+
+describe('Codex legacy AGENTS.md context cleanup', () => {
+  it('strips only the old block when the user text mentions a closing tag before it', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'codex-agents-md-'));
+    const consoleLog = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const agentsMdPath = join(directory, 'AGENTS.md');
+      writeFileSync(
+        agentsMdPath,
+        '# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n<claude-mem-context>\nstale memory\n</claude-mem-context>\n\n## After\n',
+      );
+
+      readAndStripContextTags(agentsMdPath);
+
+      expect(readFileSync(agentsMdPath, 'utf-8'))
+        .toBe('# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n## After\n');
+    } finally {
+      consoleLog.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('Codex CLI installer config repair', () => {
   it('adds claude-mem plugin enablement when missing', () => {

@@ -27,7 +27,10 @@ function makeManager(): SessionManager {
       platform_source: 'claude',
       user_prompt: 'test prompt',
     }),
-    getSessionStore: () => ({ getPromptNumberFromUserPrompts: () => 1 }),
+    getSessionStore: () => ({
+      getPromptNumberFromUserPrompts: () => 1,
+      getLatestPromptTextFromUserPrompts: () => null,
+    }),
   } as unknown as DatabaseManager;
   return new SessionManager(dbManager);
 }

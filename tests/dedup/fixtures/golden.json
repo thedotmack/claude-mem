@@ -1,0 +1,42 @@
+{
+  "_comment": "Golden oracle for #3038 near-dup tiering. Cases derived from real-DB validation (spikes over a 7,651-observation claude-mem.db). corpus builds the IDF model; cases assert classifyPair tiers. cosineThreshold/vetoDf mirror the shipped defaults' intent.",
+  "cosineThreshold": 0.78,
+  "vetoDf": 2,
+  "corpus": [
+    "Hardened on-demand checkpoint against transcript read race",
+    "On-demand checkpoint hardened against transcript read race",
+    "Race condition fixed in checkpoint hook transcript reading",
+    "Added rdlp-redact dependency to rdlp-api crate",
+    "Added rdlp-redact dependency to rdlp-plugin crate",
+    "Pinned ninja and meson versions in ffmpeg-7.1.conf",
+    "Pinned ninja and meson versions in ffmpeg-6.1.conf",
+    "Code review approval for xeve archive",
+    "Security review approval for xeve archive",
+    "Erebus platform architecture settled and documented",
+    "Erebus platform architecture settled and fully documented",
+    "Added fuzzy dedup guard",
+    "Fixed worker respawn poison loop",
+    "Code review of the parser module",
+    "Security review of the parser module",
+    "Code review approval for the build",
+    "Security review approval for the build",
+    "Erebus platform documented in detail",
+    "Erebus architecture fully documented with docs",
+    "Added dependency to the build crate",
+    "Pinned versions in the build config",
+    "Settled the platform architecture docs",
+    "Fully documented the release with docs",
+    "Reviewed the parser module for the build",
+    "Worker respawn guard added to the loop"
+  ],
+  "cases": [
+    { "a": "Hardened on-demand checkpoint against transcript read race", "b": "On-demand checkpoint hardened against transcript read race", "tier": "candidate", "note": "reporter trio: pure word-reorder reword -> flagged" },
+    { "a": "Hardened on-demand checkpoint against transcript read race", "b": "Race condition fixed in checkpoint hook transcript reading", "tier": "none", "note": "reporter trio: semantic paraphrase -> lexical miss (Branch-2 LLM tier)" },
+    { "a": "Added rdlp-redact dependency to rdlp-api crate", "b": "Added rdlp-redact dependency to rdlp-plugin crate", "tier": "none", "note": "class-3: rare identifier discriminator vetoed (DISTINCT)" },
+    { "a": "Pinned ninja and meson versions in ffmpeg-7.1.conf", "b": "Pinned ninja and meson versions in ffmpeg-6.1.conf", "tier": "none", "note": "class-3: rare version token vetoed (DISTINCT)" },
+    { "a": "Code review approval for xeve archive", "b": "Security review approval for xeve archive", "tier": "candidate", "note": "common-token discriminator: Branch-1 flags candidate, never auto-merges; Branch-2 resolves" },
+    { "a": "Erebus platform architecture settled and documented", "b": "Erebus platform architecture settled and fully documented", "tier": "candidate", "note": "true recurring near-dup (#3038 accumulation pattern)" },
+    { "a": "On-Demand Checkpoint.", "b": "on demand checkpoint", "tier": "exact", "note": "Tier-0 punctuation/case variant -> safe auto-merge" },
+    { "a": "Added fuzzy dedup guard", "b": "Fixed worker respawn poison loop", "tier": "none", "note": "unrelated" }
+  ]
+}
