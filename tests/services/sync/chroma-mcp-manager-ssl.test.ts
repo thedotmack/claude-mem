@@ -129,6 +129,7 @@ function expectLauncherPrefixBeforeMode(args: string[], mode: 'http' | 'persiste
     '--with', 'onnxruntime>=1.20',
     '--with', 'protobuf<7',
     '--with', 'chromadb==1.5.9',
+    '--with', 'pydantic<2.14',
   ]);
 }
 
@@ -194,5 +195,24 @@ describe('ChromaMcpManager SSL flag regression (#1286)', () => {
     mgr = ChromaMcpManager.getInstance();
     await mgr.callTool('chroma_list_collections', {});
     expectLauncherPrefixBeforeMode(capturedTransportOpts!.args, 'persistent');
+  });
+
+  it('caps pydantic below 2.14 before --from in remote and local modes (#4593)', async () => {
+    // chroma-mcp 0.2.6 pins mcp 1.6.0, which imports a private pydantic
+    // symbol that pydantic 2.14.0 removed; without the cap the child dies on import.
+    for (const [mode, clientType] of [['remote', 'http'], ['local', 'persistent']] as const) {
+      await ChromaMcpManager.reset();
+      capturedTransportOpts = null;
+      currentSettings = { CLAUDE_MEM_CHROMA_MODE: mode };
+      mgr = ChromaMcpManager.getInstance();
+      await mgr.callTool('chroma_list_collections', {});
+
+      const args = capturedTransportOpts!.args;
+      const capIdx = args.indexOf('pydantic<2.14');
+      expect(capIdx).toBeGreaterThan(0);
+      expect(args[capIdx - 1]).toBe('--with');
+      expect(capIdx).toBeLessThan(args.indexOf('--from'));
+      expect(args[args.indexOf('--client-type') + 1]).toBe(clientType);
+    }
   });
 });

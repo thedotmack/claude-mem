@@ -9,7 +9,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 import { resolveDataDir } from '../../shared/paths.js';
@@ -67,7 +67,7 @@ async function probeWorkerHealth(workerHost: string, workerPort: string): Promis
   detail: string;
   workerUrl: string;
 }> {
-  const workerUrl = `http://${workerHost}:${workerPort}`;
+  const workerUrl = `http://${formatHostForUrl(workerHost)}:${workerPort}`;
   const res = await fetch(`${workerUrl}/api/health`, {
     signal: AbortSignal.timeout(3000),
   });
@@ -325,7 +325,7 @@ export async function runDoctorCommand(): Promise<void> {
   const workerHost = getWorkerHost({ readOnly: true });
   const workerPort = String(getWorkerPort({ readOnly: true }));
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = `no response at http://${formatHostForUrl(workerHost)}:${workerPort} — start with \`npx claude-mem start\``;
   let chromaChecks: CheckResult[] = [];
   try {
     const worker = await probeWorkerHealth(workerHost, workerPort);

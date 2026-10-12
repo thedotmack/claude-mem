@@ -147,6 +147,9 @@ function migratedCloudSyncHubUrl(raw: unknown): string | null {
 }
 
 export interface SettingsDefaults {
+  CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED: string;
+  CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: string;
+  CLAUDE_MEM_MEMORY_WATCH_ROOTS: string;
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
@@ -362,6 +365,10 @@ export interface SettingsDefaults {
 
 export class SettingsDefaultsManager {
   private static readonly DEFAULTS: SettingsDefaults = {
+    CLAUDE_MEM_MEMORY_SEARCH_HOOK_ENABLED: 'true',
+    CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'true',
+    // Explicit JSON [{path, project, platformSource?}]. Empty means no files imported.
+    CLAUDE_MEM_MEMORY_WATCH_ROOTS: '',
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
