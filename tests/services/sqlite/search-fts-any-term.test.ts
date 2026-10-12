@@ -4,7 +4,7 @@ import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
 
 // buildFTSMatchQuery joins every query token with AND (#4130), which keeps keyword queries precise. A
 // natural-language question almost never has every one of its words in one row, so that form matches nothing.
-// When it does, the search widens to any term, ranked by bm25, before the substring fallback.
+// When neither the AND form nor the substring fallback matches, the search widens to any term, ranked by bm25.
 describe('FTS5 any-term fallback for queries no row fully matches', () => {
   let store: SessionStore;
   let search: SessionSearch;
@@ -51,7 +51,10 @@ describe('FTS5 any-term fallback for queries no row fully matches', () => {
     seedObservation('retry', 'Payment retry limit raised', 'The charge retry limit went from three to five after the outage');
     seedObservation('retry-only', 'Retry backoff', 'Exponential backoff between attempts');
     seedObservation('auth', 'Login token lifetime', 'Access tokens now expire after eight days');
+    seedObservation('glued', 'payload解析 retry重试 limit限制', 'mixed-script note');
     seedSummary('sum-retry', 'Raise the payment retry limit after the outage');
+    seedSummary('sum-retry-only', 'Retry policy review');
+    seedSummary('sum-glued', 'payload解析 retry重试 limit限制');
     seedSummary('sum-auth', 'Shorten the login token lifetime');
   });
 
@@ -66,8 +69,21 @@ describe('FTS5 any-term fallback for queries no row fully matches', () => {
   });
 
   it('keeps a query the AND form answers precise: no widening to rows holding only some terms', () => {
-    const results = search.searchObservations('retry limit', { project: 'proj' });
+    // Three terms, so the query is eligible for widening; 'Retry backoff' holds only 'retry' and must not appear.
+    const results = search.searchObservations('payment retry limit', { project: 'proj' });
     expect(results.map(r => r.title)).toEqual(['Payment retry limit raised']);
+  });
+
+  it('keeps a session query the AND form answers precise', () => {
+    const results = search.searchSessions('payment retry limit', { project: 'proj' });
+    expect(results.map(r => r.request)).toEqual(['Raise the payment retry limit after the outage']);
+  });
+
+  it('prefers a complete substring match to a partial any-term match (Latin glued to ideographs)', () => {
+    expect(search.searchObservations('payload retry limit', { project: 'proj' }).map(r => r.title))
+      .toEqual(['payload解析 retry重试 limit限制']);
+    expect(search.searchSessions('payload retry limit', { project: 'proj' }).map(r => r.request))
+      .toEqual(['payload解析 retry重试 limit限制']);
   });
 
   it('does not widen a single-token query', () => {

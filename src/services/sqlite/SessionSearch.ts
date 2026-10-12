@@ -524,15 +524,15 @@ export class SessionSearch {
       if (rows.length > 0 || (offset > 0 && this.db.prepare(sql).all(...params, 1, 0).length > 0)) {
         return rows;
       }
-      // No row holds every term: widen to any term, ranked by bm25. A query the AND form answers is never widened.
-      const anyTermRows = this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset);
-      if (anyTermRows) {
-        return anyTermRows;
-      }
       // No FTS match at all. unicode61 folds a Latin run glued to ideographs (`payload优先使用LLM`)
       // into one token that no FTS term can reach, so answer by substring, the same way queries in
       // unsegmented scripts are answered. A query FTS already answers is never widened.
-      return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
+      const substringRows = this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
+      if (substringRows.length > 0 || (offset > 0 && this.searchObservationsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
+        return substringRows;
+      }
+      // No row holds every term, as a token or as a substring: widen to any term, ranked by bm25.
+      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset) ?? substringRows;
     }
 
     return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
@@ -605,22 +605,21 @@ export class SessionSearch {
       if (rows.length > 0 || (offset > 0 && this.db.prepare(sql).all(...params, 1, 0).length > 0)) {
         return rows;
       }
-      // No row holds every term: see searchObservations.
-      const anyTermRows = this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset);
-      if (anyTermRows) {
-        return anyTermRows;
+      // No FTS match at all: answer by substring, then widen to any term (see searchObservations).
+      const substringRows = this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
+      if (substringRows.length > 0 || (offset > 0 && this.searchSessionsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
+        return substringRows;
       }
-      // No FTS match at all: see searchObservations.
-      return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
+      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset) ?? substringRows;
     }
 
     return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
   }
 
   /**
-   * Re-run an FTS search whose AND form matched nothing with the any-term form. `params[0]` is the MATCH
+   * Re-run an FTS search whose AND form, and the substring fallback, matched nothing with the any-term form. `params[0]` is the MATCH
    * argument and the rest are the filter parameters, as built by the callers. Returns null when the query has
-   * nothing to widen or the any-term form matches nothing either, so the caller's substring fallback still runs.
+   * nothing to widen or the any-term form matches nothing either.
    */
   private searchFtsAnyTerm<T>(sql: string, query: string, params: any[], limit: number, offset: number): T[] | null {
     const anyTermQuery = SessionSearch.buildFTSAnyTermQuery(query);
