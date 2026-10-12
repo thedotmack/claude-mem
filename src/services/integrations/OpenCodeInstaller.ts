@@ -75,6 +75,7 @@ export function detectOpenCodeVersion(): OpenCodeVersion | null {
     const command = process.platform === 'win32' ? lookupWindowsCommand(name) : name;
     if (!command) continue;
     const invocation = buildSpawnSyncInvocation(command, ['--version'], {
+      env: { ...process.env },
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       timeout: 5_000,

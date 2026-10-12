@@ -269,10 +269,16 @@ describe('F1: the empty tool list reaches the Claude CLI', () => {
         expect(spawnedArgv).toContain('--tools=');
         expect(spawnedArgv).not.toContain('--tools');
         expect(spawnedArgv).not.toContain('');
-        // The other layers stay in place as defense in depth.
-        expect(spawnedArgv).toContain('--disallowedTools');
-        expect(spawnedArgv).toContain('--permission-mode');
-        expect(spawnedArgv).toContain('dontAsk');
+        // SDK releases use either --flag value or --flag=value. Verify the
+        // actual safety controls, independently of that serialization choice.
+        const flagValue = (flag: string): string | undefined => {
+          const joined = spawnedArgv.find(arg => arg.startsWith(`${flag}=`));
+          if (joined !== undefined) return joined.slice(flag.length + 1);
+          const index = spawnedArgv.indexOf(flag);
+          return index >= 0 ? spawnedArgv[index + 1] : undefined;
+        };
+        expect(flagValue('--disallowedTools')?.split(',')).toEqual([...OBSERVER_DISALLOWED_TOOLS]);
+        expect(flagValue('--permission-mode')).toBe('dontAsk');
       } finally {
         rmSync(fakeCliDir, { recursive: true, force: true });
       }
