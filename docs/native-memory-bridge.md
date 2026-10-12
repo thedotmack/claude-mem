@@ -74,6 +74,11 @@ are made to import a note.
 The worker stays running while an explicit folder watcher is active; the idle
 exit timer would otherwise stop capture of external note changes.
 
+A watch root may set `platformSource` (for example, `"codex"`). Direct
+`/api/memory/save` calls use `metadata.platformSource`. The source is retained
+in both SQLite and the Chroma index so source-scoped searches can recall the
+note. Omitting it preserves the default `claude` source.
+
 Claude's native notes may use `autoMemoryDirectory` in settings; see [Claude
 Code memory](https://code.claude.com/docs/en/memory). Codex generated state lives
 under its configured home directory's `memories` folder and should be treated
