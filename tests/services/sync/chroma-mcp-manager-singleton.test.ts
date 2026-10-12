@@ -244,10 +244,14 @@ const killProcessTreeCalls: Array<{ pid: number; options?: { expectedStartToken?
 // CIM). Stub it exactly like kill-process-tree above — record the resolved
 // data dir so the wiring test can assert the sweep ran under the writer lock.
 const orphanSweepCalls: Array<{ dataDir: string | null }> = [];
+type OrphanSweepTestDeps = { dataDir?: () => string | null; stillOwnsStore?: () => boolean };
+/** A test can hold a sweep open (a slow process-table read) and release it by hand. */
+let orphanSweepOverride: ((deps: OrphanSweepTestDeps) => Promise<{ killedPids: number[] }>) | null = null;
 mock.module('../../../src/shared/port-reclaim.js', () => ({
   ...realPortReclaimSnapshot,
-  reclaimOrphanChromaDataDirWriters: async (deps?: { dataDir?: () => string | null }) => {
+  reclaimOrphanChromaDataDirWriters: async (deps?: OrphanSweepTestDeps) => {
     orphanSweepCalls.push({ dataDir: deps?.dataDir?.() ?? null });
+    if (orphanSweepOverride) return orphanSweepOverride(deps ?? {});
     return { killedPids: [] };
   },
 }));
@@ -375,6 +379,7 @@ function resetState(): void {
   prewarmSpawnCalls.length = 0;
   killProcessTreeCalls.length = 0;
   orphanSweepCalls.length = 0;
+  orphanSweepOverride = null;
   killTreeCalls.length = 0;
   deadPids.clear();
   logEntries.length = 0;
@@ -838,6 +843,59 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     // store, so anything still holding the data dir is a dead generation's
     // orphan. It must resolve the data dir actually in use, not a default.
     expect(orphanSweepCalls).toEqual([{ dataDir: mockedChromaDir }]);
+  });
+
+  it('a sweep overtaken by stop() and a reconnect leaves the new connection, its lock, and its sidecar alone', async () => {
+    // Each sweep is held open like a slow process-table read; the test
+    // releases them by hand to force the stop-then-reconnect interleaving.
+    const sweepReleases: Array<() => void> = [];
+    const sweepOwnsStore: Array<() => boolean> = [];
+    orphanSweepOverride = async deps => {
+      sweepOwnsStore.push(deps.stillOwnsStore ?? (() => true));
+      await new Promise<void>(resolve => sweepReleases.push(resolve));
+      return { killedPids: [] };
+    };
+    const waitForSweeps = async (count: number): Promise<void> => {
+      for (let attempt = 0; attempt < 200 && sweepReleases.length < count; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(sweepReleases.length).toBe(count);
+    };
+    const mgr = ChromaMcpManager.getInstance();
+
+    const firstCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForSweeps(1);
+    await mgr.stop();
+
+    const secondCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForSweeps(2);
+    const secondConnectionLock = readFileSync(chromaWriterLockPath(), 'utf-8');
+
+    // The old sweep returns after the new connection took the store.
+    sweepReleases[0]();
+    await expect(firstCall).rejects.toThrow('connection cancelled during shutdown');
+
+    // (a) The cancelled attempt's cleanup must not delete the lock the new
+    // attempt acquired, or another worker could start a second writer.
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+    expect(readFileSync(chromaWriterLockPath(), 'utf-8')).toBe(secondConnectionLock);
+    // (b) The old sweep no longer owns the store, so it can kill nothing; the
+    // new one does.
+    expect(sweepOwnsStore[0]()).toBe(false);
+    expect(sweepOwnsStore[1]()).toBe(true);
+
+    // The cancelled attempt must not clear the in-flight connection either:
+    // a read now joins the second attempt instead of starting a third.
+    const thirdCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    sweepReleases[1]();
+    await secondCall;
+    await thirdCall;
+    expect(orphanSweepCalls.length).toBe(2);
+    expect(transportInstances.length).toBe(1);
+    expect(readFileSync(chromaWriterLockPath(), 'utf-8')).toBe(secondConnectionLock);
+
+    await mgr.stop();
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
   });
 
   it('ignores kill-triggered onclose while retrying after a transport error', async () => {
