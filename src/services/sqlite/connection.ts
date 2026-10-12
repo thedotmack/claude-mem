@@ -42,6 +42,12 @@ export class SchemaNewerThanBinaryError extends Error {
  * binary, the smooth-upgrade path for existing installs — always passes.
  */
 export function assertSchemaWriterCompatible(db: Database, latestKnownSchemaVersion: number): void {
+  // This read is the first statement on a fresh connection, ahead of the
+  // pragmas. Without a busy timeout it fails at once with "database is locked"
+  // while another connection is opening the same WAL database, and a worker
+  // whose boot fails twice that way is not recycled again. busy_timeout is a
+  // per-connection setting, so a refused open still leaves the file untouched.
+  db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
   const stamp = readSchemaWriterStamp(db);
   if (stamp <= latestKnownSchemaVersion) {
     return;
