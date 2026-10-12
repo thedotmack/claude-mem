@@ -16,6 +16,8 @@ import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
  * Soft cap per stored payload field. The Pro hook envelope already truncates
@@ -39,40 +41,12 @@ export const MAX_TOOL_PAYLOAD_BYTES = 64 * 1024;
  * a third — the table grows with every read instead of every tool call. The
  * other layers are gated for the same reason at a smaller scale.
  *
- * This gates only the `tool_uses` backup write. The observation generator still
- * sees these calls exactly as it does today; nothing about that path changes.
+ * The same lightweight classifier gates hook/ingest observation generation:
+ * retrieval must not create a new paid observation of its own previous output.
  * OpenClaw already drops `memory_*` before it ever reaches the worker
  * (`openclaw/src/index.ts:802`); the prefix is mirrored here so every other
  * adapter gets the same protection.
  */
-const RECURSIVE_MEMORY_TOOLS: ReadonlySet<string> = new Set([
-  'search',
-  'timeline',
-  'get_observations',
-  'get_tool_uses',
-  'session_start_context',
-  'observation_search',
-]);
-
-export function isRecursiveMemoryTool(toolName: string): boolean {
-  if (!toolName) return false;
-  if (toolName.startsWith('memory_')) return true;
-  if (!toolName.startsWith('mcp__')) return false;
-
-  // mcp__<server>__<tool>. Match the SERVER segment too: a different MCP
-  // server's generic `search` is a real tool call and belongs in the index.
-  const parts = toolName.split('__');
-  if (parts.length < 3) return false;
-  const server = parts[1].toLowerCase();
-  const tool = parts.slice(2).join('__');
-  const isClaudeMemServer = server.includes('claude-mem')
-    || server.includes('claude_mem')
-    || server.includes('mcp-search')
-    || server.includes('cmem');
-
-  return isClaudeMemServer && RECURSIVE_MEMORY_TOOLS.has(tool);
-}
-
 export interface ToolUseRow {
   id: number;
   tool_use_id: string;
