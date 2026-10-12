@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { join } from 'path';
 import {
   findClaudeExecutable,
   resetClaudeExecutableCache,
@@ -471,6 +472,53 @@ describe('findClaudeExecutable on Windows', () => {
     fakeClis.set('C:\\install\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
 
     expect(findClaudeExecutable('SDK')).toBe('C:\\install\\claude.exe');
+  });
+});
+
+describe('findClaudeExecutable code-page-garbled where output (#4694)', () => {
+  // where.exe writes the console's active code page (cp949 on ko-KR) while the
+  // lookup decodes its stdout as UTF-8, so a non-ASCII profile folder turns
+  // into U+FFFD and the reported path does not exist. The garbled line must
+  // never become a candidate, and the native-installer home location must stay
+  // reachable on Windows when where is unreliable.
+  const GARBLED_CLAUDE = 'C:\\Users\\\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\uFFFD\\.local\\bin\\claude.exe';
+
+  it('drops where hits that do not exist instead of probing them', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${GARBLED_CLAUDE}\r\nC:\\real\\claude.exe\r\n`,
+      },
+    });
+    fakeClis.set('C:\\real\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\real\\claude.exe');
+    expect(probeCalls.some((call) => call.path === GARBLED_CLAUDE)).toBe(false);
+  });
+
+  it('finds the native-installer CLI at ~/.local/bin/claude.exe when every where hit is garbled', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${GARBLED_CLAUDE}\r\n`,
+      },
+    });
+    const homeCli = join(_internals.homedir(), '.local', 'bin', 'claude.exe');
+    fakeClis.set(homeCli, { version: '2.1.283', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe(homeCli);
+  });
+
+  it('still returns a where hit that exists on disk (#2222 discovery contract)', () => {
+    installFakes({
+      platform: 'win32',
+      whereOutputs: {
+        claude: `${GARBLED_CLAUDE}\r\nC:\\good\\claude.exe\r\n`,
+      },
+    });
+    fakeClis.set('C:\\good\\claude.exe', { version: '2.1.176', supportsDontAsk: true });
+
+    expect(findClaudeExecutable('SDK')).toBe('C:\\good\\claude.exe');
   });
 });
 
