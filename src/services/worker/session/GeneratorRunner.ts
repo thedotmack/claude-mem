@@ -400,6 +400,16 @@ export async function startGeneratorWithProvider(
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
         });
       }
+      // The org-policy refusal (#4677) goes down the same preserved auth path,
+      // but logging in again cannot lift it, so it carries the notice's own
+      // remedy instead of the /login advice.
+      if (reason === 'auth:observer_org_policy' && provider === 'claude' && !failureBooked) {
+        recordObserverFailure(provider, {
+          message: 'Your organization has disabled Claude subscription access for Claude Code',
+          kind: 'auth_invalid',
+          action: 'Set ANTHROPIC_API_KEY in ~/.claude-mem/.env, or ask your organization admin to enable subscription access',
+        });
+      }
       if (reason !== null) {
         // Abort accounting lives HERE, where the reason is consumed — the
         // ONLY point every abort flow (idle / shutdown / overflow / quota)

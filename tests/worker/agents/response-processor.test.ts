@@ -1597,6 +1597,33 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(session.abortReason).toBe('auth:observer_text');
     });
+
+    it('preserves the batch on the org-disabled subscription notice with its own abort reason (#4677)', async () => {
+      const confirmClaimedMessages = mock(async () => 0);
+      const resetProcessingToPending = mock(async () => 1);
+      const mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ markProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_org_policy');
+    });
   });
   describe('lastSummaryStored tracking (#1633)', () => {
     it('should set lastSummaryStored=true when storage returns a summaryId', async () => {

@@ -6,6 +6,7 @@ import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
@@ -472,8 +473,12 @@ export async function processAgentResponse(
     }
 
     if (isAuthFailureObserverOutput(text)) {
+      // An org that disabled subscription access is refused like a signed-out
+      // observer, but /login cannot fix it (#4677): keep it apart so the
+      // runner books the API-key / admin remedy instead.
+      const orgDisabledSubscription = isOrgDisabledSubscriptionObserverOutput(text);
       await sessionManager.resetProcessingToPending(session.sessionDbId);
-      session.abortReason = 'auth:observer_text';
+      session.abortReason = orgDisabledSubscription ? 'auth:observer_org_policy' : 'auth:observer_text';
       try {
         session.abortController.abort();
       } catch {
@@ -483,10 +488,12 @@ export async function processAgentResponse(
       // /api/health's ai.lastInteraction: the observer is signed out and will
       // keep producing nothing until re-auth, so say so instead of "ok".
       worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
-      logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
+      logger.error('PARSER', orgDisabledSubscription
+        ? `${agentName} refused: the organization has disabled Claude subscription access; queued batch preserved`
+        : `${agentName} authentication failed; run /login to preserve queued batch`, {
         sessionId: session.sessionDbId,
         outputClass: 'prose',
-        remediation: '/login',
+        remediation: orgDisabledSubscription ? 'api_key_or_admin' : '/login',
         preview: previewOutput(text),
       });
       return null;

@@ -5,6 +5,7 @@ import {
   formatEmptyOutputReason,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
@@ -153,6 +154,19 @@ describe('isAuthFailureObserverOutput', () => {
         'The admin explained that your organization has disabled Claude subscription access for Claude Code, so nothing was recorded.',
       ),
     ).toBe(false);
+    // Opens with the notice's words but runs on: an observation, not the CLI.
+    expect(
+      isAuthFailureObserverOutput(
+        'Your organization has disabled Claude subscription access for Claude Code, so we updated the setup guide to use API keys.',
+      ),
+    ).toBe(false);
+  });
+
+  it('matches the org notice alone or with its own remediation only', () => {
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code.')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Not logged in · Please run /login')).toBe(false);
+    expect(isAuthFailureObserverOutput('Not logged in · Please run /login')).toBe(true);
   });
 
   it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {
