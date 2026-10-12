@@ -419,7 +419,7 @@ describe('provider-dispatch', () => {
       return lines.filter(message => message.startsWith('Primary '));
     }
 
-    let previousClaudeReadiness: () => boolean;
+    let previousClaudeReadiness: (() => boolean) | null;
 
     beforeEach(() => {
       resetQuotaCooldownsForTesting();

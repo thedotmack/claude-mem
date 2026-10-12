@@ -19,8 +19,7 @@ import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
-import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
-import { routeAroundUnservableProvider } from '../provider-dispatch.js';
+import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
@@ -576,7 +575,7 @@ export async function processAgentResponse(
       // fresh generation instead of dropping it. Once there, the batch gets
       // the same one retry; the fallback is never routed around itself.
       const fallback = session.currentProvider
-        ? routeAroundUnservableProvider(
+        ? routeAroundUnservableProviderIfLoaded(
           session.currentProvider,
           `The observer answered a queued batch twice without observation XML (${outputClass})`,
           'unavailable',

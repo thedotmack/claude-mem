@@ -105,7 +105,8 @@ mock.module('posthog-node', () => ({
  * check reads the developer's real ~/.claude.json and Claude credentials, so
  * pin it to "no Claude login" for every test: a suite must not pass or fail
  * depending on whether the machine running it is signed in to Claude. Tests
- * that exercise the Claude fallback opt in with setClaudeFallbackReadinessForTesting.
+ * that exercise the Claude fallback opt in with setClaudeFallbackReadinessForTesting
+ * (imported from the import-free override module so nothing else loads early).
  */
-const { setClaudeFallbackReadinessForTesting } = await import('../src/shared/claude-fallback-readiness.js');
+const { setClaudeFallbackReadinessForTesting } = await import('../src/shared/claude-fallback-readiness-override.js');
 setClaudeFallbackReadinessForTesting(() => false);

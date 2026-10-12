@@ -64,7 +64,7 @@ function pinGatewayPrimary(overrides: Record<string, string> = {}): void {
 }
 
 let savedEnv: Record<string, string | undefined>;
-let previousClaudeReadiness: () => boolean;
+let previousClaudeReadiness: (() => boolean) | null;
 let spies: Array<ReturnType<typeof spyOn>>;
 let infoLines: string[];
 let warnLines: string[];

@@ -133,7 +133,7 @@ describe('quota fallback in SessionRoutes', () => {
     expect(warnLines).not.toContain('Skipping generator start while the provider cooldown is active');
   }
 
-  let previousClaudeReadiness: () => boolean;
+  let previousClaudeReadiness: (() => boolean) | null;
 
   beforeEach(() => {
     savedEnv = {};

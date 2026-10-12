@@ -530,6 +530,33 @@ export type QuotaFallbackResolver = (provider: QuotaProvider, nowMs: number) => 
 
 let quotaFallbackResolver: QuotaFallbackResolver | null = null;
 
+/**
+ * provider-dispatch's routeAroundUnservableProvider, for callers that cannot
+ * import provider-dispatch: ResponseProcessor sits on the import path of the
+ * very providers dispatch imports, so a direct import is a cycle that leaves
+ * OpenRouterProvider's base class uninitialized. Registered when dispatch
+ * loads; until then (a process that never loads it) nothing is routed.
+ */
+export type UnservableProviderRouter = (
+  provider: QuotaProvider,
+  message: string,
+  window: 'unavailable' | 'rate_limit',
+  profile?: string,
+) => QuotaProvider | null;
+
+let unservableProviderRouter: UnservableProviderRouter | null = null;
+
+export function setUnservableProviderRouter(router: UnservableProviderRouter | null): void {
+  unservableProviderRouter = router;
+}
+
+/** See UnservableProviderRouter. Null when dispatch is not loaded. */
+export function routeAroundUnservableProviderIfLoaded(
+  ...args: Parameters<UnservableProviderRouter>
+): QuotaProvider | null {
+  return unservableProviderRouter?.(...args) ?? null;
+}
+
 /** Install the resolver; returns the previous one so a caller can restore it. */
 export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null): QuotaFallbackResolver | null {
   const previous = quotaFallbackResolver;

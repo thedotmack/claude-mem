@@ -44,6 +44,7 @@ import {
   recordQuotaExhausted,
   releaseQuotaProbe,
   setQuotaFallbackResolver,
+  setUnservableProviderRouter,
   tryAdmitCmemGatewayProbe,
   type QuotaCooldownState,
   type QuotaProvider,
@@ -363,6 +364,8 @@ export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.n
 // cooldown in observer-health.json. See setQuotaFallbackResolver for why the
 // answer is injected from here rather than imported there.
 setQuotaFallbackResolver(quotaServingProvider);
+setUnservableProviderRouter((provider, message, window, profile) =>
+  provider === 'cmem-gateway' ? null : routeAroundUnservableProvider(provider, message, window, profile));
 
 /**
  * Dispatch for a caller that is about to start a generator, claiming the single

@@ -24,6 +24,7 @@ import {
   getDependencyStatus,
   isDependencyStatusInCooldown,
 } from './dependency-health.js';
+import { getClaudeFallbackReadinessOverride } from './claude-fallback-readiness-override.js';
 
 /** Whether Claude Code recorded a signed-in account in a `.claude.json`. */
 function claudeJsonHasSignedInAccount(claudeJsonFile: string): boolean {
@@ -64,20 +65,10 @@ function detectClaudeFallbackReadiness(): boolean {
   return hasClaudeCredentials();
 }
 
-let readiness: () => boolean = detectClaudeFallbackReadiness;
-
 /** Whether Claude can serve as the fallback right now. */
 export function canClaudeServeAsFallback(): boolean {
-  return readiness();
+  return (getClaudeFallbackReadinessOverride() ?? detectClaudeFallbackReadiness)();
 }
 
-/**
- * Test seam: replace the readiness check (null restores real detection).
- * Returns the previous check so a test can put it back. tests/preload.ts pins
- * it to "not ready" so no test depends on the developer's own Claude login.
- */
-export function setClaudeFallbackReadinessForTesting(check: (() => boolean) | null): () => boolean {
-  const previous = readiness;
-  readiness = check ?? detectClaudeFallbackReadiness;
-  return previous;
-}
+// Tests replace the check through the import-free override module; see there.
+export { setClaudeFallbackReadinessForTesting } from './claude-fallback-readiness-override.js';
