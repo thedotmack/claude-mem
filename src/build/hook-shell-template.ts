@@ -270,6 +270,15 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
+/** Match only runtime tool-hook commands, preserving all other lifecycle hooks. */
+function toolHookOptOutVariable(args: string[] | undefined): string | undefined {
+  if (!args || args.at(-3) !== 'hook') return undefined;
+  const event = args.at(-1);
+  return event === 'observation' ? 'CLAUDE_MEM_DISABLE_OBSERVATION'
+    : event === 'file-context' ? 'CLAUDE_MEM_DISABLE_FILE_CONTEXT' : undefined;
+}
+
+
 /**
  * Codex hook contract supports `commandWindows` as the Windows-only command
  * override. Keep this Node-based so Codex App on Windows can execute hooks from
@@ -278,7 +287,9 @@ function jsArray(values: string[]): string {
 export function buildCodexWindowsCommand(
   workerArgs: string[],
 ): string {
+  const optOutVariable = toolHookOptOutVariable(workerArgs);
   const parts = [
+    ...(optOutVariable ? [`if(process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS==='1'||process.env.${optOutVariable}==='1')process.exit(0);`] : []),
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
     "const h=o.homedir();",
     "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
@@ -323,6 +334,10 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
 
   const parts: string[] = [];
+  const optOutVariable = toolHookOptOutVariable(options.trailingCommand);
+  if (optOutVariable) {
+    parts.push(`if [ "\${CLAUDE_MEM_DISABLE_TOOL_HOOKS:-}" = 1 ] || [ "\${${optOutVariable}:-}" = 1 ]; then exit 0; fi;`);
+  }
 
   // The PATH prelude is pushed verbatim (including any trailing space). `parts`
   // are later joined with a single space, so claude-code preludes (no trailing

@@ -393,7 +393,7 @@ These switches are read from the hook's environment only, not from `~/.claude-me
 | `CLAUDE_MEM_DISABLE_OBSERVATION` | Only PostToolUse `observation` returns a no-op (tool calls are no longer captured). |
 | `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | Only PreToolUse `file-context` returns a no-op: no file history is injected before `Read`, and the [File Read Gate](/file-read-gate) never blocks a Read. |
 
-Claude Code still launches each hook, so these switches turn off claude-mem's per-tool work, not the hook process itself.
+Claude Code still launches each hook. Its shell launcher checks these switches before resolving the plugin or starting Node and Bun, so a disabled tool hook does not load the worker bundle. The Codex Windows launcher still starts Node, then checks the switch before resolving scripts or starting Bun. These switches do not change the feature settings in `settings.json`.
 
 ### Search Configuration
 
