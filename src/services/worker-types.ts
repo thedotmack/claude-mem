@@ -79,6 +79,13 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Consecutive Claude generations whose SDK stream ended or broke without a
+   * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
+   * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
+   * when a queued-work turn is answered.
+   */
+  consecutiveSdkStreamExits?: number;
+  /**
    * Consecutive rate-limit pauses this session resumed from on its own, after
    * the provider's Retry-After. Bounds those resumes before the provider
    * breaker takes over; reset when a queued-work turn is answered.

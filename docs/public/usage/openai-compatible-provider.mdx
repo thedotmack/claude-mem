@@ -95,6 +95,7 @@ endpoint or model you pinned yourself.
 | `orcarouter` | `https://api.orcarouter.ai/v1` | yes |
 | `api-route` | `https://global.api-route.com/v1` | yes |
 | `opper` | `https://api.opper.ai/v3/compat` | yes |
+| `atlascloud` | `https://api.atlascloud.ai/v1` | yes |
 | `deepseek` | `https://api.deepseek.com/v1` | yes |
 | `opencode-go` | `https://opencode.ai/zen/go/v1` | yes |
 | `opencode-zen` | `https://opencode.ai/zen/v1` | yes |
@@ -274,6 +275,24 @@ pins one provider and region. The catalogue is public at
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "opper",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Opper key>",
   "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "claude-haiku-4-5"
+}
+```
+
+## Atlas Cloud
+
+[Atlas Cloud](https://www.atlascloud.ai) serves models from DeepSeek, Z.ai,
+Moonshot, Qwen and other vendors behind one OpenAI-compatible API key. Model ids
+are vendor-prefixed, such as `deepseek-ai/deepseek-v4-flash` (the preset's
+default) or `zai-org/glm-5.3`, and are passed verbatim. The model list is public
+at `https://api.atlascloud.ai/v1/models`, and keys come from
+[console.atlascloud.ai](https://console.atlascloud.ai/api-keys).
+
+```json
+{
+  "CLAUDE_MEM_PROVIDER": "openai-compatible",
+  "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "atlascloud",
+  "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<your Atlas Cloud key>",
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "deepseek-ai/deepseek-v4-flash"
 }
 ```
 

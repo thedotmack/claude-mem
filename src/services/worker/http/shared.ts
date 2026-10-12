@@ -297,7 +297,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
-  });
+  }, payload.enqueuedAtEpochMs);
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 
@@ -392,7 +392,7 @@ export async function ingestSummarize(
   const cleanedLastAssistantMessage = payload.lastAssistantMessage
     ? stripMemoryTags(String(payload.lastAssistantMessage))
     : payload.lastAssistantMessage;
-  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber);
+  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber, payload.enqueuedAtEpochMs);
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 

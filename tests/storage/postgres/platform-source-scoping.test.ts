@@ -221,6 +221,7 @@ describe('server-beta Postgres platform source scoping', () => {
       'cursor',
       null,
       false,
+      null,
     ]);
   });
 
@@ -248,6 +249,7 @@ describe('server-beta Postgres platform source scoping', () => {
       'cursor',
       ['alpha'],
       false,
+      null,
     ]);
   });
 

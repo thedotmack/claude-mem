@@ -20,7 +20,8 @@ import {
 } from './response-pacer.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
 import { observerUsageLogFields } from '../observer-usage.js';
-import { recordObserverFailure } from '../../../shared/observer-health.js';
+import { AMBIGUOUS_QUOTA_MESSAGE, recordObserverFailure } from '../../../shared/observer-health.js';
+import { explainQuotaAbort, globalRateLimitStore } from '../RateLimitStore.js';
 import {
   CODEX_CLI_SETUP_REMEDIATION,
   recordClaudeSetupRequired,
@@ -92,6 +93,37 @@ function recordDeadlineExpiry(
     code: error.code,
     action: error.action,
   });
+}
+
+/** Quota prose: the observer's own reply said its allowance is spent. */
+export const OBSERVER_TEXT_QUOTA_MESSAGE = 'The observer replied that its usage allowance is exhausted';
+
+/**
+ * The pause to book for a quota exit.
+ * - 'quota:observer_text': the provider's own refusal, written as the reply
+ *   (any provider), so it is exhausted, not ambiguous.
+ * - Claude's guard: 'quota:<window>:<kind>'. The kind is what the guard
+ *   decided at abort time; the snapshot only supplies the wording, and when it
+ *   no longer explains the stop a kind-appropriate generic message is used.
+ * - Anything else keeps the generic record the banner reads as ambiguous.
+ */
+export function quotaPauseForExit(
+  provider: string,
+  reason: string | null | undefined,
+  profile?: string,
+): { kind: 'quota_guard' | 'quota_exhausted'; message: string } {
+  if (reason === 'quota:observer_text') {
+    return { kind: 'quota_exhausted', message: OBSERVER_TEXT_QUOTA_MESSAGE };
+  }
+  const kind = (reason ?? '').split(':')[2];
+  if (provider === 'claude' && (kind === 'quota_guard' || kind === 'quota_exhausted')) {
+    const explained = explainQuotaAbort(reason, globalRateLimitStore, Date.now(), profile);
+    if (explained?.kind === kind) return explained;
+    return kind === 'quota_guard'
+      ? { kind, message: 'Memory capture paused by the Claude usage reserve guard.' }
+      : { kind, message: 'Claude rejected the request because a usage allowance is exhausted.' };
+  }
+  return { kind: 'quota_exhausted', message: AMBIGUOUS_QUOTA_MESSAGE };
 }
 
 export async function startGeneratorWithProvider(
@@ -372,14 +404,17 @@ export async function startGeneratorWithProvider(
       // is never re-booked here as a spent allowance (a rate limit is not
       // one), nor given a breaker over a cmem fallback's window.
       if (normalizedReason === 'quota' && !failureBooked) {
-        const quotaMessage = 'Provider reported the inference allowance exhausted';
-        recordQuotaExhausted(provider, quotaMessage, reason?.split(':')[1], undefined, session.observerProfile);
+        // Book what actually stopped the observer (quotaPauseForExit): the
+        // SessionStart banner must not call a 95% reserve pause a spent
+        // allowance, nor a provider's own refusal a precaution.
+        const pause = quotaPauseForExit(provider, reason, session.observerProfile);
+        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile);
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
         // session-start warning is structurally blind to an entire outage
         // class: the allowance is spent, no observation will ever store, and
         // the user is told nothing.
-        recordObserverFailure(provider, { message: quotaMessage, kind: 'quota_exhausted' });
+        recordObserverFailure(provider, pause);
       }
       // A signed-out Claude observer answers with the CLI's own prose ("Not
       // logged in · Please run /login"). ResponseProcessor resets the batch to
@@ -398,6 +433,16 @@ export async function startGeneratorWithProvider(
           message: 'Claude Code reported the observer as signed out',
           kind: 'auth_invalid',
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
+        });
+      }
+      // The org-policy refusal (#4677) goes down the same preserved auth path,
+      // but logging in again cannot lift it, so it carries the notice's own
+      // remedy instead of the /login advice.
+      if (reason === 'auth:observer_org_policy' && provider === 'claude' && !failureBooked) {
+        recordObserverFailure(provider, {
+          message: 'Your organization has disabled Claude subscription access for Claude Code',
+          kind: 'auth_invalid',
+          action: 'Set ANTHROPIC_API_KEY in ~/.claude-mem/.env, or ask your organization admin to enable subscription access',
         });
       }
       if (reason !== null) {
