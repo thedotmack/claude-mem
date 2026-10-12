@@ -96,6 +96,42 @@ describe('dedup-scan: backfill + sweep (#3038)', () => {
     expect(store.listDedupCandidates('other-project')).toEqual([]);
   });
 
+  it('resolveDedupCandidate records a verdict that a rescan keeps', () => {
+    seed(['build the worker service module', 'worker build the service module', 'distinct subject matter']);
+    backfillProjectDedup(store.db, 'p');
+    sweepProjectCandidates(store.db, 'p', CFG);
+    const [candidate] = store.listDedupCandidates('p');
+
+    expect(store.resolveDedupCandidate(candidate.id, 'distinct')).toBe(true);
+    expect(sweepProjectCandidates(store.db, 'p', CFG)).toBe(0);
+    expect(store.listDedupCandidates('p').find((c: any) => c.id === candidate.id)?.status).toBe('distinct');
+
+    expect(store.resolveDedupCandidate(candidate.id, 'dismissed')).toBe(true);
+    expect(store.listDedupCandidates('p').find((c: any) => c.id === candidate.id)?.status).toBe('dismissed');
+  });
+
+  it('resolveDedupCandidate reports an unknown id', () => {
+    expect(store.resolveDedupCandidate(424242, 'distinct')).toBe(false);
+  });
+
+  it('listDedupCandidates filters by status when asked', () => {
+    seed([
+      'build the worker service module', 'worker build the service module',
+      'ship the release notes draft', 'draft the release notes ship',
+      'distinct subject matter',
+    ]);
+    backfillProjectDedup(store.db, 'p');
+    sweepProjectCandidates(store.db, 'p', CFG);
+    const all = store.listDedupCandidates('p');
+    expect(all.length).toBeGreaterThanOrEqual(2);
+    store.resolveDedupCandidate(all[0].id, 'dismissed');
+
+    expect(store.listDedupCandidates('p', 100, 'dismissed').map((c: any) => c.id)).toEqual([all[0].id]);
+    expect(store.listDedupCandidates('p', 100, 'pending').map((c: any) => c.id)).not.toContain(all[0].id);
+    expect(store.listDedupCandidates(undefined, 100, 'dismissed').map((c: any) => c.id)).toEqual([all[0].id]);
+    expect(store.listDedupCandidates('p')).toHaveLength(all.length);
+  });
+
   it('store.runDedupScan() backfills + sweeps all projects via configured knobs', () => {
     process.env.CLAUDE_MEM_DEDUP_COSINE_THRESHOLD = '0.80';
     seed(['build the worker service module', 'worker build the service module'], 'pp');

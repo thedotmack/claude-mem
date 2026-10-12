@@ -174,7 +174,7 @@ export function resolveIndexSeats(cfg: GrokBotIndexConfig): GrokBotIndexSeat[] {
   const live = listLiveGrokBotAgents(cfg.agentDataRoot);
   const selected = cfg.agentIdsAuto
     ? live
-    : live.filter(agent => cfg.agentIds.includes(agent.id));
+    : live.filter(agent => cfg.agentIds.some(id => id.toLowerCase() === agent.id.toLowerCase()));
   return selected.map(agent => ({
     id: agent.id,
     name: agent.name,

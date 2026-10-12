@@ -5,6 +5,7 @@ import {
   formatEmptyOutputReason,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
@@ -84,6 +85,25 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the Anthropic API credit-balance wording returned as assistant text', () => {
+    // #4632: on an API key with no credit, the SDK returns the billing notice
+    // as the whole assistant response instead of raising an error.
+    expect(isQuotaLimitedObserverOutput('Credit balance is too low')).toBe(true);
+    expect(
+      isQuotaLimitedObserverOutput(
+        'Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.',
+      ),
+    ).toBe(true);
+  });
+
+  it('does not treat prose that merely narrates a low credit balance as quota prose', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'The deploy failed because the credit balance is too low on the staging key; nothing was recorded.',
+      ),
+    ).toBe(false);
+  });
+
   it('does not treat XML that mentions a limit as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(
@@ -114,6 +134,39 @@ describe('isAuthFailureObserverOutput', () => {
     expect(isAuthFailureObserverOutput('403 Forbidden')).toBe(true);
     expect(isAuthFailureObserverOutput('Status: 401')).toBe(true);
     expect(isAuthFailureObserverOutput('Request failed with 403')).toBe(true);
+  });
+
+  it('detects the organization-disabled subscription notice (#4677)', () => {
+    // Returned as the whole assistant response when the account's org has
+    // disabled Claude subscription access for Claude Code.
+    const notice =
+      'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access';
+    expect(isAuthFailureObserverOutput(notice)).toBe(true);
+    // Disjoint from the quota and transport detectors: transport defers to
+    // auth, and quota must not claim an account-policy refusal.
+    expect(isQuotaLimitedObserverOutput(notice)).toBe(false);
+    expect(isTransportFailureObserverOutput(notice)).toBe(false);
+  });
+
+  it('does not treat prose narrating an organization policy as an auth failure', () => {
+    expect(
+      isAuthFailureObserverOutput(
+        'The admin explained that your organization has disabled Claude subscription access for Claude Code, so nothing was recorded.',
+      ),
+    ).toBe(false);
+    // Opens with the notice's words but runs on: an observation, not the CLI.
+    expect(
+      isAuthFailureObserverOutput(
+        'Your organization has disabled Claude subscription access for Claude Code, so we updated the setup guide to use API keys.',
+      ),
+    ).toBe(false);
+  });
+
+  it('matches the org notice alone or with its own remediation only', () => {
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Your organization has disabled Claude subscription access for Claude Code.')).toBe(true);
+    expect(isOrgDisabledSubscriptionObserverOutput('Not logged in · Please run /login')).toBe(false);
+    expect(isAuthFailureObserverOutput('Not logged in · Please run /login')).toBe(true);
   });
 
   it('does not classify XML, ordinary prose, or unrelated numeric output as auth failure', () => {

@@ -154,9 +154,13 @@ function unquote(value: string): string {
  * and the original text as body.
  */
 export function parseMemoryFrontmatter(raw: string): { frontmatter: MemoryFrontmatter; body: string } {
-  if (!raw.startsWith('---')) return { frontmatter: {}, body: raw };
-
   const lines = raw.split('\n');
+  // The opener must be a complete `---` line at column 0 (a trailing \r is
+  // tolerated for CRLF files): a `----` horizontal rule or an indented `---`
+  // is note text, not frontmatter. The close scan below likewise requires
+  // an exact `---`.
+  if (!/^---\r?$/.test(lines[0] ?? '')) return { frontmatter: {}, body: raw };
+
   // First line is the opening '---'; find the closing one.
   let close = -1;
   for (let i = 1; i < lines.length; i++) {

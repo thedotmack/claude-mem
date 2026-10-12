@@ -27,6 +27,19 @@ const UNSEGMENTED_SCRIPT_RANGES =
   '\\u0E00-\\u0EFF\\u1000-\\u109F\\u1780-\\u17FF\\u3040-\\u30FF\\u3100-\\u318F\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uAC00-\\uD7AF\\uF900-\\uFAFF';
 
 /**
+ * The sync triggers each external-content index depends on. SQLite drops a
+ * table's triggers along with the table, so any DROP TABLE rebuild (the v7/v9
+ * migrations) removes them while the index itself survives — their presence is
+ * introspected separately from the index tables' (#3609).
+ */
+export const OBSERVATIONS_FTS_TRIGGER_NAMES = ['observations_ai', 'observations_ad', 'observations_au'];
+export const SESSION_SUMMARIES_FTS_TRIGGER_NAMES = [
+  'session_summaries_ai',
+  'session_summaries_ad',
+  'session_summaries_au',
+];
+
+/**
  * Sync triggers for the external-content FTS5 indexes, shared by FTS setup here and by the
  * SessionStore migrations that rebuild these tables. The update triggers fire only when an
  * indexed column is written: an unscoped AFTER UPDATE also fired for bookkeeping writes
@@ -98,7 +111,16 @@ export class SessionSearch {
     const hasObservationsFTS = tables.some(t => t.name === 'observations_fts');
     const hasSummariesFTS = tables.some(t => t.name === 'session_summaries_fts');
 
-    if (hasObservationsFTS && hasSummariesFTS) {
+    // #3609 — the tables alone are not proof of a working index: a DROP TABLE
+    // rebuild (v7/v9) drops the sync triggers with the table while the index
+    // survives, and writes then silently stopped reaching it. Introspect the
+    // triggers too; missing ones are recreated in the transaction below.
+    if (
+      hasObservationsFTS &&
+      hasSummariesFTS &&
+      this.hasAllFtsTriggers(OBSERVATIONS_FTS_TRIGGER_NAMES) &&
+      this.hasAllFtsTriggers(SESSION_SUMMARIES_FTS_TRIGGER_NAMES)
+    ) {
       return;
     }
 
@@ -107,7 +129,8 @@ export class SessionSearch {
       return;
     }
 
-    logger.info('DB', 'Creating FTS5 tables');
+    const repairingTriggersOnly = hasObservationsFTS && hasSummariesFTS;
+    logger.info('DB', repairingTriggersOnly ? 'Converging FTS5 indexes and recreating missing sync triggers' : 'Creating FTS5 tables');
 
     try {
       this.db.transaction(() => {
@@ -116,13 +139,53 @@ export class SessionSearch {
         const currentTables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
         const createObservations = !currentTables.some(t => t.name === 'observations_fts');
         const createSummaries = !currentTables.some(t => t.name === 'session_summaries_fts');
+        // Recreate triggers only for indexes that already exist, converging
+        // each one first: rows written while the triggers were gone are absent
+        // from the index, and the _ad/_au triggers would fail every
+        // UPDATE/DELETE of those rows with "database disk image is malformed"
+        // once they re-attach and serve their FTS 'delete' commands (#3609).
+        const repairObservations = !createObservations && !this.hasAllFtsTriggers(OBSERVATIONS_FTS_TRIGGER_NAMES);
+        const repairSummaries = !createSummaries && !this.hasAllFtsTriggers(SESSION_SUMMARIES_FTS_TRIGGER_NAMES);
         this.createFTSTablesAndTriggers(createObservations, createSummaries);
+        if (repairObservations) {
+          this.rebuildFtsIndex('observations_fts');
+          this.db.run(OBSERVATIONS_FTS_TRIGGERS_SQL);
+        }
+        if (repairSummaries) {
+          this.rebuildFtsIndex('session_summaries_fts');
+          this.db.run(SESSION_SUMMARIES_FTS_TRIGGERS_SQL);
+        }
       }).immediate();
-      logger.info('DB', 'FTS5 tables created successfully');
+      logger.info('DB', repairingTriggersOnly ? 'FTS5 indexes converged and sync triggers recreated' : 'FTS5 tables created successfully');
     } catch (error) {
       this._fts5Available = false;
       logger.warn('DB', 'FTS5 table creation failed — search will use ChromaDB and LIKE queries', {}, error instanceof Error ? error : undefined);
     }
+  }
+
+  /** True when every trigger in `names` exists — presence, not its DDL (v54 owns the shape). */
+  private hasAllFtsTriggers(names: string[]): boolean {
+    const placeholders = names.map(() => '?').join(', ');
+    const rows = this.db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='trigger' AND name IN (${placeholders})`)
+      .all(...names) as { name: string }[];
+    return rows.length === names.length;
+  }
+
+  /**
+   * Converge a surviving external-content index with its content table by
+   * re-deriving the whole index from the content table. Rows written while the
+   * sync triggers were gone (the v7/v9 window, #3609) never reached the index,
+   * and the _ad/_au triggers answer every UPDATE/DELETE of such a row with an
+   * FTS 'delete' command — for a rowid the index does not hold, FTS5 fails the
+   * write with SQLITE_CORRUPT, surfaced by Bun SQLite as "database disk image
+   * is malformed". 'rebuild' is the documented, idempotent resync: no drift
+   * detection, no per-row backfill bookkeeping, and a fully consistent index
+   * converges to itself. One-time cost — the repair only runs while triggers
+   * are missing.
+   */
+  private rebuildFtsIndex(ftsTable: 'observations_fts' | 'session_summaries_fts'): void {
+    this.db.run(`INSERT INTO ${ftsTable}(${ftsTable}) VALUES('rebuild')`);
   }
 
   private isFts5Available(): boolean {
@@ -256,8 +319,14 @@ export class SessionSearch {
 
     if (filters.concepts) {
       const concepts = Array.isArray(filters.concepts) ? filters.concepts : [filters.concepts];
+      const conceptColumn = `${tableAlias}.concepts`;
+      // Legacy concepts can be a plain string or JSON string, matching sync's list reader.
+      const conceptArray = `CASE WHEN json_valid(${conceptColumn}) THEN CASE
+        WHEN json_type(${conceptColumn}) = 'array' THEN ${conceptColumn}
+        WHEN json_type(${conceptColumn}) = 'text' THEN json_array(json_extract(${conceptColumn}, '$'))
+        ELSE json_array(${conceptColumn}) END ELSE json_array(${conceptColumn}) END`;
       const conceptConditions = concepts.map(() => {
-        return `EXISTS (SELECT 1 FROM json_each(${tableAlias}.concepts) WHERE value = ?)`;
+        return `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`;
       });
       if (conceptConditions.length > 0) {
         conditions.push(`(${conceptConditions.join(' OR ')})`);
@@ -267,10 +336,11 @@ export class SessionSearch {
 
     if (filters.files) {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
+      const changedFilesColumn = tableAlias === 's' ? 'files_edited' : 'files_modified';
       const fileConditions = files.map(() => {
         return `(
-          EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ? ESCAPE '\\')
+          EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.${changedFilesColumn}`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
@@ -375,9 +445,9 @@ export class SessionSearch {
       case 'relevance':
         return hasFTS ? `ORDER BY ${ftsTable}.rank ASC` : 'ORDER BY o.created_at_epoch DESC';
       case 'date_desc':
-        return 'ORDER BY o.created_at_epoch DESC';
+        return 'ORDER BY o.created_at_epoch DESC, o.id DESC';
       case 'date_asc':
-        return 'ORDER BY o.created_at_epoch ASC';
+        return 'ORDER BY o.created_at_epoch ASC, o.id ASC';
       default:
         return 'ORDER BY o.created_at_epoch DESC';
     }
@@ -423,8 +493,8 @@ export class SessionSearch {
     const filterParams: any[] = [];
     const filterClause = this.buildFilterClause(filterOptions, filterParams, 's');
     const orderClause = orderBy === 'date_asc'
-      ? 'ORDER BY s.created_at_epoch ASC'
-      : 'ORDER BY s.created_at_epoch DESC';
+      ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
+      : 'ORDER BY s.created_at_epoch DESC, s.id DESC';
 
     const sql = `
       SELECT s.*, s.discovery_tokens
@@ -519,8 +589,8 @@ export class SessionSearch {
       }
 
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
-        : 'ORDER BY s.created_at_epoch DESC';
+        ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
+        : 'ORDER BY s.created_at_epoch DESC, s.id DESC';
 
       const sql = `
         SELECT s.*, s.discovery_tokens
@@ -544,9 +614,9 @@ export class SessionSearch {
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
 
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
+        ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
         : orderBy === 'date_desc'
-          ? 'ORDER BY s.created_at_epoch DESC'
+          ? 'ORDER BY s.created_at_epoch DESC, s.id DESC'
           : 'ORDER BY session_summaries_fts.rank ASC';
 
       const sql = `
@@ -605,7 +675,7 @@ export class SessionSearch {
       try {
         const files = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => isDirectChild(f, folderPath));
+          return files.some(f => typeof f === 'string' && isDirectChild(f, folderPath));
         }
       } catch (error) {
         logger.debug('DB', `Failed to parse files JSON for observation ${obs.id}`, undefined, error instanceof Error ? error : undefined);
@@ -622,7 +692,7 @@ export class SessionSearch {
       try {
         const files = JSON.parse(filesJson);
         if (Array.isArray(files)) {
-          return files.some(f => isDirectChild(f, folderPath));
+          return files.some(f => typeof f === 'string' && isDirectChild(f, folderPath));
         }
       } catch (error) {
         logger.debug('DB', `Failed to parse files JSON for session summary ${session.id}`, undefined, error instanceof Error ? error : undefined);
@@ -647,7 +717,10 @@ export class SessionSearch {
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const patterns = [`%${escape(filePath)}%`];
+    const variants = isFolder
+      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
+      : [filePath];
+    const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
     }
@@ -663,10 +736,15 @@ export class SessionSearch {
     return patterns;
   }
 
+  /** Invalid persisted file lists are absent evidence, rather than a query-wide JSON error. */
+  private static fileArrayJson(column: string): string {
+    return `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
+  }
+
   /** Any of `columns` (JSON arrays) holds a value matching any pattern; bind every pattern once per column. */
   private static jsonArrayLikeClause(columns: string[], patternCount: number): string {
-    const anyPattern = Array.from({ length: patternCount }, () => "value LIKE ? ESCAPE '\\'").join(' OR ');
-    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${column}) WHERE ${anyPattern})`).join(' OR ')})`;
+    const anyPattern = Array.from({ length: patternCount }, () => "type = 'text' AND value LIKE ? ESCAPE '\\'").join(' OR ');
+    return `(${columns.map(column => `EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(column)}) WHERE ${anyPattern})`).join(' OR ')})`;
   }
 
   findByFile(filePath: string, options: SearchOptions = {}): {
@@ -833,8 +911,8 @@ export class SessionSearch {
 
       const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY up.created_at_epoch ASC'
-        : 'ORDER BY up.created_at_epoch DESC';
+        ? 'ORDER BY up.created_at_epoch ASC, up.id ASC'
+        : 'ORDER BY up.created_at_epoch DESC, up.id DESC';
 
       const sql = `
         SELECT
@@ -859,8 +937,8 @@ export class SessionSearch {
 
     const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
     const orderClause = orderBy === 'date_asc'
-      ? 'ORDER BY up.created_at_epoch ASC'
-      : 'ORDER BY up.created_at_epoch DESC';
+      ? 'ORDER BY up.created_at_epoch ASC, up.id ASC'
+      : 'ORDER BY up.created_at_epoch DESC, up.id DESC';
 
     const sql = `
       SELECT

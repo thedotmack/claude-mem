@@ -336,11 +336,12 @@ export function appendMiddleCacheRecordsAtomic(
   cachePath: string,
   records: CcsAlignMiddleRecord[],
   excludedObsIds: Set<number> = new Set(),
+  replaceExisting: boolean = false,
 ): { appended: CcsAlignMiddleRecord[]; dropped: number } {
   const dir = path.dirname(cachePath);
   mkdirSync(dir, { recursive: true });
 
-  const existingRaw = existsSync(cachePath) ? readFileSync(cachePath, 'utf8') : '';
+  const existingRaw = !replaceExisting && existsSync(cachePath) ? readFileSync(cachePath, 'utf8') : '';
   const seenIds = new Set<number>();
   const seenBodies = new Set<string>();
 
@@ -368,7 +369,7 @@ export function appendMiddleCacheRecordsAtomic(
     toAppend.push(record);
   }
 
-  if (toAppend.length === 0 && dropped === 0) {
+  if (!replaceExisting && toAppend.length === 0 && dropped === 0) {
     return { appended: [], dropped: 0 };
   }
 
@@ -454,6 +455,10 @@ export interface LandObservationsResult {
  * compile-time omit, not a delete.
  */
 export function landObservationsInMiddleCache(input: LandObservationsInput): LandObservationsResult {
+  return landObservations(input, false);
+}
+
+function landObservations(input: LandObservationsInput, replaceExisting: boolean): LandObservationsResult {
   const dataRoot = input.dataRoot ?? DATA_DIR;
   const now = input.now ?? new Date();
   const cachePath = ccsAlignMiddleCachePath(dataRoot, input.viewerId);
@@ -472,7 +477,7 @@ export function landObservationsInMiddleCache(input: LandObservationsInput): Lan
     const { excludedObsIds } = buildExcludeSet(marksFile.marks);
 
     const records = input.observations.map(obs => buildCcsAlignRecord(obs, now));
-    const { appended, dropped } = appendMiddleCacheRecordsAtomic(cachePath, records, excludedObsIds);
+    const { appended, dropped } = appendMiddleCacheRecordsAtomic(cachePath, records, excludedObsIds, replaceExisting);
     if (appended.length > 0 || dropped > 0) {
       logger.debug('AWARENESS', 'CCS Align landed observations in middle cache', {
         viewerId: input.viewerId,
@@ -491,18 +496,12 @@ export function landObservationsInMiddleCache(input: LandObservationsInput): Lan
 }
 
 /**
- * Rebuild the middle cache from scratch: clear the file, re-land the given
+ * Rebuild the middle cache from scratch: atomically replace it with the given
  * observations, and apply current exclude marks. This is the unmark+rebuild
  * path — after removing a mark, the caller re-pulls the diary through the
  * three-layer ladder and rebuilds the compiled file.
  */
 export function rebuildMiddleCache(input: LandObservationsInput): LandObservationsResult {
-  const dataRoot = input.dataRoot ?? DATA_DIR;
-  const cachePath = ccsAlignMiddleCachePath(dataRoot, input.viewerId);
-  try {
-    if (existsSync(cachePath)) {
-      unlinkSync(cachePath);
-    }
-  } catch { /* if it can't be removed, landObservationsInMiddleCache will handle it */ }
-  return landObservationsInMiddleCache(input);
+  // Keep the old file available until the complete replacement is renamed.
+  return landObservations(input, true);
 }

@@ -1,4 +1,5 @@
 
+import { retainTextHeadTail } from '../shared/text-truncation.js';
 import { logger } from '../utils/logger.js';
 import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
@@ -350,8 +351,7 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   if (raw.length <= maxChars) return raw;
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
-  const head = raw.slice(0, headChars);
-  const tail = tailChars > 0 ? raw.slice(-tailChars) : '';
+  const { head, tail } = retainTextHeadTail(raw, headChars, tailChars);
   const elidedChars = Math.max(0, raw.length - head.length - tail.length);
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }

@@ -2,7 +2,7 @@
 import { spawnSync, spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -34,7 +34,15 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      // where.exe writes the console's active code page (e.g. cp949 on ko-KR,
+      // cp932 on ja-JP) but the `encoding: 'utf-8'` above decodes those bytes
+      // as UTF-8, so a non-ASCII profile folder name arrives as U+FFFD and the
+      // reported path does not exist (#4694, #3865). Keep only the lines that
+      // resolve on disk and thread this filtered list through EVERY return
+      // below — re-reading the raw stdout would hand the garbled path back
+      // even after the list was filtered.
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(line => existsSync(line));
       const firstBunPath = bunPaths.find(line => {
         const lowerPath = line.toLowerCase();
         return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
@@ -55,12 +63,16 @@ function findBun() {
       // the resolved absolute path instead of falling through to the bare
       // name: resolving a bare `bun` later relies on the child's PATH, which
       // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      const firstWherePath = bunPaths.find(Boolean);
       if (firstWherePath) {
         return firstWherePath;
       }
+      // Every where hit was garbled or stale (#4694): fall through to the
+      // explicit overrides and well-known install homes below instead of
+      // returning a path that can only fail with ENOENT.
+    } else {
+      return 'bun';
     }
-    return 'bun';
   }
 
   const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
@@ -130,6 +142,8 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
+// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
+args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
 
@@ -165,10 +179,15 @@ function collectStdin() {
 
 const stdinData = await collectStdin();
 
+// Bun reads tsconfig.json from its working directory and prints any warnings
+// about it to stderr, which hosts show as hook errors (#4628). Start it in a
+// neutral directory and hand it the launch directory; the hook entry point
+// (src/cli/hook-original-cwd.ts) moves back there before adapters run.
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
-  env: process.env
+  env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
+  cwd: tmpdir()
 };
 
 let spawnCmd = bunPath;

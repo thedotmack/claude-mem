@@ -10,6 +10,7 @@ import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { clearSyncHealth, defaultSyncHealthFilePath } from '../../shared/sync-health.js';
 import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
+import { purgeLinkedToolUses, resolveToolUsesRetentionDays } from '../sqlite/tool-uses.js';
 import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
@@ -57,6 +58,8 @@ export class DatabaseManager {
       clearSyncHealth();
       purgeUndrainableSyncOutbox(this.db);
     }
+
+    purgeLinkedToolUses(this.db, resolveToolUsesRetentionDays(settings.CLAUDE_MEM_TOOL_USES_RETENTION_DAYS));
 
     logger.info('DB', 'Database initialized (shared connection)');
   }

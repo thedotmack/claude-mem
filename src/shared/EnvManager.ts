@@ -11,6 +11,7 @@ import {
   writeStaleMarker,
   clearStaleMarker,
   resolveClaudeCredentialProfile,
+  resolveEffectiveClaudeConfigDir,
   type ClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
@@ -253,6 +254,39 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
     isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
   } else {
     delete isolatedEnv.CLAUDE_CONFIG_DIR;
+    // #4689 — CLAUDE_CONFIG_DIR does double duty for the child: it picks the
+    // keychain identity AND locates the session-transcript store
+    // (${CLAUDE_CONFIG_DIR}/projects/<munged cwd>/). Under the default
+    // profile it is deleted above, so every internal SDK session (observer,
+    // knowledge corpus) persists into ~/.claude/projects, where importers
+    // like Codex pick the transcripts up as user chats. When the user sets a
+    // transcript-only dir, stamp it so transcripts land there instead —
+    // while the credential profile stays DEFAULT: readClaudeOAuthToken
+    // resolves CLAUDE_MEM_CLAUDE_CONFIG_DIR independently below and injects
+    // CLAUDE_CODE_OAUTH_TOKEN at spawn time, so the child never needs the
+    // (nonexistent) login of the stamped dir. An explicit
+    // CLAUDE_MEM_CLAUDE_CONFIG_DIR profile keeps its own stamp above — its
+    // credential identity and transcript store are one dir by design
+    // (#2753), and the transcript-only setting never overrides it.
+    //
+    // Trade-off (inherent, not a regression): a token-injected child cannot
+    // self-refresh — the refresh token lives in the profile's keychain
+    // entry, and a child whose CLAUDE_CONFIG_DIR points elsewhere cannot
+    // reach it (#4149's failure mode). Every worker spawn re-reads and
+    // re-injects a fresh token, and observer batches are short-lived, so
+    // capture keeps working across token rotations; if the stored login
+    // itself expires, the stale-login marker surfaces it as usual.
+    const transcriptConfigDir = configDirSettings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR?.trim();
+    if (transcriptConfigDir) {
+      // Same normalization the sister setting goes through
+      // (resolveEffectiveClaudeConfigDir): trim → tilde expansion →
+      // trailing-separator strip. A value from the settings file or the
+      // viewer never passes through a shell, so a docs-style
+      // '~/.claude-mem/observer-claude' would otherwise be stamped LITERAL
+      // and the child would create <worker cwd>/~/… — and resume would
+      // break as soon as the worker cwd changed.
+      isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(transcriptConfigDir);
+    }
   }
 
   if (includeCredentials) {

@@ -7,7 +7,7 @@ import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import * as ingestShared from '../../src/services/worker/http/shared.js';
 import { setIngestContext } from '../../src/services/worker/http/shared.js';
 import { drainHookSpool, HookSpoolDrainer } from '../../src/services/worker/hook-spool-drain.js';
-import { HookSpool, hookSpoolKeyFor } from '../../src/shared/hook-spool.js';
+import { HookSpool, hookSpoolKeyFor, HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS } from '../../src/shared/hook-spool.js';
 import { logger } from '../../src/utils/logger.js';
 
 let spoolDir: string;
@@ -102,7 +102,7 @@ describe('drainHookSpool', () => {
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(2);
     const sessionDbId = store.findSessionDbIdByContentSessionId('session-a', 'claude');
     expect(sessionDbId).not.toBeNull();
-    expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0);
+    expect(sessionManager.queueSummarize).toHaveBeenCalledWith(sessionDbId, 'done', 0, expect.any(Number));
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledWith(sessionDbId);
     expect(store.getAdvisorCalls(0, 10).items.map(call => call.tool_use_id)).toEqual(['srvtoolu_1']);
     expect(ensureGeneratorRunning).toHaveBeenCalledWith(sessionDbId, 'summarize');
@@ -127,6 +127,28 @@ describe('drainHookSpool', () => {
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledTimes(1);
   });
 
+  it('retires a session_end whose session never registered once it passes the grace window; summarize keeps waiting', async () => {
+    const spool = new HookSpool(join(spoolDir, 'spool'));
+    // Both entries are past the unknown-session grace window: the drain asked
+    // the worker (up, DB queried) and the session never registered, so the
+    // end can never succeed. The summarize's keep is load-bearing — it also
+    // waits for an observation to create the session — so it is untouched.
+    const staleEpochMs = Date.now() - HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS - 60_000;
+    spool.enqueue('session_end', { contentSessionId: 'never-registered', platformSource: 'claude' }, staleEpochMs);
+    spool.enqueue('summarize', { contentSessionId: 'never-registered', platformSource: 'claude', lastAssistantMessage: 'hello' }, staleEpochMs);
+
+    expect(await drainHookSpool(spool)).toEqual({ drained: 0, retained: 1, quarantined: 0, expired: 1 });
+    expect(spoolFiles(spool)).toEqual([expect.stringMatching(/^summarize-/)]);
+    expect(readdirSync(spool.expiredDirectory)).toHaveLength(1);
+    expect(sessionManager.requestSessionWrapup).not.toHaveBeenCalled();
+
+    // Inside the grace window the session_end still waits out the init race.
+    const fresh = new HookSpool(join(spoolDir, 'spool-fresh'));
+    fresh.enqueue('session_end', { contentSessionId: 'another-never-registered', platformSource: 'claude' });
+    expect(await drainHookSpool(fresh)).toEqual({ drained: 0, retained: 1, quarantined: 0, expired: 0 });
+    expect(spoolFiles(fresh)).toHaveLength(1);
+  });
+
   it('attributes a late-drained observation to the prompt current when the hook saw it, not at drain time', async () => {
     const spool = new HookSpool(join(spoolDir, 'spool'));
     const sessionDbId = store.createSDKSession('late-drain', 'project', 'first prompt', undefined, 'claude');
@@ -146,6 +168,7 @@ describe('drainHookSpool', () => {
     expect(await drainHookSpool(spool)).toEqual({ drained: 1, retained: 0, quarantined: 0, expired: 0 });
     expect(sessionManager.queueObservation).toHaveBeenCalledTimes(1);
     expect(sessionManager.queueObservation.mock.calls[0][1]).toMatchObject({ prompt_number: 1, toolUseId: 'toolu_late_1' });
+    expect(sessionManager.queueObservation.mock.calls[0][2]).toBe(hookSawEventAtEpochMs);
 
     // The HTTP route path (no enqueue time) still means "now".
     await ingestShared.ingestObservation({
@@ -153,6 +176,7 @@ describe('drainHookSpool', () => {
       toolInput: { command: 'pwd' }, toolResponse: { stdout: '/' }, cwd: '/repo', toolUseId: 'toolu_live_1',
     });
     expect(sessionManager.queueObservation.mock.calls[1][1]).toMatchObject({ prompt_number: 3, toolUseId: 'toolu_live_1' });
+    expect(sessionManager.queueObservation.mock.calls[1][2]).toBeUndefined();
   });
 
   it('removes a deliberately skipped entry (it would be skipped again)', async () => {
