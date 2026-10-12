@@ -1974,6 +1974,14 @@ export class ChromaMcpManager {
   }
 
   /**
+   * CLAUDE_MEM_CHROMA_UVX_PATH from settings.json, with the environment
+   * variable taking precedence (loadFromFile applies env overrides).
+   */
+  private static uvxPathSetting(): string {
+    return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CHROMA_UVX_PATH;
+  }
+
+  /**
    * uv installs `uvx` to a per-user bin dir that is often NOT on the PATH the
    * worker inherited (the worker is spawned by the host with a minimal env that
    * predates the user adding uv to PATH). Without it, `uvx`/`cmd /c uvx` dies
@@ -1984,7 +1992,7 @@ export class ChromaMcpManager {
   private static uvBinDirs(): string[] {
     return getUvxBinDirs({
       homedir: os.homedir,
-      override: process.env.CLAUDE_MEM_CHROMA_UVX_PATH,
+      override: ChromaMcpManager.uvxPathSetting(),
       platform: process.platform,
       isFile: dir => {
         try {
@@ -2017,7 +2025,7 @@ export class ChromaMcpManager {
     if (platform !== 'win32') {
       return 'uvx';
     }
-    const override = process.env.CLAUDE_MEM_CHROMA_UVX_PATH;
+    const override = ChromaMcpManager.uvxPathSetting();
     if (override) {
       try {
         if (fs.existsSync(override) && fs.statSync(override).isFile()) {

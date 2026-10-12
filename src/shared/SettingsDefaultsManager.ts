@@ -45,6 +45,25 @@ const RETIRED_OPENROUTER_DEFAULT_MODELS: ReadonlySet<string> = new Set([
   'xiaomi/mimo-v2-flash:free',
 ]);
 
+/**
+ * Every SettingsDefaults key is declared `string`, because that is how every
+ * writer seeds it and how every gate reads it: the Chroma gates test
+ * `CLAUDE_MEM_CHROMA_ENABLED !== 'false'`, not `!== false`. settings.json is
+ * hand-editable JSON, though, so a user who writes `"CLAUDE_MEM_CHROMA_ENABLED":
+ * false` (unquoted) puts the JSON boolean there, which is `!== 'false'` and
+ * leaves chroma running with nothing reporting that the setting was ignored
+ * (#4630).
+ *
+ * Render a JSON boolean as the string the key declares so both spellings mean
+ * the same thing to every consumer. Numbers are deliberately left alone: the
+ * deadline migrations treat a hand-written number as the user choosing it, and
+ * anything else is passed through untouched so this never rewrites a value it
+ * does not understand.
+ */
+function coercePersistedSettingValue(value: unknown): unknown {
+  return typeof value === 'boolean' ? String(value) : value;
+}
+
 function hasRetiredOpenRouterDefault(flatSettings: Record<string, any>): boolean {
   const model = flatSettings.CLAUDE_MEM_OPENROUTER_MODEL;
   if (typeof model !== 'string' || !RETIRED_OPENROUTER_DEFAULT_MODELS.has(model.trim())) {
@@ -244,6 +263,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: string;
   CLAUDE_MEM_SEMANTIC_INJECT: string;        
   CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: string;  
+  CLAUDE_MEM_SEMANTIC_INJECT_FORMAT: string;
   CLAUDE_MEM_TIER_ROUTING_ENABLED: string;
   CLAUDE_MEM_TIER_SIMPLE_MODEL: string;
   CLAUDE_MEM_TIER_SUMMARY_MODEL: string;
@@ -261,6 +281,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
+  CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -485,6 +506,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_FOLDER_MD_SKELETON_DENYLIST: '[]',  // #2400 — JSON array of glob patterns; when a folder matches AND its generated CLAUDE.md would be empty/skeleton, skip injection (avoids polluting non-content dirs with empty skeletons). Default [] preserves existing behavior.
     CLAUDE_MEM_SEMANTIC_INJECT: 'false',             // Inject relevant past observations on every UserPromptSubmit (experimental, disabled by default)
     CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '5',           // Top-N most relevant observations to inject per prompt
+    CLAUDE_MEM_SEMANTIC_INJECT_FORMAT: 'narrative',  // 'narrative' = title + full narrative per match; 'index' = id + title + subtitle, expanded via get_observations
     CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',         // Route observations to models by complexity
     CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku', // Portable tier alias — works across Direct API, Bedrock, Vertex, Azure (see #1463)
     CLAUDE_MEM_TIER_SUMMARY_MODEL: '',                // Empty = use default model for summaries
@@ -508,6 +530,7 @@ export class SettingsDefaultsManager {
     // memory text to that vendor. Any other value is rejected. Applies to new
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
+    CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',
@@ -643,20 +666,26 @@ export class SettingsDefaultsManager {
     return result;
   }
 
-  static loadFromFile(settingsPath: string, applyEnvOverrides = true): SettingsDefaults {
+  static loadFromFile(
+    settingsPath: string,
+    applyEnvOverrides = true,
+    options: { readOnly?: boolean } = {},
+  ): SettingsDefaults {
     try {
       if (!existsSync(settingsPath)) {
         const defaults = this.getAllDefaults();
-        try {
-          writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
-          // A fresh file already holds the raised deadlines: nothing to move.
-          for (const raised of RAISED_DEADLINE_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
-          // stderr, never stdout: this fires on the first boot in a fresh data
-          // dir, and CLI commands like `start` promise machine-readable JSON
-          // on stdout to the hook framework.
-          console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(settingsPath, defaults, { mode: 0o600 });
+            // A fresh file already holds the raised deadlines: nothing to move.
+            for (const raised of RAISED_DEADLINE_DEFAULTS) markRaisedDefaultDone(settingsPath, raised);
+            // stderr, never stdout: this fires on the first boot in a fresh data
+            // dir, and CLI commands like `start` promise machine-readable JSON
+            // on stdout to the hook framework.
+            console.warn('[SETTINGS] Created settings file with defaults:', settingsPath);
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to create settings file, using in-memory defaults:', settingsPath, error instanceof Error ? error.message : String(error));
+          }
         }
         return this.finalizeSettings(defaults, applyEnvOverrides);
       }
@@ -676,7 +705,7 @@ export class SettingsDefaultsManager {
         // A legacy file containing only `{ env: {...} }` can be flattened
         // safely. If it also contains peer root keys (hooks, permissions,
         // theme, etc.), retain the wrapper: flattening would destroy user data.
-        if (!hasPeerRootKeys) {
+        if (!hasPeerRootKeys && !options.readOnly) {
           try {
             writeJsonFileAtomic(settingsPath, flatSettings, { mode: 0o600 });
             // stderr, never stdout — same JSON-on-stdout contract as above.
@@ -694,17 +723,19 @@ export class SettingsDefaultsManager {
           CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES: this.DEFAULTS.CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES,
         };
 
-        try {
-          writeJsonFileAtomic(
-            settingsPath,
-            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
-            { mode: 0o600 },
-          );
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with the in-memory migration even if the write fails
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn('[SETTINGS] Migrated Telegram trigger types off the legacy default:', settingsPath);
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate Telegram trigger types:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with the in-memory migration even if the write fails
+          }
         }
       }
 
@@ -715,20 +746,22 @@ export class SettingsDefaultsManager {
           CLAUDE_MEM_OPENROUTER_MODEL: this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL,
         };
 
-        try {
-          writeJsonFileAtomic(
-            settingsPath,
-            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
-            { mode: 0o600 },
-          );
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn(
-            `[SETTINGS] Migrated OpenRouter model off the retired default ${retiredModel} to ${this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL}:`,
-            settingsPath,
-          );
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to migrate the retired OpenRouter model:', settingsPath, error instanceof Error ? error.message : String(error));
-          // Continue with the in-memory migration even if the write fails
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated OpenRouter model off the retired default ${retiredModel} to ${this.DEFAULTS.CLAUDE_MEM_OPENROUTER_MODEL}:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate the retired OpenRouter model:', settingsPath, error instanceof Error ? error.message : String(error));
+            // Continue with the in-memory migration even if the write fails
+          }
         }
       }
 
@@ -739,22 +772,24 @@ export class SettingsDefaultsManager {
           CLAUDE_MEM_CLOUD_SYNC_HUB_URL: rewrittenHubUrl,
         };
 
-        try {
-          writeJsonFileAtomic(
-            settingsPath,
-            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
-            { mode: 0o600 },
-          );
-          console.warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
-        } catch (error: unknown) {
-          console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
+              settingsPath,
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
+            );
+            console.warn('[SETTINGS] Migrated cloud sync hub URL to', rewrittenHubUrl, 'from a retired hub host:', settingsPath);
+          } catch (error: unknown) {
+            console.warn('[SETTINGS] Failed to migrate cloud sync hub URL:', settingsPath, error instanceof Error ? error.message : String(error));
+          }
         }
       }
 
       for (const raised of RAISED_DEADLINE_DEFAULTS) {
         if (existsSync(raisedDefaultMarkerPath(settingsPath, raised))) continue;
         if (flatSettings[raised.key] !== raised.legacy) {
-          markRaisedDefaultDone(settingsPath, raised);
+          if (!options.readOnly) markRaisedDefaultDone(settingsPath, raised);
           continue;
         }
         flatSettings = {
@@ -762,29 +797,31 @@ export class SettingsDefaultsManager {
           [raised.key]: this.DEFAULTS[raised.key],
         };
 
-        try {
-          writeJsonFileAtomic(
-            settingsPath,
-            hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
-            { mode: 0o600 },
-          );
-          markRaisedDefaultDone(settingsPath, raised);
-          // stderr, never stdout — same JSON-on-stdout contract as above.
-          console.warn(
-            `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}ms default to ${this.DEFAULTS[raised.key]}ms:`,
-            settingsPath,
-          );
-        } catch (error: unknown) {
-          // Continue with the in-memory migration even if the write fails; with
-          // no marker, the next load tries the rewrite again.
-          const reported = `${raised.key}\0${settingsPath}`;
-          if (!raisedDefaultFailuresReported.has(reported)) {
-            raisedDefaultFailuresReported.add(reported);
-            console.warn(
-              `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
+        if (!options.readOnly) {
+          try {
+            writeJsonFileAtomic(
               settingsPath,
-              error instanceof Error ? error.message : String(error),
+              hasPeerRootKeys ? { ...writableRoot, env: flatSettings } : flatSettings,
+              { mode: 0o600 },
             );
+            markRaisedDefaultDone(settingsPath, raised);
+            // stderr, never stdout — same JSON-on-stdout contract as above.
+            console.warn(
+              `[SETTINGS] Migrated ${raised.key} off the old ${raised.legacy}ms default to ${this.DEFAULTS[raised.key]}ms:`,
+              settingsPath,
+            );
+          } catch (error: unknown) {
+            // Continue with the in-memory migration even if the write fails; with
+            // no marker, the next load tries the rewrite again.
+            const reported = `${raised.key}\0${settingsPath}`;
+            if (!raisedDefaultFailuresReported.has(reported)) {
+              raisedDefaultFailuresReported.add(reported);
+              console.warn(
+                `[SETTINGS] Failed to migrate ${raised.key}; using the new default in memory (reported once per process):`,
+                settingsPath,
+                error instanceof Error ? error.message : String(error),
+              );
+            }
           }
         }
       }
@@ -792,7 +829,7 @@ export class SettingsDefaultsManager {
       const result: SettingsDefaults = { ...this.DEFAULTS };
       for (const key of Object.keys(this.DEFAULTS) as Array<keyof SettingsDefaults>) {
         if (flatSettings[key] !== undefined) {
-          result[key] = flatSettings[key];
+          result[key] = coercePersistedSettingValue(flatSettings[key]) as string;
         }
       }
 
