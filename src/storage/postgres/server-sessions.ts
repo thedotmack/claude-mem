@@ -4,6 +4,7 @@ import type { JsonObject, PostgresQueryable } from './utils.js';
 import { assertProjectOwnership, deterministicKey, newId, queryOne, toDate, toEpoch, toJsonObject } from './utils.js';
 import type { PostgresAgentEvent } from './agent-events.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 export interface PostgresServerSession {
   id: string;
@@ -95,7 +96,8 @@ export class PostgresServerSessionsRepository {
         input.agentType ?? null,
         platformSource,
         input.generationStatus ?? 'idle',
-        JSON.stringify(input.metadata ?? {})
+        // Session metadata can carry the opening prompt: no <private> sections stored.
+        JSON.stringify(stripMemoryTagsFromJsonStrings(input.metadata ?? {}))
       ]
     );
     return mapServerSessionRow(row!);

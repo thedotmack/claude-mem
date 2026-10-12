@@ -55,7 +55,7 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
 }));
 
 import { logger } from '../../../src/utils/logger.js';
-import { ServerClientError } from '../../../src/services/hooks/server-client.js';
+import { ServerClient, ServerClientError } from '../../../src/services/hooks/server-client.js';
 import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -181,5 +181,40 @@ describe('fileEditHandler — server runtime (data-loss fix)', () => {
     expect(result.continue).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(spooledEntries()).toEqual([]);
+  });
+
+  it('strips <private> sections from the edit before the event leaves the hook (outgoing HTTP body)', async () => {
+    const outgoingBodies: string[] = [];
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (_url: string, init: RequestInit = {}) => {
+      outgoingBodies.push(String(init.body));
+      return new Response(JSON.stringify({ event: { id: 'evt-1' } }), {
+        status: 201,
+        headers: { 'content-type': 'application/json' },
+      });
+    }) as typeof globalThis.fetch;
+    try {
+      mockRuntime = {
+        runtime: 'server',
+        projectId: 'proj-test',
+        serverBaseUrl: 'http://127.0.0.1:0',
+        client: new ServerClient({ serverBaseUrl: 'http://127.0.0.1:0', apiKey: 'test-key' }),
+      };
+      const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
+
+      await fileEditHandler.execute({
+        ...cursorInput(),
+        edits: [{ oldText: 'const a = 1;', newText: 'const a = 2; <private>confidential text</private>' }],
+      });
+
+      expect(outgoingBodies).toHaveLength(1);
+      expect(outgoingBodies[0]).not.toContain('confidential text');
+      expect(outgoingBodies[0]).not.toContain('<private>');
+      const body = JSON.parse(outgoingBodies[0]);
+      expect(body.payload.tool_input.edits).toEqual([{ oldText: 'const a = 1;', newText: 'const a = 2;' }]);
+      expect(spooledEntries()).toEqual([]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });

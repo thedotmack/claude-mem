@@ -14,6 +14,7 @@
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -370,7 +371,8 @@ export class ServerClient {
       ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
       ...(input.agentType !== undefined ? { agentType: input.agentType } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
-      ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
+      // The prompt rides in metadata; <private> sections never leave the hook.
+      ...(input.metadata !== undefined ? { metadata: stripMemoryTagsFromJsonStrings(input.metadata) } : {}),
     };
   }
 
@@ -384,7 +386,10 @@ export class ServerClient {
       ...(input.contentSessionId !== undefined ? { contentSessionId: input.contentSessionId } : {}),
       ...(input.memorySessionId !== undefined ? { memorySessionId: input.memorySessionId } : {}),
       ...(input.platformSource !== undefined ? { platformSource: normalizePlatformSourceField(input.platformSource) } : {}),
-      ...(input.payload !== undefined ? { payload: input.payload } : {}),
+      // Every server-bound event (tool use, file edit, assistant message, MCP
+      // record_event) passes here: <private> sections never leave the hook,
+      // the same rule worker ingest applies before storing tool data.
+      ...(input.payload !== undefined ? { payload: stripMemoryTagsFromJsonStrings(input.payload) } : {}),
     };
   }
 
