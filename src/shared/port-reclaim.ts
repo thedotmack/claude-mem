@@ -236,13 +236,8 @@ function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
       // is not a target.
       continue;
     }
-    // comm (field 2) is parenthesised and may contain spaces, so split after it.
-    const tailStart = raw.lastIndexOf(') ');
-    if (tailStart < 0) continue;
-    const fields = raw.slice(tailStart + 2).split(' ');
-    const ppid = Number.parseInt(fields[1] ?? '', 10);
-    const starttime = fields[19];
-    if (!Number.isFinite(ppid)) continue;
+    const stat = parseLinuxProcStat(raw);
+    if (!stat) continue;
     let name = '';
     let cmdline: string | null = null;
     let uid: number | null = null;
@@ -255,16 +250,24 @@ function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
     try {
       cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
     } catch { /* kernel thread or exited — nothing to fingerprint */ }
-    rows.push({
-      pid,
-      ppid,
-      name,
-      cmdline,
-      uid,
-      startToken: starttime && /^\d+$/.test(starttime) ? starttime : null,
-    });
+    rows.push({ pid, ppid: stat.ppid, name, cmdline, uid, startToken: stat.startToken });
   }
   return rows;
+}
+
+/**
+ * ppid and starttime from one /proc/<pid>/stat line. comm (field 2) is
+ * parenthesised and may itself contain spaces or `) `, so fields are read
+ * after its LAST closing paren. Pure and exported for tests.
+ */
+export function parseLinuxProcStat(raw: string): { ppid: number; startToken: string | null } | null {
+  const tailStart = raw.lastIndexOf(') ');
+  if (tailStart < 0) return null;
+  const fields = raw.slice(tailStart + 2).split(' ');
+  const ppid = Number.parseInt(fields[1] ?? '', 10);
+  if (!Number.isFinite(ppid)) return null;
+  const starttime = fields[19];
+  return { ppid, startToken: starttime && /^\d+$/.test(starttime) ? starttime : null };
 }
 
 /**
@@ -293,7 +296,11 @@ async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProc
     );
     return [];
   }
+  return parseMacProcessTable(stdout);
+}
 
+/** Rows from `ps -eo pid=,ppid=,uid=,lstart=,command=` output. Pure and exported for tests. */
+export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
   const rows: WindowsProcessRow[] = [];
   for (const line of stdout.split('\n')) {
     // lstart is `EEE MMM d HH:mm:ss yyyy` — five fields with whatever internal

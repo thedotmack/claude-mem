@@ -16,6 +16,8 @@
 import { describe, it, expect } from 'bun:test';
 import {
   chromaCmdlineNamesExactDataDir,
+  parseLinuxProcStat,
+  parseMacProcessTable,
   reclaimOrphanChromaDataDirWriters,
   type WindowsProcessRow,
 } from '../../src/shared/port-reclaim.js';
@@ -202,5 +204,29 @@ describe('chromaCmdlineNamesExactDataDir', () => {
     expect(chromaCmdlineNamesExactDataDir(`chroma-mcp --data-dir ${DATA_DIR}/x`, DATA_DIR, 'linux')).toBe(false);
     expect(chromaCmdlineNamesExactDataDir(`chroma-mcp --data-dir ${DATA_DIR}-data`, DATA_DIR, 'linux')).toBe(false);
     expect(chromaCmdlineNamesExactDataDir('chroma-mcp', DATA_DIR, 'linux')).toBe(false);
+  });
+});
+
+describe('process-table readers', () => {
+  it('macOS: keeps the single-digit lstart padding verbatim and the full command with spaces', () => {
+    const stdout = [
+      '  812     1   501 Mon Oct  5 09:03:07 2026     /Users/A B/.local/bin/uvx --from chroma-mcp chroma-mcp --data-dir "/Users/A B/.claude-mem/chroma"',
+      '91234   812   501 Sun Oct 12 14:22:01 2026     python3.13 /x/chroma-mcp --data-dir /Users/u/.claude-mem/chroma',
+      'garbage line',
+      '',
+    ].join('\n');
+    const rows = parseMacProcessTable(stdout);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ pid: 812, ppid: 1, uid: 501, startToken: 'Mon Oct  5 09:03:07 2026' });
+    expect(rows[0].cmdline).toBe('/Users/A B/.local/bin/uvx --from chroma-mcp chroma-mcp --data-dir "/Users/A B/.claude-mem/chroma"');
+    expect(chromaCmdlineNamesExactDataDir(rows[0].cmdline, '/Users/A B/.claude-mem/chroma', 'darwin')).toBe(true);
+    expect(rows[1]).toMatchObject({ pid: 91234, ppid: 812, uid: 501, startToken: 'Sun Oct 12 14:22:01 2026' });
+  });
+
+  it('Linux: reads ppid and starttime after the LAST paren, so comm may hold spaces and parens', () => {
+    const tail = 'S 1 4100 4100 0 -1 4194560 100 0 0 0 1 2 0 0 20 0 1 0 987654 1000 10';
+    expect(parseLinuxProcStat(`4100 (python3.13) ${tail}`)).toEqual({ ppid: 1, startToken: '987654' });
+    expect(parseLinuxProcStat(`4101 (we ird) (name)) ${tail}`)).toEqual({ ppid: 1, startToken: '987654' });
+    expect(parseLinuxProcStat('4102 no-paren-here')).toBeNull();
   });
 });
