@@ -215,6 +215,32 @@ export function isContextOverflowObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect the org-policy refusal Claude Code returns as the whole response when
+ * the account's organization has disabled subscription access (#4677):
+ *   "Your organization has disabled Claude subscription access for Claude
+ *    Code · Use an Anthropic API key instead, or ask your admin to enable
+ *    access"
+ *
+ * Anchored at BOTH ends, like the signed-out wording: the notice alone, or the
+ * notice plus the CLI's own remediation, and nothing else. An observation that
+ * opens with the same words and runs on ("…, so we updated the setup guide")
+ * stays unmatched, because a false match here pauses the generator for an auth
+ * repair nobody needs.
+ *
+ * It is an auth failure (the credential is refused), but /login cannot fix it,
+ * so callers book it with its own remedy.
+ */
+export function isOrgDisabledSubscriptionObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return /^your organization has disabled claude (?:[a-z]+ )?subscription access for claude code\s*(?:[.!]|[·|:\-–—]\s*use an anthropic api key instead,? or ask your admin to enable access\s*[.!]?)?\s*$/.test(text);
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
@@ -246,6 +272,8 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     // plus its own /login remediation.
     /^not logged in\b\s*[.!]?\s*$/.test(text) ||
     /^not logged in\b\s*[·|:\-–—]\s*(?:please\s+)?run\s+\/login\b\s*[.!]?\s*$/.test(text) ||
+    // The org-policy refusal (#4677); see isOrgDisabledSubscriptionObserverOutput.
+    isOrgDisabledSubscriptionObserverOutput(raw) ||
     // The remediation half of the same line: "<state> · Please run /login".
     // Required to END the response, so it is the CLI telling the user what to
     // do rather than an observation quoting the instruction — the existing

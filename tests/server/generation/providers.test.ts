@@ -238,11 +238,18 @@ describe('buildServerGenerationPrompt', () => {
     expect(result.hadPrivateContent).toBe(true);
   });
 
-  it('includes generation_job_id and project metadata in the prompt', () => {
+  it('renders an object payload as compact JSON, escaping only &, < and >', () => {
+    const { prompt } = buildServerGenerationPrompt(makeContext({ payload: { cmd: 'echo "a<b" && ls', n: 1 } }));
+    expect(prompt).toContain(String.raw`{"cmd":"echo \"a&lt;b\" &amp;&amp; ls","n":1}`);
+    expect(prompt).not.toContain('&quot;');
+  });
+
+  it('sends the folder label but none of the ids the model never needs', () => {
     const result = buildServerGenerationPrompt(makeContext({ serverSessionId: 'session-x' }));
-    expect(result.prompt).toContain('<generation_job_id>job-1</generation_job_id>');
-    expect(result.prompt).toContain('<server_session_id>session-x</server_session_id>');
     expect(result.prompt).toContain('<project_name>demo</project_name>');
+    for (const id of ['job-1', 'session-x', '<project_id>', '<team_id>', '<generation_job_id>', '<server_session_id>']) {
+      expect(result.prompt).not.toContain(id);
+    }
   });
 });
 
