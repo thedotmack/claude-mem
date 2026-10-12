@@ -553,6 +553,7 @@ describe('Claude observer feed pacing (#4066)', () => {
     liveSessions.push(h.session);
     h.session.consecutiveContextOverflows = 1;
     h.session.consecutiveResponseStalls = 2;
+    h.session.consecutiveSdkStreamExits = 2;
     h.session.consecutiveRateLimitResumes = 3;
 
     const run = h.provider.startSession(h.session);
@@ -562,12 +563,14 @@ describe('Claude observer feed pacing (#4066)', () => {
     await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
     expect(h.session.consecutiveContextOverflows).toBe(1);
     expect(h.session.consecutiveResponseStalls).toBe(2);
+    expect(h.session.consecutiveSdkStreamExits).toBe(2);
     expect(h.session.consecutiveRateLimitResumes).toBe(3);
 
     sdk().answer(SKIP_REPLY);
     await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
     expect(h.session.consecutiveContextOverflows).toBe(0);
     expect(h.session.consecutiveResponseStalls).toBe(0);
+    expect(h.session.consecutiveSdkStreamExits).toBe(0);
     expect(h.session.consecutiveRateLimitResumes).toBe(0);
 
     h.session.abortController.abort();
