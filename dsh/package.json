@@ -1,6 +1,6 @@
 {
   "name": "@claude-mem/dsh",
-  "version": "13.34.2",
+  "version": "13.35.0",
   "private": true,
   "description": "First-party DeepSeek Harness memory integration, based on Bleed00/dsh-claude-mem",
   "type": "module",
