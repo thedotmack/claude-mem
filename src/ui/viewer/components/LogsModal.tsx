@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
 type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA';
+type LogComponent = 'HOOK' | 'WORKER' | 'SDK' | 'PARSER' | 'DB' | 'SYSTEM' | 'HTTP' | 'SESSION' | 'CHROMA' | 'OTHER';
 
 interface ParsedLogLine {
   raw: string;
@@ -30,7 +30,11 @@ const LOG_COMPONENTS: { key: LogComponent; label: string; icon: string; color: s
   { key: 'HTTP', label: 'HTTP', icon: '🌐', color: '#39d353' },
   { key: 'SESSION', label: 'Session', icon: '📋', color: '#db61a2' },
   { key: 'CHROMA', label: 'Chroma', icon: '🔮', color: '#a855f7' },
+  { key: 'OTHER', label: 'Other', icon: '🧩', color: '#8b949e' },
 ];
+
+// The logger has more components than there are chips; the rest are filtered by the Other chip.
+const LISTED_COMPONENT_KEYS = new Set<string>(LOG_COMPONENTS.map(component => component.key));
 
 function parseLogLine(line: string): ParsedLogLine {
   const pattern = /^\[([^\]]+)\]\s+\[(\w+)\s*\]\s+\[(\w+)\s*\]\s+(?:\[([^\]]+)\]\s+)?(.*)$/;
@@ -77,18 +81,29 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   const startHeightRef = useRef(0);
   const contentRef = useRef<HTMLDivElement>(null);
   const wasAtBottomRef = useRef(true);
+  const requestSeqRef = useRef(0);
+  const clearingRef = useRef(false);
 
   const [activeLevels, setActiveLevels] = useState<Set<LogLevel>>(
     new Set(['DEBUG', 'INFO', 'WARN', 'ERROR'])
   );
   const [activeComponents, setActiveComponents] = useState<Set<LogComponent>>(
-    new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA'])
+    new Set(LOG_COMPONENTS.map(component => component.key))
   );
   const [alignmentOnly, setAlignmentOnly] = useState(false);
 
   const parsedLines = useMemo(() => {
     if (!logs) return [];
-    return logs.split('\n').map(parseLogLine);
+    let record: ParsedLogLine | undefined;
+    return logs.split('\n').map(raw => {
+      const line = parseLogLine(raw);
+      if (line.timestamp) record = line;
+      else if (record) {
+        line.level = record.level;
+        line.component = record.component;
+      }
+      return line;
+    });
   }, [logs]);
 
   const filteredLines = useMemo(() => {
@@ -96,8 +111,12 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
       if (alignmentOnly) {
         return line.raw.includes('[ALIGNMENT]');
       }
-      if (!line.level || !line.component) return true;
-      return activeLevels.has(line.level) && activeComponents.has(line.component);
+      if (!line.level || !line.component) {
+        return activeLevels.size === LOG_LEVELS.length
+          && activeComponents.size === LOG_COMPONENTS.length;
+      }
+      const componentChipKey = LISTED_COMPONENT_KEYS.has(line.component) ? line.component : 'OTHER';
+      return activeLevels.has(line.level) && activeComponents.has(componentChipKey);
     });
   }, [parsedLines, activeLevels, activeComponents, alignmentOnly]);
 
@@ -114,6 +133,8 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
   }, []);
 
   const fetchLogs = useCallback(async () => {
+    if (clearingRef.current) return;
+    const request = ++requestSeqRef.current;
     wasAtBottomRef.current = checkIfAtBottom();
 
     setIsLoading(true);
@@ -124,11 +145,11 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
         throw new Error(`Failed to fetch logs: ${response.statusText}`);
       }
       const data = await response.json();
-      setLogs(data.logs || '');
+      if (request === requestSeqRef.current) setLogs(data.logs || '');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (request === requestSeqRef.current) setError(err instanceof Error ? err.message : 'Unknown error');
     } finally {
-      setIsLoading(false);
+      if (request === requestSeqRef.current) setIsLoading(false);
     }
   }, [checkIfAtBottom]);
 
@@ -140,18 +161,47 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
     if (!confirm('Are you sure you want to clear all logs?')) {
       return;
     }
+    const request = ++requestSeqRef.current;
+    clearingRef.current = true;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
     setIsLoading(true);
     setError(null);
     try {
-      const response = await fetch('/api/logs/clear', { method: 'POST' });
+      const response = await fetch('/api/logs/clear', { method: 'POST', signal: controller.signal });
       if (!response.ok) {
         throw new Error(`Failed to clear logs: ${response.statusText}`);
       }
-      setLogs('');
+      if (request === requestSeqRef.current) setLogs('');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
+      if (controller.signal.aborted) {
+        // Abort only says that the acknowledgment was lost: the worker may
+        // already have cleared the file. Reconcile even with auto-refresh off,
+        // keeping this operation's request ownership and a bounded read.
+        const reconciliation = new AbortController();
+        const reconciliationTimeout = setTimeout(() => reconciliation.abort(), 5000);
+        try {
+          const response = await fetch('/api/logs', { signal: reconciliation.signal });
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          const data = await response.json();
+          if (request === requestSeqRef.current) {
+            setLogs(data.logs || '');
+            setError('Clear request timed out; its outcome is unknown. Displaying current logs.');
+          }
+        } catch {
+          if (request === requestSeqRef.current) {
+            setError('Clear request timed out; its outcome is unknown and current logs could not be refreshed. Try Refresh.');
+          }
+        } finally {
+          clearTimeout(reconciliationTimeout);
+        }
+      } else if (request === requestSeqRef.current) {
+        setError(err instanceof Error ? err.message : 'Unknown error');
+      }
     } finally {
-      setIsLoading(false);
+      clearTimeout(timeout);
+      clearingRef.current = false;
+      if (request === requestSeqRef.current) setIsLoading(false);
     }
   }, []);
 
@@ -234,7 +284,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
 
   const setAllComponents = useCallback((enabled: boolean) => {
     if (enabled) {
-      setActiveComponents(new Set(['HOOK', 'WORKER', 'SDK', 'PARSER', 'DB', 'SYSTEM', 'HTTP', 'SESSION', 'CHROMA']));
+      setActiveComponents(new Set(LOG_COMPONENTS.map(component => component.key)));
     } else {
       setActiveComponents(new Set());
     }

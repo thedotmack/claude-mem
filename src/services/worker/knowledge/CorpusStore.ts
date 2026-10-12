@@ -3,9 +3,19 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { logger } from '../../../utils/logger.js';
 import { paths } from '../../../shared/paths.js';
+import { AppError } from '../../server/ErrorHandler.js';
 import type { CorpusFile, CorpusStats } from './types.js';
 
 const CORPORA_DIR = paths.corpora();
+
+/**
+ * Characters permitted in a corpus name. Anything outside this set (spaces,
+ * slashes, non-ASCII) is a client-side input mistake, not a server fault — so
+ * validation throws a 400 `AppError`, not a bare 500-mapped `Error`.
+ */
+export const CORPUS_NAME_PATTERN = /^[a-zA-Z0-9._-]+$/;
+export const CORPUS_NAME_ERROR =
+  'Invalid corpus name: only alphanumeric characters, dots, hyphens, and underscores are allowed';
 
 export class CorpusStore {
   private readonly corporaDir: string;
@@ -86,8 +96,8 @@ export class CorpusStore {
 
   private validateCorpusName(name: string): string {
     const trimmed = name.trim();
-    if (!/^[a-zA-Z0-9._-]+$/.test(trimmed)) {
-      throw new Error('Invalid corpus name: only alphanumeric characters, dots, hyphens, and underscores are allowed');
+    if (!CORPUS_NAME_PATTERN.test(trimmed)) {
+      throw new AppError(CORPUS_NAME_ERROR, 400, 'INVALID_CORPUS_NAME');
     }
     return trimmed;
   }
@@ -96,7 +106,7 @@ export class CorpusStore {
     const safeName = this.validateCorpusName(name);
     const resolved = path.resolve(this.corporaDir, `${safeName}.corpus.json`);
     if (!resolved.startsWith(path.resolve(this.corporaDir) + path.sep)) {
-      throw new Error('Invalid corpus name');
+      throw new AppError('Invalid corpus name', 400, 'INVALID_CORPUS_NAME');
     }
     return resolved;
   }

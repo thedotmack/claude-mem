@@ -1,12 +1,15 @@
 import React from "react";
 import { Summary } from "../types";
 import { formatDate } from "../utils/formatters";
+import { DeleteButton } from "./DeleteButton";
+import type { DeletableItemType } from "../utils/feed-deletion";
 
 interface SummaryCardProps {
   summary: Summary;
+  onDeleted: (itemType: DeletableItemType, id: number) => void;
 }
 
-export function SummaryCard({ summary }: SummaryCardProps) {
+export function SummaryCard({ summary, onDeleted }: SummaryCardProps) {
   const date = formatDate(summary.created_at_epoch);
 
   const sections = [
@@ -14,6 +17,7 @@ export function SummaryCard({ summary }: SummaryCardProps) {
     { key: "learned", label: "Learned", content: summary.learned, icon: "/icon-thick-learned.svg" },
     { key: "completed", label: "Completed", content: summary.completed, icon: "/icon-thick-completed.svg" },
     { key: "next_steps", label: "Next Steps", content: summary.next_steps, icon: "/icon-thick-next-steps.svg" },
+    { key: "notes", label: "Notes", content: summary.notes, icon: "/icon-thick-learned.svg" },
   ].filter((section) => section.content);
 
   return (
@@ -25,6 +29,7 @@ export function SummaryCard({ summary }: SummaryCardProps) {
             {summary.platform_source || 'claude'}
           </span>
           <span className="summary-project-badge">{summary.project}</span>
+          <DeleteButton itemType="summary" id={summary.id} onDeleted={onDeleted} />
         </div>
         {summary.request && (
           <h2 className="summary-title">{summary.request}</h2>

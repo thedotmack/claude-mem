@@ -19,8 +19,11 @@
  *     a safe fallback, never an exception. This module sits on the telemetry
  *     fire-and-forget path and must obey the "telemetry never throws" invariant.
  *   - We never emit raw paths, prompts, project names, or model output. The
- *     redaction order matters: home dir → absolute paths → URL query strings →
+ *     redaction order matters: home dir → URL query strings / userinfo →
+ *     absolute paths → residual query fragments → assignment-style secrets →
  *     secret/token patterns → whitespace collapse → length caps.
+ *     URLs must be stripped BEFORE path collapse: collapsing `/v1/data?token=`
+ *     first destroys `://` so query/userinfo redaction would never fire.
  *   - Output is bounded: message ≤ MESSAGE_MAX_CHARS, stack ≤ STACK_MAX_CHARS,
  *     and only the top STACK_MAX_FRAMES frames survive.
  *
@@ -154,10 +157,39 @@ export function redactUrlQueryStrings(text: string): string {
   // up to the next whitespace/quote/paren. A scheme is letters/digits with
   // optional + . - (e.g. mongodb+srv). Per match: drop everything from the
   // first ? or #, then strip userinfo (scheme://user:pass@ → [REDACTED]@).
-  return text.replace(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'()]+/g, match =>
-    match
+  return text.replace(/\b[A-Za-z][A-Za-z0-9+.-]*:\/\/[^\s"'()]+/g, match => {
+    // Slack incoming-webhook URLs carry the secret in the path, not the query.
+    if (/^https?:\/\/hooks\.slack\.com\/services\//i.test(match)) {
+      return match.replace(/^(https?:\/\/hooks\.slack\.com\/services\/)[^\s"'()]+/i, `$1${REDACTED}`);
+    }
+    return match
       .replace(/[?#].*$/, '')
-      .replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/, `$1${REDACTED}@`)
+      .replace(/^([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^/@\s]+@/, `$1${REDACTED}@`);
+  });
+}
+
+/**
+ * Strips `?query` leftovers after path collapse. Path heuristics keep only a
+ * basename, which can leave `https:/data?token=secret` — no longer a
+ * `scheme://` URL, so redactUrlQueryStrings would miss it.
+ */
+export function redactResidualQueryStrings(text: string): string {
+  if (typeof text !== 'string' || text.length === 0) return text ?? '';
+  return text.replace(/\?[^\s"'()]*/g, '');
+}
+
+/**
+ * Masks assignment-style secrets (`token=…`, `api_key=…`) that are not inside
+ * a URL. Bare `code=` is omitted — it matches ordinary "error code=12".
+ */
+export function redactAssignmentSecrets(text: string): string {
+  if (typeof text !== 'string' || text.length === 0) return text ?? '';
+  return text.replace(
+    /\b(?:access[_-]?token|api[_-]?key|auth(?:orization)?|secret|password|passwd|jwt|session[_-]?id|token)=[^\s"'&]+/gi,
+    (match) => {
+      const eq = match.indexOf('=');
+      return `${match.slice(0, eq + 1)}${REDACTED}`;
+    }
   );
 }
 
@@ -226,9 +258,9 @@ export function collapseWhitespace(text: string): string {
 
 /**
  * Full redaction pipeline for a single line/message, applied in the mandated
- * order: home dir → absolute paths → URL query strings → secrets → whitespace.
- * Pure / never throws. Length capping is applied by the callers (scrubMessage /
- * scrubStack) so this stays composable.
+ * order: home dir → URL query/userinfo → absolute paths → residual query →
+ * assignment secrets → token patterns. Pure / never throws. Length capping is
+ * applied by the callers (scrubMessage / scrubStack) so this stays composable.
  */
 export function redactText(text: unknown): string {
   // CAP FIRST: no regex in this pipeline ever sees more than MAX_RAW_INPUT_CHARS.
@@ -237,8 +269,10 @@ export function redactText(text: unknown): string {
   let out = capRawInput(text);
   if (out.length === 0) return '';
   out = redactHomeDir(out);
-  out = redactAbsolutePaths(out);
   out = redactUrlQueryStrings(out);
+  out = redactAbsolutePaths(out);
+  out = redactResidualQueryStrings(out);
+  out = redactAssignmentSecrets(out);
   out = redactSecrets(out);
   return out;
 }

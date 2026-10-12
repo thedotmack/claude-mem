@@ -83,15 +83,29 @@ function mapMemorySourceRow(row: MemorySourceRow): MemorySource {
   });
 }
 
-function buildFtsQuery(query: string): string {
-  return query
-    .normalize('NFKC')
+function buildSearchQuery(query: string): { words: string; symbols: Array<{ literal: string; expanded: string }> } {
+  const tokenQuery = (text: string): string => text
     .trim()
     .split(/\s+/)
     .flatMap(token => token.split(/[^\p{L}\p{N}_]+/gu))
     .filter(Boolean)
     .map(token => `"${token}"`)
     .join(' ');
+  // unicode61 keeps compatibility characters in stored documents. Match each
+  // indexed word in its original or normalized form independently.
+  const tokens = query.match(/[\p{L}\p{N}\p{S}_][\p{L}\p{N}\p{M}\p{S}_]*/gu) ?? [];
+  const words = tokens.filter(token => tokenQuery(token)).map(token => {
+    const alternatives = [...new Set([token, token.normalize('NFKC')].map(tokenQuery).filter(Boolean))];
+    return alternatives.length > 1
+      ? `(${alternatives.map(text => `(${text})`).join(' OR ')})`
+      : alternatives[0] ?? '';
+  }).filter(Boolean).join(' AND ');
+  // Symbol-only compatibility terms have no raw FTS token: ™ expands to TM
+  // and ℀ to a/c. Keep their literal and expanded alternatives as constraints.
+  const symbols = [...new Set(tokens.filter(token => !tokenQuery(token)))]
+    .map(literal => ({ literal, expanded: tokenQuery(literal.normalize('NFKC')) }))
+    .filter(symbol => symbol.expanded);
+  return { words, symbols };
 }
 
 export class MemoryItemsRepository {
@@ -171,14 +185,14 @@ export class MemoryItemsRepository {
     }
     const next = CreateMemoryItemSchema.parse({
       projectId: input.projectId ?? existing.projectId,
-      serverSessionId: input.serverSessionId ?? existing.serverSessionId,
-      legacyObservationId: input.legacyObservationId ?? existing.legacyObservationId,
+      serverSessionId: input.serverSessionId !== undefined ? input.serverSessionId : existing.serverSessionId,
+      legacyObservationId: input.legacyObservationId !== undefined ? input.legacyObservationId : existing.legacyObservationId,
       kind: input.kind ?? existing.kind,
       type: input.type ?? existing.type,
-      title: input.title ?? existing.title,
-      subtitle: input.subtitle ?? existing.subtitle,
-      text: input.text ?? existing.text,
-      narrative: input.narrative ?? existing.narrative,
+      title: input.title !== undefined ? input.title : existing.title,
+      subtitle: input.subtitle !== undefined ? input.subtitle : existing.subtitle,
+      text: input.text !== undefined ? input.text : existing.text,
+      narrative: input.narrative !== undefined ? input.narrative : existing.narrative,
       facts: input.facts ?? existing.facts,
       concepts: input.concepts ?? existing.concepts,
       filesRead: input.filesRead ?? existing.filesRead,
@@ -244,18 +258,35 @@ export class MemoryItemsRepository {
   }
 
   search(projectId: string, query: string, limit = 20): MemoryItem[] {
-    const ftsQuery = buildFtsQuery(query);
-    if (!ftsQuery) return [];
+    const { words, symbols } = buildSearchQuery(query);
+    if (!words && symbols.length === 0) return [];
 
+    const conditions = ['memory_items.project_id = ?'];
+    const parameters: Array<string | number> = [projectId];
+    const ftsCondition = `memory_items.id IN (
+      SELECT memory_item_id FROM memory_items_fts
+      WHERE project_id = ? AND memory_items_fts MATCH ?
+    )`;
+    if (words) {
+      conditions.push(ftsCondition);
+      parameters.push(projectId, words);
+    }
+    const indexedFields = ['title', 'subtitle', 'text', 'narrative', 'facts', 'concepts'];
+    for (const symbol of symbols) {
+      const literalCondition = indexedFields.map(field => `instr(COALESCE(memory_items.${field}, ''), ?) > 0`).join(' OR ');
+      // MATCH stays in its own subquery: SQLite cannot always evaluate a
+      // virtual-table MATCH directly beneath an outer OR expression.
+      conditions.push(`((${literalCondition}) OR ${ftsCondition})`);
+      parameters.push(...indexedFields.map(() => symbol.literal), projectId, symbol.expanded);
+    }
+    parameters.push(limit);
     const rows = this.db.prepare(`
       SELECT memory_items.*
       FROM memory_items
-      JOIN memory_items_fts ON memory_items_fts.memory_item_id = memory_items.id
-      WHERE memory_items_fts.project_id = ?
-        AND memory_items_fts MATCH ?
+      WHERE ${conditions.join(' AND ')}
       ORDER BY memory_items.updated_at_epoch DESC
       LIMIT ?
-    `).all(projectId, ftsQuery, limit) as MemoryItemRow[];
+    `).all(...parameters) as MemoryItemRow[];
     return rows.map(mapMemoryItemRow);
   }
 }

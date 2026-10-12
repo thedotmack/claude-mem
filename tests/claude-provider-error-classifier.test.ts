@@ -191,3 +191,31 @@ describe('classifyClaudeError — model identifier rejections without .status (#
     expect(classified.kind).toBe('transient');
   });
 });
+
+/**
+ * An observer working directory that cannot be created (the data dir is a file
+ * or unwritable) is a setup problem: retrying cannot fix it. The CLI's own
+ * `Path "..." does not exist` result is not: telemetry shows it once per install
+ * and never again, so it stays transient.
+ */
+describe('classifyClaudeError — observer working directory', () => {
+  it('classifies the ensureObserverSessionsDir setup message as setup_required', () => {
+    const err = new Error('Observer working directory could not be prepared: /home/u/data/observer-sessions (ENOTDIR): not a directory');
+    expect(classifyClaudeError(err).kind).toBe('setup_required');
+  });
+
+  it('keeps the CLI "Path ... does not exist" result transient', () => {
+    const err = new Error('Claude Code returned an error result: Path "/home/u/.claude-mem/observer-sessions/1" does not exist');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+
+  it('only matches the message at its start', () => {
+    const err = new Error('upstream said: Observer working directory could not be prepared: /x (EACCES): denied');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+
+  it('does not treat an unrelated "does not exist" message as setup_required', () => {
+    const err = new Error('the requested record does not exist');
+    expect(classifyClaudeError(err).kind).toBe('transient');
+  });
+});

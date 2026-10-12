@@ -114,7 +114,7 @@ You are writing chapter {N} of {TOTAL} in a serial week-by-week digest of the {P
 **Format key for the source file:**
 - Numeric lines like `1 7:59p 🔵 Save hook file is empty` are observations (ID, time, type-emoji, title)
 - `S##` lines are session boundaries (the user prompt that started the session)
-- Emoji legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note
+- Emoji legend: 🎯session 🔴bugfix 🟣feature 🔄refactor ✅change 🔵discovery ⚖️decision 🚨security_alert 🔐security_note 🤫sensitive
 
 **Story so far (carry-forward from Week {N-1}):**
 

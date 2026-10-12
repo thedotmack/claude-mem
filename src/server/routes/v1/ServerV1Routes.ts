@@ -5,7 +5,7 @@ import type { Database } from 'bun:sqlite';
 import { z, type ZodTypeAny } from 'zod';
 import type { RouteHandler } from '../../../services/server/Server.js';
 import { CreateAgentEventSchema } from '../../../core/schemas/agent-event.js';
-import { CreateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
+import { CreateMemoryItemSchema, UpdateMemoryItemSchema } from '../../../core/schemas/memory-item.js';
 import { CreateProjectSchema } from '../../../core/schemas/project.js';
 import { CreateServerSessionSchema } from '../../../core/schemas/session.js';
 import {
@@ -25,7 +25,7 @@ const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
 /**
  * Write-path contract guard (#2684): a memory_items row is only useful if at
  * least one of its searchable columns is non-empty, because the FTS trigger
- * indexes exactly those columns. Returns true if the create body would produce
+ * indexes exactly those columns. Returns true if the supplied values produce
  * a searchable row.
  */
 function hasSearchableContent(body: {
@@ -211,7 +211,7 @@ export class ServerV1Routes implements RouteHandler {
       res.json({ memory });
     });
 
-    app.patch('/v1/memories/:id', writeAuth, this.handleCreate(CreateMemoryItemSchema.partial(), (req, res, body) => {
+    app.patch('/v1/memories/:id', writeAuth, this.handleCreate(UpdateMemoryItemSchema, (req, res, body) => {
       const id = this.routeParam(req.params.id);
       const repo = new MemoryItemsRepository(this.options.getDatabase());
       const existing = repo.getById(id);
@@ -222,6 +222,16 @@ export class ServerV1Routes implements RouteHandler {
       if (!this.ensureProjectAllowed(req, res, existing.projectId)) return;
       if (body.projectId && body.projectId !== existing.projectId) {
         res.status(400).json({ error: 'ValidationError', message: 'projectId cannot be changed' });
+        return;
+      }
+      // PATCH omission preserves stored values, while explicit null/[] clears
+      // them. Reject losing searchable content, while allowing unrelated edits
+      // to existing empty records that predate the public creation check.
+      if (hasSearchableContent(existing) && !hasSearchableContent({ ...existing, ...body })) {
+        res.status(400).json({
+          error: 'ValidationError',
+          message: 'memory_items requires at least one searchable text field; refusing to clear the last searchable field',
+        });
         return;
       }
       const memory = repo.update(id, body);
@@ -242,11 +252,16 @@ export class ServerV1Routes implements RouteHandler {
 
     app.post('/v1/context', readAuth, this.handleCreate(z.object({
       projectId: z.string().min(1),
-      query: z.string().min(1),
+      // Optional: a context request with no query asks for the most RECENT
+      // items, which is what a session-start block actually wants.
+      query: z.string().min(1).optional(),
       limit: z.number().int().positive().max(50).optional(),
     }), (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
-      const memories = new MemoryItemsRepository(this.options.getDatabase()).search(body.projectId, body.query, body.limit ?? 10);
+      const repo = new MemoryItemsRepository(this.options.getDatabase());
+      const memories = body.query
+        ? repo.search(body.projectId, body.query, body.limit ?? 10)
+        : repo.listByProject(body.projectId, body.limit ?? 10);
       this.audit(req, 'memory.context', null, body.projectId);
       res.json({ memories, context: memories.map(memory => memory.narrative ?? memory.text ?? memory.title).filter(Boolean).join('\n\n') });
     }));

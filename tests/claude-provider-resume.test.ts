@@ -4,7 +4,9 @@ describe('ClaudeProvider Resume Parameter Logic', () => {
   function shouldPassResumeParameter(session: {
     memorySessionId: string | null;
     lastPromptNumber: number;
+    disableSessionPersistence?: boolean;
   }): boolean {
+    if (session.disableSessionPersistence) return false;
     const hasRealMemorySessionId = !!session.memorySessionId;
     return hasRealMemorySessionId && session.lastPromptNumber > 1;
   }
@@ -125,6 +127,18 @@ describe('ClaudeProvider Resume Parameter Logic', () => {
       const shouldResume = shouldPassResumeParameter(session);
 
       expect(shouldResume).toBe(true);
+    });
+
+    it('should NOT resume when session persistence is disabled for observer spawns', () => {
+      const session = {
+        memorySessionId: '5439891b-7d4b-4ee3-8662-c000f66bc199',
+        lastPromptNumber: 2,
+        disableSessionPersistence: true,
+      };
+
+      const shouldResume = shouldPassResumeParameter(session);
+
+      expect(shouldResume).toBe(false);
     });
   });
 });

@@ -5,13 +5,16 @@ import { logger } from './logger.js';
 
 export interface WorktreeInfo {
   isWorktree: boolean;
-  worktreeName: string | null;     
-  parentRepoPath: string | null;   
-  parentProjectName: string | null; 
+  /** Nests under a superproject like a worktree nests under its parent (#2842). */
+  isSubmodule: boolean;
+  worktreeName: string | null;
+  parentRepoPath: string | null;
+  parentProjectName: string | null;
 }
 
 const NOT_A_WORKTREE: WorktreeInfo = {
   isWorktree: false,
+  isSubmodule: false,
   worktreeName: null,
   parentRepoPath: null,
   parentProjectName: null
@@ -50,18 +53,31 @@ export function detectWorktree(cwd: string): WorktreeInfo {
   const gitdirPath = path.resolve(path.dirname(gitPath), match[1]);
 
   const worktreesMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]worktrees[/\\]([^/\\]+)$/);
-  if (!worktreesMatch) {
-    return NOT_A_WORKTREE;
+  if (worktreesMatch) {
+    const parentRepoPath = worktreesMatch[1];
+    return {
+      isWorktree: true,
+      isSubmodule: false,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
   }
 
-  const parentRepoPath = worktreesMatch[1];
-  const worktreeName = path.basename(cwd);
-  const parentProjectName = path.basename(parentRepoPath);
+  // Submodules point at `<super>/.git/modules/<name>`, which the worktrees
+  // pattern never matched — they resolved to their own leaf name, a new empty
+  // project, so context injection reported "no memory yet" (#2842).
+  const submoduleMatch = gitdirPath.match(/^(.+)[/\\]\.git[/\\]modules[/\\](.+)$/);
+  if (submoduleMatch) {
+    const parentRepoPath = submoduleMatch[1];
+    return {
+      isWorktree: false,
+      isSubmodule: true,
+      worktreeName: path.basename(cwd),
+      parentRepoPath,
+      parentProjectName: path.basename(parentRepoPath)
+    };
+  }
 
-  return {
-    isWorktree: true,
-    worktreeName,
-    parentRepoPath,
-    parentProjectName
-  };
+  return NOT_A_WORKTREE;
 }

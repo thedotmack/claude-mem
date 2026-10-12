@@ -17,6 +17,7 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
         handler = rest[1];
       }
     }),
+    delete: mock(() => {}),
   };
 
   routes.setupRoutes(app as any);
@@ -125,7 +126,12 @@ describe('DataRoutes import platform scoping', () => {
         observationsSkipped: 0,
         promptsImported: 2,
         promptsSkipped: 0,
+        sessionsRejected: 0,
+        summariesRejected: 0,
+        observationsRejected: 0,
+        promptsRejected: 0,
       },
+      rejected: { sessions: [], summaries: [], observations: [], prompts: [] },
     });
 
     const rows = store.db.prepare(`
