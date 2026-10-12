@@ -421,6 +421,9 @@ export class SessionSearch {
     return { clause: `(${groups.join(' AND ')})`, params };
   }
 
+  /** Fewest query terms before an AND query with no match is widened to any term (see buildFTSAnyTermQuery). */
+  private static readonly MIN_ANY_TERM_TOKENS = 3;
+
   /**
    * Build an FTS5 query that preserves literal-token safety while allowing multi-word
    * input to behave as an AND of terms instead of an exact phrase.
@@ -438,6 +441,25 @@ export class SessionSearch {
     return tokens
       .map(token => `"${token.replace(/"/g, '""')}"`)
       .join(' AND ');
+  }
+
+  /**
+   * The same quoted tokens as buildFTSMatchQuery, joined with OR, for a query whose terms never all appear in one
+   * row. A natural-language question ("when did we change the retry limit") almost never has every word in one
+   * observation, so the AND query matches nothing; OR lets FTS5's bm25 rank the rows that share the most, and the
+   * rarest, terms first. Queries of one or two terms stay keyword queries, matched with AND as #4130 intends
+   * ("authentication bug" must not widen to every row that mentions "bug"); widening starts at three terms, where
+   * a query reads as a question. Null when the query is not widened.
+   */
+  private static buildFTSAnyTermQuery(query: string): string | null {
+    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
+    if (tokens.length < SessionSearch.MIN_ANY_TERM_TOKENS) {
+      return null;
+    }
+
+    return tokens
+      .map(token => `"${token.replace(/"/g, '""')}"`)
+      .join(' OR ');
   }
 
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
@@ -568,7 +590,12 @@ export class SessionSearch {
       // No FTS match at all. unicode61 folds a Latin run glued to ideographs (`payload优先使用LLM`)
       // into one token that no FTS term can reach, so answer by substring, the same way queries in
       // unsegmented scripts are answered. A query FTS already answers is never widened.
-      return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
+      const substringRows = this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
+      if (substringRows.length > 0 || (offset > 0 && this.searchObservationsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
+        return substringRows;
+      }
+      // No row holds every term, as a token or as a substring: widen to any term, ranked by bm25.
+      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset) ?? substringRows;
     }
 
     return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
@@ -641,11 +668,33 @@ export class SessionSearch {
       if (rows.length > 0 || (offset > 0 && this.db.prepare(sql).all(...params, 1, 0).length > 0)) {
         return rows;
       }
-      // No FTS match at all: see searchObservations.
-      return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
+      // No FTS match at all: answer by substring, then widen to any term (see searchObservations).
+      const substringRows = this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
+      if (substringRows.length > 0 || (offset > 0 && this.searchSessionsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
+        return substringRows;
+      }
+      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset) ?? substringRows;
     }
 
     return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
+  }
+
+  /**
+   * Re-run an FTS search whose AND form, and the substring fallback, matched nothing with the any-term form. `params[0]` is the MATCH
+   * argument and the rest are the filter parameters, as built by the callers. Returns null when the query has
+   * nothing to widen or the any-term form matches nothing either.
+   */
+  private searchFtsAnyTerm<T>(sql: string, query: string, params: any[], limit: number, offset: number): T[] | null {
+    const anyTermQuery = SessionSearch.buildFTSAnyTermQuery(query);
+    if (!anyTermQuery) {
+      return null;
+    }
+    const anyTermParams = [anyTermQuery, ...params.slice(1)];
+    const rows = this.db.prepare(sql).all(...anyTermParams, limit, offset) as T[];
+    if (rows.length > 0 || (offset > 0 && this.db.prepare(sql).all(...anyTermParams, 1, 0).length > 0)) {
+      return rows;
+    }
+    return null;
   }
 
   findByConcept(concept: string, options: SearchOptions = {}): ObservationSearchResult[] {
