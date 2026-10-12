@@ -857,6 +857,37 @@ describe('SyncApply', () => {
     expect(prompts.map((p) => p.session_db_id)).toEqual([sessions[0].id]);
   });
 
+  it('never folds a native session that shares the content id into a remote memory stub', () => {
+    // The same content session also runs on this device (resumed here) and its
+    // memory agent has not registered: a native row with a native prompt.
+    const store = new SessionStore(db);
+    const nativeId = store.createSDKSession('sess-remote-1', 'proj-remote', 'hello');
+    db.prepare(`
+      INSERT INTO user_prompts (content_session_id, session_db_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES ('sess-remote-1', ?, 1, 'native prompt', ?, 1751234567000)
+    `).run(nativeId, ISO);
+
+    const apply = makeApply();
+    apply.applyOps([op(1, 'observation', '11', obsBody())]); // memory-keyed stub for mem-remote-1
+    apply.applyOps([op(2, 'prompt', '31', promptBody({ prompt_number: 2 }))]); // links content ↔ memory
+
+    const native = db.prepare('SELECT id, memory_session_id FROM sdk_sessions WHERE id = ?').get(nativeId) as any;
+    expect(native).toBeTruthy();
+    expect(native.memory_session_id).toBeNull();
+    const nativePrompt = db.prepare(`SELECT session_db_id FROM user_prompts WHERE prompt_text = 'native prompt'`).get() as any;
+    expect(nativePrompt.session_db_id).toBe(nativeId);
+  });
+
+  it('never hands a remote memory id to a native session that shares the content id', () => {
+    const store = new SessionStore(db);
+    const nativeId = store.createSDKSession('sess-remote-1', 'proj-remote', 'hello');
+
+    makeApply().applyOps([op(1, 'prompt', '31', promptBody())]); // carries mem-remote-1
+
+    const native = db.prepare('SELECT memory_session_id FROM sdk_sessions WHERE id = ?').get(nativeId) as any;
+    expect(native.memory_session_id).toBeNull();
+  });
+
   it('mutations from another device apply to NATIVE rows via the self-origin identity', () => {
     // A native prompt (origin columns NULL — NULL = this device).
     db.prepare(`

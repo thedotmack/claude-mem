@@ -132,7 +132,17 @@
 // stub session (precedent: SessionStore.getOrCreateManualSession). Stubs use
 // the body's content_session_id/platform_source when the body carries them
 // (prompts do); otherwise content_session_id falls back to the
-// memory_session_id (globally unique, so no collision).
+// memory_session_id (globally unique, so no collision). A prompt whose
+// origin session has no memory id yet gets a content-keyed stub when the
+// op carries a real project (the origin session exists; its memory agent
+// may never register), and stays an orphan when the project is 'unknown'
+// (no session on the origin either; set_prompt_session links it later).
+// When an op later links that content id to a memory id that already has
+// its own stub, mergeContentSession folds the content-keyed stub into the
+// memory-keyed one: referencing rows move, and the memory-keyed row takes
+// the real content id and platform if it still had the synthetic ones.
+// Only sync stubs (SYNC_STUB_PREDICATE) are ever folded or handed a remote
+// memory id; a session native to this device is left untouched.
 //
 // FTS: all writes here are plain SQL INSERT/UPDATE against the base tables,
 // so the existing FTS5 triggers (observations/summaries:
@@ -155,9 +165,12 @@
 //   - Stub-session warts: a stub created from observations/summaries only
 //     keeps content_session_id = memory_session_id (their bodies carry no
 //     content id) until an op carrying the real association (prompt row op
-//     or set_prompt_session) arrives — and even then the stub's content id
-//     is not rewritten; only prompt linking and parked-title claiming use
-//     the association. Stubs are created with status 'completed' and stay
+//     or set_prompt_session) arrives. Its content id is rewritten only when
+//     a content-keyed stub for that session exists to fold in; otherwise
+//     only prompt linking and parked-title claiming use the association.
+//     Prompts orphaned before a content-keyed stub could be created stay
+//     orphaned (their project was never stored locally). Stubs are created
+//     with status 'completed' and stay
 //     'completed' even if a live local session later adopts them.
 
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
@@ -871,13 +884,32 @@ export class SyncApply {
         (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, NULL, ?, ?, 'completed')
       ON CONFLICT(platform_source, content_session_id)
-        DO UPDATE SET memory_session_id = COALESCE(sdk_sessions.memory_session_id, excluded.memory_session_id)
+        DO UPDATE SET memory_session_id = CASE
+          WHEN sdk_sessions.memory_session_id IS NULL AND ${SyncApply.SYNC_STUB_PREDICATE}
+            THEN excluded.memory_session_id
+          ELSE sdk_sessions.memory_session_id
+        END
       RETURNING id
     `).get(
       contentSessionId, memorySessionId, project, platform, new Date(createdAtEpoch).toISOString(), createdAtEpoch
     ) as { id: number };
     return row.id;
   }
+
+  /**
+   * True for an sdk_sessions row this module created (a sync stub), false for
+   * a session native to this device. Stubs are inserted with user_prompt NULL
+   * and only ever hold replica prompts; createSDKSession always stores the
+   * prompt, and a live local session owns native prompts or queued messages.
+   * A native session is never folded away or handed a remote memory id: the
+   * same content session can run here too (resume on a second machine), and
+   * its own memory agent registers its own id.
+   */
+  private static readonly SYNC_STUB_PREDICATE = `(
+    sdk_sessions.user_prompt IS NULL
+    AND NOT EXISTS (SELECT 1 FROM user_prompts up WHERE up.session_db_id = sdk_sessions.id AND up.origin_device_id IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM pending_messages pm WHERE pm.session_db_id = sdk_sessions.id)
+  )`;
 
   /**
    * Fold a content-keyed session (no memory id) into the memory session
@@ -893,6 +925,7 @@ export class SyncApply {
     const other = this.db.prepare(`
       SELECT id, custom_title FROM sdk_sessions
       WHERE platform_source = ? AND content_session_id = ? AND memory_session_id IS NULL AND id != ?
+        AND ${SyncApply.SYNC_STUB_PREDICATE}
     `).get(platform, contentSessionId, targetId) as { id: number; custom_title: string | null } | undefined;
     if (!other) return;
     // Every column that references sdk_sessions(id): the declared foreign keys,
