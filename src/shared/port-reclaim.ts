@@ -62,13 +62,14 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { isPidAlive, type PidInfo } from '../supervisor/process-registry.js';
 import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
-import { captureProcessStartToken, isSameProcess } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
 import { DATA_DIR } from './paths.js';
 
@@ -86,6 +87,28 @@ const CHROMA_SIDECAR_NAME_PATTERN = /^(uv|uvx|python|chroma-mcp)(\.exe)?$/i;
 /** Whitelist check for a process-table Name column value. */
 export function isChromaSidecarName(name: string): boolean {
   return CHROMA_SIDECAR_NAME_PATTERN.test(name.trim());
+}
+
+/**
+ * The chroma-mcp entry point anywhere in a command line, in either spelling
+ * (`chroma-mcp` console script, `chroma_mcp` module form).
+ *
+ * Needed alongside isChromaSidecarName because the chain's LEAF is an
+ * interpreter: on POSIX the python running the chroma-mcp console script
+ * reports comm `python3.13` — 15-char kernel truncation and version suffix
+ * keep it off the name whitelist — while its argv still names chroma-mcp and
+ * carries the data-dir fingerprint.
+ */
+const CHROMA_MCP_CMDLINE_PATTERN = /chroma[-_]mcp/i;
+
+/**
+ * A process-table row names a chroma-mcp sidecar chain member: by executable
+ * name (the uvx/uv/uvx.exe/... launchers) or by the chroma-mcp entry point in
+ * its command line (the python leaf). Only ever combined with a data-dir
+ * fingerprint match — the name alone never justifies a kill.
+ */
+function isChromaSidecarCandidate(row: WindowsProcessRow): boolean {
+  return isChromaSidecarName(row.name) || (row.cmdline !== null && CHROMA_MCP_CMDLINE_PATTERN.test(row.cmdline));
 }
 
 export interface WindowsProcessRow {
@@ -176,6 +199,125 @@ async function readWindowsProcessTableWithNames(capMs?: number): Promise<Windows
     );
     return null;
   }
+}
+
+/**
+ * Linux counterpart of readWindowsProcessTableWithNames: one readdir plus up
+ * to three small reads per pid. Identity comes from /proc/<pid>/stat, which
+ * yields ppid and starttime (the token format captureProcessStartToken()
+ * revalidates against on this platform) from the SAME read — the atomicity
+ * rule that keeps a discovered PID from being certified with a replacement's
+ * token (see readProcessTable in kill-process-tree.ts).
+ */
+function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
+  let entries: string[];
+  try {
+    entries = readdirSync('/proc');
+  } catch (error) {
+    logger.warn(
+      'PROCESS',
+      'Cannot read /proc — orphan chroma-mcp sweep disabled for this attempt',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    return [];
+  }
+
+  const rows: WindowsProcessRow[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number.parseInt(entry, 10);
+    let raw: string;
+    try {
+      raw = readFileSync(`/proc/${entry}/stat`, 'utf-8');
+    } catch {
+      // Exited between readdir and read. Safe: a row we never observed simply
+      // is not a target.
+      continue;
+    }
+    // comm (field 2) is parenthesised and may contain spaces, so split after it.
+    const tailStart = raw.lastIndexOf(') ');
+    if (tailStart < 0) continue;
+    const fields = raw.slice(tailStart + 2).split(' ');
+    const ppid = Number.parseInt(fields[1] ?? '', 10);
+    const starttime = fields[19];
+    if (!Number.isFinite(ppid)) continue;
+    let name = '';
+    let cmdline: string | null = null;
+    try {
+      name = readFileSync(`/proc/${entry}/comm`, 'utf-8').trim();
+    } catch { /* name is supplementary evidence; the cmdline marker still applies */ }
+    try {
+      cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
+    } catch { /* kernel thread or exited — nothing to fingerprint */ }
+    rows.push({
+      pid,
+      ppid,
+      name,
+      cmdline,
+      startToken: starttime && /^\d+$/.test(starttime) ? starttime : null,
+    });
+  }
+  return rows;
+}
+
+/**
+ * macOS/BSD counterpart: `ps -eo pid=,ppid=,lstart=,command=` is one snapshot
+ * carrying discovery and identity. Its lstart is byte-identical to
+ * `ps -p <pid> -o lstart=`, which is what captureProcessStartToken() uses on
+ * this platform — the same agreement readProcessTablePosix() in
+ * kill-process-tree.ts relies on (and asserts by test). LC_ALL/LANG are
+ * pinned so a locale-formatted date would not compare unequal on the
+ * revalidation.
+ */
+async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,lstart=,command='], {
+      timeout: cappedTimeoutMs(10_000, capMs),
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    logger.warn(
+      'PROCESS',
+      'Cannot enumerate the process table with names — orphan chroma-mcp sweep disabled for this attempt',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    return [];
+  }
+
+  const rows: WindowsProcessRow[] = [];
+  for (const line of stdout.split('\n')) {
+    // lstart is `EEE MMM d HH:mm:ss yyyy` — five fields with whatever internal
+    // padding ps printed, preserved verbatim so the token byte-matches the
+    // later revalidation read. The command line follows it.
+    const match = line.trim().match(
+      /^(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
+    );
+    if (!match) continue;
+    rows.push({
+      pid: Number.parseInt(match[1]!, 10),
+      ppid: Number.parseInt(match[2]!, 10),
+      name: normalizeProcessName(match[4]!.split(' ')[0] ?? ''),
+      cmdline: match[4]!.trim().length > 0 ? match[4]! : null,
+      startToken: match[3]!.trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Cross-platform process table with names and command lines.
+ *
+ * Null means "cannot enumerate" — only the Windows reader signals that (it is
+ * shared with the ghost-listener path); the POSIX readers degrade to an empty
+ * table and log. Callers must refuse to kill on null, never guess.
+ */
+function readProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[] | null> {
+  if (process.platform === 'win32') return readWindowsProcessTableWithNames(capMs);
+  if (process.platform === 'linux') return Promise.resolve(readLinuxProcessTableWithNames());
+  return readMacProcessTableWithNames(capMs);
 }
 
 /** Owner PIDs currently LISTENING on `port`, or null when netstat failed. */
@@ -679,4 +821,93 @@ export async function reclaimGhostListeningPort(
     stillOwnedBy: after,
   });
   return { reclaimed: false, reason: 'still-bound', killedPids };
+}
+
+/**
+ * Injectable seams for the orphan sweep, mirroring GhostPortReclaimDeps: the
+ * suite injects a fake table and kill so every decision branch runs on every
+ * CI platform without touching real processes.
+ */
+export interface OrphanSweepDeps {
+  readTable?: (capMs?: number) => Promise<WindowsProcessRow[] | null>;
+  killTree?: (pid: number, options: KillTreeOptions) => Promise<void>;
+  dataDir?: () => string | null;
+}
+
+/**
+ * Kill every chroma-mcp sidecar still holding THIS install's chroma data dir
+ * (#4608).
+ *
+ * When a worker dies out of band — crash, SIGKILL without tree teardown, a
+ * package upgrade replacing it — its chroma-mcp sidecar chain survives
+ * re-parented to init (PPID=1). It holds no port (POSIX sockets died with the
+ * worker), so the Windows ghost-listener path above never sees it, and the
+ * chroma writer lock cannot help either: the lock only governs lock-file
+ * lifetime, while the orphan keeps the DATA DIR open and accepts nothing that
+ * would tell it to stop. The next worker then spawns its own chroma-mcp on
+ * the same store — two concurrent writers, which is what the reporter logged
+ * for 16 days (110 failed batch adds, 84 transport errors, a store once
+ * judged corrupt).
+ *
+ * Call it while holding the chroma writer lock: the lock proves no LIVE
+ * worker owns this store, so any process still carrying our --data-dir
+ * fingerprint is by definition an orphan of a dead generation. Every kill
+ * target is evidence-matched three ways — chroma sidecar by name or by the
+ * chroma-mcp entry point in its command line, PLUS our data dir in its
+ * command line, PLUS not our own pid — and goes through killProcessTree with
+ * the start token from the SAME table read that discovered it, so PID reuse
+ * between discovery and kill is never signalled.
+ *
+ * Fail-soft by design: an unreadable table or a failed tree-kill is logged
+ * and skipped, never thrown — the sweep is a pre-spawn cleanup, and turning
+ * a ps hiccup into a chroma outage would trade one degradation for another.
+ * Graceful teardown (SIGTERM first) leaves uv its builds-scratch cleanup.
+ */
+export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps = {}): Promise<{ killedPids: number[] }> {
+  const dataDir = deps.dataDir ?? (() => DATA_DIR);
+  const readTable = deps.readTable ?? readProcessTableWithNames;
+  const killTree = deps.killTree ?? ((pid: number, options: KillTreeOptions) => killProcessTree(pid, options));
+
+  const ownDataDir = dataDir();
+  if (!ownDataDir) return { killedPids: [] };
+
+  const table = await readTable();
+  if (table === null) {
+    logger.warn('PROCESS', 'Cannot enumerate the process table — refusing to guess at chroma orphans');
+    return { killedPids: [] };
+  }
+
+  const targets = table.filter(
+    row =>
+      row.pid !== process.pid &&
+      isChromaSidecarCandidate(row) &&
+      chromaCmdlineMatchesDataDir(row.cmdline, ownDataDir)
+  );
+  if (targets.length === 0) return { killedPids: [] };
+
+  logger.warn('PROCESS', 'Killing orphaned chroma-mcp sidecar(s) still holding this install\'s chroma data dir', {
+    dataDir: ownDataDir,
+    targets: targets.map(target => ({ pid: target.pid, ppid: target.ppid, name: target.name })),
+  });
+
+  const killedPids: number[] = [];
+  for (const target of targets) {
+    try {
+      await killTree(target.pid, {
+        // Identity from the discovery read — never re-probed against a
+        // different observation, and never self-captured after an await.
+        expectedStartToken: target.startToken,
+        signalMode: 'graceful',
+      });
+      killedPids.push(target.pid);
+    } catch (error) {
+      logger.error(
+        'PROCESS',
+        'Orphan chroma-mcp tree-kill failed; leaving the rest of the sweep to proceed',
+        { pid: target.pid },
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  }
+  return { killedPids };
 }

@@ -14,6 +14,7 @@ import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
 import * as realKillProcessTree from '../../../src/shared/kill-process-tree.js';
+import * as realPortReclaim from '../../../src/shared/port-reclaim.js';
 import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
@@ -22,6 +23,7 @@ const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
 const realKillProcessTreeSnapshot = { ...realKillProcessTree };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
 const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
@@ -237,6 +239,18 @@ mock.module('../../../src/supervisor/env-sanitizer.js', () => ({
 let killProcessTreeOverride: ((pid: number) => Promise<void>) | null = null;
 /** Every killProcessTree call, so wiring of the identity token is assertable. */
 const killProcessTreeCalls: Array<{ pid: number; options?: { expectedStartToken?: string | null } }> = [];
+
+// #4608: the orphan sweep shells out to the real process table (ps / /proc /
+// CIM). Stub it exactly like kill-process-tree above — record the resolved
+// data dir so the wiring test can assert the sweep ran under the writer lock.
+const orphanSweepCalls: Array<{ dataDir: string | null }> = [];
+mock.module('../../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimOrphanChromaDataDirWriters: async (deps?: { dataDir?: () => string | null }) => {
+    orphanSweepCalls.push({ dataDir: deps?.dataDir?.() ?? null });
+    return { killedPids: [] };
+  },
+}));
 mock.module('../../../src/shared/kill-process-tree.js', () => ({
   ...realKillProcessTreeSnapshot,
   killProcessTree: (pid: number, options?: { expectedStartToken?: string | null }) =>
@@ -343,6 +357,7 @@ afterAll(() => {
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
   mock.module('../../../src/shared/kill-process-tree.js', () => realKillProcessTreeSnapshot);
+  mock.module('../../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
   mock.module('child_process', () => realChildProcess);
   // The MCP SDK mocks must be re-registered too: leaking FakeClient (no
   // listTools, canned callTool) breaks tests/server/mcp/recall-mcp-server.test.ts
@@ -359,6 +374,7 @@ function resetState(): void {
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
   killProcessTreeCalls.length = 0;
+  orphanSweepCalls.length = 0;
   killTreeCalls.length = 0;
   deadPids.clear();
   logEntries.length = 0;
@@ -809,6 +825,19 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     // The first transport's pid must have been signaled by killProcessTree
     // before the second transport spawned.
     expect(killTreeCalls).toContain(firstPid);
+  });
+
+  it('sweeps orphaned chroma-mcp data-dir holders under the writer lock on every connect (#4608)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+
+    // The sweep runs AFTER the writer lock is acquired and BEFORE this
+    // worker's own sidecar spawns: the lock proves no live worker owns the
+    // store, so anything still holding the data dir is a dead generation's
+    // orphan. It must resolve the data dir actually in use, not a default.
+    expect(orphanSweepCalls).toEqual([{ dataDir: mockedChromaDir }]);
   });
 
   it('ignores kill-triggered onclose while retrying after a transport error', async () => {
