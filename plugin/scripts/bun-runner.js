@@ -130,7 +130,7 @@ if (args.length === 0) {
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
-// Resolve relative script path against process.cwd() BEFORE spawning in tmpdir() (issues #4628, #4679)
+// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
 args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
@@ -167,10 +167,14 @@ function collectStdin() {
 
 const stdinData = await collectStdin();
 
+// Bun reads tsconfig.json from its working directory and prints any warnings
+// about it to stderr, which hosts show as hook errors (#4628). Start it in a
+// neutral directory and hand it the launch directory; the hook entry point
+// (src/cli/hook-original-cwd.ts) moves back there before adapters run.
 const spawnOptions = {
   stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
-  env: process.env,
+  env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
   cwd: tmpdir()
 };
 
