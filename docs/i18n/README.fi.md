@@ -215,7 +215,6 @@ Asennusohjelma hoitaa riippuvuudet, plugin-asetukset, AI-palveluntarjoajan mää
 
 - **[Asetukset](https://docs.claude-mem.ai/configuration)** - Ympäristömuuttujat ja asetukset
 - **[Kehitys](https://docs.claude-mem.ai/development)** - Rakentaminen, testaus, osallistuminen
-- **[Julkaisuhaarat](https://docs.claude-mem.ai/branches)** - Stable-, core-dev- ja community-edge-haarojen kulku
 - **[Vianmääritys](https://docs.claude-mem.ai/troubleshooting)** - Yleiset ongelmat ja ratkaisut
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Katso [Hakutyökalujen opas](https://docs.claude-mem.ai/usage/search-tools) yksityiskohtaisia esimerkkejä varten.
-
----
-
-## Julkaisuhaarat
-
-Vakaat julkaisut toimitetaan `main`-haarasta ja julkaistaan npm:ssä. `core-dev`- ja
-`community-edge`-haarat ovat lähdekoodista ajettavia haaroja varhaisia luotettavuuskorjauksia ja
-yhteisöintegraatioita varten. Katso **[Julkaisuhaarat](https://docs.claude-mem.ai/branches)**
-haarojen kulusta ja ei-vakaiden versioiden ajo-ohjeista.
 
 ---
 
@@ -383,11 +373,6 @@ Osallistuminen on tervetullutta! Ole hyvä ja:
 3. Tee muutoksesi testeineen
 4. Päivitä dokumentaatio
 5. Lähetä Pull Request
-
-Claude-Mem toimitetaan kolmesta haarasta: `main` (vakaa), `core-dev` ja
-`community-edge`. Vain `main` julkaistaan npm:ssä; muut ajetaan
-lähdekoodista. Katso [Julkaisuhaarat](https://docs.claude-mem.ai/branches) strategiasta ja
-paikallisista ajo-ohjeista.
 
 Katso [Kehitysopas](https://docs.claude-mem.ai/development) osallistumisen työnkulusta.
 

@@ -96,7 +96,6 @@
           "modes",
           "telemetry",
           "development",
-          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration",
@@ -180,5 +179,11 @@
     "telemetry": {
       "enabled": false
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/branches",
+      "destination": "/development"
+    }
+  ]
 }
