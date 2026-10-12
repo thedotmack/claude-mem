@@ -132,7 +132,17 @@
 // stub session (precedent: SessionStore.getOrCreateManualSession). Stubs use
 // the body's content_session_id/platform_source when the body carries them
 // (prompts do); otherwise content_session_id falls back to the
-// memory_session_id (globally unique, so no collision).
+// memory_session_id (globally unique, so no collision). A prompt whose
+// origin session has no memory id yet gets a content-keyed stub when the
+// op carries a real project (the origin session exists; its memory agent
+// may never register), and stays an orphan when the project is 'unknown'
+// (no session on the origin either; set_prompt_session links it later).
+// When an op later links that content id to a memory id that already has
+// its own stub, mergeContentSession folds the content-keyed stub into the
+// memory-keyed one: referencing rows move, and the memory-keyed row takes
+// the real content id and platform if it still had the synthetic ones.
+// Only sync stubs (SYNC_STUB_PREDICATE) are ever folded or handed a remote
+// memory id; a session native to this device is left untouched.
 //
 // FTS: all writes here are plain SQL INSERT/UPDATE against the base tables,
 // so the existing FTS5 triggers (observations/summaries:
@@ -155,9 +165,12 @@
 //   - Stub-session warts: a stub created from observations/summaries only
 //     keeps content_session_id = memory_session_id (their bodies carry no
 //     content id) until an op carrying the real association (prompt row op
-//     or set_prompt_session) arrives — and even then the stub's content id
-//     is not rewritten; only prompt linking and parked-title claiming use
-//     the association. Stubs are created with status 'completed' and stay
+//     or set_prompt_session) arrives. Its content id is rewritten only when
+//     a content-keyed stub for that session exists to fold in; otherwise
+//     only prompt linking and parked-title claiming use the association.
+//     Prompts orphaned before a content-keyed stub could be created stay
+//     orphaned (their project was never stored locally). Stubs are created
+//     with status 'completed' and stay
 //     'completed' even if a live local session later adopts them.
 
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
@@ -853,6 +866,92 @@ export class SyncApply {
   }
 
   /**
+   * Insert a stub sdk_sessions row for a remote session, or adopt the local
+   * row that already holds its (platform_source, content_session_id) identity
+   * (migration v33) instead of failing the batch. An adopted row without a
+   * memory id takes this one, so a prompt's content-keyed session and the
+   * memory id that arrives later end up in one row. Returns the row id.
+   */
+  private upsertStubSession(
+    contentSessionId: string,
+    memorySessionId: string | null,
+    project: string,
+    platform: string,
+    createdAtEpoch: number
+  ): number {
+    const row = this.db.prepare(`
+      INSERT INTO sdk_sessions
+        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, status)
+      VALUES (?, ?, ?, ?, NULL, ?, ?, 'completed')
+      ON CONFLICT(platform_source, content_session_id)
+        DO UPDATE SET memory_session_id = CASE
+          WHEN sdk_sessions.memory_session_id IS NULL AND ${SyncApply.SYNC_STUB_PREDICATE}
+            THEN excluded.memory_session_id
+          ELSE sdk_sessions.memory_session_id
+        END
+      RETURNING id
+    `).get(
+      contentSessionId, memorySessionId, project, platform, new Date(createdAtEpoch).toISOString(), createdAtEpoch
+    ) as { id: number };
+    return row.id;
+  }
+
+  /**
+   * True for an sdk_sessions row this module created (a sync stub), false for
+   * a session native to this device. Stubs are inserted with user_prompt NULL
+   * and only ever hold replica prompts; createSDKSession always stores the
+   * prompt, and a live local session owns native prompts or queued messages.
+   * A native session is never folded away or handed a remote memory id: the
+   * same content session can run here too (resume on a second machine), and
+   * its own memory agent registers its own id.
+   */
+  private static readonly SYNC_STUB_PREDICATE = `(
+    sdk_sessions.user_prompt IS NULL
+    AND NOT EXISTS (SELECT 1 FROM user_prompts up WHERE up.session_db_id = sdk_sessions.id AND up.origin_device_id IS NULL)
+    AND NOT EXISTS (SELECT 1 FROM pending_messages pm WHERE pm.session_db_id = sdk_sessions.id)
+  )`;
+
+  /**
+   * Fold a content-keyed session (no memory id) into the memory session
+   * `targetId` once an op links the two ids. A prompt that arrived before
+   * its memory id got the content-keyed row (resolvePromptSession), and an
+   * observation that overtook the repair op got the memory-keyed one, with
+   * the memory id as its synthetic content id and the default platform. The
+   * merge moves the rows that point at the content-keyed session, keeps its
+   * title when the target has none, and gives the target the real content
+   * id and platform.
+   */
+  private mergeContentSession(targetId: number, platform: string, contentSessionId: string): void {
+    const other = this.db.prepare(`
+      SELECT id, custom_title FROM sdk_sessions
+      WHERE platform_source = ? AND content_session_id = ? AND memory_session_id IS NULL AND id != ?
+        AND ${SyncApply.SYNC_STUB_PREDICATE}
+    `).get(platform, contentSessionId, targetId) as { id: number; custom_title: string | null } | undefined;
+    if (!other) return;
+    // Every column that references sdk_sessions(id): the declared foreign keys,
+    // read from the schema so a new referencing table moves instead of
+    // cascading away, plus tool_uses.session_db_id, which has none on purpose.
+    const refs = this.db.prepare(`
+      SELECT m.name AS tbl, f."from" AS col FROM sqlite_master m
+      JOIN pragma_foreign_key_list(m.name) f
+      WHERE m.type = 'table' AND f."table" = 'sdk_sessions' AND f."to" = 'id'
+    `).all() as Array<{ tbl: string; col: string }>;
+    for (const { tbl, col } of [...refs, { tbl: 'tool_uses', col: 'session_db_id' }]) {
+      this.db.prepare(`UPDATE "${tbl}" SET "${col}" = ? WHERE "${col}" = ?`).run(targetId, other.id);
+    }
+    // Delete first: the target cannot take the content id while the other row
+    // still holds it under the (platform_source, content_session_id) index.
+    this.db.prepare('DELETE FROM sdk_sessions WHERE id = ?').run(other.id);
+    this.db.prepare(`
+      UPDATE sdk_sessions SET
+        custom_title = COALESCE(custom_title, ?),
+        platform_source = CASE WHEN content_session_id = memory_session_id THEN ? ELSE platform_source END,
+        content_session_id = CASE WHEN content_session_id = memory_session_id THEN ? ELSE content_session_id END
+      WHERE id = ?
+    `).run(other.custom_title, platform, contentSessionId, targetId);
+  }
+
+  /**
    * Ensure a local sdk_sessions row exists for a remote memory_session_id;
    * returns its local id. Creates a minimal stub when unknown (see module
    * header — FK is enforced and sessions do not sync). Every path through
@@ -875,40 +974,19 @@ export class SyncApply {
       // content id, so the association first shows up here (via a prompt row
       // op or a set_prompt_session repair), not at stub creation.
       if (contentSessionId) {
+        this.mergeContentSession(existing.id, platform, contentSessionId);
         this.claimParkedTitle(existing.id, SyncApply.parkedTitleContentKey(platform, contentSessionId));
       }
       return existing.id;
     }
 
-    const content = contentSessionId ?? memorySessionId;
-    const iso = new Date(createdAtEpoch).toISOString();
-    // ON CONFLICT on the (platform_source, content_session_id) identity
-    // (migration v33): if a local session already claims this content id
-    // under another memory id, adopt it instead of failing the batch.
-    const inserted = this.db.prepare(`
-      INSERT INTO sdk_sessions
-        (content_session_id, memory_session_id, project, platform_source, user_prompt, started_at, started_at_epoch, status)
-      VALUES (?, ?, ?, ?, NULL, ?, ?, 'completed')
-      ON CONFLICT(platform_source, content_session_id) DO NOTHING
-      RETURNING id
-    `).get(content, memorySessionId, project, platform, iso, createdAtEpoch) as { id: number } | null;
-
-    let sessionId: number;
-    if (inserted) {
-      logger.debug('SYNC_APPLY', 'Created stub sdk_session for remote memory session', {
-        memorySessionId,
-        project,
-      });
-      sessionId = inserted.id;
-    } else {
-      const adopted = this.db.prepare(
-        'SELECT id FROM sdk_sessions WHERE platform_source = ? AND content_session_id = ?'
-      ).get(platform, content) as { id: number } | undefined;
-      if (!adopted) {
-        throw new Error(`SyncApply: could not create or adopt a session for memory_session_id=${memorySessionId}`);
-      }
-      sessionId = adopted.id;
-    }
+    const sessionId = this.upsertStubSession(
+      contentSessionId ?? memorySessionId, memorySessionId, project, platform, createdAtEpoch
+    );
+    logger.debug('SYNC_APPLY', 'Linked remote memory session to a local sdk_session', {
+      memorySessionId,
+      project,
+    });
 
     this.claimParkedTitle(sessionId, SyncApply.parkedTitleMemKey(memorySessionId));
     if (contentSessionId) {
@@ -1123,10 +1201,7 @@ export class SyncApply {
         fieldString(op, body, 'platform_source')
       );
     }
-    // No memory id on the origin yet (prompt captured before registration) —
-    // link only if a matching local session already exists; otherwise orphan
-    // (session_db_id is nullable and the set_prompt_session repair op links
-    // it once the origin registers).
+    // No memory id on the origin yet (prompt captured before registration).
     const contentSessionId = fieldString(op, body, 'content_session_id');
     if (!contentSessionId) return null;
     const platform = normalizePlatformSource(fieldString(op, body, 'platform_source') ?? undefined);
@@ -1135,7 +1210,18 @@ export class SyncApply {
       WHERE COALESCE(NULLIF(platform_source, ''), ?) = ? AND content_session_id = ?
       LIMIT 1
     `).get(DEFAULT_PLATFORM_SOURCE, platform, contentSessionId) as { id: number } | undefined;
-    return row?.id ?? null;
+    if (row) return row.id;
+    // The origin sends project 'unknown' when the prompt has no session there
+    // either: orphan it, and the set_prompt_session repair op links it once
+    // the origin registers.
+    const project = fieldString(op, body, 'project');
+    if (!project || project === 'unknown') return null;
+    // A real project means the origin's session exists but has no memory id.
+    // A session whose memory agent never started never gets one, so no repair
+    // op would come: create the content-keyed session the origin has.
+    const sessionId = this.upsertStubSession(contentSessionId, null, project, platform, createdAtEpoch);
+    this.claimParkedTitle(sessionId, SyncApply.parkedTitleContentKey(platform, contentSessionId));
+    return sessionId;
   }
 
   private applyPrompt(op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[]): 'applied' | 'stale' {

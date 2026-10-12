@@ -491,6 +491,22 @@ describe('ResponseProcessor', () => {
       expect(observations[0].narrative).toContain('line-range handling aligned with the new helpers');
     });
 
+    it('does not store an init reply or acknowledge queued work, even when it parses as an observation', async () => {
+      // Upstream's seam: with the feed paced to one unanswered prompt,
+      // lastGeneratorSource names the prompt this reply answers.
+      const session = createMockSession({ lastGeneratorSource: 'init', claimedMessageIds: [7] });
+      const text = '<observation><type>feature</type><title>Unproven deployment</title><narrative>The user asked to deploy.</narrative></observation>';
+
+      await processAgentResponse(text, session, mockDbManager, mockSessionManager,
+        mockWorker, 100, null, 'SDK');
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(mockSessionManager.confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockSessionManager.resetProcessingToPending).not.toHaveBeenCalled();
+      // The turn is kept so role alternation holds; only storage is refused.
+      expect(session.conversationHistory).toEqual([{ role: 'assistant', content: text }]);
+    });
+
     it('stores observations against the dispatched prompt context when the live session has already advanced', async () => {
       const session = createMockSession({
         project: 'repo-b/worktree',
@@ -1327,6 +1343,45 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
+    it('confirms an explicit <skip_summary/> to an observation prompt and hands storage no rows', async () => {
+      // The file's default store stub answers with observation ids whatever it
+      // is given; a skip writes nothing, so answer as the real store would.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      const confirmClaimedMessages = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ earliestPendingTimestamp: 1700000000000 });
+
+      await processAgentResponse(
+        '<skip_summary reason="agent bookkeeping"/>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'Gemini'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      // With the memory session id known the skip still passes through the
+      // store, carrying nothing: no observations and a null summary.
+      for (const [, , observations, summary] of mockStoreObservations.mock.calls) {
+        expect(observations).toEqual([]);
+        expect(summary).toBeNull();
+      }
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it('clears pending work and does NOT call storeObservations on empty response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
       mockSessionManager = {
@@ -1596,6 +1651,33 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(session.abortReason).toBe('auth:observer_text');
+    });
+
+    it('preserves the batch on the org-disabled subscription notice with its own abort reason (#4677)', async () => {
+      const confirmClaimedMessages = mock(async () => 0);
+      const resetProcessingToPending = mock(async () => 1);
+      const mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ markProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_org_policy');
     });
   });
   describe('lastSummaryStored tracking (#1633)', () => {
