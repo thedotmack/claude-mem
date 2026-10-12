@@ -6,6 +6,7 @@ import { pathToFileURL } from 'url';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../src/shared/paths.js';
 import { writeJsonFileAtomic } from '../src/shared/atomic-json.js';
+import { formatHostForUrl } from '../src/shared/worker-url.js';
 import type {
   ObservationRecord,
   SdkSessionRecord,
@@ -51,7 +52,7 @@ async function fetchWithTimeout(url: string, init?: RequestInit): Promise<Respon
 export async function exportMemories(query: string, outputFile: string, project?: string) {
   const settings = SettingsDefaultsManager.loadFromFile(join(resolveDataDir(), 'settings.json'));
   const port = parseWorkerPort(settings.CLAUDE_MEM_WORKER_PORT);
-  const baseUrl = `http://${settings.CLAUDE_MEM_WORKER_HOST}:${port}`;
+  const baseUrl = `http://${formatHostForUrl(settings.CLAUDE_MEM_WORKER_HOST)}:${port}`;
 
   console.log(`🔍 Searching for: "${query}"${project ? ` (project: ${project})` : ' (all projects)'}`);
 

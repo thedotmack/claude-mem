@@ -1009,8 +1009,9 @@ export class TranscriptWatcher {
     // and a session whose directory is not known yet learns it there too
     // (DeepSeek Harness writes it on that line only; a turn without one is
     // skipped). A tail that resumes past that line reads it once, before the
-    // first new one, for its context only.
-    let primeFirstLine = offset > 0 && (Boolean(watch.subagentSource) || !fileContext.cwd);
+    // first new one, for its context only. A header-based identity is learned
+    // even when a saved cwd exists; a UUID in the path may omit the host prefix.
+    let primeFirstLine = offset > 0 && (Boolean(schema.sessionIdPath) || Boolean(watch.subagentSource) || !fileContext.cwd);
     const tailer = new FileTailer(
       filePath,
       offset,

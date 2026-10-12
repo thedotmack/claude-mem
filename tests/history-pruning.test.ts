@@ -10,7 +10,7 @@ import {
 import { buildContinuationPrompt, buildObservationPrompt, SUMMARY_MODE_MARKER } from '../src/sdk/prompts.js';
 import { ModeManager } from '../src/services/domain/ModeManager.js';
 import type { ModeConfig } from '../src/services/domain/types.js';
-import { OpenAICompatibleProvider, type ProviderQueryResult } from '../src/services/worker/OpenAICompatibleProvider.js';
+import { OpenAICompatibleProvider, type OpenAIChatMessage, type ObserverRequestLabel, type ProviderQueryResult } from '../src/services/worker/OpenAICompatibleProvider.js';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import type { ActiveSession, ConversationMessage } from '../src/services/worker-types.js';
 
@@ -168,7 +168,7 @@ function makeSession(): ActiveSession {
 }
 
 /**
- * Records the size of every request. Replies are non-XML, so
+ * Records independent snapshots of the serialized wire messages. Replies are non-XML, so
  * processAgentResponse confirms and returns without touching storage.
  */
 class RecordingProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
@@ -176,6 +176,7 @@ class RecordingProvider extends OpenAICompatibleProvider<{ apiKey: string; model
   protected readonly syntheticIdPrefix = 'test';
   protected readonly forwardEmptyMessageResponse = false;
   readonly requestChars: number[] = [];
+  readonly requests: Array<{ messages: OpenAIChatMessage[]; generationId?: string }> = [];
   private turn = 0;
 
   protected getConfig() {
@@ -186,8 +187,19 @@ class RecordingProvider extends OpenAICompatibleProvider<{ apiKey: string; model
     return new Error('missing key');
   }
 
-  protected async query(history: ConversationMessage[]): Promise<ProviderQueryResult> {
+  protected async query(
+    history: ConversationMessage[],
+    _config: { apiKey: string; model: string },
+    _signal?: AbortSignal,
+    _timeout?: number,
+    _paidSendBudget?: unknown,
+    label?: ObserverRequestLabel,
+  ): Promise<ProviderQueryResult> {
     this.requestChars.push(history.reduce((sum, message) => sum + message.content.length, 0));
+    this.requests.push({
+      messages: JSON.parse(JSON.stringify(this.conversationToOpenAIMessages(history))),
+      generationId: label?.generationId,
+    });
     return { content: `REPLY_${this.turn++}` };
   }
 
@@ -214,6 +226,7 @@ describe('observer requests across a long generation', () => {
       spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
         ...SettingsDefaultsManager.getAllDefaults(),
         CLAUDE_MEM_TIER_ROUTING_ENABLED: 'false',
+        CLAUDE_MEM_OBSERVER_CONTEXT_WINDOW: '200000',
       })),
     ];
   });
@@ -223,37 +236,81 @@ describe('observer requests across a long generation', () => {
     mock.restore();
   });
 
-  it(`keeps every reply once and pays only a stub per old payload over ${TURNS} turns`, async () => {
-    const messages = Array.from({ length: TURNS }, (_, i) => ({
+  function messages(count: number) {
+    return Array.from({ length: count }, (_, i) => ({
       type: 'observation',
       tool_name: 'Read',
       tool_input: { file_path: `/repo/file-${i}.ts` },
       tool_response: `${i}:`.padEnd(PAYLOAD_CHARS, 'y'),
       prompt_number: 2,
     }));
-    const sessionManager = {
+  }
+
+  function makeQueue(session: ActiveSession, messages: unknown[]) {
+    const pending = [...messages];
+    return {
+      pending,
       getMessageIterator: async function* () {
-        yield* messages;
+        while (pending.length > 0 && !session.abortController.signal.aborted) {
+          yield pending[0];
+        }
       },
-      confirmClaimedMessages: async () => {},
+      confirmClaimedMessages: async () => { pending.shift(); },
       resetProcessingToPending: async () => {},
       getClaimedMessages: () => [],
     };
-    const provider = new RecordingProvider({} as never, sessionManager as never);
+  }
+
+  it('preserves every previously sent wire message beyond the old pruning horizon, including a summary', async () => {
     const session = makeSession();
+    const queue = makeQueue(session, [
+      ...messages(40),
+      { type: 'summarize', last_assistant_message: 'all forty files inspected' },
+    ]);
+    const provider = new RecordingProvider({} as never, queue as never);
 
     await provider.startSession(session);
 
-    // One request per turn (the init prompt rides on the first): the
-    // generation never had to recycle.
-    expect(provider.requestChars).toHaveLength(TURNS);
+    expect(provider.requests).toHaveLength(41);
     expect(session.abortReason ?? null).toBeNull();
+    // The old implementation rewrote the first payload at request five. A
+    // deep-copied wire body catches it even if the original arrays mutate.
+    for (let i = 1; i < provider.requests.length; i++) {
+      const previous = provider.requests[i - 1].messages;
+      expect(provider.requests[i].messages.slice(0, previous.length)).toEqual(previous);
+    }
+    const summaryMessages = provider.requests.at(-1)!.messages;
+    expect(summaryMessages[1].content).toContain('0:'.padEnd(PAYLOAD_CHARS, 'y'));
+    expect(summaryMessages.some(message => message.content.includes('pruned="true"'))).toBe(false);
     // Every reply sits in the history exactly once, in order.
     expect(session.conversationHistory.filter(message => message.role === 'assistant').map(message => message.content))
-      .toEqual(Array.from({ length: TURNS }, (_, i) => `REPLY_${i}`));
-    // Past the verbatim window a turn adds a stub and a reply, never a payload,
-    // so the request grows by a few hundred chars a turn instead of ~5k.
-    const growthPerTurn = (provider.requestChars[TURNS - 1] - provider.requestChars[TURNS - 101]) / 100;
-    expect(growthPerTurn).toBeLessThan(MIN_PRUNABLE_CHARS);
+      .toEqual(Array.from({ length: 41 }, (_, i) => `REPLY_${i}`));
+    expect(queue.pending).toHaveLength(0);
+  }, 30_000);
+
+  it(`retains raw payloads within each generation and drains ${TURNS} turns through bounded recycling`, async () => {
+    const session = makeSession();
+    const queue = makeQueue(session, messages(TURNS));
+    const provider = new RecordingProvider({} as never, queue as never);
+    let generations = 0;
+    while (queue.pending.length > 0 && generations < 10) {
+      session.abortController = new AbortController();
+      session.abortReason = null;
+      await provider.startSession(session);
+      generations++;
+    }
+
+    expect(queue.pending).toHaveLength(0);
+    expect(provider.requests).toHaveLength(TURNS);
+    expect(generations).toBeGreaterThan(1);
+    expect(Math.max(...provider.requestChars)).toBeLessThan(410_000);
+    expect(new Set(provider.requests.map(request => request.generationId)).size).toBe(generations);
+    for (let i = 1; i < provider.requests.length; i++) {
+      const previous = provider.requests[i - 1];
+      const current = provider.requests[i];
+      if (previous.generationId === current.generationId) {
+        expect(current.messages.slice(0, previous.messages.length)).toEqual(previous.messages);
+      }
+    }
   }, 30_000);
 });
