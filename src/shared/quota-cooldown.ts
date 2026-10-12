@@ -196,7 +196,13 @@ export const RATE_LIMIT_RECHECK_COOLDOWN_MS = 90_000;
  * or absent window keeps the full quota cooldown, so an unfamiliar provider is
  * never treated as transient by accident.
  */
-const TRANSIENT_QUOTA_WINDOWS = new Set(['rate_limit']);
+const TRANSIENT_QUOTA_WINDOWS = new Set([
+  'rate_limit',
+  // A provider that cannot serve right now (an outage that outlived its
+  // retries, replies with no usable output), armed only while the fallback
+  // takes the work (provider-dispatch's routeAroundUnservableProvider).
+  'unavailable',
+]);
 
 /**
  * The cooldown an armed window is entitled to. Read from the window rather than

@@ -195,8 +195,10 @@ export const contextHandler: EventHandler = {
     // Other observer providers do not use Claude credentials. Keep the hint
     // for a configured Claude route, including the gateway's active fallback.
     const gatewayRole = cmemGatewayRole(settings);
+    // Empty is the default fallback, the Anthropic plan (provider-dispatch's readQuotaFallbackProvider).
+    const fallbackSetting = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
     const usesClaudeCredentials = (settings.CLAUDE_MEM_PROVIDER || 'claude') === 'claude'
-      || String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim() === 'claude'
+      || fallbackSetting === 'claude' || fallbackSetting === ''
       || (gatewayRole === 'primary' && Boolean(settings.CLAUDE_MEM_PRO_FALLBACK_AT));
     const staleReason = usesClaudeCredentials ? readStaleMarker() : null;
     if (staleReason) {

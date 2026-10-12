@@ -98,3 +98,14 @@ mock.module('posthog-node', () => ({
     }
   },
 }));
+
+/**
+ * The provider fallback defaults to the Anthropic plan and is used only when a
+ * Claude login or key exists (src/shared/claude-fallback-readiness.ts). That
+ * check reads the developer's real ~/.claude.json and Claude credentials, so
+ * pin it to "no Claude login" for every test: a suite must not pass or fail
+ * depending on whether the machine running it is signed in to Claude. Tests
+ * that exercise the Claude fallback opt in with setClaudeFallbackReadinessForTesting.
+ */
+const { setClaudeFallbackReadinessForTesting } = await import('../src/shared/claude-fallback-readiness.js');
+setClaudeFallbackReadinessForTesting(() => false);
