@@ -39,7 +39,9 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
-import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import { getAdvertisedMcpToolsForRuntime, withoutDisabledWorkStateTools, WORK_STATE_TOOL_NAMES } from './mcp-tool-visibility.js';
+import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
 import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
@@ -1080,8 +1082,15 @@ const server = new Server(
   }
 );
 
+function workStateEnabled(): boolean {
+  return isWorkStateEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_ENABLED);
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
+  const advertisedTools = withoutDisabledWorkStateTools(
+    getAdvertisedMcpToolsForRuntime(tools, selectRuntime()),
+    workStateEnabled(),
+  );
   return {
     tools: advertisedTools.map(tool => ({
       name: tool.name,
@@ -1097,6 +1106,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (!tool) {
     throw new Error(`Unknown tool: ${request.params.name}`);
+  }
+
+  if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
+    return {
+      content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
+      isError: true
+    };
   }
 
   try {

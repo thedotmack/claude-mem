@@ -33,6 +33,13 @@ export const RESPONSE_STALL_RESUME_DELAY_MS = 30_000;
 export const MAX_CONSECUTIVE_STALL_RESUMES = 3;
 
 /**
+ * Consecutive Claude SDK stream exits without a result before observer health
+ * is told, so SessionStart warns instead of capture stalling silently. An
+ * answered queued-work turn resets the count.
+ */
+export const MAX_CONSECUTIVE_SDK_STREAM_EXITS = 3;
+
+/**
  * Consecutive rate-limit resumes allowed before a session stops resuming on its
  * own and the provider breaker takes over. An answered queued-work turn resets
  * the count, so this only trips when the provider keeps refusing.

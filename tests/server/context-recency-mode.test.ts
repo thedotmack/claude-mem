@@ -199,6 +199,38 @@ describe('POST /v1/context recency mode (no query)', () => {
     ]);
   });
 
+  it('selects summary and observation allowances within the same folder and platform scope', async () => {
+    const summary = await storage.observations.create({
+      projectId, teamId, serverSessionId: claudeSessionId, kind: 'summary',
+      content: 'Older alpha session summary', metadata: { project: 'alpha' },
+    });
+    await client.query("UPDATE observations SET created_at = now() - interval '1 day' WHERE id = $1", [summary.id]);
+    await storage.observations.create({
+      projectId, teamId, serverSessionId: claudeSessionId, kind: 'summary',
+      content: 'Newer beta session summary', metadata: { project: 'beta' },
+    });
+    const result = await context({ limit: 3, summaryLimit: 1, folderProjects: ['alpha'], platformSource: 'claude' });
+    expect(result.status).toBe(200);
+    expect(result.contents).toEqual([
+      'third observation about deployment',
+      'first observation about setup',
+      'Older alpha session summary',
+    ]);
+    // A category with no rows does not donate its allowance to the other kind.
+    const noSummary = await context({ limit: 3, summaryLimit: 3, platformSource: 'cursor' });
+    expect(noSummary.contents).toEqual([]);
+    expect((await context({ limit: 2, summaryLimit: 0 })).contents).toHaveLength(2);
+    expect((await context({ limit: 2, summaryLimit: 2 })).contents).toHaveLength(2);
+  });
+
+  it('rejects a summary allowance beyond the total limit or on a relevance request', async () => {
+    for (const body of [
+      { limit: 2, summaryLimit: 3 },
+      { limit: 2, summaryLimit: -1 },
+      { limit: 2, summaryLimit: 1, query: 'deployment' },
+    ]) expect((await context(body)).status).toBe(400);
+  });
+
   it('applies the platform filter in recency mode', async () => {
     const result = await context({ platformSource: 'claude' });
     expect(result.contents).toEqual([
@@ -276,6 +308,11 @@ describe('POST /v1/context recency mode (no query)', () => {
     await client.query(`UPDATE observations SET kind = 'summary' WHERE id = $1`, [summaryId]);
 
     expect((await context({ folderProjects: ['delta'], excludeSubagents: true })).contents).toEqual([
+      'session summary',
+      'seat diary note',
+      'main agent decision',
+    ]);
+    expect((await context({ limit: 3, summaryLimit: 1, folderProjects: ['delta'], excludeSubagents: true })).contents).toEqual([
       'session summary',
       'seat diary note',
       'main agent decision',
