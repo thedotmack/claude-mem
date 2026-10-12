@@ -179,6 +179,60 @@ describe('SettingsDefaultsManager', () => {
         expect(result.CLAUDE_MEM_MODEL).toBe('all-keys-model');
         expect(result.CLAUDE_MEM_PROVIDER).toBe('gemini');
       });
+
+      // Every key is declared `string` and the gates compare against a string
+      // ('false'), so a hand-written JSON boolean in settings.json has to
+      // arrive as that same text (#4630).
+      describe('JSON primitives in settings.json', () => {
+        it('should read an unquoted boolean false as "false"', () => {
+          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: false }));
+
+          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+          expect(result.CLAUDE_MEM_CHROMA_ENABLED).toBe('false');
+        });
+
+        it('should read an unquoted boolean true as "true"', () => {
+          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_TELEGRAM_ENABLED: true }));
+
+          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+          expect(result.CLAUDE_MEM_TELEGRAM_ENABLED).toBe('true');
+        });
+
+        it('should leave the file untouched so the user keeps their own spelling', () => {
+          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: false }, null, 2));
+          const originalContent = readFileSync(settingsPath, 'utf-8');
+
+          SettingsDefaultsManager.loadFromFile(settingsPath);
+
+          expect(readFileSync(settingsPath, 'utf-8')).toBe(originalContent);
+        });
+
+        it('should leave a JSON number alone, as the deadline migrations expect', () => {
+          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_LLM_TIMEOUT_MS: 90000 }));
+
+          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+          expect(result.CLAUDE_MEM_LLM_TIMEOUT_MS).toEqual(90000);
+        });
+
+        it('should pass string values through unchanged', () => {
+          writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CHROMA_ENABLED: 'false' }));
+
+          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+          expect(result.CLAUDE_MEM_CHROMA_ENABLED).toBe('false');
+        });
+
+        it('should coerce a boolean nested under the legacy env wrapper', () => {
+          writeFileSync(settingsPath, JSON.stringify({ env: { CLAUDE_MEM_CHROMA_ENABLED: false } }));
+
+          const result = SettingsDefaultsManager.loadFromFile(settingsPath);
+
+          expect(result.CLAUDE_MEM_CHROMA_ENABLED).toBe('false');
+        });
+      });
     });
 
     describe('file exists but is empty or corrupt', () => {
