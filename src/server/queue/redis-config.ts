@@ -102,7 +102,7 @@ function connectionFromUrl(rawUrl: string): RedisOptions {
     throw new Error(`Invalid Redis database in CLAUDE_MEM_REDIS_URL: ${parsed.pathname}`);
   }
   return {
-    host: parsed.hostname || '127.0.0.1',
+    host: parsed.hostname.replace(/^\[|\]$/g, '') || '127.0.0.1',
     port: parsed.port ? Number.parseInt(parsed.port, 10) : 6379,
     username: parsed.username ? decodeURIComponent(parsed.username) : undefined,
     password: parsed.password ? decodeURIComponent(parsed.password) : undefined,
