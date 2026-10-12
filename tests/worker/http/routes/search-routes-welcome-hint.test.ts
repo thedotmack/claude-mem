@@ -355,6 +355,9 @@ describe('SearchRoutes Welcome Hint', () => {
       VALUES ('hint-delete-session', 'hint-delete-project', 'discovery', 'one memory', '2026-10-12T00:00:00Z', 1)`).run();
     if (count === 2) db.prepare(`INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
       VALUES ('hint-delete-session', 'hint-delete-project', 'discovery', 'other memory', '2026-10-12T00:00:01Z', 2)`).run();
+    const previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const fixtureDir = mkdtempSync(join(tmpdir(), 'welcome-delete-context-'));
+    process.env.CLAUDE_MEM_DATA_DIR = fixtureDir;
     const cache = new ContextCacheService({
       debounceMs: 60_000,
       expandProjectReadKeys: projects => projects,
@@ -393,7 +396,13 @@ describe('SearchRoutes Welcome Hint', () => {
         expect((empty.send as any).mock.calls[0][0]).toContain('CONTEXT_FROM_GENERATOR');
         expect(generateContextStub).toHaveBeenCalledTimes(1);
       }
-    } finally { cache.stop(); db.close(); }
+    } finally {
+      cache.stop();
+      db.close();
+      if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+      rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
   }
 
