@@ -12,6 +12,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const MCP_SERVER_PATH = join(import.meta.dir, '..', '..', 'plugin', 'scripts', 'mcp-server.cjs');
 
 const READ_ONLY_TOOL_NAMES = [
+  'mem_search',
   'important_workflow', 'search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read',
   'session_start_context', 'observation_search', 'observation_context', 'observation_generation_status',
   'smart_search', 'smart_unfold', 'smart_outline', 'list_corpora',

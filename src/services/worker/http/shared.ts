@@ -13,6 +13,7 @@ import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
+import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -134,6 +135,9 @@ export interface ObservationPayload {
 }
 
 export async function ingestObservation(payload: ObservationPayload, handoff: IngestHandoff = {}): Promise<IngestResult> {
+  if (isRecursiveMemoryTool(payload.toolName)) {
+    return { ok: true, status: 'skipped', reason: 'memory_retrieval' };
+  }
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireIngestContext();
 
   const platformSource = normalizePlatformSource(payload.platformSource);
@@ -270,6 +274,12 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
         toolUseId: payload.toolUseId,
       }, error instanceof Error ? error : new Error(String(error)));
     }
+  }
+
+  if (isExplicitMemoryWrite(payload.toolName)) {
+    // The explicit note is already stored. Its raw receipt above is useful,
+    // but observing the echo would duplicate it and buy another provider call.
+    return { ok: true, status: 'skipped', reason: 'explicit_memory_write' };
   }
 
   sessionManager.queueObservation(sessionDbId, {
