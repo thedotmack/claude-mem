@@ -1,12 +1,27 @@
 
 import { logger } from '../../../utils/logger.js';
-import { parseJsonArrayColumn } from '../../../utils/json-utils.js';
 import type { ObservationSearchResult } from '../../sqlite/types.js';
 import type { SessionStore } from '../../sqlite/SessionStore.js';
 import type { SearchOrchestrator } from '../search/SearchOrchestrator.js';
 import { CorpusRenderer } from './CorpusRenderer.js';
 import { CorpusStore } from './CorpusStore.js';
 import type { CorpusFile, CorpusFilter, CorpusObservation, CorpusStats } from './types.js';
+
+function safeParseJsonArray(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((v): v is string => typeof v === 'string');
+  if (typeof value !== 'string') return [];
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch (error) {
+    if (error instanceof Error) {
+      logger.warn('WORKER', 'Failed to parse JSON array field', {}, error);
+    } else {
+      logger.warn('WORKER', 'Failed to parse JSON array field (non-Error thrown)', { thrownValue: String(error) });
+    }
+    return [];
+  }
+}
 
 export class CorpusBuilder {
   private renderer: CorpusRenderer;
@@ -19,18 +34,28 @@ export class CorpusBuilder {
     this.renderer = new CorpusRenderer();
   }
 
-  async build(name: string, description: string, filter: CorpusFilter): Promise<CorpusFile> {
+  async build(
+    name: string,
+    description: string,
+    filter: CorpusFilter,
+    options: { writeFile?: boolean } = {}
+  ): Promise<CorpusFile> {
     logger.debug('WORKER', `Building corpus "${name}" with filter`, { filter });
 
-    const searchArgs: Record<string, unknown> = {};
+    // A corpus contains observations; unrelated prompts and summaries must
+    // not consume the semantic search candidate window.
+    const searchArgs: Record<string, unknown> = { searchType: 'observations' };
     if (filter.project) searchArgs.project = filter.project;
     if (filter.types && filter.types.length > 0) searchArgs.obs_type = filter.types.join(',');
-    if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts.join(',');
-    if (filter.files && filter.files.length > 0) searchArgs.files = filter.files.join(',');
+    if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts;
+    if (filter.files && filter.files.length > 0) searchArgs.files = filter.files;
     if (filter.query) searchArgs.query = filter.query;
     if (filter.date_start) searchArgs.dateStart = filter.date_start;
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
     if (filter.limit) searchArgs.limit = filter.limit;
+    // The stored filter is the whole definition of a corpus; the 90-day window interactive
+    // search applies to date-less Chroma queries would shrink it on every rebuild.
+    searchArgs.ignoreDefaultRecencyWindow = true;
 
     const searchResult = await this.searchOrchestrator.search(searchArgs);
 
@@ -76,7 +101,9 @@ export class CorpusBuilder {
     const renderedText = this.renderer.renderCorpus(corpus);
     corpus.stats.token_estimate = this.renderer.estimateTokens(renderedText);
 
-    this.corpusStore.write(corpus);
+    if (options.writeFile !== false) {
+      this.corpusStore.write(corpus);
+    }
 
     logger.debug('WORKER', `Corpus "${name}" built with ${observations.length} observations, ~${corpus.stats.token_estimate} tokens`);
 
@@ -90,25 +117,14 @@ export class CorpusBuilder {
       title: row.title || '',
       subtitle: row.subtitle || null,
       narrative: row.narrative || null,
-      facts: this.parseCorpusColumn(row.facts, 'facts'),
-      concepts: this.parseCorpusColumn(row.concepts, 'concepts'),
-      files_read: this.parseCorpusColumn(row.files_read, 'files_read'),
-      files_modified: this.parseCorpusColumn(row.files_modified, 'files_modified'),
+      facts: safeParseJsonArray(row.facts),
+      concepts: safeParseJsonArray(row.concepts),
+      files_read: safeParseJsonArray(row.files_read),
+      files_modified: safeParseJsonArray(row.files_modified),
       project: row.project,
       created_at: row.created_at,
       created_at_epoch: row.created_at_epoch,
     };
-  }
-
-  private parseCorpusColumn(value: unknown, column: string): string[] {
-    return parseJsonArrayColumn(value, (error, rawValue) => {
-      logger.warn(
-        'WORKER',
-        `Malformed JSON in observation column "${column}"; defaulting to empty array`,
-        { column, rawPreview: rawValue.slice(0, 100) },
-        error instanceof Error ? error : new Error(String(error)),
-      );
-    });
   }
 
   private calculateStats(observations: CorpusObservation[]): CorpusStats {

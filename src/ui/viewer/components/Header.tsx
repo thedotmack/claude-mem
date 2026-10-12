@@ -3,23 +3,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
-import { useHealth } from '../hooks/useHealth';
-
-/** Format a seconds count as a compact human-readable duration (e.g. "2h 14m"). */
-function formatUptime(seconds: number): string {
-  if (!Number.isFinite(seconds) || seconds < 0) return 'unknown';
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const parts: string[] = [];
-  if (d) parts.push(`${d}d`);
-  if (h) parts.push(`${h}h`);
-  if (m) parts.push(`${m}m`);
-  // Show seconds only below the hour mark, and never a bare "0s" alongside minutes.
-  if (s && !d && !h) parts.push(`${s}s`);
-  return parts.length ? parts.join(' ') : '0s';
-}
+import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL } from '../constants/promo';
 
 interface HeaderProps {
   projects: string[];
@@ -45,15 +29,11 @@ export function Header({
   onShowHelp
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
-  const health = useHealth();
-  const headerTitle = health
-    ? `version: ${health.version}\npid: ${health.pid}\nuptime: ${formatUptime(health.uptime)}`
-    : undefined;
 
   return (
     <div className="header">
       <div className="header-main">
-        <h1 title={headerTitle}>
+        <h1>
           <div style={{ position: 'relative', display: 'inline-block' }}>
             <img src="claude-mem-logomark.webp" alt="" className={`logomark ${isProcessing ? 'spinning' : ''}`} />
             {queueDepth > 0 && (
@@ -64,6 +44,23 @@ export function Header({
           </div>
           <span className="logo-text">claude-mem</span>
         </h1>
+        {/* Most people running the free plugin never learn the trial exists.
+            It sits beside the logo (not in .status) so it survives the
+            responsive rules that hide the icon links on tablet and mobile. */}
+        <a
+          className="pro-trial-cta"
+          href={PRO_TRIAL_URL}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={PRO_TRIAL_PITCH}
+          aria-label={PRO_TRIAL_PITCH}
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3Z" />
+          </svg>
+          <span className="pro-trial-cta-full">{PRO_TRIAL_PITCH}</span>
+          <span className="pro-trial-cta-short">{PRO_TRIAL_SHORT}</span>
+        </a>
       </div>
       <div className="status">
         <a

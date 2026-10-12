@@ -1,6 +1,6 @@
 import { describe, it, expect, mock, afterEach, afterAll, beforeEach } from 'bun:test';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
-import path, { join, relative } from 'path';
+import path, { join } from 'path';
 import { tmpdir } from 'os';
 
 // Snapshot the real modules BEFORE mock.module mutates the live namespace, then
@@ -112,6 +112,27 @@ describe('replaceTaggedContent', () => {
     const result = replaceTaggedContent(existingContent, newContent);
 
     expect(result).toBe('Some content\n</claude-mem-context>\nMore content\n\n<claude-mem-context>\nNew content\n</claude-mem-context>');
+  });
+
+  it('replaces only the block when a closing tag comes before it, and does not grow on refresh', () => {
+    // A closing tag taken for the end of the block copied the text between it
+    // and the block, and kept the old block, on every refresh of an
+    // auto-loaded CLAUDE.md or AGENTS.md.
+    const before = 'Notes\n</claude-mem-context>\nKeep this line.\n';
+    let content = `${before}<claude-mem-context>\nold\n</claude-mem-context>\n## After\n`;
+
+    content = replaceTaggedContent(content, 'first refresh');
+    content = replaceTaggedContent(content, 'second refresh');
+
+    expect(content).toBe(`${before}<claude-mem-context>\nsecond refresh\n</claude-mem-context>\n## After\n`);
+  });
+
+  it('keeps the text after a dangling opening tag once a later refresh finds the block', () => {
+    const appended = replaceTaggedContent('Some content\n<claude-mem-context>\nIncomplete tag section', 'first');
+
+    expect(replaceTaggedContent(appended, 'second')).toBe(
+      'Some content\n<claude-mem-context>\nIncomplete tag section\n\n<claude-mem-context>\nsecond\n</claude-mem-context>',
+    );
   });
 
   it('should preserve newlines in new content', () => {
@@ -397,7 +418,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
   });
 
   it('should accept absolute paths within projectRoot and use them directly', async () => {
@@ -425,7 +446,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent(relative(tempDir, folderPath)));
+    expect(callUrl).toContain(encodeURIComponent(folderPath));
   });
 
   it('should work without projectRoot for backward compatibility', async () => {
@@ -478,7 +499,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('/home/user/my-project/src/utils'));
     expect(callUrl.replace('http://', '')).not.toContain('//');
   });
 
@@ -534,7 +555,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src/utils'));
   });
 
   it('should handle empty string paths gracefully with projectRoot', async () => {
@@ -556,7 +577,7 @@ describe('updateFolderClaudeMdFiles', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src'));
+    expect(callUrl).toContain(encodeURIComponent('/home/user/project/src'));
   });
 });
 
@@ -809,8 +830,8 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src/services'));
-    expect(callUrl).not.toContain(encodeURIComponent('src/utils'));
+    expect(callUrl).toContain(encodeURIComponent('/project/src/services'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/utils'));
   });
 
   it('should handle relative CLAUDE.md paths with projectRoot', async () => {
@@ -850,7 +871,7 @@ describe('issue #859 - skip folders with active CLAUDE.md', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src/c'));
+    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
   });
 
   it('should still exclude project root even when CLAUDE.md filter would allow it', async () => {
@@ -1082,9 +1103,9 @@ describe('CLAUDE.local.md support', () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const callUrl = (fetchMock.mock.calls[0] as unknown[])[0] as string;
-    expect(callUrl).toContain(encodeURIComponent('src/c'));
-    expect(callUrl).not.toContain(encodeURIComponent('src/a'));
-    expect(callUrl).not.toContain(encodeURIComponent('src/b'));
+    expect(callUrl).toContain(encodeURIComponent('/project/src/c'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/a'));
+    expect(callUrl).not.toContain(encodeURIComponent('/project/src/b'));
   });
 });
 
@@ -1109,6 +1130,23 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
   const emptySkeletonResponse = {
     content: [{ text: 'no observation rows here' }],
   };
+
+  it('does not create a new CLAUDE.md when the formatted timeline is empty', async () => {
+    delete process.env[ENV_KEY];
+
+    const folderPath = join(tempDir, 'empty-timeline');
+    mkdirSync(folderPath, { recursive: true });
+    const filePath = join(folderPath, 'file.ts');
+
+    global.fetch = mock(() => Promise.resolve({
+      ok: true,
+      json: () => Promise.resolve(emptySkeletonResponse),
+    } as Response));
+
+    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
+
+    expect(existsSync(join(folderPath, 'CLAUDE.md'))).toBe(false);
+  });
 
   it('does NOT overwrite an existing CLAUDE.md with a skeleton when the folder matches the deny-list', async () => {
     process.env[ENV_KEY] = JSON.stringify(['**/transient']);
@@ -1152,7 +1190,7 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
     expect(readFileSync(claudeMdPath, 'utf-8')).toContain('#123');
   });
 
-  it('empty/skeleton content never touches an existing file, even with no deny-list', async () => {
+  it('default (unset deny-list) preserves prior behavior — existing file gets the empty section rewritten', async () => {
     delete process.env[ENV_KEY];
 
     const folderPath = join(tempDir, 'no-denylist');
@@ -1168,26 +1206,10 @@ describe('skeleton CLAUDE.md deny-list (#2400)', () => {
 
     await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
 
+    // With no deny-list, the existing file is still processed (the new guard is
+    // a no-op), so the tagged context section is appended to the existing file.
     const content = readFileSync(claudeMdPath, 'utf-8');
-    expect(content).toBe('PRE-EXISTING');
-    expect(content).not.toContain('<claude-mem-context>');
-  });
-
-  it('does not create an empty skeleton CLAUDE.md in a folder with no observations', async () => {
-    delete process.env[ENV_KEY];
-
-    const folderPath = join(tempDir, 'no-obs');
-    mkdirSync(folderPath, { recursive: true });
-    const claudeMdPath = join(folderPath, 'CLAUDE.md');
-    const filePath = join(folderPath, 'file.ts');
-
-    global.fetch = mock(() => Promise.resolve({
-      ok: true,
-      json: () => Promise.resolve(emptySkeletonResponse),
-    } as Response));
-
-    await updateFolderClaudeMdFiles([filePath], 'test-project', 37777, tempDir);
-
-    expect(existsSync(claudeMdPath)).toBe(false);
+    expect(content).toContain('PRE-EXISTING');
+    expect(content).toContain('<claude-mem-context>');
   });
 });

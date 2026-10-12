@@ -1,10 +1,11 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
+import { redactForLog } from '../../utils/redaction.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
@@ -12,31 +13,20 @@ import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
+import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
 
-async function dispatchToWorker(
-  input: NormalizedHookInput,
-  platformSource: string,
-): Promise<HookResult> {
-  const result = await executeWithWorkerFallback<{ status?: string }>(
-    '/api/sessions/observations',
-    'POST',
-    {
-      contentSessionId: input.sessionId,
-      platformSource,
-      tool_name: input.toolName,
-      tool_input: input.toolInput,
-      tool_response: input.toolResponse,
-      cwd: input.cwd,
-      agentId: input.agentId,
-      agentType: input.agentType,
-    },
-  );
-
-  if (isWorkerFallback(result)) {
-    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-  }
-
-  logger.debug('HOOK', 'Observation sent successfully via worker', { toolName: input.toolName });
+function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
+  spoolHookEvent('observation', {
+    contentSessionId: input.sessionId,
+    platformSource,
+    toolName: input.toolName!,
+    toolInput: input.toolInput,
+    toolResponse: input.toolResponse,
+    cwd: input.cwd,
+    agentId: input.agentId,
+    agentType: input.agentType,
+    toolUseId: input.toolUseId,
+  });
   return { continue: true, suppressOutput: true };
 }
 
@@ -49,14 +39,12 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    if (!sessionId) {
-      // Mirrors session-init/summarize: without a session id the worker would
-      // create an orphaned session row keyed on undefined.
-      logger.warn('HOOK', 'observation: No sessionId provided, skipping');
+    if (isRecursiveMemoryTool(toolName)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const toolStr = logger.formatTool(toolName, toolInput);
+    // A Bash command line or URL can carry a secret; logs get the redacted form.
+    const toolStr = redactForLog(logger.formatTool(toolName, toolInput));
 
     logger.dataIn('HOOK', `PostToolUse: ${toolStr}`, {});
 
@@ -69,14 +57,24 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true };
     }
 
-    const agentSkip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
-    if (agentSkip.skip) {
-      logger.debug('HOOK', `Skipping observation: ${agentSkip.reason}`, {
+    // #2736 — drop subagent observations BEFORE any worker HTTP call or provider
+    // request. Placed ahead of the runtime branch so it covers both the worker
+    // and server runtimes. Saves the round-trip and the provider tokens, and
+    // prevents Dynamic Workflows fan-out from exhausting provider quota.
+    const skip = shouldSkipAgentObservation(input.agentId, input.agentType, loadFromFileOnce());
+    if (skip.skip) {
+      logger.debug('HOOK', `Skipping observation: ${skip.reason}`, {
         toolName,
         agentId: input.agentId,
         agentType: input.agentType,
       });
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Save echoes go through the worker spool so ingest can retain a write
+    // receipt, without generating a second observation of the explicit note.
+    if (isExplicitMemoryWrite(toolName)) {
+      return spoolObservation(input, platformSource);
     }
 
     const runtime = resolveRuntimeContext();
@@ -99,6 +97,7 @@ export const observationHandler: EventHandler = {
           agentId: input.agentId,
           agentType: input.agentType,
           platformSource,
+          tool_use_id: input.toolUseId,
         },
       };
       try {
@@ -108,7 +107,7 @@ export const observationHandler: EventHandler = {
       } catch (error: unknown) {
         if (isServerClientError(error) && error.isFallbackEligible()) {
           logServerFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
-          // fall through to worker fallback
+          // fall through to the worker spool
         } else {
           logger.error('HOOK', 'Server event failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
@@ -118,6 +117,6 @@ export const observationHandler: EventHandler = {
       }
     }
 
-    return dispatchToWorker(input, platformSource);
+    return spoolObservation(input, platformSource);
   },
 };

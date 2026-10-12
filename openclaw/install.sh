@@ -971,7 +971,7 @@ write_settings() {
 
     // All defaults from SettingsDefaultsManager.ts
     const defaults = {
-      CLAUDE_MEM_MODEL: 'claude-sonnet-4-6',
+      CLAUDE_MEM_MODEL: 'claude-sonnet-5',
       CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
       CLAUDE_MEM_WORKER_PORT: '37777',
       CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
@@ -982,7 +982,7 @@ write_settings() {
       CLAUDE_MEM_GEMINI_MODEL: 'gemini-2.5-flash-lite',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'true',
       CLAUDE_MEM_OPENROUTER_API_KEY: '',
-      CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
       CLAUDE_MEM_OPENROUTER_SITE_URL: '',
       CLAUDE_MEM_OPENROUTER_APP_NAME: 'claude-mem',
       CLAUDE_MEM_DATA_DIR: path.join(homedir, '.claude-mem'),
@@ -1015,7 +1015,7 @@ write_settings() {
       overrides.CLAUDE_MEM_GEMINI_MODEL = 'gemini-2.5-flash-lite';
     } else if (provider === 'openrouter') {
       overrides.CLAUDE_MEM_OPENROUTER_API_KEY = apiKey;
-      overrides.CLAUDE_MEM_OPENROUTER_MODEL = 'xiaomi/mimo-v2-flash:free';
+      overrides.CLAUDE_MEM_OPENROUTER_MODEL = 'cohere/north-mini-code:free';
     }
 
     const settings = Object.assign(defaults, overrides);
@@ -1425,7 +1425,7 @@ print_completion_summary() {
   case "$AI_PROVIDER" in
     claude)    provider_display="Claude Max Plan (CLI authentication)" ;;
     gemini)    provider_display="Gemini (gemini-2.5-flash-lite)" ;;
-    openrouter) provider_display="OpenRouter (xiaomi/mimo-v2-flash:free)" ;;
+    openrouter) provider_display="OpenRouter (cohere/north-mini-code:free)" ;;
     *)         provider_display="$AI_PROVIDER" ;;
   esac
 

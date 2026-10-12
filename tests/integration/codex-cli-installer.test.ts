@@ -1,21 +1,34 @@
-import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
-  installCodexPluginCache,
+  readAndStripContextTags,
   removeLegacyCodexMcpSearchConfig,
-  resolveCodexPluginCacheDirectory,
   setTomlFeatureEnabled,
   setTomlPluginEnabled,
 } from '../../src/services/integrations/CodexCliInstaller.js';
 
-const tempDirs: string[] = [];
+describe('Codex legacy AGENTS.md context cleanup', () => {
+  it('strips only the old block when the user text mentions a closing tag before it', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'codex-agents-md-'));
+    const consoleLog = spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const agentsMdPath = join(directory, 'AGENTS.md');
+      writeFileSync(
+        agentsMdPath,
+        '# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n<claude-mem-context>\nstale memory\n</claude-mem-context>\n\n## After\n',
+      );
 
-afterEach(() => {
-  for (const dir of tempDirs.splice(0)) {
-    rmSync(dir, { recursive: true, force: true });
-  }
+      readAndStripContextTags(agentsMdPath);
+
+      expect(readFileSync(agentsMdPath, 'utf-8'))
+        .toBe('# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n## After\n');
+    } finally {
+      consoleLog.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('Codex CLI installer config repair', () => {
@@ -143,77 +156,5 @@ describe('Codex CLI installer config repair', () => {
     ].join('\n');
 
     expect(removeLegacyCodexMcpSearchConfig(input)).toBe(input);
-  });
-
-  it('resolves the Codex cache from the marketplace manifest version', () => {
-    const root = join(tmpdir(), `codex-marketplace-${Date.now()}-${Math.random()}`);
-    const codexDir = join(root, 'codex-home');
-    const manifestDir = join(root, 'plugin', '.codex-plugin');
-    tempDirs.push(root);
-    mkdirSync(manifestDir, { recursive: true });
-    writeFileSync(join(manifestDir, 'plugin.json'), JSON.stringify({ version: '13.9.1+codex.test' }));
-
-    expect(resolveCodexPluginCacheDirectory(root, codexDir)).toBe(
-      join(
-        codexDir,
-        'plugins',
-        'cache',
-        'claude-mem-local',
-        'claude-mem',
-        '13.9.1+codex.test',
-      ),
-    );
-  });
-
-  it('installs directly from the local marketplace and provisions its runtime', async () => {
-    const root = join(tmpdir(), `codex-marketplace-${Date.now()}-${Math.random()}`);
-    const codexDir = join(root, 'codex-home');
-    const manifestDir = join(root, 'plugin', '.codex-plugin');
-    tempDirs.push(root);
-    mkdirSync(manifestDir, { recursive: true });
-    writeFileSync(join(manifestDir, 'plugin.json'), JSON.stringify({ version: '13.9.1' }));
-    const cacheDir = join(codexDir, 'plugins', 'cache', 'claude-mem-local', 'claude-mem', '13.9.1');
-    const commands: string[][] = [];
-    const provisioned: string[] = [];
-
-    await installCodexPluginCache(root, {
-      codexDir,
-      runBestEffort: (args) => {
-        commands.push(args);
-        // `codex plugin add` creates the plugin cache directory by copying the plugin.
-        mkdirSync(cacheDir, { recursive: true });
-        return true;
-      },
-      ensureRuntime: async (targetDir) => {
-        provisioned.push(targetDir);
-      },
-    });
-
-    expect(commands).toEqual([
-      ['plugin', 'add', 'claude-mem@claude-mem-local'],
-    ]);
-    expect(provisioned).toEqual([cacheDir]);
-    // The install marker is written only after provisioning succeeds, into the
-    // Codex cache dir — a truthful "runtime ready" signal for version-check.js.
-    const marker = join(cacheDir, '.install-version');
-    expect(existsSync(marker)).toBe(true);
-    expect(JSON.parse(readFileSync(marker, 'utf-8')).version).toBe('13.9.1');
-  });
-
-  it('fails without provisioning when Codex cannot install the local plugin', async () => {
-    const root = join(tmpdir(), `codex-marketplace-${Date.now()}-${Math.random()}`);
-    const manifestDir = join(root, 'plugin', '.codex-plugin');
-    tempDirs.push(root);
-    mkdirSync(manifestDir, { recursive: true });
-    writeFileSync(join(manifestDir, 'plugin.json'), JSON.stringify({ version: '13.9.1' }));
-    let provisioned = false;
-
-    await expect(installCodexPluginCache(root, {
-      runBestEffort: () => false,
-      ensureRuntime: async () => {
-        provisioned = true;
-      },
-    })).rejects.toThrow(/cache could not be installed/);
-    expect(provisioned).toBe(false);
   });
 });

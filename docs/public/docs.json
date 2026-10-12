@@ -35,19 +35,22 @@
         "pages": [
           "introduction",
           "installation",
-          "screenpipe-integration",
+          "t3code-integration",
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/openai-compatible-provider",
+          "usage/multi-key-rotation",
+          "usage/quota-fallback",
           "usage/search-tools",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
+          "usage/memory-ingest",
           "usage/manual-recovery",
-          "usage/folder-context",
-          "beta-features",
-          "endless-mode"
+          "usage/folder-context"
         ]
       },
       {
@@ -60,19 +63,17 @@
         ]
       },
       {
+        "group": "Grok Bot Integration",
+        "icon": "robot",
+        "pages": [
+          "grok-bot/index"
+        ]
+      },
+      {
         "group": "Antigravity CLI Integration",
         "icon": "terminal",
         "pages": [
           "antigravity-cli/setup"
-        ]
-      },
-      {
-        "group": "Kiro CLI Integration",
-        "icon": "terminal",
-        "pages": [
-          "kiro-cli/setup",
-          "kiro-cli/parity",
-          "kiro-cli/troubleshooting"
         ]
       },
       {
@@ -95,16 +96,20 @@
           "modes",
           "telemetry",
           "development",
+          "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration"
+          "openclaw-integration",
+          "kimi-integration"
         ]
       },
       {
         "group": "Hosted Server",
         "icon": "cloud",
         "pages": [
-          "hosted-server"
+          "hosted-server",
+          "cloud-sync",
+          "cmem-pro-headless"
         ]
       },
       {

@@ -1,13 +1,16 @@
 
 import path from 'path';
 import { existsSync, readFileSync } from 'fs';
-import { SessionStore } from '../sqlite/SessionStore.js';
-import { NOT_DISMISSED_SQL } from '../sqlite/observations/dismiss-filter.js';
+import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
 import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
+import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
+import { poolSize, rankByStrength } from '../reinforcement/rank.js';
 import type {
   ContextConfig,
+  LocalObservation,
+  LocalSessionSummary,
   Observation,
   SessionSummary,
   SummaryTimelineItem,
@@ -16,78 +19,12 @@ import type {
 } from './types.js';
 import { SUMMARY_LOOKAHEAD } from './types.js';
 
-function isDreamProject(project: string | null | undefined): boolean {
-  return Boolean(project?.endsWith(':dream'));
-}
+type DatabaseOwner = { db: Database };
 
-function rawProjectName(project: string): string {
-  return isDreamProject(project) ? project.slice(0, -':dream'.length) : project;
-}
-
-function uniqueProjects(projects: string[]): string[] {
-  return Array.from(new Set(projects.filter(Boolean)));
-}
-
-function rawProjectsForFallback(projects: string[]): string[] {
-  return uniqueProjects(projects.map(rawProjectName));
-}
-
-function rowMatchesRawProject(
-  row: { project?: string | null; merged_into_project?: string | null },
-  rawProjects: Set<string>
-): boolean {
-  return Boolean(
-    (row.project && !isDreamProject(row.project) && rawProjects.has(row.project))
-    || (row.merged_into_project && rawProjects.has(row.merged_into_project))
-  );
-}
-
-function sortRowsForContext<T extends { project?: string | null; merged_into_project?: string | null; created_at_epoch: number }>(
-  rows: T[],
-  rawProjects: string[]
-): T[] {
-  const rawProjectSet = new Set(rawProjects);
-  return [...rows].sort((a, b) => {
-    const aIsDream = isDreamProject(a.project) && !rowMatchesRawProject(a, rawProjectSet);
-    const bIsDream = isDreamProject(b.project) && !rowMatchesRawProject(b, rawProjectSet);
-    if (aIsDream !== bIsDream) return aIsDream ? -1 : 1;
-    return b.created_at_epoch - a.created_at_epoch;
-  });
-}
-
-function includeRawFallback(
-  rows: Observation[],
-  fallback: Observation | null,
-  rawProjects: string[],
-  limit: number
-): Observation[] {
-  const rawProjectSet = new Set(rawProjects);
-  const selected = rows.slice(0, limit);
-  if (!fallback || selected.length === 0 || selected.some(row => rowMatchesRawProject(row, rawProjectSet))) {
-    return selected;
-  }
-  const duplicateIndex = selected.findIndex(row => row.id === fallback.id);
-  if (duplicateIndex >= 0) return selected;
-  return [...selected.slice(0, Math.max(0, limit - 1)), fallback];
-}
-
-function queryLatestRawObservation(
-  db: SessionStore,
-  rawProjects: string[],
-  typeArray: string[],
-  conceptArray: string[],
-  platformSource?: string
-): Observation | null {
-  if (rawProjects.length === 0) return null;
-
-  const projectPlaceholders = rawProjects.map(() => '?').join(',');
-  const typePlaceholders = typeArray.map(() => '?').join(',');
-  const conceptPlaceholders = conceptArray.map(() => '?').join(',');
-
-  const row = db.db.prepare(`
-    SELECT
+const OBSERVATION_SELECT = `
       o.id,
       o.memory_session_id,
+      s.content_session_id,
       COALESCE(s.platform_source, 'claude') as platform_source,
       o.type,
       o.title,
@@ -100,129 +37,205 @@ function queryLatestRawObservation(
       o.discovery_tokens,
       o.created_at,
       o.created_at_epoch,
-      o.project,
-      o.merged_into_project
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
-      AND o.project NOT LIKE '%:dream'
-      AND (? IS NULL OR s.platform_source = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-      AND ${NOT_DISMISSED_SQL}
-    ORDER BY o.created_at_epoch DESC
-    LIMIT 1
-  `).get(
-    ...rawProjects,
-    ...rawProjects,
-    platformSource ?? null,
-    platformSource ?? null,
-    ...typeArray,
-    ...conceptArray
-  ) as Observation | undefined;
+      o.project
+`;
 
-  return row ?? null;
+// Each project key can match on `project` or `merged_into_project`. One
+// `(project IN … OR merged_into_project IN …) ORDER BY … LIMIT n` makes SQLite
+// fetch every matching row and sort them all. Instead take the newest `limit`
+// rows per (column, key) from the v63 (key COLLATE NOCASE, created_at_epoch DESC)
+// indexes, and keep the newest `limit` ids of the union.
+const PROJECT_KEY_COLUMNS = ['project', 'merged_into_project'] as const;
+
+// SQLite accepts at most 500 terms in a compound SELECT. Each key contributes
+// one term per project column, so bound batches before applying the global cap.
+const PROJECT_KEYS_PER_QUERY = 250;
+
+function newestUniqueRows<T extends { id: number; created_at_epoch: number }>(batches: T[][], limit: number): T[] {
+  const rows = new Map<number, T>();
+  for (const batch of batches) for (const row of batch) rows.set(row.id, row);
+  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch).slice(0, limit);
+}
+
+function newestIdsPerProjectKeySql(
+  alias: string,
+  projectCount: number,
+  perKeySql: (keyPredicate: string) => string,
+): string {
+  const parts: string[] = [];
+  for (const column of PROJECT_KEY_COLUMNS) {
+    for (let i = 0; i < projectCount; i++) {
+      parts.push(`SELECT * FROM (${perKeySql(`${alias}.${column} COLLATE NOCASE = ?`)})`);
+    }
+  }
+  return `
+    SELECT id FROM (${parts.join(' UNION ')})
+    ORDER BY created_at_epoch DESC
+    LIMIT ?`;
 }
 
 export function queryObservationsMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): Observation[] {
+): LocalObservation[] {
+  // Opt-in ACT-R ranking (CLAUDE_MEM_REINFORCE_ALPHA > 0): fetch a wider
+  // recency pool and let re-confirmed older observations climb into the
+  // window. With alpha = 0 the pool is exactly the configured count and the
+  // rows come back as queried, i.e. the N most recent.
+  const alpha = config.reinforcementAlpha ?? 0;
+  const pool = queryObservationsNewest(db, config, {
+    limit: poolSize(config.totalObservationCount, alpha),
+    platformSource,
+    projects,
+    excludeSubagents: config.mainAgentOnly,
+    withReinforcementDates: alpha > 0,
+  });
+  return rankByStrength(pool, config.totalObservationCount, alpha);
+}
+
+/**
+ * Newest observations matching the active mode filters.
+ *
+ * Pass `projects` to stay on the SessionStart / `/api/context/inject` path
+ * (strict project scope). Omit `projects` for a house-wide newest feed — used
+ * only by the Grok Bot INDEX writer when a seat diary is thin. Do not add a
+ * house-fallback query param to `/api/context/inject`.
+ *
+ * `includeManualSaves` also admits rows from `/api/memory/save` (session
+ * `manual-<project>`), which are stored with no concepts and so never pass the
+ * mode concept filter. The Grok Bot seat query sets it so seat self-saves land
+ * in the live INDEX.
+ */
+export function queryObservationsNewest(
+  db: DatabaseOwner,
+  config: ContextConfig,
+  options: {
+    limit: number;
+    platformSource?: string;
+    projects?: string[];
+    includeManualSaves?: boolean;
+    excludeSubagents?: boolean;
+    /** Also select the reinforcement history (only needed while ranking is on). */
+    withReinforcementDates?: boolean;
+  }
+): LocalObservation[] {
   const typeArray = Array.from(config.observationTypes);
   const typePlaceholders = typeArray.map(() => '?').join(',');
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
+  const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
+  if (projects.length > PROJECT_KEYS_PER_QUERY) {
+    const batches: LocalObservation[][] = [];
+    for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {
+      batches.push(queryObservationsNewest(db, config, { ...options, projects: projects.slice(offset, offset + PROJECT_KEYS_PER_QUERY) }));
+    }
+    return newestUniqueRows(batches, options.limit);
+  }
 
-  const projectPlaceholders = projects.map(() => '?').join(',');
-  const rawProjects = rawProjectsForFallback(projects);
-  const hasDreamProjects = projects.some(isDreamProject);
-  const queryLimit = hasDreamProjects
-    ? Math.max(config.totalObservationCount * 2, config.totalObservationCount + rawProjects.length)
-    : config.totalObservationCount;
+  const manualClause = options.includeManualSaves
+    ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
+    : '';
 
-  const rows = db.db.prepare(`
-    SELECT
-      o.id,
-      o.memory_session_id,
-      COALESCE(s.platform_source, 'claude') as platform_source,
-      o.type,
-      o.title,
-      o.subtitle,
-      o.narrative,
-      o.facts,
-      o.concepts,
-      o.files_read,
-      o.files_modified,
-      o.discovery_tokens,
-      o.created_at,
-      o.created_at_epoch,
-      o.project,
-      o.merged_into_project
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-           OR o.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
-      AND type IN (${typePlaceholders})
-      AND EXISTS (
-        SELECT 1 FROM json_each(o.concepts)
-        WHERE value IN (${conceptPlaceholders})
-      )
-      AND ${NOT_DISMISSED_SQL}
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
+  // #3274: SessionStart injection opts in. The seat INDEX passes `projects`
+  // too, and must keep agent-tagged rows. A subagent row carries BOTH agent_id
+  // and agent_type: transcript-watch rows (Grok Bot seats) carry agent_id alone
+  // and must stay injected, or `session_start_context` returns nothing for them.
+  const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
+
+  const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
+
+  const filterSql = `(? IS NULL OR s.platform_source = ?)
+      ${agentFilter}
+      AND (${manualClause} (
+        type IN (${typePlaceholders})
+        AND EXISTS (
+          SELECT 1 FROM json_each(o.concepts)
+          WHERE value IN (${conceptPlaceholders})
+        )
+      ))`;
+  const filterParams = [
+    options.platformSource ?? null,
+    options.platformSource ?? null,
     ...typeArray,
     ...conceptArray,
-    queryLimit
-  ) as Observation[];
+  ];
 
-  if (!hasDreamProjects) return rows;
+  if (projects.length === 0) {
+    return db.db.prepare(`
+      SELECT
+        ${OBSERVATION_SELECT}${reinforcementColumn}
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE ${filterSql}
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?
+    `).all(...filterParams, options.limit) as LocalObservation[];
+  }
 
-  const sorted = sortRowsForContext(rows, rawProjects);
-  const rawFallback = queryLatestRawObservation(db, rawProjects, typeArray, conceptArray, platformSource);
-  return includeRawFallback(sorted, rawFallback, rawProjects, config.totalObservationCount);
+  const winnersSql = newestIdsPerProjectKeySql('o', projects.length, keyPredicate => `
+      SELECT o.id, o.created_at_epoch
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE ${keyPredicate} AND ${filterSql}
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?`);
+  const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
+    projects.flatMap(project => [project, ...filterParams, options.limit]));
+
+  return db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}${reinforcementColumn}
+    FROM (${winnersSql}) w
+    JOIN observations o ON o.id = w.id
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    ORDER BY o.created_at_epoch DESC
+  `).all(...perKeyParams, options.limit) as LocalObservation[];
 }
 
-export function countObservationsByProjects(db: SessionStore, projects: string[], platformSource?: string): number {
+export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');
   const row = db.db.prepare(`
     SELECT COUNT(*) as count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (o.project IN (${projectPlaceholders})
-       OR o.merged_into_project IN (${projectPlaceholders}))
+    WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
+       OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
-      AND ${NOT_DISMISSED_SQL}
   `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
   return row?.count ?? 0;
 }
 
 export function querySummariesMulti(
-  db: SessionStore,
+  db: DatabaseOwner,
   projects: string[],
   config: ContextConfig,
   platformSource?: string
-): SessionSummary[] {
-  const projectPlaceholders = projects.map(() => '?').join(',');
-  const rawProjects = rawProjectsForFallback(projects);
-  const hasDreamProjects = projects.some(isDreamProject);
-  const queryLimit = hasDreamProjects
-    ? Math.max((config.sessionCount + SUMMARY_LOOKAHEAD) * 2, config.sessionCount + SUMMARY_LOOKAHEAD + rawProjects.length)
-    : config.sessionCount + SUMMARY_LOOKAHEAD;
+): LocalSessionSummary[] {
+  if (projects.length === 0) return [];
+  const limit = config.sessionCount + SUMMARY_LOOKAHEAD;
+  if (projects.length > PROJECT_KEYS_PER_QUERY) {
+    const batches: LocalSessionSummary[][] = [];
+    for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {
+      batches.push(querySummariesMulti(db, projects.slice(offset, offset + PROJECT_KEYS_PER_QUERY), config, platformSource));
+    }
+    return newestUniqueRows(batches, limit);
+  }
+  const platformParams = [platformSource ?? null, platformSource ?? null];
 
-  const rows = db.db.prepare(`
+  const winnersSql = newestIdsPerProjectKeySql('ss', projects.length, keyPredicate => `
+      SELECT ss.id, ss.created_at_epoch
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+      WHERE ${keyPredicate} AND (? IS NULL OR s.platform_source = ?)
+      ORDER BY ss.created_at_epoch DESC
+      LIMIT ?`);
+  const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
+    projects.flatMap(project => [project, ...platformParams, limit]));
+
+  return db.db.prepare(`
     SELECT
       ss.id,
       ss.memory_session_id,
@@ -232,55 +245,46 @@ export function querySummariesMulti(
       ss.learned,
       ss.completed,
       ss.next_steps,
+      ss.notes,
       ss.created_at,
       ss.created_at_epoch,
-      ss.project,
-      ss.merged_into_project
-    FROM session_summaries ss
+      ss.project
+    FROM (${winnersSql}) w
+    JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project IN (${projectPlaceholders})
-           OR ss.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
-    queryLimit
-  ) as SessionSummary[];
-
-  return hasDreamProjects
-    ? sortRowsForContext(rows, rawProjects).slice(0, config.sessionCount + SUMMARY_LOOKAHEAD)
-    : rows;
+  `).all(...perKeyParams, limit) as LocalSessionSummary[];
 }
 
-export function countSummariesByProjects(db: SessionStore, projects: string[], platformSource?: string): number {
-  if (projects.length === 0) return 0;
-  const projectPlaceholders = projects.map(() => '?').join(',');
-  const row = db.db.prepare(`
-    SELECT COUNT(*) as count
-    FROM session_summaries ss
-    LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project IN (${projectPlaceholders})
-       OR ss.merged_into_project IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
-  `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
-  return row?.count ?? 0;
+/** Claude Code cuts a longer encoded project directory name to this length and appends a hash. */
+const CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH = 200;
+
+/** Claude Code's 32-bit string hash over UTF-16 code units, in base 36: the suffix of a cut name. */
+function claudeProjectDirNameHash(cwd: string): string {
+  let hash = 0;
+  for (let index = 0; index < cwd.length; index++) hash = ((hash << 5) - hash + cwd.charCodeAt(index)) | 0;
+  return Math.abs(hash).toString(36);
 }
 
 export function cwdToDashed(cwd: string): string {
-  // Claude Code encodes a project's transcript directory by replacing BOTH path
-  // separators AND dots with dashes (e.g. `/Users/john.doe/proj` ->
-  // `-Users-john-doe-proj`). Replacing only `/` left a literal `.` in the dir
-  // name, so "Include last message" silently no-opped for any cwd component
-  // containing a dot — Unix usernames like `john.doe`, dotted dirs, etc. (#2401).
-  return cwd.replace(/[/.]/g, '-');
+  // Claude Code encodes a project's transcript directory by replacing EVERY
+  // non-alphanumeric character with a dash, one-for-one (e.g.
+  // `/Users/john.doe/my_project` -> `-Users-john-doe-my-project`, and a real
+  // macOS temp cwd `/var/folders/m8/w_4jf2z.../T` -> `-var-folders-m8-w-4jf2z...-T`).
+  // Replacing only `/` and `.` left other characters — underscores, spaces — in
+  // the dir name, so the built path never matched the on-disk directory and
+  // "Include last message" / memory-dir resolution silently no-opped for those
+  // cwds (follow-up to the dot-only #2401 fix).
+  // One dash per UTF-16 code unit: no `u` flag, so an emoji becomes two dashes,
+  // as in Claude Code. A name longer than 200 characters is cut to 200 and gets
+  // `-<hash of the raw cwd>` (Claude Code 2.1.289).
+  const dashed = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (dashed.length <= CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH) return dashed;
+  return `${dashed.slice(0, CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH)}-${claudeProjectDirNameHash(cwd)}`;
 }
 
 function parseAssistantTextFromLine(line: string): string | null {
-  if (!line.includes('"type":"assistant"')) return null;
+  if (!/"type"\s*:\s*"assistant"/.test(line)) return null;
 
   const entry = JSON.parse(line);
   if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
@@ -341,13 +345,12 @@ export function getPriorSessionMessages(
   }
 
   const priorSessionObs = observations.find(obs =>
-    obs.memory_session_id !== currentSessionId && !isDreamProject(obs.project)
-  );
+    obs.memory_session_id !== currentSessionId && obs.content_session_id !== currentSessionId);
   if (!priorSessionObs) {
     return { assistantMessage: '' };
   }
 
-  const priorSessionId = priorSessionObs.memory_session_id;
+  const priorSessionId = priorSessionObs.content_session_id ?? priorSessionObs.memory_session_id;
   const dashedCwd = cwdToDashed(cwd);
   const transcriptPath = path.join(CLAUDE_CONFIG_DIR, 'projects', dashedCwd, `${priorSessionId}.jsonl`);
   return extractPriorMessages(transcriptPath);
@@ -360,22 +363,7 @@ export function prepareSummariesForTimeline(
   const mostRecentSummaryId = allSummaries[0]?.id;
 
   return displaySummaries.map((summary, i) => {
-    // Each summary is a "Session started" marker, so back-date it to the start
-    // of its session: the next-older summary in the SAME project (its previous
-    // session). This applies to every entry, including the newest. In
-    // multi-project context allSummaries interleaves projects ordered by time,
-    // so we skip summaries from other projects rather than blindly taking
-    // allSummaries[i + 1]. allSummaries is over-fetched by SUMMARY_LOOKAHEAD so
-    // the last displayed summary still has an older neighbor to anchor to.
-    // (Single-project queries don't select `project`, so it is undefined for
-    // every row and this matches the immediate next summary, as before.)
-    let olderSummary: SessionSummary | null = null;
-    for (let j = i + 1; j < allSummaries.length; j++) {
-      if (allSummaries[j].project === summary.project) {
-        olderSummary = allSummaries[j];
-        break;
-      }
-    }
+    const olderSummary = i === 0 ? null : allSummaries[i + 1];
     return {
       ...summary,
       displayEpoch: olderSummary ? olderSummary.created_at_epoch : summary.created_at_epoch,

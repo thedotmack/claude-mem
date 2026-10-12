@@ -2,27 +2,51 @@
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { paths } from '../../shared/paths.js';
 import { ModeManager } from '../domain/ModeManager.js';
+import { logger } from '../../utils/logger.js';
 import type { ContextConfig } from './types.js';
+import { parseContextCountValue } from '../../shared/context-count.js';
 
-// Mirrors SettingsDefaultsManager.DEFAULTS for the three numeric context
-// fields. Kept here as the last-line-of-defense default so a corrupted
-// settings.json (manual edits writing null / "" / non-numeric strings) can't
-// surface NaN downstream — see asInt below for why that matters.
-const FALLBACK_TOTAL_OBSERVATION_COUNT = 50;
-const FALLBACK_FULL_OBSERVATION_COUNT = 0;
-const FALLBACK_SESSION_COUNT = 10;
+/** Reinforcement weight; anything non-numeric or negative means off. */
+function parseReinforcementAlpha(raw: string | undefined): number {
+  const alpha = Number(raw);
+  return Number.isFinite(alpha) && alpha > 0 ? alpha : 0;
+}
 
-// parseInt('', 10) and parseInt(undefined as any, 10) both return NaN.
-// SettingsDefaultsManager.loadFromFile guarantees these keys exist under
-// the happy path, but a settings.json edited by hand or written by a
-// pre-migration tool can carry null / "" / non-numeric values; the spread
-// in SettingsDefaultsManager that overlays user values then copies the
-// bad type over the string default. NaN flows from here into SQL LIMIT
-// bindings and Array.prototype.slice indices, which Postgres rejects and
-// JS silently coerces to empty results — a silent context truncation.
-function asInt(value: unknown, fallback: number): number {
-  const parsed = parseInt(String(value ?? ''), 10);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+/**
+ * Keep direct file/env settings finite without narrowing valid custom counts.
+ * Anything else falls back to the default, with a warning that names it.
+ */
+function parseContextCount(key: string, raw: unknown, fallback: string): number {
+  const count = parseContextCountValue(raw);
+  if (count !== undefined) return count;
+  if (raw !== undefined) {
+    logger.warn('CONFIG', `${key} must be a whole number >= 0; using the default`, { value: raw, default: fallback });
+  }
+  return Number(fallback);
+}
+
+function parseCsvSetting(raw: string | undefined): string[] | null {
+  const values = (raw ?? '').split(',').map(v => v.trim()).filter(v => v !== '');
+  return values.length > 0 ? values : null;
+}
+
+// Settings keep the ids of whatever mode was active when they were written, so
+// after a CLAUDE_MEM_MODE switch they can name ids the active mode never emits
+// and filter every observation out. Keep only the active mode's ids; if none
+// survive (or nothing is configured), use the mode's full list.
+function filterToActiveModeIds(settingKey: string, raw: string | undefined, modeIds: string[]): Set<string> {
+  const configuredIds = parseCsvSetting(raw);
+  if (!configuredIds) return new Set(modeIds);
+
+  const validIds = configuredIds.filter(id => modeIds.includes(id));
+  const discardedIds = configuredIds.filter(id => !modeIds.includes(id));
+  if (discardedIds.length > 0) {
+    logger.warn('CONFIG', `${settingKey} has ids not in the active mode; ignoring them`, {
+      discardedIds: discardedIds.join(','),
+      fallingBackToModeList: validIds.length === 0,
+    });
+  }
+  return new Set(validIds.length > 0 ? validIds : modeIds);
 }
 
 export function loadContextConfig(): ContextConfig {
@@ -30,19 +54,27 @@ export function loadContextConfig(): ContextConfig {
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
   const mode = ModeManager.getInstance().getActiveMode();
-  const observationTypes = new Set(mode.observation_types.map(t => t.id));
-  const observationConcepts = new Set(mode.observation_concepts.map(c => c.id));
+  // CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES / _CONCEPTS are documented in
+  // configuration.mdx and persisted by SettingsRoutes; they narrow the mode's
+  // lists, never widen them. Empty keeps the mode-wide default.
+  const observationTypes = filterToActiveModeIds(
+    'CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES',
+    settings.CLAUDE_MEM_CONTEXT_OBSERVATION_TYPES,
+    mode.observation_types.map(t => t.id)
+  );
+  const observationConcepts = filterToActiveModeIds(
+    'CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS',
+    settings.CLAUDE_MEM_CONTEXT_OBSERVATION_CONCEPTS,
+    mode.observation_concepts.map(c => c.id)
+  );
 
+  const defaults = SettingsDefaultsManager.getAllDefaults();
+  const count = (key: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS' | 'CLAUDE_MEM_CONTEXT_FULL_COUNT' | 'CLAUDE_MEM_CONTEXT_SESSION_COUNT') =>
+    parseContextCount(key, settings[key], defaults[key]);
   return {
-    totalObservationCount: asInt(
-      settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS,
-      FALLBACK_TOTAL_OBSERVATION_COUNT,
-    ),
-    fullObservationCount: asInt(
-      settings.CLAUDE_MEM_CONTEXT_FULL_COUNT,
-      FALLBACK_FULL_OBSERVATION_COUNT,
-    ),
-    sessionCount: asInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, FALLBACK_SESSION_COUNT),
+    totalObservationCount: count('CLAUDE_MEM_CONTEXT_OBSERVATIONS'),
+    fullObservationCount: count('CLAUDE_MEM_CONTEXT_FULL_COUNT'),
+    sessionCount: count('CLAUDE_MEM_CONTEXT_SESSION_COUNT'),
     showReadTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS === 'true',
     showWorkTokens: settings.CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS === 'true',
     showSavingsAmount: settings.CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT === 'true',
@@ -52,7 +84,7 @@ export function loadContextConfig(): ContextConfig {
     fullObservationField: settings.CLAUDE_MEM_CONTEXT_FULL_FIELD as 'narrative' | 'facts',
     showLastSummary: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY === 'true',
     showLastMessage: settings.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE === 'true',
-    mermaidContext: settings.CLAUDE_MEM_MERMAID_CONTEXT === 'true',
-    fetchByIdSupported: settings.CLAUDE_MEM_CONTEXT_FETCH_BY_ID_SUPPORTED !== 'false',
+    mainAgentOnly: settings.CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY !== 'false',
+    reinforcementAlpha: parseReinforcementAlpha(settings.CLAUDE_MEM_REINFORCE_ALPHA),
   };
 }

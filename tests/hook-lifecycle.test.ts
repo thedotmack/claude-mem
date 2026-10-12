@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, mock } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { fileURLToPath } from 'node:url';
 
 describe('Hook Lifecycle - Event Handlers', () => {
   describe('worker fallback failure counter', () => {
@@ -46,16 +47,6 @@ describe('Hook Lifecycle - Event Handlers', () => {
       expect(result.exitCode).toBe(0);
     });
 
-  });
-});
-
-describe('Kiro CLI Compatibility', () => {
-  describe('getPlatformAdapter', () => {
-    it('should return kiroAdapter for kiro and kiro-cli', async () => {
-      const { getPlatformAdapter, kiroAdapter } = await import('../src/cli/adapters/index.js');
-      expect(getPlatformAdapter('kiro')).toBe(kiroAdapter);
-      expect(getPlatformAdapter('kiro-cli')).toBe(kiroAdapter);
-    });
   });
 });
 
@@ -504,7 +495,7 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
     expect(typeof hookCommand).toBe('function');
 
     const hookCommandSource = await Bun.file(
-      new URL('../src/cli/hook-command.ts', import.meta.url).pathname
+      fileURLToPath(new URL('../src/cli/hook-command.ts', import.meta.url))
     ).text();
 
     // Diagnostics still go through the structured logger.
@@ -519,8 +510,10 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
 
     // hookCommand orchestrates hook-io; it does not write streams directly.
     expect(hookCommandSource).toContain("emitModelContext");
-    expect(hookCommandSource).toContain("emitBlockingError");
+    expect(hookCommandSource).toContain("emitDiagnostic");
     expect(hookCommandSource).toContain("exitGraceful");
+    // plan-17 step 2: no hook path exits 2 any more.
+    expect(hookCommandSource).not.toContain("emitBlockingError");
     expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");
   });
 });

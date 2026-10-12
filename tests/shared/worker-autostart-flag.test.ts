@@ -1,162 +1,223 @@
-import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
-import { existsSync, readFileSync, rmSync } from 'fs';
+import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import { tmpdir } from 'os';
-import path from 'path';
-
-// Capture real exports before mock.module mutates the live namespace, then
-// re-register the snapshots in afterAll so these mocks do not leak into later
-// test files (bun's mock.module is process-global; mock.restore() does NOT undo it).
 import * as realHookSettings from '../../src/shared/hook-settings.js';
-import * as realSupervisor from '../../src/supervisor/index.js';
+import * as realInfrastructure from '../../src/services/infrastructure/index.js';
 import * as realHealthMonitor from '../../src/services/infrastructure/HealthMonitor.js';
-import * as realCliTelemetry from '../../src/services/telemetry/cli-telemetry.js';
+import * as realSupervisor from '../../src/supervisor/index.js';
+import * as realProcessManager from '../../src/services/infrastructure/ProcessManager.js';
+import * as realKillProcessTree from '../../src/shared/kill-process-tree.js';
+import * as realPortReclaim from '../../src/shared/port-reclaim.js';
+import * as realSpawnGate from '../../src/shared/worker-spawn-gate.js';
+import { DATA_DIR } from '../../src/shared/paths.js';
+import { isWorkerAutostartDisabled } from '../../src/shared/worker-autostart.js';
+
+/**
+ * CLAUDE_MEM_WORKER_AUTOSTART=false: the worker is managed externally. Hooks
+ * must still USE a running worker, must never launch, kill or recycle one, and
+ * a down worker must not feed the fail-loud counter.
+ */
 
 const realHookSettingsSnapshot = { ...realHookSettings };
-const realSupervisorSnapshot = { ...realSupervisor };
+const realInfrastructureSnapshot = { ...realInfrastructure };
 const realHealthMonitorSnapshot = { ...realHealthMonitor };
-const realCliTelemetrySnapshot = { ...realCliTelemetry };
+const realSupervisorSnapshot = { ...realSupervisor };
+const realProcessManagerSnapshot = { ...realProcessManager };
+const realKillProcessTreeSnapshot = { ...realKillProcessTree };
+const realPortReclaimSnapshot = { ...realPortReclaim };
+const realSpawnGateSnapshot = { ...realSpawnGate };
 
-let settings: Record<string, string> = {};
-let workerHealthy = true;
-const fetchLog: Array<{ url: string; method: string }> = [];
-const dataDir = path.join(tmpdir(), `claude-mem-worker-utils-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+let settings: Record<string, unknown> = {};
+let workerUp = true;
+// false: /api/readiness answers 503 (a worker that is up but never ready).
+let workerReady = true;
+let versionMatch = { matches: true, pluginVersion: '13.4.1', workerVersion: '13.4.1' };
+const spawnCalls: string[] = [];
+const killCalls: number[] = [];
 
 mock.module('../../src/shared/hook-settings.js', () => ({
+  ...realHookSettingsSnapshot,
   loadFromFileOnce: () => settings,
 }));
-
-mock.module('../../src/supervisor/index.js', () => ({
-  validateWorkerPidFile: (options: { pidFilePath?: string } = {}) => {
-    if (!options.pidFilePath) return 'alive';
-    if (!existsSync(options.pidFilePath)) return 'missing';
-    try {
-      const pidInfo = JSON.parse(readFileSync(options.pidFilePath, 'utf-8')) as { pid?: unknown };
-      if (typeof pidInfo.pid === 'number' && Number.isInteger(pidInfo.pid) && pidInfo.pid > 0) {
-        return 'alive';
-      }
-    } catch {
-      rmSync(options.pidFilePath, { force: true });
-      return 'invalid';
-    }
-    rmSync(options.pidFilePath, { force: true });
-    return 'stale';
-  },
-  getSupervisor: () => ({
-    assertCanSpawn: () => {},
-    registerProcess: () => {},
-    unregisterProcess: () => {},
-    getRegistry: () => ({ reapSession: () => {} }),
-    stop: () => Promise.resolve(),
-  }),
+mock.module('../../src/services/infrastructure/index.js', () => ({
+  ...realInfrastructureSnapshot,
+  checkVersionMatch: () => Promise.resolve(versionMatch),
+  isPortInUse: () => Promise.resolve(false),
 }));
-
 mock.module('../../src/services/infrastructure/HealthMonitor.js', () => ({
-  checkVersionMatch: () =>
-    Promise.resolve({ matches: true, pluginVersion: '13.4.1', workerVersion: '13.4.1' }),
+  ...realHealthMonitorSnapshot,
+  // The infrastructure barrel re-exports HealthMonitor's bindings, so the
+  // barrel's version stub is repeated here; otherwise the real probe answers
+  // and a mismatch is never simulated.
+  checkVersionMatch: () => Promise.resolve(versionMatch),
+  // The pre-spawn port gate (#3171): report the port free so the default path
+  // reaches the spawn.
+  classifyPortOccupancy: () => Promise.resolve('free'),
+}));
+mock.module('../../src/supervisor/index.js', () => ({
+  ...realSupervisorSnapshot,
+  validateWorkerPidFile: () => 'alive',
+  readOwnedWorkerPidInfo: () => ({ pid: 4242, port: 0, startedAt: new Date(0).toISOString() }),
+}));
+mock.module('../../src/services/infrastructure/ProcessManager.js', () => ({
+  ...realProcessManagerSnapshot,
+  spawnDetachedWorkerDaemon: (runtimePath: string) => {
+    spawnCalls.push(runtimePath);
+    workerUp = true;
+    return 4343;
+  },
+}));
+mock.module('../../src/shared/kill-process-tree.js', () => ({
+  ...realKillProcessTreeSnapshot,
+  killProcessTree: (pid: number) => {
+    killCalls.push(pid);
+    return Promise.resolve();
+  },
+}));
+mock.module('../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimGhostListeningPort: () => Promise.resolve({ reclaimed: false, reason: 'not-supported', killedPids: [] }),
+}));
+mock.module('../../src/shared/worker-spawn-gate.js', () => ({
+  ...realSpawnGateSnapshot,
+  acquireSpawnLock: () => true,
+  releaseSpawnLock: () => {},
 }));
 
-mock.module('../../src/services/telemetry/cli-telemetry.js', () => ({
-  captureCliEvent: () => Promise.resolve(),
-}));
+afterAll(() => {
+  mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
+  mock.module('../../src/services/infrastructure/index.js', () => realInfrastructureSnapshot);
+  mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
+  mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
+  mock.module('../../src/services/infrastructure/ProcessManager.js', () => realProcessManagerSnapshot);
+  mock.module('../../src/shared/kill-process-tree.js', () => realKillProcessTreeSnapshot);
+  mock.module('../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
+  mock.module('../../src/shared/worker-spawn-gate.js', () => realSpawnGateSnapshot);
+});
 
 async function importWorkerUtilsFresh() {
   return import(`../../src/shared/worker-utils.js?worker-autostart=${Date.now()}-${Math.random()}`);
 }
 
-function installFetchMock(): void {
-  fetchLog.length = 0;
-  global.fetch = mock((url: string | URL | Request, init?: RequestInit) => {
-    fetchLog.push({
-      url: typeof url === 'string' ? url : url.toString(),
-      method: (init?.method ?? 'GET').toUpperCase(),
-    });
-    const status = workerHealthy ? 200 : 503;
-    return Promise.resolve({
-      ok: workerHealthy,
-      status,
-      text: () => Promise.resolve(''),
-      json: () => Promise.resolve({ version: '13.4.1' }),
-    } as unknown as Response);
-  }) as unknown as typeof fetch;
+function jsonResponse(body: Record<string, unknown>): Response {
+  return {
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(JSON.stringify(body)),
+    json: () => Promise.resolve(body),
+  } as unknown as Response;
 }
 
-describe('worker autostart and fail-loud warning behavior', () => {
+function hookFailureCount(): number {
+  const statePath = join(DATA_DIR, 'state', 'hook-failures.json');
+  if (!existsSync(statePath)) return 0;
+  try {
+    return Number((JSON.parse(readFileSync(statePath, 'utf-8')) as { consecutiveFailures?: unknown }).consecutiveFailures ?? 0);
+  } catch {
+    return 0;
+  }
+}
+
+describe('isWorkerAutostartDisabled', () => {
+  it('is disabled only by an explicit false', () => {
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: 'false' })).toBe(true);
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: ' FALSE ' })).toBe(true);
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: 'true' })).toBe(false);
+    expect(isWorkerAutostartDisabled({ CLAUDE_MEM_WORKER_AUTOSTART: '' })).toBe(false);
+    expect(isWorkerAutostartDisabled({})).toBe(false);
+  });
+});
+
+describe('CLAUDE_MEM_WORKER_AUTOSTART opt-out in the hook path', () => {
   const originalFetch = global.fetch;
+  const originalScript = process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+  let scriptDir: string;
 
   beforeEach(() => {
     settings = {};
-    workerHealthy = true;
-    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
-    installFetchMock();
+    workerUp = true;
+    workerReady = true;
+    versionMatch = { matches: true, pluginVersion: '13.4.1', workerVersion: '13.4.1' };
+    spawnCalls.length = 0;
+    killCalls.length = 0;
+    scriptDir = mkdtempSync(join(tmpdir(), 'claude-mem-autostart-'));
+    const scriptPath = join(scriptDir, 'worker-service.cjs');
+    writeFileSync(scriptPath, '');
+    process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = scriptPath;
+    global.fetch = mock((url: string | URL | Request) => {
+      if (!workerUp) return Promise.reject(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }));
+      const u = typeof url === 'string' ? url : url.toString();
+      if (u.includes('/api/health')) return Promise.resolve(jsonResponse({ version: versionMatch.workerVersion, uptime: 10 }));
+      if (u.includes('/api/readiness') && !workerReady) {
+        return Promise.resolve({ ...jsonResponse({}), ok: false, status: 503 } as Response);
+      }
+      return Promise.resolve(jsonResponse({}));
+    }) as unknown as typeof fetch;
   });
 
   afterEach(() => {
     global.fetch = originalFetch;
-    delete process.env.CLAUDE_MEM_DATA_DIR;
-    rmSync(dataDir, { recursive: true, force: true });
+    if (originalScript === undefined) delete process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+    else process.env.CLAUDE_MEM_WORKER_SCRIPT_PATH = originalScript;
+    rmSync(scriptDir, { recursive: true, force: true });
   });
 
-  afterAll(() => {
-    mock.module('../../src/shared/hook-settings.js', () => realHookSettingsSnapshot);
-    mock.module('../../src/supervisor/index.js', () => realSupervisorSnapshot);
-    mock.module('../../src/services/infrastructure/HealthMonitor.js', () => realHealthMonitorSnapshot);
-    mock.module('../../src/services/telemetry/cli-telemetry.js', () => realCliTelemetrySnapshot);
-  });
-
-  it('returns false without contacting the worker when CLAUDE_MEM_WORKER_AUTOSTART=false', async () => {
+  it('still uses a worker that is already running', async () => {
     settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
+    const workerUtils = await importWorkerUtilsFresh();
 
-    const { ensureWorkerAliveOnce } = await importWorkerUtilsFresh();
-
-    expect(await ensureWorkerAliveOnce()).toBe(false);
-    expect(fetchLog).toHaveLength(0);
+    expect(await workerUtils.ensureWorkerAliveOnce()).toBe(true);
+    expect(spawnCalls).toHaveLength(0);
   });
 
-  it('uses the existing worker path when autostart is unset', async () => {
-    const { ensureWorkerAliveOnce } = await importWorkerUtilsFresh();
+  it('never lazy-spawns, and a down worker skips quietly without feeding the fail-loud counter', async () => {
+    settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
+    workerUp = false;
+    const before = hookFailureCount();
+    const workerUtils = await importWorkerUtilsFresh();
 
-    expect(await ensureWorkerAliveOnce()).toBe(true);
-    expect(fetchLog.some(call => call.url.includes('/api/health'))).toBe(true);
+    const result = await workerUtils.executeWithWorkerFallback('/api/sessions/observations', 'POST', {});
+
+    expect(workerUtils.isWorkerFallback(result)).toBe(true);
+    expect((result as { reason?: string }).reason).toBe('worker_autostart_disabled');
+    expect(spawnCalls).toHaveLength(0);
+    expect(hookFailureCount()).toBe(before);
   });
 
-  it('best-effort calls skip lazy-spawn without recording fail-loud debt', async () => {
-    workerHealthy = false;
+  it('never recycles a mismatched worker it did not start; it uses it as is', async () => {
+    settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
+    versionMatch = { matches: false, pluginVersion: '13.4.1', workerVersion: '13.3.0' };
+    const workerUtils = await importWorkerUtilsFresh();
 
-    const { executeWithWorkerFallback, isWorkerFallback } = await importWorkerUtilsFresh();
-    const result = await executeWithWorkerFallback('/api/context/inject?projects=test', 'GET', undefined, {
-      allowLazySpawn: false,
-    });
-
-    expect(isWorkerFallback(result)).toBe(true);
-    expect(fetchLog.some(call => call.url.includes('/api/health'))).toBe(true);
-    expect(existsSync(path.join(dataDir, 'state', 'hook-failures.json'))).toBe(false);
+    expect(await workerUtils.ensureWorkerAliveOnce()).toBe(true);
+    expect(killCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
   });
 
-  it('warns but does not throw or exit for Kiro when the worker-unreachable threshold is reached', async () => {
-    settings = { CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '1' };
+  it('bounds the readiness wait on a mismatched external worker by the hook budget (#3434)', async () => {
+    settings = { CLAUDE_MEM_WORKER_AUTOSTART: 'false' };
+    versionMatch = { matches: false, pluginVersion: '13.4.1', workerVersion: '13.3.0' };
+    workerReady = false;
+    const workerUtils = await importWorkerUtilsFresh();
 
-    const { recordWorkerUnreachable, setActivePlatform } = await importWorkerUtilsFresh();
-    setActivePlatform('kiro');
+    const startedAt = Date.now();
+    const alive = await workerUtils.ensureWorkerRunning(400);
+    const elapsedMs = Date.now() - startedAt;
 
-    expect(await recordWorkerUnreachable()).toBe(1);
+    expect(alive).toBe(false);
+    // Unbudgeted, this path waits out the full hook readiness timeout (10 s).
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(killCalls).toHaveLength(0);
+    expect(spawnCalls).toHaveLength(0);
   });
 
-  it('does not exit 2 for regular Claude Code worker outages and exposes one outage hint', async () => {
-    settings = { CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: '1' };
-    const exitSpy = spyOn(process, 'exit').mockImplementation((() => {
-      throw new Error('process.exit should not be called for worker outages');
-    }) as never);
+  it('keeps the default: with AUTOSTART unset a down worker is lazy-spawned', async () => {
+    settings = {};
+    workerUp = false;
+    const workerUtils = await importWorkerUtilsFresh();
 
-    try {
-      const { recordWorkerUnreachable, setActivePlatform, consumeWorkerOutageHint } = await importWorkerUtilsFresh();
-      setActivePlatform('claude-code');
-
-      expect(await recordWorkerUnreachable()).toBeGreaterThan(0);
-      expect(exitSpy).not.toHaveBeenCalled();
-      expect(consumeWorkerOutageHint('session-1')).toContain('background worker offline');
-      expect(consumeWorkerOutageHint('session-1')).toBeNull();
-    } finally {
-      exitSpy.mockRestore();
-    }
+    expect(await workerUtils.ensureWorkerAliveOnce()).toBe(true);
+    expect(spawnCalls).toHaveLength(1);
   });
 });

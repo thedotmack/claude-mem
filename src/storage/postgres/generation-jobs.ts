@@ -125,7 +125,16 @@ export class PostgresObservationGenerationJobRepository {
         )
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb)
         ON CONFLICT (idempotency_key) DO UPDATE SET
-          payload = observation_generation_jobs.payload || excluded.payload,
+          -- The conflicting INSERT carries a freshly generated job id in both $1
+          -- and payload.generation_job_id. ON CONFLICT keeps the existing row, so
+          -- $1 is discarded -- but the merge below would otherwise let the new
+          -- payload overwrite generation_job_id with that discarded id, leaving
+          -- the row pointing at a job that never existed. The worker resolves the
+          -- job via payload.generation_job_id, so such a row can never be locked
+          -- and is silently dropped. Re-pin the pointer to the surviving row.
+          payload = observation_generation_jobs.payload
+                    || excluded.payload
+                    || jsonb_build_object('generation_job_id', observation_generation_jobs.id),
           updated_at = now()
         RETURNING *
       `,

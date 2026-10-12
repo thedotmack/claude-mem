@@ -264,8 +264,9 @@ The index is useless without retrieval mechanisms:
 - `search` - Search memory index (Layer 1: Get IDs)
 - `timeline` - Get chronological context (Layer 2: See narrative arc)
 - `get_observations` - Fetch full details (Layer 3: Deep dive)
+- `get_tool_uses` - Fetch the original `tool_input` / `tool_response` (Layer 4: Raw evidence)
 
-The 3-layer workflow ensures progressive disclosure: index → context → details.
+The layered workflow ensures progressive disclosure: index → context → details → raw evidence.
 
 ---
 
@@ -316,9 +317,11 @@ Is my task related to npm? → YES
 
 ---
 
-## The Three-Layer Workflow
+## The Layered Workflow
 
-Claude-Mem implements progressive disclosure through a 3-layer workflow pattern:
+Claude-Mem implements progressive disclosure through a layered workflow pattern.
+Layers 1-3 are the everyday path; layer 4 exists for the rare case where a
+summary is not evidence enough.
 
 ### Layer 1: Search (Index)
 
@@ -399,6 +402,41 @@ Concepts: hooks, timeout, npm, configuration
 
 **Cost:** ~155 tokens for full details
 **Value:** Complete understanding of the issue
+
+### Layer 4: Get Tool Uses (Raw Evidence)
+
+Observations are compressed *summaries* of what tools did. Sometimes the
+compression is exactly what you do not want — you need the literal bytes: the
+exact diff that was applied, the exact stderr a build printed, the exact JSON an
+API returned.
+
+Claude-mem keeps those raw bodies in the `tool_uses` table, and this layer is
+the only way to read them back:
+
+```typescript
+get_tool_uses({
+  ids: ["toolu_01ABC..."],   // or numeric tool_uses ids
+  project: "claude-mem"
+})
+```
+
+**Returns:** The stored `tool_input` / `tool_response` for those calls, along
+with the tool name, the session ids, and the observation the call was folded
+into.
+
+**Cost:** Up to 64 KB per row — by far the most expensive layer
+**Value:** The unsummarized truth, when and only when the summary was not enough
+
+<Warning>
+  Never start here, and never call `get_tool_uses` without ids you got from
+  layers 1-3. Raw tool bodies are exactly the context pollution the rest of this
+  page exists to avoid; disclosing a handful on purpose is progressive
+  disclosure, disclosing them by default is just a bigger transcript.
+</Warning>
+
+Payloads larger than 64 KB are truncated on write and carry a
+`…[truncated: N bytes]` marker, so a clipped body is distinguishable from one
+that legitimately ends where it does.
 
 ---
 

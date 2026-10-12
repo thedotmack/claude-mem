@@ -75,12 +75,13 @@ const LANGUAGE_NAMES: Record<string, string> = {
   nl: "Dutch",
   tr: "Turkish",
   uk: "Ukrainian",
+  ur: "Urdu",
   vi: "Vietnamese",
   id: "Indonesian",
   th: "Thai",
+  tl: "Tagalog",
   hi: "Hindi",
   bn: "Bengali",
-  ur: "Urdu",
   ro: "Romanian",
   sv: "Swedish",
   it: "Italian",
@@ -89,7 +90,6 @@ const LANGUAGE_NAMES: Record<string, string> = {
   fi: "Finnish",
   da: "Danish",
   no: "Norwegian",
-  ne: "Nepali",
   bg: "Bulgarian",
   et: "Estonian",
   lt: "Lithuanian",
@@ -367,11 +367,12 @@ export async function translateReadme(
   const translationResults = await runWithConcurrency(languages, parallel, translateLang);
   results.push(...translationResults);
 
+  const latestCache = await readCache(cachePath);
   const newCache: TranslationCache = {
     sourceHash,
     lastUpdated: new Date().toISOString(),
     translations: {
-      ...(isHashMatch ? cache?.translations : {}),
+      ...(latestCache?.sourceHash === sourceHash ? latestCache.translations : {}),
       ...Object.fromEntries(
         results.filter(r => r.success && !r.cached).map(r => [
           r.language,

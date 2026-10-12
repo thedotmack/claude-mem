@@ -274,42 +274,52 @@ export class PostgresServerSessionsRepository {
   }
 
   /**
-   * List events tied to this server_session that do NOT yet have a completed
-   * observation_generation_jobs row. Tenant-scoped: rows are filtered by
-   * (project_id, team_id) before any join.
+   * Every event of the session, in order — the input a SESSION SUMMARY needs.
+   * Tenant-scoped: rows are filtered by (project_id, team_id).
+   *
+   * Never only the events the per-event lane has not collapsed yet: that lane
+   * normally finishes first, so a summary fed those arrived at an empty list
+   * and the model was asked to summarise nothing (#4137).
+   *
+   * Bounded by count at BOTH ends, never only at the head: a session longer
+   * than 2 x `eventsPerEnd` returns its first and last `eventsPerEnd` events,
+   * so the summary always sees the opening (the goal) and the close (the
+   * outcome and what was left pending). The count bound only caps memory; the
+   * caller's byte budget (`capSummaryInput`) does the real sizing.
    */
-  async listUnprocessedEvents(input: {
+  async listSessionEvents(input: {
     serverSessionId: string;
     projectId: string;
     teamId: string;
-    limit?: number;
+    eventsPerEnd?: number;
   }): Promise<PostgresAgentEvent[]> {
-    const limit = input.limit ?? 500;
-    const result = await this.client.query<UnprocessedEventRow>(
+    const eventsPerEnd = input.eventsPerEnd ?? 500;
+    const result = await this.client.query<SessionEventRow>(
       `
         SELECT e.*
         FROM agent_events e
-        WHERE e.server_session_id = $1
-          AND e.project_id = $2
+        WHERE e.project_id = $2
           AND e.team_id = $3
-          AND NOT EXISTS (
-            SELECT 1 FROM observation_generation_jobs j
-            WHERE j.agent_event_id = e.id
-              AND j.project_id = e.project_id
-              AND j.team_id = e.team_id
-              AND j.source_type = 'agent_event'
-              AND j.status = 'completed'
+          AND e.id IN (
+            (SELECT head.id FROM agent_events head
+              WHERE head.server_session_id = $1 AND head.project_id = $2 AND head.team_id = $3
+              ORDER BY head.occurred_at ASC, head.id ASC
+              LIMIT $4)
+            UNION
+            (SELECT tail.id FROM agent_events tail
+              WHERE tail.server_session_id = $1 AND tail.project_id = $2 AND tail.team_id = $3
+              ORDER BY tail.occurred_at DESC, tail.id DESC
+              LIMIT $4)
           )
-        ORDER BY e.occurred_at ASC
-        LIMIT $4
+        ORDER BY e.occurred_at ASC, e.id ASC
       `,
-      [input.serverSessionId, input.projectId, input.teamId, limit]
+      [input.serverSessionId, input.projectId, input.teamId, eventsPerEnd]
     );
-    return result.rows.map(mapUnprocessedEventRow);
+    return result.rows.map(mapSessionEventRow);
   }
 }
 
-interface UnprocessedEventRow {
+interface SessionEventRow {
   id: string;
   project_id: string;
   team_id: string;
@@ -326,7 +336,7 @@ interface UnprocessedEventRow {
   created_at: Date;
 }
 
-function mapUnprocessedEventRow(row: UnprocessedEventRow): PostgresAgentEvent {
+function mapSessionEventRow(row: SessionEventRow): PostgresAgentEvent {
   return {
     id: row.id,
     projectId: row.project_id,

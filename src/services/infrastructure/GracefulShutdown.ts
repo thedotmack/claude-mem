@@ -30,29 +30,45 @@ export interface GracefulShutdownConfig {
 export async function performGracefulShutdown(config: GracefulShutdownConfig): Promise<void> {
   logger.info('SYSTEM', 'Shutdown initiated');
 
+  const errors: unknown[] = [];
+  const details: string[] = [];
+  async function cleanup(stage: string, action: () => Promise<void>): Promise<void> {
+    try { await action(); } catch (error) {
+      errors.push(error);
+      details.push(`${stage}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   if (config.server) {
     await closeHttpServer(config.server);
     logger.info('SYSTEM', 'HTTP server closed');
   }
 
-  await config.sessionManager.shutdownAll();
+  await cleanup('sessions', () => config.sessionManager.shutdownAll());
 
   if (config.mcpClient) {
-    await config.mcpClient.close();
-    logger.info('SYSTEM', 'MCP client closed');
+    await cleanup('MCP', async () => {
+      await config.mcpClient!.close();
+      logger.info('SYSTEM', 'MCP client closed');
+    });
   }
 
   if (config.chromaMcpManager) {
-    logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
-    await config.chromaMcpManager.stop();
-    logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    await cleanup('Chroma', async () => {
+      logger.info('SHUTDOWN', 'Stopping Chroma MCP connection...');
+      await config.chromaMcpManager!.stop();
+      logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
+    });
   }
 
   if (config.dbManager) {
-    await config.dbManager.close();
+    await cleanup('database', () => config.dbManager!.close());
   }
 
-  await getSupervisor().stop();
+  await cleanup('supervisor', () => getSupervisor().stop());
+
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, `Worker shutdown cleanup failed: ${details.join('; ')}`);
 
   logger.info('SYSTEM', 'Worker shutdown complete');
 }
@@ -65,7 +81,25 @@ async function closeHttpServer(server: http.Server): Promise<void> {
   }
 
   await new Promise<void>((resolve, reject) => {
-    server.close(err => err ? reject(err) : resolve());
+    server.close(err => {
+      if (!err) {
+        resolve();
+        return;
+      }
+      // #3380 — Node's http.Server.close(cb) reports ERR_SERVER_NOT_RUNNING
+      // when the handle is not listening (e.g. the bind failed or the server
+      // already closed). Closing an already-closed server is the desired end
+      // state, not a failure: rejecting here aborted ALL remaining teardown
+      // (session drain, MCP close, chroma stop, db close, supervisor stop).
+      // Same tolerance as ServerService.stop() in
+      // src/server/runtime/ServerService.ts.
+      if ((err as NodeJS.ErrnoException).code === 'ERR_SERVER_NOT_RUNNING') {
+        logger.warn('SYSTEM', 'Server was already stopped when close was requested', {}, err);
+        resolve();
+        return;
+      }
+      reject(err);
+    });
   });
 
   if (process.platform === 'win32') {

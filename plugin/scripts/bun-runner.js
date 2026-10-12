@@ -2,7 +2,7 @@
 import { spawnSync, spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, appendFileSync, writeFileSync } from 'fs';
 import { join, dirname, resolve } from 'path';
-import { homedir } from 'os';
+import { homedir, tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -22,11 +22,10 @@ function fixBrokenScriptPath(argPath) {
 
 function findBun() {
   const pathCheck = IS_WINDOWS
-    ? spawnSync('where bun', {
+    ? spawnSync('where', ['bun'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true,
-        shell: true
+        windowsHide: true
       })
     : spawnSync('which', ['bun'], {
         encoding: 'utf-8',
@@ -35,17 +34,55 @@ function findBun() {
 
   if (pathCheck.status === 0 && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunCmdPath = pathCheck.stdout.split('\n').find(line => line.trim().endsWith('bun.cmd'));
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      const firstBunPath = bunPaths.find(line => {
+        const lowerPath = line.toLowerCase();
+        return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
+      });
+      const firstBunDir = firstBunPath ? dirname(firstBunPath).toLowerCase() : null;
+      const firstInstallPaths = firstBunDir
+        ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
+        : [];
+      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
+      if (bunExePath) {
+        return bunExePath;
+      }
+      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
       if (bunCmdPath) {
-        return bunCmdPath.trim();
+        return bunCmdPath;
+      }
+      // The official installer ships bun.exe only (no bun.cmd shim). Return
+      // the resolved absolute path instead of falling through to the bare
+      // name: resolving a bare `bun` later relies on the child's PATH, which
+      // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
+      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      if (firstWherePath) {
+        return firstWherePath;
       }
     }
-    return 'bun'; 
+    return 'bun';
   }
 
+  const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
+  const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
+  const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
+
+  // Explicit overrides + BUN_INSTALL (official installer) + well-known homes.
+  // Hook PATH from Git Bash often omits ~/.bun/bin (#3224).
   const bunPaths = IS_WINDOWS
-    ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
+    ? [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun.exe') : '',
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun.exe') : '',
+        join(homedir(), '.bun', 'bin', 'bun.exe'),
+      ]
     : [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun') : '',
         join(homedir(), '.bun', 'bin', 'bun'),
         '/usr/local/bin/bun',
         '/opt/homebrew/bin/bun',
@@ -53,7 +90,7 @@ function findBun() {
       ];
 
   for (const bunPath of bunPaths) {
-    if (existsSync(bunPath)) {
+    if (bunPath && existsSync(bunPath)) {
       return bunPath;
     }
   }
@@ -87,40 +124,14 @@ if (isPluginDisabledInClaudeSettings()) {
 
 const args = process.argv.slice(2);
 
-let shouldEmitHookContinueJson = false;
-if (args[0] === '--hook-continue-json') {
-  shouldEmitHookContinueJson = true;
-  args.shift();
-}
-
 if (args.length === 0) {
   console.error('Usage: node bun-runner.js <script> [args...]');
   process.exit(1);
 }
 
 args[0] = fixBrokenScriptPath(args[0]);
-
-// Lifecycle commands manage the long-lived worker daemon; every other invocation
-// is a hook payload whose runtime blocks the Claude Code event that spawned it
-// (UserPromptSubmit, PostToolUse, ...). A wedged worker on one of those must never
-// hang the user's prompt — see the watchdog below.
-const LIFECYCLE_COMMANDS = ['start', 'stop', 'restart', 'status'];
-const isLifecycle = LIFECYCLE_COMMANDS.some(cmd => args.includes(cmd));
-
-// Kill the child and everything it spawned. On Windows the child is a cmd.exe
-// wrapper (shell:true), so child.kill() leaves the real `bun` grandchild running
-// — the orphan pileup that stacks up one hung worker per prompt. taskkill /T /F
-// tears down the whole tree.
-function killChildTree(child) {
-  if (!child || child.killed) return;
-  if (IS_WINDOWS && child.pid) {
-    try {
-      spawnSync('taskkill', ['/pid', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
-      return;
-    } catch {}
-  }
-  try { child.kill(); } catch {}
-}
+// Resolve a relative script path against the launch directory before the child starts in tmpdir() (#4628)
+args[0] = resolve(process.cwd(), args[0]);
 
 const bunPath = findBun();
 
@@ -154,24 +165,31 @@ function collectStdin() {
   });
 }
 
-// Wrapped in an async IIFE: top-level `await` is unsupported in the ESM loader
-// of Node < 14.8, which some Claude Code installs invoke hooks with (e.g. the
-// Node 12 shipped by Ubuntu 22.04 / many WSL setups). There it throws
-// "SyntaxError: Unexpected reserved word" at module load, breaking the hook.
-// Same oldest-Node compatibility reason as the optional-chaining note above.
-(async () => {
 const stdinData = await collectStdin();
 
+// Bun reads tsconfig.json from its working directory and prints any warnings
+// about it to stderr, which hosts show as hook errors (#4628). Start it in a
+// neutral directory and hand it the launch directory; the hook entry point
+// (src/cli/hook-original-cwd.ts) moves back there before adapters run.
 const spawnOptions = {
-  stdio: ['pipe', shouldEmitHookContinueJson ? 'ignore' : 'inherit', 'inherit'],
+  stdio: ['pipe', 'inherit', 'inherit'],
   windowsHide: true,
-  env: process.env
+  env: Object.assign({}, process.env, { CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() }),
+  cwd: tmpdir()
 };
 
 let spawnCmd = bunPath;
 let spawnArgs = args;
 
-if (IS_WINDOWS) {
+// Only .cmd/.bat shims need cmd.exe; a resolved bun.exe must be spawned
+// directly. Routing it through `shell: true` breaks when the environment
+// grows past cmd.exe's ~8191-char per-variable limit (e.g. a long PATH,
+// which these hooks double via the login-shell prepend): cmd silently
+// sees an empty PATH and fails with `"bun" is not recognized` even though
+// `where bun` succeeded moments earlier (issue #3196).
+const needsCmdShell = IS_WINDOWS && /\.(cmd|bat)$/i.test(bunPath);
+
+if (needsCmdShell) {
   const quote = (s) => `"${String(s).replace(/"/g, '\\"')}"`;
   spawnOptions.shell = true;
   spawnCmd = [bunPath, ...args].map(quote).join(' ');
@@ -180,33 +198,8 @@ if (IS_WINDOWS) {
 
 const child = spawn(spawnCmd, spawnArgs, spawnOptions);
 
-// Watchdog: a hook payload invocation must never block its Claude Code event for
-// longer than this. If the worker wedges (e.g. a stuck daemon connection on
-// Windows), kill the process tree and exit 0 — honoring the exit-0 strategy, with
-// the runner-errors log as the durable signal. Lifecycle commands are exempt: the
-// daemon they start is meant to outlive this launcher.
-let watchdog = null;
-if (!isLifecycle) {
-  const timeoutMs = Number(process.env.CLAUDE_MEM_HOOK_TIMEOUT_MS) || 8000;
-  watchdog = setTimeout(() => {
-    try {
-      const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
-      const logsDir = join(dataDir, 'logs');
-      mkdirSync(logsDir, { recursive: true });
-      appendFileSync(
-        join(logsDir, 'runner-errors.log'),
-        `[bun-runner] worker hook exceeded ${timeoutMs}ms — killed to unblock prompt\n` +
-        `  script: ${args[0]}\n` +
-        `  timestamp: ${new Date().toISOString()}\n\n`
-      );
-    } catch {}
-    killChildTree(child);
-    process.exit(0);
-  }, timeoutMs);
-  if (watchdog.unref) watchdog.unref();
-}
-
 if (child.stdin) {
+  child.stdin.on('error', () => {});
   if (stdinData && stdinData.length > 0) {
     child.stdin.write(stdinData);
     child.stdin.end();
@@ -215,9 +208,16 @@ if (child.stdin) {
     // they manage the worker daemon, not hook payloads.  Killing the child here
     // prevents the daemon from starting/stopping on platforms where Claude Code
     // doesn't pipe a payload for SessionStart (e.g. Windows CC ≤ 2.1.145).
+    const lifecycleCommands = ['start', 'stop', 'restart', 'status'];
+    const isLifecycle = lifecycleCommands.some(cmd => args.includes(cmd));
+
     if (isLifecycle) {
+      // Lifecycle commands don't need stdin — close pipe and let child run.
       try { child.stdin.end(); } catch {}
     } else {
+      // Issue #2188: empty/missing stdin previously masked by `|| '{}'` fallback,
+      // which silently hid WSL bash failures (e.g. hooks invoked under a broken
+      // shell that never piped a payload). Surface the failure mode instead.
       const dataDir = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
       const payloadType = stdinData === null
         ? 'null (no data event or stream error)'
@@ -241,8 +241,23 @@ if (child.stdin) {
         `  CLAUDE_PLUGIN_ROOT: ${RESOLVED_PLUGIN_ROOT}`,
       ].join('\n');
 
+      // IO discipline (see src/shared/hook-io.ts intent vocabulary):
+      // - this stderr write is a USER_HINT (Claude Code surfaces it inline).
+      // - the CAPTURE_BROKEN marker file below is a DIAGNOSTIC durable signal for
+      //   the next session-start hint.
+      // - exit 0 below is the EXIT_SIGNAL per CLAUDE.md (Windows Terminal tab
+      //   management); the marker file, not the exit code, is the durable failure
+      //   signal. bun-runner runs in its own node process BEFORE hookCommand's
+      //   stderr buffer is installed, so this write is never swallowed.
+
+      // Write to stderr so Claude Code surfaces the diagnostic.
       console.error(diagnostic);
 
+      // Persist diagnostic to the runner-errors log and drop a CAPTURE_BROKEN marker
+      // file so the next session-start hint can surface the failure. We exit 0 to
+      // honor the project's exit-code strategy (worker/hook errors exit 0 to
+      // prevent Windows Terminal tab pileup) — the marker file is the durable
+      // signal that something is wrong, not the exit code.
       try {
         const logsDir = join(dataDir, 'logs');
         mkdirSync(logsDir, { recursive: true });
@@ -261,20 +276,17 @@ if (child.stdin) {
 }
 
 child.on('error', (err) => {
+  // EXCEPTION to CLAUDE.md exit-0-on-error: Bun-not-found is a user environment
+  // problem, not a hook execution failure. Surfacing exit 1 here forces Claude
+  // Code to display the stderr message rather than silently retrying. This runs
+  // before any hook handler, so the exit-0 tab-management rationale doesn't apply.
   console.error(`Failed to start Bun: ${err.message}`);
   process.exit(1);
 });
 
 child.on('close', (code, signal) => {
-  if (watchdog) clearTimeout(watchdog);
-  const exitCode = typeof code === 'number' ? code : 0;
-  if (shouldEmitHookContinueJson && !signal && exitCode === 0) {
-    process.stdout.write('{"continue":true,"suppressOutput":true}\n');
-  }
-  const isHookEventCommand = args[1] === 'hook';
-  if ((signal || exitCode > 128) && (args.includes('start') || isHookEventCommand)) {
+  if ((signal || code > 128) && args.includes('start')) {
     process.exit(0);
   }
-  process.exit(exitCode);
+  process.exit(code || 0);
 });
-})();

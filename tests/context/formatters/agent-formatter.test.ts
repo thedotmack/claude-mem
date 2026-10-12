@@ -1,10 +1,25 @@
-import { describe, it, expect, mock, beforeEach } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterAll } from 'bun:test';
+
+// Capture real exports before mock.module mutates the live namespace, then
+// re-register the snapshot in afterAll so the partial ModeManager stub (no
+// class prototype, no loadMode) does not leak into later test files (bun's
+// mock.module is process-global; mock.restore() does NOT undo it). A leaked
+// stub breaks tests/server/server-boot.test.ts, server-runtime-smoke and the
+// tests/sdk parser suites whenever the readdir-dependent file order runs them
+// after this file.
+import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+
+const realModeManagerSnapshot = { ...realModeManagerModule };
+
+afterAll(() => {
+  mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+});
 
 mock.module('../../../src/services/domain/ModeManager.js', () => ({
   ModeManager: {
     getInstance: () => ({
       getActiveMode: () => ({
-        name: 'code',
+        name: 'Code Development',
         prompts: {},
         observation_types: [
           { id: 'decision', emoji: 'D' },
@@ -13,6 +28,7 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
         ],
         observation_concepts: [],
       }),
+      getActiveModeId: () => 'code',
       getTypeIcon: (type: string) => {
         const icons: Record<string, string> = {
           decision: 'D',
@@ -87,6 +103,7 @@ function createTestConfig(overrides: Partial<ContextConfig> = {}): ContextConfig
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: true,
+    mainAgentOnly: true,
     ...overrides,
   };
 }
@@ -96,9 +113,10 @@ describe('AgentFormatter', () => {
     it('should produce valid markdown header with project name', () => {
       const result = renderAgentHeader('my-project');
 
-      expect(result).toHaveLength(2);
-      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2}$/);
-      expect(result[1]).toBe('');
+      expect(result).toHaveLength(3);
+      expect(result[0]).toMatch(/^# \[my-project\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
+      expect(result[1]).toBe('Mode: Code Development (code)');
+      expect(result[2]).toBe('');
     });
 
     it('should handle special characters in project name', () => {
@@ -110,7 +128,7 @@ describe('AgentFormatter', () => {
     it('should handle empty project name', () => {
       const result = renderAgentHeader('');
 
-      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2}$/);
+      expect(result[0]).toMatch(/^# \[\] recent context, \d{4}-\d{2}-\d{2} \d{1,2}:\d{2}[ap]m [A-Z]{3,4}$/);
     });
   });
 
@@ -118,9 +136,9 @@ describe('AgentFormatter', () => {
     it('should produce legend with type items', () => {
       const result = renderAgentLegend();
 
-      expect(result).toHaveLength(8);
+      expect(result).toHaveLength(4);
       expect(result[0]).toContain('Legend:');
-      expect(result[7]).toBe('');
+      expect(result[3]).toBe('');
     });
 
     it('should include session in legend', () => {
@@ -129,19 +147,14 @@ describe('AgentFormatter', () => {
       expect(result[0]).toContain('session');
     });
 
-    it('should keep get_observations hint when fetch-by-id is supported', () => {
-      const joined = renderAgentLegend(true).join('\n');
-      expect(joined).toContain('get_observations');
-      expect(joined).toContain('ToolSearch select:mcp__mcp-search__search,mcp__mcp-search__timeline,mcp__mcp-search__get_observations');
-      expect(joined).toContain('/make-plan');
-      expect(joined).toContain('/do');
+    it('should keep get_observations hint when fetch-by-id is supported (default)', () => {
+      expect(renderAgentLegend(true).join('\n')).toContain('get_observations');
     });
 
     it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
       const joined = renderAgentLegend(false).join('\n');
       expect(joined).toContain('short refs are display-only');
       expect(joined).not.toContain('get_observations');
-      expect(joined).toContain('avoid direct ID fetches');
     });
   });
 
@@ -343,6 +356,15 @@ describe('AgentFormatter', () => {
 
       expect(joined).toContain('Session started');
     });
+
+    it('should abbreviate a server summary UUID when fetch-by-id is unsupported', () => {
+      const summary = { id: '3c4b2513-5048-45fa-95e0-e3222ae99671', request: 'Ship it' };
+
+      expect(renderAgentSummaryItem(summary, '10:00', { fetchByIdSupported: false })[0])
+        .toBe('S3c4b2513 Ship it (10:00)');
+      expect(renderAgentSummaryItem(summary, '10:00')[0])
+        .toBe('S3c4b2513-5048-45fa-95e0-e3222ae99671 Ship it (10:00)');
+    });
   });
 
   describe('renderAgentSummaryField', () => {
@@ -417,19 +439,19 @@ describe('AgentFormatter', () => {
       expect(joined).toContain('mem-search skill');
     });
 
-    it('should not mention by-id fetch when refs are display-only', () => {
-      const result = renderAgentFooter(5000, 100, false);
-      const joined = result.join('\n');
-
-      expect(joined).toContain('mem-search skill');
-      expect(joined).not.toContain('get_observations([IDs])');
-    });
-
     it('should round work tokens to nearest thousand', () => {
       const result = renderAgentFooter(15500, 100);
       const joined = result.join('\n');
 
       expect(joined).toContain('16k');
+    });
+
+    it('should point at observation_search, not get_observations, when fetch-by-id is unsupported', () => {
+      const joined = renderAgentFooter(5000, 100, false).join('\n');
+
+      expect(joined).toContain('observation_search');
+      expect(joined).not.toContain('get_observations');
+      expect(joined).not.toContain('mem-search skill');
     });
   });
 
@@ -438,6 +460,7 @@ describe('AgentFormatter', () => {
       const result = renderAgentEmptyState('my-project');
 
       expect(result).toContain('# [my-project] recent context,');
+      expect(result).toContain('Mode: Code Development (code)');
       expect(result).toContain('No previous sessions found.');
     });
 
@@ -456,21 +479,21 @@ describe('AgentFormatter', () => {
 });
 
 describe('formatContextReferenceId', () => {
-  const uuid = '3c4b2513-5048-45fa-95e0-e3222ae99671';
+  const UUID = '3c4b2513-5048-45fa-95e0-e3222ae99671';
 
   it('abbreviates UUID ids to their 8-char prefix when fetch-by-id is unsupported', () => {
-    expect(formatContextReferenceId(uuid, { fetchByIdSupported: false })).toBe('3c4b2513');
+    expect(formatContextReferenceId(UUID, { fetchByIdSupported: false })).toBe('3c4b2513');
   });
 
   it('keeps the full UUID when fetch-by-id is supported', () => {
-    expect(formatContextReferenceId(uuid, { fetchByIdSupported: true })).toBe(uuid);
+    expect(formatContextReferenceId(UUID, { fetchByIdSupported: true })).toBe(UUID);
   });
 
-  it('defaults to the full id when fetchByIdSupported is omitted', () => {
-    expect(formatContextReferenceId(uuid, {})).toBe(uuid);
+  it('defaults to the full id when fetchByIdSupported is omitted (backward compatible)', () => {
+    expect(formatContextReferenceId(UUID, {})).toBe(UUID);
   });
 
-  it('leaves non-UUID ids unchanged even when fetch-by-id is unsupported', () => {
+  it('leaves non-UUID (numeric) ids unchanged even when fetch-by-id is unsupported', () => {
     expect(formatContextReferenceId(42, { fetchByIdSupported: false })).toBe('42');
   });
 });

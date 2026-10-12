@@ -22,7 +22,7 @@ export class PrivacyCheckValidator {
     store: SessionStore,
     contentSessionId: string,
     promptNumber: number,
-    operationType: 'observation' | 'summarize' | 'pre-compact',
+    operationType: 'observation' | 'summarize',
     sessionDbId: number,
     additionalContext?: Record<string, any>
   ): PromptPrivacyDecision {

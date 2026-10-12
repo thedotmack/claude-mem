@@ -225,14 +225,10 @@ describe('SQLiteSearchStrategy', () => {
       }));
     });
 
-    it('should pass isFolder to findByFile so SQLite fallback filters direct children', () => {
-      const options: StrategySearchOptions = {
-        isFolder: true
-      };
+    it('should pass isFolder to findByFile so a folder is matched by its direct children', () => {
+      strategy.findByFile('/src/utils', { isFolder: true });
 
-      strategy.findByFile('/src/features', options);
-
-      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/features', expect.objectContaining({
+      expect(mockSessionSearch.findByFile).toHaveBeenCalledWith('/src/utils', expect.objectContaining({
         isFolder: true
       }));
     });

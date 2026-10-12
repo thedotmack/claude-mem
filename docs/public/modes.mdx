@@ -31,6 +31,48 @@ Or via environment variable:
 export CLAUDE_MEM_MODE="code--fr"
 ```
 
+The active mode is shown in the startup context injected into each new session, for example:
+
+```text
+Mode: Code Development (code)
+```
+
+## Creating a Custom Mode
+
+Run `/mode-creator` to design a domain-specific note system through an interactive interview. It helps choose observation types and concept tags, writes and validates the mode, installs it under `~/.claude-mem/modes/`, activates it, optionally configures Telegram alerts, restarts the worker, and verifies the active mode in startup context.
+
+Custom modes in the data directory are durable across plugin upgrades. The worker searches user modes before bundled modes, while inherited custom modes can still use a bundled parent such as `code`:
+
+```text
+~/.claude-mem/modes/code--architecture-practice.json
+```
+
+Avoid editing files inside the plugin cache because a plugin update can replace them.
+
+## Telegram alerts and session wrap-ups
+
+Telegram has two separate delivery paths. A session wrap-up sends the latest stored session summary once the Claude Code session ends. Per-observation alerts are real-time notifications for matching observation types or concepts; they are now disabled by default, even when Telegram itself is enabled.
+
+Configure the new settings as strings in `~/.claude-mem/settings.json`:
+
+- `CLAUDE_MEM_TELEGRAM_WRAPUPS_ENABLED` defaults to `"true"`, but no wrap-up can be sent until a route is configured.
+- `CLAUDE_MEM_TELEGRAM_OBSERVATION_ALERTS_ENABLED` defaults to `"false"`; set it to `"true"` only when you want the existing `CLAUDE_MEM_TELEGRAM_TRIGGER_TYPES` or `CLAUDE_MEM_TELEGRAM_TRIGGER_CONCEPTS` alerts to resume.
+- `CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES` defaults to `"{}"` and contains a JSON object keyed by project name.
+
+For example, use this route object as the value of `CLAUDE_MEM_TELEGRAM_WRAPUP_ROUTES`:
+
+```json
+{
+  "claude-mem": {
+    "chat_id": "-1001234567890",
+    "bot_token": "optional override",
+    "key": "optional route label"
+  }
+}
+```
+
+A route needs a `chat_id`; its `bot_token` can override `CLAUDE_MEM_TELEGRAM_BOT_TOKEN`, and `key` is an optional route label. `CLAUDE_MEM_TELEGRAM_ENABLED` remains the master switch for both paths. Route lookup first matches the project name exactly, then the parent name before the first `/` for worktrees. If neither route exists, claude-mem logs `No wrap-up route for project` and does not send anything—there is never a fallback to `CLAUDE_MEM_TELEGRAM_CHAT_ID` for a wrap-up.
+
 ## Available Modes
 
 ### Code Mode (Default)

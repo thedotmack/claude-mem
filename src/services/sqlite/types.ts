@@ -2,7 +2,6 @@
 export interface ObservationRow {
   id: number;
   memory_session_id: string;
-  content_session_id?: string | null;
   project: string;
   text: string | null;
   type: 'decision' | 'bugfix' | 'feature' | 'refactor' | 'discovery' | 'change';
@@ -22,7 +21,6 @@ export interface ObservationRow {
 export interface SessionSummaryRow {
   id: number;
   memory_session_id: string;
-  content_session_id?: string | null;
   project: string;
   request: string | null;
   investigated: string | null;
@@ -55,6 +53,8 @@ export interface DateRange {
 
 export interface SearchFilters {
   project?: string;
+  /** Every key a checkout reads; when set, it scopes the search instead of `project` (gate P2-5). */
+  projects?: string[];
   platformSource?: string;
   type?: ObservationRow['type'] | ObservationRow['type'][];
   concepts?: string | string[];

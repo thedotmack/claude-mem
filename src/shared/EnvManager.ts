@@ -1,14 +1,48 @@
 
+import { createHash } from 'crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync, chmodSync } from 'fs';
 import { parseEnv } from 'util';
+import { basename } from 'path';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import {
   readClaudeOAuthToken,
   writeStaleMarker,
   clearStaleMarker,
+  resolveClaudeCredentialProfile,
+  resolveEffectiveClaudeConfigDir,
+  type ClaudeCredentialProfile,
   type OAuthTokenResult,
 } from './oauth-token.js';
+
+/** #2753 — the credential profile's label for logging (never the token itself): 'default' for the bare keychain entry, else the config dir's basename. */
+function resolveConfigDirProfileLabel(): string {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  return explicitConfigDir ? basename(configDir) : 'default';
+}
+
+/**
+ * The account identity that quota state is keyed by (RateLimitStore entries,
+ * the 'claude' quota-cooldown breaker). It follows the credential the SDK
+ * child uses: 'default' for the bare keychain entry, else the config dir's
+ * basename plus the 8-hex sha256 suffix Claude Code gives that profile's
+ * keychain entry (see deriveMacKeychainServiceName). Two dirs that share a
+ * basename stay apart, and no path (or username) reaches /api/health or
+ * quota-cooldown.json.
+ */
+export function credentialProfileKey(profile: ClaudeCredentialProfile): string {
+  if (!profile.explicitConfigDir) return 'default';
+  const suffix = createHash('sha256').update(profile.configDir.normalize('NFC')).digest('hex').slice(0, 8);
+  return `${basename(profile.configDir)}#${suffix}`;
+}
+
+/** The quota key for the credential the next Claude spawn will use. */
+export function resolveConfigDirProfileKey(): string {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  return credentialProfileKey(resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR));
+}
 
 // Resolved lazily so tests (and any rare runtime path-overrides) can target a
 // temp file via CLAUDE_MEM_ENV_FILE without depending on module-load order.
@@ -43,28 +77,6 @@ const BLOCKED_ENV_VARS = [
   // chain sanitizeEnv.
   'CLAUDE_CODE_EFFORT_LEVEL',
   'CLAUDE_CODE_ALWAYS_ENABLE_EFFORT',
-  // Issue #2620: host Claude Code routing flags and model overrides must not
-  // reroute claude-mem's worker subprocess away from its own OAuth endpoint.
-  'CLAUDE_CODE_USE_BEDROCK',
-  'CLAUDE_CODE_USE_VERTEX',
-  'CLAUDE_CODE_USE_MANTLE',
-  'ANTHROPIC_DEFAULT_OPUS_MODEL',
-  'ANTHROPIC_DEFAULT_SONNET_MODEL',
-  'ANTHROPIC_DEFAULT_HAIKU_MODEL',
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'ALL_PROXY',
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-  'all_proxy',
-  'npm_config_proxy',
-  'npm_config_https_proxy',
-  'SSL_CERT_FILE',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
-  'NODE_EXTRA_CA_CERTS',
 ];
 
 export interface ClaudeMemEnv {
@@ -72,57 +84,41 @@ export interface ClaudeMemEnv {
   ANTHROPIC_BASE_URL?: string;
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
+  GEMINI_API_KEYS?: string;
   OPENROUTER_API_KEY?: string;
-  HTTPS_PROXY?: string;
-  HTTP_PROXY?: string;
-  NO_PROXY?: string;
-  SSL_CERT_FILE?: string;
-  REQUESTS_CA_BUNDLE?: string;
-  CURL_CA_BUNDLE?: string;
-  NODE_EXTRA_CA_CERTS?: string;
+  OPENROUTER_API_KEYS?: string;
+  OPENAI_COMPAT_API_KEY?: string;
+  OPENAI_COMPAT_API_KEYS?: string;
 }
 
 /**
- * Corporate proxy / custom CA passthrough. These keys are honored only when
- * declared explicitly in ~/.claude-mem/.env; ambient parent-shell values stay
- * blocked so session-local proxy routing does not silently latch onto the
- * persistent daemon.
- */
-export const PROXY_AND_CA_PASSTHROUGH_KEYS = [
-  'HTTPS_PROXY',
-  'HTTP_PROXY',
-  'NO_PROXY',
-  'SSL_CERT_FILE',
-  'REQUESTS_CA_BUNDLE',
-  'CURL_CA_BUNDLE',
-  'NODE_EXTRA_CA_CERTS',
-] as const;
-
-const AMBIENT_PROXY_AND_CA_ENV_KEYS = [
-  ...PROXY_AND_CA_PASSTHROUGH_KEYS,
-  'https_proxy',
-  'http_proxy',
-  'no_proxy',
-  'all_proxy',
-  'ALL_PROXY',
-  'npm_config_proxy',
-  'npm_config_https_proxy',
-] as const;
-
-/**
- * The credential keys copied out of ~/.claude-mem/.env.
+ * The only env keys ever copied out of ~/.claude-mem/.env. This is the
+ * whitelist that load/save/buildIsolatedEnv enforce — only the keys listed
+ * here cross the boundary. Do NOT replace the per-key copy loops with
+ * Object.assign(result, parsed): that would let arbitrary keys (a leaked
+ * CLAUDE_CODE_* or a typo'd ANTHROPIC_* variant) through (see #2375).
+ *
+ * The `*_API_KEYS` plural entries are the multi-key rotation pools
+ * (src/shared/api-key-pool.ts). They are deliberately generic: a third-party
+ * endpoint reached through the `openai-compatible` provider supplies its key as
+ * OPENAI_COMPAT_API_KEY rather than as a per-vendor name, so adding an endpoint
+ * never means widening this whitelist.
  */
 const CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
+  'GEMINI_API_KEYS',
   'OPENROUTER_API_KEY',
+  'OPENROUTER_API_KEYS',
+  'OPENAI_COMPAT_API_KEY',
+  'OPENAI_COMPAT_API_KEYS',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):
 // handles `#` comments, blank lines, KEY=VALUE, and quote-stripping. The
-// downstream whitelists still filter the result — arbitrary
+// downstream CREDENTIAL_KEYS whitelist still filters the result — arbitrary
 // keys in the file never reach a ClaudeMemEnv. serializeEnvFile is kept custom
 // (header banner + selective quoting; no stdlib equivalent).
 function parseEnvFile(content: string): Record<string, string> {
@@ -156,9 +152,9 @@ function serializeEnvFile(env: Record<string, string>): string {
  * the SDK subprocess; they are re-injected here (and in buildIsolatedEnv)
  * exclusively from the file.
  *
- * The whitelist is enforced by the copy loops below. Do not replace them with
- * Object.assign(result, parsed): arbitrary keys in ~/.claude-mem/.env must not
- * cross into process.env or subprocess env.
+ * The whitelist is enforced by the CREDENTIAL_KEYS copy loop below — only the
+ * five named keys are ever copied out (see CREDENTIAL_KEYS for why this must
+ * not become Object.assign(result, parsed)).
  */
 export function loadClaudeMemEnv(): ClaudeMemEnv {
   const envFile = envFilePath();
@@ -172,9 +168,6 @@ export function loadClaudeMemEnv(): ClaudeMemEnv {
 
     const result: ClaudeMemEnv = {};
     for (const key of CREDENTIAL_KEYS) {
-      if (parsed[key]) result[key] = parsed[key];
-    }
-    for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
       if (parsed[key]) result[key] = parsed[key];
     }
 
@@ -237,14 +230,69 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 
   isolatedEnv.CLAUDE_MEM_INTERNAL = '1';
 
+  // #2753 / #4149 — set CLAUDE_CONFIG_DIR on the SDK SUBPROCESS from the SAME
+  // credential profile deriveMacKeychainServiceName (oauth-token.ts) uses to
+  // pick the keychain service name, so the child and the worker always agree:
+  //   - explicit profile: stamp the effective config dir (the
+  //     CLAUDE_MEM_CLAUDE_CONFIG_DIR setting when set, else
+  //     process.env.CLAUDE_CONFIG_DIR), so both resolve the suffixed
+  //     'Claude Code-credentials-<hash>' keychain entry.
+  //   - default profile: leave CLAUDE_CONFIG_DIR UNSET on the child, deleting
+  //     any value the blanket process.env copy above carried in. Claude Code
+  //     chooses its macOS keychain service name from whether CLAUDE_CONFIG_DIR
+  //     is SET, not from its value, so stamping even the default '~/.claude'
+  //     made the child hunt for a suffixed entry a normal login never creates
+  //     while the worker injects under the bare name. Once the access token
+  //     expired the worker stopped injecting, the child could not reach the
+  //     refresh token, and capture silently stopped (#4149).
+  // This never touches the worker's own paths.CLAUDE_CONFIG_DIR /
+  // MARKETPLACE_ROOT, which stay derived solely from
+  // process.env.CLAUDE_CONFIG_DIR at module load.
+  const configDirSettings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  const { configDir, explicitConfigDir } = resolveClaudeCredentialProfile(configDirSettings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+  if (explicitConfigDir) {
+    isolatedEnv.CLAUDE_CONFIG_DIR = configDir;
+  } else {
+    delete isolatedEnv.CLAUDE_CONFIG_DIR;
+    // #4689 — CLAUDE_CONFIG_DIR does double duty for the child: it picks the
+    // keychain identity AND locates the session-transcript store
+    // (${CLAUDE_CONFIG_DIR}/projects/<munged cwd>/). Under the default
+    // profile it is deleted above, so every internal SDK session (observer,
+    // knowledge corpus) persists into ~/.claude/projects, where importers
+    // like Codex pick the transcripts up as user chats. When the user sets a
+    // transcript-only dir, stamp it so transcripts land there instead —
+    // while the credential profile stays DEFAULT: readClaudeOAuthToken
+    // resolves CLAUDE_MEM_CLAUDE_CONFIG_DIR independently below and injects
+    // CLAUDE_CODE_OAUTH_TOKEN at spawn time, so the child never needs the
+    // (nonexistent) login of the stamped dir. An explicit
+    // CLAUDE_MEM_CLAUDE_CONFIG_DIR profile keeps its own stamp above — its
+    // credential identity and transcript store are one dir by design
+    // (#2753), and the transcript-only setting never overrides it.
+    //
+    // Trade-off (inherent, not a regression): a token-injected child cannot
+    // self-refresh — the refresh token lives in the profile's keychain
+    // entry, and a child whose CLAUDE_CONFIG_DIR points elsewhere cannot
+    // reach it (#4149's failure mode). Every worker spawn re-reads and
+    // re-injects a fresh token, and observer batches are short-lived, so
+    // capture keeps working across token rotations; if the stored login
+    // itself expires, the stale-login marker surfaces it as usual.
+    const transcriptConfigDir = configDirSettings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR?.trim();
+    if (transcriptConfigDir) {
+      // Same normalization the sister setting goes through
+      // (resolveEffectiveClaudeConfigDir): trim → tilde expansion →
+      // trailing-separator strip. A value from the settings file or the
+      // viewer never passes through a shell, so a docs-style
+      // '~/.claude-mem/observer-claude' would otherwise be stamped LITERAL
+      // and the child would create <worker cwd>/~/… — and resume would
+      // break as soon as the worker cwd changed.
+      isolatedEnv.CLAUDE_CONFIG_DIR = resolveEffectiveClaudeConfigDir(transcriptConfigDir);
+    }
+  }
+
   if (includeCredentials) {
     const credentials = loadClaudeMemEnv();
 
     for (const key of CREDENTIAL_KEYS) {
-      const value = credentials[key];
-      if (value) isolatedEnv[key] = value;
-    }
-    for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
       const value = credentials[key];
       if (value) isolatedEnv[key] = value;
     }
@@ -257,29 +305,6 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
   }
 
   return isolatedEnv;
-}
-
-export function applyProxyAndCaFromEnvFile(): string[] {
-  const env = loadClaudeMemEnv();
-  const applied: string[] = [];
-
-  for (const key of AMBIENT_PROXY_AND_CA_ENV_KEYS) {
-    delete process.env[key];
-  }
-
-  for (const key of PROXY_AND_CA_PASSTHROUGH_KEYS) {
-    const value = env[key];
-    if (!value) continue;
-
-    process.env[key] = value;
-    applied.push(key);
-
-    if (key === 'HTTPS_PROXY') process.env.https_proxy = value;
-    if (key === 'HTTP_PROXY') process.env.http_proxy = value;
-    if (key === 'NO_PROXY') process.env.no_proxy = value;
-  }
-
-  return applied;
 }
 
 /**
@@ -357,7 +382,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
     case 'expired':
       logger.warn(
         'OAUTH',
-        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Re-login via Claude Desktop to refresh.`,
+        `Refusing to inject expired CLAUDE_CODE_OAUTH_TOKEN: ${result.reason}. Run /login in Claude Code (or \`claude auth login\` in a terminal) to refresh it.`,
         { expiresAt: result.expiresAt },
       );
       writeStaleMarker(result.reason);
@@ -401,8 +426,12 @@ export function getAuthMethodDescription(): string {
   // Note: this is a quick sync hint for logging — the authoritative OAuth
   // path is buildIsolatedEnvWithFreshOAuth() which reads the keychain at
   // spawn time. process.env may or may not carry a token here.
+  // #2753: names the resolved profile (suffix/dir basename or 'default'),
+  // never the token itself — the profile is the whole point (which
+  // config-dir identity's keychain entry this worker will inject).
+  const profile = resolveConfigDirProfileLabel();
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
-    return 'Claude Code OAuth token (env, refreshed via keychain at spawn)';
+    return `Claude Code OAuth token (env, refreshed via keychain at spawn) profile=${profile}`;
   }
-  return 'Claude Code OAuth token (read from system keychain at spawn)';
+  return `Claude Code OAuth token (read from the Claude Code credential store at spawn) profile=${profile}`;
 }

@@ -8,6 +8,7 @@ import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN, findContextBlockRange } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -55,23 +56,21 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
 }
 
 export function replaceTaggedContent(existingContent: string, newContent: string): string {
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${newContent}\n${CONTEXT_TAG_CLOSE}`;
 
   if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
+    return wrappedContent;
   }
 
-  const startIdx = existingContent.indexOf(startTag);
-  const endIdx = existingContent.indexOf(endTag);
+  const block = findContextBlockRange(existingContent);
 
-  if (startIdx !== -1 && endIdx !== -1) {
-    return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
-      existingContent.substring(endIdx + endTag.length);
+  if (block) {
+    return existingContent.substring(0, block.start) +
+      wrappedContent +
+      existingContent.substring(block.end);
   }
 
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+  return existingContent + `\n\n${wrappedContent}`;
 }
 
 export function writeClaudeMdToFolder(folderPath: string, newContent: string, targetFilename?: string): void {
@@ -318,11 +317,10 @@ export async function updateFolderClaudeMdFiles(
   });
 
   for (const folderPath of folderPaths) {
-    const queryPath = projectRoot ? path.relative(projectRoot, folderPath) : folderPath;
     let response: Response;
     try {
       response = await workerHttpRequest(
-        `/api/search/by-file?filePath=${encodeURIComponent(queryPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
+        `/api/search/by-file?filePath=${encodeURIComponent(folderPath)}&limit=${limit}&project=${encodeURIComponent(project)}&isFolder=true`
       );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
@@ -348,8 +346,10 @@ export async function updateFolderClaudeMdFiles(
 
     const formatted = formatTimelineForClaudeMd(result.content[0].text);
 
+    const claudeMdPath = path.join(folderPath, targetFilename);
     const hasNoActivity = formatted.includes('*No recent activity*');
     const isEmptyOrSkeleton = formatted.trim() === '' || hasNoActivity;
+    const fileExists = existsSync(claudeMdPath);
 
     // #2400 — when the generated content is empty/skeleton AND the folder
     // matches the user's deny-list, never inject (skip even if the file exists,
@@ -359,7 +359,7 @@ export async function updateFolderClaudeMdFiles(
       continue;
     }
 
-    if (isEmptyOrSkeleton) {
+    if (isEmptyOrSkeleton && !fileExists) {
       logger.debug('FOLDER_INDEX', 'Skipping empty context file creation', { folderPath, targetFilename });
       continue;
     }

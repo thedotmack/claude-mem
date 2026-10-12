@@ -1,0 +1,4 @@
+{"timestamp":"2026-09-18T16:00:00.000Z","type":"turn_context","payload":{"model":"gpt-5-codex"}}
+{"timestamp":"2026-09-18T16:00:05.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":100,"cached_input_tokens":40,"output_tokens":10}}}}
+{"timestamp":"2026-09-18T16:10:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":500,"cached_input_tokens":200,"output_tokens":80}}}}
+{"timestamp":"2026-09-19T07:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":9000,"cached_input_tokens":9000,"output_tokens":9000}}}}

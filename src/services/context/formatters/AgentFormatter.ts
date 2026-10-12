@@ -8,14 +8,19 @@ import type {
 } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatIsoDate } from '../../../shared/timeline-formatting.js';
+import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
-import { buildToolSearchSelectArg } from '../../../shared/mcp-constants.js';
 
-export function renderAgentHeader(project: string): string[] {
-  const date = formatIsoDate();
+function formatActiveMode(): string {
+  const manager = ModeManager.getInstance();
+  const mode = manager.getActiveMode();
+  return `${mode.name} (${manager.getActiveModeId()})`;
+}
+
+export function renderAgentHeader(project: string, headerTime: string = formatHeaderDateTime()): string[] {
   return [
-    `# [${project}] recent context, ${date}`,
+    `# [${project}] recent context, ${headerTime}`,
+    `Mode: ${formatActiveMode()}`,
     ''
   ];
 }
@@ -23,21 +28,17 @@ export function renderAgentHeader(project: string): string[] {
 export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
+
+  // Server runtime: ids are UUIDs shown as 8-char display refs, and there is no
+  // by-id fetch, so point at the server's search tool instead.
   const fetchLine = fetchByIdSupported
     ? `Fetch details: get_observations([IDs]) | Search: mem-search skill`
-    : `Fetch details: mem-search by title/context (short refs are display-only)`;
-  const memSearchLine = fetchByIdSupported
-    ? `mem-search: load tools with ToolSearch select:${buildToolSearchSelectArg()} first, then search -> timeline -> get_observations([ids]) in batches.`
-    : `mem-search: search by title/context first; short refs are display-only, so avoid direct ID fetches from this context.`;
+    : `Fetch details: observation_search by title (short refs are display-only)`;
 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
     `Format: ID TIME TYPE TITLE`,
     fetchLine,
-    '',
-    memSearchLine,
-    `Planning: for multi-step work, invoke /make-plan so it writes a phased plan file to plans/inbox/, then execute with /do after review.`,
-    `Subagents: fan out independent fact-gathering work in parallel; orchestrator synthesizes decisions from source and file:line evidence.`,
     ''
   ];
 }
@@ -124,11 +125,12 @@ export function renderAgentFullObservation(
 }
 
 export function renderAgentSummaryItem(
-  summary: { id: number; request: string | null },
-  formattedTime: string
+  summary: { id: number | string; request: string | null },
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   return [
-    `S${summary.id} ${summary.request || 'Session started'} (${formattedTime})`,
+    `S${formatContextReferenceId(summary.id, config)} ${summary.request || 'Session started'} (${formattedTime})`,
   ];
 }
 
@@ -157,16 +159,15 @@ export function renderAgentFooter(
   fetchByIdSupported: boolean = true
 ): string[] {
   const workTokensK = Math.round(totalDiscoveryTokens / 1000);
-  const accessHint = fetchByIdSupported
+  const accessPath = fetchByIdSupported
     ? 'get_observations([IDs]) or mem-search skill'
-    : 'mem-search skill';
+    : 'observation_search';
   return [
     '',
-    `Access ${workTokensK}k tokens of past work via ${accessHint}.`
+    `Access ${workTokensK}k tokens of past work via ${accessPath}.`
   ];
 }
 
-export function renderAgentEmptyState(project: string): string {
-  const date = formatIsoDate();
-  return `# [${project}] recent context, ${date}\n\nNo previous sessions found.`;
+export function renderAgentEmptyState(project: string, headerTime: string = formatHeaderDateTime()): string {
+  return `# [${project}] recent context, ${headerTime}\nMode: ${formatActiveMode()}\n\nNo previous sessions found.`;
 }

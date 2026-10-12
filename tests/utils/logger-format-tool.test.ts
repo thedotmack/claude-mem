@@ -1,64 +1,7 @@
 import { describe, it, expect } from 'bun:test';
+import { logger } from '../../src/utils/logger.js';
 
-function formatTool(toolName: string, toolInput?: any): string {
-  if (!toolInput) return toolName;
-
-  let input = toolInput;
-  if (typeof toolInput === 'string') {
-    try {
-      input = JSON.parse(toolInput);
-    } catch {
-      input = toolInput;
-    }
-  }
-
-  if (toolName === 'Bash' && input.command) {
-    return `${toolName}(${input.command})`;
-  }
-
-  if (input.file_path) {
-    return `${toolName}(${input.file_path})`;
-  }
-
-  if (input.notebook_path) {
-    return `${toolName}(${input.notebook_path})`;
-  }
-
-  if (toolName === 'Glob' && input.pattern) {
-    return `${toolName}(${input.pattern})`;
-  }
-
-  if (toolName === 'Grep' && input.pattern) {
-    return `${toolName}(${input.pattern})`;
-  }
-
-  if (input.url) {
-    return `${toolName}(${input.url})`;
-  }
-
-  if (input.query) {
-    return `${toolName}(${input.query})`;
-  }
-
-  if (toolName === 'Task') {
-    if (input.subagent_type) {
-      return `${toolName}(${input.subagent_type})`;
-    }
-    if (input.description) {
-      return `${toolName}(${input.description})`;
-    }
-  }
-
-  if (toolName === 'Skill' && input.skill) {
-    return `${toolName}(${input.skill})`;
-  }
-
-  if (toolName === 'LSP' && input.operation) {
-    return `${toolName}(${input.operation})`;
-  }
-
-  return toolName;
-}
+const formatTool = (toolName: string, toolInput?: any): string => logger.formatTool(toolName, toolInput);
 
 describe('logger.formatTool()', () => {
   describe('Valid JSON string input', () => {
@@ -380,4 +323,84 @@ describe('logger.formatTool()', () => {
       expect(result).toBe('Task');
     });
   });
+});
+
+// safeStringify is the depth-guarded serializer the DEBUG log path uses instead
+// of a plain JSON.stringify, which overflows the stack on deeply nested or
+// self-referential payloads ("RangeError: Maximum call stack size exceeded").
+const safeStringify = (data: unknown, indent?: number): string =>
+  (logger as any).safeStringify(data, indent);
+
+describe('logger.safeStringify()', () => {
+  it('serializes ordinary objects like JSON.stringify', () => {
+    expect(safeStringify({ a: 1, b: 'x' })).toBe(JSON.stringify({ a: 1, b: 'x' }));
+    expect(safeStringify({ a: 1 }, 2)).toBe(JSON.stringify({ a: 1 }, null, 2));
+  });
+
+  it('truncates a nested object past the depth cap instead of recursing into it', () => {
+    // Depth far beyond the serializer's cap: prune stops early, so it never
+    // walks the whole chain (which is how a plain JSON.stringify overflows).
+    let deep: any = {};
+    let cursor = deep;
+    for (let i = 0; i < 50; i++) {
+      cursor.next = {};
+      cursor = cursor.next;
+    }
+    let out = '';
+    expect(() => { out = safeStringify(deep, 2); }).not.toThrow();
+    expect(out).toContain('[Object]'); // truncated past the depth cap
+  });
+
+  it('truncates a nested array past the depth cap', () => {
+    let arr: any = [];
+    let cursor = arr;
+    for (let i = 0; i < 50; i++) {
+      const child: any[] = [];
+      cursor.push(child);
+      cursor = child;
+    }
+    let out = '';
+    expect(() => { out = safeStringify(arr, 2); }).not.toThrow();
+    expect(out).toContain('[Array]');
+  });
+
+  it('handles self-referential (circular) structures', () => {
+    const cyclic: any = { name: 'root' };
+    cyclic.self = cyclic;
+    let out = '';
+    expect(() => { out = safeStringify(cyclic, 2); }).not.toThrow();
+    expect(out).toContain('[Circular]');
+    expect(out).toContain('root');
+  });
+
+  it('handles BigInt without throwing', () => {
+    let out = '';
+    expect(() => { out = safeStringify({ big: 10n }); }).not.toThrow();
+    expect(out).toContain('10n');
+  });
+
+  it('serializes toJSON values (Date, URL) the way JSON.stringify does, not as {}', () => {
+    const payload = { at: new Date(0), url: new URL('https://example.com/a?b=1') };
+    expect(safeStringify(payload)).toBe(JSON.stringify(payload));
+  });
+
+  it('survives a throwing getter', () => {
+    const obj = {
+      get boom(): string { throw new Error('nope'); },
+      ok: 1,
+    };
+    let out = '';
+    expect(() => { out = safeStringify(obj); }).not.toThrow();
+    expect(out).toContain('[unreadable]');
+    expect(out).toContain('"ok":1');
+  });
+});
+
+describe('logger.formatTool() parsed null input', () => {
+  for (const toolName of ['Bash', 'Read', 'mcp__fixture__no_args']) {
+    it(`formats JSON null for ${toolName} as no arguments`, () => {
+      expect(formatTool(toolName, 'null')).toBe(toolName);
+      expect(formatTool(toolName, '  null  ')).toBe(toolName);
+    });
+  }
 });

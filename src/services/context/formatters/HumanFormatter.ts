@@ -8,14 +8,20 @@ import type {
 import { colors } from '../types.js';
 import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
-import { formatIsoDate } from '../../../shared/timeline-formatting.js';
+import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
 
-export function renderHumanHeader(project: string): string[] {
-  const date = formatIsoDate();
+function formatActiveMode(): string {
+  const manager = ModeManager.getInstance();
+  const mode = manager.getActiveMode();
+  return `${mode.name} (${manager.getActiveModeId()})`;
+}
+
+export function renderHumanHeader(project: string, headerTime: string = formatHeaderDateTime()): string[] {
   return [
     '',
-    `${colors.bright}${colors.cyan}[${project}] recent context, ${date}${colors.reset}`,
+    `${colors.bright}${colors.cyan}[${project}] recent context, ${headerTime}${colors.reset}`,
+    `${colors.dim}Mode: ${formatActiveMode()}${colors.reset}`,
     `${colors.gray}${'─'.repeat(60)}${colors.reset}`,
     ''
   ];
@@ -41,15 +47,22 @@ export function renderHumanColumnKey(): string[] {
 }
 
 export function renderHumanContextIndex(fetchByIdSupported: boolean = true): string[] {
-  const drilldownLine = fetchByIdSupported
-    ? `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`
-    : `${colors.dim}  - Search: observation_search / mem-search skill (by-id fetch is not available in server-beta mode)${colors.reset}`;
+  // Server runtime: ids are UUIDs shown as 8-char display refs, and neither
+  // get_observations nor the mem-search skill's worker tools exist there; the
+  // server's own search tool covers both drill-down and history.
+  const drilldownLines = fetchByIdSupported
+    ? [
+        `${colors.dim}  - Fetch by ID: get_observations([IDs]) for observations visible in this index${colors.reset}`,
+        `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
+      ]
+    : [
+        `${colors.dim}  - Search: observation_search by title or topic (short refs are display-only; server runtime has no fetch by ID)${colors.reset}`,
+      ];
   return [
     `${colors.dim}Context Index: This semantic index (titles, types, files, tokens) is usually sufficient to understand past work.${colors.reset}`,
     '',
     `${colors.dim}When you need implementation details, rationale, or debugging context:${colors.reset}`,
-    drilldownLine,
-    `${colors.dim}  - Search history: Use the mem-search skill for past decisions, bugs, and deeper research${colors.reset}`,
+    ...drilldownLines,
     `${colors.dim}  - Trust this index over re-reading code for past decisions and learnings${colors.reset}`,
     ''
   ];
@@ -140,12 +153,13 @@ export function renderHumanFullObservation(
 }
 
 export function renderHumanSummaryItem(
-  summary: { id: number; request: string | null },
-  formattedTime: string
+  summary: { id: number | string; request: string | null },
+  formattedTime: string,
+  config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   const summaryTitle = `${summary.request || 'Session started'} (${formattedTime})`;
   return [
-    `${colors.yellow}#S${summary.id}${colors.reset} ${summaryTitle}`,
+    `${colors.yellow}#S${formatContextReferenceId(summary.id, config)}${colors.reset} ${summaryTitle}`,
     ''
   ];
 }
@@ -177,7 +191,6 @@ export function renderHumanFooter(totalDiscoveryTokens: number, totalReadTokens:
   ];
 }
 
-export function renderHumanEmptyState(project: string): string {
-  const date = formatIsoDate();
-  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${date}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
+export function renderHumanEmptyState(project: string, headerTime: string = formatHeaderDateTime()): string {
+  return `\n${colors.bright}${colors.cyan}[${project}] recent context, ${headerTime}${colors.reset}\n${colors.dim}Mode: ${formatActiveMode()}${colors.reset}\n${colors.gray}${'─'.repeat(60)}${colors.reset}\n\n${colors.dim}No previous sessions found for this project yet.${colors.reset}\n`;
 }

@@ -3,20 +3,22 @@ import os from 'os';
 import fs from 'fs';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { findClaudeExecutable as defaultFindClaudeExecutable } from '../../shared/find-claude-executable.js';
-import { findKiroCliExecutable } from './KiroProvider.js';
+import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { logger } from '../../utils/logger.js';
 import {
   clearDependencyStatus,
   recordClaudeCliSetupRequired,
   recordUvxVectorSearchUnavailable,
-  recordKiroCliSetupRequired,
   snapshotDependencyHealth,
   type DependencyHealthSnapshot,
 } from '../../shared/dependency-health.js';
+import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
 
 interface DependencyPreflightSettings {
   CLAUDE_MEM_PROVIDER?: string;
   CLAUDE_MEM_CHROMA_ENABLED?: string;
+  CLAUDE_MEM_CHROMA_UVX_PATH?: string;
 }
 
 interface ClassifiedClaudeSetupError {
@@ -73,17 +75,6 @@ function pathSeparatorFor(platform: NodeJS.Platform): string {
   return platform === 'win32' ? ';' : ':';
 }
 
-function uvxBinDirs(options: Required<Pick<WorkerDependencyPreflightOptions, 'homedir' | 'isFile'>>, env: Record<string, string>): string[] {
-  const override = env.CLAUDE_MEM_CHROMA_UVX_PATH;
-  const dirs = [
-    override,
-    path.join(options.homedir(), '.local', 'bin'),
-    path.join(options.homedir(), '.cargo', 'bin'),
-  ].filter((dir): dir is string => Boolean(dir));
-
-  return dirs.map(dir => options.isFile(dir) ? path.dirname(dir) : dir);
-}
-
 function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<string, string> {
   const platform = options.platform ?? process.platform;
   const pathExists = options.pathExists ?? defaultPathExists;
@@ -94,7 +85,12 @@ function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<stri
   const separator = pathSeparatorFor(platform);
   const currentPathEntries = (env[pathKey] ?? '').split(separator).filter(Boolean);
   const have = new Set(currentPathEntries.map(entry => platform === 'win32' ? entry.toLowerCase() : entry));
-  const additions = uvxBinDirs({ homedir, isFile }, env).filter(dir => {
+  const additions = getUvxBinDirs({
+    homedir,
+    isFile,
+    override: options.settings.CLAUDE_MEM_CHROMA_UVX_PATH,
+    platform,
+  }).filter(dir => {
     if (!pathExists(dir)) return false;
     const key = platform === 'win32' ? dir.toLowerCase() : dir;
     return !have.has(key);
@@ -103,6 +99,14 @@ function effectiveUvxEnv(options: WorkerDependencyPreflightOptions): Record<stri
   if (additions.length > 0) {
     env[pathKey] = [...additions, ...currentPathEntries].join(separator);
   }
+
+  // Defense in depth for #3552. Today this env is only read for its PATH key
+  // (hasExecutableOnPath / resolveUvxCommand probe the filesystem with it and
+  // never spawn), so stripping changes no current behavior — it exists so that
+  // the day someone does hand this env to a child, it cannot carry a foreign
+  // interpreter in. The env that actually reaches chroma-mcp is built by
+  // ChromaMcpManager.getUvxPreflightEnv(), which applies the same rule.
+  stripForeignPythonEnv(env);
 
   return env;
 }
@@ -140,7 +144,7 @@ function resolveUvxCommand(options: WorkerDependencyPreflightOptions): string {
 
   const isFile = options.isFile ?? defaultIsFile;
   const env = effectiveUvxEnv(options);
-  const override = env.CLAUDE_MEM_CHROMA_UVX_PATH;
+  const override = options.settings.CLAUDE_MEM_CHROMA_UVX_PATH;
   if (override && isFile(override)) {
     return override;
   }
@@ -165,6 +169,7 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
     try {
       findClaudeExecutable();
       clearDependencyStatus('claude_cli');
+      clearClaudeCliSelfHealAttempts();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       const classified = options.classifyClaudeError(error);
@@ -178,17 +183,6 @@ export function runWorkerDependencyPreflight(options: WorkerDependencyPreflightO
     }
   } else {
     clearDependencyStatus('claude_cli');
-  }
-
-  if (provider === 'kiro') {
-    if (findKiroCliExecutable()) {
-      clearDependencyStatus('kiro_cli');
-    } else {
-      logger.warn('WORKER', 'Kiro CLI dependency preflight failed: kiro-cli not found');
-      recordKiroCliSetupRequired('kiro-cli not found — the Kiro compression provider cannot run.');
-    }
-  } else {
-    clearDependencyStatus('kiro_cli');
   }
 
   if (chromaEnabled) {

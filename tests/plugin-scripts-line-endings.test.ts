@@ -12,10 +12,6 @@ const SHEBANG_SCRIPTS = [
 ];
 
 describe('plugin/scripts line endings (#1342)', () => {
-  it('does not ship the stale worker-cli.js shim (#2937)', () => {
-    expect(existsSync(join(SCRIPTS_DIR, 'worker-cli.js'))).toBe(false);
-  });
-
   for (const filename of SHEBANG_SCRIPTS) {
     const filePath = join(SCRIPTS_DIR, filename);
 

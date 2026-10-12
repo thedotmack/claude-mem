@@ -1,10 +1,11 @@
 import { describe, it, expect } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import {
   buildTimeline,
   countObservationsByProjects,
-  countSummariesByProjects,
   queryObservationsMulti,
+  queryObservationsNewest,
   querySummariesMulti,
 } from '../../src/services/context/ObservationCompiler.js';
 import type { ContextConfig, Observation, SummaryTimelineItem } from '../../src/services/context/types.js';
@@ -155,6 +156,7 @@ describe('context compiler platform scoping', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
   function seed(
@@ -244,9 +246,6 @@ describe('context compiler platform scoping', () => {
       expect(countObservationsByProjects(store, ['context-platform-project'], 'codex')).toBe(1);
       expect(countObservationsByProjects(store, ['context-platform-project'], 'claude')).toBe(1);
       expect(countObservationsByProjects(store, ['context-platform-project'])).toBe(2);
-      expect(countSummariesByProjects(store, ['context-platform-project'], 'codex')).toBe(1);
-      expect(countSummariesByProjects(store, ['context-platform-project'], 'claude')).toBe(1);
-      expect(countSummariesByProjects(store, ['context-platform-project'])).toBe(2);
     } finally {
       store.close();
     }
@@ -298,11 +297,119 @@ describe('context compiler platform scoping', () => {
   });
 });
 
-describe('context compiler dream namespace selection', () => {
+describe('case-insensitive project retrieval (#3531)', () => {
   const config: ContextConfig = {
-    totalObservationCount: 2,
-    fullObservationCount: 1,
-    sessionCount: 2,
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['case-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+    mainAgentOnly: true,
+  };
+
+  it('resolves rows stored under a mixed-case key when queried with a different case', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      // Machine A wrote the bucket as `PasteyPal` (mixed case). Machine B, whose
+      // directory name differs only in case, now derives `pasteypal` and must
+      // still reach those rows.
+      const sessionDbId = store.createSDKSession('content-3531', 'PasteyPal', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-3531');
+      store.storeObservation(
+        'mem-3531',
+        'PasteyPal',
+        {
+          type: 'discovery',
+          title: 'CASE_OBS',
+          subtitle: null,
+          facts: [],
+          narrative: 'case narrative',
+          concepts: ['case-scope'],
+          files_read: [],
+          files_modified: [],
+        },
+        1,
+        0,
+        1_700_000_000_000,
+      );
+      store.storeSummary(
+        'mem-3531',
+        'PasteyPal',
+        {
+          request: 'CASE_SUMMARY',
+          investigated: 'investigated',
+          learned: 'learned',
+          completed: 'completed',
+          next_steps: 'next',
+          notes: null,
+        },
+        1,
+        0,
+        1_700_000_000_000,
+      );
+
+      expect(queryObservationsMulti(store, ['pasteypal'], config).map(o => o.title)).toEqual(['CASE_OBS']);
+      expect(querySummariesMulti(store, ['pasteypal'], config).map(s => s.request)).toEqual(['CASE_SUMMARY']);
+      expect(countObservationsByProjects(store, ['pasteypal'])).toBe(1);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('concept exact-match injection (#3379)', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['gotcha']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+    mainAgentOnly: true,
+  };
+
+  it('excludes a row whose stored concept carries a "keyword: description" prefix', () => {
+    // The injection query matches concepts exactly (`WHERE value IN (...)`).
+    // A row stored as "gotcha: x" must NOT match — this is the #3379 defect
+    // that the parser normalization and the v49 backfill remove at the write
+    // side; the query itself intentionally stays exact-match.
+    const db = new Database(':memory:');
+    try {
+      const store = new SessionStore(db);
+      const sessionDbId = store.createSDKSession('content-3379', 'concept-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-3379');
+      // Insert directly: the fresh store is already past v49, so this mimics
+      // a malformed row written before the migration existed.
+      db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, concepts, created_at, created_at_epoch)
+        VALUES ('mem-3379', 'concept-project', 'discovery', 'MALFORMED_CONCEPT_OBS', '["gotcha: x"]', ?, ?)
+      `).run(new Date().toISOString(), 1_700_000_000_000);
+
+      expect(queryObservationsMulti(store, ['concept-project'], config)).toEqual([]);
+    } finally {
+      db.close();
+    }
+  });
+});
+
+describe('queryObservationsNewest house feed', () => {
+  const config: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
     showReadTokens: true,
     showWorkTokens: true,
     showSavingsAmount: true,
@@ -312,75 +419,209 @@ describe('context compiler dream namespace selection', () => {
     fullObservationField: 'narrative',
     showLastSummary: true,
     showLastMessage: false,
+    mainAgentOnly: true,
   };
 
-  function seedObservation(
+  it('returns newest rows across projects when no project filter is passed', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const seat = store.createSDKSession('seat-content', 'cmem_work_thin', 'seat', undefined, 'grok-bot');
+      store.ensureMemorySessionIdRegistered(seat, 'seat-mem');
+      store.storeObservation('seat-mem', 'cmem_work_thin', {
+        type: 'discovery',
+        title: 'SEAT_ONLY',
+        subtitle: null,
+        facts: [],
+        narrative: 'thin diary',
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      }, 1, 0, 1_700_000_000_000);
+
+      const house = store.createSDKSession('house-content', 'claude-mem', 'house', undefined, 'claude');
+      store.ensureMemorySessionIdRegistered(house, 'house-mem');
+      store.storeObservation('house-mem', 'claude-mem', {
+        type: 'discovery',
+        title: 'HOUSE_NEWEST',
+        subtitle: null,
+        facts: [],
+        narrative: 'house feed',
+        concepts: ['platform-scope'],
+        files_read: [],
+        files_modified: [],
+      }, 1, 0, 1_700_000_100_000);
+
+      const scoped = queryObservationsNewest(store, config, {
+        limit: 10,
+        projects: ['cmem_work_thin'],
+      });
+      expect(scoped.map(obs => obs.title)).toEqual(['SEAT_ONLY']);
+
+      const houseFeed = queryObservationsNewest(store, config, { limit: 10 });
+      expect(houseFeed.map(obs => obs.title)).toEqual(['HOUSE_NEWEST', 'SEAT_ONLY']);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('context compiler main-agent-only injection filtering', () => {
+  const baseConfig: ContextConfig = {
+    totalObservationCount: 20,
+    fullObservationCount: 3,
+    sessionCount: 20,
+    showReadTokens: true,
+    showWorkTokens: true,
+    showSavingsAmount: true,
+    showSavingsPercent: true,
+    observationTypes: new Set(['discovery']),
+    observationConcepts: new Set(['agent-scope']),
+    fullObservationField: 'narrative',
+    showLastSummary: true,
+    showLastMessage: false,
+    mainAgentOnly: true,
+  };
+
+  function seedObs(
     store: SessionStore,
-    input: { project: string; title: string; epoch: number; platformSource?: string },
+    input: {
+      project: string;
+      contentSessionId: string;
+      memorySessionId: string;
+      title: string;
+      agentId: string | null;
+      agentType: string | null;
+      createdAtEpoch: number;
+    },
   ): void {
     const sessionDbId = store.createSDKSession(
-      `${input.title}-content`,
+      input.contentSessionId,
       input.project,
-      `${input.title} prompt`,
+      'prompt',
       undefined,
-      input.platformSource ?? 'claude',
+      'claude',
     );
-    const memorySessionId = `${input.title}-memory`;
-    store.ensureMemorySessionIdRegistered(sessionDbId, memorySessionId);
+    store.ensureMemorySessionIdRegistered(sessionDbId, input.memorySessionId);
     store.storeObservation(
-      memorySessionId,
+      input.memorySessionId,
       input.project,
       {
         type: 'discovery',
         title: input.title,
         subtitle: null,
         facts: [],
-        narrative: `${input.title} narrative`,
-        concepts: ['platform-scope'],
+        narrative: 'agent scope narrative',
+        concepts: ['agent-scope'],
         files_read: [],
         files_modified: [],
+        agent_id: input.agentId,
+        agent_type: input.agentType,
       },
       1,
       0,
-      input.epoch,
+      input.createdAtEpoch,
     );
   }
 
-  it('prioritizes dream observations while preserving a raw fallback', () => {
+  function seedMix(store: SessionStore, project: string): void {
+    seedObs(store, {
+      project,
+      contentSessionId: 'main-session',
+      memorySessionId: 'main-memory',
+      title: 'MAIN_OBS',
+      agentId: null,
+      agentType: null,
+      createdAtEpoch: 1_700_000_000_000,
+    });
+    // A Claude Code subagent: the hook sends both agent_id and agent_type.
+    seedObs(store, {
+      project,
+      contentSessionId: 'sub-session',
+      memorySessionId: 'sub-memory',
+      title: 'SUB_OBS',
+      agentId: 'agent-42',
+      agentType: 'Explore',
+      createdAtEpoch: 1_700_000_001_000,
+    });
+  }
+
+  it('keeps main-agent rows that carry only one agent field', () => {
     const store = new SessionStore(':memory:');
     try {
-      seedObservation(store, { project: 'dream-project', title: 'RAW_OLD', epoch: 1_700_000_000_000 });
-      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_ONE', epoch: 1_700_000_001_000 });
-      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_TWO', epoch: 1_700_000_002_000 });
-      seedObservation(store, { project: 'dream-project:dream', title: 'DREAM_THREE', epoch: 1_700_000_003_000 });
+      seedMix(store, 'agent-scope-project');
+      // Transcript-watch ingestion stamps agent_id alone on main-agent rows
+      // (a Grok Bot seat id). Filtering on agent_id alone would make
+      // session_start_context return nothing for those seats.
+      seedObs(store, {
+        project: 'agent-scope-project',
+        contentSessionId: 'grok-seat-session',
+        memorySessionId: 'grok-seat-memory',
+        title: 'GROK_SEAT_OBS',
+        agentId: 'grok-seat-7',
+        agentType: null,
+        createdAtEpoch: 1_700_000_002_000,
+      });
+      // `claude --agent reviewer` runs a main thread that carries agent_type alone.
+      seedObs(store, {
+        project: 'agent-scope-project',
+        contentSessionId: 'agent-main-session',
+        memorySessionId: 'agent-main-memory',
+        title: 'AGENT_MAIN_OBS',
+        agentId: null,
+        agentType: 'reviewer',
+        createdAtEpoch: 1_700_000_003_000,
+      });
 
-      const rows = queryObservationsMulti(store, ['dream-project:dream', 'dream-project'], config);
-
-      expect(rows.map(row => row.title)).toEqual(['DREAM_THREE', 'RAW_OLD']);
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['AGENT_MAIN_OBS', 'GROK_SEAT_OBS', 'MAIN_OBS']);
     } finally {
       store.close();
     }
   });
 
-  it('does not use cross-platform raw observations as the fallback', () => {
+  it('excludes subagent observations from the injection window when mainAgentOnly is true (default)', () => {
     const store = new SessionStore(':memory:');
     try {
-      seedObservation(store, {
-        project: 'platform-dream',
-        title: 'CLAUDE_RAW',
-        epoch: 1_700_000_000_000,
-        platformSource: 'claude',
-      });
-      seedObservation(store, {
-        project: 'platform-dream:dream',
-        title: 'CODEX_DREAM',
-        epoch: 1_700_000_001_000,
-        platformSource: 'codex',
-      });
+      seedMix(store, 'agent-scope-project');
 
-      const rows = queryObservationsMulti(store, ['platform-dream:dream', 'platform-dream'], config, 'codex');
+      const observations = queryObservationsMulti(store, ['agent-scope-project'], baseConfig);
+      expect(observations.map(obs => obs.title)).toEqual(['MAIN_OBS']);
+    } finally {
+      store.close();
+    }
+  });
 
-      expect(rows.map(row => row.title)).toEqual(['CODEX_DREAM']);
+  it('keeps subagent observations on a project-scoped newest query', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsNewest(store, baseConfig, {
+        limit: 20,
+        projects: ['agent-scope-project'],
+        includeManualSaves: true,
+      });
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+    } finally {
+      store.close();
+    }
+  });
+
+  it('includes subagent observations when mainAgentOnly is false (backward compat) and leaves the count query unfiltered', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      seedMix(store, 'agent-scope-project');
+
+      const observations = queryObservationsMulti(
+        store,
+        ['agent-scope-project'],
+        { ...baseConfig, mainAgentOnly: false },
+      );
+      expect(observations.map(obs => obs.title).sort()).toEqual(['MAIN_OBS', 'SUB_OBS']);
+
+      // Guard the "don't over-filter" constraint: the count query has no
+      // agent_id filter, so it still sees both main and subagent rows.
+      expect(countObservationsByProjects(store, ['agent-scope-project'])).toBe(2);
     } finally {
       store.close();
     }

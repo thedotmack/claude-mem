@@ -5,11 +5,6 @@ import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
-const SEMVER_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
-
-function escapeRegex(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
 
 describe('Version Consistency', () => {
   let rootVersion: string;
@@ -20,7 +15,7 @@ describe('Version Consistency', () => {
     
     const packageJson = JSON.parse(readFileSync(packageJsonPath, 'utf-8'));
     expect(packageJson.version).toBeDefined();
-    expect(packageJson.version).toMatch(SEMVER_PATTERN);
+    expect(packageJson.version).toMatch(/^\d+\.\d+\.\d+$/);
     
     rootVersion = packageJson.version;
   });
@@ -54,39 +49,44 @@ describe('Version Consistency', () => {
     expect(claudeMemPlugin.version).toBe(rootVersion);
   });
 
-  it('should have version injected into built worker-service.cjs', () => {
-    const workerServicePath = path.join(projectRoot, 'plugin/scripts/worker-service.cjs');
-    
-    if (!existsSync(workerServicePath)) {
-      console.log('⚠️  worker-service.cjs not found - run npm run build first');
-      return;
-    }
-    
-    const workerServiceContent = readFileSync(workerServicePath, 'utf-8');
 
-    const versionPattern = new RegExp(`"${escapeRegex(rootVersion)}"`, 'g');
-    const matches = workerServiceContent.match(versionPattern);
-    
-    expect(matches).toBeTruthy();
-    expect(matches!.length).toBeGreaterThan(0);
+  for (const pluginPath of [
+    'claude-mem-cursor/.cursor-plugin/plugin.json',
+    'claude-mem-grok-bot/.cursor-plugin/plugin.json',
+  ]) {
+    it(`should have matching version in ${pluginPath}`, () => {
+      const manifestPath = path.join(projectRoot, pluginPath);
+      expect(existsSync(manifestPath)).toBe(true);
+
+      const pluginJson = JSON.parse(readFileSync(manifestPath, 'utf-8'));
+      expect(pluginJson.version).toBe(rootVersion);
+    });
+  }
+
+  it('should list both cursor marketplace plugin sources', () => {
+    const marketplaceJsonPath = path.join(projectRoot, '.cursor-plugin', 'marketplace.json');
+    expect(existsSync(marketplaceJsonPath)).toBe(true);
+
+    const marketplaceJson = JSON.parse(readFileSync(marketplaceJsonPath, 'utf-8'));
+    expect(marketplaceJson.plugins.map((plugin: any) => plugin.name)).toEqual([
+      'claude-mem-cursor',
+      'claude-mem-grok-bot',
+    ]);
   });
 
-  it('should have built mcp-server.cjs', () => {
-    const mcpServerPath = path.join(projectRoot, 'plugin/scripts/mcp-server.cjs');
-
-    if (!existsSync(mcpServerPath)) {
-      console.log('⚠️  mcp-server.cjs not found - run npm run build first');
-      return;
-    }
-
-    const mcpServerContent = readFileSync(mcpServerPath, 'utf-8');
-    expect(mcpServerContent.length).toBeGreaterThan(0);
-  });
+  for (const bundle of ['worker-service.cjs', 'mcp-server.cjs', 'server-service.cjs', 'transcript-watcher.cjs']) {
+    it(`should have the release version injected into built ${bundle}`, () => {
+      const bundlePath = path.join(projectRoot, 'plugin/scripts', bundle);
+      expect(existsSync(bundlePath)).toBe(true);
+      const content = readFileSync(bundlePath, 'utf-8');
+      expect(content.includes(`"${rootVersion}"`)).toBe(true);
+    });
+  }
 
   it('should validate version format is semver compliant', () => {
-    expect(rootVersion).toMatch(SEMVER_PATTERN);
+    expect(rootVersion).toMatch(/^\d+\.\d+\.\d+$/);
     
-    const [major, minor, patch] = rootVersion.split(/[+-]/)[0].split('.').map(Number);
+    const [major, minor, patch] = rootVersion.split('.').map(Number);
     expect(major).toBeGreaterThanOrEqual(0);
     expect(minor).toBeGreaterThanOrEqual(0);
     expect(patch).toBeGreaterThanOrEqual(0);

@@ -68,58 +68,6 @@ describe('SessionStore', () => {
     expect(duplicate?.prompt_text.length).toBe(MAX_STORED_PROMPT_CHARS);
   });
 
-  it('should clear sdk_sessions.user_prompt when completed first prompt history exists for that session', () => {
-    const contentSessionId = 'completed-canonical-session-store';
-    const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
-    store.saveUserPrompt(contentSessionId, 1, 'Initial prompt', sessionId);
-
-    store.markSessionCompleted(sessionId);
-
-    const row = store.db.prepare(
-      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
-    ).get(sessionId) as { status: string; user_prompt: string | null };
-
-    expect(row.status).toBe('completed');
-    expect(row.user_prompt).toBeNull();
-  });
-
-  it('should preserve sdk_sessions.user_prompt when completed first prompt history is absent', () => {
-    const contentSessionId = 'completed-partial-history-session-store';
-    const sessionId = store.createSDKSession(contentSessionId, 'test-project', 'Initial prompt');
-    store.saveUserPrompt(contentSessionId, 2, 'Follow-up prompt', sessionId);
-
-    store.markSessionCompleted(sessionId);
-
-    const row = store.db.prepare(
-      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
-    ).get(sessionId) as { status: string; user_prompt: string | null };
-
-    expect(row.status).toBe('completed');
-    expect(row.user_prompt).toBe('Initial prompt');
-  });
-
-  it('should not clear a completed session from another platform with the same content id', () => {
-    const contentSessionId = 'completed-platform-shared-session-store';
-    const claudeSessionId = store.createSDKSession(contentSessionId, 'test-project', 'Claude prompt', undefined, 'claude');
-    const codexSessionId = store.createSDKSession(contentSessionId, 'test-project', 'Codex prompt', undefined, 'codex');
-    store.saveUserPrompt(contentSessionId, 1, 'Codex prompt', codexSessionId);
-
-    store.markSessionCompleted(claudeSessionId);
-    store.markSessionCompleted(codexSessionId);
-
-    const claude = store.db.prepare(
-      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
-    ).get(claudeSessionId) as { status: string; user_prompt: string | null };
-    const codex = store.db.prepare(
-      'SELECT status, user_prompt FROM sdk_sessions WHERE id = ?'
-    ).get(codexSessionId) as { status: string; user_prompt: string | null };
-
-    expect(claude.status).toBe('completed');
-    expect(claude.user_prompt).toBe('Claude prompt');
-    expect(codex.status).toBe('completed');
-    expect(codex.user_prompt).toBeNull();
-  });
-
   it('should hide only older duplicate prompts from paginated prompt results', () => {
     const contentSessionId = 'paginated-duplicate-session-store';
     store.createSDKSession(contentSessionId, 'test-project', 'initial prompt');
@@ -266,5 +214,92 @@ describe('SessionStore', () => {
     const stored = store.getSummaryForSession(memoryId);
     expect(stored).not.toBeNull();
     expect(stored?.created_at_epoch).toBe(pastTimestamp);
+  });
+
+  it('lists all sessions for the catalog, newest first, excluding empty projects', () => {
+    store.createSDKSession('content-old', 'proj-a', 'first');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 1000 WHERE content_session_id = 'content-old'`).run();
+    store.createSDKSession('content-new', 'proj-b', 'second');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 2000 WHERE content_session_id = 'content-new'`).run();
+
+    const { sessions, hasMore } = store.getSessionCatalog();
+
+    expect(sessions.map(s => s.content_session_id)).toEqual(['content-new', 'content-old']);
+    expect(hasMore).toBe(false);
+    expect(sessions[0]).toMatchObject({ project: 'proj-b', platform_source: 'claude', started_at_epoch: 2000 });
+  });
+
+  it('filters the session catalog by platform source', () => {
+    store.createSDKSession('content-claude', 'proj-a', 'a', undefined, 'claude');
+    store.createSDKSession('content-codex', 'proj-a', 'b', undefined, 'codex');
+
+    const claudeSessions = store.getSessionCatalog({ platformSource: 'claude' }).sessions;
+
+    expect(claudeSessions.map(s => s.content_session_id)).toEqual(['content-claude']);
+  });
+
+  it('includes custom_title and a combined item_count across observations/summaries/prompts', () => {
+    const sessionDbId = store.createSDKSession('content-counts', 'proj-counts', 'first', 'My Custom Title');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-counts');
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'discovery', 'obs 1', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO observations (memory_session_id, project, type, title, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'discovery', 'obs 2', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO session_summaries (memory_session_id, project, request, created_at, created_at_epoch)
+      VALUES ('mem-counts', 'proj-counts', 'a summary', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run();
+    store.db.prepare(`
+      INSERT INTO user_prompts (session_db_id, content_session_id, prompt_number, prompt_text, created_at, created_at_epoch)
+      VALUES (?, 'content-counts', 1, 'a prompt', '2026-07-20T00:00:00.000Z', 1752969600000)
+    `).run(sessionDbId);
+
+    const sessions = store.getSessionCatalog().sessions;
+    const row = sessions.find(s => s.content_session_id === 'content-counts');
+
+    expect(row).toBeDefined();
+    expect(row!.custom_title).toBe('My Custom Title');
+    expect(row!.item_count).toBe(4);
+  });
+
+  it('filters the session catalog by project and caps it with a limit', () => {
+    store.createSDKSession('content-a1', 'proj-a', 'x');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 1000 WHERE content_session_id = 'content-a1'`).run();
+    store.createSDKSession('content-a2', 'proj-a', 'y');
+    store.db.prepare(`UPDATE sdk_sessions SET started_at_epoch = 2000 WHERE content_session_id = 'content-a2'`).run();
+    store.createSDKSession('content-b1', 'proj-b', 'z');
+
+    expect(store.getSessionCatalog({ project: 'proj-a' }).sessions.map(s => s.content_session_id)).toEqual(['content-a2', 'content-a1']);
+    expect(store.getSessionCatalog({ project: 'proj-a', limit: 1 }).sessions.map(s => s.content_session_id)).toEqual(['content-a2']);
+  });
+
+  it('pages through older sessions with offset, reporting whether more follow', () => {
+    for (const [id, epoch] of [['content-3', 3000], ['content-2', 2000], ['content-1', 1000]] as const) {
+      store.createSDKSession(id, 'proj-paged', 'x');
+      store.db.prepare('UPDATE sdk_sessions SET started_at_epoch = ? WHERE content_session_id = ?').run(epoch, id);
+    }
+
+    const first = store.getSessionCatalog({ project: 'proj-paged', limit: 2 });
+    expect(first.sessions.map(s => s.content_session_id)).toEqual(['content-3', 'content-2']);
+    expect(first.hasMore).toBe(true);
+
+    const second = store.getSessionCatalog({ project: 'proj-paged', limit: 2, offset: 2 });
+    expect(second.sessions.map(s => s.content_session_id)).toEqual(['content-1']);
+    expect(second.hasMore).toBe(false);
+  });
+
+  it('reports item_count 0 and custom_title null for a session with no content and no title', () => {
+    store.createSDKSession('content-empty', 'proj-empty', 'first');
+
+    const sessions = store.getSessionCatalog().sessions;
+    const row = sessions.find(s => s.content_session_id === 'content-empty');
+
+    expect(row).toBeDefined();
+    expect(row!.custom_title).toBeNull();
+    expect(row!.item_count).toBe(0);
   });
 });

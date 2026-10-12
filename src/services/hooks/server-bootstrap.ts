@@ -11,8 +11,8 @@
 //   2. Find or create a "local-hook" team and project so the api_key has
 //      proper tenant scope.
 //   3. Generate a `cmem_<random>` key, hash with SHA-256, insert into
-//      `api_keys` with the scopes hooks need: events:write, sessions:write,
-//      observations:read, jobs:read.
+//      `api_keys` with the scopes the /v1 routes actually require:
+//      memories:read and memories:write.
 //   4. Persist the plaintext key to ~/.claude-mem/settings.json under
 //      `CLAUDE_MEM_SERVER_API_KEY` (the new canonical key after the
 //      server-beta → server rename). Reads in `runtime-selector.ts`
@@ -24,26 +24,27 @@
 // logged.
 
 import { createHash, randomBytes } from 'crypto';
-import { chmodSync, existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
 import { logger } from '../../utils/logger.js';
-import { stripBom } from '../../utils/json-utils.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { createPostgresPool, type PostgresPool } from '../../storage/postgres/pool.js';
 import { parsePostgresConfig } from '../../storage/postgres/config.js';
 import { PostgresAuthRepository } from '../../storage/postgres/auth.js';
 import { PostgresProjectsRepository } from '../../storage/postgres/projects.js';
 import { PostgresTeamsRepository } from '../../storage/postgres/teams.js';
-import { SETTINGS_FILE_MODE } from '../../shared/SettingsDefaultsManager.js';
 
 const LOCAL_HOOK_TEAM_NAME = 'local-hook-team';
 const LOCAL_HOOK_PROJECT_NAME = 'local-hook-project';
 const LOCAL_HOOK_ACTOR_ID = 'system:local-hook-bootstrap';
 
+// The /v1 routes gate reads on `memories:read` and writes on `memories:write`
+// (see ServerV1PostgresRoutes.ts), and the auth middleware matches scopes by
+// exact membership with no alias or expansion. A bootstrapped hook key must
+// therefore carry both, or every request it authenticates is refused with
+// `403 Forbidden — Invalid API key or insufficient scope`. This mirrors
+// DEFAULT_LOCAL_API_KEY_SCOPES (the SQLite path's equivalent, #2428).
 export const HOOK_API_KEY_SCOPES: readonly string[] = Object.freeze([
-  'events:write',
-  'sessions:write',
-  'observations:read',
-  'jobs:read',
+  'memories:read',
+  'memories:write',
 ]);
 
 export interface BootstrapResult {
@@ -104,22 +105,54 @@ export async function bootstrapServerApiKey(
   }
 }
 
+export async function revokeServerApiKey(
+  apiKeyId: string,
+  pool?: PostgresPool,
+): Promise<void> {
+  const closePool = pool === undefined;
+  const activePool = pool ?? buildPoolFromEnv();
+  try {
+    await activePool.query(
+      `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+      [apiKeyId],
+    );
+  } finally {
+    if (closePool) {
+      await activePool.end().catch(() => undefined);
+    }
+  }
+}
+
 export interface RotateOptions {
   previousApiKeyId?: string | null;
   pool?: PostgresPool;
+  beforeRevoke?: (result: BootstrapResult) => void | Promise<void>;
 }
 
 export async function rotateServerApiKey(options: RotateOptions = {}): Promise<BootstrapResult> {
   const closePool = options.pool === undefined;
   const pool = options.pool ?? buildPoolFromEnv();
   try {
-    if (options.previousApiKeyId) {
-      await pool.query(
-        `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
-        [options.previousApiKeyId],
-      );
+    const result = await bootstrapServerApiKey({ pool, closePool: false });
+    let beforeRevokeCompleted = options.beforeRevoke === undefined;
+    try {
+      if (options.beforeRevoke) {
+        await options.beforeRevoke(result);
+        beforeRevokeCompleted = true;
+      }
+      if (options.previousApiKeyId) {
+        await pool.query(
+          `UPDATE api_keys SET revoked_at = now() WHERE id = $1 AND revoked_at IS NULL`,
+          [options.previousApiKeyId],
+        );
+      }
+    } catch (error) {
+      if (!beforeRevokeCompleted) {
+        await revokeServerApiKey(result.apiKeyId, pool).catch(() => undefined);
+      }
+      throw error;
     }
-    return await bootstrapServerApiKey({ pool, closePool: false });
+    return result;
   } finally {
     if (closePool) {
       await pool.end().catch(() => undefined);
@@ -129,62 +162,49 @@ export async function rotateServerApiKey(options: RotateOptions = {}): Promise<B
 
 export function persistServerSettings(
   settingsPath: string,
-  values: { apiKey: string; projectId: string; serverBaseUrl?: string },
-): void {
-  const dir = dirname(settingsPath);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
-
-  let existing: Record<string, unknown> = {};
-  if (existsSync(settingsPath)) {
-    try {
-      existing = JSON.parse(stripBom(readFileSync(settingsPath, 'utf-8'))) as Record<string, unknown>;
-    } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('HOOK', 'Failed to read existing settings file; starting fresh', { settingsPath }, err);
-      existing = {};
-    }
-  }
-  // Preserve Claude-Code-style top-level peers (`hooks`, `permissions`, etc.)
-  // when settings are stored as `{ env: { ... } }`.
-  const target = (existing.env && typeof existing.env === 'object' && !Array.isArray(existing.env)
-    ? existing.env
-    : existing) as Record<string, unknown>;
-
-  // Phase 1d: write the new canonical settings keys. Legacy
-  // `CLAUDE_MEM_SERVER_BETA_*` keys are dual-accepted by reads in
-  // `runtime-selector.ts`, so existing installs continue to work. Any
-  // legacy keys that already live in `target` are left untouched (we don't
-  // delete them) so a downgrade can still find them.
-  target.CLAUDE_MEM_SERVER_API_KEY = values.apiKey;
-  target.CLAUDE_MEM_SERVER_PROJECT_ID = values.projectId;
-  if (values.serverBaseUrl) {
-    target.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
-  }
-
-  // When the file already exists, `writeFileSync(..., { mode })` does not
-  // tighten its permissions before replacing the contents. Restrict first so
-  // an existing 0644 settings file does not briefly expose the plaintext key.
-  if (existsSync(settingsPath)) {
-    try {
-      chmodSync(settingsPath, SETTINGS_FILE_MODE);
-    } catch {
-      // Non-POSIX filesystems may reject chmod; creation mode/final chmod remain.
-    }
-  }
-
-  writeFileSync(settingsPath, JSON.stringify(existing, null, 2), {
-    encoding: 'utf-8',
-    mode: SETTINGS_FILE_MODE,
+  values: { apiKey: string; projectId: string; serverBaseUrl?: string; previousApiKeyId?: string | null },
+): boolean {
+  const updates: Record<string, unknown> = {
+    CLAUDE_MEM_SERVER_API_KEY: values.apiKey,
+    CLAUDE_MEM_SERVER_PROJECT_ID: values.projectId,
+  };
+  if (values.serverBaseUrl) updates.CLAUDE_MEM_SERVER_URL = values.serverBaseUrl;
+  if (values.previousApiKeyId) updates.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID = values.previousApiKeyId;
+  const result = updateSettingsDocument(settingsPath, updates, {}, target => {
+    if (!values.previousApiKeyId) delete target.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID;
   });
-  // Hooks read this file on every invocation; restrict permissions so other
-  // local users cannot read the API key.
-  try {
-    chmodSync(settingsPath, SETTINGS_FILE_MODE);
-  } catch {
-    // Non-POSIX filesystems may reject chmod; settings file remains readable.
+  if (result.status === 'refused') {
+    logger.warn('HOOK', 'Could not persist server settings; leaving existing credentials unchanged.', { settingsPath }, result.error instanceof Error ? result.error : undefined);
+    return false;
   }
+  // The boundary writes settings.json owner-only from the first byte, so the
+  // API key hooks read on every invocation is never readable by other users.
+  return true;
+}
+
+export interface ServerKeyRotationState {
+  /** Set only by an unfinished rotation (persistServerSettings' retry marker). */
+  pendingRevocationKeyId: string | null;
+  currentApiKey: string | null;
+  currentProjectId: string | null;
+}
+
+/**
+ * What `server keys rotate` finds in settings.json. Only an explicit
+ * CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID means an earlier rotation saved its new
+ * key but could not revoke the old one; that run finishes the revocation and
+ * mints nothing. The current key's own id is never a pending revocation: an
+ * ordinary rotation revokes it only after its replacement is saved.
+ */
+export function readServerKeyRotationState(flat: Record<string, unknown> | null | undefined): ServerKeyRotationState {
+  const nonEmpty = (value: unknown): string | null =>
+    typeof value === 'string' && value.length > 0 ? value : null;
+  return {
+    pendingRevocationKeyId: nonEmpty(flat?.CLAUDE_MEM_SERVER_PREVIOUS_API_KEY_ID),
+    // The canonical key first, then the pre-rename CLAUDE_MEM_SERVER_BETA_* name.
+    currentApiKey: nonEmpty(flat?.CLAUDE_MEM_SERVER_API_KEY ?? flat?.CLAUDE_MEM_SERVER_BETA_API_KEY),
+    currentProjectId: nonEmpty(flat?.CLAUDE_MEM_SERVER_PROJECT_ID ?? flat?.CLAUDE_MEM_SERVER_BETA_PROJECT_ID),
+  };
 }
 
 export function createRawApiKey(): string {

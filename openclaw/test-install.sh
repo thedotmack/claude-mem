@@ -558,7 +558,7 @@ test_write_settings_new_file() {
 
   local model
   model="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_MODEL);")"
-  assert_eq "claude-sonnet-4-6" "$model" "CLAUDE_MEM_MODEL defaults to claude-sonnet-4-6"
+  assert_eq "claude-sonnet-5" "$model" "CLAUDE_MEM_MODEL defaults to claude-sonnet-5"
 
   HOME="$ORIGINAL_HOME"
   rm -rf "$fake_home"
@@ -616,7 +616,7 @@ test_write_settings_openrouter() {
 
   local or_model
   or_model="$(node -e "const s = JSON.parse(require('fs').readFileSync('${settings_file}','utf8')); console.log(s.CLAUDE_MEM_OPENROUTER_MODEL);")"
-  assert_eq "xiaomi/mimo-v2-flash:free" "$or_model" "OpenRouter: model defaults to xiaomi/mimo-v2-flash:free"
+  assert_eq "cohere/north-mini-code:free" "$or_model" "OpenRouter: model defaults to cohere/north-mini-code:free"
 
   HOME="$ORIGINAL_HOME"
   rm -rf "$fake_home"

@@ -1,12 +1,17 @@
 import { existsSync, readFileSync, writeFileSync } from 'fs';
-import { execFile, execSync, spawnSync, type SpawnSyncReturns } from 'child_process';
+import { execFile, execSync, spawnSync, type SpawnSyncOptionsWithStringEncoding } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
 import { homedir } from 'os';
 import { ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
+import { buildSpawnSyncInvocation, lookupWindowsCommand } from '../../shared/spawn.js';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
+import { settingsTarget } from '../../shared/settings-document.js';
+import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
+import { ensureTreeSitterCliBinary } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -36,50 +41,48 @@ function userHasOptedOutOfVectorSearch(): boolean {
   let raw: unknown;
   try {
     if (!existsSync(USER_SETTINGS_PATH)) return false;
-    raw = JSON.parse(readFileSync(USER_SETTINGS_PATH, 'utf-8'));
+    raw = readJsonFileWithBom(USER_SETTINGS_PATH);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     console.warn(`claude-mem: could not read ${USER_SETTINGS_PATH} while checking vector-search opt-out:`, err);
     return false;
   }
   if (!raw || typeof raw !== 'object') return false;
-  const record = raw as Record<string, unknown>;
-  const envBlock = (record.env && typeof record.env === 'object')
-    ? (record.env as Record<string, unknown>)
-    : {};
-  const value = record.CLAUDE_MEM_DISABLE_VECTOR_SEARCH ?? envBlock.CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
+  if (Array.isArray(raw)) return false;
+  const value = settingsTarget(raw as Record<string, unknown>).CLAUDE_MEM_DISABLE_VECTOR_SEARCH;
   return value === true || value === 'true' || value === '1';
 }
 
-const BUN_COMMON_PATHS = IS_WINDOWS
-  ? [join(homedir(), '.bun', 'bin', 'bun.exe')]
-  : [join(homedir(), '.bun', 'bin', 'bun'), '/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun'];
-
-const UV_COMMON_PATHS = IS_WINDOWS
-  ? [join(homedir(), '.local', 'bin', 'uv.exe'), join(homedir(), '.cargo', 'bin', 'uv.exe')]
-  : [join(homedir(), '.local', 'bin', 'uv'), join(homedir(), '.cargo', 'bin', 'uv'), '/usr/local/bin/uv', '/opt/homebrew/bin/uv'];
-
-function isBareCommand(command: string): boolean {
-  return !/[\\/]/.test(command) && !/^[A-Za-z]:/.test(command);
+/**
+ * Absolute paths bun's installer can write to, recomputed per call so an
+ * installer that set `$BUN_INSTALL` earlier in this process is still found.
+ * Honours `$BUN_INSTALL`, both `homedir()` and `%USERPROFILE%` (which differ on
+ * redirected Windows profiles), `%LOCALAPPDATA%\bun`, and the platform defaults.
+ * The previous `homedir()`-only list missed env-directed installs and aborted
+ * with "executable not found" even when the binary was present.
+ */
+export function bunCommonPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const binName = IS_WINDOWS ? 'bun.exe' : 'bun';
+  const homeRoots = [homedir(), env.USERPROFILE].filter((v): v is string => Boolean(v));
+  const localAppData = IS_WINDOWS && env.LOCALAPPDATA
+    ? [join(env.LOCALAPPDATA, 'bun', binName), join(env.LOCALAPPDATA, 'bun', 'bin', binName)]
+    : [];
+  const systemPaths = IS_WINDOWS
+    ? []
+    : ['/usr/local/bin/bun', '/opt/homebrew/bin/bun', '/home/linuxbrew/.linuxbrew/bin/bun', '/usr/bin/bun', '/snap/bin/bun'];
+  const candidates = [
+    ...(env.BUN_INSTALL ? [join(env.BUN_INSTALL, 'bin', binName)] : []),
+    ...homeRoots.map(root => join(root, '.bun', 'bin', binName)),
+    ...localAppData,
+    ...systemPaths,
+  ];
+  return [...new Set(candidates)];
 }
 
-function resolveCommand(command: string, args: string[]): { command: string; args: string[] } {
-  if (IS_WINDOWS && isBareCommand(command)) {
-    return {
-      command: process.env.ComSpec ?? 'cmd.exe',
-      args: ['/d', '/c', command, ...args],
-    };
-  }
-  return { command, args };
-}
-
-function probeVersionCommand(command: string): SpawnSyncReturns<string> {
-  const resolved = resolveCommand(command, ['--version']);
-  return spawnSync(resolved.command, resolved.args, {
-    encoding: 'utf-8',
-    stdio: ['pipe', 'pipe', 'pipe'],
-    windowsHide: true,
-  });
+/** Absolute paths uv's installer can write to (getUvxBinDirs already dedupes). */
+export function uvCommonPaths(env: NodeJS.ProcessEnv = process.env): string[] {
+  const binName = IS_WINDOWS ? 'uv.exe' : 'uv';
+  return getUvxBinDirs({ env }).map(dir => join(dir, binName));
 }
 
 interface MarkerSchema {
@@ -93,24 +96,34 @@ const LEGACY_VERSION_MARKER_RE =
   /^v?\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 
 function markerPath(targetDir: string): string {
-  return join(resolveRuntimeRoot(targetDir), '.install-version');
+  return join(targetDir, '.install-version');
 }
 
-function resolveRuntimeRoot(targetDir: string): string {
-  const marketplacePluginDir = join(targetDir, 'plugin');
-  if (existsSync(join(marketplacePluginDir, 'package.json'))) return marketplacePluginDir;
-  return targetDir;
+function spawnVersionProbe(command: string, args: string[]) {
+  const options: SpawnSyncOptionsWithStringEncoding = {
+    encoding: 'utf-8',
+    stdio: ['pipe', 'pipe', 'pipe'],
+  };
+  const invocation = buildSpawnSyncInvocation(command, args, options);
+  return spawnSync(invocation.command, invocation.args, invocation.options);
 }
 
-export function getBunPath(): string | null {
+function getToolPath(command: string, commonPaths: string[]): string | null {
+  const pathCommand = IS_WINDOWS ? lookupWindowsCommand(command) : command;
   try {
-    const result = probeVersionCommand('bun');
-    if (result.status === 0) return 'bun';
+    if (pathCommand) {
+      const result = spawnVersionProbe(pathCommand, ['--version']);
+      if (result.status === 0) return pathCommand;
+    }
   } catch {
     // Not in PATH
   }
 
-  return BUN_COMMON_PATHS.find(existsSync) || null;
+  return commonPaths.find(existsSync) || null;
+}
+
+export function getBunPath(): string | null {
+  return getToolPath('bun', bunCommonPaths());
 }
 
 function isBunInstalled(): boolean {
@@ -122,7 +135,7 @@ export function getBunVersion(): string | null {
   if (!bunPath) return null;
 
   try {
-    const result = probeVersionCommand(bunPath);
+    const result = spawnVersionProbe(bunPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -132,14 +145,7 @@ export function getBunVersion(): string | null {
 }
 
 function getUvPath(): string | null {
-  try {
-    const result = probeVersionCommand('uv');
-    if (result.status === 0) return 'uv';
-  } catch {
-    // Not in PATH
-  }
-
-  return UV_COMMON_PATHS.find(existsSync) || null;
+  return getToolPath('uv', uvCommonPaths());
 }
 
 function isUvInstalled(): boolean {
@@ -151,7 +157,7 @@ export function getUvVersion(): string | null {
   if (!uvPath) return null;
 
   try {
-    const result = probeVersionCommand(uvPath);
+    const result = spawnVersionProbe(uvPath, ['--version']);
     return result.status === 0 ? result.stdout.trim() : null;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -160,7 +166,7 @@ export function getUvVersion(): string | null {
   }
 }
 
-function describeExecError(error: unknown): string {
+function describeExecError(error: unknown, includeStdoutWithStderr = false): string {
   if (error && typeof error === 'object') {
     const e = error as { message?: string; stdout?: Buffer | string; stderr?: Buffer | string };
     const parts: string[] = [];
@@ -168,7 +174,7 @@ function describeExecError(error: unknown): string {
     const stderr = e.stderr ? e.stderr.toString().trim() : '';
     if (stderr) parts.push(`stderr: ${stderr}`);
     const stdout = e.stdout ? e.stdout.toString().trim() : '';
-    if (!stderr && stdout) parts.push(`stdout: ${stdout}`);
+    if (stdout && (!stderr || includeStdoutWithStderr)) parts.push(`stdout: ${stdout}`);
     return parts.join('\n');
   }
   return String(error);
@@ -259,66 +265,6 @@ function installUv(): void {
  * we resolve subpaths, never a pinned version.
  */
 const ZOD_REQUIRED_SUBPATHS = ['zod/v3', 'zod/v4', 'zod/v4-mini'] as const;
-const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
-
-export function treeSitterCliBinaryPath(targetDir: string): string {
-  return join(
-    targetDir,
-    'node_modules',
-    'tree-sitter-cli',
-    IS_WINDOWS ? 'tree-sitter.exe' : 'tree-sitter',
-  );
-}
-
-export function isTreeSitterCliBinaryUsable(targetDir: string): boolean {
-  const result = spawnSync(treeSitterCliBinaryPath(targetDir), ['--version'], {
-    encoding: 'utf-8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
-    windowsHide: true,
-  });
-  return result.status === 0
-    && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((result.stdout ?? '').trim());
-}
-
-/**
- * Runtime installs suppress all dependency lifecycle scripts to avoid running
- * unbounded transitive postinstalls. tree-sitter-cli is the one intentional
- * exception: its install script downloads the platform CLI used by smart-explore.
- * Run only that top-level script, with the installer's existing timeout.
- */
-export async function ensureTreeSitterCliBinary(
-  targetDir: string,
-  isUsable: (targetDir: string) => boolean = isTreeSitterCliBinaryUsable,
-): Promise<void> {
-  const binaryPath = treeSitterCliBinaryPath(targetDir);
-  if (isUsable(targetDir)) return;
-
-  const cliDir = join(targetDir, 'node_modules', 'tree-sitter-cli');
-  const installScript = join(cliDir, 'install.js');
-  if (!existsSync(installScript)) {
-    throw new Error(`tree-sitter-cli install script not found: ${installScript}`);
-  }
-
-  await new Promise<void>((resolve, reject) => {
-    execFile(process.execPath, [installScript], {
-      cwd: cliDir,
-      timeout: INSTALL_TIMEOUT_MS,
-      maxBuffer: 16 * 1024 * 1024,
-      windowsHide: true,
-    }, (error, stdout, stderr) => {
-      if (error) {
-        reject(Object.assign(error, { stdout, stderr }));
-        return;
-      }
-      resolve();
-    });
-  });
-
-  if (!isUsable(targetDir)) {
-    throw new Error(`tree-sitter-cli install completed without creating a working executable ${binaryPath}`);
-  }
-}
 
 export function verifyCriticalModules(targetDir: string): void {
   const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
@@ -370,10 +316,6 @@ export function verifyCriticalModules(targetDir: string): void {
     }
   }
 
-  if (dependencies.includes('tree-sitter-cli') && !isTreeSitterCliBinaryUsable(targetDir)) {
-    unresolvable.push('tree-sitter-cli executable');
-  }
-
   if (unresolvable.length > 0) {
     throw new Error(
       `Post-install check failed: unresolvable modules: ${unresolvable.join(', ')}`,
@@ -408,7 +350,7 @@ export async function ensureBun(summary?: InstallSummary): Promise<{ bunPath: st
 
   let bunPath = getBunPath();
   if (!bunPath) {
-    bunPath = BUN_COMMON_PATHS.find(existsSync) ?? null;
+    bunPath = bunCommonPaths().find(existsSync) ?? null;
   }
   if (!bunPath) {
     installerError(ErrorSeverity.ABORT, {
@@ -467,9 +409,10 @@ export async function ensureUv(
 
   let uvPath = getUvPath();
   if (!uvPath) {
-    // Re-probe UV_COMMON_PATHS directly — PATH may not yet include ~/.local/bin
-    // in the current shell even though the install just wrote the binary there.
-    uvPath = UV_COMMON_PATHS.find(existsSync) ?? null;
+    // Re-probe the known uv bin dirs directly — PATH may not yet include
+    // ~/.local/bin in the current shell even though the install just wrote the
+    // binary there.
+    uvPath = uvCommonPaths().find(existsSync) ?? null;
   }
   if (!uvPath) {
     if (options.allowVectorSearchOptOut && userHasOptedOutOfVectorSearch()) {
@@ -514,18 +457,19 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   // tree-sitter-cli postinstall downloads a Rust binary and can hang the
   // install. Bun honors trustedDependencies; npm does not. We additionally
   // pass --ignore-scripts as belt-and-suspenders and bound it with a timeout.
-  // Async exec (not execSync): a blocked event loop freezes the installer's
-  // clack spinner for the duration of the install, which reads as a stall.
+  // Async execFile (not execFileSync): a blocked event loop freezes the
+  // installer's clack spinner for the duration of the install, which reads as a
+  // stall. execFile (not exec) passes bunPath as argv[0] with no shell, so a
+  // resolved path with spaces or shell metacharacters is never parsed.
   const runBunInstall = (): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      const resolved = resolveCommand(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts']);
-      execFile(resolved.command, resolved.args, {
+      execFile(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts'], {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
-        windowsHide: true,
+        ...(IS_WINDOWS ? { windowsHide: true } : {}),
       }, (error, stdout, stderr) =>
-        // exec errors don't carry stdio; attach so describeExecError can report it.
+        // execFile errors don't carry stdio; attach so describeExecError can report it.
         error ? reject(Object.assign(error, { stdout, stderr })) : resolve());
     });
 
@@ -536,14 +480,46 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
     throw new Error(`bun install failed in ${targetDir}\n${describeExecError(err)}`);
   }
 
+  verifyCriticalModules(targetDir);
+}
+
+/**
+ * Provision the tree-sitter CLI in `targetDir` and report a failure at
+ * `severity`. `install` passes WARN_CONTINUE: it runs before the sign-in/trial
+ * step, and smart_search is not worth an aborted install. `repair` passes
+ * ABORT. Returns whether the CLI is usable.
+ */
+export async function provisionTreeSitterCli(
+  targetDir: string,
+  severity: ErrorSeverity.ABORT | ErrorSeverity.WARN_CONTINUE,
+  summary: InstallSummary,
+  installTimeoutMs: number = INSTALL_TIMEOUT_MS,
+): Promise<boolean> {
   try {
-    await ensureTreeSitterCliBinary(targetDir);
+    await ensureTreeSitterCliBinary(targetDir, installTimeoutMs);
+    return true;
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
-    throw new Error(`tree-sitter-cli setup failed in ${targetDir}\n${describeExecError(err)}`);
+    const processError = err as Error & { code?: number | string; killed?: boolean };
+    const failure = processError.killed
+      ? 'timed out'
+      : typeof processError.code === 'number'
+        ? `exited with code ${processError.code}`
+        : err.message;
+    installerError(severity, {
+      component: 'tree-sitter-cli-cache',
+      phase: 'dependency-install',
+      cause: Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
+        code: processError.code,
+        killed: processError.killed,
+      }),
+      details: describeExecError(err, true).slice(0, 4000),
+      ...(severity === ErrorSeverity.WARN_CONTINUE
+        ? { remediation: 'smart_search and smart_outline stay disabled until the tree-sitter CLI is provisioned: run `npx claude-mem repair`.' }
+        : {}),
+    }, summary);
+    return false;
   }
-
-  verifyCriticalModules(targetDir);
 }
 
 export function readInstallMarker(targetDir: string): MarkerSchema | null {
@@ -582,36 +558,14 @@ export function writeInstallMarker(
   writeFileSync(markerPath(targetDir), JSON.stringify(payload));
 }
 
-function pluginDeclaresTreeSitterCli(targetDir: string): boolean {
-  try {
-    const pkg = JSON.parse(readFileSync(join(targetDir, 'package.json'), 'utf-8'));
-    return Object.keys(pkg.dependencies || {}).includes('tree-sitter-cli');
-  } catch {
-    // [ANTI-PATTERN IGNORED]: a missing or unparseable package.json in an
-    // incomplete/partial install is an expected negative — treat it as "does
-    // not declare tree-sitter-cli" so the caller re-provisions rather than
-    // throwing.
-    return false;
-  }
-}
-
 export function isInstallCurrent(targetDir: string, expectedVersion: string): boolean {
-  const runtimeRoot = resolveRuntimeRoot(targetDir);
-  if (!existsSync(join(runtimeRoot, 'node_modules'))) return false;
-  const marker = readInstallMarker(runtimeRoot);
+  if (!existsSync(join(targetDir, 'node_modules'))) return false;
+  const marker = readInstallMarker(targetDir);
   if (!marker) return false;
   if (marker.version !== expectedVersion) return false;
   const currentBun = getBunVersion();
   if (currentBun && !marker.bun) return false;
   if (!currentBun && marker.bun) return false;
   if (currentBun && marker.bun && currentBun !== marker.bun) return false;
-  // A present marker is not sufficient if the smart-explore runtime it vouches
-  // for is missing. A prior install can write .install-version and later lose
-  // (or never have downloaded) the tree-sitter-cli executable; without this
-  // check the install fast path treats that cache as current and skips the
-  // provisioning/validation that would repair it, leaving smart-explore broken.
-  if (pluginDeclaresTreeSitterCli(runtimeRoot) && !isTreeSitterCliBinaryUsable(runtimeRoot)) {
-    return false;
-  }
   return true;
 }

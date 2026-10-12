@@ -29,6 +29,6 @@ export function renderFooter(
   return Agent.renderAgentFooter(
     economics.totalDiscoveryTokens,
     economics.totalReadTokens,
-    config.fetchByIdSupported
+    config.fetchByIdSupported !== false,
   );
 }

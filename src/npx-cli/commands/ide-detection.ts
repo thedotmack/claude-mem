@@ -1,8 +1,9 @@
-import { execSync } from 'child_process';
+import { execFileSync } from 'child_process';
 import { existsSync, readdirSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
+import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
 
 export interface IDEInfo {
   id: string;
@@ -11,10 +12,21 @@ export interface IDEInfo {
   hint?: string;
 }
 
+export function initialIDESelection(ides: IDEInfo[]): string[] {
+  const detected = ides.filter(ide => ide.detected).map(ide => ide.id);
+  return detected.length ? detected : ['claude-code'];
+}
+
 function isCommandInPath(command: string): boolean {
   try {
-    const whichCommand = IS_WINDOWS ? 'where' : 'which';
-    execSync(`${whichCommand} ${command}`, { stdio: 'pipe' });
+    if (IS_WINDOWS) {
+      execFileSync('where.exe', [command], {
+        stdio: 'ignore',
+        windowsHide: true,
+      });
+    } else {
+      execFileSync('which', [command], { stdio: 'ignore' });
+    }
     return true;
   } catch (error: unknown) {
     if (process.env.DEBUG) {
@@ -43,7 +55,7 @@ export function detectInstalledIDEs(): IDEInfo[] {
     {
       id: 'claude-code',
       label: 'Claude Code',
-      detected: isCommandInPath('claude') || isCommandInPath('claude-code'),
+      detected: isCommandInPath('claude'),
       hint: 'recommended',
     },
     {
@@ -71,19 +83,28 @@ export function detectInstalledIDEs(): IDEInfo[] {
       hint: 'native hooks integration',
     },
     {
-      // Directory-only on purpose (matching gemini-cli/codex-cli): the
-      // installer requires ~/.kiro to exist, so detecting a PATH-only binary
-      // would offer an install that immediately fails.
-      id: 'kiro-cli',
-      label: 'Kiro CLI',
-      detected: existsSync(process.env.KIRO_HOME ?? join(home, '.kiro')),
-      hint: 'agent hooks + MCP integration',
+      id: 't3code',
+      label: 'T3 Code',
+      detected: existsSync(t3CodeSettingsPath()),
+      hint: 'Codex + Claude native hooks and MCP',
+    },
+    {
+      id: 'kimi',
+      label: 'Kimi Code',
+      detected: existsSync(join(home, '.kimi-code')) || isCommandInPath('kimi'),
+      hint: 'hooks + MCP integration',
     },
     {
       id: 'cursor',
       label: 'Cursor',
       detected: existsSync(join(home, '.cursor')),
       hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'grok-bot',
+      label: 'Grok Bot',
+      detected: existsSync(join(home, '.cursor')),
+      hint: 'transcript watch + MCP integration',
     },
     {
       id: 'copilot-cli',
@@ -96,6 +117,24 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'Antigravity',
       detected: existsSync(join(home, '.gemini', 'antigravity')) || isCommandInPath('agy'),
       hint: 'hooks + MCP integration',
+    },
+    {
+      id: 'omp',
+      label: 'OMP',
+      detected: isCommandInPath('omp') || existsSync(join(home, '.omp')),
+      hint: 'native hooks integration',
+    },
+    {
+      id: 'pi',
+      label: 'Pi',
+      detected: isCommandInPath('pi') || existsSync(process.env.PI_CODING_AGENT_DIR || join(home, '.pi', 'agent')),
+      hint: 'manual recall; check automatic capture compatibility',
+    },
+    {
+      id: 'dsh',
+      label: 'DeepSeek Harness',
+      detected: isCommandInPath('dsh') || existsSync(process.env.DSH_HOME || join(home, '.dsh')),
+      hint: 'native plugin + transcript capture',
     },
     {
       id: 'goose',

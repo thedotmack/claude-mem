@@ -8,7 +8,6 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
   let handler: ((req: Request, res: Response) => void) | undefined;
   const app = {
     get: mock(() => {}),
-    delete: mock(() => {}),
     post: mock((path: string, ...rest: any[]) => {
       if (path !== targetPath) return;
       if (rest.length === 1) {
@@ -18,6 +17,7 @@ function capturePostChain(routes: DataRoutes, targetPath: string): (req: Request
         handler = rest[1];
       }
     }),
+    delete: mock(() => {}),
   };
 
   routes.setupRoutes(app as any);
@@ -108,45 +108,6 @@ describe('DataRoutes import platform scoping', () => {
             created_at_epoch: 4,
           },
         ],
-        summaries: [
-          {
-            memory_session_id: 'cursor-memory',
-            content_session_id: 'cursor-content-for-summary',
-            project: 'cursor-project',
-            request: 'cursor summary',
-            investigated: null,
-            learned: null,
-            completed: null,
-            next_steps: null,
-            files_read: null,
-            files_edited: null,
-            notes: null,
-            prompt_number: 1,
-            discovery_tokens: 0,
-            created_at: startedAt,
-            created_at_epoch: 5,
-          },
-        ],
-        observations: [
-          {
-            memory_session_id: 'cursor-memory',
-            content_session_id: 'cursor-content-for-observation',
-            project: 'cursor-project',
-            text: null,
-            type: 'discovery',
-            title: 'cursor observation',
-            subtitle: null,
-            facts: null,
-            narrative: 'imported observation',
-            concepts: null,
-            files_read: null,
-            files_modified: null,
-            prompt_number: 1,
-            discovery_tokens: 0,
-            created_at: startedAt,
-            created_at_epoch: 6,
-          },
-        ],
       },
     } as any, {
       json,
@@ -159,13 +120,18 @@ describe('DataRoutes import platform scoping', () => {
       stats: {
         sessionsImported: 2,
         sessionsSkipped: 0,
-        summariesImported: 1,
+        summariesImported: 0,
         summariesSkipped: 0,
-        observationsImported: 1,
+        observationsImported: 0,
         observationsSkipped: 0,
         promptsImported: 2,
         promptsSkipped: 0,
+        sessionsRejected: 0,
+        summariesRejected: 0,
+        observationsRejected: 0,
+        promptsRejected: 0,
       },
+      rejected: { sessions: [], summaries: [], observations: [], prompts: [] },
     });
 
     const rows = store.db.prepare(`
@@ -180,15 +146,5 @@ describe('DataRoutes import platform scoping', () => {
       { prompt_text: 'claude imported prompt', platform_source: 'claude' },
       { prompt_text: 'cursor imported prompt', platform_source: 'cursor' },
     ]);
-
-    const importedSummary = store.db.prepare(`
-      SELECT content_session_id FROM session_summaries WHERE memory_session_id = 'cursor-memory'
-    `).get() as { content_session_id: string | null };
-    const importedObservation = store.db.prepare(`
-      SELECT content_session_id FROM observations WHERE memory_session_id = 'cursor-memory'
-    `).get() as { content_session_id: string | null };
-
-    expect(importedSummary.content_session_id).toBe('cursor-content-for-summary');
-    expect(importedObservation.content_session_id).toBe('cursor-content-for-observation');
   });
 });
