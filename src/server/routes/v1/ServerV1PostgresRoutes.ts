@@ -29,7 +29,7 @@ import { createRecallMcpServer, type RecallBackend } from '../../mcp/recall-mcp-
 import { requireRateLimit, requireMonthlyQuota } from '../../middleware/rate-limit.js';
 import { meterRequests } from '../../middleware/usage-metering.js';
 import { PostgresUsageRepository } from '../../../storage/postgres/usage.js';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { PostgresServerSessionsRepository } from '../../../storage/postgres/server-sessions.js';
 import { IngestEventsService, type EnqueueOutcome } from '../../services/IngestEventsService.js';
 import { EndSessionService } from '../../services/EndSessionService.js';
@@ -891,6 +891,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
+        // Idempotency key: a repeat returns the existing row instead of a
+        // duplicate. `generation:` is the server generator's own namespace.
+        generationKey: z.string().min(1).max(200)
+          .refine(key => !key.startsWith('generation:'), 'generationKey prefix "generation:" is reserved')
+          .optional(),
         metadata: z.record(z.string(), z.unknown()).optional(),
       }),
       async (req, res, body) => {
@@ -907,6 +912,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           ...this.sessionLookupPlatformScope(req.body),
         });
         const createInput = {
+          id: randomUUID(),
+          generationKey: body.generationKey,
           projectId: body.projectId,
           teamId,
           serverSessionId: linkedSessionId,
@@ -917,8 +924,23 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const observation = await repo.create(createInput);
-          await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
-          res.status(201).json({ memory: serializeObservation(observation) });
+          if (observation.id === createInput.id) {
+            await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
+            res.status(201).json({ memory: serializeObservation(observation) });
+            return;
+          }
+          // A repeated generationKey returns the existing row, keeping its
+          // original ID. This route only needs memories:write, so a key that
+          // can't read memories gets the id back, not another writer's content.
+          await this.auditWrite(req, 'memory.write', observation.id, observation.projectId, {
+            outcome: 'existing_generation_key',
+          });
+          const scopes = req.authContext?.scopes ?? [];
+          const canRead = req.authContext?.mode === 'local-dev'
+            || scopes.includes('memories:read') || scopes.includes('*');
+          res.status(200).json(canRead
+            ? { memory: serializeObservation(observation), existing: true }
+            : { memory: { id: observation.id, projectId: observation.projectId }, existing: true });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'memory.write failed', { requestId: req.requestId ?? null }, err);
@@ -987,6 +1009,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // the CLAUDE_MEM_CONTEXT_OBSERVATIONS range and the default depends on
         // whether a query was given.
         limit: z.number().int().positive().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
+        // Portion of the recency limit reserved for session summaries. Without
+        // it, MCP/relevance consumers keep the existing mixed result window.
+        summaryLimit: z.number().int().nonnegative().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
         platformSource: z.string().min(1).nullable().optional(),
         // Folder labels (observations.metadata.project). When set, only rows
         // generated for one of these folders are returned (ASCII
@@ -995,7 +1020,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: leave out rows generated from
         // subagent hook events.
         excludeSubagents: z.boolean().optional(),
-      }),
+      }).refine(body => body.summaryLimit === undefined || (
+        body.query === undefined
+        && body.summaryLimit <= (body.limit ?? SERVER_CONTEXT_RECENT_DEFAULT_LIMIT)
+      ), { message: 'summaryLimit requires recency mode and must not exceed limit' }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
@@ -1006,9 +1034,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          // One query for both modes, so the platform, folder and subagent
-          // filters apply to the recency read exactly as to a relevance read.
-          results = await repo.search({
+          // Both category reads use the same project/platform/folder/subagent
+          // scope as the ordinary mixed read, with filtering before LIMIT.
+          const searchInput = {
             projectId: body.projectId,
             teamId,
             query: body.query ?? null,
@@ -1016,7 +1044,22 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
-          });
+          };
+          if (body.summaryLimit === undefined) {
+            results = await repo.search(searchInput);
+          } else {
+            const observationLimit = limit - body.summaryLimit;
+            const [observations, summaries] = await Promise.all([
+              observationLimit > 0
+                ? repo.search({ ...searchInput, limit: observationLimit, summary: false })
+                : Promise.resolve([]),
+              body.summaryLimit > 0
+                ? repo.search({ ...searchInput, limit: body.summaryLimit, summary: true })
+                : Promise.resolve([]),
+            ]);
+            results = [...observations, ...summaries].sort((a, b) =>
+              b.createdAtEpoch - a.createdAtEpoch || b.updatedAtEpoch - a.updatedAtEpoch);
+          }
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'observation.context failed', { requestId: req.requestId ?? null }, err);
@@ -1029,6 +1072,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .join('\n\n');
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
+          ...(body.summaryLimit === undefined ? {} : { summaryLimit: body.summaryLimit }),
           query: body.query ?? null,
           limit,
           platformSource,

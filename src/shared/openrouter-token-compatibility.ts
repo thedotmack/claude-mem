@@ -36,21 +36,16 @@ export async function fetchWithOpenRouterTokenCompatibility(
   }
 
   let bodyText = '';
-  let responseForCaller = response;
   try {
-    const bodyBytes = new Uint8Array(await response.clone().arrayBuffer());
-    bodyText = new TextDecoder().decode(bodyBytes);
-    responseForCaller = new Response(response.body === null ? null : bodyBytes, {
-      status: response.status,
-      statusText: response.statusText,
-      headers: response.headers,
-    });
+    bodyText = await response.clone().text();
   } catch {
     return response;
   }
 
   if (!isMaxCompletionTokensCompatibilityError(response.status, bodyText)) {
-    return responseForCaller;
+    // Inspect only the clone: reconstructing a Response discards fetch URL,
+    // redirect and response-type metadata even when no retry is needed.
+    return response;
   }
 
   const { max_tokens: _ignored, ...bodyWithoutMaxTokens } = body;

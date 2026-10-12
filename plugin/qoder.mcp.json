@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "mcp-search": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "-e",
+        "const f=require('fs'),p=require('path');const e=process.env.QODER_PLUGIN_ROOT||process.cwd();const r=f.existsSync(p.join(e,'plugin','scripts','mcp-server.cjs'))?p.join(e,'plugin'):e;const s=p.join(r,'scripts','mcp-server.cjs');if(!f.existsSync(s)){process.stderr.write('claude-mem: Qoder MCP server not found\\n');process.exit(1)}require(s)"
+      ]
+    }
+  }
+}
