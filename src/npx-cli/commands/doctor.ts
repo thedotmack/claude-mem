@@ -9,10 +9,9 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
-import { resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
-import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
@@ -68,7 +67,7 @@ async function probeWorkerHealth(workerHost: string, workerPort: string): Promis
   detail: string;
   workerUrl: string;
 }> {
-  const workerUrl = `http://${workerHost}:${workerPort}`;
+  const workerUrl = `http://${formatHostForUrl(workerHost)}:${workerPort}`;
   const res = await fetch(`${workerUrl}/api/health`, {
     signal: AbortSignal.timeout(3000),
   });
@@ -322,10 +321,11 @@ export async function runDoctorCommand(): Promise<void> {
   checks.push(marketplaceManifestCheck(marketplaceDir));
 
   // 5. Worker health.
-  const workerHost = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_HOST');
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  // The address the worker binds: settings.json, with env vars overriding it.
+  const workerHost = getWorkerHost({ readOnly: true });
+  const workerPort = String(getWorkerPort({ readOnly: true }));
   let workerStatus: CheckStatus = 'fail';
-  let workerDetail = `no response at http://${workerHost}:${workerPort} — start with \`npx claude-mem start\``;
+  let workerDetail = `no response at http://${formatHostForUrl(workerHost)}:${workerPort} — start with \`npx claude-mem start\``;
   let chromaChecks: CheckResult[] = [];
   try {
     const worker = await probeWorkerHealth(workerHost, workerPort);
