@@ -449,7 +449,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             ))}
             <button
               className="console-filter-action"
-              onClick={() => setAllLevels(activeLevels.size === 0)}
+              onClick={() => setAllLevels(activeLevels.size !== LOG_LEVELS.length)}
               title={activeLevels.size === LOG_LEVELS.length ? 'Select none' : 'Select all'}
             >
               {activeLevels.size === LOG_LEVELS.length ? '○' : '●'}
@@ -474,7 +474,7 @@ export function LogsDrawer({ isOpen, onClose }: LogsDrawerProps) {
             ))}
             <button
               className="console-filter-action"
-              onClick={() => setAllComponents(activeComponents.size === 0)}
+              onClick={() => setAllComponents(activeComponents.size !== LOG_COMPONENTS.length)}
               title={activeComponents.size === LOG_COMPONENTS.length ? 'Select none' : 'Select all'}
             >
               {activeComponents.size === LOG_COMPONENTS.length ? '○' : '●'}

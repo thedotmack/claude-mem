@@ -14,8 +14,11 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 export function resolveDateBound(value: string | number, boundary: 'start' | 'end'): number {
   if (typeof value === 'number') return value;
 
-  const epoch = new Date(value).getTime();
-  if (boundary === 'end' && DATE_ONLY_PATTERN.test(value.trim())) {
+  // Trim before parsing as well as classification: padded ISO dates otherwise
+  // use the runtime local timezone instead of date-only UTC semantics.
+  const normalized = value.trim();
+  const epoch = new Date(normalized).getTime();
+  if (boundary === 'end' && DATE_ONLY_PATTERN.test(normalized)) {
     return epoch + MS_PER_DAY - 1;
   }
   return epoch;

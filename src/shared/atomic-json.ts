@@ -58,20 +58,30 @@ export function writeJsonFileAtomic(
   options: AtomicJsonWriteOptions = {}
 ): void {
   let resolved = filepath;
+  const followed = new Set<string>();
   try {
-    if (lstatSync(filepath).isSymbolicLink()) {
+    while (lstatSync(resolved).isSymbolicLink()) {
+      const absolute = resolve(resolved);
+      if (followed.has(absolute)) {
+        throw Object.assign(new Error(`Symlink loop at ${resolved}`), { code: 'ELOOP' });
+      }
+      followed.add(absolute);
       try {
-        resolved = realpathSync(filepath);
+        resolved = realpathSync(resolved);
+        break;
       } catch (realpathErr) {
+        // A missing final target can be created. Loops, permission errors and
+        // other resolution failures must never turn a link into a regular file.
+        if ((realpathErr as NodeJS.ErrnoException).code !== 'ENOENT') throw realpathErr;
         const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
-        emitDiagnostic(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually: ${realpathError.message}\n`);
-        const linkTarget = readlinkSync(filepath);
-        resolved = resolve(dirname(filepath), linkTarget);
+        emitDiagnostic(`claude-mem: realpathSync failed for ${resolved}, resolving symlink manually: ${realpathError.message}\n`);
+        const linkTarget = readlinkSync(resolved);
+        resolved = resolve(dirname(resolved), linkTarget);
       }
     }
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
+    if (code !== 'ENOENT') {
       throw err;
     }
   }

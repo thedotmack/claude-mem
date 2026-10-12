@@ -256,8 +256,14 @@ export class SessionSearch {
 
     if (filters.concepts) {
       const concepts = Array.isArray(filters.concepts) ? filters.concepts : [filters.concepts];
+      const conceptColumn = `${tableAlias}.concepts`;
+      // Legacy concepts can be a plain string or JSON string, matching sync's list reader.
+      const conceptArray = `CASE WHEN json_valid(${conceptColumn}) THEN CASE
+        WHEN json_type(${conceptColumn}) = 'array' THEN ${conceptColumn}
+        WHEN json_type(${conceptColumn}) = 'text' THEN json_array(json_extract(${conceptColumn}, '$'))
+        ELSE json_array(${conceptColumn}) END ELSE json_array(${conceptColumn}) END`;
       const conceptConditions = concepts.map(() => {
-        return `EXISTS (SELECT 1 FROM json_each(${tableAlias}.concepts) WHERE value = ?)`;
+        return `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`;
       });
       if (conceptConditions.length > 0) {
         conditions.push(`(${conceptConditions.join(' OR ')})`);
@@ -267,10 +273,11 @@ export class SessionSearch {
 
     if (filters.files) {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
+      const changedFilesColumn = tableAlias === 's' ? 'files_edited' : 'files_modified';
       const fileConditions = files.map(() => {
         return `(
           EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_read) WHERE value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.files_modified) WHERE value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${tableAlias}.${changedFilesColumn}) WHERE value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
@@ -375,9 +382,9 @@ export class SessionSearch {
       case 'relevance':
         return hasFTS ? `ORDER BY ${ftsTable}.rank ASC` : 'ORDER BY o.created_at_epoch DESC';
       case 'date_desc':
-        return 'ORDER BY o.created_at_epoch DESC';
+        return 'ORDER BY o.created_at_epoch DESC, o.id DESC';
       case 'date_asc':
-        return 'ORDER BY o.created_at_epoch ASC';
+        return 'ORDER BY o.created_at_epoch ASC, o.id ASC';
       default:
         return 'ORDER BY o.created_at_epoch DESC';
     }
@@ -423,8 +430,8 @@ export class SessionSearch {
     const filterParams: any[] = [];
     const filterClause = this.buildFilterClause(filterOptions, filterParams, 's');
     const orderClause = orderBy === 'date_asc'
-      ? 'ORDER BY s.created_at_epoch ASC'
-      : 'ORDER BY s.created_at_epoch DESC';
+      ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
+      : 'ORDER BY s.created_at_epoch DESC, s.id DESC';
 
     const sql = `
       SELECT s.*, s.discovery_tokens
@@ -519,8 +526,8 @@ export class SessionSearch {
       }
 
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
-        : 'ORDER BY s.created_at_epoch DESC';
+        ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
+        : 'ORDER BY s.created_at_epoch DESC, s.id DESC';
 
       const sql = `
         SELECT s.*, s.discovery_tokens
@@ -544,9 +551,9 @@ export class SessionSearch {
       const filterClause = this.buildFilterClause(filterOptions, params, 's');
 
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY s.created_at_epoch ASC'
+        ? 'ORDER BY s.created_at_epoch ASC, s.id ASC'
         : orderBy === 'date_desc'
-          ? 'ORDER BY s.created_at_epoch DESC'
+          ? 'ORDER BY s.created_at_epoch DESC, s.id DESC'
           : 'ORDER BY session_summaries_fts.rank ASC';
 
       const sql = `
@@ -647,7 +654,10 @@ export class SessionSearch {
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const patterns = [`%${escape(filePath)}%`];
+    const variants = isFolder
+      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
+      : [filePath];
+    const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
     }
@@ -833,8 +843,8 @@ export class SessionSearch {
 
       const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
       const orderClause = orderBy === 'date_asc'
-        ? 'ORDER BY up.created_at_epoch ASC'
-        : 'ORDER BY up.created_at_epoch DESC';
+        ? 'ORDER BY up.created_at_epoch ASC, up.id ASC'
+        : 'ORDER BY up.created_at_epoch DESC, up.id DESC';
 
       const sql = `
         SELECT
@@ -859,8 +869,8 @@ export class SessionSearch {
 
     const whereClause = `WHERE ${baseConditions.join(' AND ')}`;
     const orderClause = orderBy === 'date_asc'
-      ? 'ORDER BY up.created_at_epoch ASC'
-      : 'ORDER BY up.created_at_epoch DESC';
+      ? 'ORDER BY up.created_at_epoch ASC, up.id ASC'
+      : 'ORDER BY up.created_at_epoch DESC, up.id DESC';
 
     const sql = `
       SELECT
