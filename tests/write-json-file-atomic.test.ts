@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -192,5 +193,40 @@ describe('writeJsonFileAtomic', () => {
     expect(leftovers).toEqual([]);
     // The pre-existing directory should still be there — we didn't clobber it.
     expect(statSync(target).isDirectory()).toBe(true);
+  });
+
+  it('preserves every link in a dangling symlink chain', () => {
+    if (IS_WINDOWS) return;
+    const first = join(tempDir, 'settings.json');
+    const second = join(tempDir, 'alias.json');
+    const target = join(tempDir, 'dotfiles', 'settings.json');
+    symlinkSync('alias.json', first);
+    symlinkSync('dotfiles/settings.json', second);
+
+    writeJsonFileAtomic(first, { owned: true });
+
+    expect(lstatSync(first).isSymbolicLink()).toBe(true);
+    expect(lstatSync(second).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(first)).toBe('alias.json');
+    expect(readlinkSync(second)).toBe('dotfiles/settings.json');
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ owned: true });
+    expect(realpathSync(first)).toBe(realpathSync(target));
+    expect(readdirSync(join(tempDir, 'dotfiles'))).toEqual(['settings.json']);
+  });
+
+  it('rejects a symlink loop without replacing either link', () => {
+    if (IS_WINDOWS) return;
+    const first = join(tempDir, 'first');
+    const second = join(tempDir, 'second');
+    symlinkSync('second', first);
+    symlinkSync('first', second);
+
+    expect(() => writeJsonFileAtomic(first, { owned: true })).toThrow();
+
+    expect(lstatSync(first).isSymbolicLink()).toBe(true);
+    expect(lstatSync(second).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(first)).toBe('second');
+    expect(readlinkSync(second)).toBe('first');
+    expect(readdirSync(tempDir).sort()).toEqual(['first', 'second']);
   });
 });

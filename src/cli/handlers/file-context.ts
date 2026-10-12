@@ -15,7 +15,9 @@ import { detectLanguage } from '../../services/smart-file-read/language-map.js';
 import { isTreeSitterCliAvailable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
+import { memorySearchHandler } from './memory-search.js';
 import { isQwenCodeHookEvent } from './session-init.js';
+import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
 
 /** Below this a file gets neither the timeline nor a deny: reading it costs about what the timeline would. */
 const FILE_CONTEXT_MIN_BYTES = 1_500;
@@ -312,6 +314,8 @@ export function shouldDenyFullFileRead(
 
 export const fileContextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
+    const memoryContext = await memorySearchHandler.execute(input);
+    if (memoryContext.hookSpecificOutput?.additionalContext) return memoryContext;
     if (input.agentId) {
       logger.debug('HOOK', 'Skipping file context: subagent context detected', {
         sessionId: input.sessionId,
@@ -334,6 +338,14 @@ export const fileContextHandler: EventHandler = {
 
     if (input.cwd && !shouldTrackProject(input.cwd)) {
       logger.debug('HOOK', 'Project excluded from tracking, skipping file context', { cwd: input.cwd });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // #4558 — the by-file lookup is a worker-only route, and calling it lazy-spawns
+    // a local worker (and creates its DB). In server runtime there is no local
+    // worker by design, so skip file context like summarize/session-end do.
+    if (resolveRuntimeContext().runtime === 'server') {
+      logger.debug('HOOK', 'Server runtime: skipping worker file-context lookup', { cwd: input.cwd });
       return { continue: true, suppressOutput: true };
     }
 

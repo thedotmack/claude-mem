@@ -16,6 +16,7 @@ import {
   ServerSessionsRepository,
 } from '../../../storage/sqlite/index.js';
 import { requireServerAuth } from '../../middleware/auth.js';
+import { isMemorySearchQueryWithinLimit, MAX_MEMORY_SEARCH_TERMS } from '../../../storage/sqlite/memory-items.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -241,7 +242,7 @@ export class ServerV1Routes implements RouteHandler {
 
     app.post('/v1/search', readAuth, this.handleCreate(z.object({
       projectId: z.string().min(1),
-      query: z.string().min(1),
+      query: z.string().min(1).refine(isMemorySearchQueryWithinLimit, `Search supports at most ${MAX_MEMORY_SEARCH_TERMS} distinct terms`),
       limit: z.number().int().positive().max(100).optional(),
     }), (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
@@ -254,7 +255,7 @@ export class ServerV1Routes implements RouteHandler {
       projectId: z.string().min(1),
       // Optional: a context request with no query asks for the most RECENT
       // items, which is what a session-start block actually wants.
-      query: z.string().min(1).optional(),
+      query: z.string().min(1).refine(isMemorySearchQueryWithinLimit, `Search supports at most ${MAX_MEMORY_SEARCH_TERMS} distinct terms`).optional(),
       limit: z.number().int().positive().max(50).optional(),
     }), (req, res, body) => {
       if (!this.ensureProjectAllowed(req, res, body.projectId)) return;

@@ -62,4 +62,4 @@ function resolveDataDir() {
   return defaultDataDir;
 }
 
-module.exports = { resolveDataDir };
+module.exports = { resolveDataDir, settingsTarget };

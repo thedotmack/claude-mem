@@ -29,6 +29,7 @@ interface ContextInjectRender {
   cacheable: boolean;
 }
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
+import { isWorkStateEnabled } from '../../../../shared/work-state-setting.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
@@ -39,6 +40,8 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
+import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -99,11 +102,13 @@ const semanticContextSchema = z.object({
   // Every key the checkout reads (gate P2-5); a list, or comma-separated.
   projects: z.union([z.array(z.string()), z.string()]).optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  format: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private progressiveSearch?: ProgressiveMemorySearch;
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
   private cachedSettingsSaveCount = -1;
@@ -196,6 +201,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    app.post('/api/mem-search', this.handleProgressiveSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -219,6 +225,17 @@ export class SearchRoutes extends BaseRouteHandler {
     res.locals.searchTelemetry = searchTelemetry;
     const result = await this.searchManager.search(this.searchArgsFromRequest(req), searchTelemetry);
     res.json(result);
+  });
+
+  private handleProgressiveSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
+    const { searchScope, projects, ...input } = req.body ?? {};
+    const scope = typeof searchScope === 'string' ? `worker/${searchScope}` : 'worker/global';
+    try {
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope, projects)));
+    } catch (error) {
+      res.json(progressiveSearchToolError(error));
+    }
   });
 
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
@@ -479,14 +496,18 @@ export class SearchRoutes extends BaseRouteHandler {
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to
     // what that leaves of the 10K delivery limit. The terminal preview is for
-    // the human and goes without it.
-    const workStateSection = forHuman
+    // the human and goes without it, and so does a session whose host turned
+    // work state off (CLAUDE_MEM_WORK_STATE_ENABLED=false, #4606).
+    const settings = this.getCachedSettings();
+    const workStateEnabled = isWorkStateEnabled(
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED ?? settings.CLAUDE_MEM_WORK_STATE_ENABLED,
+    );
+    const workStateSection = forHuman || !workStateEnabled
       ? ''
       : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), 'placeholders');
     const withWorkState = (text: string): string =>
       workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
 
-    const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
@@ -564,6 +585,21 @@ export class SearchRoutes extends BaseRouteHandler {
     const observations = result?.observations || [];
     if (!observations.length) {
       res.json({ context: '', count: 0 });
+      return;
+    }
+
+    const format = SearchRoutes.firstString(req.body?.format) ?? SearchRoutes.firstString(req.query.format);
+    if (format === 'index') {
+      // Progressive disclosure: one line per match, expanded on demand. Costs a
+      // fraction of a narrative per match, but a match only becomes content if
+      // the model calls get_observations, which is why narrative is the default.
+      const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+      for (const obs of observations.slice(0, limit)) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`- #${obs.id} ${obs.title || 'Observation'}${obs.subtitle ? ` — ${obs.subtitle}` : ''} (${date})`);
+      }
+      lines.push('', 'Call get_observations with the ids above to read the full details of any that bear on this prompt.');
+      res.json({ context: lines.join('\n'), count: observations.length });
       return;
     }
 

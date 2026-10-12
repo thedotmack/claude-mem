@@ -79,6 +79,7 @@ All free models support:
 | `CLAUDE_MEM_OPENROUTER_SITE_URL` | string | — | Optional: URL for analytics attribution |
 | `CLAUDE_MEM_OPENROUTER_REASONING_EFFORT` | `none`, `minimal`, `low`, `medium`, `high` | — | Optional: reasoning effort for openrouter.ai models. `none` turns reasoning off, the fix for a model that spends the output budget thinking and answers with nothing. Unset sends nothing. Never sent to custom base URLs or the claude-mem observer |
 | `CLAUDE_MEM_OPENROUTER_APP_NAME` | string | `claude-mem` | Optional: App name for analytics |
+| `CLAUDE_MEM_OPENROUTER_TEMPERATURE` | Number, 0–2 | Unset (0.3) | Optional worker sampling temperature, e.g. `0.7` or `"0.7"`. Settings file or environment; environment takes precedence. Overrides extra-body temperature when set. Blank or invalid values preserve existing behavior |
 | `CLAUDE_MEM_OPENROUTER_EXTRA_BODY` | JSON object | — | Optional: extra request fields (see [Extra request fields](#extra-request-fields)). Settings file or environment only |
 
 ### Using the Settings UI

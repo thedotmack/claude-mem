@@ -181,6 +181,8 @@ export class PostgresObservationRepository {
     platformSource?: string | null;
     folderProjects?: string[] | null;
     excludeSubagents?: boolean;
+    /** Select summaries (true) or observations (false); omit for both. */
+    summary?: boolean;
   }): Promise<PostgresObservation[]> {
     const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const query = input.query && input.query.trim().length > 0 ? input.query : null;
@@ -198,6 +200,7 @@ export class PostgresObservationRepository {
           AND server_sessions.team_id = observations.team_id
         WHERE observations.project_id = $1
           AND observations.team_id = $2
+          AND ($8::boolean IS NULL OR (observations.kind = 'summary') = $8)
           AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))
           AND (
             $6::text[] IS NULL
@@ -252,6 +255,7 @@ export class PostgresObservationRepository {
         platformSource,
         folderProjects,
         input.excludeSubagents === true,
+        input.summary ?? null,
       ]
     );
     return result.rows.map(mapObservationRow);

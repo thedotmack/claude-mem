@@ -6,6 +6,7 @@ import {
   type ChildProcess,
   type SpawnSyncOptionsWithStringEncoding,
 } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 
 export type SpawnHiddenOptions = SpawnOptions;
@@ -57,7 +58,13 @@ export function lookupWindowsCommandCandidates(command: string): string[] {
     return result.stdout
       .split(/\r?\n/)
       .map(line => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      // where.exe writes the console's active code page (cp949 on ko-KR) while
+      // the `encoding: 'utf-8'` above decodes the bytes as UTF-8, so a
+      // non-ASCII profile folder name arrives as U+FFFD and the path does not
+      // exist (#4694, #3865). Callers spawn these paths; a nonexistent one can
+      // only fail with ENOENT, so drop it here.
+      .filter(line => existsSync(line));
   } catch {
     // where exits non-zero when absent and can throw if PATH is malformed.
     return [];

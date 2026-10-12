@@ -99,7 +99,7 @@ class FakeTransport {
   // pokes into via `(this.transport as unknown as { _process })._process`.
   _process: FakeChildProcess;
 
-  constructor(_opts: { command: string; args: string[] }) {
+  constructor(readonly opts: { command: string; args: string[] }) {
     transportCount += 1;
     this._process = new FakeChildProcess();
     transportInstances.push(this);
@@ -1156,6 +1156,21 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('keeps the MCP 1.6 Pydantic compatibility bound in prewarm and transport launches', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const prewarmArgs = prewarmSpawnCalls[0].args;
+    const transportArgs = transportInstances[0].opts.args;
+    for (const args of [prewarmArgs, transportArgs]) {
+      expect(args.filter(arg => arg === 'pydantic<2.14')).toHaveLength(1);
+      const compatibilityAt = args.indexOf('pydantic<2.14');
+      expect(args[compatibilityAt - 1]).toBe('--with');
+      expect(compatibilityAt).toBeLessThan(args.indexOf('--from'));
+    }
+    expect(prewarmArgs.slice(0, -1)).toEqual(transportArgs.slice(0, transportArgs.indexOf('chroma-mcp') + 1));
+    expect(prewarmArgs.at(-1)).toBe('--help');
   });
 
   it('stops spawning uvx after a burst of consecutive prewarm failures (#4108)', async () => {

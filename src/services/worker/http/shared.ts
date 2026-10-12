@@ -13,6 +13,7 @@ import { normalizePlatformSource } from '../../../shared/platform-source.js';
 import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
+import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -134,6 +135,9 @@ export interface ObservationPayload {
 }
 
 export async function ingestObservation(payload: ObservationPayload, handoff: IngestHandoff = {}): Promise<IngestResult> {
+  if (isRecursiveMemoryTool(payload.toolName)) {
+    return { ok: true, status: 'skipped', reason: 'memory_retrieval' };
+  }
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireIngestContext();
 
   const platformSource = normalizePlatformSource(payload.platformSource);
@@ -272,6 +276,12 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     }
   }
 
+  if (isExplicitMemoryWrite(payload.toolName)) {
+    // The explicit note is already stored. Its raw receipt above is useful,
+    // but observing the echo would duplicate it and buy another provider call.
+    return { ok: true, status: 'skipped', reason: 'explicit_memory_write' };
+  }
+
   sessionManager.queueObservation(sessionDbId, {
     tool_name: payload.toolName,
     tool_input: cleanedToolInput,
@@ -287,7 +297,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     agentId: typeof payload.agentId === 'string' ? payload.agentId : undefined,
     agentType: typeof payload.agentType === 'string' ? payload.agentType : undefined,
     toolUseId: typeof payload.toolUseId === 'string' ? payload.toolUseId : undefined,
-  });
+  }, payload.enqueuedAtEpochMs);
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 
@@ -382,7 +392,7 @@ export async function ingestSummarize(
   const cleanedLastAssistantMessage = payload.lastAssistantMessage
     ? stripMemoryTags(String(payload.lastAssistantMessage))
     : payload.lastAssistantMessage;
-  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber);
+  sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage, promptNumber, payload.enqueuedAtEpochMs);
   // Enqueued: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
 
