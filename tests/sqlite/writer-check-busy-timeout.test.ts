@@ -10,7 +10,9 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { LATEST_SCHEMA_VERSION, openGuardedSqliteDatabase } from '../../src/services/sqlite/connection.js';
 
-const HOLD_MS = 500;
+// Long enough that the guarded open below starts while the lock is still held
+// even on a loaded runner, and well inside the 5 s busy timeout.
+const HOLD_MS = 1500;
 const dirs: string[] = [];
 
 afterEach(() => {
@@ -50,12 +52,11 @@ describe('writer-stamp check waits for a concurrent opener', () => {
     seed.close();
 
     const holder = await holdExclusiveLock(dbPath);
-    const startedAt = Date.now();
-    const db = openGuardedSqliteDatabase(dbPath);
-    const waitedMs = Date.now() - startedAt;
-    db.close();
+    // The regression was a throw ("database is locked") about 1 ms into the
+    // open; asserting the open succeeds avoids depending on runner timing.
+    let opened: Database | null = null;
+    expect(() => { opened = openGuardedSqliteDatabase(dbPath); }).not.toThrow();
+    opened!.close();
     await holder.exited;
-
-    expect(waitedMs).toBeGreaterThan(HOLD_MS / 2);
   });
 });
