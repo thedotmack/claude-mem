@@ -12,6 +12,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
 import { killProcessTree, collectDescendantIdentities } from '../../shared/kill-process-tree.js';
+import { reclaimOrphanChromaDataDirWriters } from '../../shared/port-reclaim.js';
 import { stripForeignPythonEnv } from '../../shared/uvx-env.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { getSupervisor } from '../../supervisor/index.js';
@@ -402,6 +403,22 @@ export class ChromaMcpManager {
     try {
       if (localChromaDataDir) {
         this.acquireChromaWriterLock(localChromaDataDir);
+        // #4608: the writer lock proves no LIVE worker owns this store, so a
+        // chroma-mcp still carrying our --data-dir is an orphan of a dead
+        // generation (PPID=1 after a crash or an upgrade replaced the
+        // worker). Kill it BEFORE spawning our own sidecar, or two writers
+        // share one persistent store — the state the reporter logged for 16
+        // days (110 failed batch adds, 84 transport errors, a store once
+        // judged corrupt). Fail-soft: a sweep hiccup never blocks the
+        // connection.
+        await reclaimOrphanChromaDataDirWriters({
+          dataDir: () => localChromaDataDir,
+          // stop() bumps the generation and releases the lock; a sweep it
+          // overtook must not kill the next owner's sidecar.
+          stillOwnsStore: () =>
+            this.connectionGeneration === connectionGeneration && this.chromaWriterLock !== null,
+        });
+        this.assertConnectionNotCancelled(connectionGeneration);
         ChromaMcpManager.assertChromaStoreCompatible(localChromaDataDir);
       }
 
