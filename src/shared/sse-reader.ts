@@ -130,7 +130,6 @@ export async function* readSseEvents(
   };
 
   for await (const chunk of iterateByteStream(source)) {
-    const ready: SseEvent[] = [];
     let lineStart = 0;
     for (let index = 0; index < chunk.length; index++) {
       const byte = chunk[index];
@@ -144,7 +143,10 @@ export async function* readSseEvents(
       pendingLineParts = [];
       pendingLineBytes = 0;
       const dispatched = handleLine(lineBytes);
-      if (dispatched) ready.push(dispatched);
+      if (dispatched) {
+        if (options.terminalEventNames?.includes(dispatched.event)) sawTerminalEvent = true;
+        yield dispatched;
+      }
       skipLeadingLF = byte === CR;
       lineStart = index + 1;
     }
@@ -153,10 +155,6 @@ export async function* readSseEvents(
       pendingLineParts.push(tail);
       pendingLineBytes += tail.length;
       assertWithinCap(pendingLineBytes);
-    }
-    for (const event of ready) {
-      if (options.terminalEventNames?.includes(event.event)) sawTerminalEvent = true;
-      yield event;
     }
   }
 
