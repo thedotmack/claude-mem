@@ -19,6 +19,8 @@ describe('POST /v1/memories generationKey', () => {
   let url: string;
   let projectId: string;
   let apiKey: string;
+  let writeOnlyApiKey: string;
+  let teamId: string;
 
   beforeEach(async () => {
     schema = await createIsolatedSchema(databaseUrl, 'cm_generation_key');
@@ -32,6 +34,11 @@ describe('POST /v1/memories generationKey', () => {
     apiKey = raw;
     await storage.auth.createApiKey({ keyHash: hash, teamId: team.id, projectId,
       actorId: 'test', scopes: ['memories:read', 'memories:write'] });
+    teamId = team.id;
+    const writeOnly = newApiKey();
+    writeOnlyApiKey = writeOnly.raw;
+    await storage.auth.createApiKey({ keyHash: writeOnly.hash, teamId, projectId,
+      actorId: 'writer', scopes: ['memories:write'] });
     server = new Server({ getInitializationComplete: () => true, getMcpReady: () => true,
       onShutdown: async () => {}, onRestart: async () => {}, workerPath: '/test/worker.cjs',
       runtime: 'server-beta',
@@ -51,9 +58,9 @@ describe('POST /v1/memories generationKey', () => {
     await pool?.end();
     if (schema) await dropSchema(databaseUrl, schema);
   });
-  function post(extra: Record<string, unknown> = {}) {
+  function post(extra: Record<string, unknown> = {}, key = apiKey) {
     return fetch(url, { method: 'POST', headers: {
-      Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+      Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ projectId, content: 'original', ...extra }) });
   }
   async function rowCount() {
@@ -70,6 +77,25 @@ describe('POST /v1/memories generationKey', () => {
     expect(repeated.id).toBe(original.id);
     expect(repeated.content).toBe('original');
     expect(await rowCount()).toBe(1);
+    const audit = await pool.query(
+      "SELECT details FROM audit_log WHERE action = 'memory.write' AND resource_id = $1 ORDER BY created_at",
+      [original.id],
+    );
+    expect(audit.rows.map(row => row.details?.outcome ?? null)).toEqual([null, 'existing_generation_key']);
+  });
+  it('gives a write-only key the existing id but not the stored content', async () => {
+    const original = (await (await post({ generationKey: 'import:1' })).json()).memory;
+    const repeat = await post({ generationKey: 'import:1', content: 'probe' }, writeOnlyApiKey);
+    expect(repeat.status).toBe(200);
+    const body = await repeat.json();
+    expect(body.existing).toBe(true);
+    expect(body.memory.id).toBe(original.id);
+    expect(body.memory.content).toBeUndefined();
+    expect(await rowCount()).toBe(1);
+  });
+  it('reserves the generator generationKey namespace', async () => {
+    expect((await post({ generationKey: 'generation:v1:x' })).status).toBe(400);
+    expect(await rowCount()).toBe(0);
   });
   it('inserts two observations with 201 when generationKey is absent', async () => {
     const first = await post();

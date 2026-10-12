@@ -891,7 +891,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         platformSource: z.string().min(1).nullable().optional(),
         kind: z.string().min(1).optional(),
         content: z.string().min(1),
-        generationKey: z.string().min(1).max(200).optional(),
+        // Idempotency key: a repeat returns the existing row instead of a
+        // duplicate. `generation:` is the server generator's own namespace.
+        generationKey: z.string().min(1).max(200)
+          .refine(key => !key.startsWith('generation:'), 'generationKey prefix "generation:" is reserved')
+          .optional(),
         metadata: z.record(z.string(), z.unknown()).optional(),
       }),
       async (req, res, body) => {
@@ -920,9 +924,23 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
           const observation = await repo.create(createInput);
-          await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
-          // A conflict returns the existing row, retaining its original ID.
-          res.status(observation.id === createInput.id ? 201 : 200).json({ memory: serializeObservation(observation) });
+          if (observation.id === createInput.id) {
+            await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
+            res.status(201).json({ memory: serializeObservation(observation) });
+            return;
+          }
+          // A repeated generationKey returns the existing row, keeping its
+          // original ID. This route only needs memories:write, so a key that
+          // can't read memories gets the id back, not another writer's content.
+          await this.auditWrite(req, 'memory.write', observation.id, observation.projectId, {
+            outcome: 'existing_generation_key',
+          });
+          const scopes = req.authContext?.scopes ?? [];
+          const canRead = req.authContext?.mode === 'local-dev'
+            || scopes.includes('memories:read') || scopes.includes('*');
+          res.status(200).json(canRead
+            ? { memory: serializeObservation(observation), existing: true }
+            : { memory: { id: observation.id, projectId: observation.projectId }, existing: true });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'memory.write failed', { requestId: req.requestId ?? null }, err);
