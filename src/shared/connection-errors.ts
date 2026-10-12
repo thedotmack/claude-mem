@@ -21,6 +21,7 @@ const CONNECTION_REFUSED_CODES: ReadonlySet<string> = new Set(['ECONNREFUSED', '
 function hasConnectionRefusedCode(error: unknown, seen: Set<unknown>): boolean {
   if (!error || typeof error !== 'object' || seen.has(error)) return false;
   seen.add(error);
+  if (error instanceof Error && error.message.includes('ECONNREFUSED')) return true;
   const candidate = error as { code?: unknown; cause?: unknown; errors?: unknown };
   if (typeof candidate.code === 'string' && CONNECTION_REFUSED_CODES.has(candidate.code)) return true;
   if (hasConnectionRefusedCode(candidate.cause, seen)) return true;
