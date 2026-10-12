@@ -137,10 +137,11 @@ for (const scenario of ['held', 'failed'] as const) {
       expect(reported.failure).toBeUndefined();
       expect(reported.loaded).toEqual({ saveDisabled: false, inputDisabled: false, observations: '7', status: '' });
       expect(loads).toBe(scenario === 'failed' ? 2 : 1);
-      // The one POST comes after the load and carries the loaded values.
+      // The one POST comes after the load. Nothing was edited, so it carries
+      // nothing to write: neither the defaults nor an echo of the loaded values
+      // that could put back a change made elsewhere since (#4597).
       expect(postsWhenLoaded).toBe(0);
-      expect(posts).toHaveLength(1);
-      expect(posts[0]).toMatchObject(stored);
+      expect(posts).toEqual([{}]);
     } finally {
       clearTimeout(timeout); releaseLoad(); child.kill(); await child.exited; server.stop(true);
       rmSync(profile, { recursive: true, force: true });

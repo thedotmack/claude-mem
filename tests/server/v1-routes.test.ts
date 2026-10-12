@@ -61,6 +61,24 @@ describe('server REST API v1 routes', () => {
     mock.restore();
   });
 
+  it.each(['/v1/search', '/v1/context'])('rejects oversized distinct search queries with HTTP 400 at %s', async route => {
+    const { project } = await (await post('/v1/projects', { name: 'Query bounds' })).json();
+    const response = await post(route, { projectId: project.id,
+      query: Array.from({ length: 65 }, (_, index) => `项目${index}`).join(' ') });
+    expect(response.status).toBe(400);
+    expect((await response.json()).error).toBe('ValidationError');
+  });
+
+  it.each(['/v1/search', '/v1/context'])('deduplicates repeated terms at %s before the limit', async route => {
+    const { project } = await (await post('/v1/projects', { name: 'Query duplicates' })).json();
+    const { memory } = await (await post('/v1/memories', { projectId: project.id,
+      kind: 'manual', type: 'note', text: '修改了项目配置' })).json();
+    const response = await post(route, { projectId: project.id,
+      query: Array(1000).fill('项目').join(' ') });
+    expect(response.status).toBe(200);
+    expect((await response.json()).memories.map((row: { id: string }) => row.id)).toEqual([memory.id]);
+  });
+
   it.each(['ＡＢＣ', 'ﬁles'])('searches the stored Unicode token form: %s', async title => {
     const projectResponse = await post('/v1/projects', { name: 'Unicode memory' });
     const { project } = await projectResponse.json();

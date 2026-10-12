@@ -256,8 +256,14 @@ export class SessionSearch {
 
     if (filters.concepts) {
       const concepts = Array.isArray(filters.concepts) ? filters.concepts : [filters.concepts];
+      const conceptColumn = `${tableAlias}.concepts`;
+      // Legacy concepts can be a plain string or JSON string, matching sync's list reader.
+      const conceptArray = `CASE WHEN json_valid(${conceptColumn}) THEN CASE
+        WHEN json_type(${conceptColumn}) = 'array' THEN ${conceptColumn}
+        WHEN json_type(${conceptColumn}) = 'text' THEN json_array(json_extract(${conceptColumn}, '$'))
+        ELSE json_array(${conceptColumn}) END ELSE json_array(${conceptColumn}) END`;
       const conceptConditions = concepts.map(() => {
-        return `EXISTS (SELECT 1 FROM json_each(${tableAlias}.concepts) WHERE value = ?)`;
+        return `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`;
       });
       if (conceptConditions.length > 0) {
         conditions.push(`(${conceptConditions.join(' OR ')})`);
@@ -267,10 +273,11 @@ export class SessionSearch {
 
     if (filters.files) {
       const files = Array.isArray(filters.files) ? filters.files : [filters.files];
+      const changedFilesColumn = tableAlias === 's' ? 'files_edited' : 'files_modified';
       const fileConditions = files.map(() => {
         return `(
           EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_read`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
-          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.files_modified`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
+          OR EXISTS (SELECT 1 FROM json_each(${SessionSearch.fileArrayJson(`${tableAlias}.${changedFilesColumn}`)}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\')
         )`;
       });
       if (fileConditions.length > 0) {
@@ -647,7 +654,10 @@ export class SessionSearch {
    */
   private static filePathPatterns(filePath: string, isFolder: boolean): string[] {
     const escape = (value: string) => value.replace(/[\\%_]/g, '\\$&');
-    const patterns = [`%${escape(filePath)}%`];
+    const variants = isFolder
+      ? [filePath, normalizePath(filePath), normalizePath(filePath).replaceAll('/', '\\')]
+      : [filePath];
+    const patterns = [...new Set(variants)].map(value => `%${escape(value)}%`);
     if (!isFolder || !/^([A-Za-z]:)?[\\/]/.test(filePath)) {
       return patterns;
     }

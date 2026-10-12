@@ -3,6 +3,8 @@
 import { describe, expect, it } from 'bun:test';
 import { classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
 import { classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
+import { classifyGeminiError } from '../../src/services/worker/GeminiProvider.js';
+import { paidSendOutcomeOf } from '../../src/services/worker/provider-errors.js';
 import { describeNetworkFailure } from '../../src/shared/network-failure.js';
 
 // #4092: a LAN endpoint failed instantly from the background worker while the
@@ -47,6 +49,30 @@ describe('OpenRouter network errors name the code and host', () => {
 
   it('still works without a URL', () => {
     expect(classifyOpenRouterError({ cause: new Error('ECONNRESET') }).message).toBe('OpenRouter network error: ECONNRESET');
+  });
+});
+
+// #4604: a refused connection never left the machine, so it is pre-send and
+// must not spend the batch's paid-send budget. A reset can land after the
+// server took the request, so it stays ambiguous ("never pay twice").
+describe('a refused connection is pre-send, not a paid send', () => {
+  it('openai-compatible: both runtimes\' refusal codes are refused_before_work', () => {
+    expect(paidSendOutcomeOf(classifyOpenAICompatError({ cause: bunRefused() }))).toBe('refused_before_work');
+    expect(paidSendOutcomeOf(classifyOpenAICompatError({ cause: nodeRefused() }))).toBe('refused_before_work');
+  });
+
+  it('openai-compatible: a reset stays ambiguous', () => {
+    const reset = Object.assign(new Error('read ECONNRESET'), { code: 'ECONNRESET' });
+    expect(paidSendOutcomeOf(classifyOpenAICompatError({ cause: reset }))).toBe('ambiguous');
+  });
+
+  it('OpenRouter: refused is refused_before_work, a reset stays ambiguous', () => {
+    expect(paidSendOutcomeOf(classifyOpenRouterError({ cause: bunRefused() }))).toBe('refused_before_work');
+    expect(paidSendOutcomeOf(classifyOpenRouterError({ cause: new Error('ECONNRESET') }))).toBe('ambiguous');
+  });
+
+  it('Gemini: a refused connection is refused_before_work', () => {
+    expect(paidSendOutcomeOf(classifyGeminiError({ cause: nodeRefused() }))).toBe('refused_before_work');
   });
 });
 

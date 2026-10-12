@@ -366,9 +366,9 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
     abortSignal: AbortSignal | undefined,
     paidSendBudget: PaidSendBudget | undefined,
   ): Promise<CodexAppServerTurnResult> {
-    return withRetry(async attemptSignal => {
+    return this.appServer.withClient((client, admittedSignal) => withRetry(async attemptSignal => {
       try {
-        return await this.appServer.runTurn({
+        return await client.runTurn({
           codexPath: config.codexPath,
           model: config.model,
           reasoningEffort: config.reasoningEffort,
@@ -400,7 +400,7 @@ export class CodexProvider extends OpenAICompatibleProvider<CodexConfig> {
       }
       // maxRetries bounds in-place retries of refusals only (a rate limit, an
       // armed breaker); the paid-send budget bounds every resend of the batch.
-    }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: timeoutMs, abortSignal, paidSendBudget });
+    }, { label: 'Codex', maxRetries: 1, perAttemptTimeoutMs: timeoutMs, abortSignal: admittedSignal, paidSendBudget }), abortSignal);
   }
 }
 
