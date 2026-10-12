@@ -100,7 +100,9 @@ class Logger {
     // named for a previous day.
     const date = new Date().toISOString().split('T')[0];
     if (this.logFileInitialized && this.logFileDate === date) return;
-    this.logFileInitialized = true;
+    // Failed setup must stay retryable, but report initialization failure only once per UTC day.
+    const firstAttemptToday = this.logFileDate !== date;
+    this.logFileInitialized = false;
     this.logFileDate = date;
 
     try {
@@ -111,8 +113,11 @@ class Logger {
       }
 
       this.logFilePath = join(logsDir, `claude-mem-${date}.log`);
+      this.logFileInitialized = true;
     } catch (error: unknown) {
-      console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
+      if (firstAttemptToday) {
+        console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
+      }
       this.logFilePath = null;
     }
   }
