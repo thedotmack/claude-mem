@@ -987,6 +987,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // the CLAUDE_MEM_CONTEXT_OBSERVATIONS range and the default depends on
         // whether a query was given.
         limit: z.number().int().positive().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
+        // Portion of the recency limit reserved for session summaries. Without
+        // it, MCP/relevance consumers keep the existing mixed result window.
+        summaryLimit: z.number().int().nonnegative().max(SERVER_CONTEXT_MAX_LIMIT).optional(),
         platformSource: z.string().min(1).nullable().optional(),
         // Folder labels (observations.metadata.project). When set, only rows
         // generated for one of these folders are returned (ASCII
@@ -995,7 +998,10 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY: leave out rows generated from
         // subagent hook events.
         excludeSubagents: z.boolean().optional(),
-      }),
+      }).refine(body => body.summaryLimit === undefined || (
+        body.query === undefined
+        && body.summaryLimit <= (body.limit ?? SERVER_CONTEXT_RECENT_DEFAULT_LIMIT)
+      ), { message: 'summaryLimit requires recency mode and must not exceed limit' }),
       async (req, res, body) => {
         const teamId = this.requireTeamId(req, res);
         if (!teamId) return;
@@ -1006,9 +1012,9 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         let results;
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
-          // One query for both modes, so the platform, folder and subagent
-          // filters apply to the recency read exactly as to a relevance read.
-          results = await repo.search({
+          // Both category reads use the same project/platform/folder/subagent
+          // scope as the ordinary mixed read, with filtering before LIMIT.
+          const searchInput = {
             projectId: body.projectId,
             teamId,
             query: body.query ?? null,
@@ -1016,7 +1022,22 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
-          });
+          };
+          if (body.summaryLimit === undefined) {
+            results = await repo.search(searchInput);
+          } else {
+            const observationLimit = limit - body.summaryLimit;
+            const [observations, summaries] = await Promise.all([
+              observationLimit > 0
+                ? repo.search({ ...searchInput, limit: observationLimit, summary: false })
+                : Promise.resolve([]),
+              body.summaryLimit > 0
+                ? repo.search({ ...searchInput, limit: body.summaryLimit, summary: true })
+                : Promise.resolve([]),
+            ]);
+            results = [...observations, ...summaries].sort((a, b) =>
+              b.createdAtEpoch - a.createdAtEpoch || b.updatedAtEpoch - a.updatedAtEpoch);
+          }
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
           logger.warn('SYSTEM', 'observation.context failed', { requestId: req.requestId ?? null }, err);
@@ -1029,6 +1050,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           .join('\n\n');
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'context',
+          ...(body.summaryLimit === undefined ? {} : { summaryLimit: body.summaryLimit }),
           query: body.query ?? null,
           limit,
           platformSource,

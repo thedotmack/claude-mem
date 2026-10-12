@@ -152,6 +152,28 @@ describe('server-runtime session start reads the shared store', () => {
     expect(stats).toBeNull();
   });
 
+  for (const kind of ['discovery', 'summary']) {
+    it(`keeps both context categories when recent ${kind} rows exceed the combined limit`, async () => {
+      // Default context asks for 50 observations and 10 summaries (+1 lookahead).
+      // One busy session, or many short sessions, can fill that entire recency
+      // window with a single kind. The other category still has available rows.
+      await client.query('UPDATE observations SET created_at = now() - interval \'1 day\'');
+      for (let index = 0; index < 65; index++) {
+        await storage.observations.create({
+          projectId, teamId, kind, content: `Recent ${kind} ${index}`,
+          metadata: { title: `Recent ${kind} ${index}`, request: `Task ${index}`, project: 'this-repo' },
+        });
+      }
+      const { text, stats } = await generateServerContextWithStats(runtime(), {
+        projects: ['this-repo'], cwd: process.cwd(),
+      });
+      expect(stats!.observation_count).toBe(kind === 'discovery' ? 50 : 1);
+      expect(stats!.has_session_summary).toBe(true);
+      if (kind === 'summary') expect(text).toContain('Import no longer aborts on a bad row');
+      else expect(text).toContain('Stop one bad row from aborting the restore');
+    });
+  }
+
   it('asks for everything in full mode and stays within the route cap', async () => {
     const { text } = await generateServerContextWithStats(runtime(), {
       projects: ['this-repo'],
