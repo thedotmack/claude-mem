@@ -2,7 +2,7 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
+import { openGuardedSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -21,7 +21,10 @@ export class DatabaseManager {
   private cloudSync: CloudSync | null = null;
 
   async initialize(): Promise<void> {
-    this.db = openConfiguredSqliteDatabase(DB_PATH);
+    // Guard before pragmas: journal_mode = WAL persistently rewrites the file,
+    // so a database whose schema is newer than this binary's chain must be
+    // refused before the shared open touches it (#3609 step 2).
+    this.db = openGuardedSqliteDatabase(DB_PATH);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
