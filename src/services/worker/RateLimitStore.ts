@@ -123,13 +123,13 @@ export class RateLimitStore {
     const key: RateLimitBucketKey = info.rateLimitType ?? 'default';
     const previousRejection = this.rejections.get(key);
     const observedAt = Date.now();
-    const unified = readUnifiedWindows(unifiedWindows);
+    const { windows: unified, malformed: malformedWindows } = readUnifiedWindows(unifiedWindows);
 
     // Other windows: refresh fields the unified snapshot actually reports.
     // Utilization establishes a new display state and drops stale status;
     // reset-only snapshots preserve an unchanged active rejection.
     for (const [window, snapshot] of unified) {
-      if (window === key) continue;
+      if (window === key || malformedWindows.has(window)) continue;
       // State carries forward only within one account: another account's
       // reset time or rejection says nothing about this account's window.
       const cachedWindow = this.entries.get(window);
@@ -243,29 +243,37 @@ function isResetPending(resetsAt: number | undefined, now: number): boolean {
   return resetsAtMs !== undefined && resetsAtMs > now;
 }
 
-/** Windows in UNIFIED_WINDOWS with a well-formed snapshot; anything else is skipped. */
-function readUnifiedWindows(raw: unknown): Map<RateLimitWindow, UnifiedWindowSnapshot> {
-  const out = new Map<RateLimitWindow, UnifiedWindowSnapshot>();
-  if (!raw || typeof raw !== 'object') return out;
+/**
+ * The finite fields of each window in UNIFIED_WINDOWS, plus the windows whose
+ * entry is malformed: a field that is present but not a finite number (null
+ * included). The CLI never writes one, so it is a corrupt snapshot. set()
+ * never refreshes a SIBLING window from a malformed entry, since that would
+ * replace a good reading with half of a bad one. The event's own window still
+ * uses whichever half is finite, so a 0.97 reading keeps the quota guard armed.
+ */
+function readUnifiedWindows(raw: unknown): { windows: Map<RateLimitWindow, UnifiedWindowSnapshot>; malformed: Set<RateLimitWindow> } {
+  const windows = new Map<RateLimitWindow, UnifiedWindowSnapshot>();
+  const malformed = new Set<RateLimitWindow>();
+  if (!raw || typeof raw !== 'object') return { windows, malformed };
   for (const window of UNIFIED_WINDOWS) {
     const entry = (raw as Record<string, unknown>)[window];
     if (!entry || typeof entry !== 'object') continue;
     const { utilization, resetsAt } = entry as Record<string, unknown>;
-    // A field that is present but not a finite number voids the whole entry:
-    // the CLI never writes one, so this is a corrupt snapshot, and refreshing
-    // the window from its other half would replace a good reading with half
-    // of a bad one.
-    if (!isAbsentOrFiniteNumber(utilization) || !isAbsentOrFiniteNumber(resetsAt)) continue;
+    if (!isAbsentOrFiniteNumber(utilization) || !isAbsentOrFiniteNumber(resetsAt)) malformed.add(window);
     const snapshot: UnifiedWindowSnapshot = {};
-    if (typeof utilization === 'number') snapshot.utilization = utilization;
-    if (typeof resetsAt === 'number') snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
-    if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) out.set(window, snapshot);
+    if (isFiniteNumber(utilization)) snapshot.utilization = utilization;
+    if (isFiniteNumber(resetsAt)) snapshot.resetsAt = normalizeResetTimeMs(resetsAt);
+    if (snapshot.utilization !== undefined || snapshot.resetsAt !== undefined) windows.set(window, snapshot);
   }
-  return out;
+  return { windows, malformed };
+}
+
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value);
 }
 
 function isAbsentOrFiniteNumber(value: unknown): boolean {
-  return value == null || (typeof value === 'number' && Number.isFinite(value));
+  return value === undefined || isFiniteNumber(value);
 }
 
 /** Process-wide singleton. */
