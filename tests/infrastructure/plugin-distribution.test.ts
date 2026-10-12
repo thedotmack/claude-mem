@@ -136,8 +136,13 @@ describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
     'plugin/hooks/codex-hooks.json',
+    'plugin/hooks/qoder-hooks.json',
+    'plugin/hooks/qoder-repo-hooks.json',
     'plugin/.claude-plugin/plugin.json',
     'plugin/.codex-plugin/plugin.json',
+    'plugin/.qoder-plugin/plugin.json',
+    'plugin/qoder.mcp.json',
+    'plugin/scripts/qoder-hook-launcher.cjs',
     'plugin/.mcp.json',
     'plugin/sqlite/SessionStore.js',
     'plugin/sqlite/observations/files.js',
@@ -159,6 +164,48 @@ describe('Plugin Distribution - Required Files', () => {
       expect(existsSync(fullPath)).toBe(true);
     });
   }
+});
+
+describe('Plugin Distribution - Qoder', () => {
+  it('ships root and bundled manifests with the correct relative paths', () => {
+    const root = readJson('.qoder-plugin/plugin.json');
+    const bundled = readJson('plugin/.qoder-plugin/plugin.json');
+    expect(root.hooks).toBe('./plugin/hooks/qoder-repo-hooks.json');
+    expect(root.mcpServers).toBe('./plugin/qoder.mcp.json');
+    expect(bundled.hooks).toBe('./hooks/qoder-hooks.json');
+    expect(bundled.mcpServers).toBe('./qoder.mcp.json');
+  });
+
+  it('runs every Qoder hook through the structured hook launcher', () => {
+    for (const file of ['plugin/hooks/qoder-hooks.json', 'plugin/hooks/qoder-repo-hooks.json']) {
+      const entries = commandHookEntriesFrom(file);
+      expect(entries.length).toBeGreaterThan(0);
+      for (const entry of entries) {
+        expect(entry.command).toBe('node');
+        expect(entry.args.join(' ')).toContain('qoder-hook-launcher.cjs');
+        expect(entry.env.CLAUDE_MEM_CODEX_HOOK).toBe('1');
+      }
+    }
+  });
+
+  it('routes Qoder through the compatible Codex hook adapter', () => {
+    const launcher = readFileSync(
+      path.join(projectRoot, 'plugin/scripts/qoder-hook-launcher.cjs'),
+      'utf-8',
+    );
+    expect(launcher).toContain("'hook',\n    'codex'");
+    expect(launcher.indexOf("version-check.js")).toBeLessThan(
+      launcher.indexOf("bun-runner.js"),
+    );
+    expect(launcher).toContain("event === 'context'");
+  });
+
+  it('gives first-session dependency setup enough time to complete', () => {
+    for (const file of ['plugin/hooks/qoder-hooks.json', 'plugin/hooks/qoder-repo-hooks.json']) {
+      const hooks = readJson(file);
+      expect(hooks.hooks.SessionStart[0].hooks[0].timeout).toBe(180);
+    }
+  });
 });
 
 describe('Plugin Distribution - Codex Marketplace', () => {
