@@ -1,7 +1,6 @@
 import express, { Request, Response } from 'express';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
-import '../../../sqlite/manual-session.js';
 import {
   ingestMemorySource,
   claudeProjectsDir,

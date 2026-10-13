@@ -231,7 +231,8 @@ describe('Grok Bot transcript integration', () => {
 
       const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
       const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
-      expect(grokWatches).toHaveLength(1);
+      // The agent's own watch, then the catch-all for agents created after install.
+      expect(grokWatches).toHaveLength(2);
       expect(grokWatches[0].agentId).toBe(memoryAgentId);
       expect(grokWatches[0].path).toBe(
         path.join(workspaceRoot, 'agent-transcripts', memoryAgentId, '*.jsonl'),
