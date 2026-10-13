@@ -89,8 +89,8 @@ jobs:
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'log-home'
           $logs = Join-Path $env:USERPROFILE '.claude-mem\logs'
           New-Item -ItemType Directory -Force -Path $logs | Out-Null
-          $stamp = Get-Date -Format 'yyyy-MM-dd'
-          Set-Content -Path (Join-Path $logs "worker-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
+          $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+          Set-Content -Path (Join-Path $logs "claude-mem-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
 
           $out = node scripts/worker-logs.cjs
           if ($out.Count -ne 50) { throw "expected 50 lines, got $($out.Count)" }
@@ -200,6 +200,19 @@ jobs:
         run: |
           $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
           & $bun test tests/integration/worker-recycle-orphans.test.ts --timeout 600000
+
+      # Ghost-listener recovery gate (plan-15 #3603). Fails on main: a worker
+      # killed OUT-OF-BAND (taskkill /F without /T) leaves its chroma sidecar
+      # chain holding the inherited listening socket, and no launcher reclaims
+      # the port — ensureWorkerStarted returns 'dead' forever. Passes once the
+      # spawn path reclaims the dead owner's sidecar descendants and starts.
+      - name: Ghost-listener recovery gate (#3603)
+        shell: pwsh
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}\claude-mem-ghost-data
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\\bin\\bun.exe'
+          & $bun test tests/integration/worker-ghost-port-recovery.test.ts --timeout 600000
 
       # Diagnostic only — never fails the job. Ancestry/identity filtering is
       # done inside the tests; this is just a human-readable postmortem for

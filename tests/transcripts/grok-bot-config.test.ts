@@ -36,6 +36,7 @@ describe('Grok Bot transcript integration', () => {
     expect(watch.project).toBe('cmem_work_root');
     expect(watch.workspace).toBe(path.join('/tmp/example-repo', '.cmem-projects', 'cmem_work_root'));
     expect(watch.startAtEnd).toBe(true);
+    expect(watch.agentId).toBeUndefined();
   });
 
   it('writes an idempotent transcript-watch config with the Grok Bot schema', () => {
@@ -90,12 +91,14 @@ describe('Grok Bot transcript integration', () => {
       const byProject = Object.fromEntries(
         grokWatches.map((watch: { project: string; path: string }) => [watch.project, watch]),
       );
+      expect(byProject.cmem_work_biff.agentId).toBe(biffId);
       expect(byProject.cmem_work_biff.path).toBe(
         path.join(workspaceRoot, 'agent-transcripts', biffId, '*.jsonl'),
       );
       expect(byProject.cmem_work_biff.workspace).toBe(
         path.join(workspaceRoot, '.cmem-projects', 'cmem_work_biff'),
       );
+      expect(byProject['cmem_work_new-bot'].agentId).toBe(newBotId);
       expect(byProject['cmem_work_new-bot'].path).toBe(
         path.join(workspaceRoot, 'agent-transcripts', newBotId, '*.jsonl'),
       );
@@ -147,6 +150,8 @@ describe('Grok Bot transcript integration', () => {
         path.join(agentData, 'agent-transcripts', agentId, '*.jsonl'),
         path.join(agentData, 'agent-transcripts', '*', '*.jsonl'),
       ]);
+      expect(grokWatches[0].agentId).toBe(agentId);
+      expect(grokWatches[1].agentId).toBeUndefined();
       expect(grokWatches[0].project).toBe('cmem_work_alpha');
       expect(grokWatches[1].project).toBe('cmem_work_root');
       expect(grokWatches.every((watch: { path: string }) => watch.path.startsWith(agentData))).toBe(true);
@@ -208,6 +213,30 @@ describe('Grok Bot transcript integration', () => {
 
       expect(installGrokBotIntegration(configPath, workspaceRoot)).toBe(0);
       expect(existsSync(path.join(workspaceRoot, 'agent-transcripts', agentId))).toBe(true);
+    } finally {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('watches agents that have a memory tree even without profile.json', () => {
+    const tempRoot = mkdtempSync(path.join(tmpdir(), 'grok-bot-memory-'));
+    const configPath = path.join(tempRoot, 'transcript-watch.json');
+    const workspaceRoot = path.join(tempRoot, 'agent-host');
+    const memoryAgentId = '521e962d-2ec3-4488-bfbc-54d5209ce118';
+    try {
+      mkdirSync(path.join(workspaceRoot, 'agents', memoryAgentId, 'memory', 'log'), { recursive: true });
+      mkdirSync(path.join(workspaceRoot, 'agent-transcripts'), { recursive: true });
+
+      expect(installGrokBotIntegration(configPath, workspaceRoot)).toBe(0);
+
+      const parsed = JSON.parse(readFileSync(configPath, 'utf-8'));
+      const grokWatches = parsed.watches.filter((watch: { name: string }) => watch.name === 'grok-bot');
+      expect(grokWatches).toHaveLength(1);
+      expect(grokWatches[0].agentId).toBe(memoryAgentId);
+      expect(grokWatches[0].path).toBe(
+        path.join(workspaceRoot, 'agent-transcripts', memoryAgentId, '*.jsonl'),
+      );
+      expect(existsSync(path.join(workspaceRoot, 'agent-transcripts', memoryAgentId))).toBe(true);
     } finally {
       rmSync(tempRoot, { recursive: true, force: true });
     }

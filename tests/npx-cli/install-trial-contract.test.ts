@@ -4,8 +4,10 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   buildTrialReadySettings,
+  lastOAuthStartFailure,
   parseInstallerOAuthStartBody,
   parseTrialReadyBody,
+  startInstallerOAuthPairing,
 } from '../../src/npx-cli/commands/install';
 import {
   buildProviderLabels,
@@ -67,15 +69,131 @@ function runCompletedPairingChild(body: Record<string, unknown>): {
   }
 }
 
+const validStartBody = {
+  pairing_id: pairingId,
+  secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  user_code: 'ABCD-2345',
+  authorization_url: authorizationUrl,
+  checkout_url: checkoutUrl,
+  poll_interval: 3,
+};
+
+function runDeferredLoginChild(
+  status: number,
+  extraEnv: Record<string, string> = {},
+  unsetEnv: string[] = [],
+): { output: string; exitCode: number } {
+  const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-installer-deferred-'));
+  try {
+    const script = `
+      globalThis.fetch = async () => {
+        console.log('__FETCH_CALLED__');
+        return new Response(${JSON.stringify(status === 200 ? JSON.stringify(validStartBody) : '')}, {
+          status: ${status},
+          headers: { 'content-type': 'application/json' },
+        });
+      };
+      const { offerDeferredLogin } = await import('./src/npx-cli/commands/install.ts');
+      await offerDeferredLogin({ provider: 'claude', providerSource: 'default' }, 'test-version');
+      console.log('__DEFERRED_DONE__');
+    `;
+    const env: Record<string, string | undefined> = {
+      ...process.env,
+      CLAUDE_MEM_DATA_DIR: dataDir,
+      CLAUDE_MEM_TELEMETRY: '0',
+      ...extraEnv,
+    };
+    for (const key of unsetEnv) delete env[key];
+    const result = Bun.spawnSync([process.execPath, '--eval', script], {
+      cwd: repoRoot,
+      env,
+      stdin: 'ignore',
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+    const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
+    return { output, exitCode: result.exitCode };
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
+}
+
+describe('installer OAuth start failure classification', () => {
+  const realFetch = globalThis.fetch;
+  const withFetch = async (impl: (init?: RequestInit) => Promise<Response>, opts?: { timeoutMs?: number }) => {
+    globalThis.fetch = ((_url: unknown, init?: RequestInit) => impl(init)) as typeof fetch;
+    try {
+      return await startInstallerOAuthPairing({ source: 'npx-installer-deferred', ...opts });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  };
+
+  it('labels a non-2xx response http_error', async () => {
+    expect(await withFetch(async () => new Response('', { status: 503 }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('http_error');
+  });
+
+  it('labels a 2xx with malformed JSON bad_body, not network', async () => {
+    expect(await withFetch(async () => new Response('<html>not json</html>', {
+      status: 200,
+      headers: { 'content-type': 'text/html' },
+    }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('bad_body');
+  });
+
+  it('labels a 2xx whose JSON fails the pairing contract bad_body', async () => {
+    expect(await withFetch(async () => Response.json({ pairing_id: 'nope' }))).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('bad_body');
+  });
+
+  it('labels a thrown fetch network and an abort timeout', async () => {
+    expect(await withFetch(async () => { throw new TypeError('fetch failed'); })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('network');
+
+    expect(await withFetch((init) => new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => {
+        const err = new Error('aborted');
+        err.name = 'AbortError';
+        reject(err);
+      });
+    }), { timeoutMs: 20 })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('timeout');
+  });
+
+  it('labels an abort that fires while the 2xx body is still streaming timeout, not bad_body', async () => {
+    expect(await withFetch((init) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"pairing_id":'));
+          init?.signal?.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            controller.error(err);
+          });
+        },
+      });
+      return Promise.resolve(new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } }));
+    }, { timeoutMs: 20 })).toBeNull();
+    expect(lastOAuthStartFailure()).toBe('timeout');
+  });
+
+  it('clears the failure and sends the deferred source on success', async () => {
+    const seen: string[] = [];
+    const pairing = await withFetch(async (init) => {
+      seen.push(String(init?.body));
+      return Response.json(validStartBody);
+    });
+    expect(pairing?.pairingId).toBe(pairingId);
+    expect(lastOAuthStartFailure()).toBeNull();
+    expect(seen[0]).toContain('"source":"npx-installer-deferred"');
+  });
+});
+
 describe('installer trial-ready contract', () => {
   it('parses an OAuth-only pairing without accepting an email or identity', () => {
     expect(parseInstallerOAuthStartBody({
-      pairing_id: pairingId,
-      secret: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-      user_code: 'ABCD-2345',
-      authorization_url: authorizationUrl,
-      checkout_url: checkoutUrl,
-      poll_interval: 3,
+      ...validStartBody,
       email: 'must-not-be-read@example.com',
     })).toEqual({
       pairingId,
@@ -85,6 +203,53 @@ describe('installer trial-ready contract', () => {
       checkoutUrl,
       pollIntervalMs: 3000,
     });
+  });
+
+  it('derives an absolute poll deadline from expires_in, clamped to 30 minutes', () => {
+    const before = Date.now();
+    const parsed = parseInstallerOAuthStartBody({ ...validStartBody, expires_in: 1800 });
+    const after = Date.now();
+    expect(parsed).toEqual(expect.objectContaining({ pairingId, expiresAt: expect.any(Number) }));
+    expect(parsed!.expiresAt!).toBeGreaterThanOrEqual(before + 1800_000 - 2000);
+    expect(parsed!.expiresAt!).toBeLessThanOrEqual(after + 1800_000);
+
+    const clamped = parseInstallerOAuthStartBody({ ...validStartBody, expires_in: 7200 });
+    expect(clamped!.expiresAt!).toBeLessThanOrEqual(Date.now() + 30 * 60 * 1000);
+    expect(clamped!.expiresAt!).toBeGreaterThanOrEqual(before + 30 * 60 * 1000 - 2000);
+
+    expect(parseInstallerOAuthStartBody(validStartBody)).not.toHaveProperty('expiresAt');
+    expect(parseInstallerOAuthStartBody({ ...validStartBody, expires_in: 'soon' })).not.toHaveProperty('expiresAt');
+    expect(parseInstallerOAuthStartBody({ ...validStartBody, expires_in: -5 })).not.toHaveProperty('expiresAt');
+  });
+
+  it('prints only the login-only link for a deferred non-interactive sign-in', () => {
+    const { output, exitCode } = runDeferredLoginChild(200, {}, ['CI']);
+    expect(exitCode, output).toBe(0);
+    expect(output).toContain('__FETCH_CALLED__');
+    expect(output).toContain('Sign-in link: https://cmem.ai/login?next=');
+    expect(output).toContain('AGENT: show this link to the user');
+    expect(output).not.toContain(checkoutUrl);
+    expect(output).not.toContain('trial=7');
+    expect(output).not.toContain('ABCD-2345');
+    expect(output).not.toContain('bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb');
+    expect(output).toContain('__DEFERRED_DONE__');
+  });
+
+  it('stays silent and exits 0 when the deferred start request fails', () => {
+    const { output, exitCode } = runDeferredLoginChild(503, {}, ['CI']);
+    expect(exitCode, output).toBe(0);
+    expect(output).toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('Sign-in link:');
+    expect(output).not.toContain('AGENT:');
+    expect(output).toContain('__DEFERRED_DONE__');
+  });
+
+  it('never contacts cmem.ai for the deferred offer under CI', () => {
+    const { output, exitCode } = runDeferredLoginChild(200, { CI: '1' });
+    expect(exitCode, output).toBe(0);
+    expect(output).not.toContain('__FETCH_CALLED__');
+    expect(output).not.toContain('Sign-in link:');
+    expect(output).toContain('__DEFERRED_DONE__');
   });
 
   it('rejects OAuth starts without both browser destinations', () => {

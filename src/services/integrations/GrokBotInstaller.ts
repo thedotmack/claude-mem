@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
 
@@ -166,6 +167,7 @@ function buildGrokBotAgentWatch(
     workspace,
     project,
     startAtEnd: true,
+    ...(agentId !== '*' ? { agentId } : {}),
   };
 }
 
@@ -185,14 +187,23 @@ function listGrokBotAgents(agentDataRoot: string): GrokBotAgent[] {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith('sand-subagent-')) continue;
     const profilePath = path.join(agentsDir, entry.name, 'profile.json');
-    if (!existsSync(profilePath)) continue;
-    try {
-      const profile = JSON.parse(readFileSync(profilePath, 'utf-8')) as { name?: unknown };
-      const name = typeof profile.name === 'string' ? profile.name : '';
-      agents.push({ id: entry.name, name });
-    } catch {
-      continue;
+    const memoryDir = path.join(agentsDir, entry.name, 'memory');
+    const hasProfile = existsSync(profilePath);
+    const hasMemory = existsSync(memoryDir);
+    // Watch agents with a profile, and also pilot-style agents that already
+    // have a memory tree even if profile.json is missing.
+    if (!hasProfile && !hasMemory) continue;
+
+    let name = '';
+    if (hasProfile) {
+      try {
+        const profile = JSON.parse(readFileSync(profilePath, 'utf-8')) as { name?: unknown };
+        name = typeof profile.name === 'string' ? profile.name : '';
+      } catch {
+        if (!hasMemory) continue;
+      }
     }
+    agents.push({ id: entry.name, name });
   }
   return agents;
 }
@@ -231,7 +242,7 @@ function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
     };
   }
 
-  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as TranscriptWatchConfig;
+  const parsed = readJsonFileWithBom<TranscriptWatchConfig>(resolvedPath);
   return {
     version: 1,
     schemas: { ...(parsed.schemas ?? {}) },

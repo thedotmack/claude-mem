@@ -75,6 +75,27 @@ describe('worker dependency preflight', () => {
     expect(getDependencyStatus('uvx')).toBeNull();
   });
 
+  it('finds uvx.exe at the path set in settings on Windows (#4195)', () => {
+    const settingsUvx = 'C:\\Users\\Jane Doe\\AppData\\Local\\Programs\\Python\\Python313\\Scripts\\uvx.exe';
+
+    const snapshot = runWorkerDependencyPreflight({
+      settings: {
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_CHROMA_ENABLED: 'true',
+        CLAUDE_MEM_CHROMA_UVX_PATH: settingsUvx,
+      },
+      classifyClaudeError: classifier,
+      env: { PATH: 'C:\\Windows\\System32' },
+      platform: 'win32',
+      homedir: () => 'C:\\Users\\Jane Doe',
+      pathExists: () => false,
+      isFile: filePath => filePath === settingsUvx,
+    });
+
+    expect(snapshot.degraded).toBe(false);
+    expect(getDependencyStatus('uvx')).toBeNull();
+  });
+
   it('clears stale Claude CLI setup status when a non-Claude provider is selected', () => {
     recordDependencyStatus('claude_cli', 'setup_required', 'old failure');
 

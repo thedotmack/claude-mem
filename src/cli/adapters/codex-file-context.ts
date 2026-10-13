@@ -1,6 +1,6 @@
 import { existsSync, statSync } from 'fs';
 import path from 'path';
-import { parse, type ParsedToken } from 'shell-quote';
+import { parse, quote, type ParsedToken } from 'shell-quote';
 
 const MAX_FILE_PATHS = 10;
 const READ_COMMANDS = new Set(['cat', 'head', 'tail', 'less', 'more', 'bat', 'view', 'nl', 'tac']);
@@ -37,7 +37,7 @@ function normalizeCommand(command: unknown): string | null {
   if (typeof command === 'string') return command;
   if (Array.isArray(command)) {
     const parts = command.filter((part): part is string => typeof part === 'string');
-    return parts.length > 0 ? parts.join(' ') : null;
+    return parts.length > 0 ? quote(parts) : null;
   }
   return null;
 }
@@ -88,7 +88,19 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
   const command = normalizeCommand((toolInput as { command?: unknown } | undefined)?.command);
   if (!command) return [];
 
-  const tokens = parse(command);
+  // `parse` throws on substitutions it cannot resolve — `${}` raises
+  // "Bad substitution" on every shell-quote 1.x, including 1.10.x. This is a
+  // best-effort enrichment that only adds `filePaths` for read commands, so an
+  // unparseable command must yield no paths rather than propagate: the throw
+  // escaped to the generic hook handler, which answers BLOCKING_ERROR and
+  // discards the tool call entirely (#3688). Failing to enrich is invisible;
+  // blocking the user's command is not.
+  let tokens: ParsedToken[];
+  try {
+    tokens = parse(command);
+  } catch {
+    return [];
+  }
   const paths: string[] = [];
 
   for (const segment of splitSegments(tokens)) {
@@ -99,12 +111,17 @@ function extractFromBash(toolInput: unknown, cwd: string): string[] {
     if (!READ_COMMANDS.has(argv0)) continue;
 
     let skipNext = false;
+    let optionsEnded = false;
     for (const token of segment.slice(argv0Index + 1)) {
       if (skipNext) {
         skipNext = false;
         continue;
       }
-      if (isFlagLike(token)) {
+      if (!optionsEnded && token === '--') {
+        optionsEnded = true;
+        continue;
+      }
+      if (!optionsEnded && isFlagLike(token)) {
         skipNext = dropFlagValue(token, argv0) && !token.includes('=');
         continue;
       }

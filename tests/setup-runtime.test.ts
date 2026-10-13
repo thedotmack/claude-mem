@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'fs';
+import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync, readFileSync, existsSync, rmSync, chmodSync, readdirSync } from 'fs';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import {
@@ -9,7 +10,15 @@ import {
   isInstallCurrent,
   platformBunRemediation,
   platformUvRemediation,
+  bunCommonPaths,
+  uvCommonPaths,
+  installPluginDependencies,
+  provisionTreeSitterCli,
 } from '../src/npx-cli/install/setup-runtime';
+import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
+import { createInstallSummary, InstallAbortError } from '../src/npx-cli/install/error-reporter';
+import { ErrorSeverity } from '../src/npx-cli/install/error-taxonomy';
+import { IS_WINDOWS } from '../src/npx-cli/utils/paths';
 
 const SETUP_RUNTIME_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'npx-cli', 'install', 'setup-runtime.ts');
 const SHARED_SPAWN_SOURCE_PATH = join(import.meta.dir, '..', 'src', 'shared', 'spawn.ts');
@@ -156,6 +165,68 @@ describe('setup-runtime install marker', () => {
   });
 });
 
+describe('setup-runtime binary detection honours installer env vars', () => {
+  const bunName = IS_WINDOWS ? 'bun.exe' : 'bun';
+  const uvName = IS_WINDOWS ? 'uv.exe' : 'uv';
+
+  it('bunCommonPaths honours BUN_INSTALL', () => {
+    const paths = bunCommonPaths({ BUN_INSTALL: '/opt/bun' });
+    expect(paths).toContain(join('/opt/bun', 'bin', bunName));
+  });
+
+  it('uvCommonPaths honours UV_INSTALL_DIR', () => {
+    const paths = uvCommonPaths({ UV_INSTALL_DIR: '/opt/uv/bin' });
+    expect(paths).toContain(join('/opt/uv/bin', uvName));
+  });
+
+  it('uvCommonPaths honours XDG_BIN_HOME', () => {
+    const paths = uvCommonPaths({ XDG_BIN_HOME: '/xdg/bin' });
+    expect(paths).toContain(join('/xdg/bin', uvName));
+  });
+
+  it('bunCommonPaths returns absolute paths and no duplicates', () => {
+    const paths = bunCommonPaths({ BUN_INSTALL: '/opt/bun' });
+    expect(paths.length).toBe(new Set(paths).size);
+    expect(paths.every(p => p.length > 0)).toBe(true);
+  });
+});
+
+describe('installPluginDependencies passes the bun path as an argument, not through a shell', () => {
+  // The bun path now flows from installer env vars (e.g. $BUN_INSTALL) that can
+  // hold spaces or shell metacharacters. execFile must pass it as argv[0] so it
+  // never reaches a shell.
+  it('runs a bun path containing spaces and injection syntax without evaluating it', async () => {
+    if (IS_WINDOWS) return; // POSIX fake-bin shell script
+
+    const unique = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const marker = join(tmpdir(), `pwned-${unique}`);
+    // The bun executable lives in a dir whose name has a space and injection
+    // syntax; its output goes to a clean path so the fake script's own redirect
+    // is never the thing under test.
+    const base = join(tmpdir(), `bun space $(touch ${marker}) ${unique}`);
+    const targetDir = join(base, 'target');
+    const argsFile = join(tmpdir(), `args-${unique}.txt`);
+    mkdirSync(targetDir, { recursive: true });
+    writeFileSync(join(targetDir, 'package.json'), JSON.stringify({ dependencies: {} }));
+
+    const fakeBun = join(base, 'bun');
+    writeFileSync(fakeBun, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`);
+    chmodSync(fakeBun, 0o755);
+
+    try {
+      await installPluginDependencies(targetDir, fakeBun);
+      const recorded = readFileSync(argsFile, 'utf-8').trim().split('\n');
+      expect(recorded).toEqual(['install', '--frozen-lockfile', '--ignore-scripts']);
+      // The $(touch ...) in the path must NOT have executed.
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+      rmSync(marker, { force: true });
+      rmSync(argsFile, { force: true });
+    }
+  });
+});
+
 describe('setup-runtime Windows spawn hygiene', () => {
   it('does not use shell: IS_WINDOWS for bun/uv version probes', () => {
     const source = readFileSync(SETUP_RUNTIME_SOURCE_PATH, 'utf-8');
@@ -178,5 +249,211 @@ describe('doctor marketplace runtime hygiene', () => {
     // dev-sync installs never have one (#3661).
     expect(source).toContain('no npx install marker');
     expect(source).toContain('install marker stale');
+  });
+});
+
+// #2910: every installer path suppresses lifecycle scripts, so tree-sitter-cli's
+// install.js (the step that downloads the executable) never ran and smart_search
+// silently returned 0 symbols. The installer now runs that one trusted,
+// package-local script when the CLI is not usable.
+describe('tree-sitter CLI provisioning (#2910)', () => {
+  const TREE_SITTER_BINARY_NAME = process.platform === 'win32' ? 'tree-sitter.exe' : 'tree-sitter';
+  const TREE_SITTER_INSTALL_TIMEOUT_MS = 30_000;
+  const REPO_TREE_SITTER_BINARY = join(import.meta.dir, '..', 'node_modules', 'tree-sitter-cli', TREE_SITTER_BINARY_NAME);
+  let tempDir: string;
+  let previousDataDir: string | undefined;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'tree-sitter-provision-'));
+    previousDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    process.env.CLAUDE_MEM_DATA_DIR = join(tempDir, 'data');
+  });
+
+  afterEach(() => {
+    if (previousDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+    else process.env.CLAUDE_MEM_DATA_DIR = previousDataDir;
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  function writeCliPackage(installScript?: string): string {
+    const cliDir = join(tempDir, 'node_modules', 'tree-sitter-cli');
+    mkdirSync(cliDir, { recursive: true });
+    writeFileSync(join(cliDir, 'package.json'), JSON.stringify({ name: 'tree-sitter-cli', version: '0.26.9', bin: { 'tree-sitter': 'tree-sitter' } }));
+    if (installScript !== undefined) writeFileSync(join(cliDir, 'install.js'), installScript);
+    return cliDir;
+  }
+
+  function copyRealBinaryInto(cliDir: string): void {
+    const target = join(cliDir, TREE_SITTER_BINARY_NAME);
+    copyFileSync(REPO_TREE_SITTER_BINARY, target);
+    if (process.platform !== 'win32') chmodSync(target, 0o755);
+  }
+
+  // Like tree-sitter-cli's real install.js, these write the executable into
+  // their working directory, which is a staging directory inside the package.
+  const materializingInstallScript = (): string => [
+    `const fs = require('fs');`,
+    `const target = require('path').join(process.cwd(), ${JSON.stringify(TREE_SITTER_BINARY_NAME)});`,
+    `fs.copyFileSync(${JSON.stringify(REPO_TREE_SITTER_BINARY)}, target);`,
+    process.platform === 'win32' ? '' : 'fs.chmodSync(target, 0o755);',
+  ].join('\n');
+
+  const partialDownloadScript = (exitStatement: string): string => [
+    `require('fs').writeFileSync(require('path').join(process.cwd(), ${JSON.stringify(TREE_SITTER_BINARY_NAME)}), 'half a download');`,
+    exitStatement,
+  ].join('\n');
+
+  const sha256 = (content: string | Buffer) => createHash('sha256').update(content).digest('hex');
+  // The fake downloads are the repo's own tree-sitter build, so pin its digest.
+  const pinRepoBinary = () => sha256(readFileSync(REPO_TREE_SITTER_BINARY));
+
+  function expectNothingLeftInPlace(cliDir: string): void {
+    expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(false);
+    expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
+  }
+
+  it('runs the package install script when the executable is missing', async () => {
+    const cliDir = writeCliPackage(materializingInstallScript());
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).resolves.toBeUndefined();
+    expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(true);
+    expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
+  });
+
+  // The File Read Gate and the parser only check that the executable exists, so
+  // a half-written one would send Claude to smart_outline, which cannot parse.
+  it('leaves no executable in place when the download fails partway', async () => {
+    const cliDir = writeCliPackage(partialDownloadScript('process.exitCode = 2;'));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).rejects.toMatchObject({ code: 2 });
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('leaves no executable in place when the download is killed by the timeout', async () => {
+    const cliDir = writeCliPackage(partialDownloadScript('setTimeout(() => {}, 5000);'));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, 1000, pinRepoBinary)).rejects.toMatchObject({ killed: true });
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('never moves an executable that does not answer --version into place', async () => {
+    const cliDir = writeCliPackage(partialDownloadScript(''));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => sha256('half a download')))
+      .rejects.toThrow('without creating a working executable');
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  // A replaced release asset must never run, not even for the --version probe.
+  it.skipIf(process.platform === 'win32')('refuses, without running it, an executable whose SHA-256 is not the pinned one', async () => {
+    const ranMarker = join(tempDir, 'downloaded-executable-ran');
+    const cliDir = writeCliPackage([
+      `const target = require('path').join(process.cwd(), 'tree-sitter');`,
+      `require('fs').writeFileSync(target, ${JSON.stringify(`#!/bin/sh
+touch '${ranMarker}'
+echo 'tree-sitter 0.26.9'
+`)});`,
+      `require('fs').chmodSync(target, 0o755);`,
+    ].join('\n'));
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).rejects.toThrow('not the pinned');
+    expect(existsSync(ranMarker)).toBe(false);
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it('downloads nothing when no SHA-256 is pinned for the package version', async () => {
+    const downloadMarker = join(tempDir, 'install-script-ran');
+    const cliDir = writeCliPackage(`require('fs').writeFileSync(${JSON.stringify(downloadMarker)}, '');`);
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => undefined)).rejects.toThrow('No SHA-256 is pinned');
+    expect(existsSync(downloadMarker)).toBe(false);
+    expectNothingLeftInPlace(cliDir);
+  });
+
+  it.skipIf(process.platform === 'win32')('closes stdin before accepting a package-local version response', async () => {
+    const cliDir = writeCliPackage();
+    const binaryPath = join(cliDir, 'tree-sitter');
+    writeFileSync(binaryPath, [
+      '#!/usr/bin/env node',
+      "process.stdin.resume(); process.stdin.on('end', () => process.stdout.write('tree-sitter 0.26.8\\n'));",
+    ].join('\n'));
+    chmodSync(binaryPath, 0o755);
+
+    const startedAt = Date.now();
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(2000);
+  });
+
+  it('never borrows a tree-sitter package from an ancestor node_modules', async () => {
+    copyRealBinaryInto(writeCliPackage());
+
+    await expect(ensureTreeSitterCliBinary(join(tempDir, 'nested', 'cache'), TREE_SITTER_INSTALL_TIMEOUT_MS)).rejects.toThrow('install script not found');
+  });
+
+  it('rejects a tree-sitter package path that is not a directory', async () => {
+    mkdirSync(join(tempDir, 'node_modules'), { recursive: true });
+    writeFileSync(join(tempDir, 'node_modules', 'tree-sitter-cli'), 'not a directory');
+
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).rejects.toThrow('package path is not a directory');
+  });
+
+  it('install: a provisioning failure only warns, so the install still reaches sign-in', async () => {
+    writeCliPackage("console.error('release asset unavailable'); process.exitCode = 2;");
+    const summary = createInstallSummary();
+
+    await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.WARN_CONTINUE, summary)).resolves.toBe(false);
+
+    expect(summary.warnings).toEqual([
+      expect.objectContaining({
+        component: 'tree-sitter-cli-cache',
+        remediation: expect.stringContaining('npx claude-mem repair'),
+      }),
+    ]);
+    expect(existsSync(join(tempDir, 'data', 'last-install-error.json'))).toBe(false);
+  });
+
+  it('repair: a provisioning failure aborts and keeps the provisioner output', async () => {
+    writeCliPackage([
+      "console.log('Downloading https://example/tree-sitter');",
+      "console.error('release asset unavailable');",
+      'process.exitCode = 2;',
+    ].join('\n'));
+
+    let caught: unknown = null;
+    try {
+      await provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toBeInstanceOf(InstallAbortError);
+    expect(caught).toMatchObject({
+      category: { id: 'tree-sitter-cli-cache-provisioning-failed' },
+      cause: { code: 2 },
+    });
+    const record = JSON.parse(readFileSync(join(tempDir, 'data', 'last-install-error.json'), 'utf-8'));
+    expect(record.details).toContain('Downloading https://example/tree-sitter');
+    expect(record.details).toContain('release asset unavailable');
+  });
+
+  it('repair: reports a provisioner that runs past the install timeout', async () => {
+    writeCliPackage('setTimeout(() => {}, 5000);');
+
+    let caught: unknown = null;
+    try {
+      await provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, createInstallSummary(), 1000);
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ cause: { killed: true } });
+  });
+
+  it('reports nothing when the CLI already works', async () => {
+    copyRealBinaryInto(writeCliPackage());
+    const summary = createInstallSummary();
+
+    await expect(provisionTreeSitterCli(tempDir, ErrorSeverity.ABORT, summary)).resolves.toBe(true);
+    expect(summary.warnings).toEqual([]);
   });
 });

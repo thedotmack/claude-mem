@@ -17,6 +17,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync } from 'fs';
 import { MARKETPLACE_ROOT } from '../../shared/paths.js';
+import { lookupWindowsCommand } from '../../shared/spawn.js';
 
 function firstExisting(candidates: string[]): string | null {
   for (const candidate of candidates) {
@@ -46,8 +47,9 @@ export function getPluginRootAbsolutePath(): string | null {
   ].filter((value): value is string => Boolean(value));
 
   for (const candidate of candidates) {
-    if (existsSync(path.join(candidate, 'scripts'))) {
-      return candidate;
+    const absolute = path.resolve(candidate);
+    if (existsSync(path.join(absolute, 'scripts'))) {
+      return absolute;
     }
   }
   return null;
@@ -78,7 +80,11 @@ export function getWorkerServiceAbsolutePath(): string | null {
  * via PATH at exec time) when no known install location exists.
  */
 export function getBunAbsolutePath(): string {
+  const pathResolvedBun = process.platform === 'win32'
+    ? lookupWindowsCommand('bun')
+    : null;
   const candidates = [
+    ...(pathResolvedBun?.toLowerCase().endsWith('.exe') ? [pathResolvedBun] : []),
     path.join(homedir(), '.bun', 'bin', 'bun'),
     '/usr/local/bin/bun',
     '/usr/bin/bun',

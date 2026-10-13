@@ -154,6 +154,66 @@ CREATE TABLE user_prompts (
 - `idx_user_prompts_project` on `project`
 - `idx_user_prompts_created_at` on `created_at_epoch DESC`
 
+### 5. tool_uses
+
+Durable backup index for raw tool I/O (schema v51). Written from the same ingest
+choke point that feeds the observation generator, so it captures the same calls
+without adding a second capture path.
+
+```sql
+CREATE TABLE tool_uses (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  tool_use_id TEXT NOT NULL,
+  content_session_id TEXT NOT NULL,
+  memory_session_id TEXT,
+  session_db_id INTEGER,
+  project TEXT NOT NULL,
+  platform_source TEXT NOT NULL DEFAULT 'claude',
+  tool_name TEXT NOT NULL,
+  tool_input TEXT,
+  tool_response TEXT,
+  cwd TEXT,
+  prompt_number INTEGER,
+  agent_type TEXT,
+  agent_id TEXT,
+  observation_id INTEGER,
+  or_generation_id TEXT,
+  or_session_id TEXT,
+  content_hash TEXT,
+  created_at TEXT NOT NULL,
+  created_at_epoch INTEGER NOT NULL,
+
+  UNIQUE(content_session_id, tool_use_id)
+);
+```
+
+**Why it exists**: `pending_messages` is the generation *queue* — rows are
+claimed, summarized, and deleted, so raw tool payloads were unrecoverable once
+an observation existed. `tool_uses` is the durable side index that survives the
+queue, and it is what the `get_tool_uses` MCP tool (progressive-disclosure layer
+4) reads.
+
+**Not a transcript store**: the JSONL transcripts on disk and the transcript
+watcher remain the spine for session history. This table is a by-reference index
+for tool bodies, nothing more.
+
+**Idempotency**: `UNIQUE(content_session_id, tool_use_id)` means a replayed
+PostToolUse (hook retry, transcript re-scan) updates the row instead of
+duplicating it. `observation_id` is linked *after* generation and is never
+overwritten once set.
+
+**Payload cap**: `tool_input` / `tool_response` are truncated at 64 KB with a
+`…[truncated: N bytes]` marker. `content_hash` is computed over the original,
+pre-truncation payload.
+
+**Cost columns**: none, deliberately. `or_generation_id` and `or_session_id` are
+nullable join keys back to an OpenRouter spend line; dollars live on that line,
+never here.
+
+**Indexes**: `project`, `memory_session_id`, `content_session_id`,
+`session_db_id`, `tool_name`, `created_at_epoch`, `observation_id`,
+`or_generation_id`
+
 ### Legacy Tables
 
 - **sessions**: Legacy session tracking (v3.x)
@@ -162,7 +222,7 @@ CREATE TABLE user_prompts (
 
 ## FTS5 Full-Text Search
 
-SQLite FTS5 (Full-Text Search) virtual tables enable fast full-text search across observations, summaries, and user prompts.
+SQLite FTS5 (Full-Text Search) virtual tables enable fast full-text search across observations and session summaries. User prompts are searched by substring (`LIKE`) and have no FTS index.
 
 ### FTS5 Virtual Tables
 
@@ -196,19 +256,9 @@ CREATE VIRTUAL TABLE session_summaries_fts USING fts5(
 );
 ```
 
-#### user_prompts_fts
-
-```sql
-CREATE VIRTUAL TABLE user_prompts_fts USING fts5(
-  prompt_text,
-  content='user_prompts',
-  content_rowid='id'
-);
-```
-
 ### Automatic Synchronization
 
-FTS5 tables stay in sync via triggers:
+FTS5 tables stay in sync via triggers. The update triggers fire only when an indexed column is written, so bookkeeping updates (sync revision, project merges, content hashes) never touch the index. Each index update appends a delete marker plus a re-insert of the row's text, so an unscoped update trigger would grow the index on every such write:
 
 ```sql
 -- Insert trigger example
@@ -217,8 +267,9 @@ CREATE TRIGGER observations_ai AFTER INSERT ON observations BEGIN
   VALUES (new.id, new.title, new.subtitle, new.narrative, new.text, new.facts, new.concepts);
 END;
 
--- Update trigger example
-CREATE TRIGGER observations_au AFTER UPDATE ON observations BEGIN
+-- Update trigger example (fires only when an indexed column is written)
+CREATE TRIGGER observations_au
+AFTER UPDATE OF title, subtitle, narrative, text, facts, concepts ON observations BEGIN
   INSERT INTO observations_fts(observations_fts, rowid, title, subtitle, narrative, text, facts, concepts)
   VALUES('delete', old.id, old.title, old.subtitle, old.narrative, old.text, old.facts, old.concepts);
   INSERT INTO observations_fts(rowid, title, subtitle, narrative, text, facts, concepts)
@@ -295,6 +346,7 @@ Database schema is managed via migrations in `src/services/sqlite/migrations.ts`
 - Migration 005: Multi-prompt sessions (prompt_counter, prompt_number)
 - Migration 006: FTS5 virtual tables and triggers
 - Migration 007-010: Various improvements and user prompts table
+- Migration 051: `tool_uses` durable raw tool I/O index
 
 ## Performance Considerations
 

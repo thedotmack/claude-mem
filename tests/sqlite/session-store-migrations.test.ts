@@ -735,6 +735,14 @@ describe('SessionStore migrations', () => {
     expect(sessionFk?.on_delete).toBe('CASCADE');
   });
 
+  it('a fresh session_summaries FK uses ON UPDATE CASCADE and ON DELETE CASCADE', () => {
+    store = new SessionStore(':memory:');
+    const fks = store.db.query('PRAGMA foreign_key_list(session_summaries)').all() as Array<{ table: string; on_update: string; on_delete: string }>;
+    const sessionFk = fks.find(fk => fk.table === 'sdk_sessions');
+    expect(sessionFk?.on_update).toBe('CASCADE');
+    expect(sessionFk?.on_delete).toBe('CASCADE');
+  });
+
   it('fresh DB uses composite sdk session identity and session-scoped prompt/pending indexes', () => {
     store = new SessionStore(':memory:');
 
@@ -942,6 +950,7 @@ describe('SessionStore migrations', () => {
         fullObservationField: 'narrative',
         showLastSummary: true,
         showLastMessage: false,
+        mainAgentOnly: true,
       };
       const injected = queryObservationsMulti(migrated, ['proj-v49'], config);
       expect(injected.map(obs => obs.title)).toEqual(['MIXED_CONCEPTS']);

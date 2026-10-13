@@ -858,10 +858,17 @@ function getServerPort(): number {
 
 function spawnServerDaemon(port: number): number | undefined {
   const scriptPath = typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
+  // A cwd that does not exist makes spawn fail with ENOENT, and paths.ts resolves
+  // DATA_DIR without creating it — so create it rather than depend on some earlier
+  // caller having done so. Idempotent.
+  mkdirSync(paths.dataDir(), { recursive: true });
   const child = spawn(process.execPath, [scriptPath, '--daemon'], {
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
+    // Never the caller's directory: a daemon holds its cwd open for its whole life, and
+    // on Windows that locks the folder against rename or move (#3706).
+    cwd: paths.dataDir(),
     // Strip host CLI bleed-through (CLAUDE_CODE_*, including EFFORT_LEVEL) and
     // Anthropic credentials before handing env to the detached daemon. The
     // daemon re-reads credentials from ~/.claude-mem/.env at SDK spawn time.

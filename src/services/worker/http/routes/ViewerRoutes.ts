@@ -9,31 +9,37 @@ import { DatabaseManager } from '../../DatabaseManager.js';
 import { SessionManager } from '../../SessionManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
-const VIEWER_HTML_CANDIDATE_PATHS: readonly string[] = (() => {
-  const packageRoot = getPackageRoot();
-  return [
-    path.join(packageRoot, 'ui', 'viewer.html'),
-    path.join(packageRoot, 'plugin', 'ui', 'viewer.html'),
-  ];
-})();
-
-const resolvedViewerHtmlPath: string | null =
-  VIEWER_HTML_CANDIDATE_PATHS.find((candidate) => existsSync(candidate)) ?? null;
-
-const viewerHtmlBytes: Buffer | null = resolvedViewerHtmlPath
-  ? readFileSync(resolvedViewerHtmlPath)
-  : null;
-
-if (resolvedViewerHtmlPath) {
-  logger.info('SYSTEM', 'Cached viewer.html at boot', {
-    path: resolvedViewerHtmlPath,
-    bytes: viewerHtmlBytes!.byteLength,
-  });
-} else {
-  logger.warn('SYSTEM', 'viewer.html not found at any expected location at boot', {
-    candidates: VIEWER_HTML_CANDIDATE_PATHS,
-  });
+// Read on first request, not at import. Hook processes share this module but
+// never serve the viewer or Observation TV, so reading at import made every
+// hook spawn read both HTML files and log a boot line for nothing (#3665).
+function lazyUiHtml(fileName: string): () => Buffer | null {
+  let cache: { bytes: Buffer | null } | undefined;
+  return () => {
+    if (cache) {
+      return cache.bytes;
+    }
+    const packageRoot = getPackageRoot();
+    const candidates = [
+      path.join(packageRoot, 'ui', fileName),
+      path.join(packageRoot, 'plugin', 'ui', fileName),
+    ];
+    const resolvedPath = candidates.find((candidate) => existsSync(candidate)) ?? null;
+    const bytes = resolvedPath ? readFileSync(resolvedPath) : null;
+    if (bytes) {
+      logger.debug('SYSTEM', `Cached ${fileName} on first request`, {
+        path: resolvedPath,
+        bytes: bytes.byteLength,
+      });
+    } else {
+      logger.warn('SYSTEM', `${fileName} not found at any expected location`, { candidates });
+    }
+    cache = { bytes };
+    return bytes;
+  };
 }
+
+const getViewerHtmlBytes = lazyUiHtml('viewer.html');
+const getTvHtmlBytes = lazyUiHtml('tv.html');
 
 /**
  * Self-contained (no external resources — the worker serves this on localhost
@@ -83,27 +89,41 @@ const RESTART_PAGE_HTML = `<!doctype html>
 
   const outgoingPid = ${process.pid};
 
-  async function successorIsReady() {
-    const health = await fetch('/health', { cache: 'no-store' });
-    if (!health.ok) return false;
-    const body = await health.json();
-    // No pid means a worker too old to report one — fall back to "healthy"
-    // rather than hanging until the deadline.
-    if (typeof body.pid === 'number' && body.pid === outgoingPid) return false;
+  // A stalled connection or JSON body must not hold the recovery page forever.
+  // Each operation is bounded, within the same overall restart deadline.
+  async function withRequestDeadline(deadlineMs, operation) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), Math.min(5000, Math.max(0, deadlineMs - Date.now())));
+    try {
+      return await operation(controller.signal);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
 
-    // Binding the port is not being ready to observe: the successor opens the
-    // database, bootstraps chroma and connects MCP after it starts listening,
-    // and readiness stays 503 through all of it. This is the same signal the
-    // CLI restart path verifies. 404 means a worker too old to expose it.
-    const readiness = await fetch('/api/readiness', { cache: 'no-store' });
-    return readiness.ok || readiness.status === 404;
+  async function successorIsReady(deadlineMs) {
+    return withRequestDeadline(deadlineMs, async (signal) => {
+      const health = await fetch('/health', { cache: 'no-store', signal });
+      if (!health.ok) return false;
+      const body = await health.json();
+      // No pid means a worker too old to report one — fall back to "healthy"
+      // rather than hanging until the deadline.
+      if (typeof body.pid === 'number' && body.pid === outgoingPid) return false;
+  
+      // Binding the port is not being ready to observe: the successor opens the
+      // database, bootstraps chroma and connects MCP after it starts listening,
+      // and readiness stays 503 through all of it. This is the same signal the
+      // CLI restart path verifies. 404 means a worker too old to expose it.
+      const readiness = await fetch('/api/readiness', { cache: 'no-store', signal });
+      return readiness.ok || readiness.status === 404;
+    });
   }
 
   async function waitForSuccessor(deadlineMs) {
     while (Date.now() < deadlineMs) {
-      await new Promise((resolve) => setTimeout(resolve, 500));
+      await new Promise((resolve) => setTimeout(resolve, Math.min(500, Math.max(0, deadlineMs - Date.now()))));
       try {
-        if (await successorIsReady()) return true;
+        if (Date.now() < deadlineMs && await successorIsReady(deadlineMs) && Date.now() < deadlineMs) return true;
       } catch {
         // Expected while the old worker is down and the successor is booting.
       }
@@ -114,13 +134,14 @@ const RESTART_PAGE_HTML = `<!doctype html>
   button.addEventListener('click', async () => {
     button.disabled = true;
     status.textContent = 'Restarting…';
+    const deadlineMs = Date.now() + 60000;
     try {
-      await fetch('/api/admin/restart', { method: 'POST' });
+      await withRequestDeadline(deadlineMs, signal => fetch('/api/admin/restart', { method: 'POST', signal }));
     } catch {
       // The worker often dies before the response lands — that is the restart
       // working, so fall through to the health poll either way.
     }
-    if (await waitForSuccessor(Date.now() + 60000)) {
+    if (await waitForSuccessor(deadlineMs)) {
       status.textContent = 'Memory worker restarted. You can close this tab.';
     } else {
       status.textContent = 'Still not answering. Run: npx claude-mem doctor';
@@ -146,6 +167,7 @@ export class ViewerRoutes extends BaseRouteHandler {
 
     app.get('/health', this.handleHealth.bind(this));
     app.get('/', this.handleViewerUI.bind(this));
+    app.get('/tv', this.handleTvUI.bind(this));
     app.get('/restart', this.handleRestartPage.bind(this));
     app.get('/stream', this.handleSSEStream.bind(this));
   }
@@ -165,11 +187,26 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    const viewerHtmlBytes = getViewerHtmlBytes();
     if (!viewerHtmlBytes) {
       throw new Error('Viewer UI not found at any expected location');
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(viewerHtmlBytes);
+  });
+
+  /**
+   * Observation TV: the same /stream the viewer consumes, rendered as a
+   * full-screen fading title card. Static, dependency-free, and served from
+   * the same origin so the EventSource needs no CORS of its own.
+   */
+  private handleTvUI = this.wrapHandler((req: Request, res: Response): void => {
+    const tvHtmlBytes = getTvHtmlBytes();
+    if (!tvHtmlBytes) {
+      throw new Error('Observation TV UI not found at any expected location');
+    }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.send(tvHtmlBytes);
   });
 
   /**

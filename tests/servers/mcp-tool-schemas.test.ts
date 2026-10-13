@@ -41,6 +41,19 @@ describe('MCP tool inputSchema declarations', () => {
     expect(getObsSection).toContain("required:");
   });
 
+  it('work_state tools send the session cwd to the work-state routes', async () => {
+    const src = await Bun.file(mcpServerPath).text();
+    const section = src.slice(
+      src.indexOf("name: 'work_state_write'"),
+      src.indexOf("name: 'session_start_context'"),
+    );
+    expect(section).toContain("required: ['list', 'fields']");
+    expect(section).toContain("callWorker('/api/work-state/entries'");
+    expect(section).toContain("name: 'work_state_read'");
+    expect(section).toContain("callWorker('/api/work-state'");
+    expect(section.match(/cwd: process\.cwd\(\)/g)).toHaveLength(2);
+  });
+
   it('session_start_context exposes worker SessionStart renderer parameters', async () => {
     const src = await Bun.file(mcpServerPath).text();
     const section = src.slice(
@@ -93,13 +106,18 @@ describe('MCP tool inputSchema declarations', () => {
     expect(section).toContain('handleObservationSearch');
   });
 
-  it('observation_context declares query as required and exposes a limit cap', async () => {
+  it('observation_context declares query as optional (recency mode when omitted) and exposes a limit cap', async () => {
+    // query became optional alongside SessionStart server-runtime support
+    // (plan-24 step 4, #2991): omitting it asks /v1/context for the most
+    // recent observations instead of a relevance-ranked search.
     const src = await Bun.file(mcpServerPath).text();
     const section = src.slice(
       src.indexOf("name: 'observation_context'"),
       src.indexOf("name: 'observation_generation_status'"),
     );
-    expect(section).toContain("required: ['query']");
+    expect(section).toContain('query:');
+    expect(section).not.toContain("required: ['query']");
+    expect(section).not.toContain('required:');
     expect(section).toContain('platformSource:');
     expect(section).toContain('handleObservationContext');
   });

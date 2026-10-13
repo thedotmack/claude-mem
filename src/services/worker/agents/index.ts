@@ -10,6 +10,7 @@ export type {
 export {
   processAgentResponse,
   snapshotResponseContext,
+  takeObserverSchemaReminder,
   type ResponseContext,
 } from './ResponseProcessor.js';
 

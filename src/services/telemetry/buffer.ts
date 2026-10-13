@@ -61,6 +61,9 @@ interface SessionCompressedRecord {
   obs_type_decision?: number;
   obs_type_refactor?: number;
   obs_type_other?: number;
+  // Closed enum from SessionRoutes.normalizeAbortReason, on aborted turns.
+  // Counted into outcomes_aborted_deadline_exceeded and top_abort_reason.
+  abort_reason?: string;
   [key: string]: unknown;
 }
 
@@ -144,6 +147,7 @@ function computeSessionCompressedRollup(
   let outcomesOk = 0;
   let outcomesError = 0;
   let outcomesAborted = 0;
+  let outcomesAbortedDeadlineExceeded = 0;
   let outcomesInvalidOutput = 0;
   let observationsCreated = 0;
   let obsTypeBugfix = 0;
@@ -152,6 +156,12 @@ function computeSessionCompressedRollup(
   let obsTypeRefactor = 0;
   let obsTypeOther = 0;
   const modelFrequency: Map<string, number> = new Map();
+  // Abort-reason frequency across the session's aborted turns. outcomes_aborted
+  // already counts how many turns aborted, but not why — so an auth outage that
+  // silently stops all capture is indistinguishable from an idle timeout in the
+  // rollup. top_abort_reason names the dominant cause so the auth share of
+  // aborts is measurable (#4150).
+  const abortReasonFrequency: Map<string, number> = new Map();
   // Last-seen non-empty string per session for the source/observed fields.
   // `ide` is constant within a session. `provider` is NOT: it can change
   // mid-session on provider fallback or a quota cooldown, so last-seen reports
@@ -185,8 +195,16 @@ function computeSessionCompressedRollup(
     }
     if (r.outcome === 'ok') outcomesOk++;
     else if (r.outcome === 'error') outcomesError++;
-    else if (r.outcome === 'aborted') outcomesAborted++;
-    else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+    else if (r.outcome === 'aborted') {
+      outcomesAborted++;
+      if (r.abort_reason === 'deadline_exceeded') outcomesAbortedDeadlineExceeded++;
+    } else if (r.outcome === 'invalid_output') outcomesInvalidOutput++;
+
+    // abort_reason is a closed enum SessionRoutes already normalized; only
+    // aborted turns carry it. Count it here for top_abort_reason below.
+    if (typeof r.abort_reason === 'string' && r.abort_reason) {
+      abortReasonFrequency.set(r.abort_reason, (abortReasonFrequency.get(r.abort_reason) ?? 0) + 1);
+    }
 
     if (typeof r.model === 'string' && r.model) {
       modelFrequency.set(r.model, (modelFrequency.get(r.model) ?? 0) + 1);
@@ -228,6 +246,10 @@ function computeSessionCompressedRollup(
     outcomes_ok: outcomesOk,
     outcomes_error: outcomesError,
     outcomes_aborted: outcomesAborted,
+    // Subset of outcomes_aborted: requests abandoned at the LLM deadline
+    // (CLAUDE_MEM_LLM_TIMEOUT_MS). Per-turn abort_reason does not survive the
+    // rollup, and these are the aborts a backend may still have billed.
+    outcomes_aborted_deadline_exceeded: outcomesAbortedDeadlineExceeded,
     outcomes_invalid_output: outcomesInvalidOutput,
     // Generation-side observation volume + type mix for the session. Lets
     // PostHog derive cost-per-observation (total_cost_usd / observations_created)
@@ -258,6 +280,20 @@ function computeSessionCompressedRollup(
       }
     }
     rollup.top_model = topModel;
+  }
+
+  // top_abort_reason: only present when at least one turn aborted, so a clean
+  // session carries no abort field at all (matches top_model's shape).
+  if (abortReasonFrequency.size > 0) {
+    let topAbortReason = '';
+    let topAbortCount = 0;
+    for (const [reason, freq] of abortReasonFrequency) {
+      if (freq > topAbortCount) {
+        topAbortCount = freq;
+        topAbortReason = reason;
+      }
+    }
+    rollup.top_abort_reason = topAbortReason;
   }
 
   // Source fields: only present if at least one record carried them (matches

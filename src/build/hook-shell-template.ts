@@ -44,6 +44,8 @@ export interface ShellTemplateOptions {
   trailingJson?: object;
   /** stderr message when no candidate root resolves. */
   notFoundMessage: string;
+  /** Runtime hooks that observe memory should degrade to no-memory, not block the host prompt. */
+  failOpen?: boolean;
   /**
    * MCP-only: extra candidate roots enumerated before the cache directories
    * (e.g. '$PWD/plugin', '$PWD'). Ignored for non-mcp hosts.
@@ -58,10 +60,10 @@ export interface ShellTemplateOptions {
   mcpExtraCacheRoots?: string[];
 }
 
-const CLAUDE_CODE_PATH_PRELUDE = `export PATH="$($SHELL -lc 'echo $PATH' 2>/dev/null):$PATH";`;
-
-const CLAUDE_CODE_SETUP_PATH_PRELUDE =
-  'export PATH="$HOME/.nvm/versions/node/v$(ls \\"$HOME/.nvm/versions/node\\" 2>/dev/null | ' +
+// Prepend common tool locations without spawning a login shell on every hook
+// invocation. Setup already used this shape; runtime hooks now match (#3190).
+const CLAUDE_CODE_HOOK_PATH_PRELUDE =
+  'export PATH="$HOME/.nvm/versions/node/v$(ls "$HOME/.nvm/versions/node" 2>/dev/null | ' +
   "sed 's/^v//' | sort -t. -k1,1n -k2,2n -k3,3n | tail -1)/bin:$HOME/.local/bin:/usr/local/bin:/opt/homebrew/bin:$PATH\";";
 
 const CODEX_CLI_PATH_PRELUDE =
@@ -72,9 +74,8 @@ const CODEX_CLI_PATH_PRELUDE =
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
     case 'claude-code':
-      return CLAUDE_CODE_PATH_PRELUDE;
     case 'claude-code-setup':
-      return CLAUDE_CODE_SETUP_PATH_PRELUDE;
+      return CLAUDE_CODE_HOOK_PATH_PRELUDE;
     case 'codex-cli':
       // Trailing space is intentional: join() adds one more → double space
       // before `_C=`, matching the hand-authored codex-hooks.json.
@@ -111,7 +112,11 @@ function fileExistsClause(options: ShellTemplateOptions): string {
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
 
-  const lines: string[] = [`[ -n "$_E" ] && printf '%s\\n' "$_E";`];
+  const lines: string[] = [];
+
+  if (isMcp) {
+    lines.push(`[ -n "$_E" ] && printf '%s\\n' "$_E";`);
+  }
 
   if (isMcp && options.mcpExtraCandidates && options.mcpExtraCandidates.length > 0) {
     const quoted = options.mcpExtraCandidates.map((candidate) => `"${candidate}"`).join(' ');
@@ -149,15 +154,34 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const trimAssignment = isMcp ? '' : ' _R="${_R%/}";';
   const fileClause = fileExistsClause(options);
 
-  return (
+  const fallbackBlock = (
     `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
     `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
+  );
+
+  if (isMcp) {
+    return fallbackBlock;
+  }
+
+  // The host-injected root is overwhelmingly the common path. Resolve it
+  // directly so every hook does not enumerate and sort versioned caches even
+  // when the host already supplied a usable installation root.
+  return (
+    `_P=; if [ -n "$_E" ]; then _R="\${_E%/}"; ` +
+    `[ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
+    `${fileClause} && _P="$_Q"; fi; ` +
+    `if [ -z "$_P" ]; then ${fallbackBlock} fi;`
   );
 }
 
 const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
+const FAIL_OPEN_EXIT_STATUS_VAR = '_S';
+const FAIL_OPEN_COMMAND_MESSAGE = 'claude-mem: hook command failed';
+/** Fail-open hooks degrade to no-memory; fail-loud hooks surface the failure to the host. */
+const FAIL_OPEN_EXIT_CODE = '0';
+const FAIL_LOUD_EXIT_CODE = '1';
 
 /**
  * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
@@ -186,14 +210,14 @@ function shTokenToNode(token: string): string {
  * Windows when Git's `usr/bin` is not on PATH, so the search tools never
  * registered. This emits the `node -e` payload (`.mcp.json` args[1]) that does
  * the same plugin-root discovery in pure Node — no shell dependency — then
- * spawns the resolved server and forwards signals. The candidate order mirrors
+ * loads the resolved server in-process. The candidate order mirrors
  * the POSIX prelude's: $CLAUDE_PLUGIN_ROOT/$PLUGIN_ROOT, mcpExtraCandidates,
  * version-sorted cache roots (never mtime; orphan-stamped dirs skipped), then
  * the marketplace install dir.
  *
  * Only `requireFile`, `notFoundMessage`, and the mcp* candidate fields are
  * consumed. `trailingCommand`, `extraEnv`, `trailingJson`, and the cygpath
- * clause are intentionally ignored for this host — the spawn target is derived
+ * clause are intentionally ignored for this host — the module target is derived
  * solely from `requireFile`, and the Node launcher needs no shell scaffolding.
  */
 function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
@@ -214,7 +238,7 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
   ].join(',');
 
   return (
-    `const f=require('fs'),p=require('path'),o=require('os'),c=require('child_process');` +
+    `const f=require('fs'),p=require('path'),o=require('os');` +
     `const h=o.homedir();` +
     `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
     `const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';` +
@@ -230,9 +254,11 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `let R=null;` +
     `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
     `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
-    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit',windowsHide:true});` +
-    `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
-    `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
+    // p.resolve, not p.join: R is relative when CLAUDE_PLUGIN_ROOT or
+    // CLAUDE_CONFIG_DIR is, and require() reads a relative path such as
+    // plugin/scripts/mcp-server.cjs as a package name. Resolving against cwd
+    // matches the existsSync check above, as the old child-process spawn did.
+    `require(p.resolve(R,'scripts',${require}))`
   );
 }
 
@@ -244,6 +270,15 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
+/** Match only runtime tool-hook commands, preserving all other lifecycle hooks. */
+function toolHookOptOutVariable(args: string[] | undefined): string | undefined {
+  if (!args || args.at(-3) !== 'hook') return undefined;
+  const event = args.at(-1);
+  return event === 'observation' ? 'CLAUDE_MEM_DISABLE_OBSERVATION'
+    : event === 'file-context' ? 'CLAUDE_MEM_DISABLE_FILE_CONTEXT' : undefined;
+}
+
+
 /**
  * Codex hook contract supports `commandWindows` as the Windows-only command
  * override. Keep this Node-based so Codex App on Windows can execute hooks from
@@ -252,7 +287,9 @@ function jsArray(values: string[]): string {
 export function buildCodexWindowsCommand(
   workerArgs: string[],
 ): string {
+  const optOutVariable = toolHookOptOutVariable(workerArgs);
   const parts = [
+    ...(optOutVariable ? [`if(process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS==='1'||process.env.${optOutVariable}==='1')process.exit(0);`] : []),
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
     "const h=o.homedir();",
     "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
@@ -297,6 +334,10 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
 
   const parts: string[] = [];
+  const optOutVariable = toolHookOptOutVariable(options.trailingCommand);
+  if (optOutVariable) {
+    parts.push(`if [ "\${CLAUDE_MEM_DISABLE_TOOL_HOOKS:-}" = 1 ] || [ "\${${optOutVariable}:-}" = 1 ]; then exit 0; fi;`);
+  }
 
   // The PATH prelude is pushed verbatim (including any trailing space). `parts`
   // are later joined with a single space, so claude-code preludes (no trailing
@@ -308,7 +349,8 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
   parts.push(candidateBlock(options));
-  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
+  const notFoundExitCode = options.failOpen ? FAIL_OPEN_EXIT_CODE : FAIL_LOUD_EXIT_CODE;
+  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${notFoundExitCode}; };`);
 
   // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
@@ -328,6 +370,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   let command = `${envPrefix}${options.trailingCommand.join(' ')}`;
   if (options.trailingJson) {
     command += `; echo '${JSON.stringify(options.trailingJson)}'`;
+  }
+  if (options.failOpen) {
+    command = `{ ${command}; } || { ${FAIL_OPEN_EXIT_STATUS_VAR}=$?; echo "${FAIL_OPEN_COMMAND_MESSAGE} (exit $${FAIL_OPEN_EXIT_STATUS_VAR})" >&2; exit ${FAIL_OPEN_EXIT_CODE}; }`;
   }
   parts.push(command);
 
