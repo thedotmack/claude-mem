@@ -1,8 +1,11 @@
-# claude-mem-cowork
+# CMEM Pro for the Claude app
 
-Claude-Mem for **Cowork** (native Claude app — mobile, web, desktop cloud sessions).
+Claude-Mem memory for the **Claude app** (mobile, web, desktop cloud sessions),
+powered by CMEM Pro on cmem.ai. Install it with
+`/plugin install cmem-pro@thedotmack`. It was called `claude-mem-cowork`;
+existing installs move to `cmem-pro` automatically on Claude Code 2.1.193+.
 
-Cowork sessions run in ephemeral cloud containers, so the local claude-mem
+Claude app sessions run in ephemeral cloud containers, so the local claude-mem
 worker/SQLite model can't persist there. This plugin replaces the worker with
 thin HTTPS shims: hooks capture tool use and stream raw fragments to cmem.ai,
 where **Pro runs the worker and observer server-side**; compiled observations
@@ -23,6 +26,14 @@ are injected back into every new session and every spawned agent.
 Plus a **mem-search** skill: progressive Index → Timeline search against
 `/api/mcp memory_search`, available in any session.
 
+## Memory tools (cmem.ai connector)
+
+`.mcp.json` points at the cmem.ai memory server, `https://cmem.ai/api/mcp`. In
+the Claude app it appears on the plugin's **Connectors** tab: connect it and
+sign in with the cmem.ai account that holds your memory. Claude Code connects
+to it directly. Its tools (`memory_search`, `timeline`, `get_observations`,
+`get_summaries`, `list_projects`) only read; nothing is stored in this file.
+
 ## Fail-soft guarantees
 
 - No API key configured → every hook is a silent no-op. Sessions never break.
@@ -34,17 +45,17 @@ Plus a **mem-search** skill: progressive Index → Timeline search against
 
 ## Setup (per user — nothing is hardcoded)
 
-Say "set up claude-mem" in any Cowork session (the **mem-setup** skill) and
+Say "set up claude-mem" in any Claude app session (the **mem-setup** skill) and
 paste your values from cmem.ai → Connect. Credential sources, in order:
 
 1. Env vars: `CMEM_API_KEY`, `CMEM_USER_ID`, `CMEM_SYNC_HUB_URL`, `CMEM_API_BASE`
 2. `config.json` in this plugin (`apiKey`, `userId`, `syncHubUrl`) — the
-   durable option in Cowork; repackage after editing so it survives sessions
+   durable option in the Claude app; repackage after editing so it survives sessions
 3. `~/.claude-mem/settings.json` (`CLAUDE_MEM_CLOUD_SYNC_TOKEN` /
    `CLAUDE_MEM_CLOUD_SYNC_USER_ID` / `CLAUDE_MEM_CLOUD_SYNC_HUB_URL`) — compat
    with a local claude-mem install's cloud-sync pairing
 
-Project naming is automatic and deliberately NOT a setting: root Cowork
+Project naming is automatic and deliberately NOT a setting: root Claude app
 sessions land on `cmem_work_root`, sessions inside a project folder get
 `cmem_work_<folder>`. Optional `inject` toggles
 (`sessionStart`, `agents`, `maxChars`). Verify with
@@ -59,5 +70,6 @@ retrieval works via the existing `/api/mcp`; capture is inert.
 ## Privacy notes
 
 - Tool inputs/outputs are truncated to 16 KB per field before sending.
-- Calls to memory tools themselves (`mcp__memory__*`, `mcp__cmem*`) are never
-  captured (feedback-loop guard). Add more exclusions in `capture.skipTools`.
+- Calls to memory tools themselves (`mcp__memory__*`, `mcp__cmem*`, and the
+  Claude-Mem connector's `mcp__Claude-Mem__*`) are never captured
+  (feedback-loop guard). Add more exclusions in `capture.skipTools`.

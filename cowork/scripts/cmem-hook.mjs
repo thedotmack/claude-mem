@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * claude-mem-cowork — thin HTTP hook shim for Cowork (Claude app cloud sessions).
+ * CMEM Pro for the Claude app (plugin id cmem-pro, formerly claude-mem-cowork) — thin HTTP hook
+ * shim for Claude app cloud sessions.
  *
- * Local claude-mem runs a worker service on the user's machine. Cowork containers
- * are ephemeral, so this shim replaces the worker with HTTPS calls to cmem.ai:
+ * Local claude-mem runs a worker service on the user's machine. Claude app cloud
+ * containers are ephemeral, so this shim replaces the worker with HTTPS calls to cmem.ai:
  *
  *   capture  →  POST {base}/api/hooks/ingest      (raw hook payloads; Pro worker/observer runs server-side)
  *   inject   →  GET  {base}/api/hooks/context     (compiled context block)
@@ -178,7 +179,7 @@ async function http(method, url, body, timeoutMs, headers = {}) {
         'Authorization': `Bearer ${CFG.apiKey}`,
         'Content-Type': 'application/json',
         'X-CMEM-Platform': 'cowork',
-        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.3',
+        'X-CMEM-Plugin': 'cmem-pro/0.2.0',
         ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {}),
         ...headers
       },
@@ -371,7 +372,7 @@ async function mcpSearch(query, limit, project) {
     const init = await mcpRpc('initialize', {
       protocolVersion: '2025-03-26',
       capabilities: {},
-      clientInfo: { name: 'claude-mem-cowork', version: '0.1.0' }
+      clientInfo: { name: 'cmem-pro', version: '0.2.0' }
     }, 1);
     if (!init.ok) return null;
     await mcpRpc('notifications/initialized', {}, undefined).catch?.(() => {});
@@ -457,7 +458,11 @@ async function onSessionInit(input) {
   });
 }
 
-const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem)/;
+// Memory reads are never captured (feedback-loop guard): the Claude memory tool,
+// a connector named cmem*, the Claude-Mem connector — mcp__Claude-Mem__* in the
+// Claude app, mcp__claude_ai_Claude-Mem__* when Claude Code loads it — and this
+// plugin's own cmem.ai connector (.mcp.json), mcp__plugin_cmem-pro_cmem__*.
+const ALWAYS_SKIP = /^(mcp__memory__|mcp__cmem|mcp__(claude_ai_)?claude-mem__|mcp__plugin_cmem-pro_)/i;
 
 async function onObservation(input) {
   const tool = input.tool_name || '';

@@ -3,13 +3,14 @@ name: mem-setup
 description: >
   This skill should be used when the user asks to "set up claude-mem", "pair
   claude-mem", "connect cmem", "add my cmem key", "set up cloud sync in
-  Cowork", or provides cmem.ai Connect values (sync token, user id, SyncHub
-  URL) for this plugin. Configures the claude-mem-cowork plugin credentials.
+  Cowork" or in the Claude app, or provides cmem.ai Connect values (sync token,
+  user id, SyncHub URL) for this plugin. Configures the CMEM Pro plugin
+  credentials.
 metadata:
   version: "0.1.0"
 ---
 
-# Claude-Mem Setup (Cowork pairing)
+# Claude-Mem Setup (Claude app pairing)
 
 Configure this plugin with the user's own cmem.ai credentials so hooks can
 capture and inject memory. Anyone can pair — credentials are per-user
@@ -38,7 +39,7 @@ optional.
    `config.json`: set `apiKey` to the sync token, `userId`, and `syncHubUrl`.
    Leave other settings unless the user asks (`inject` toggles). Project naming
    is automatic (`cmem_work_*`) and is not configurable.
-2. Cowork containers are ephemeral: edits to the installed copy last only for
+2. Claude app containers are ephemeral: edits to the installed copy last only for
    this session. To make pairing permanent, repackage — zip the plugin
    directory as `<plugin-name>.plugin` and send it to the user to re-install
    (the cowork-plugin skill's packaging flow). Tell the user this is why.

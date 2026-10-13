@@ -9,11 +9,11 @@ metadata:
   version: "0.1.0"
 ---
 
-# Claude-Mem Search (Cowork)
+# Claude-Mem Search
 
 Search the user's persistent Claude-Mem memory on cmem.ai. Memory contains
 timestamped observations synthesized from past sessions across all their
-agents (Claude Code, Cowork, Codex, and others).
+agents (Claude Code, the Claude app, Codex, and others).
 
 ## How to search
 

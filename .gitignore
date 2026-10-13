@@ -30,6 +30,8 @@ Auto Run Docs/
 src/ui/viewer.html
 
 .mcp.json
+# the cmem-pro plugin ships its connector reference (a URL, no credentials)
+!cowork/.mcp.json
 .cursor/
 
 .idea/

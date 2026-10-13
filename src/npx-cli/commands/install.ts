@@ -855,7 +855,7 @@ function copyPluginToMarketplace(): void {
 /**
  * Keep only the marketplace entries whose local `source` shipped.
  *
- * The repo's root .claude-plugin/marketplace.json also lists claude-mem-cowork
+ * The repo's root .claude-plugin/marketplace.json also lists cmem-pro
  * (`./cowork`), which the npm package does not ship. Copied verbatim, the
  * manifest would advertise a plugin whose source is missing from the
  * marketplace directory, so drop every entry whose relative source path does
