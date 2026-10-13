@@ -69,15 +69,11 @@ async function pauseOnUnreachable(apiUrl: string): Promise<void> {
   });
 
   class UnreachableProvider extends OpenRouterProvider {
-    private requests = 0;
-
     protected override getConfig() {
       return { apiKey: 'test-key', model: 'test-model', apiUrl };
     }
 
     protected override async query(): Promise<{ content: string }> {
-      this.requests += 1;
-      if (this.requests === 1) return { content: '' };
       const cause = Object.assign(new Error('Unable to connect. Is the computer able to access the url?'), { code: 'ConnectionRefused' });
       throw classifyOpenRouterError({ cause, requestUrl: apiUrl });
     }

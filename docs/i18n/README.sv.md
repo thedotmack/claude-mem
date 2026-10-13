@@ -215,7 +215,6 @@ Installationsprogrammet hanterar beroenden, plugin-konfiguration, konfiguration 
 
 - **[Konfiguration](https://docs.claude-mem.ai/configuration)** - Miljövariabler och inställningar
 - **[Utveckling](https://docs.claude-mem.ai/development)** - Bygga, testa, bidra
-- **[Release-grenar](https://docs.claude-mem.ai/branches)** - Flödet mellan stable-, core-dev- och community-edge-grenarna
 - **[Felsökning](https://docs.claude-mem.ai/troubleshooting)** - Vanliga problem och lösningar
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Se [Sökverktygsguide](https://docs.claude-mem.ai/usage/search-tools) för detaljerade exempel.
-
----
-
-## Release-grenar
-
-Stabila utgåvor levereras från `main` och publiceras till npm. `core-dev` och
-`community-edge` är källkörda grenar för tidiga tillförlitlighetsfixar och
-community-integrationer. Se **[Release-grenar](https://docs.claude-mem.ai/branches)**
-för grenflödet och instruktioner för att köra icke-stabila versioner.
 
 ---
 
@@ -383,11 +373,6 @@ Bidrag är välkomna! Vänligen:
 3. Gör dina ändringar med tester
 4. Uppdatera dokumentationen
 5. Skicka in en Pull Request
-
-Claude-Mem levereras från tre grenar: `main` (stabil), `core-dev` och
-`community-edge`. Endast `main` publiceras till npm; de andra körs från
-källkod. Se [Release-grenar](https://docs.claude-mem.ai/branches) för
-strategin och instruktioner för lokal körning.
 
 Se [Utvecklingsguide](https://docs.claude-mem.ai/development) för bidragsarbetsflöde.
 

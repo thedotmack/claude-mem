@@ -14,12 +14,15 @@
  * so subscribing can recover automatically. User-owned openrouter.ai (or any
  * non-gateway) base URLs ignore the fallback marker entirely.
  *
- * Quota fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER, opt-in): while the
- * selected provider's breaker holds for its quota (a spent allowance, or a
- * rate limit that outlasted its retries), every plain return is routed to the
- * configured fallback, provided it can serve and is not itself held. Empty —
- * the default — leaves dispatch exactly as it was. The cmem-gateway branch
- * keeps its own marker and runs first, untouched.
+ * Provider fallback (CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER, default 'claude' —
+ * the Anthropic plan): while the selected provider's breaker holds because it
+ * cannot serve (a spent allowance, a rate limit or over-capacity refusal that
+ * outlasted its retries, an outage or repeated unusable replies — see
+ * routeAroundUnservableProvider), every plain return is routed to the
+ * fallback, provided it can serve (for Claude: a Claude login or key exists)
+ * and is not itself held. Once the window elapses the primary is re-probed and
+ * takes the work back. 'off' leaves dispatch waiting on the primary. The
+ * cmem-gateway branch keeps its own marker and runs first, untouched.
  */
 
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -32,13 +35,16 @@ import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvide
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import { canClaudeServeAsFallback } from '../../shared/claude-fallback-readiness.js';
 import {
   cooldownAppliesToCurrentAccount,
   getQuotaCooldown,
   isQuotaCooldownActive,
   isQuotaCooldownHolding,
+  recordQuotaExhausted,
   releaseQuotaProbe,
   setQuotaFallbackResolver,
+  setUnservableProviderRouter,
   tryAdmitCmemGatewayProbe,
   type QuotaCooldownState,
   type QuotaProvider,
@@ -98,10 +104,19 @@ export interface ProviderSelection {
 export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible'] as const;
 export type QuotaFallbackProvider = typeof QUOTA_FALLBACK_PROVIDERS[number];
 
-/** The configured quota fallback, or null when the setting is empty or unrecognised. */
+/** The CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER value that turns the fallback off. */
+export const QUOTA_FALLBACK_OFF = 'off';
+
+/**
+ * The configured fallback, or null when it is turned off ('off') or the value
+ * is unrecognised. Empty means the default, the Anthropic plan: settings files
+ * written before it became the default persisted "" for "nothing chosen", and
+ * those installs get the fallback too. Only an explicit 'off' opts out.
+ */
 export function readQuotaFallbackProvider(): QuotaFallbackProvider | null {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const raw = String(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER ?? '').trim();
+  if (raw === '') return 'claude';
   return (QUOTA_FALLBACK_PROVIDERS as readonly string[]).includes(raw) ? raw as QuotaFallbackProvider : null;
 }
 
@@ -123,9 +138,9 @@ function gatewayFallbackState(): 'not-refusing' | 'refusing' | 'probe' {
 }
 
 /**
- * Whether a fallback has what it needs to run. Claude counts as available:
- * when dispatch returns it, the Claude setup check in SessionRoutes runs
- * exactly as it does for a Claude primary. The cmem gateway is skipped inside
+ * Whether a fallback has what it needs to run. Claude needs a Claude login or
+ * key and a CLI that is not failing to start (canClaudeServeAsFallback);
+ * without one, work waits on the primary as it always did. The cmem gateway is skipped inside
  * its trial-expiry window; after it, it is available for the single re-probe,
  * which `selectWithQuotaFallback` claims before sending.
  */
@@ -133,7 +148,7 @@ function isFallbackAvailable(provider: QuotaFallbackProvider): boolean {
   switch (provider) {
     case 'gemini': return isGeminiAvailable();
     case 'openai-compatible': return isOpenAICompatAvailable();
-    case 'claude': return true;
+    case 'claude': return canClaudeServeAsFallback();
     case 'openrouter': return isOpenRouterAvailable() && gatewayFallbackState() !== 'refusing';
   }
 }
@@ -151,6 +166,31 @@ function quotaBreakerOf(provider: SelectableProvider): QuotaCooldownState | null
 
 function isHeldForQuota(provider: SelectableProvider, nowMs: number): boolean {
   return quotaBreakerOf(provider) !== null && isQuotaCooldownHolding(provider, nowMs);
+}
+
+/**
+ * Arm `provider`'s breaker because it cannot serve right now, when — and only
+ * when — the fallback can take the work meanwhile. Returns that fallback, or
+ * null with nothing armed (no fallback, it is the provider itself, or it
+ * cannot serve), leaving the caller's usual handling in place.
+ *
+ * For failures that do not arm a breaker on their own: an outage or upstream
+ * fault that outlived the provider's retries, a rate limit or over-capacity
+ * refusal the session would otherwise wait out with Retry-After resumes, a
+ * provider that keeps answering without usable output. The window is the
+ * short throttle cooldown ('unavailable' / 'rate_limit'), after which the
+ * primary is re-probed once and takes the work back when it answers.
+ */
+export function routeAroundUnservableProvider(
+  provider: SelectableProvider,
+  message: string,
+  window: 'unavailable' | 'rate_limit',
+  profile?: string,
+): QuotaFallbackProvider | null {
+  const fallback = quotaFallbackTarget(provider);
+  if (fallback === null) return null;
+  recordQuotaExhausted(provider, message, window, undefined, profile);
+  return fallback;
 }
 
 /**
@@ -211,10 +251,18 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
 
   switch (next) {
     case 'fallback':
-      logger.warn('SESSION', 'Primary in quota cooldown; dispatching to fallback', {
-        primary,
-        fallback: routed.provider,
-      });
+      if (routed.provider === 'claude') {
+        logger.warn('SESSION', 'Primary cannot serve right now; memory runs on the Anthropic plan (Claude) until it recovers', {
+          primary,
+          fallback: routed.provider,
+          window: quotaBreakerOf(primary)?.window ?? 'quota',
+        });
+      } else {
+        logger.warn('SESSION', 'Primary in quota cooldown; dispatching to fallback', {
+          primary,
+          fallback: routed.provider,
+        });
+      }
       return;
     case 'probing':
       logger.info('SESSION', 'Primary quota cooldown elapsed; probing primary', { primary });
@@ -239,8 +287,7 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
 
 /**
  * A plain (non-gateway-fallback) selection for a caller about to send. The
- * transition log is only kept when a fallback is configured, so an install
- * that configures nothing logs nothing new.
+ * transition log is kept unless the fallback is turned off.
  */
 function selectWithQuotaFallback(primary: SelectableProvider): ProviderSelection {
   const nowMs = Date.now();
@@ -293,8 +340,7 @@ export function getSelectedProvider(): SelectableProvider {
 /**
  * Where memory capture runs while `held` is in a quota cooldown: the provider
  * dispatch is using, when that is a different one and not itself holding.
- * Null otherwise, and always null with no quota fallback configured, so a
- * default install is unchanged.
+ * Null otherwise, and always null with the fallback turned off.
  *
  * Read by the session-start notice, through the mirrored cooldown. It asks
  * dispatch rather than `quotaFallbackTarget(held)` because the held provider
@@ -318,6 +364,8 @@ export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.n
 // cooldown in observer-health.json. See setQuotaFallbackResolver for why the
 // answer is injected from here rather than imported there.
 setQuotaFallbackResolver(quotaServingProvider);
+setUnservableProviderRouter((provider, message, window, profile) =>
+  provider === 'cmem-gateway' ? null : routeAroundUnservableProvider(provider, message, window, profile));
 
 /**
  * Dispatch for a caller that is about to start a generator, claiming the single

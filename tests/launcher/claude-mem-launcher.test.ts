@@ -22,6 +22,8 @@ process.stdin.on('end', () => {
   process.stdout.write(JSON.stringify({
     pluginRoot: require('path').dirname(__dirname),
     argv: process.argv.slice(2),
+    cwd: process.cwd(),
+    originalCwd: process.env.CLAUDE_MEM_HOOK_ORIGINAL_CWD,
     stdin: Buffer.concat(chunks).toString('utf-8'),
   }), () => process.exit(Number(process.env.STUB_WORKER_EXIT_CODE || 0)));
 });
@@ -49,22 +51,28 @@ function cacheVersionRoot(temporaryHome: string, version: string): string {
 
 function runLauncher(
   launcherArguments: string[],
-  { temporaryHome, stdinPayload = '{"hook_event_name":"PostToolUse"}', extraEnvironment = {} }: {
+  { temporaryHome, stdinPayload = '{"hook_event_name":"PostToolUse"}', extraEnvironment = {}, workingDirectory }: {
     temporaryHome: string;
     stdinPayload?: string;
     extraEnvironment?: Record<string, string>;
+    workingDirectory?: string;
   },
 ): LauncherRunResult {
   // Built from scratch so a CLAUDE_PLUGIN_ROOT / CLAUDE_CONFIG_DIR inherited
   // from the session running the tests can never leak into resolution.
   const launcherEnvironment: Record<string, string> = {
     PATH: process.env.PATH ?? '',
+    // where.exe needs PATHEXT to match bun.exe, and the launcher runs it from SystemRoot.
+    ...(process.platform === 'win32'
+      ? { PATHEXT: process.env.PATHEXT ?? '', SystemRoot: process.env.SystemRoot ?? '' }
+      : {}),
     HOME: temporaryHome,
     USERPROFILE: temporaryHome,
     CLAUDE_MEM_DATA_DIR: path.join(temporaryHome, '.claude-mem'),
     ...extraEnvironment,
   };
   const result = spawnSync(process.execPath, [launcherBundlePath, ...launcherArguments], {
+    cwd: workingDirectory,
     input: stdinPayload,
     env: launcherEnvironment,
     encoding: 'utf-8',
@@ -77,7 +85,7 @@ function runObservationHook(options: Parameters<typeof runLauncher>[1]): Launche
   return runLauncher(['hook', 'claude-code', 'observation'], options);
 }
 
-function parseStubWorkerOutput(stdout: string): { pluginRoot: string; argv: string[]; stdin: string } {
+function parseStubWorkerOutput(stdout: string): { pluginRoot: string; argv: string[]; cwd: string; originalCwd?: string; stdin: string } {
   return JSON.parse(stdout);
 }
 
@@ -91,6 +99,63 @@ describe('claude-mem launcher', () => {
 
   afterAll(() => {
     rmSync(scratchParentDirectory, { recursive: true, force: true });
+  });
+
+  // #4719: the bash hooks exited before node/bun on these switches; the exec-form launcher must too.
+  for (const [hookEvent, optOutVariable] of [
+    ['observation', 'CLAUDE_MEM_DISABLE_OBSERVATION'],
+    ['observation', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
+    ['file-context', 'CLAUDE_MEM_DISABLE_FILE_CONTEXT'],
+    ['file-context', 'CLAUDE_MEM_DISABLE_TOOL_HOOKS'],
+  ]) {
+    it(`exits 0 without starting the worker for ${hookEvent} when ${optOutVariable}=1`, () => {
+      const temporaryHome = makeTemporaryHome();
+      const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+      const result = runLauncher(['hook', 'claude-code', hookEvent], {
+        temporaryHome,
+        extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot, [optOutVariable]: '1' },
+      });
+      expect(result).toEqual({ status: 0, stdout: '', stderr: '' });
+    });
+  }
+
+  for (const [launcherArguments, environmentOverride] of [
+    [['hook', 'claude-code', 'observation'], { CLAUDE_MEM_DISABLE_FILE_CONTEXT: '1' }],
+    [['hook', 'claude-code', 'observation'], { CLAUDE_MEM_DISABLE_OBSERVATION: 'true' }],
+    [['hook', 'claude-code', 'observation'], { CLAUDE_MEM_DISABLE_TOOL_HOOKS: '0' }],
+    [['hook', 'claude-code', 'context'], { CLAUDE_MEM_DISABLE_TOOL_HOOKS: '1' }],
+    [['start'], { CLAUDE_MEM_DISABLE_TOOL_HOOKS: '1' }],
+  ] as Array<[string[], Record<string, string>]>) {
+    it(`still runs the worker for ${launcherArguments.join(' ')} with ${JSON.stringify(environmentOverride)}`, () => {
+      const temporaryHome = makeTemporaryHome();
+      const environmentRoot = makeStubPluginRoot(path.join(temporaryHome, 'env-root'));
+      const result = runLauncher(launcherArguments, {
+        temporaryHome,
+        extraEnvironment: { CLAUDE_PLUGIN_ROOT: environmentRoot, ...environmentOverride },
+      });
+      expect(result.status).toBe(0);
+      expect(parseStubWorkerOutput(result.stdout).argv).toEqual(launcherArguments);
+    });
+  }
+
+  it('starts Bun in a neutral directory and hands it the launch directory (#4628)', () => {
+    const temporaryHome = makeTemporaryHome();
+    const projectDirectory = path.join(temporaryHome, 'project');
+    mkdirSync(projectDirectory);
+    makeStubPluginRoot(path.join(projectDirectory, 'relative-root'));
+
+    // A relative plugin root still resolves against the launch directory.
+    const result = runObservationHook({
+      temporaryHome,
+      workingDirectory: projectDirectory,
+      extraEnvironment: { CLAUDE_PLUGIN_ROOT: 'relative-root' },
+    });
+
+    expect(result.status).toBe(0);
+    const stubWorkerOutput = parseStubWorkerOutput(result.stdout);
+    expect(stubWorkerOutput.originalCwd).toBe(projectDirectory);
+    expect(stubWorkerOutput.cwd).not.toBe(projectDirectory);
+    expect(stubWorkerOutput.pluginRoot).toBe(path.join(projectDirectory, 'relative-root'));
   });
 
   it('prints the integer LAUNCHER_PROTOCOL for --version', () => {

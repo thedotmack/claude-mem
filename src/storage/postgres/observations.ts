@@ -20,6 +20,7 @@ export interface PostgresObservation {
   projectId: string;
   teamId: string;
   serverSessionId: string | null;
+  contentSessionId?: string | null;
   kind: string;
   content: string;
   generationKey: string | null;
@@ -46,6 +47,7 @@ interface ObservationRow {
   project_id: string;
   team_id: string;
   server_session_id: string | null;
+  content_session_id?: string | null;
   kind: string;
   content: string;
   generation_key: string | null;
@@ -179,6 +181,8 @@ export class PostgresObservationRepository {
     platformSource?: string | null;
     folderProjects?: string[] | null;
     excludeSubagents?: boolean;
+    /** Select summaries (true) or observations (false); omit for both. */
+    summary?: boolean;
   }): Promise<PostgresObservation[]> {
     const platformSource = normalizePlatformSourceOrNull(input.platformSource);
     const query = input.query && input.query.trim().length > 0 ? input.query : null;
@@ -187,13 +191,16 @@ export class PostgresObservationRepository {
       : null;
     const result = await this.client.query<ObservationRow>(
       `
-        SELECT observations.* FROM observations
+        SELECT observations.*,
+          COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
+        FROM observations
         LEFT JOIN server_sessions
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
         WHERE observations.project_id = $1
           AND observations.team_id = $2
+          AND ($8::boolean IS NULL OR (observations.kind = 'summary') = $8)
           AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))
           AND (
             $6::text[] IS NULL
@@ -248,6 +255,7 @@ export class PostgresObservationRepository {
         platformSource,
         folderProjects,
         input.excludeSubagents === true,
+        input.summary ?? null,
       ]
     );
     return result.rows.map(mapObservationRow);
@@ -453,6 +461,7 @@ function mapObservationRow(row: ObservationRow): PostgresObservation {
     projectId: row.project_id,
     teamId: row.team_id,
     serverSessionId: row.server_session_id,
+    ...(row.content_session_id !== undefined ? { contentSessionId: row.content_session_id } : {}),
     kind: row.kind,
     content: row.content,
     generationKey: row.generation_key,

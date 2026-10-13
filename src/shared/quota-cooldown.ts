@@ -196,7 +196,13 @@ export const RATE_LIMIT_RECHECK_COOLDOWN_MS = 90_000;
  * or absent window keeps the full quota cooldown, so an unfamiliar provider is
  * never treated as transient by accident.
  */
-const TRANSIENT_QUOTA_WINDOWS = new Set(['rate_limit']);
+const TRANSIENT_QUOTA_WINDOWS = new Set([
+  'rate_limit',
+  // A provider that cannot serve right now (an outage that outlived its
+  // retries, replies with no usable output), armed only while the fallback
+  // takes the work (provider-dispatch's routeAroundUnservableProvider).
+  'unavailable',
+]);
 
 /**
  * The cooldown an armed window is entitled to. Read from the window rather than
@@ -523,6 +529,33 @@ export function resetQuotaCooldownsForTesting(): void {
 export type QuotaFallbackResolver = (provider: QuotaProvider, nowMs: number) => QuotaProvider | null;
 
 let quotaFallbackResolver: QuotaFallbackResolver | null = null;
+
+/**
+ * provider-dispatch's routeAroundUnservableProvider, for callers that cannot
+ * import provider-dispatch: ResponseProcessor sits on the import path of the
+ * very providers dispatch imports, so a direct import is a cycle that leaves
+ * OpenRouterProvider's base class uninitialized. Registered when dispatch
+ * loads; until then (a process that never loads it) nothing is routed.
+ */
+export type UnservableProviderRouter = (
+  provider: QuotaProvider,
+  message: string,
+  window: 'unavailable' | 'rate_limit',
+  profile?: string,
+) => QuotaProvider | null;
+
+let unservableProviderRouter: UnservableProviderRouter | null = null;
+
+export function setUnservableProviderRouter(router: UnservableProviderRouter | null): void {
+  unservableProviderRouter = router;
+}
+
+/** See UnservableProviderRouter. Null when dispatch is not loaded. */
+export function routeAroundUnservableProviderIfLoaded(
+  ...args: Parameters<UnservableProviderRouter>
+): QuotaProvider | null {
+  return unservableProviderRouter?.(...args) ?? null;
+}
 
 /** Install the resolver; returns the previous one so a caller can restore it. */
 export function setQuotaFallbackResolver(resolver: QuotaFallbackResolver | null): QuotaFallbackResolver | null {

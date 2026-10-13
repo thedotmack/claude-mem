@@ -97,20 +97,33 @@ export function readLauncherProtocol(binaryPath: string): number | null {
   return /^\d+$/.test(printedVersion) ? Number(printedVersion) : null;
 }
 
-/** First `<dir>/<name>` on a PATH value, no spawn (`.exe` appended on Windows). */
+const DEFAULT_WINDOWS_PATH_EXTENSIONS = '.COM;.EXE;.BAT;.CMD';
+
+/**
+ * First `<dir>/<name>` on a PATH value, no spawn. On Windows each directory is
+ * tried with every PATHEXT extension in order, the way a shell-style lookup
+ * resolves a bare command, so an npm `claude-mem.cmd` shim earlier on PATH is
+ * reported instead of the launcher `.exe` behind it.
+ */
 export function findExecutableOnPath(
   executableName: string,
   pathValue: string,
   platform: NodeJS.Platform,
+  windowsPathExtensions: string = DEFAULT_WINDOWS_PATH_EXTENSIONS,
 ): string | null {
   const platformPath = pathModuleFor(platform);
   const pathDelimiter = platform === 'win32' ? ';' : ':';
-  const fileName = platform === 'win32' ? `${executableName}.exe` : executableName;
+  const candidateFileNames = platform === 'win32'
+    ? windowsPathExtensions.split(';').map((extension) => extension.trim()).filter(Boolean)
+      .map((extension) => `${executableName}${extension.toLowerCase()}`)
+    : [executableName];
   for (const pathEntry of pathValue.split(pathDelimiter)) {
     const directory = pathEntry.trim().replace(/^"(.*)"$/, '$1');
     if (!directory) continue;
-    const candidatePath = platformPath.join(directory, fileName);
-    if (existsSync(candidatePath)) return candidatePath;
+    for (const candidateFileName of candidateFileNames) {
+      const candidatePath = platformPath.join(directory, candidateFileName);
+      if (existsSync(candidatePath)) return candidatePath;
+    }
   }
   return null;
 }
@@ -421,20 +434,34 @@ function inspectExistingLauncherBinary(binaryPath: string): ExistingLauncherBina
 }
 
 const TEMPORARY_OUTFILE_PATTERN = /^\.claude-mem-.*\.tmp/;
-const RENAMED_ASIDE_WINDOWS_BINARY_PATTERN = /^claude-mem\.old-.*\.exe$/;
+const RENAMED_ASIDE_WINDOWS_BINARY_PATTERN = /^claude-mem\.old-(\d+)\.exe$/;
+
+/** True while `processId` is running (EPERM: it exists but belongs to someone else). */
+function isProcessRunning(processId: number): boolean {
+  try {
+    process.kill(processId, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
 
 /**
  * Best-effort removal of leftovers from earlier placements: Windows binaries
- * renamed aside while a hook was still running them, and temp outfiles from a
+ * renamed aside by a placement that has since exited, and temp outfiles from a
  * crashed compile. A temp file younger than the compile timeout may belong to
  * a concurrent session still compiling, so it is left alone.
  */
 function removeStalePlacementLeftovers(binDirectory: string, platformPath: typeof posixPath): void {
   const now = Date.now();
   for (const entryName of readdirSync(binDirectory)) {
-    const isRenamedAside = RENAMED_ASIDE_WINDOWS_BINARY_PATTERN.test(entryName);
+    const renamedAsideMatch = RENAMED_ASIDE_WINDOWS_BINARY_PATTERN.exec(entryName);
     const isTemporaryOutfile = TEMPORARY_OUTFILE_PATTERN.test(entryName);
-    if (!isRenamedAside && !isTemporaryOutfile) continue;
+    if (!renamedAsideMatch && !isTemporaryOutfile) continue;
+    // A renamed-aside binary is another placement's rollback copy until the
+    // process that moved it finishes; deleting it then would leave no launcher
+    // if that placement's move-in fails.
+    if (renamedAsideMatch && isProcessRunning(Number(renamedAsideMatch[1]))) continue;
     const entryPath = platformPath.join(binDirectory, entryName);
     try {
       if (isTemporaryOutfile && now - statSync(entryPath).mtimeMs < LAUNCHER_COMPILE_TIMEOUT_MS) continue;

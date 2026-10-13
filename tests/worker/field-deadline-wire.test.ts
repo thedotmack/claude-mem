@@ -82,11 +82,13 @@ test('a field deadline longer than CLAUDE_MEM_LLM_TIMEOUT_MS governs the OpenRou
       (provider as any).compressField(text, budget, config, signal, deadlineMs), context, undefined, 3000);
     expect(String(condensed)).toContain('condensed by the model');
 
-    // The old wiring dropped it: the 600ms LLM default cuts the pass off first,
-    // so the field falls back to truncation despite the 3s knob.
-    const truncated = await optimizeField(raw, (text, budget, signal) =>
+    // Liveness over deadlines (Phase 3): a streamed request has no
+    // CLAUDE_MEM_LLM_TIMEOUT_MS wall-clock deadline any more (an idle timeout
+    // and an absolute cap bound it instead), so even without the forwarded
+    // deadline the 600ms setting no longer cuts a 1.2s reply off.
+    const withoutForwardedDeadline = await optimizeField(raw, (text, budget, signal) =>
       (provider as any).compressField(text, budget, config, signal), context, undefined, 3000);
-    expect(truncated).toBe(raw);
+    expect(String(withoutForwardedDeadline)).toContain('condensed by the model');
   } finally {
     if (originalLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
     else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = originalLlmTimeout;

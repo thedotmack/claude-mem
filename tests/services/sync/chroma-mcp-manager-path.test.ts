@@ -31,8 +31,10 @@ mock.module('../../../src/utils/logger.js', () => ({
   logger: { info: () => {}, debug: () => {}, warn: () => {}, error: () => {}, failure: () => {} },
 }));
 
+const mockSettings: Record<string, string> = {};
+
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
-  SettingsDefaultsManager: { get: () => '', getInt: () => 0, loadFromFile: () => ({}) },
+  SettingsDefaultsManager: { get: () => '', getInt: () => 0, loadFromFile: () => ({ ...mockSettings }) },
 }));
 
 mock.module('../../../src/shared/paths.js', () => ({
@@ -155,6 +157,39 @@ describe('ChromaMcpManager child PATH Homebrew coverage (#3271)', () => {
     const env = getUvxPreflightEnv();
     expect(env.PYTHONUTF8).toBe('1');
     expect(env.PYTHONIOENCODING).toBe('utf-8');
+  });
+});
+
+describe('ChromaMcpManager uvx path from settings.json (#4195)', () => {
+  let uvxDir: string;
+  let uvxExe: string;
+
+  beforeEach(() => {
+    uvxDir = fsRuntime.mkdtempSync(path.join(realOs.tmpdir(), 'uv tools '));
+    uvxExe = path.join(uvxDir, 'uvx.exe');
+    fsRuntime.writeFileSync(uvxExe, '');
+    existingDirs.add(uvxExe);
+    existingDirs.add(uvxDir);
+    mockSettings.CLAUDE_MEM_CHROMA_UVX_PATH = uvxExe;
+  });
+
+  afterEach(() => {
+    delete mockSettings.CLAUDE_MEM_CHROMA_UVX_PATH;
+    fsRuntime.rmSync(uvxDir, { recursive: true, force: true });
+  });
+
+  it('launches the uvx.exe the setting names on win32', () => {
+    setPlatform('win32');
+    setPath('C:\\Windows\\System32');
+
+    expect(ChromaMcpManager.resolveUvxCommand('win32')).toBe(uvxExe);
+  });
+
+  it('puts the setting\'s folder first on the chroma child PATH', () => {
+    setPlatform('win32');
+    setPath('C:\\Windows\\System32');
+
+    expect(childPath()[0]).toBe(uvxDir);
   });
 });
 

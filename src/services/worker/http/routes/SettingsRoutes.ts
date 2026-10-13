@@ -15,8 +15,10 @@ import { clearPortCache } from '../../../../shared/worker-utils.js';
 import { snapshotDependencyHealth } from '../../../../shared/dependency-health.js';
 import { ensureSettingsDocument, updateSettingsDocument } from '../../../../shared/settings-document.js';
 import { isHttpUrl } from '../../../../shared/openrouter-base-url.js';
+import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
+import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -118,6 +120,7 @@ function withoutEnvironmentEchoes(posted: Record<string, unknown>, settingsPath:
 const FILE_ONLY_SETTING_KEYS = new Set([
   'CLAUDE_CODE_PATH',
   'CLAUDE_MEM_CODEX_PATH',
+  'CLAUDE_MEM_CHROMA_UVX_PATH',
 ]);
 
 const LOOPBACK_HOSTNAMES = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
@@ -230,7 +233,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     // GET and an unchanged mask is skipped on POST. Observation TV / Chroma /
     // Telegram / CloudSync / Redis tokens remain file/env only.
     //
-    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH) are also
+    // Executable spawn paths (CLAUDE_CODE_PATH, CLAUDE_MEM_CODEX_PATH,
+    // CLAUDE_MEM_CHROMA_UVX_PATH) are also
     // file/env only: each value is a binary the worker spawns, so it must not be
     // HTTP-writable.
     const settingKeys = [
@@ -267,6 +271,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
       'CLAUDE_MEM_CLAUDE_CONFIG_DIR',
+      'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR',
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_AMOUNT',
@@ -278,6 +283,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SESSION_COUNT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
       'CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED',
     ];
@@ -308,6 +314,10 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     clearPortCache();
+    // Drop cached settings snapshots first, so the re-render below reads this save.
+    noteUserSettingsSaved();
+    // Context settings (counts, columns, welcome hint) shape the SessionStart block.
+    emitContextInvalidation('all', 'settings');
 
     logger.info('WORKER', 'Settings updated');
     res.json({ success: true, message: 'Settings updated successfully' });
@@ -350,12 +360,12 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    // Empty is valid: it turns the fallback off.
+    // Empty is valid: it means the default, the Anthropic plan. 'off' turns it off.
     if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
-      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts.
-      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible'];
+      // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts, plus QUOTA_FALLBACK_OFF.
+      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'off'];
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", "openrouter", or "openai-compatible"' };
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
       }
     }
 
@@ -373,9 +383,9 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS) {
-      const obsCount = parseInt(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS, 10);
-      if (isNaN(obsCount) || obsCount < 1 || obsCount > 200) {
+    if (settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS !== undefined) {
+      const obsCount = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_OBSERVATIONS);
+      if (obsCount === undefined || obsCount < 1 || obsCount > 200) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_OBSERVATIONS must be between 1 and 200' };
       }
     }
@@ -451,6 +461,18 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
+    // #4689 — same shape guard as CLAUDE_MEM_CLAUDE_CONFIG_DIR: the value is
+    // stamped verbatim onto the SDK subprocess env (EnvManager's
+    // buildIsolatedEnv), so a type-confused payload must not reach the child.
+    if (
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== undefined &&
+      settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== ''
+    ) {
+      if (typeof settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR !== 'string' || !settings.CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR.trim()) {
+        return { valid: false, error: 'CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR must be a non-empty path string, or "" to keep transcripts beside the credential profile' };
+      }
+    }
+
     const booleanSettings = [
       'CLAUDE_MEM_CONTEXT_SHOW_READ_TOKENS',
       'CLAUDE_MEM_CONTEXT_SHOW_WORK_TOKENS',
@@ -458,6 +480,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_CONTEXT_SHOW_SAVINGS_PERCENT',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY',
       'CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE',
+      'CLAUDE_MEM_FILE_READ_GATE_ENABLED',
       'CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY',
     ];
 
@@ -467,16 +490,16 @@ export class SettingsRoutes extends BaseRouteHandler {
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT, 10);
-      if (isNaN(count) || count < 0 || count > 20) {
+    if (settings.CLAUDE_MEM_CONTEXT_FULL_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_FULL_COUNT);
+      if (count === undefined || count < 0 || count > 20) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_FULL_COUNT must be between 0 and 20' };
       }
     }
 
-    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT) {
-      const count = parseInt(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT, 10);
-      if (isNaN(count) || count < 1 || count > 50) {
+    if (settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT !== undefined) {
+      const count = parseContextCountValue(settings.CLAUDE_MEM_CONTEXT_SESSION_COUNT);
+      if (count === undefined || count < 1 || count > 50) {
         return { valid: false, error: 'CLAUDE_MEM_CONTEXT_SESSION_COUNT must be between 1 and 50' };
       }
     }

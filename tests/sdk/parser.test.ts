@@ -34,6 +34,27 @@ afterEach(() => {
 });
 
 describe('parseAgentXml — observations', () => {
+  it('treats a whitespace-padded standalone <skip_summary/> as a valid no-op with no observations', () => {
+    const result = parseAgentXml('\n  <skip_summary reason="agent bookkeeping"/>  \n');
+
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.observations).toEqual([]);
+      expect(result.summary?.skipped).toBe(true);
+      expect(result.summary?.skip_reason).toBe('agent bookkeeping');
+    }
+  });
+
+  it('treats a fenced standalone <skip_summary/> as a valid no-op with no observations', () => {
+    const result = parseAgentXml('```xml\n<skip_summary />\n```');
+
+    expect(result.valid).toBe(true);
+    if (result.valid) {
+      expect(result.observations).toEqual([]);
+      expect(result.summary?.skipped).toBe(true);
+    }
+  });
+
   it('returns a populated observation when title is present', () => {
     const xml = `<observation>
       <type>discovery</type>

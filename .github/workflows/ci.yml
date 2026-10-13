@@ -30,9 +30,10 @@ jobs:
         run: npm install --no-audit --no-fund
 
       # Plugin installations execute the committed bundles directly. Check
-      # them before rebuilding, which would hide a stale published worker.
-      - name: Verify committed plugin versions
-        run: bun test tests/infrastructure/version-consistency.test.ts
+      # them before rebuilding, which would hide a stale published worker or
+      # a bundle committed with merge-conflict markers (#4728).
+      - name: Verify committed plugin bundles
+        run: bun test tests/infrastructure/version-consistency.test.ts tests/infrastructure/committed-plugin-bundles.test.ts
 
       - name: Typecheck
         run: npm run typecheck

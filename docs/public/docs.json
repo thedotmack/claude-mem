@@ -35,6 +35,7 @@
         "pages": [
           "introduction",
           "installation",
+          "t3code-integration",
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
@@ -95,11 +96,12 @@
           "modes",
           "telemetry",
           "development",
-          "branches",
           "troubleshooting",
           "platform-integration",
           "openclaw-integration",
-          "kimi-integration"
+          "kimi-integration",
+          "qoder-integration",
+          "screenpipe-integration"
         ]
       },
       {
@@ -177,5 +179,11 @@
     "telemetry": {
       "enabled": false
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/branches",
+      "destination": "/development"
+    }
+  ]
 }

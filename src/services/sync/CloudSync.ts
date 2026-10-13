@@ -513,6 +513,8 @@ export interface CloudSyncStatus {
   deviceId: string;
   pending: { observations: number; summaries: number; prompts: number; mutations: number; tombstones: number };
   quarantine: { count: number; latestReason: string | null };
+  /** Pulled hub ops this device set aside because they can never apply here. */
+  pullQuarantine: { count: number; latestReason: string | null };
   lastFlushAt: number | null;
   lastError: string | null;
   /** Set while paused on a 401/403; cleared by a successful re-check. */
@@ -787,6 +789,7 @@ export class CloudSync {
         tombstones: this.countPendingTombstones(),
       },
       quarantine: this.quarantineStatus(),
+      pullQuarantine: this.pullQuarantineStatus(),
       lastFlushAt: this.lastFlushAt,
       lastError: this.lastError,
       authError: this.authFailure
@@ -1939,6 +1942,20 @@ export class CloudSync {
     }
   }
 
+  private pullQuarantineStatus(): { count: number; latestReason: string | null } {
+    try {
+      const count = (this.db.prepare(
+        'SELECT COUNT(*) AS n FROM sync_pull_quarantine'
+      ).get() as { n: number }).n;
+      const latest = this.db.prepare(
+        'SELECT reason FROM sync_pull_quarantine ORDER BY id DESC LIMIT 1'
+      ).get() as { reason: string } | undefined;
+      return { count, latestReason: latest?.reason ?? null };
+    } catch {
+      return { count: 0, latestReason: null }; // DB opened without SessionStore migrations
+    }
+  }
+
   private maxDecimal(values: string[]): string {
     let max = '0';
     for (const value of values) {
@@ -2011,7 +2028,8 @@ export class CloudSync {
 
   private scheduleRetry(minDelayMs = 0): void {
     if (this.stopped || this.retryTimer) return;
-    const delay = applyBackoffJitter(Math.max(this.nextBackoffMs, minDelayMs));
+    // Jitter the local ladder, never the minimum requested by the hub.
+    const delay = Math.max(applyBackoffJitter(this.nextBackoffMs), minDelayMs);
     this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
     const timer = setTimeout(() => {
       this.retryTimer = null;

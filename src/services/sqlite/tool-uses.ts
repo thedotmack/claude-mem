@@ -16,6 +16,8 @@ import { Database } from 'bun:sqlite';
 import { createHash } from 'crypto';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
+import { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
+export { isRecursiveMemoryTool } from '../../shared/memory-retrieval-tools.js';
 
 /**
  * Soft cap per stored payload field. The Pro hook envelope already truncates
@@ -39,40 +41,12 @@ export const MAX_TOOL_PAYLOAD_BYTES = 64 * 1024;
  * a third — the table grows with every read instead of every tool call. The
  * other layers are gated for the same reason at a smaller scale.
  *
- * This gates only the `tool_uses` backup write. The observation generator still
- * sees these calls exactly as it does today; nothing about that path changes.
+ * The same lightweight classifier gates hook/ingest observation generation:
+ * retrieval must not create a new paid observation of its own previous output.
  * OpenClaw already drops `memory_*` before it ever reaches the worker
  * (`openclaw/src/index.ts:802`); the prefix is mirrored here so every other
  * adapter gets the same protection.
  */
-const RECURSIVE_MEMORY_TOOLS: ReadonlySet<string> = new Set([
-  'search',
-  'timeline',
-  'get_observations',
-  'get_tool_uses',
-  'session_start_context',
-  'observation_search',
-]);
-
-export function isRecursiveMemoryTool(toolName: string): boolean {
-  if (!toolName) return false;
-  if (toolName.startsWith('memory_')) return true;
-  if (!toolName.startsWith('mcp__')) return false;
-
-  // mcp__<server>__<tool>. Match the SERVER segment too: a different MCP
-  // server's generic `search` is a real tool call and belongs in the index.
-  const parts = toolName.split('__');
-  if (parts.length < 3) return false;
-  const server = parts[1].toLowerCase();
-  const tool = parts.slice(2).join('__');
-  const isClaudeMemServer = server.includes('claude-mem')
-    || server.includes('claude_mem')
-    || server.includes('mcp-search')
-    || server.includes('cmem');
-
-  return isClaudeMemServer && RECURSIVE_MEMORY_TOOLS.has(tool);
-}
-
 export interface ToolUseRow {
   id: number;
   tool_use_id: string;
@@ -196,6 +170,7 @@ export function createToolUsesSchema(db: Database): void {
   `);
 
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_project ON tool_uses(project)');
+  db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_project_nocase_created ON tool_uses(project COLLATE NOCASE, created_at_epoch DESC, id DESC)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_memory_session ON tool_uses(memory_session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_content_session ON tool_uses(content_session_id)');
   db.run('CREATE INDEX IF NOT EXISTS idx_tool_uses_session_db_id ON tool_uses(session_db_id)');
@@ -236,7 +211,9 @@ export function upsertToolUse(db: Database, input: UpsertToolUseInput): number |
     )
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(content_session_id, tool_use_id) DO UPDATE SET
-      memory_session_id = COALESCE(excluded.memory_session_id, tool_uses.memory_session_id),
+      memory_session_id = CASE WHEN tool_uses.observation_id IS NULL
+        THEN COALESCE(excluded.memory_session_id, tool_uses.memory_session_id)
+        ELSE tool_uses.memory_session_id END,
       session_db_id     = COALESCE(excluded.session_db_id, tool_uses.session_db_id),
       project           = CASE WHEN excluded.project != '' THEN excluded.project ELSE tool_uses.project END,
       platform_source   = excluded.platform_source,
@@ -300,14 +277,20 @@ export function linkToolUsesToObservation(
   const result = db.prepare(`
     UPDATE tool_uses
     SET observation_id = COALESCE(observation_id, ?),
-        memory_session_id = COALESCE(?, memory_session_id)
+        memory_session_id = CASE WHEN observation_id IS NULL
+          THEN COALESCE(?, memory_session_id)
+          ELSE COALESCE(memory_session_id, ?)
+        END
     WHERE content_session_id = ?
       AND tool_use_id IN (${placeholders})
+      AND (observation_id IS NULL OR observation_id = ?)
   `).run(
     params.observationId,
     params.memorySessionId ?? null,
+    params.memorySessionId ?? null,
     params.contentSessionId,
-    ...ids
+    ...ids,
+    params.observationId
   );
 
   return Number(result.changes ?? 0);
@@ -365,7 +348,7 @@ export function getToolUsesByIds(
   const conditions = [`(${idClauses.join(' OR ')})`];
 
   if (options.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(options.project);
   }
   if (options.contentSessionId) {
@@ -398,7 +381,7 @@ export function queryToolUses(db: Database, filters: ToolUseQueryFilters = {}): 
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
@@ -464,7 +447,7 @@ export function countToolUses(
   const params: Array<string | number> = [];
 
   if (filters.project) {
-    conditions.push('project = ?');
+    conditions.push('project COLLATE NOCASE = ?');
     params.push(filters.project);
   }
   if (filters.contentSessionId) {
@@ -505,4 +488,62 @@ export function toolUsesTableExists(db: Database): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` as a whole number of days. 0 means keep
+ * forever, and so does anything that is not a plain non-negative integer: a
+ * typo in a hand-edited settings.json must never turn into a purge, and must
+ * never stop the worker from starting. settings.json is hand-editable JSON, so
+ * the value may arrive as an unquoted number (`30`) as well as a string (`"30"`);
+ * both mean 30 days. Any other type is ignored.
+ */
+export function resolveToolUsesRetentionDays(raw: unknown): number {
+  if (typeof raw === 'number') {
+    return Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
+  }
+  if (typeof raw !== 'string') return 0;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return 0;
+  const days = Number(trimmed);
+  return Number.isSafeInteger(days) ? days : 0;
+}
+
+/**
+ * Opt-in retention for the raw tool I/O index. Deletes rows older than
+ * `retentionDays` that are linked to an observation that still exists, because
+ * that observation carries the distilled result. `observation_id` is not a
+ * foreign key, so deleting an observation leaves the link behind: a row whose
+ * observation is gone is, like a row with no `observation_id` at all, the only
+ * copy of that I/O and is never touched. `retentionDays` of 0 keeps
+ * everything. Freed pages are reused by SQLite; returning disk space to the OS
+ * is the job of VACUUM / auto_vacuum, not of this purge.
+ *
+ * Returns the number of rows removed.
+ */
+export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoch: number = Date.now()): number {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays <= 0) return 0;
+  try {
+    if (!toolUsesTableExists(db)) return 0;
+    const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
+    const { changes } = db
+      .prepare(
+        `DELETE FROM tool_uses
+          WHERE observation_id IS NOT NULL
+            AND created_at_epoch < ?
+            AND EXISTS (SELECT 1 FROM observations WHERE observations.id = tool_uses.observation_id)`
+      )
+      .run(cutoffEpoch);
+    if (changes > 0) {
+      logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
+        rows: changes,
+        retentionDays,
+      });
+    }
+    return changes;
+  } catch (error) {
+    logger.debug('DB', 'tool_uses retention purge skipped', {},
+      error instanceof Error ? error : new Error(String(error)));
+    return 0;
+  }
 }

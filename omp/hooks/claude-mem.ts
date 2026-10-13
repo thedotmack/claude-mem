@@ -18,9 +18,11 @@
  *  - context handler MAY return { messages }, but that REPLACES the conversation
  *    (chained replacement). We spread the original messages back in and append
  *    one system message — never return only injected text (would wipe the chat).
- *  - contentSessionId is process-stable and regenerated only on session_compact
- *    (one claude-mem session per omp session, not per prompt — before_agent_start
- *    fires once per user prompt, so we never mint a new id there).
+ *  - contentSessionId is regenerated on session_compact, session_switch and
+ *    session_branch: one claude-mem session per omp session file (and a new one
+ *    after each compaction), never per prompt — before_agent_start fires once
+ *    per user prompt, so we never mint a new id there. A reload re-emits
+ *    session_switch for the file already open, and that keeps the id.
  *  - every user prompt posts init (the worker de-duplicates a repeated prompt),
  *    as the Claude Code hooks do, each after the previous one so prompts are
  *    recorded in order. Observations wait for the latest prompt's init and are
@@ -35,8 +37,9 @@
  */
 
 import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { HookAPI } from "@oh-my-pi/pi-coding-agent/extensibility/hooks";
 
 // ---------------------------------------------------------------------------
@@ -132,6 +135,8 @@ interface OmpSession {
   // resolves true once the worker recorded that prompt. Observations and the
   // summary wait on it so they land after the prompts they belong to.
   lastInit?: Promise<boolean>;
+  // All observations dispatched for this identity, including HTTP still in flight.
+  observations?: Promise<void>;
   // The worker recorded at least one prompt for this id (finalize needs one).
   anchored: boolean;
   // The worker skipped this checkout as excluded: nothing more is sent.
@@ -143,7 +148,7 @@ let ctxCache: { at: number; cwd: string; md: string } | null = null;
 let lastAssistant = ""; // captured on agent_end, sent at summarize
 
 function newSession(): OmpSession {
-  session = { id: `omp-${process.pid}-${Date.now().toString(36)}`, anchored: false, excluded: false };
+  session = { id: `omp-${process.pid}-${randomUUID()}`, anchored: false, excluded: false };
   return session;
 }
 
@@ -225,13 +230,13 @@ async function recordPrompt(target: OmpSession, body: Record<string, unknown>): 
   }
 }
 
-// Finalize a session the worker recorded a prompt for. Chained after its latest
-// init, so the summary never overtakes the prompts it summarizes; a session
+// Finalize a session the worker recorded a prompt for. Wait for its latest
+// init and all dispatched observations, so the summary cannot overtake them; a session
 // with no recorded prompt (every init failed, or the checkout is excluded) is
 // left alone.
 function finalize(target: OmpSession | undefined, assistantMessage: string): void {
   if (!target) return;
-  void (target.lastInit ?? Promise.resolve(false)).then(() => {
+  void Promise.all([target.lastInit ?? Promise.resolve(false), target.observations]).then(() => {
     if (!target.anchored || target.excluded) return;
     return post("/api/sessions/summarize", {
       contentSessionId: target.id,
@@ -253,6 +258,32 @@ export default function claudeMemBridge(pi: HookAPI): void {
     workerBase = undefined;
     newSession();
   });
+
+  // /new, /resume and branches switch sessions without firing session_start
+  // again. Close the old prompt chain before rotating its bridge identity.
+  const switchSession = async (
+    event?: { previousSessionFile?: string | undefined },
+    ctx?: { sessionManager?: { getSessionFile?(): string | undefined } },
+  ) => {
+    // OMP's reload() re-emits session_switch for the file that is already open
+    // (switchSession(this.sessionFile)). That is the same OMP session: keep its
+    // id, context cache and pending summary. A switch with no previous file
+    // (e.g. a non-persisted /new) still rotates.
+    const previousFile = event?.previousSessionFile;
+    const currentFile = ctx?.sessionManager?.getSessionFile?.();
+    if (
+      typeof previousFile === "string" && previousFile !== ""
+      && typeof currentFile === "string" && currentFile !== ""
+      && resolve(previousFile) === resolve(currentFile)
+    ) return;
+    finalize(session, lastAssistant);
+    newSession();
+    workerBase = undefined;
+    ctxCache = null;
+    lastAssistant = "";
+  };
+  pi.on("session_switch", switchSession);
+  pi.on("session_branch", switchSession);
 
   // Compaction starts a new logical session in claude-mem too (matches Claude
   // Code's SessionStart clear/compact path): finalize the session that is
@@ -301,10 +332,11 @@ export default function claudeMemBridge(pi: HookAPI): void {
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
 
-    void (target.lastInit ?? Promise.resolve(true)).then(recorded => {
+    const observation = (target.lastInit ?? Promise.resolve(true)).then(recorded => {
       if (!recorded || target.excluded) return;
       return post("/api/sessions/observations", body);
     });
+    target.observations = Promise.all([target.observations, observation]).then(() => {});
   });
 
   // agent_end: remember the last assistant message so summarize has an anchor.

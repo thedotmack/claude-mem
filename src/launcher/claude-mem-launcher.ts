@@ -23,8 +23,8 @@
  */
 import { spawn, spawnSync, type SpawnOptions } from 'child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
-import { homedir } from 'os';
-import { basename, dirname, join } from 'path';
+import { homedir, tmpdir } from 'os';
+import { basename, dirname, join, resolve } from 'path';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 
 const IS_WINDOWS = process.platform === 'win32';
@@ -119,7 +119,7 @@ function resolvePluginRootForLauncher(): string | null {
     const trimmedRoot = candidateRoot.replace(/[\\/]+$/, '') || candidateRoot;
     const pluginRoot = existsSync(join(trimmedRoot, 'plugin', 'scripts')) ? join(trimmedRoot, 'plugin') : trimmedRoot;
     if (existsSync(join(pluginRoot, 'scripts', 'worker-service.cjs'))) {
-      return pluginRoot;
+      return resolve(pluginRoot);
     }
   }
   return null;
@@ -145,10 +145,37 @@ function isPluginDisabledInClaudeSettings(): boolean {
   }
 }
 
-/** Ported verbatim from bun-runner.js findBun(): PATH first, then explicit overrides and well-known homes. */
+/**
+ * Tool-hook opt-outs (#4719), read from the hook's environment only: exit
+ * before resolving the plugin or starting Bun, so a disabled tool hook never
+ * loads the worker bundle. Mirrors toolHookOptOutVariable in
+ * src/build/hook-shell-template.ts; the handlers still honour the same
+ * switches, so this is the fast path, not the only guard.
+ */
+function isToolHookDisabledByEnvironment(workerServiceArguments: string[]): boolean {
+  if (workerServiceArguments[0] !== 'hook') return false;
+  const hookEvent = workerServiceArguments[2];
+  const eventOptOutVariable = hookEvent === 'observation' ? 'CLAUDE_MEM_DISABLE_OBSERVATION'
+    : hookEvent === 'file-context' ? 'CLAUDE_MEM_DISABLE_FILE_CONTEXT' : undefined;
+  if (!eventOptOutVariable) return false;
+  return process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS === '1' || process.env[eventOptOutVariable] === '1';
+}
+
+/**
+ * Absolute path of a Windows system tool. Spawning the bare name lets libuv
+ * pick up a same-named executable from the hook's cwd (the user's project)
+ * before PATH, so a `where.exe` committed to a repository would run on every
+ * hook. Same mitigation as the installer's powershell.exe lookup.
+ */
+function windowsSystem32Executable(executableName: string): string {
+  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || process.env.windir || process.env.WINDIR || 'C:\\Windows';
+  return join(systemRoot, 'System32', executableName);
+}
+
+/** Ported from bun-runner.js findBun(): PATH first, then explicit overrides and well-known homes. */
 function findBun(): string | null {
   const pathCheck = IS_WINDOWS
-    ? spawnSync('where', ['bun'], {
+    ? spawnSync(windowsSystem32Executable('where.exe'), ['bun'], {
         encoding: 'utf-8',
         stdio: ['pipe', 'pipe', 'pipe'],
         windowsHide: true
@@ -160,7 +187,10 @@ function findBun(): string | null {
 
   if (pathCheck.status === 0 && pathCheck.stdout && pathCheck.stdout.trim()) {
     if (IS_WINDOWS) {
-      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+      // where.exe prints in the console code page, so a non-ASCII profile path
+      // can arrive garbled; keep only lines that exist on disk (#4694).
+      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
+        .filter(line => existsSync(line));
       const firstBunPath = bunPaths.find(line => {
         const lowerPath = line.toLowerCase();
         return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
@@ -181,12 +211,15 @@ function findBun(): string | null {
       // the resolved absolute path instead of falling through to the bare
       // name: resolving a bare `bun` later relies on the child's PATH, which
       // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      const firstWherePath = bunPaths.find(Boolean);
       if (firstWherePath) {
         return firstWherePath;
       }
+      // Every where hit was garbled or stale (#4694): fall through to the
+      // explicit overrides and well-known install homes below.
+    } else {
+      return 'bun';
     }
-    return 'bun';
   }
 
   const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
@@ -324,7 +357,7 @@ function reportEmptyStdinAndExit(stdinData: Buffer | null, workerScriptPath: str
 }
 
 async function runThroughWorker(workerServiceArguments: string[]): Promise<never> {
-  if (isPluginDisabledInClaudeSettings()) {
+  if (isToolHookDisabledByEnvironment(workerServiceArguments) || isPluginDisabledInClaudeSettings()) {
     process.exit(0);
   }
 
@@ -356,7 +389,12 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
   const spawnOptions: SpawnOptions = {
     stdio: ['pipe', 'inherit', 'inherit'],
     windowsHide: true,
-    env: { ...process.env, ...bunRuntime.extraEnvironment },
+    // Bun reads tsconfig.json from its working directory and prints warnings
+    // about it to stderr, which Claude Code shows as hook errors (#4628). Start
+    // it in a neutral directory and hand it the launch directory; the hook
+    // entry point (src/cli/hook-original-cwd.ts) moves back there.
+    env: { ...process.env, ...bunRuntime.extraEnvironment, CLAUDE_MEM_HOOK_ORIGINAL_CWD: process.cwd() },
+    cwd: tmpdir(),
   };
   let spawnCommand = bunRuntime.bunExecutablePath;
   let spawnArguments = workerArguments;

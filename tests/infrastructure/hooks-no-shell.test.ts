@@ -71,7 +71,7 @@ describe('plugin/hooks/hooks.json runtime hooks have no shell (#3605)', () => {
 
   it('has exactly one node entry, the SessionStart ensure-launcher self-heal', () => {
     const nodeEntries = runtimeEntries.filter(({ entry }) => entry.command === 'node');
-    expect(nodeEntries.map(({ location }) => location)).toEqual(['SessionStart.1.0']);
+    expect(nodeEntries.map(({ location }) => location)).toEqual(['SessionStart.2.0']);
   });
 });
 
@@ -94,7 +94,7 @@ describe('build-hooks Rule A verifier rejects runtime entries outside the manife
       type: 'command', command: 'claude-mem', args: ['arbitrary', 'worker', 'arguments'],
     });
     expect(() => verifyParsedHooks(parsedHooks)).toThrow(
-      'plugin/hooks/hooks.json (SessionStart.0.2) has claude-mem args ["arbitrary","worker","arguments"] that are not in the manifest',
+      'plugin/hooks/hooks.json (SessionStart.0.1) has claude-mem args ["arbitrary","worker","arguments"] that are not in the manifest',
     );
   });
 

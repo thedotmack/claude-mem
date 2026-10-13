@@ -17,6 +17,7 @@ export function SummaryCard({ summary, onDeleted }: SummaryCardProps) {
     { key: "learned", label: "Learned", content: summary.learned, icon: "/icon-thick-learned.svg" },
     { key: "completed", label: "Completed", content: summary.completed, icon: "/icon-thick-completed.svg" },
     { key: "next_steps", label: "Next Steps", content: summary.next_steps, icon: "/icon-thick-next-steps.svg" },
+    { key: "notes", label: "Notes", content: summary.notes, icon: "/icon-thick-learned.svg" },
   ].filter((section) => section.content);
 
   return (

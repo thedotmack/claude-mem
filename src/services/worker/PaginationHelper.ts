@@ -99,7 +99,7 @@ export class PaginationHelper {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    query += ' ORDER BY o.created_at_epoch DESC LIMIT ? OFFSET ?';
+    query += ' ORDER BY o.created_at_epoch DESC, o.id DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
     const results = db.prepare(query).all(...params) as Observation[];
@@ -129,6 +129,7 @@ export class PaginationHelper {
         ss.learned,
         ss.completed,
         ss.next_steps,
+        ss.notes,
         ss.project,
         ss.created_at,
         ss.created_at_epoch
@@ -161,7 +162,7 @@ export class PaginationHelper {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    query += ' ORDER BY ss.created_at_epoch DESC LIMIT ? OFFSET ?';
+    query += ' ORDER BY ss.created_at_epoch DESC, ss.id DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
     const stmt = db.prepare(query);
@@ -235,7 +236,7 @@ export class PaginationHelper {
       query += ` WHERE ${conditions.join(' AND ')}`;
     }
 
-    query += ' ORDER BY up.created_at_epoch DESC LIMIT ? OFFSET ?';
+    query += ' ORDER BY up.created_at_epoch DESC, up.id DESC LIMIT ? OFFSET ?';
     params.push(limit + 1, offset);
 
     const stmt = db.prepare(query);

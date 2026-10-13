@@ -149,12 +149,12 @@ async function runWorkerService(
   return { exitCode, stdout, stderr, elapsedMs: Date.now() - startedAt };
 }
 
-function sessionStartInput(): string {
+function sessionStartInput(source = 'startup'): string {
   return JSON.stringify({
     session_id: 'session-start-server-runtime',
     cwd: projectDir,
     hook_event_name: 'SessionStart',
-    source: 'startup',
+    source,
   });
 }
 
@@ -203,6 +203,20 @@ afterEach(async () => {
 });
 
 describe('SessionStart in server runtime (plan-24 step 4)', () => {
+  it('returns no timeline on Claude resume without reading the server or worker', async () => {
+    writeSettings(startFakeServer());
+
+    const result = await runWorkerService(['hook', 'claude-code', 'context'], sessionStartInput('resume'));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.elapsedMs).toBeLessThan(HOOK_BUDGET_MS);
+    expect(workerPortConnections).toBe(0);
+    expect(contextRequests).toEqual([]);
+    expect(parseHookOutput(result.stdout)).toEqual({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+    });
+  }, 30_000);
+
   it('renders the shared server\'s rows in under 5 s without touching the worker port', async () => {
     const serverBaseUrl = startFakeServer();
     writeSettings(serverBaseUrl);

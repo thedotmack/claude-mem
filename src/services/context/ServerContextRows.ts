@@ -36,8 +36,9 @@ type ServerRow = Record<string, unknown>;
  * caller renders the empty state instead of reaching for stale local rows.
  *
  * Server summaries are stored as observations with kind='summary', so one
- * recency read returns both. It asks for enough rows to fill the observation
- * count plus the summary count, capped at the route's SERVER_CONTEXT_MAX_LIMIT.
+ * recency read returns both, with separate observation and summary allowances
+ * so newer rows of one kind cannot crowd out the other. Their combined count
+ * is capped at the route's SERVER_CONTEXT_MAX_LIMIT.
  * That cap also bounds `full` mode, which asks for everything.
  *
  * `config.mainAgentOnly` (CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY) asks the server to
@@ -72,6 +73,11 @@ export async function fetchServerContextRows(
       // returns the NEWEST, which is what a session-start block is. `query: ''`
       // is not a third option -- the route's schema rejects it (min 1 char).
       limit,
+      // Only reserve exact category counts when both fit. Full mode and custom
+      // totals above the cap retain the existing capped mixed recency window.
+      ...(wanted <= SERVER_CONTEXT_MAX_LIMIT
+        ? { summaryLimit: config.sessionCount + SUMMARY_LOOKAHEAD }
+        : {}),
       folderProjects,
       excludeSubagents: config.mainAgentOnly,
       ...(platformSource ? { platformSource } : {}),
@@ -146,6 +152,7 @@ export function toLocalObservationShape(
   return {
     id: asText(row.id) ?? '',
     memory_session_id: asText(pick(row, 'serverSessionId', 'memory_session_id')) ?? '',
+    content_session_id: asText(pick(row, 'contentSessionId', 'content_session_id')) ?? undefined,
     platform_source: platformSource ?? '',
     type: asText(pick(row, 'kind', 'type')) ?? 'discovery',
     title: asText(pick(row, 'title')) ?? firstLine,
@@ -179,6 +186,7 @@ export function toLocalSummaryShape(
     learned: asText(pick(row, 'learned')),
     completed: asText(pick(row, 'completed')),
     next_steps: asText(pick(row, 'next_steps', 'nextSteps')),
+    notes: asText(pick(row, 'notes')),
     created_at: new Date(epoch).toISOString(),
     created_at_epoch: epoch,
     project: asText(pick(row, 'project')) ?? project,

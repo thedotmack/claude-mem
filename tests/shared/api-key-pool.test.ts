@@ -288,7 +288,11 @@ describe('retryPolicyForPool', () => {
     expect(seen).toBe(3);
   });
 
-  it('still retries transient in place rather than spending the pool on a network blip', async () => {
+  // Never pay twice (Phase 1): a transient failure is ambiguous (the work may
+  // have been billed), so it is neither retried in place nor rotated — one send,
+  // then the session's transport pause decides. Before Phase 1 this retried in
+  // place three times against the same key.
+  it('neither retries a transient failure in place nor spends the pool on it', async () => {
     const attempts: string[] = [];
     await expect(withKeyPool({ poolId: 'openrouter', keys: ['k1', 'k2'] },
       ({ key, poolSize }) => withRetry(async () => {
@@ -297,7 +301,7 @@ describe('retryPolicyForPool', () => {
       }, { label: 'probe', baseDelayMs: 1, ...retryPolicyForPool(poolSize) }),
     )).rejects.toThrow();
 
-    expect(attempts).toEqual(['k1', 'k1', 'k1']);
+    expect(attempts).toEqual(['k1']);
   });
 });
 

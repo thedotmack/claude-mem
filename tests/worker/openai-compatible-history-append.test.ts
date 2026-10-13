@@ -113,10 +113,10 @@ describe('OpenAICompatibleProvider conversation history', () => {
     mock.restore();
   });
 
-  it('records each reply exactly once across the init, observation and summary turns', async () => {
+  it('records each reply exactly once across the observation and summary turns', async () => {
     const session = makeSession();
     const provider = new TestProvider(
-      ['INIT_REPLY', 'OBSERVATION_REPLY', 'SUMMARY_REPLY'],
+      ['OBSERVATION_REPLY', 'SUMMARY_REPLY'],
       makeSessionManager([
         { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 },
         { type: 'summarize', last_assistant_message: 'done' },
@@ -125,17 +125,18 @@ describe('OpenAICompatibleProvider conversation history', () => {
 
     await provider.startSession(session);
 
-    expect(provider.queries).toBe(3);
+    // The init prompt rides on the observation request: no reply of its own.
+    expect(provider.queries).toBe(2);
     expect(session.conversationHistory.map(message => message.role))
-      .toEqual(['user', 'assistant', 'user', 'assistant', 'user', 'assistant']);
+      .toEqual(['user', 'user', 'assistant', 'user', 'assistant']);
     expect(session.conversationHistory.filter(message => message.role === 'assistant').map(message => message.content))
-      .toEqual(['INIT_REPLY', 'OBSERVATION_REPLY', 'SUMMARY_REPLY']);
+      .toEqual(['OBSERVATION_REPLY', 'SUMMARY_REPLY']);
   });
 
   it('adds no assistant turn for an empty observation reply when empty replies are not forwarded', async () => {
     const session = makeSession();
     const provider = new TestProvider(
-      ['INIT_REPLY', ''],
+      [''],
       makeSessionManager([
         { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 },
       ])
@@ -143,6 +144,6 @@ describe('OpenAICompatibleProvider conversation history', () => {
 
     await provider.startSession(session);
 
-    expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'assistant', 'user']);
+    expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'user']);
   });
 });

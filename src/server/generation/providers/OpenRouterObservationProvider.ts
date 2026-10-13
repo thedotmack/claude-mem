@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { assistantText } from '../../../shared/assistant-text.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
@@ -17,6 +18,7 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
 
 export interface OpenRouterObservationProviderOptions {
   apiKey: string;
@@ -42,7 +44,7 @@ export interface OpenRouterObservationProviderOptions {
 }
 
 interface OpenRouterResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: unknown } }>;
   usage?: { total_tokens?: number };
   error?: { code?: string | number; message?: string };
 }
@@ -145,7 +147,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.choices?.[0]?.message?.content?.trim() ?? '';
+    const rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
     if (!rawText) {
       logger.warn('SDK', 'OpenRouter returned empty content', {
         provider: 'openrouter',
@@ -188,7 +190,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (readError) {
     const err = readError instanceof Error ? readError : new Error(String(readError));
     logger.warn('SDK', 'Failed to read OpenRouter error response body', { provider: 'openrouter' }, err);

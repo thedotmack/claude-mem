@@ -26,7 +26,12 @@
             ],
             "timeout": 60,
             "async": true
-          },
+          }
+        ]
+      },
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
           {
             "type": "command",
             "command": "claude-mem",
@@ -87,9 +92,27 @@
         ]
       }
     ],
+    "PostToolUseFailure": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "claude-mem",
+            "args": [
+              "hook",
+              "claude-code",
+              "observation"
+            ],
+            "timeout": 120,
+            "async": true
+          }
+        ]
+      }
+    ],
     "PreToolUse": [
       {
-        "matcher": "Read",
+        "matcher": "Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$",
         "hooks": [
           {
             "type": "command",
@@ -99,8 +122,7 @@
               "claude-code",
               "file-context"
             ],
-            "timeout": 60,
-            "async": true
+            "timeout": 15
           }
         ]
       }

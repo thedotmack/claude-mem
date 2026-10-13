@@ -13,6 +13,8 @@ export interface ProjectWatermarks {
   summaries: number;
   prompts: number;
   pending?: PendingIdsByKind;
+  /** Rows whose remote revision must remove obsolete document fragments. */
+  fragmentReconciliation?: PendingIdsByKind;
   /**
    * Set once this project's title-only observations, which older versions
    * skipped while advancing the watermark, have been requeued (#4069).
@@ -64,6 +66,13 @@ function normalizeProjectWatermarks(marks: Partial<ProjectWatermarks> | undefine
     normalized.pending = pending;
   }
 
+  if (marks?.fragmentReconciliation) {
+    normalized.fragmentReconciliation = {
+      observations: normalizePendingIds(marks.fragmentReconciliation.observations),
+      summaries: normalizePendingIds(marks.fragmentReconciliation.summaries),
+    };
+  }
+
   if (marks?.titleOnlyRequeued === true) {
     normalized.titleOnlyRequeued = true;
   }
@@ -85,6 +94,9 @@ function load(): Record<string, ProjectWatermarks> {
   let parsed: Record<string, Partial<ProjectWatermarks>>;
   try {
     parsed = readJsonFileWithBom<Record<string, Partial<ProjectWatermarks>>>(path);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      throw new Error('checkpoint must be a project-watermark object');
+    }
   } catch (error) {
     // A truncated or corrupt state file must not abort the sync pipeline. Treat
     // it as empty and rebuild from the SQLite watermarks on the next backfill.
@@ -223,6 +235,30 @@ export const ChromaSyncState = {
 
     current.pending = current.pending ?? {};
     current.pending[kind] = merged;
+    all[project] = current;
+    persist();
+  },
+
+  markFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    current.pending = current.pending ?? {};
+    current.pending[kind] = normalizePendingIds([...(current.pending[kind] ?? []), id]);
+    current.fragmentReconciliation = current.fragmentReconciliation ?? {};
+    current.fragmentReconciliation[kind] = normalizePendingIds([...(current.fragmentReconciliation[kind] ?? []), id]);
+    all[project] = current;
+    persist();
+  },
+
+  needsFragmentReconciliation(project: string, kind: DocKind, id: number): boolean {
+    return this.get(project).fragmentReconciliation?.[kind]?.includes(id) ?? false;
+  },
+
+  clearFragmentReconciliation(project: string, kind: DocKind, id: number): void {
+    const all = load();
+    const current = normalizeProjectWatermarks(all[project] ?? ZERO);
+    if (!current.fragmentReconciliation?.[kind]?.includes(id)) return;
+    current.fragmentReconciliation[kind] = current.fragmentReconciliation[kind]!.filter(value => value !== id);
     all[project] = current;
     persist();
   },

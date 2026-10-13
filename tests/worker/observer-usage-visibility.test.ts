@@ -84,13 +84,11 @@ class RealUsageProvider extends OpenAICompatibleProvider<{ apiKey: string; model
   }
 }
 
-/** Init returns content; the observation turn is billed but empty-bodied (Gemini path). */
+/** The observation turn is billed but empty-bodied (Gemini path). */
 class EmptyObservationUsageProvider extends OpenAICompatibleProvider<{ apiKey: string; model: string }> {
   protected readonly providerName = 'TestProvider';
   protected readonly syntheticIdPrefix = 'test';
   protected readonly forwardEmptyMessageResponse = false;
-
-  private queryCount = 0;
 
   constructor(dbManager: any, sessionManager: any) {
     super(dbManager, sessionManager);
@@ -105,10 +103,6 @@ class EmptyObservationUsageProvider extends OpenAICompatibleProvider<{ apiKey: s
   }
 
   protected async query(_history: ConversationMessage[]): Promise<ProviderQueryResult> {
-    this.queryCount += 1;
-    if (this.queryCount === 1) {
-      return { content: 'init ok', tokensUsed: 100, inputTokens: 90, outputTokens: 10 };
-    }
     return { content: '', tokensUsed: 1000, inputTokens: 990, outputTokens: 10 };
   }
 
@@ -285,21 +279,24 @@ describe('OpenAICompatibleProvider observer cost visibility', () => {
 
     await provider.startSession(session);
 
-    // init query + observation query, each 990 in / 10 out.
-    expect(session.cumulativeInputTokens).toBe(1980);
-    expect(session.cumulativeOutputTokens).toBe(20);
+    // One observation query (the init prompt rides on it), 990 in / 10 out.
+    expect(session.cumulativeInputTokens).toBe(990);
+    expect(session.cumulativeOutputTokens).toBe(10);
 
     const completion = successSpy.mock.calls.find(call => String(call[1]).includes('agent completed'));
     expect(completion).toBeDefined();
     expect(completion![2]).toMatchObject({
-      cumulativeInputTokens: 1980,
-      cumulativeOutputTokens: 20,
+      cumulativeInputTokens: 990,
+      cumulativeOutputTokens: 10,
     });
   });
 
   it('reports cumulative observer tokens when the session dies mid-flight', async () => {
     const provider = new RealUsageProvider({} as any, {
-      getMessageIterator: async function* () {},
+      resetProcessingToPending: async () => 0,
+      getMessageIterator: async function* () {
+        yield { type: 'observation', tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 2 };
+      },
     } as any, true);
     const session = makeSession({ cumulativeInputTokens: 4_100_000, cumulativeOutputTokens: 9_000 });
 
@@ -326,14 +323,14 @@ describe('OpenAICompatibleProvider observer cost visibility', () => {
 
     await provider.startSession(session);
 
-    // init 90/10 + empty observation 990/10
-    expect(session.cumulativeInputTokens).toBe(1080);
-    expect(session.cumulativeOutputTokens).toBe(20);
+    // The empty observation is still billed: 990/10.
+    expect(session.cumulativeInputTokens).toBe(990);
+    expect(session.cumulativeOutputTokens).toBe(10);
 
     const completion = successSpy.mock.calls.find(call => String(call[1]).includes('agent completed'));
     expect(completion![2]).toMatchObject({
-      cumulativeInputTokens: 1080,
-      cumulativeOutputTokens: 20,
+      cumulativeInputTokens: 990,
+      cumulativeOutputTokens: 10,
     });
   });
 });

@@ -7,6 +7,7 @@ import { getPathModeProjectContext, getProjectContext } from '../../utils/projec
 import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
 
 const DEFAULT_DATA_DIR = paths.dataDir();
@@ -551,7 +552,11 @@ export async function adoptMergedWorktrees(opts: {
     db?.close();
   }
 
-  if (!dryRun && adoptedChromaTargets.length > 0) {
+  if (
+    !dryRun &&
+    adoptedChromaTargets.length > 0 &&
+    SettingsDefaultsManager.loadFromFile(path.join(dataDirectory, 'settings.json')).CLAUDE_MEM_CHROMA_ENABLED !== 'false'
+  ) {
     const chromaSync = new ChromaSync('claude-mem');
     try {
       await chromaSync.updateMergedIntoProject(adoptedChromaTargets, parentProject);

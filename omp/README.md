@@ -14,16 +14,19 @@ OMP-side plugin or modification is required.
 
 | OMP event | claude-mem endpoint | Purpose |
 |---|---|---|
-| `session_start` | — | Mint a process-stable `contentSessionId` |
+| `session_start` | — | Mint the session's `contentSessionId` |
 | `before_agent_start` | `POST /api/sessions/init` | Record every user prompt, in order (creates the claude-mem session on the first) |
 | `tool_result` | `POST /api/sessions/observations` | Record each tool call after its prompt (fire-and-forget; never posts an init) |
 | `context` | `GET /api/context/inject` | Inject memory from past sessions into the prompt (60s cache) |
+| `session_switch` / `session_branch` | `POST /api/sessions/summarize` | Finalize the previous session after its prompts and observations, then mint a new id |
 | `session_shutdown` | `POST /api/sessions/summarize` | Finalize the session summary |
 
 Behavioral notes (matching the OpenClaw adapter's conventions):
 
-- `contentSessionId` is stable for the lifetime of an OMP process and rotates on
-  compaction — never per user prompt, so observations stay grouped.
+- `contentSessionId` follows the OMP session file: it rotates when OMP moves to
+  another file (`/new`, `/resume`, fork, branch, `/btw`) and on compaction —
+  never per user prompt, so observations stay grouped. A reload of the file
+  that is already open keeps it.
 - All POSTs are fire-and-forget detached chains; the hook never blocks tool
   dispatch (the extension runner's 30s handler cap is never approached).
 - `memory_*` tool results are skipped to avoid recursion.

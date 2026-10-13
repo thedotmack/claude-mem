@@ -1,6 +1,8 @@
 # CMEM Pro cloud sync-api — protocol v2 hub on Fly + Neon.
 # Deploy from this directory: `fly deploy`
 # Secrets: DATABASE_URL (already set), CMEM_INTERNAL_PROJECTOR_SECRET
+# Forward mode (Phase 12 step 5): `fly secrets set FORWARD_ORIGIN=https://ziczmqtpmaxbornfghye.supabase.co/functions/v1/cmem-sync`
+# proxies /v1/sync/* to the Supabase function and skips Postgres. Rollback: `fly secrets unset FORWARD_ORIGIN`.
 
 app = "cmem-sync-api"
 primary_region = "iad"

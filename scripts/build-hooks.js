@@ -8,6 +8,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'url';
 import { allowScriptsMap } from './postinstall-allowlist.js';
 import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
+import { preparePiExtensionBuild, preflightDshAttribution, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -136,6 +137,17 @@ const ENSURE_LAUNCHER_HOOK_TIMEOUT_SECONDS = 180;
 // only on `claude --init` / `--maintenance` (SPIKE item 8), never at runtime.
 const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
 
+// Claude Code's PreToolUse Read timeout (seconds). The hook is synchronous so
+// the File Read Gate can deny a whole-file Read, which makes every Read wait on
+// it: bounded well under the old 60 s, and above the 3 s worker budget
+// (FILE_CONTEXT_WORKER_BUDGET_MS in src/cli/handlers/file-context.ts) plus hook
+// startup.
+const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
+
+// PreToolUse matcher (#4596, #4549): Read for the File Read Gate / file
+// timeline, plus the tools whose calls the memory-search handler inspects.
+const PRE_TOOL_USE_MATCHER = 'Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
+
 export function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
@@ -174,18 +186,23 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         // objects are invalid, so Claude Code would dump the raw text at the top
         // of every session.
         'SessionStart.0.0': claudeExecHook(['start'], { timeout: 60, async: true }, 'startup|resume|clear|compact'),
-        'SessionStart.0.1': claudeExecHook(['hook', 'claude-code', 'context'], { timeout: 60 }, 'startup|resume|clear|compact'),
+        // No `resume`: a resumed session already has its timeline (#4423).
+        'SessionStart.1.0': claudeExecHook(['hook', 'claude-code', 'context'], { timeout: 60 }, 'startup|clear|compact'),
         // Self-heal for marketplace-only installs (SPIKE Decision 1): compile the
         // launcher onto PATH when it is missing or stale. `startup` only.
         // Synchronous (no `async`): Claude Code shows a sync hook's
         // systemMessage to the user, which is how a failed self-heal is reported.
-        'SessionStart.1.0': {
+        'SessionStart.2.0': {
           groupMatcher: 'startup',
           entry: { type: 'command', ...buildEnsureLauncherExecHook(), timeout: ENSURE_LAUNCHER_HOOK_TIMEOUT_SECONDS },
         },
         'UserPromptSubmit.0.0': claudeExecHook(['hook', 'claude-code', 'session-init'], { timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS }),
         'PostToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'observation'], { timeout: 120, async: true }, '*'),
-        'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: 60, async: true }, 'Read'),
+        // A tool call that fails (e.g. Bash exiting non-zero) is delivered here
+        // instead of PostToolUse, so without it memory never sees a failed attempt.
+        'PostToolUseFailure.0.0': claudeExecHook(['hook', 'claude-code', 'observation'], { timeout: 120, async: true }, '*'),
+        // Synchronous so the File Read Gate can deny a whole-file Read.
+        'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS }, PRE_TOOL_USE_MATCHER),
         'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
         'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
       },
@@ -203,7 +220,7 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
-        // The mcp Node launcher derives its spawn target from requireFile, so
+        // The mcp Node launcher derives its module target from requireFile, so
         // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
@@ -407,6 +424,8 @@ async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
   try {
+    const piBuild = preparePiExtensionBuild();
+    preflightDshAttribution();
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
@@ -432,7 +451,12 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.4.3',
-        'tree-sitter-cli': '^0.26.5',
+        // Exact, not a range: the worker only installs a tree-sitter executable
+        // whose SHA-256 is pinned for this version
+        // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
+        // install that ignores bun.lock (npm) would resolve a range to a newer,
+        // unpinned release and leave smart_outline without an executable.
+        'tree-sitter-cli': '0.26.9',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
         'tree-sitter-go': '^0.25.0',
@@ -929,6 +953,17 @@ async function buildHooks() {
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
 
+    fs.mkdirSync('dist/pi-extension', { recursive: true });
+    await build({ ...piBuild.options, outfile: 'dist/pi-extension/index.js' });
+    for (const file of piBuild.attributionFiles) fs.writeFileSync(path.join('dist/pi-extension', file.name), file.contents);
+    console.log('✓ Pi memory extension built');
+    fs.mkdirSync('dsh/lib', { recursive: true });
+    const dshManifest = JSON.parse(fs.readFileSync('dsh/package.json', 'utf8'));
+    dshManifest.version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+    fs.writeFileSync('dsh/package.json', JSON.stringify(dshManifest, null, 2) + '\n');
+    await build({ ...DSH_PLUGIN_BUILD_OPTIONS, outfile: 'dsh/lib/index.js' });
+    console.log('✓ DeepSeek Harness memory plugin built');
+
     console.log('\n📋 Copying onboarding explainer to plugin tree...');
     const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
     const onboardingExplainerDst = 'plugin/skills/how-it-works/onboarding-explainer.md';
@@ -958,13 +993,19 @@ async function buildHooks() {
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
       'plugin/hooks/codex-hooks.json',
+      'plugin/hooks/qoder-hooks.json',
+      'plugin/hooks/qoder-repo-hooks.json',
       'plugin/scripts/bun-runner.js',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.codex-plugin/plugin.json',
+      'plugin/.qoder-plugin/plugin.json',
+      'plugin/qoder.mcp.json',
+      'plugin/scripts/qoder-hook-launcher.cjs',
       'plugin/.mcp.json',
       '.codex-plugin/plugin.json',
+      '.qoder-plugin/plugin.json',
       '.agents/plugins/marketplace.json',
       'dist/bug-report/index.js',
     ];

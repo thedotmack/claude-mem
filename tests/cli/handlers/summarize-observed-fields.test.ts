@@ -57,27 +57,36 @@ mock.module('../../../src/shared/observed-billing.js', () => ({
   },
 }));
 
-const workerCallLog: Array<{ path: string; method: string; body: any }> = [];
+// Awaited worker calls must stay empty (Stop spools and exits); the spool
+// nudge is fire-and-forget.
+const awaitedWorkerCallLog: string[] = [];
+const nudgeLog: string[] = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
-  ensureWorkerRunning: () => Promise.resolve(true),
-  getWorkerPort: () => 37777,
-  workerHttpRequest: (apiPath: string, options?: any) => {
-    workerCallLog.push({ path: apiPath, method: options?.method ?? 'GET', body: options?.body });
-    return Promise.resolve(new Response('{"status":"queued"}', { status: 200 }));
+  ...realWorkerUtilsSnapshot,
+  ensureWorkerRunning: () => {
+    awaitedWorkerCallLog.push('ensureWorkerRunning');
+    return Promise.resolve(true);
   },
-  executeWithWorkerFallback: async (apiPath: string, method: string, body: unknown) => {
-    workerCallLog.push({ path: apiPath, method, body });
+  workerHttpRequest: (apiPath: string) => {
+    nudgeLog.push(apiPath);
+    return Promise.resolve(new Response('{"status":"draining"}', { status: 202 }));
+  },
+  executeWithWorkerFallback: async (apiPath: string) => {
+    awaitedWorkerCallLog.push(apiPath);
     return { status: 'queued' };
   },
-  isWorkerFallback: (_result: unknown) => false,
 }));
 
 import { logger } from '../../../src/utils/logger.js';
+import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let tempSpool: ReturnType<typeof useTempHookSpoolDataDir>;
 
 beforeEach(() => {
-  workerCallLog.length = 0;
+  tempSpool = useTempHookSpoolDataDir();
+  awaitedWorkerCallLog.length = 0;
+  nudgeLog.length = 0;
   modelExtractCallCount = 0;
   billingDetectCallCount = 0;
   loggerSpies = [
@@ -92,6 +101,7 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+  tempSpool.restore();
 });
 
 afterAll(() => {
@@ -103,13 +113,14 @@ afterAll(() => {
 });
 
 function postedBody(): any {
-  expect(workerCallLog).toHaveLength(1);
-  expect(workerCallLog[0].path).toBe('/api/sessions/summarize');
-  const { body } = workerCallLog[0];
-  return typeof body === 'string' ? JSON.parse(body) : body;
+  expect(awaitedWorkerCallLog).toHaveLength(0);
+  expect(nudgeLog).toEqual(['/api/spool/nudge']);
+  const entries = spooledEntries('summarize');
+  expect(entries).toHaveLength(1);
+  return entries[0].payload;
 }
 
-describe('summarizeHandler — observed model + billing in the summarize body', () => {
+describe('summarizeHandler — observed model + billing in the spooled summarize payload', () => {
   it('sends observedModel and observedBilling for a claude-code Stop hook', async () => {
     const { summarizeHandler } = await import('../../../src/cli/handlers/summarize.js');
     const result = await summarizeHandler.execute({
@@ -155,7 +166,7 @@ describe('summarizeHandler — observed model + billing in the summarize body', 
     });
 
     const body = postedBody();
-    expect(body.last_assistant_message).toBe('Codex answer');
+    expect(body.lastAssistantMessage).toBe('Codex answer');
     expect(body.observedModel).toBe('claude-test-model');
     expect(modelExtractCallCount).toBe(1);
   });
@@ -171,7 +182,7 @@ describe('summarizeHandler — observed model + billing in the summarize body', 
     });
 
     const body = postedBody();
-    expect(body.last_assistant_message).toBe('A normal assistant turn.');
+    expect(body.lastAssistantMessage).toBe('A normal assistant turn.');
     expect(body.observedModel).toBe('claude-test-model');
     expect(modelExtractCallCount).toBe(1);
   });
@@ -187,7 +198,7 @@ describe('summarizeHandler — observed model + billing in the summarize body', 
     });
 
     const body = postedBody();
-    expect(body.last_assistant_message).toBe('A normal assistant turn.');
+    expect(body.lastAssistantMessage).toBe('A normal assistant turn.');
     expect(modelExtractCallCount).toBe(1);
   });
 

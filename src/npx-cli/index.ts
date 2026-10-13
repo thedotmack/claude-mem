@@ -24,11 +24,12 @@ ${styleText('bold', 'Install Commands')} (no Bun required):
   ${styleText('cyan', 'npx claude-mem')}                     Interactive install
   ${styleText('cyan', 'npx claude-mem install')}              Interactive install (also puts the claude-mem hook launcher on PATH)
   ${styleText('cyan', 'npx claude-mem install --ide <id>')}   Install for specific IDE
+  ${styleText('cyan', 'npx claude-mem install --ide dsh --dsh-profile <name>')}   Install DeepSeek Harness (default profile: web)
   ${styleText('cyan', 'npx claude-mem install --provider claude|codex|gemini|openrouter|host')}   Set LLM provider (optional non-interactively; a fresh install defaults to claude)
   ${styleText('cyan', 'npx claude-mem install --model <id>')}   Set Claude or Codex model (when provider=claude|codex)
   ${styleText('cyan', 'npx claude-mem install --no-auto-start')}   Skip worker auto-start at the end
   ${styleText('cyan', 'npx claude-mem install --disable-auto-memory')}   Explicitly disable Claude Code native auto-memory
-  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server brings up Docker pg+redis, generates an API key, injects the IDE MCP config)
+  ${styleText('cyan', 'npx claude-mem install --runtime worker|server')}   Select runtime non-interactively (server prints the docker compose command for pg+redis without running it, and provisions a hook API key only when CLAUDE_MEM_SERVER_DATABASE_URL is set; otherwise set CLAUDE_MEM_SERVER_DATABASE_URL before running npx claude-mem server keys rotate once Postgres is up)
   ${styleText('cyan', 'npx claude-mem install --runtime server --server-url <url>')}   Point the server runtime at a specific base URL
   ${styleText('cyan', 'npx claude-mem repair')}                Repair runtime (re-runs Bun/uv setup and bun install in plugin cache)
   ${styleText('cyan', 'npx claude-mem prune [--dry-run] [--keep <n>]')}   Remove superseded plugin cache versions (keeps newest 2 + live worker + registered install)
@@ -58,6 +59,8 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem transcript watch')}     Start transcript watcher
   ${styleText('cyan', 'npx claude-mem antigravity-cli install|status|uninstall')}   Manage Antigravity CLI hooks + MCP config
   ${styleText('cyan', 'npx claude-mem kimi install|status|uninstall')}   Manage Kimi Code CLI hooks + MCP config
+  ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
+  ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
 
 ${styleText('bold', 'Claude Code Hooks')}:
   Each hook runs ${styleText('cyan', 'claude-mem hook claude-code <event>')} directly, with no shell.
@@ -67,8 +70,8 @@ ${styleText('bold', 'Claude Code Hooks')}:
   restart your terminal or IDE, then check ${styleText('cyan', 'npx claude-mem doctor')}.
 
 ${styleText('bold', 'IDE Identifiers')}:
-  claude-code, cursor, grok-bot, opencode, openclaw, omp,
-  windsurf, codex-cli, kimi, copilot-cli, antigravity, goose,
+  claude-code, cursor, grok-bot, opencode, openclaw, omp, pi, dsh,
+  windsurf, codex-cli, t3code (aliases: t3, t3-code), kimi, copilot-cli, antigravity, goose,
   roo-code, warp
 `);
 }
@@ -82,6 +85,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
       model: { type: 'string' },
       runtime: { type: 'string' },
       'server-url': { type: 'string' },
+      'dsh-profile': { type: 'string' },
       'no-auto-start': { type: 'boolean' },
       'disable-auto-memory': { type: 'boolean' },
     },
@@ -123,6 +127,7 @@ function parseInstallOptions(argv: string[]): InstallOptions {
     disableAutoMemory: values['disable-auto-memory'] === true,
     runtime: runtime as InstallOptions['runtime'],
     serverUrl: flag('server-url'),
+    dshProfile: flag('dsh-profile'),
   };
 }
 
@@ -223,6 +228,30 @@ async function main(): Promise<void> {
       break;
     }
 
+    case 't3':
+    case 't3-code':
+    case 't3code': {
+      const { t3CodeStatus, uninstallT3Code } = await import('../services/integrations/T3CodeInstaller.js');
+      const { values } = parseArgs({ args: args.slice(2), options: { settings: { type: 'string' } } });
+      const options = { settingsPath: values.settings };
+      if (args[1] === 'status') process.exit(t3CodeStatus(options));
+      if (args[1] === 'uninstall') process.exit(uninstallT3Code(options));
+      console.error('Usage: npx claude-mem t3code status|uninstall [--settings <path>]');
+      console.error('Install with: npx claude-mem install --ide t3code');
+      process.exit(1);
+      break;
+    }
+
+    case 'pi': {
+      const { installPiExtension, uninstallPiExtension, piExtensionStatus } = await import('../services/integrations/PiInstaller.js');
+      const action = args[1]?.toLowerCase();
+      const code = action === 'install' ? installPiExtension()
+        : action === 'uninstall' ? uninstallPiExtension()
+        : action === 'status' ? piExtensionStatus() : 1;
+      if (!['install', 'uninstall', 'status'].includes(action ?? '')) console.error('Usage: npx claude-mem pi install|status|uninstall');
+      process.exitCode = code;
+      break;
+    }
     case 'kimi': {
       const { handleKimiCommand } = await import('../services/integrations/KimiHooksInstaller.js');
       const exitCode = await handleKimiCommand(args[1]?.toLowerCase(), args.slice(2));

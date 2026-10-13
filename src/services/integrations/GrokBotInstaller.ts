@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
 
@@ -246,7 +247,7 @@ function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
     };
   }
 
-  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as TranscriptWatchConfig;
+  const parsed = readJsonFileWithBom<TranscriptWatchConfig>(resolvedPath);
   return {
     version: 1,
     schemas: { ...(parsed.schemas ?? {}) },

@@ -192,9 +192,10 @@ function resolveWorkerRuntimePathUncached(options: RuntimeResolverOptions): stri
 import {
   captureProcessStartToken,
   verifyPidFileOwnership,
+  verifyWorkerPidFileOwnership,
   type PidInfo
 } from '../../supervisor/process-registry.js';
-export { captureProcessStartToken, verifyPidFileOwnership, type PidInfo };
+export { captureProcessStartToken, verifyPidFileOwnership, verifyWorkerPidFileOwnership, type PidInfo };
 
 export function writePidFile(info: PidInfo): void {
   mkdirSync(DATA_DIR, { recursive: true });

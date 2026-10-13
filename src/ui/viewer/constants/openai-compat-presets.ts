@@ -11,6 +11,8 @@ export interface OpenAICompatPresetOption {
   label: string;
   baseUrl: string;
   defaultModel: string;
+  /** Shown under the preset select when the preset needs a setting the defaults cannot cover. */
+  note?: string;
 }
 
 export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] = [
@@ -18,6 +20,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'orcarouter', label: 'OrcaRouter (orcarouter.ai)', baseUrl: 'https://api.orcarouter.ai/v1', defaultModel: 'openai/gpt-4o-mini' },
   { id: 'api-route', label: 'API Route (api-route.com)', baseUrl: 'https://global.api-route.com/v1', defaultModel: '' },
   { id: 'opper', label: 'Opper (opper.ai)', baseUrl: 'https://api.opper.ai/v3/compat', defaultModel: 'gpt-5.4-mini' },
+  { id: 'atlascloud', label: 'Atlas Cloud (atlascloud.ai)', baseUrl: 'https://api.atlascloud.ai/v1', defaultModel: 'deepseek-ai/deepseek-v4-flash' },
   { id: 'deepseek', label: 'DeepSeek', baseUrl: 'https://api.deepseek.com/v1', defaultModel: 'deepseek-chat' },
   { id: 'opencode-go', label: 'OpenCode Go (opencode.ai)', baseUrl: 'https://opencode.ai/zen/go/v1', defaultModel: 'kimi-k3' },
   { id: 'opencode-zen', label: 'OpenCode Zen (opencode.ai)', baseUrl: 'https://opencode.ai/zen/v1', defaultModel: '' },
@@ -25,6 +28,7 @@ export const OPENAI_COMPAT_PRESET_OPTIONS: readonly OpenAICompatPresetOption[] =
   { id: 'together', label: 'Together AI', baseUrl: 'https://api.together.xyz/v1', defaultModel: '' },
   { id: 'minimax', label: 'MiniMax (global)', baseUrl: 'https://api.minimax.io/v1', defaultModel: 'MiniMax-M3' },
   { id: 'minimax-cn', label: 'MiniMax (China)', baseUrl: 'https://api.minimaxi.com/v1', defaultModel: 'MiniMax-M3' },
+  { id: 'iflytek', label: 'iFlytek Spark (Astron MaaS)', baseUrl: 'https://maas-api.cn-huabei-1.xf-yun.com/v2', defaultModel: 'spark-x2.5', note: 'Token Plan keys need Base URL https://maas-token-api.cn-huabei-1.xf-yun.com/v2; the default endpoint is pay-as-you-go and answers them with 403.' },
   { id: 'ollama', label: 'Ollama (local)', baseUrl: 'http://localhost:11434/v1', defaultModel: '' },
   { id: 'lmstudio', label: 'LM Studio (local)', baseUrl: 'http://localhost:1234/v1', defaultModel: '' },
   { id: 'vllm', label: 'vLLM (self-hosted)', baseUrl: 'http://localhost:8000/v1', defaultModel: '' },

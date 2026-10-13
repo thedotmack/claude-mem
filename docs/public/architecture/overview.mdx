@@ -9,7 +9,7 @@ description: "System components and data flow in Claude-Mem"
 
 Claude-Mem operates as a Claude Code plugin with the following core components:
 
-1. **Plugin Hooks** - Lifecycle events (lifecycle hooks for SessionStart, UserPromptSubmit, PreToolUse for `Read`, PostToolUse, Stop and SessionEnd, plus a Setup version-check), each run as a shell-free `claude-mem hook claude-code <event>` command
+1. **Plugin Hooks** - Lifecycle events (lifecycle hooks for SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PostToolUseFailure, Stop and SessionEnd, plus a Setup version-check), each run as a shell-free `claude-mem hook claude-code <event>` command
 2. **Worker Service** - Express HTTP API on a per-user port; processes observations via the Claude Agent SDK (or Gemini / OpenRouter)
 3. **Database Layer** - SQLite + FTS5 (and optional Chroma for semantic search)
 4. **Search Tools** - HTTP API + the `mem-search` skill / MCP server for progressive disclosure search

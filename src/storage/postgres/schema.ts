@@ -311,6 +311,7 @@ CREATE INDEX IF NOT EXISTS idx_observation_jobs_status_next_attempt ON observati
 CREATE INDEX IF NOT EXISTS idx_observation_jobs_team_project ON observation_generation_jobs(team_id, project_id, status, created_at);
 CREATE INDEX IF NOT EXISTS idx_observation_jobs_event ON observation_generation_jobs(agent_event_id);
 CREATE INDEX IF NOT EXISTS idx_observation_jobs_source ON observation_generation_jobs(source_type, source_id);
+CREATE INDEX IF NOT EXISTS idx_observation_jobs_processing_locked_at ON observation_generation_jobs(locked_at) WHERE status = 'processing';
 CREATE INDEX IF NOT EXISTS idx_observation_job_events_job_created ON observation_generation_job_events(generation_job_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_log_scope_created ON audit_log(project_id, team_id, created_at);
 

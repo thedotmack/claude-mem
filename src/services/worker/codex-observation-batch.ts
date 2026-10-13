@@ -1,3 +1,4 @@
+import { retainTextHeadTail } from '../../shared/text-truncation.js';
 import { buildObservationPrompt, renderObservationPrompt, type ObservationPromptParts } from '../../sdk/prompts.js';
 import { logger } from '../../utils/logger.js';
 import type { PendingMessageWithId } from '../worker-types.js';
@@ -21,8 +22,9 @@ export function boundObservationPrompt(parts: ObservationPromptParts, maxChars: 
   if (prompt.length <= maxChars) return prompt;
   const shrinkField = (text: string, budget: number): string => {
     if (text.length <= budget) return text;
-    const head = Math.floor(budget / 2);
-    return `${text.slice(0, head)}<elided chars="${text.length - budget}" />${budget - head ? text.slice(-(budget - head)) : ''}`;
+    const headChars = Math.floor(budget / 2);
+    const { head, tail } = retainTextHeadTail(text, headChars, budget - headChars);
+    return `${head}<elided chars="${text.length - head.length - tail.length}" />${tail}`;
   };
   const shrink = (budget: number) => metadata + renderObservationPrompt({ ...parts,
     parameters: shrinkField(parts.parameters, budget), outcome: shrinkField(parts.outcome, budget) });
