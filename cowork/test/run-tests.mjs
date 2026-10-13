@@ -14,6 +14,8 @@ const TESTHOME = mkdtempSync(join(tmpdir(), 'owned-cmem-testhome-'));
 const SPOOL = TESTHOME + '/.claude-mem/cowork-spool.jsonl';
 let received = [];
 let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
+let holdIngest = null; // predicate: matching ingest requests stay open until released from `held`
+const held = [];
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -23,6 +25,7 @@ const server = http.createServer((req, res) => {
     received.push(rec);
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
+      if (holdIngest?.(rec.body)) { held.push(res); return; }
       res.writeHead(202, { 'content-type': 'application/json' });
       return res.end('{"accepted":1}');
     }
@@ -56,6 +59,12 @@ function run(event, stdinObj, env = {}) {
     }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
     child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
   });
+}
+
+async function until(cond, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise(r => setTimeout(r, 20));
+  return cond();
 }
 
 let pass = 0, fail = 0;
@@ -312,6 +321,24 @@ await run('observation', { session_id: 's2', cwd: '/home/claude', tool_name: 'Ba
 const tailBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.payload.tool_use_id) || [];
 check('next flush delivers the remainder', tailBatch.includes('e201'), JSON.stringify(tailBatch));
 check('spool empty after full drain', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+
+// ---- 8d. session-init runs async, so a slow one overlaps later events ----
+console.log('\n[8d] slow session-init overlapping later events');
+rmSync(SPOOL, { force: true });
+received = [];
+holdIngest = env => env?.event === 'session-init';
+const slowInit = run('session-init', { session_id: 's5', cwd: '/home/claude', prompt: 'held prompt' });
+check('session-init request held open', await until(() => held.length === 1));
+await run('observation', { session_id: 's5', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_16', tool_input: { command: 'ls' } });
+check('a later event is delivered meanwhile', received.some(r => r.body?.payload?.tool_use_id === 'tu_16'));
+holdIngest = null;
+held.shift()?.writeHead(503).end('{}');
+await slowInit;
+check('the failed session-init is spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('held prompt'));
+received = [];
+await run('summarize', { session_id: 's5', cwd: '/home/claude' });
+check('and delivered by the next flush', received.some(r => r.body?.batch?.some(e => e.event === 'session-init' && e.payload.prompt === 'held prompt')), JSON.stringify(received.map(r => r.body?.event ?? 'batch')));
+check('spool empty afterwards', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
 
 // ---- 9. remaining lifecycle events ----
 console.log('\n[9] lifecycle events');

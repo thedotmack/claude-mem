@@ -48,7 +48,11 @@ optional.
    `CLAUDE_MEM_CLOUD_SYNC_USER_ID`, `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` keys — the
    same keys the local claude-mem cloud-sync pairing writes). This plugin's
    hooks stay off wherever claude-mem is installed locally, so that pairing is
-   what carries this machine's work to cmem.ai.
+   what carries this machine's work to cmem.ai. The worker reads those keys
+   only at startup: restart it and run the claude-mem cloud-sync skill's
+   Verify step, which must report `configured: true` and `hub.reachable: true`.
+   Don't report success before it does; if it never does, pair through that
+   skill's installer flow instead.
 4. Verify without exposing the secret:
 
    ```bash
