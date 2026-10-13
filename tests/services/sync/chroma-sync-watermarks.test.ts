@@ -180,6 +180,9 @@ function makeStoreFromRows(
           },
           finalize: () => {},
           get: (...params: Array<string | number>) => {
+            if (query.includes('o.id = ?')) return observationRows.find(row => row.id === params[1]);
+            if (query.includes('ss.id = ?')) return summaryRows.find(row => row.id === params[1]);
+            if (query.includes('up.id = ?')) return promptRows.find(row => row.id === params[1]);
             if (query.includes('COUNT(*) as count FROM observations')) {
               return { count: observationRows.length };
             }
