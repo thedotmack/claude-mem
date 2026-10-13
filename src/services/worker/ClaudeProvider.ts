@@ -88,13 +88,17 @@ export function isThinkingRejectFeedback(text: string): boolean {
 
 /**
  * Flatten a thrown provider error into the text the thinking-reject match runs
- * against: the message plus any structured body (the SDK attaches the 400 JSON
- * to `.body`, mirroring the effort-hint inspection in classifyClaudeError).
+ * against: the message, the structured HTTP status (`status 400`, so a thrown
+ * 400 whose message only names thinking still matches), and any structured
+ * body (the SDK attaches the 400 JSON to `.body`, mirroring the effort-hint
+ * inspection in classifyClaudeError).
  */
-function describeErrorFeedbackText(error: unknown): string {
-  const errAny = error as { message?: unknown; body?: unknown } | null;
+export function describeErrorFeedbackText(error: unknown): string {
+  const errAny = error as { message?: unknown; body?: unknown; status?: unknown; statusCode?: unknown } | null;
   const parts: string[] = [];
   if (typeof errAny?.message === 'string') parts.push(errAny.message);
+  const status = errAny?.status ?? errAny?.statusCode;
+  if (typeof status === 'number' || typeof status === 'string') parts.push(`status ${status}`);
   const body = errAny?.body;
   if (typeof body === 'string') {
     parts.push(body);
@@ -803,36 +807,38 @@ export class ClaudeProvider {
           // always pending while a batch is re-queued, so the buffer never
           // idles out, and an endlessly failing turn would spin on it.
           if (!turnDispatchedText) {
-            if (resultIsError && !retriedAfterErrorResult) {
-              // #4732: an always-thinking gateway upstream rejects the
-              // thinking param with 400/1210 and the CLI reports it as a
-              // failed turn whose empty reply would flow down the
-              // no-observation-XML path and drop the claimed batch. Name the
-              // rejection on the first sight, strip the param for every later
-              // generation on this session, and pause this one as a transport
-              // exit: the claimed batch is re-queued and the transport resume
-              // opens the next generation with thinking omitted. One strip
-              // per session — if the gateway refused the param once it keeps
-              // refusing it, and a second pause here would just loop.
-              const resultErrorFeedback = [
-                typeof (message as any).result === 'string' ? (message as any).result : '',
-                ...(((message as any).errors as string[] | undefined) ?? []),
-              ].join('\n');
-              if (!session.observerThinkingStripped && isThinkingRejectFeedback(resultErrorFeedback)) {
-                session.observerThinkingStripped = true;
-                logger.warn('SDK', 'Upstream rejected the thinking parameter; retrying the next generation with it stripped (#4732)', {
-                  sessionId: session.sessionDbId,
-                  claimed: session.claimedMessageIds.length,
-                });
-                await this.sessionManager.resetProcessingToPending(session.sessionDbId);
-                session.abortReason = 'transport:thinking_rejected';
-                try {
-                  session.abortController.abort();
-                } catch {
-                  // best-effort
-                }
-                break;
+            // #4732: an always-thinking gateway upstream rejects the
+            // thinking param with 400/1210 and the CLI reports it as a
+            // failed turn whose empty reply would flow down the
+            // no-observation-XML path and drop the claimed batch. Name the
+            // rejection on the first sight, strip the param for every later
+            // generation on this session, and pause this one as a transport
+            // exit: the claimed batch is re-queued and the transport resume
+            // opens the next generation with thinking omitted. One strip
+            // per session — if the gateway refused the param once it keeps
+            // refusing it, and a second pause here would just loop. This sits
+            // above the ordinary one-retry gate: an earlier textless failure
+            // that already used that retry must not hide the rejection.
+            const resultErrorFeedback = [
+              typeof (message as any).result === 'string' ? (message as any).result : '',
+              ...(((message as any).errors as string[] | undefined) ?? []),
+            ].join('\n');
+            if (resultIsError && !session.observerThinkingStripped && isThinkingRejectFeedback(resultErrorFeedback)) {
+              session.observerThinkingStripped = true;
+              logger.warn('SDK', 'Upstream rejected the thinking parameter; retrying the next generation with it stripped (#4732)', {
+                sessionId: session.sessionDbId,
+                claimed: session.claimedMessageIds.length,
+              });
+              await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+              session.abortReason = 'transport:thinking_rejected';
+              try {
+                session.abortController.abort();
+              } catch {
+                // best-effort
               }
+              break;
+            }
+            if (resultIsError && !retriedAfterErrorResult) {
               retriedAfterErrorResult = true;
               logger.warn('SDK', 'SDK turn failed before emitting text, re-queueing the claimed batch', {
                 sessionId: session.sessionDbId,
@@ -903,9 +909,10 @@ export class ClaudeProvider {
       // 400 instead of an error result frame. Same response as the result-frame
       // branch above: name it, strip the param for the next generation, and
       // release the claimed batch through the transport exit so the resume
-      // retries with thinking omitted. The error itself is still rethrown
-      // untouched below — fail-fast classification is unchanged, only the
-      // batch survives to be retried.
+      // retries with thinking omitted. The transport exit aborts the session
+      // controller and keeps the session, so the error rethrown below is
+      // ignored by the generator's catch (SessionRoutes: an error after abort
+      // is not booked as an observer failure) and the batch is retried.
       if (
         !session.abortReason &&
         !responseProcessingThrew &&

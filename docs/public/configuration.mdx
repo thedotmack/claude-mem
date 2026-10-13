@@ -189,6 +189,12 @@ Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
 
 Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
 
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_OBSERVER_THINKING` | `disabled` | The `thinking` parameter the Claude observer sends. `disabled` saves tokens on Anthropic-native endpoints. `omit` sends no `thinking` field, for a gateway whose upstream model always thinks and rejects `disabled` (for example GLM's error 1210). `enabled` or `enabled:<budget>` (default budget `1024`) turns thinking on and spends thinking tokens on every observer request |
+
+If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, the observer drops the parameter for the rest of that session and retries the same batch, so nothing is lost while you change the setting.
+
 ### System Configuration
 
 | Setting                       | Default                         | Description                           |

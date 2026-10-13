@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { isThinkingRejectFeedback } from '../src/services/worker/ClaudeProvider.js';
+import { describeErrorFeedbackText, isThinkingRejectFeedback } from '../src/services/worker/ClaudeProvider.js';
 
 /**
  * Regression coverage for #4732: a gateway that maps every `claude-*` model to
@@ -31,6 +31,15 @@ describe('isThinkingRejectFeedback (#4732)', () => {
     expect(isThinkingRejectFeedback(
       'Bad request — {"type":"error","error":{"type":"invalid_request_error","message":"thinking is not supported"}}',
     )).toBe(true);
+  });
+
+  it('matches a thrown error whose 400 is only in the structured status', () => {
+    const thrown = Object.assign(new Error('thinking parameter is not supported'), { status: 400 });
+    expect(isThinkingRejectFeedback(describeErrorFeedbackText(thrown))).toBe(true);
+    const thrownWithStatusCode = Object.assign(new Error('thinking parameter is not supported'), { statusCode: 400 });
+    expect(isThinkingRejectFeedback(describeErrorFeedbackText(thrownWithStatusCode))).toBe(true);
+    // Without any status the message alone doesn't say the request was refused.
+    expect(isThinkingRejectFeedback(describeErrorFeedbackText(new Error('thinking parameter is not supported')))).toBe(false);
   });
 
   it('does not match an unrelated 400 (effort, prompt length)', () => {
