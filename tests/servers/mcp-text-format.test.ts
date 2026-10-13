@@ -38,7 +38,7 @@ describe('purpose-specific model responses', () => {
     expect(text).toContain('#plain — Excerpt: Use staging for deployment rehearsals.');
     expect(text).toContain('#summary — How did we stop login redirects?');
     expect(text).toContain('Use observation_context with a focused query and limit');
-    expect(text).not.toContain('Use mem_search');
+    expect(text).not.toContain('mem_search');
     expect(text).not.toContain('PRIVATE_');
     expect(text.length).toBeLessThan(500);
     expect(result).not.toHaveProperty('structuredContent');
