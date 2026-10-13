@@ -218,6 +218,14 @@ can have up to 2N provider calls in flight. Size N against your provider's rate
 limit. Values above 64 are clamped to 64, and invalid values are ignored with a
 warning.
 
+If a worker stops making progress, stale processing locks can be reclaimed for
+another attempt. Each attempt may persist observations or report a failure only
+while it still owns the Postgres processing lock. A response from a reclaimed
+attempt is discarded so it cannot complete or fail the replacement attempt.
+This ownership check also applies to session summaries and does not hold a
+database lock during the provider call. Recovery may still require another paid
+provider call; it does not guarantee exactly-once provider execution.
+
 ### Custom generation provider (advanced)
 
 The generation worker ships with `claude`, `gemini` and `openrouter` providers, and

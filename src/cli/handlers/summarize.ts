@@ -8,7 +8,7 @@ import { logger } from '../../utils/logger.js';
 import { extractLastAssistantTurn, extractLastAssistantModel } from '../../shared/transcript-parser.js';
 import { detectObservedBilling } from '../../shared/observed-billing.js';
 import { stripMemoryTags } from '../../utils/tag-stripping.js';
-import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isSummarizeDisabledByEnv } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { clearInjected } from '../../shared/kimi-context-gate.js';
@@ -138,6 +138,15 @@ export const summarizeHandler: EventHandler = {
     // re-injects a fresh timeline (see src/shared/kimi-context-gate.ts).
     if (input.platform === 'kimi' && input.hookEventName === 'PreCompact') {
       clearInjected(sessionId);
+    }
+
+    // #4734: CLAUDE_MEM_DISABLE_SUMMARY skips the summary (and advisor capture)
+    // for headless read-only runs. Checked here, after the Kimi PreCompact
+    // marker clear above, so a disabled summary never stops Kimi re-injecting
+    // fresh context after a compaction.
+    if (isSummarizeDisabledByEnv('summarize')) {
+      logger.debug('HOOK', 'Skipping summary: CLAUDE_MEM_DISABLE_SUMMARY=1', { sessionId });
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
     // Advisor capture runs before summarize's own early returns (an empty

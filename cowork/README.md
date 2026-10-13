@@ -12,13 +12,19 @@ are injected back into every new session and every spawned agent.
 
 | Hook | Event sent / behavior |
 |---|---|
-| `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it — skipped on a machine with a local claude-mem install (an enabled plugin registered in `installed_plugins.json` with its hook and worker files), whose hook injects from the local db that cloud sync keeps current. A disabled plugin or an orphaned cache copy doesn't count as an install |
-| `UserPromptSubmit` | `session-init` — registers the turn + prompt with the observer pipeline |
+| `SessionStart` | Registers the session, pulls a compiled context block from cmem.ai and injects it |
+| `UserPromptSubmit` | `session-init` — registers the turn + prompt with the observer pipeline. Runs in the background, so a slow cmem.ai never holds up the prompt |
 | `PostToolUse` (all tools) | `observation` — streams the raw tool-use fragment (truncated) for server-side synthesis |
-| `PreToolUse` on `Task`/`Agent` | Fetches observations relevant to the agent's prompt and prepends them to it (skipped when claude-mem is installed locally, as for `SessionStart`) |
+| `PreToolUse` on `Task`/`Agent` | Fetches observations relevant to the agent's prompt and prepends them to it |
 | `SubagentStop` | Marks the agent's work complete |
 | `Stop` | `summarize` signal (turn boundary for the observer) |
 | `SessionEnd` | Closes the session |
+
+On a machine with a local claude-mem install (an enabled plugin registered in
+`installed_plugins.json` with its hook and worker files) every hook above is a
+no-op. The local plugin captures and injects there, and its cloud sync carries
+that work to cmem.ai, so capturing here too would record every session twice.
+A disabled plugin or an orphaned cache copy doesn't count as an install.
 
 Plus a **mem-search** skill: progressive Index → Timeline search against
 `/api/mcp memory_search`, available in any session.
@@ -26,8 +32,8 @@ Plus a **mem-search** skill: progressive Index → Timeline search against
 ## Fail-soft guarantees
 
 - No API key configured → every hook is a silent no-op. Sessions never break.
-- cmem.ai unreachable → capture events spool to `/tmp/cmem-spool.jsonl` and
-  flush on later hook fires (batched to `/api/hooks/ingest`).
+- cmem.ai unreachable → capture events spool to `~/.claude-mem/cowork-spool.jsonl`
+  (0600) and flush on later hook fires (batched to `/api/hooks/ingest`).
 - `/api/hooks/*` endpoints not deployed yet → context injection falls back to
   the live `/api/mcp` `memory_search`; ingest 404s are dropped, not spooled.
 - Every hook exits `0` unconditionally.

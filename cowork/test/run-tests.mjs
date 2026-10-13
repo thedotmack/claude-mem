@@ -14,6 +14,8 @@ const TESTHOME = mkdtempSync(join(tmpdir(), 'owned-cmem-testhome-'));
 const SPOOL = TESTHOME + '/.claude-mem/cowork-spool.jsonl';
 let received = [];
 let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
+let holdIngest = null; // predicate: matching ingest requests stay open until released from `held`
+const held = [];
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -23,6 +25,7 @@ const server = http.createServer((req, res) => {
     received.push(rec);
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
+      if (holdIngest?.(rec.body)) { held.push(res); return; }
       res.writeHead(202, { 'content-type': 'application/json' });
       return res.end('{"accepted":1}');
     }
@@ -56,6 +59,12 @@ function run(event, stdinObj, env = {}) {
     }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
     child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
   });
+}
+
+async function until(cond, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise(r => setTimeout(r, 20));
+  return cond();
 }
 
 let pass = 0, fail = 0;
@@ -313,6 +322,24 @@ const tailBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.paylo
 check('next flush delivers the remainder', tailBatch.includes('e201'), JSON.stringify(tailBatch));
 check('spool empty after full drain', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
 
+// ---- 8d. session-init runs async, so a slow one overlaps later events ----
+console.log('\n[8d] slow session-init overlapping later events');
+rmSync(SPOOL, { force: true });
+received = [];
+holdIngest = env => env?.event === 'session-init';
+const slowInit = run('session-init', { session_id: 's5', cwd: '/home/claude', prompt: 'held prompt' });
+check('session-init request held open', await until(() => held.length === 1));
+await run('observation', { session_id: 's5', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_16', tool_input: { command: 'ls' } });
+check('a later event is delivered meanwhile', received.some(r => r.body?.payload?.tool_use_id === 'tu_16'));
+holdIngest = null;
+held.shift()?.writeHead(503).end('{}');
+await slowInit;
+check('the failed session-init is spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('held prompt'));
+received = [];
+await run('summarize', { session_id: 's5', cwd: '/home/claude' });
+check('and delivered by the next flush', received.some(r => r.body?.batch?.some(e => e.event === 'session-init' && e.payload.prompt === 'held prompt')), JSON.stringify(received.map(r => r.body?.event ?? 'batch')));
+check('spool empty afterwards', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+
 // ---- 9. remaining lifecycle events ----
 console.log('\n[9] lifecycle events');
 received = [];
@@ -324,6 +351,10 @@ const evs = received.filter(r => r.url.startsWith('/api/hooks/ingest')).map(r =>
 check('session-init/subagent-stop/summarize/session-end all sent', ['session-init', 'subagent-stop', 'summarize', 'session-end'].every(e => evs.includes(e)), JSON.stringify(evs));
 const initEv = received.find(r => r.body?.event === 'session-init');
 check('prompt included in session-init', initEv?.body.payload.prompt === 'hello world');
+// UserPromptSubmit holds the prompt until its hooks finish and cancels one at
+// its timeout; session-init only sends, so it must run in the background
+const promptHooks = JSON.parse(readFileSync(PLUGIN_DIR + '/hooks/hooks.json', 'utf8')).hooks.UserPromptSubmit.flatMap(g => g.hooks);
+check('session-init hook is async (never holds the prompt)', promptHooks.length === 1 && promptHooks[0].command.endsWith(' session-init') && promptHooks[0].async === true, JSON.stringify(promptHooks));
 
 // ---- 9b. project auto-naming (cmem_work_ prefix) ----
 console.log('\n[9b] project auto-naming');
@@ -340,8 +371,9 @@ await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Ba
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
 
 // ---- 9c. local-first: an enabled plugin registered in installed_plugins.json
-// with its hook and worker files means no cloud context read, worker up or down ----
-console.log('\n[9c] local-first context');
+// with its hook and worker files means no cmem.ai traffic at all (no context
+// read, no capture), worker up or down ----
+console.log('\n[9c] local-first');
 const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
 mkdirSync(LOCAL_PLUGIN + '/hooks', { recursive: true });
 mkdirSync(LOCAL_PLUGIN + '/scripts', { recursive: true });
@@ -357,6 +389,12 @@ check('no cloud context block injected', !localStart.out.includes('claude-mem-co
 received = [];
 await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } });
 check('agent prompts skip the cloud read too', !received.some(r => r.url.startsWith('/api/hooks/context') || r.url.startsWith('/api/mcp')));
+received = [];
+await run('session-init', { session_id: 's9', cwd: '/home/claude', prompt: 'hello' });
+await run('observation', { session_id: 's9', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_30', tool_input: { command: 'ls' } });
+check('capture is skipped too (the local plugin and its cloud sync own it)', received.length === 0, JSON.stringify(received.map(r => r.url)));
+const localStatus = await run('status', '');
+check('status says the hooks are off', localStatus.out.includes('hooks    : off'), localStatus.out);
 rmSync(TESTHOME + '/.claude', { recursive: true, force: true });
 received = [];
 const cloudStart = await run('context', { session_id: 's10', cwd: '/home/claude', source: 'startup' });

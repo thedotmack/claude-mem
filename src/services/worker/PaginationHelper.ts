@@ -218,7 +218,9 @@ export class PaginationHelper {
       NOT EXISTS (
         SELECT 1
         FROM user_prompts duplicate
-        WHERE duplicate.session_db_id = up.session_db_id
+        WHERE up.native_prompt_id IS NULL
+          AND duplicate.native_prompt_id IS NULL
+          AND duplicate.session_db_id = up.session_db_id
           AND duplicate.prompt_text = up.prompt_text
           AND (
             duplicate.created_at_epoch > up.created_at_epoch

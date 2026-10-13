@@ -22,6 +22,17 @@ export const AUTH_CACHE_TTL_DEFAULT_SECONDS = 900;
 const LOOPBACK_HOSTNAMES = new Set(["127.0.0.1", "localhost", "[::1]"]);
 
 /**
+ * The host part of a URL authority. An IPv6 literal must be bracketed
+ * (`http://[::1]:8080`); `http://::1:8080` is not a valid URL and Bun/Node
+ * reject it before connecting. Bare literals (any `:`) get brackets; an
+ * already-bracketed host and an IPv4 host pass through unchanged.
+ */
+export function formatHostForUrl(host: string): string {
+	if (host.startsWith("[") && host.endsWith("]")) return host;
+	return host.includes(":") ? `[${host}]` : host;
+}
+
+/**
  * FORWARD_ORIGIN must be an absolute https:// URL (a path prefix such as
  * `/functions/v1/cmem-sync` is allowed) with no query, fragment or
  * credentials. Plain http:// is accepted only for loopback hosts (tests and

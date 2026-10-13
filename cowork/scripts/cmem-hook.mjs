@@ -11,6 +11,7 @@
  *
  * Design rule #1: NEVER break the session. Every hook path exits 0 no matter what.
  * Failed ingest posts are spooled to ~/.claude-mem (0600) and re-flushed on later hook fires.
+ * On a machine with a local claude-mem install every hook is a no-op (localClaudeMemInstalled).
  *
  * Usage: node cmem-hook.mjs <event>
  *   events: context | session-init | observation | agent-context |
@@ -178,7 +179,7 @@ async function http(method, url, body, timeoutMs, headers = {}) {
         'Authorization': `Bearer ${CFG.apiKey}`,
         'Content-Type': 'application/json',
         'X-CMEM-Platform': 'cowork',
-        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.3',
+        'X-CMEM-Plugin': 'claude-mem-cowork/0.1.4',
         ...(CFG.userId ? { 'X-CMEM-User-Id': CFG.userId } : {}),
         ...headers
       },
@@ -318,10 +319,13 @@ function viewerPort() {
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
 }
 
-// Local-first: an agent on a machine with a local claude-mem install never
-// reads cmem.ai context; the local hook injects from the local db, which cloud
-// sync keeps current. An agent with no local install (a Cowork container, a
-// remote machine) reads the cloud.
+// Local-first: on a machine with a local claude-mem install this plugin does
+// nothing. The local hooks capture and inject from the local db, and the local
+// plugin's cloud sync is what carries that work to cmem.ai. Capturing here too
+// would send every prompt and tool call to cmem.ai a second time (its observer
+// records the session again under a cmem_work_* project) and hold each prompt
+// on a cmem.ai round trip. An agent with no local install (a Cowork container,
+// a remote machine) captures to and reads from the cloud.
 // The install is what Claude Code loads: an enabled plugin registered in
 // installed_plugins.json with its hook and worker files. Worker health doesn't
 // decide it, so a cold start or a worker on ::1 or a LAN address still counts.
@@ -432,7 +436,6 @@ async function onSessionStart(input) {
   // …and inject context
   if (!CFG.inject.sessionStart) return;
   if (!CFG.apiKey) return;
-  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('session-start', null, input.cwd);
   const project = resolveProject(input.cwd);
   const body = text || [
@@ -478,7 +481,6 @@ async function onAgentContext(input) {
   const prompt = typeof ti.prompt === 'string' ? ti.prompt : null;
   if (!prompt) return;
   if (prompt.includes('<claude-mem-context')) return;   // already injected upstream
-  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('agent', prompt, input.cwd);
   if (!text) return;
   process.stdout.write(JSON.stringify({
@@ -526,6 +528,7 @@ async function cliStatus() {
   console.log(`api base : ${CFG.apiBase}`);
   console.log(`project  : ${resolveProject()} (auto — derived from the working folder)`);
   console.log(`api key  : ${CFG.apiKey ? 'configured (…' + CFG.apiKey.slice(-4) + ')' : 'MISSING'}`);
+  console.log(`hooks    : ${localClaudeMemInstalled() ? 'off — the local claude-mem install handles memory on this machine' : 'on'}`);
   if (!CFG.apiKey) return;
   try {
     const res = await http('GET', `${CFG.apiBase}/api/hooks/context?project=${encodeURIComponent(resolveProject())}&scope=status`, undefined, HTTP_TIMEOUT_MS.fast);
@@ -557,6 +560,7 @@ const HANDLERS = {
     if (event === 'status') return await cliStatus();
     const handler = HANDLERS[event];
     if (!handler) return;                 // unknown event — inert
+    if (localClaudeMemInstalled()) return; // local-first: the local plugin owns memory here
     const input = readStdin();
     await handler(input);
   } catch { /* rule #1: never break the session */ }
