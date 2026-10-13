@@ -21,14 +21,9 @@ function modelText(result: CallToolResult): string {
   expect(() => JSON.parse(text)).toThrow();
   return text;
 }
-function cursor(text: string): string {
-  const value = /^Continue with: (ms_[A-Za-z0-9_-]{24})$/m.exec(text)?.[1];
-  expect(value).toBeDefined();
-  return value!;
-}
 
-describe('built local MCP progressive stdio integration', () => {
-  it('advertises guided/automatic search and delivers curated text through the real stdio transport', async () => {
+describe('built local MCP flash search stdio integration', () => {
+  it('advertises flash search, restores the layered tools and delivers curated text through the real stdio transport', async () => {
     const db = new Database(':memory:');
     const store = new SessionStore(db);
     const project = 'stdio-progressive-fixture';
@@ -73,33 +68,19 @@ describe('built local MCP progressive stdio integration', () => {
     try {
       await client.connect(transport);
       const listing = await client.listTools();
-      expect(listing.tools.find(tool => tool.name === 'mem_search')?.annotations?.readOnlyHint).toBe(true);
+      expect(listing.tools.find(tool => tool.name === 'flash_search')?.annotations?.readOnlyHint).toBe(true);
+      expect(listing.tools.some(tool => tool.name === 'mem_search')).toBe(false);
+      expect(listing.tools.find(tool => tool.name === 'search')?.description).toStartWith('Step 1: Search memory.');
       expect(listing.tools.some(tool => tool.name === 'save_memory')).toBe(true);
-      const first = modelText(await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', project } }) as CallToolResult);
-      expect(first).toStartWith('mem-search step 1 of 3');
-      expect(first).toContain(`[${saved.id}]`);
-      expect(first).not.toContain('PRIVATE_STDIO_BODY');
-      const second = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(first), selectedIds: [saved.id] } }) as CallToolResult);
-      expect(second).toStartWith('mem-search step 2 of 3');
-      expect(second).not.toContain('PRIVATE_STDIO_BODY');
-      const third = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(second), selectedIds: [String(saved.id)] } }) as CallToolResult);
-      expect(third).toStartWith('mem-search step 3 of 3');
-      expect(third).toContain('PRIVATE_STDIO_BODY');
-      const auto = modelText(await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', project, mode: 'auto' } }) as CallToolResult);
-      expect(auto).toContain('Automatic search: index → context → selected details.');
-      expect(auto).toContain('PRIVATE_STDIO_BODY');
+      const flash = modelText(await client.callTool({ name: 'flash_search', arguments: { query: 'authentication', project } }) as CallToolResult);
+      expect(flash).toStartWith('flash-search — selected details');
+      expect(flash).toContain('PRIVATE_STDIO_BODY');
       for (const fixture of literals) {
-        const index = modelText(await client.callTool({ name: 'mem_search', arguments: { query: fixture.title, project: fixture.project } }) as CallToolResult);
-        expect(index).not.toContain(fixture.body);
-        const context = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(index), selectedIds: [fixture.id] } }) as CallToolResult);
-        expect(context).not.toContain(fixture.body);
-        const selected = modelText(await client.callTool({ name: 'mem_search', arguments: { continuation: cursor(context), selectedIds: [fixture.id] } }) as CallToolResult);
-        expect(selected).toContain(fixture.body);
-        const automatic = modelText(await client.callTool({ name: 'mem_search', arguments: { query: fixture.title, project: fixture.project, mode: 'auto' } }) as CallToolResult);
+        const automatic = modelText(await client.callTool({ name: 'flash_search', arguments: { query: fixture.title, project: fixture.project } }) as CallToolResult);
         expect(automatic).toContain(fixture.body);
         expect(automatic).not.toContain('No readable memory details');
       }
-      const bad = await client.callTool({ name: 'mem_search', arguments: { query: 'authentication', limit: 1000 } }) as CallToolResult;
+      const bad = await client.callTool({ name: 'flash_search', arguments: { query: 'authentication', limit: 1000 } }) as CallToolResult;
       expect(bad.isError).toBe(true);
       expect(modelText(bad)).toContain('limit must be an integer');
       const note = modelText(await client.callTool({ name: 'save_memory', arguments: { text: 'A durable SQLite fixture note.', title: 'Saved fixture note', project } }) as CallToolResult);
@@ -175,13 +156,13 @@ describe('built local MCP progressive stdio integration', () => {
           expect(text).toContain('#plain-fixture — Excerpt: Use staging for deployment rehearsals.');
           expect(text).toContain('#summary-fixture — How did we fix login redirects?');
           expect(text).toContain('Use observation_context with a focused query and limit');
-          expect(text).not.toContain('Use mem_search');
+          expect(text).not.toContain('get_observations(ids=');
           const supported = await client.callTool({ name: 'observation_context', arguments: { query: 'staging', limit: 1 } }) as CallToolResult;
           expect(supported.isError).not.toBe(true);
           expect(modelText(supported)).toContain('Selected server context.');
         }
       }
-      const unavailable = await client.callTool({ name: 'mem_search', arguments: { query: 'decision' } }) as CallToolResult;
+      const unavailable = await client.callTool({ name: 'flash_search', arguments: { query: 'decision' } }) as CallToolResult;
       expect(unavailable.isError).toBe(true);
       expect(modelText(unavailable)).toContain('hosted claude-mem MCP');
       const note = await client.callTool({ name: 'save_memory', arguments: { text: 'A server-scoped note.' } }) as CallToolResult;
