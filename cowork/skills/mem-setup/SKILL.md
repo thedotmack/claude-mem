@@ -43,11 +43,12 @@ optional.
    directory as `<plugin-name>.plugin` and send it to the user to re-install
    (the cowork-plugin skill's packaging flow). Tell the user this is why.
 3. If this machine also has a local claude-mem install (a `~/.claude-mem/`
-   directory exists), optionally write the same values to
+   directory exists), write the same values to
    `~/.claude-mem/settings.json` with mode 0600 (`CLAUDE_MEM_CLOUD_SYNC_TOKEN`,
    `CLAUDE_MEM_CLOUD_SYNC_USER_ID`, `CLAUDE_MEM_CLOUD_SYNC_HUB_URL` keys — the
-   same keys the local claude-mem cloud-sync pairing writes) — the hook script
-   and the local worker both read it.
+   same keys the local claude-mem cloud-sync pairing writes). This plugin's
+   hooks stay off wherever claude-mem is installed locally, so that pairing is
+   what carries this machine's work to cmem.ai.
 4. Verify without exposing the secret:
 
    ```bash

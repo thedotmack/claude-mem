@@ -324,6 +324,10 @@ const evs = received.filter(r => r.url.startsWith('/api/hooks/ingest')).map(r =>
 check('session-init/subagent-stop/summarize/session-end all sent', ['session-init', 'subagent-stop', 'summarize', 'session-end'].every(e => evs.includes(e)), JSON.stringify(evs));
 const initEv = received.find(r => r.body?.event === 'session-init');
 check('prompt included in session-init', initEv?.body.payload.prompt === 'hello world');
+// UserPromptSubmit holds the prompt until its hooks finish and cancels one at
+// its timeout; session-init only sends, so it must run in the background
+const promptHooks = JSON.parse(readFileSync(PLUGIN_DIR + '/hooks/hooks.json', 'utf8')).hooks.UserPromptSubmit.flatMap(g => g.hooks);
+check('session-init hook is async (never holds the prompt)', promptHooks.length === 1 && promptHooks[0].command.endsWith(' session-init') && promptHooks[0].async === true, JSON.stringify(promptHooks));
 
 // ---- 9b. project auto-naming (cmem_work_ prefix) ----
 console.log('\n[9b] project auto-naming');
@@ -340,8 +344,9 @@ await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Ba
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
 
 // ---- 9c. local-first: an enabled plugin registered in installed_plugins.json
-// with its hook and worker files means no cloud context read, worker up or down ----
-console.log('\n[9c] local-first context');
+// with its hook and worker files means no cmem.ai traffic at all (no context
+// read, no capture), worker up or down ----
+console.log('\n[9c] local-first');
 const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
 mkdirSync(LOCAL_PLUGIN + '/hooks', { recursive: true });
 mkdirSync(LOCAL_PLUGIN + '/scripts', { recursive: true });
@@ -357,6 +362,12 @@ check('no cloud context block injected', !localStart.out.includes('claude-mem-co
 received = [];
 await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } });
 check('agent prompts skip the cloud read too', !received.some(r => r.url.startsWith('/api/hooks/context') || r.url.startsWith('/api/mcp')));
+received = [];
+await run('session-init', { session_id: 's9', cwd: '/home/claude', prompt: 'hello' });
+await run('observation', { session_id: 's9', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_30', tool_input: { command: 'ls' } });
+check('capture is skipped too (the local plugin and its cloud sync own it)', received.length === 0, JSON.stringify(received.map(r => r.url)));
+const localStatus = await run('status', '');
+check('status says the hooks are off', localStatus.out.includes('hooks    : off'), localStatus.out);
 rmSync(TESTHOME + '/.claude', { recursive: true, force: true });
 received = [];
 const cloudStart = await run('context', { session_id: 's10', cwd: '/home/claude', source: 'startup' });
