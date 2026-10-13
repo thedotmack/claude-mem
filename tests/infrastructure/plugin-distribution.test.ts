@@ -240,6 +240,21 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     }
   });
 
+  it('marks every Codex compaction so the next PostToolUse can re-inject memory', () => {
+    // PostCompact cannot emit additionalContext, and Codex never sends
+    // SessionStart to a subagent thread, so PostCompact marks the thread and its
+    // next PostToolUse (registered for every tool) carries the timeline back.
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const postCompact = codexHooks.hooks.PostCompact;
+
+    expect(postCompact).toHaveLength(1);
+    // No matcher: Codex then matches every compaction trigger (manual and auto).
+    expect(postCompact[0].matcher).toBeUndefined();
+    expect(postCompact[0].hooks).toHaveLength(1);
+    expect(postCompact[0].hooks[0].command).toContain('hook codex post-compact');
+    expect(codexHooks.hooks.PostToolUse[0].matcher).toBe('.*');
+  });
+
   it('sets the Codex hook marker on every Codex command', () => {
     for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
       expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
@@ -703,6 +718,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
     'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
+    'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
   },
 };
 
