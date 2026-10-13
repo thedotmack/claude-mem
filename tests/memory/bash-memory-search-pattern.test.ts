@@ -95,9 +95,9 @@ describe('Bash memory lookup uses the native search pattern', () => {
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Owned search server did not bind');
       const search = async (query: string, project = 'pattern-project') => {
-        const response = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
+        const response = await fetch(`http://127.0.0.1:${address.port}/api/flash-search`, {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ query, mode: 'auto', project, projects: [project], searchScope: project, limit: 8 }),
+          body: JSON.stringify({ query, project, projects: [project], limit: 8 }),
         });
         expect(response.status).toBe(200);
         const result = await response.json() as { content: Array<{ text: string }>; isError?: boolean };

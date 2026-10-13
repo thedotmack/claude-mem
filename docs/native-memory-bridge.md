@@ -14,7 +14,7 @@ agents to use only tools actually available. To-do lists remain in
 The existing `PreToolUse` file-context hook recognizes `memory_search`, a local
 `memory` tool's read commands, and Read/Grep/Glob/Bash reads scoped to Claude
 native memory folders, Codex's memory folder, or configured note roots. It
-calls `/api/mem-search` in automatic mode, using the checkout's project scope.
+calls `/api/flash-search` (the shallow, title-word lookup), using the checkout's project scope.
 An explicitly mapped note folder uses its own project instead, even when another
 checkout reads it. The internal HTTP transport carries a `content` envelope,
 while the model sees only its concise, selected readable text. Structured
@@ -47,7 +47,7 @@ code mode; hosted tools can bypass that path. Its hook output cannot replace
 MCP results through `updatedMCPToolOutput`. See the [Codex hooks
 reference](https://developers.openai.com/codex/hooks). Internal hosted memory
 retrieval and background native-memory generation have no verified plugin
-interception API. Use direct `mem_search` instructions and the optional file
+interception API. Use direct memory search instructions and the optional file
 bridge for those paths.
 
 ## Enable a note-folder bridge

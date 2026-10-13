@@ -251,7 +251,7 @@ function requireServerForObservationTool(toolName: string): ServerAvailable {
   if (!resolution) {
     throw new ServerClientError(
       'transport',
-      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use mem_search for worker-mode memory access.`,
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
     );
   }
   if (!resolution.available) {
@@ -494,32 +494,29 @@ const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
 const tools = [
   {
-    name: 'mem_search',
-    description: 'Search memory through enforced progressive disclosure. Guided mode returns readable mem-search step 1 of 3 (index), a short continuation for step 2 (context), then step 3 (selected details). Follow the next-call instructions and choose only IDs shown in the previous result. Auto mode completes the same bounded pipeline in one call. Use this tool for every memory search.',
+    name: 'flash_search',
+    description: 'Flash search: a fast, shallow one-call memory lookup. It searches the index, picks records whose titles share the most query words, adds nearby context, and returns up to maxDetails records. It does not reason about relevance, so same-word titles from unrelated projects can crowd out the answer and conflicting records are not reconciled. Use it for quick, direct lookups such as duplicate checks before saving. For anything that needs judgment, use the mem-search workflow: search → timeline → get_observations.',
     inputSchema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['guided', 'auto'], description: 'Guided by default; auto completes index, context and filtered details in one call.' },
-        query: { type: 'string', description: 'Search query; required for a new search, up to 500 characters.' },
+        query: { type: 'string', description: 'Search query, up to 500 characters.' },
         project: { type: 'string', description: 'Optional project filter.' },
         limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Index result count, default 20.' },
         maxDetails: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum full details, default 3.' },
         depthBefore: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows before each selected anchor, default 2.' },
         depthAfter: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows after each selected anchor, default 2.' },
-        continuation: { type: 'string', minLength: 27, maxLength: 27, pattern: '^ms_[A-Za-z0-9_-]{24}$', description: 'Short opaque continuation from the previous mem_search response.' },
-        selectedIds: { type: 'array', items: { type: ['string', 'number'] }, description: 'Only relevant IDs from the previous response.' },
       },
+      required: ['query'],
       additionalProperties: false,
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       try {
         if (selectRuntime() === 'server') {
-          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local mem_search.');
+          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local flash_search.');
         }
-        const checkout = currentCheckout();
-        const body = { ...withCheckoutProjects(args ?? {}, checkout), searchScope: checkout.allProjects.join(',') };
-        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/mem-search', {
+        const body = withCheckoutProjects(args ?? {}, currentCheckout());
+        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/flash-search', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }), startWorkerAfterRefusedConnection);
         if (!response.ok) throw new Error(`Worker API error (${response.status})`);
@@ -535,7 +532,7 @@ const tools = [
   },
   {
     name: 'save_memory',
-    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching with mem_search for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
+    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching memory for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -554,7 +551,7 @@ const tools = [
   },
   {
     name: 'important_workflow',
-    description: `Use mem_search for all memory search. Guided mode enforces index -> context -> selected details with short opaque continuations. Auto mode performs the same bounded pipeline. Legacy layered workflow:
+    description: `LAYERED WORKFLOW (ALWAYS FOLLOW):
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
@@ -570,9 +567,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
         type: 'text' as const,
         text: `# Memory Search Workflow
 
-Use mem_search for every memory search. Guided mode returns readable mem-search step 1 of 3 (index), step 2 of 3 (context), then step 3 of 3 (filtered details). Follow the next-call instructions with the short continuation and only relevant selectedIds shown in the previous response. Auto mode performs that same bounded progression in one call. Local and remote MCP share this contract.
-
-**Compatibility pattern for older clients or advanced filters:**
+**3-Layer Pattern (ALWAYS follow this):**
 
 1. **Search** - Get index of results with IDs
    \`search(query="...", limit=20, project="...")\`
@@ -596,7 +591,7 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
   },
   {
     name: 'search',
-    description: 'Legacy index search for advanced filters. Prefer mem_search for enforced progressive disclosure and guided next steps. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
@@ -648,7 +643,7 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
   },
   {
     name: 'timeline',
-    description: 'Legacy context lookup. Prefer mem_search continuations for enforced progressive disclosure. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
       properties: {
@@ -667,7 +662,7 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
   },
   {
     name: 'get_observations',
-    description: 'Legacy detail lookup for IDs already filtered through memory search or the injected session index. Prefer mem_search continuations for enforced progressive disclosure. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
     inputSchema: {
       type: 'object',
       properties: {
