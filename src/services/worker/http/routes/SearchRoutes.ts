@@ -115,6 +115,7 @@ export class SearchRoutes extends BaseRouteHandler {
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
   private readonly projectsKnownNonEmpty = new Set<string>();
+  private projectsKnownNonEmptyGeneration: number | undefined;
 
   constructor(
     private searchManager: SearchManager,
@@ -158,13 +159,18 @@ export class SearchRoutes extends BaseRouteHandler {
     projects: string[],
     platformSource?: string,
   ): boolean {
+    const removalGeneration = this.contextCache?.removalGenerationNow();
+    if (removalGeneration !== this.projectsKnownNonEmptyGeneration) {
+      this.projectsKnownNonEmpty.clear();
+      this.projectsKnownNonEmptyGeneration = removalGeneration;
+    }
     const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
-    if (this.projectsKnownNonEmpty.has(cacheKey)) {
+    if (removalGeneration !== undefined && this.projectsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
     const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
     if (observationCount > 0) {
-      this.projectsKnownNonEmpty.add(cacheKey);
+      if (removalGeneration !== undefined) this.projectsKnownNonEmpty.add(cacheKey);
       return true;
     }
     return false;
