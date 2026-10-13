@@ -136,6 +136,23 @@ describe('Codex PostToolUse after a compaction', () => {
     });
   });
 
+  it('still passes the worker-outage notice on when there is no timeline to return', async () => {
+    // Memory instructions off and the worker down: the context hook has already
+    // marked the session's one outage notice as shown, so dropping it loses it.
+    contextSpy.mockImplementation(async () => ({
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+      systemMessage: 'claude-mem worker is unavailable',
+    }));
+    await getEventHandler('post-compact').execute(codexCompaction(SUBAGENT));
+
+    const result = await getEventHandler('observation').execute(codexToolCall(SUBAGENT));
+
+    expect(codexAdapter.formatOutput(result)).toEqual({
+      continue: true,
+      systemMessage: 'claude-mem worker is unavailable',
+    });
+  });
+
   it('only re-injects on Codex', async () => {
     await getEventHandler('post-compact').execute(codexCompaction());
 

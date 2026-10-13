@@ -107,9 +107,12 @@ export const observationWithPendingTimelineHandler: EventHandler = {
     }
 
     const contextResult = await contextHandler.execute(input);
+    // The once-per-session worker-outage notice, if the context hook consumed
+    // it. It is passed on even without a timeline, or nobody would see it.
+    const outageNotice = contextResult.systemMessage ? { systemMessage: contextResult.systemMessage } : {};
     const timeline = contextResult.hookSpecificOutput?.additionalContext;
     if (!timeline) {
-      return observationResult;
+      return { ...observationResult, ...outageNotice };
     }
     logger.debug('HOOK', 'Re-injecting the memory timeline after a Codex compaction', {
       sessionId: input.sessionId,
@@ -118,8 +121,7 @@ export const observationWithPendingTimelineHandler: EventHandler = {
     return {
       ...observationResult,
       hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: timeline },
-      // The once-per-session worker-outage notice, if the context hook consumed it.
-      ...(contextResult.systemMessage ? { systemMessage: contextResult.systemMessage } : {}),
+      ...outageNotice,
     };
   }
 };
