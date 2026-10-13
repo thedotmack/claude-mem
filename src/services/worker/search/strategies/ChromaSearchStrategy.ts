@@ -95,7 +95,7 @@ export class ChromaSearchStrategy {
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
       query,
-      SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
+      Math.max(SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, Number(options.offset) + Number(options.limit)),
       whereFilter
     );
 
