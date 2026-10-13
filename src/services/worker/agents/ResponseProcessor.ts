@@ -19,7 +19,7 @@ import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
-import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
@@ -569,6 +569,36 @@ export async function processAgentResponse(
 
     if (answersQueuedWork) {
       clearRejectedOutput(session);
+      // A provider that answers the same batch twice without usable output is
+      // not serving it. When the fallback (by default the Anthropic plan) can
+      // take the work, hold the provider briefly and hand the batch there in a
+      // fresh generation instead of dropping it. Once there, the batch gets
+      // the same one retry; the fallback is never routed around itself.
+      const fallback = session.currentProvider
+        ? routeAroundUnservableProviderIfLoaded(
+          session.currentProvider,
+          `The observer answered a queued batch twice without observation XML (${outputClass})`,
+          'unavailable',
+          session.observerProfile,
+        )
+        : null;
+      if (fallback !== null) {
+        logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — handing it to the ${fallback} fallback`, {
+          sessionId: session.sessionDbId,
+          outputClass,
+          preview,
+          ...replyDiagnostics,
+        });
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        session.abortReason = `output_retry:${outputClass}`;
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        worker?.broadcastProcessingStatus?.();
+        return null;
+      }
       logger.error('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — dropping it`, {
         sessionId: session.sessionDbId,
         outputClass,

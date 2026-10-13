@@ -545,6 +545,13 @@ export function renderObserverQuotaCooldownNotice(
   // below applies — least of all "do not restart", advice about a problem
   // that is not happening. No primary/fallback wording: the held provider can
   // be either one.
+  if (cooldown?.servingProvider === 'claude') {
+    // The default fallback: say plainly that memory is on the Anthropic plan.
+    const why = cooldown.window === 'unavailable' ? 'is unavailable'
+      : cooldown.window === 'rate_limit' ? 'is rate limited or over capacity'
+        : `is in a quota cooldown${windowText}`;
+    return `ℹ️ claude-mem's ${provider} provider ${why}; memory is running on your Anthropic plan (Claude) meanwhile, and switches back after ${untilText}.`;
+  }
   if (cooldown?.servingProvider) {
     return `ℹ️ claude-mem's ${provider} provider is in a quota cooldown${windowText}; memory capture continues on ${cooldown.servingProvider} until it clears at ${untilText}.`;
   }

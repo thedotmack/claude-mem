@@ -800,8 +800,26 @@ describe('renderObserverQuotaCooldownNotice', () => {
       quotaCooldown: activeCooldown({ provider: 'gemini', window: undefined, servingProvider: 'claude' }),
     }), armedAt + 5 * 60_000);
     expect(notice).toContain("claude-mem's gemini provider is in a quota cooldown");
-    expect(notice).toContain('memory capture continues on claude');
+    expect(notice).toContain('memory is running on your Anthropic plan (Claude)');
     expect(notice).not.toMatch(/paused|restart/i);
+  });
+
+  it('names a non-Claude serving provider as before', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ provider: 'claude', window: undefined, servingProvider: 'gemini' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain('memory capture continues on gemini');
+  });
+
+  it('says the provider is unavailable when it is held for an outage', () => {
+    const armedAt = 1_754_700_000_000;
+    const notice = renderObserverQuotaCooldownNotice(unhealthyState({
+      consecutiveFailures: 0,
+      quotaCooldown: activeCooldown({ provider: 'openrouter', window: 'unavailable', servingProvider: 'claude' }),
+    }), armedAt + 5 * 60_000);
+    expect(notice).toContain("claude-mem's openrouter provider is unavailable; memory is running on your Anthropic plan (Claude)");
   });
 
   it('names the pause, the provider, the until timestamp, and tells the user it is not a failure', () => {

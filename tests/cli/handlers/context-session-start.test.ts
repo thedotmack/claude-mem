@@ -166,8 +166,9 @@ describe('contextHandler SessionStart path', () => {
   });
 
   for (const memoryProvider of ['codex', 'openai-compatible', 'openrouter', 'gemini']) {
-    it(`does not request Claude login when memory uses ${memoryProvider} without Claude fallback`, async () => {
+    it(`does not request Claude login when memory uses ${memoryProvider} with the fallback turned off`, async () => {
       provider = memoryProvider;
+      quotaFallbackProvider = 'off';
       staleReason = 'expired keychain entry';
       const { contextHandler } = await import('../../../src/cli/handlers/context.js');
       const result = await contextHandler.execute({
@@ -193,6 +194,19 @@ describe('contextHandler SessionStart path', () => {
       expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
     });
   }
+
+  it('keeps the Claude login hint for the default (empty) fallback, the Anthropic plan', async () => {
+    provider = 'gemini';
+    quotaFallbackProvider = '';
+    staleReason = 'expired keychain entry';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-stale-default-fallback',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+    });
+    expect(result.hookSpecificOutput?.additionalContext).toContain('Claude Code OAuth token is stale');
+  });
 
   it('keeps the Claude login hint for a configured Claude quota fallback', async () => {
     provider = 'codex';

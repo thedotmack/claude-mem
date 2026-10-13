@@ -36,6 +36,12 @@ export interface ActiveSession {
    * changed while it ran.
    */
   observerProfile?: string;
+  /**
+   * The provider the current run stands in for when dispatch routed around it
+   * (the provider fallback), else null/undefined. A stand-in that is refused
+   * must not strand the work: the primary takes it back once it recovers.
+   */
+  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
   consecutiveRestarts: number;
   /**
    * Rejected replies (neither observation/summary XML nor the

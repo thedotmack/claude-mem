@@ -8,7 +8,12 @@ import type { OpenRouterProvider } from '../OpenRouterProvider.js';
 import type { OpenAICompatProvider } from '../OpenAICompatProvider.js';
 import type { CodexProvider } from '../CodexProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
-import { recordCmemFallbackIfEligible, releaseCmemGatewayProbe, type SelectableProvider } from '../provider-dispatch.js';
+import {
+  recordCmemFallbackIfEligible,
+  releaseCmemGatewayProbe,
+  routeAroundUnservableProvider,
+  type SelectableProvider,
+} from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
 import { normalizeAbortReason } from './abort-reason.js';
 import {
@@ -320,6 +325,18 @@ export async function startGeneratorWithProvider(
         } else {
           logger.debug('SESSION', pauseLine, pauseContext, describeProviderError(classified));
         }
+        // The fault outlived the provider's own retries. When the fallback (by
+        // default the Anthropic plan) can take the work, hold this provider
+        // briefly and move the buffered work there now, rather than waiting
+        // for the next captured event to hit the same outage.
+        const fallback = routeAroundUnservableProvider(provider, classified.message, 'unavailable', session.observerProfile);
+        if (fallback !== null) {
+          logger.warn('SESSION', 'Provider unavailable after its retries; buffered work moves to the fallback', {
+            ...pauseContext,
+            fallback,
+          }, describeProviderError(classified));
+          scheduledResume = { afterMs: 0, source: 'provider-fallback' };
+        }
       } else if (classified?.code === CODEX_COOLDOWN_REFUSAL_CODE) {
         // Withheld by the armed Codex breaker, never sent: the request that
         // armed it was booked once. Booking this one too would re-arm the
@@ -344,8 +361,7 @@ export async function startGeneratorWithProvider(
           ...(classified.requestId ? { requestId: classified.requestId } : {}),
           ...observerUsageLogFields(session),
         }, describeProviderError(classified));
-        const resumeAfterMs = bookClassifiedFailure(session, provider, classified);
-        if (resumeAfterMs !== null) scheduledResume = { afterMs: resumeAfterMs, source: 'rate-limit' };
+        scheduledResume = bookClassifiedFailure(session, provider, classified);
       } else {
         logger.error('SESSION', 'Generator failed', {
           sessionId: session.sessionDbId,
@@ -435,6 +451,16 @@ export async function startGeneratorWithProvider(
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
         });
       }
+      // A Claude fallback run that finds Claude signed out (or refused by org
+      // policy) takes Claude out of the fallback rotation for a cooldown, as a
+      // thrown auth refusal already does (bookClassifiedFailure). Otherwise each
+      // captured event would start the same signed-out fallback again while
+      // the primary is held. A Claude primary keeps retrying on the next event.
+      const claudeStandInSignedOut = provider === 'claude' && session.fallbackFrom != null && !failureBooked
+        && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy');
+      if (claudeStandInSignedOut) {
+        recordAuthCooldown('claude', 'Claude Code reported the fallback observer as signed out', session.observerProfile);
+      }
       // The org-policy refusal (#4677) goes down the same preserved auth path,
       // but logging in again cannot lift it, so it carries the notice's own
       // remedy instead of the /login advice.
@@ -473,6 +499,15 @@ export async function startGeneratorWithProvider(
         completionHandler: completionHandler,
         resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
+
+      // A refused stand-in is not the user's provider failing: the fallback's
+      // credential was refused (and is now held), but the primary it stood in
+      // for can take the work back once it recovers. Left as an auth pause the
+      // periodic sweep would skip the session for good, so mark it resumable;
+      // the sweep paces itself on the primary's breaker.
+      if (session.fallbackFrom != null && session.pausedReason === 'auth') {
+        session.pausedReason = 'provider_switch';
+      }
 
       // Paused work that nothing else is guaranteed to pick up resumes on its
       // own — without it, a session's last event (a summarize) stays in RAM:
@@ -550,16 +585,16 @@ export async function startGeneratorWithProvider(
 /**
  * Book a classified provider failure once, with the provider's own detail
  * (code, message, action, link, request id), so the session-start warning
- * shows the same words as the log line. Returns how long a rate-limited
- * session waits before it resumes on its own, or null when it waits for the
- * next captured event (or the user).
+ * shows the same words as the log line. Returns when and why a paused session
+ * resumes on its own, or null when it waits for the next captured event (or
+ * the user).
  */
 function bookClassifiedFailure(
   session: ActiveSession,
   provider: SelectableProvider,
   error: ClassifiedProviderError,
-): number | null {
-  let resumeAfterMs: number | null = null;
+): { afterMs: number; source: string } | null {
+  let resume: { afterMs: number; source: string } | null = null;
   switch (error.kind) {
     case 'quota_exhausted':
       // A spent allowance: withhold requests for a cooldown, then let one
@@ -584,10 +619,21 @@ function bookClassifiedFailure(
       // On the cmem gateway the resume also draws on the unattended budget it
       // shares with transport and fallback resumes; once that is spent, the
       // breaker takes over here too.
+      // When the fallback (by default the Anthropic plan) can take the work,
+      // the limit already outlasted the provider's in-place retries: hold the
+      // provider for the throttle cooldown and move the work there now, rather
+      // than resuming into the same refusal.
+      if (routeAroundUnservableProvider(provider, error.message, 'rate_limit', session.observerProfile) !== null) {
+        resume = { afterMs: 0, source: 'provider-fallback' };
+        break;
+      }
       const plan = error.retryAfterMs !== undefined ? planRateLimitResume(session) : null;
       if (plan?.resume && error.retryAfterMs !== undefined
         && planUnattendedGatewayResume(session, 'rate-limit', canCmemGatewayServe()).resume) {
-        resumeAfterMs = Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS);
+        resume = {
+          afterMs: Math.min(Math.max(error.retryAfterMs, 0), QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS),
+          source: 'rate-limit',
+        };
       } else {
         recordQuotaExhausted(provider, error.message, 'rate_limit', undefined, session.observerProfile);
       }
@@ -602,7 +648,7 @@ function bookClassifiedFailure(
     url: error.url,
     requestId: error.requestId,
   });
-  return resumeAfterMs;
+  return resume;
 }
 
 /**

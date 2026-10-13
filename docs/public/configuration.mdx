@@ -142,7 +142,7 @@ See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets a
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | — (off) | Where observer work goes while the selected provider's quota breaker holds (a spent allowance, or rate limits that outlast their retries): `claude`, `gemini`, `openrouter`, or `openai-compatible`. Empty = off |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
 
 See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
