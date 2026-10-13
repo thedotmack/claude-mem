@@ -21,6 +21,8 @@ description: Automated semantic versioning and release workflow for Claude Code 
     - `plugin/.claude-plugin/plugin.json` — bundled Claude-plugin manifest
     - `.codex-plugin/plugin.json` — Codex-plugin manifest
     - `plugin/.codex-plugin/plugin.json` — bundled Codex-plugin manifest
+    - `.qoder-plugin/plugin.json` — Qoder plugin manifest
+    - `plugin/.qoder-plugin/plugin.json` — bundled Qoder plugin manifest
     - `openclaw/openclaw.plugin.json` — OpenClaw plugin manifest
     - `.grok-plugin/plugin.json` — Grok plugin manifest
     - `claude-mem-cursor/.cursor-plugin/plugin.json` — Cursor plugin manifest
@@ -28,12 +30,12 @@ description: Automated semantic versioning and release workflow for Claude Code 
     - `dsh/package.json` — bundled DSH plugin package
     - `README.md` — the version badge (`version-X.Y.Z-green`), not a `"version"` key
 
-    Verify coverage before editing: `git grep -l "\"version\": \"<OLD>\""` should list the twelve JSON files above, and `git grep -n "version-<OLD>-green"` the README badge. If a new manifest has been added since this doc was last updated, update this list.
+    Verify coverage before editing: `git grep -l "\"version\": \"<OLD>\""` should list the fourteen JSON files above, and `git grep -n "version-<OLD>-green"` the README badge. If a new manifest has been added since this doc was last updated, update this list.
 
 ## Workflow
 
 1.  **Update**: Increment the version string in every path above. Do NOT touch `CHANGELOG.md` — it's regenerated.
-2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all twelve JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
+2.  **Verify**: `git grep -n "\"version\": \"<NEW>\""` — confirm all fourteen JSON files match, and the README badge reads `version-<NEW>-green`. `git grep -n "\"version\": \"<OLD>\""` — should return zero hits.
 3.  **Build and sync**: `npm run build-and-sync` to regenerate artifacts, sync the local marketplace copy, restart the worker, and clear the queue. Do not use plain `npm run build` for release validation because it can leave the local marketplace/worker out of sync.
 4.  **Commit**: `git add -A && git commit -m "chore: bump version to X.Y.Z"`.
 5.  **Tag**: `git tag -a vX.Y.Z -m "Version X.Y.Z"`.
@@ -92,7 +94,7 @@ description: Automated semantic versioning and release workflow for Claude Code 
 
 ## Checklist
 
-- [ ] All thirteen version files (twelve JSON manifests and the README badge) have matching versions
+- [ ] All fifteen version files (fourteen JSON manifests and the README badge) have matching versions
 - [ ] `git grep` for old version returns zero hits
 - [ ] `npm run build-and-sync` succeeded
 - [ ] Git tag created and pushed
