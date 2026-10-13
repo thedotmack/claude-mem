@@ -16,8 +16,9 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
-| `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for non-streamed observer requests: Gemini, Codex, and the cmem.ai gateway (plus any OpenAI-compatible endpoint that refuses streaming). It exists to catch a hung request; a slow backend just needs a higher value. OpenRouter and OpenAI-compatible requests are streamed and are not bounded by this setting: they end after 90 seconds with no token or keep-alive, with a 300-second cap on the whole request. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
+| `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for non-streamed observer requests: Gemini, Codex, and the cmem.ai gateway (plus any OpenAI-compatible endpoint that refuses streaming). It exists to catch a hung request; a slow backend just needs a higher value. OpenRouter and OpenAI-compatible requests are streamed and are not bounded by this setting: they end after the idle window (`CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS`) with no token or keep-alive, with a 300-second cap on the whole request. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS` | `180000` | Deadline (ms, 500–300000) for condensing one oversized tool field before its observation is sent; on expiry the field is truncated instead. It is a request to the same backend as the observer request, so it has the same default. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
+| `CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS` | `90000` | Silence (ms, 500–300000) that ends a streamed OpenRouter or OpenAI-compatible request: no token and no keep-alive for this long, and the request is abandoned (a 300-second cap bounds the whole request). Raise it when a self-hosted backend queues requests behind a load balancer — the queue wait is silent, so it reads as idle and the shipped 90 seconds can fire before the backend even starts generating. It is an independent knob, so it does not move `CLAUDE_MEM_LLM_TIMEOUT_MS` (which streamed requests ignore). An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
@@ -187,6 +188,12 @@ Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
 | `ANTHROPIC_API_KEY` | none | Direct Anthropic API key; normally omit this in LiteLLM gateway mode |
 
 Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_OBSERVER_THINKING` | `disabled` | The `thinking` parameter the Claude observer sends. `disabled` saves tokens on Anthropic-native endpoints. `omit` sends no `thinking` field, for a gateway whose upstream model always thinks and rejects `disabled` (for example GLM's error 1210). `enabled` or `enabled:<budget>` (default budget `1024`) turns thinking on and spends thinking tokens on every observer request |
+
+If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, the observer drops the parameter for the rest of that session and retries the same batch, so nothing is lost while you change the setting.
 
 ### System Configuration
 

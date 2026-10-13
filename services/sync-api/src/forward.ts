@@ -11,7 +11,7 @@
  * - /internal/v1/* answers 410: Pro reads Supabase directly after its merge.
  */
 import { errorResponse, json } from "./auth";
-import type { SyncApiEnv } from "./env";
+import { formatHostForUrl, type SyncApiEnv } from "./env";
 
 const UPSTREAM_RETRY_AFTER_SECONDS = "5";
 
@@ -159,7 +159,7 @@ export function startForwardProxy(env: SyncApiEnv): ForwardProxyApp {
 		fetch: (request) => handleForwardRequest(request, forwardOrigin),
 	});
 	const host = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
-	const url = `http://${host}:${server.port}`;
+	const url = `http://${formatHostForUrl(host)}:${server.port}`;
 	const stop = async (): Promise<void> => {
 		server.stop(true);
 	};

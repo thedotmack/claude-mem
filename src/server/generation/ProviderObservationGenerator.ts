@@ -167,7 +167,7 @@ export class ProviderObservationGenerator {
    */
   async process(
     job: Job<ServerGenerationJobPayload>,
-  ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
+  ): Promise<{ jobId: string; status: 'completed' | 'superseded'; observationCount: number }> {
     const correlationId = `bullmq:${job.id ?? '?'}`;
     // Phase 12 — pivot id captured up front so every log line in this
     // dispatch carries the same identifier whether or not we manage to
@@ -315,6 +315,7 @@ export class ProviderObservationGenerator {
         await markGenerationFailed({
           pool: this.options.pool,
           job: fresh,
+          expectedAttempt: fresh,
           reason: error instanceof Error ? error.message : String(error),
           classification: classified?.kind ?? 'unknown',
           retryable,
@@ -334,7 +335,7 @@ export class ProviderObservationGenerator {
     fresh: PostgresObservationGenerationJob,
     correlationId: string,
     payloadRequestId: string | null,
-  ): Promise<{ jobId: string; status: 'completed'; observationCount: number }> {
+  ): Promise<{ jobId: string; status: 'completed' | 'superseded'; observationCount: number }> {
     const events = await this.loadEvents(fresh, payload);
     const project = await this.loadProject(fresh);
 
@@ -390,6 +391,7 @@ export class ProviderObservationGenerator {
       await markGenerationFailed({
         pool: this.options.pool,
         job: fresh,
+        expectedAttempt: fresh,
         reason: outcome.reason,
         classification: outcome.kind,
         retryable: false,
@@ -401,6 +403,10 @@ export class ProviderObservationGenerator {
           ? `generation empty response: ${outcome.reason}`
           : `generation parse error: ${outcome.reason}`,
       );
+    }
+
+    if (outcome.kind === 'superseded') {
+      return { jobId: outcome.jobId, status: 'superseded', observationCount: 0 };
     }
 
     logger.info('SYSTEM', 'generation completed', {
