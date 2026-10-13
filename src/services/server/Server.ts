@@ -26,6 +26,14 @@ import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
 import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
 import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
+import { TERMINAL_INIT_PHASES, type InitPhaseSource, type InitPhaseState } from './init-phase.js';
+
+/**
+ * Keep-alive comment cadence on GET /api/ready. Clients treat 5 s of silence
+ * as wedged (READY_STREAM_IDLE_TIMEOUT_MS in worker-utils.ts), so the ping
+ * must be comfortably shorter than that: equal values would race.
+ */
+const READY_STREAM_PING_INTERVAL_MS = 2000;
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
@@ -108,6 +116,14 @@ export interface AiStatus {
 
 export interface ServerOptions {
   getInitializationComplete: () => boolean;
+  /**
+   * Boot progress for GET /api/ready (the worker's InitPhaseTracker). Absent
+   * (server runtime, tests) ⇒ the phase is derived from
+   * getInitializationComplete(): `ready` or `starting`, re-checked on each ping.
+   */
+  initPhaseSource?: InitPhaseSource;
+  /** Test hook: /api/ready keep-alive cadence. Default 2000 ms. */
+  readyStreamPingIntervalMs?: number;
   getMcpReady: () => boolean;
   // reason feeds worker_stopped telemetry: 'restart' when the CLI restart
   // path tags /api/admin/shutdown with ?reason=restart, 'stop' otherwise.
@@ -164,6 +180,22 @@ export function applySecurityHeaders(res: Response): void {
 export class Server {
   readonly app: Application;
   private server: http.Server | null = null;
+  /**
+   * The idle-exit monitor's client-activity signals: when a request last
+   * started or finished (epoch ms; null before the first), and how many
+   * requests are still open.
+   *
+   * Counted per request, deliberately NOT per socket. Under Bun the server's
+   * 'connection' event yields wrapper objects with undefined addresses that
+   * never emit 'close', so a socket tally reads as permanently busy on a Bun
+   * install (the runtime claude-mem ships on) while the OS shows no
+   * connections at all. A request settles on its response's 'finish' or
+   * 'close', or its socket's 'close', the event Bun emits when a streaming
+   * client disconnects (SSEBroadcaster.addClient relies on the same one).
+   * A count that never settles only keeps the worker up, which fails safe.
+   */
+  private lastRequestAt: number | null = null;
+  private inFlightRequests = 0;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
 
@@ -185,6 +217,45 @@ export class Server {
 
   getHttpServer(): http.Server | null {
     return this.server;
+  }
+
+  /**
+   * When a request last started or finished (epoch ms), or null if none has.
+   *
+   * A request that stays open, such as a viewer tab on the SSE stream or a
+   * corpus prime, stamps this only when it starts and when it ends, so the
+   * idle-exit monitor reads it together with getInFlightRequestCount().
+   */
+  getLastRequestAt(): number | null {
+    return this.lastRequestAt;
+  }
+
+  /** Requests that have started and not yet finished or closed. */
+  getInFlightRequestCount(): number {
+    return this.inFlightRequests;
+  }
+
+  /**
+   * Count one request as in flight until its response finishes or its
+   * connection closes, whichever comes first, and stamp both ends.
+   */
+  private trackRequestActivity(res: Response): void {
+    this.lastRequestAt = Date.now();
+    this.inFlightRequests++;
+    const socket = res.socket;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      res.off('finish', settle);
+      res.off('close', settle);
+      socket?.off('close', settle);
+      this.inFlightRequests--;
+      this.lastRequestAt = Date.now();
+    };
+    res.on('finish', settle);
+    res.on('close', settle);
+    socket?.on('close', settle);
   }
 
   async listen(port: number, host: string): Promise<void> {
@@ -244,6 +315,15 @@ export class Server {
   }
 
   private setupMiddleware(): void {
+    // Idle-exit request tracking, ahead of the body parsers and every route
+    // registered from here on. The remote read-only guard, security headers,
+    // host/CORS guards and the /api/auth routes mount before it (position
+    // zero belongs to the read-only guard), so a request that only they
+    // answer is not counted; none of those stays open.
+    this.app.use((_req: Request, res: Response, next: () => void) => {
+      this.trackRequestActivity(res);
+      next();
+    });
     const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
   }
@@ -277,6 +357,71 @@ export class Server {
 
   private setupPreBodyParserRoutes(): void {
     this.options.preBodyParserRoutes?.forEach(handler => handler.setupRoutes(this.app));
+  }
+
+  /**
+   * GET /api/ready — SSE boot progress. Sends the current phase at once, then
+   * every transition, with a `: ping` comment between them, and ENDS the
+   * response after `ready` or `failed`. A client that reads silence or a close
+   * without a terminal phase must treat the worker as wedged, never as ready.
+   */
+  private handleReadyStream(req: Request, res: Response): void {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const source = this.options.initPhaseSource;
+    const readPhase = (): InitPhaseState => source
+      ? source.getInitPhase()
+      : { phase: this.options.getInitializationComplete() ? 'ready' : 'starting' };
+
+    let finished = false;
+    let lastSentPhase: string | null = null;
+    let unsubscribe: (() => void) | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+    const socket = req.socket;
+    const cleanup = () => {
+      finished = true;
+      if (pingTimer !== null) { clearInterval(pingTimer); pingTimer = null; }
+      if (unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
+      res.off('close', cleanup);
+      socket.off('close', cleanup);
+    };
+
+    const send = (state: InitPhaseState) => {
+      if (finished || state.phase === lastSentPhase) return;
+      lastSentPhase = state.phase;
+      const payload = {
+        phase: state.phase,
+        ...(state.message !== undefined ? { message: state.message } : {}),
+        version: BUILT_IN_VERSION,
+        pid: process.pid,
+      };
+      res.write(`event: phase\ndata: ${JSON.stringify(payload)}\n\n`);
+      if (TERMINAL_INIT_PHASES.includes(state.phase)) {
+        cleanup();
+        res.end();
+      }
+    };
+
+    // Client disconnect: Node emits res 'close'; Bun's node:http does not
+    // (only the socket closes), so listen to both. req 'close' is avoided: on
+    // Node it can fire as soon as a GET body is consumed.
+    res.on('close', cleanup);
+    socket.on('close', cleanup);
+    if (source) unsubscribe = source.subscribeInitPhase(send);
+    send(readPhase());
+    if (finished) return;
+
+    pingTimer = setInterval(() => {
+      if (finished) return;
+      res.write(': ping\n\n');
+      // Without a transition source, the ping tick is the only time the
+      // derived phase can be re-read.
+      if (!source) send(readPhase());
+    }, this.options.readyStreamPingIntervalMs ?? READY_STREAM_PING_INTERVAL_MS);
   }
 
   private setupCoreRoutes(): void {
@@ -320,6 +465,8 @@ export class Server {
         });
       }
     });
+
+    this.app.get('/api/ready', (req: Request, res: Response) => this.handleReadyStream(req, res));
 
     this.app.get('/api/version', (_req: Request, res: Response) => {
       res.status(200).json({ version: BUILT_IN_VERSION });

@@ -1,4 +1,5 @@
 
+import { retainTextHeadTail } from '../shared/text-truncation.js';
 import { logger } from '../utils/logger.js';
 import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
@@ -62,20 +63,17 @@ ${mode.prompts.format_examples}
 ${mode.prompts.footer}`;
 }
 
-export function buildInitPrompt(
-  project: string,
-  sessionId: string,
-  userPrompt: string,
-  mode: ModeConfig,
-  priorContext: string = '',
-): string {
+/**
+ * The observer instructions every init and continuation prompt opens with.
+ *
+ * A provider prompt cache (OpenRouter, the cmem.ai gateway) hits only on a
+ * byte-identical prefix. This block depends on the mode alone, so it goes
+ * first and everything per-session (prior context, the user's request, the
+ * continuation greeting, dates, project names) follows it: every generation,
+ * session and user then shares one cacheable start.
+ */
+function observerInstructions(mode: ModeConfig): string {
   return `${mode.prompts.system_identity}
-${wrapPriorContext(priorContext)}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
 
 ${mode.prompts.observer_role}
 
@@ -85,7 +83,23 @@ ${mode.prompts.recording_focus}
 
 ${mode.prompts.skip_guidance}
 
-${observationSkeleton(mode)}
+${observationSkeleton(mode)}`;
+}
+
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
+  return `${observerInstructions(mode)}
+${wrapPriorContext(priorContext)}
+
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 ${mode.prompts.header_memory_start}`;
 }
@@ -337,8 +351,7 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   if (raw.length <= maxChars) return raw;
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
-  const head = raw.slice(0, headChars);
-  const tail = tailChars > 0 ? raw.slice(-tailChars) : '';
+  const { head, tail } = retainTextHeadTail(raw, headChars, tailChars);
   const elidedChars = Math.max(0, raw.length - head.length - tail.length);
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
@@ -466,7 +479,9 @@ export function buildContinuationPrompt(
   mode: ModeConfig,
   priorContext: string = '',
 ): string {
-  return `${mode.prompts.continuation_greeting}
+  return `${observerInstructions(mode)}
+
+${mode.prompts.continuation_greeting}
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
@@ -474,19 +489,7 @@ ${wrapPriorContext(priorContext)}
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-${mode.prompts.system_identity}
-
-${mode.prompts.observer_role}
-
-${mode.prompts.spatial_awareness}
-
-${mode.prompts.recording_focus}
-
-${mode.prompts.skip_guidance}
-
 ${mode.prompts.continuation_instruction}
-
-${observationSkeleton(mode)}
 
 ${mode.prompts.header_memory_continued}`;
 }

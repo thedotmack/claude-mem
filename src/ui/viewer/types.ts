@@ -29,6 +29,7 @@ export interface Summary {
   learned?: string;
   completed?: string;
   next_steps?: string;
+  notes?: string | null;
   created_at_epoch: number;
 }
 
@@ -89,7 +90,8 @@ export interface Settings {
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
 
-  CLAUDE_MEM_PROVIDER?: string;  
+  CLAUDE_MEM_PROVIDER?: string;
+  CLAUDE_MEM_CLAUDE_AUTH_METHOD?: string;
   CLAUDE_MEM_CODEX_MODEL?: string;
   CLAUDE_MEM_GEMINI_API_KEY?: string;
   CLAUDE_MEM_GEMINI_API_KEYS?: string;
@@ -121,6 +123,7 @@ export interface Settings {
 
   CLAUDE_MEM_CONTEXT_SHOW_LAST_SUMMARY?: string;
   CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE?: string;
+  CLAUDE_MEM_FILE_READ_GATE_ENABLED?: string;
 
   /** File/env only — shown read-only. Not written via POST /api/settings. */
   CLAUDE_CODE_PATH?: string;

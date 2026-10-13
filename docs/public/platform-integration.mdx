@@ -72,13 +72,15 @@ The worker API is harness-agnostic. claude-mem ships first-party installers and 
 | Harness | Platform identifier | Hook / MCP config location | Installer command |
 | --- | --- | --- | --- |
 | Claude Code | `claude` | Native plugin hooks (`~/.claude/...`) | `/plugin marketplace add thedotmack/claude-mem` |
-| Codex CLI | `codex` | `~/.codex/config.toml` | `npx claude-mem install --ide codex` |
+| Codex CLI | `codex` | `~/.codex/config.toml` | `npx claude-mem install --ide codex-cli` |
 | Cursor | `cursor` | `~/.cursor/hooks.json`, `~/.cursor/mcp.json` | `npx claude-mem install --ide cursor` |
 | Windsurf | `windsurf` | `~/.codeium/windsurf/hooks.json` | `npx claude-mem install --ide windsurf` |
-| OpenCode | `opencode` | `~/.config/opencode/opencode.json` | `npx claude-mem install --ide opencode` |
+| OpenCode | `opencode` | `~/.config/opencode/plugins/claude-mem.js`, `~/.config/opencode/opencode.json` | `npx claude-mem install --ide opencode` |
 | OpenClaw | `openclaw` | OpenClaw gateway plugin config | `curl -fsSL https://install.cmem.ai/openclaw.sh \| bash` |
 | Antigravity CLI | `antigravity-cli` | `~/.gemini/settings.json`, `~/.gemini/.../mcp_config.json` | `npx claude-mem install --ide antigravity` |
 | Kimi Code | `kimi` | `~/.kimi-code/config.toml`, `~/.kimi-code/mcp.json` | `npx claude-mem kimi install` |
+
+The OpenCode plugin needs OpenCode 1.3.4 or later, and supports both OpenCode 1 and OpenCode 2 from one file. OpenCode 2 loads it from its `plugins` directory, so the installer adds a `plugin` entry to `opencode.json` only for OpenCode 1.
 
 ## Worker Architecture
 

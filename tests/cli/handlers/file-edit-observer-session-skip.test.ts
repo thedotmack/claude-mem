@@ -27,21 +27,32 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({ CLAUDE_MEM_EXCLUDED_PROJECTS: '' }),
 }));
 
+// FileEdit spools and exits: no awaited worker call on any path. The nudge is
+// recorded separately (fire-and-forget).
+const nudgeLog: string[] = [];
 mock.module('../../../src/shared/worker-utils.js', () => ({
+  ...realWorkerUtilsSnapshot,
   executeWithWorkerFallback: (apiPath: string, method: string, body: unknown) => {
     workerCallLog.push({ path: apiPath, method, body });
-    throw new Error(`worker must not be called for internal observer sessions: ${apiPath}`);
+    throw new Error(`file-edit hook must not await the worker: ${apiPath}`);
   },
-  isWorkerFallback: () => false,
+  workerHttpRequest: (apiPath: string) => {
+    nudgeLog.push(apiPath);
+    return Promise.resolve(new Response('{"status":"draining"}', { status: 202 }));
+  },
 }));
 
 import { OBSERVER_SESSIONS_DIR } from '../../../src/shared/paths.js';
 import { logger } from '../../../src/utils/logger.js';
+import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
+let tempSpool: ReturnType<typeof useTempHookSpoolDataDir>;
 
 beforeEach(() => {
+  tempSpool = useTempHookSpoolDataDir();
   workerCallLog.length = 0;
+  nudgeLog.length = 0;
   loggerSpies = [
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'dataIn').mockImplementation(() => {}),
@@ -50,6 +61,7 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+  tempSpool.restore();
 });
 
 afterAll(() => {
@@ -74,5 +86,35 @@ describe('fileEditHandler internal observer sessions', () => {
     expect(result.suppressOutput).toBe(true);
     expect(result.exitCode).toBe(0);
     expect(workerCallLog).toEqual([]);
+    expect(spooledEntries()).toEqual([]);
+    expect(nudgeLog).toEqual([]);
+  });
+
+  it('spools a tracked file edit and nudges the worker without awaiting it', async () => {
+    const { fileEditHandler } = await import('../../../src/cli/handlers/file-edit.js');
+
+    const result = await fileEditHandler.execute({
+      sessionId: 'user-session-file-edit',
+      cwd: '/tmp/file-edit-project',
+      platform: 'Cursor',
+      filePath: '/tmp/file-edit-project/a.ts',
+      edits: [{ oldText: 'before', newText: 'after' }],
+    });
+
+    expect(result.continue).toBe(true);
+    expect(workerCallLog).toEqual([]);
+    expect(nudgeLog).toEqual(['/api/spool/nudge']);
+    expect(spooledEntries()).toEqual([{
+      kind: 'file_edit',
+      payload: {
+        contentSessionId: 'user-session-file-edit',
+        platformSource: 'cursor',
+        toolName: 'write_file',
+        toolInput: { filePath: '/tmp/file-edit-project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] },
+        toolResponse: { success: true },
+        cwd: '/tmp/file-edit-project',
+      },
+      enqueuedAtEpochMs: expect.any(Number),
+    }]);
   });
 });

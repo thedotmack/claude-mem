@@ -31,6 +31,32 @@ export const DEADLINE_EXCEEDED_CODE = 'deadline_exceeded';
 export const CODEX_COOLDOWN_REFUSAL_CODE = 'codex_cooldown_active';
 
 /**
+ * What one paid send ended as, for the "never pay twice" rule (xAI SDK retry
+ * rules; retry.ts decides from it):
+ *  - `refused_before_work`: the backend said no before doing anything (a 429,
+ *    a pre-send refusal). Nothing was billed; retrying in place is safe.
+ *  - `ambiguous`: no answer arrived (network error before any response, our
+ *    own deadline) or a 5xx on a non-streamed POST. The work may have run and
+ *    been billed. Never retried in place; the session's transport pause
+ *    decides, against the batch's PaidSendBudget.
+ *  - `output_failure`: a response arrived and then its body could not be read
+ *    or parsed, or a 200 carried an embedded error (litellm's "Unable to get
+ *    json response"). The work ran and was billed. Never resent.
+ *  - `rejected`: the backend answered with a definite refusal (auth, quota, bad
+ *    request). Nothing to resend.
+ * Unset on an error means it is derived from `kind` (paidSendOutcomeOf).
+ */
+export type PaidSendOutcome = 'refused_before_work' | 'ambiguous' | 'output_failure' | 'rejected';
+
+/**
+ * `kind` (and `code`) of the refusal withRetry throws instead of sending when
+ * the claimed batch has spent its PaidSendBudget. Never sent, so never billed.
+ */
+export const PAID_SEND_BUDGET_EXHAUSTED_CODE = 'paid_send_budget_exhausted';
+
+export { MAX_ERROR_BODY_BYTES, readCappedErrorBody } from '../../shared/capped-error-body.js';
+
+/**
  * Optional structured detail carried alongside a classified error. Populated
  * when the upstream (e.g. the cmem.ai gateway) returns a taxonomy envelope
  * `{ code, message, action, url, request_id }`; the worker carries these
@@ -47,6 +73,21 @@ export interface ProviderErrorDetail {
    * "configuration repaired" without re-running a doomed query.
    */
   executablePath?: string;
+  /**
+   * The per-batch id sent as `x-client-request-id` (tracing only, never
+   * server-side idempotency), so a log line or a provider support ticket can
+   * name every send of one batch.
+   */
+  clientAttemptId?: string;
+  /** Overrides the outcome derived from `kind`; see PaidSendOutcome. */
+  paidSendOutcome?: PaidSendOutcome;
+  /**
+   * A streamed request failed in transport (network error, idle timeout, a
+   * stream that ended early) before the model produced any output. withRetry's
+   * `retryBeforeOutput` may resend such a failure once, against the batch's
+   * PaidSendBudget (xAI SDK retryBeforeOutput).
+   */
+  failedBeforeOutput?: boolean;
 }
 
 export class ClassifiedProviderError extends Error {
@@ -58,6 +99,11 @@ export class ClassifiedProviderError extends Error {
   readonly url?: string;
   readonly requestId?: string;
   readonly executablePath?: string;
+  /** Set by the provider, or by withRetry for the batch it sent; see ProviderErrorDetail. */
+  clientAttemptId?: string;
+  readonly paidSendOutcome?: PaidSendOutcome;
+  /** Set by the streaming request path; see ProviderErrorDetail.failedBeforeOutput. */
+  failedBeforeOutput?: boolean;
 
   constructor(message: string, opts: {
     kind: ProviderErrorClass;
@@ -86,6 +132,15 @@ export class ClassifiedProviderError extends Error {
     if (opts.executablePath !== undefined) {
       this.executablePath = opts.executablePath;
     }
+    if (opts.clientAttemptId !== undefined) {
+      this.clientAttemptId = opts.clientAttemptId;
+    }
+    if (opts.paidSendOutcome !== undefined) {
+      this.paidSendOutcome = opts.paidSendOutcome;
+    }
+    if (opts.failedBeforeOutput !== undefined) {
+      this.failedBeforeOutput = opts.failedBeforeOutput;
+    }
   }
 }
 
@@ -110,11 +165,25 @@ export function isClassified(err: unknown): err is ClassifiedProviderError {
 }
 
 /**
+ * What a failed send ended as (see PaidSendOutcome). An explicit outcome wins;
+ * otherwise a rate limit was refused before work, a transient fault (network,
+ * 5xx, deadline) is ambiguous, and every other classified kind is a definite
+ * refusal. An unclassified error is ambiguous: nothing says the work did not run.
+ */
+export function paidSendOutcomeOf(err: unknown): PaidSendOutcome {
+  if (!isClassified(err)) return 'ambiguous';
+  if (err.paidSendOutcome) return err.paidSendOutcome;
+  if (err.kind === 'rate_limit') return 'refused_before_work';
+  if (err.kind === 'transient') return 'ambiguous';
+  return 'rejected';
+}
+
+/**
  * The one rendering of a classified error for humans: message, then the
  * action, link, and request id when present. This is the single renderer for
  * the worker's `Observer failed` log line; the observer-health ledger stores
  * the fields structurally and renders them itself at session start.
  */
 export function describeProviderError(err: ClassifiedProviderError): string {
-  return `${err.message}${err.action ? ' — ' + err.action : ''}${err.url ? ' ' + err.url : ''}${err.requestId ? ` (req ${err.requestId})` : ''}`;
+  return `${err.message}${err.action ? ' — ' + err.action : ''}${err.url ? ' ' + err.url : ''}${err.requestId ? ` (req ${err.requestId})` : ''}${err.clientAttemptId ? ` (client attempt ${err.clientAttemptId})` : ''}`;
 }

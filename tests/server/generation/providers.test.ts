@@ -17,6 +17,9 @@ import {
   classifyGeminiServerError,
   type GeminiBadRequestCategory,
 } from '../../../src/server/generation/providers/GeminiObservationProvider.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
+import { parseAgentXml } from '../../../src/sdk/parser.js';
+import { assistantText } from '../../../src/shared/assistant-text.js';
 import { OpenRouterObservationProvider } from '../../../src/server/generation/providers/OpenRouterObservationProvider.js';
 import { buildServerGenerationPrompt } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { ServerGenerationContext } from '../../../src/server/generation/providers/shared/types.js';
@@ -163,14 +166,17 @@ describe('shared error classification', () => {
     expect((err.cause as Error).message).not.toContain(rawBody);
   });
 
-  it('classifyHttpProviderError treats a 2xx body-level litellm parse error as transient', () => {
+  // Never pay twice (Phase 1): the call was billed, only its output was lost;
+  // this used to be transient (BullMQ-retried) and is now never retried.
+  it('classifyHttpProviderError treats a 2xx body-level litellm parse error as a non-retried output failure', () => {
     const err = classifyHttpProviderError({
       status: 200,
       bodyText: '200 Unable to get json response - Expecting value: line 45 column 1',
       cause: new Error('OpenRouter API error: 200 - Unable to get json response'),
       providerLabel: 'OpenRouter',
     });
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
   });
 
   it('classifyClaudeServerError treats 529 as transient', () => {
@@ -232,11 +238,18 @@ describe('buildServerGenerationPrompt', () => {
     expect(result.hadPrivateContent).toBe(true);
   });
 
-  it('includes generation_job_id and project metadata in the prompt', () => {
+  it('renders an object payload as compact JSON, escaping only &, < and >', () => {
+    const { prompt } = buildServerGenerationPrompt(makeContext({ payload: { cmd: 'echo "a<b" && ls', n: 1 } }));
+    expect(prompt).toContain(String.raw`{"cmd":"echo \"a&lt;b\" &amp;&amp; ls","n":1}`);
+    expect(prompt).not.toContain('&quot;');
+  });
+
+  it('sends the folder label but none of the ids the model never needs', () => {
     const result = buildServerGenerationPrompt(makeContext({ serverSessionId: 'session-x' }));
-    expect(result.prompt).toContain('<generation_job_id>job-1</generation_job_id>');
-    expect(result.prompt).toContain('<server_session_id>session-x</server_session_id>');
     expect(result.prompt).toContain('<project_name>demo</project_name>');
+    for (const id of ['job-1', 'session-x', '<project_id>', '<team_id>', '<generation_job_id>', '<server_session_id>']) {
+      expect(result.prompt).not.toContain(id);
+    }
   });
 });
 
@@ -357,8 +370,14 @@ describe('GeminiObservationProvider', () => {
 
       expect(category).toBe(expectedCategory);
       expect(closedBadRequestCategories.has(category)).toBe(true);
-      expect(err.kind).toBe('unrecoverable');
-      expect(err.message).toBe(`Gemini bad request: ${expectedCategory}`);
+      // A refused key is a refused credential; the rest are bad requests.
+      if (expectedCategory === 'api_key') {
+        expect(err.kind).toBe('auth_invalid');
+        expect(err.message).toBe('Gemini auth invalid (status 400)');
+      } else {
+        expect(err.kind).toBe('unrecoverable');
+        expect(err.message).toBe(`Gemini bad request: ${expectedCategory}`);
+      }
       expect(err.message).not.toContain('RAW_PROVIDER_BODY');
       expect(err.cause).toBeInstanceOf(Error);
       expect((err.cause as Error).message).toContain('status 400');
@@ -553,6 +572,53 @@ describe('GeminiObservationProvider', () => {
 });
 
 describe('OpenRouterObservationProvider', () => {
+  it('preserves XML tags and words split across content blocks without changing worker separation', async () => {
+    const xml = '<observation><type>discovery</type><title>Native answer</title><narrative>Reliable extraction</narrative></observation>';
+    const content = [{ type: 'text', text: '<observ' }, { type: 'reasoning', text: 'private' }, { type: 'text', text: xml.slice(7) }];
+    const provider = new OpenRouterObservationProvider({ apiKey: 'fake', fetchImpl: async () => jsonResponse(200, { choices: [{ message: { content } }] }) });
+    const response = await provider.generate(makeContext());
+    expect(response.rawText).toBe(xml);
+    ModeManager.getInstance().loadMode('code');
+    expect(parseAgentXml(response.rawText, 'boundary').valid).toBe(true);
+    expect(parseAgentXml(response.rawText, 'boundary').observations[0].title).toBe('Native answer');
+    expect(assistantText([{ type: 'text', text: 'first' }, { type: 'text', text: 'second' }])).toBe('first\nsecond');
+  });
+
+  it('extracts text blocks from successful compatible responses without leaking reasoning', async () => {
+    const provider = new OpenRouterObservationProvider({
+      apiKey: 'fake',
+      fetchImpl: async () => jsonResponse(200, {
+        choices: [{ message: { content: [
+          { type: 'reasoning', text: 'private reasoning' },
+          { type: 'text', text: '<observation>first' },
+          { type: 'text', text: 'second</observation>' },
+          { type: 'tool_call', arguments: 'not an answer' },
+          null,
+        ] } }],
+        usage: { total_tokens: 11 },
+      }),
+    });
+    const result = await provider.generate(makeContext());
+    expect(result.rawText).toBe('<observation>firstsecond</observation>');
+    expect(result.tokensUsed).toBe(11);
+  });
+
+  it('treats non-text compatible response content as empty', async () => {
+    const nonTextContents = [
+      null,
+      42,
+      { text: 'not a content block array' },
+      [{ type: 'reasoning', text: 'private' }],
+    ];
+    for (const content of nonTextContents) {
+      const provider = new OpenRouterObservationProvider({
+        apiKey: 'fake',
+        fetchImpl: async () => jsonResponse(200, { choices: [{ message: { content } }] }),
+      });
+      expect((await provider.generate(makeContext())).rawText).toBe('');
+    }
+  });
+
   it('retries the exact token-field compatibility response', async () => {
     const issueReport = readFileSync(new URL('../../fixtures/claude-mem-issue-3712.md', import.meta.url), 'utf8');
     const compatibilityError = issueReport.match(/Unsupported parameter:[\s\S]*?instead\./)?.[0] ?? '';

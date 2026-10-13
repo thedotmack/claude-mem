@@ -59,6 +59,8 @@ describe('sync-health helpers', () => {
       .toBe('subscription_inactive');
     expect(classifySyncAuthFailure(401, '{"error":"Subscription not active"}')?.code).toBe('subscription_inactive');
     expect(classifySyncAuthFailure(403, 'not json')?.code).toBe('invalid_token');
+    expect(classifySyncAuthFailure(403, '<!DOCTYPE html>\n<!--[if lt IE 7]> <html class="no-js ie6 oldie" lang="en-US"> <![endif]--><title>Attention Required! | Cloudflare</title>')).toBeNull();
+    expect(classifySyncAuthFailure(401, '<html><body>blocked</body></html>')).toBeNull();
     expect(classifySyncAuthFailure(403, '{"code":"subscription_inactive"}')?.message).toContain('cmem.ai/pro');
   });
 

@@ -98,6 +98,13 @@ describe('worker-utils API timeout resolution', () => {
     const requests: string[] = [];
     global.fetch = mock((url: string | URL | Request) => {
       requests.push(String(url));
+      // Phase 4: readiness is one GET /api/ready SSE read, not /api/readiness.
+      if (String(url).endsWith('/api/ready')) {
+        return Promise.resolve(new Response(
+          'event: phase\ndata: {"phase":"ready","version":"test","pid":1}\n\n',
+          { headers: { 'Content-Type': 'text/event-stream' } },
+        ));
+      }
       return Promise.resolve(new Response(JSON.stringify({ ok: true })));
     }) as unknown as typeof fetch;
 
@@ -112,7 +119,7 @@ describe('worker-utils API timeout resolution', () => {
 
     expect(result).toEqual({ ok: true });
     expect(requests).toEqual([
-      expect.stringContaining('/api/readiness'),
+      expect.stringMatching(/\/api\/ready$/),
       expect.stringContaining('/api/test'),
     ]);
   });

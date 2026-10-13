@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
@@ -647,6 +648,52 @@ describe('ProcessManager', () => {
   });
 
   describe('cleanStalePidFile', () => {
+    it.if(process.platform === 'linux')('treats a tokenless PID reused by an unrelated process as stale', () => {
+      const commandLine = readFileSync(`/proc/${process.pid}/cmdline`, 'utf-8');
+      expect(commandLine).not.toContain('worker-service.cjs');
+      writeFileSync(PID_FILE, JSON.stringify({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+      }));
+
+      expect(cleanStalePidFile({ removeStale: false })).toBe('stale');
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it.if(process.platform === 'linux')('accepts a tokenless worker identified by its command line', async () => {
+      const workerDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-legacy-worker-'));
+      const workerScript = path.join(workerDir, 'worker-service.cjs');
+      writeFileSync(workerScript, 'setInterval(() => {}, 1000);\n');
+      const worker = spawn(process.execPath, [workerScript], { stdio: 'ignore' });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          worker.once('spawn', resolve);
+          worker.once('error', reject);
+        });
+        if (!worker.pid) throw new Error('Worker test process did not receive a PID');
+        writeFileSync(PID_FILE, JSON.stringify({
+          pid: worker.pid,
+          port: 37777,
+          startedAt: new Date().toISOString()
+        }));
+
+        expect(cleanStalePidFile({ removeStale: false })).toBe('alive');
+      } finally {
+        // An exit that already happened never fires 'exit' again, so only wait
+        // for a child still running, and never longer than five seconds.
+        if (worker.exitCode === null && worker.signalCode === null) {
+          const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
+          worker.kill('SIGTERM');
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([exited, new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 5_000); })]);
+          clearTimeout(cleanupTimer);
+        }
+        rmSync(workerDir, { recursive: true, force: true });
+      }
+    });
+
     it('should remove PID file when process is dead', () => {
       const staleInfo: PidInfo = {
         pid: 2147483647,

@@ -25,6 +25,7 @@ let quotaFallbackProvider = '';
 let proFallbackAt = '';
 let openRouterBaseUrl = '';
 let staleReason: string | null = null;
+let memoryInstructions: string | undefined = 'false';
 const outageNoticeRequests: Array<string | undefined> = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
@@ -35,6 +36,7 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: quotaFallbackProvider,
     CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
     CLAUDE_MEM_OPENROUTER_BASE_URL: openRouterBaseUrl,
+    CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: memoryInstructions,
   }),
 }));
 
@@ -75,12 +77,98 @@ beforeEach(() => {
   proFallbackAt = '';
   openRouterBaseUrl = '';
   staleReason = null;
+  memoryInstructions = 'false';
 });
 
 describe('contextHandler SessionStart path', () => {
+  it('steers note-taking to available plugin tools by default and still injects instructions during a worker outage', async () => {
+    memoryInstructions = undefined;
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const input = { sessionId: 'memory-instructions', cwd: '/tmp/repo', platform: 'codex' };
+    const result = await contextHandler.execute(input);
+    expect(result.hookSpecificOutput?.additionalContext).toContain('context from worker');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('concise purpose-specific text');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('internal metadata out of model context');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('observation_add for the selected server project');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('save_memory is local-worker only');
+    expect(result.hookSpecificOutput?.additionalContext).toContain('hosted read-only connector');
+    workerUnreachable = true;
+    try {
+      const fallback = await contextHandler.execute(input);
+      expect(fallback.hookSpecificOutput?.additionalContext).toContain('save_memory tool is available');
+    } finally { workerUnreachable = false; }
+  });
+  it('skips the model and terminal timeline on Claude resume before contacting the worker', async () => {
+    calls.length = 0;
+    outageNoticeRequests.length = 0;
+    showTerminalOutput = true;
+    workerUnreachable = true;
+    staleReason = 'expired keychain entry';
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-resume-claude',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+        sessionSource: 'resume',
+      });
+
+      expect(result).toEqual({
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
+        exitCode: 0,
+      });
+      expect(calls).toEqual([]);
+      expect(outageNoticeRequests).toEqual([]);
+    } finally {
+      showTerminalOutput = false;
+      workerUnreachable = false;
+    }
+  });
+
+  for (const sessionSource of ['startup', 'clear', 'compact'] as const) {
+    it(`keeps model and terminal context on Claude ${sessionSource}`, async () => {
+      calls.length = 0;
+      showTerminalOutput = true;
+      try {
+        const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+        const result = await contextHandler.execute({
+          sessionId: `session-${sessionSource}-claude`,
+          cwd: '/tmp/repo',
+          platform: 'claude-code',
+          sessionSource,
+        });
+
+        expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+        expect(result.systemMessage).toContain('context from worker');
+        expect(calls.map(call => call[0])).toEqual([
+          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&cwd=%2Ftmp%2Frepo',
+          '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&cwd=%2Ftmp%2Frepo&colors=true',
+        ]);
+      } finally {
+        showTerminalOutput = false;
+      }
+    });
+  }
+
+  it('keeps context injection for Codex resume', async () => {
+    calls.length = 0;
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-resume-codex',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+      sessionSource: 'resume',
+    });
+
+    expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
+    expect(calls).toHaveLength(1);
+  });
+
   for (const memoryProvider of ['codex', 'openai-compatible', 'openrouter', 'gemini']) {
-    it(`does not request Claude login when memory uses ${memoryProvider} without Claude fallback`, async () => {
+    it(`does not request Claude login when memory uses ${memoryProvider} with the fallback turned off`, async () => {
       provider = memoryProvider;
+      quotaFallbackProvider = 'off';
       staleReason = 'expired keychain entry';
       const { contextHandler } = await import('../../../src/cli/handlers/context.js');
       const result = await contextHandler.execute({
@@ -106,6 +194,19 @@ describe('contextHandler SessionStart path', () => {
       expect(result.hookSpecificOutput?.additionalContext).toContain('claude auth login');
     });
   }
+
+  it('keeps the Claude login hint for the default (empty) fallback, the Anthropic plan', async () => {
+    provider = 'gemini';
+    quotaFallbackProvider = '';
+    staleReason = 'expired keychain entry';
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const result = await contextHandler.execute({
+      sessionId: 'session-stale-default-fallback',
+      cwd: '/tmp/repo',
+      platform: 'codex',
+    });
+    expect(result.hookSpecificOutput?.additionalContext).toContain('Claude Code OAuth token is stale');
+  });
 
   it('keeps the Claude login hint for a configured Claude quota fallback', async () => {
     provider = 'codex';
@@ -146,7 +247,7 @@ describe('contextHandler SessionStart path', () => {
 
     expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
     expect(calls).toEqual([[
-      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex',
+      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=codex&cwd=%2Ftmp%2Frepo',
       'GET',
       undefined,
       { workerStartupTimeoutMs: 15_000, timeoutMs: 2_000 },
@@ -164,7 +265,7 @@ describe('contextHandler SessionStart path', () => {
     });
 
     expect(calls).toEqual([[
-      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude',
+      '/api/context/inject?projects=parent-project%2Crepo-project&platformSource=claude&cwd=%2Ftmp%2Frepo',
       'GET',
       undefined,
       undefined,
@@ -186,8 +287,8 @@ describe('contextHandler SessionStart path', () => {
       expect(result.hookSpecificOutput?.additionalContext).toBe('context from worker');
       expect(result.systemMessage).toContain('context from worker');
       expect(calls.map(call => call[0])).toEqual([
-        '/api/context/inject?projects=parent-project%2Crepo-project',
-        '/api/context/inject?projects=parent-project%2Crepo-project&colors=true',
+        '/api/context/inject?projects=parent-project%2Crepo-project&cwd=%2Ftmp%2Frepo',
+        '/api/context/inject?projects=parent-project%2Crepo-project&cwd=%2Ftmp%2Frepo&colors=true',
       ]);
     } finally {
       includeAllSources = false;
@@ -227,7 +328,7 @@ describe('contextHandler SessionStart path', () => {
       });
 
       expect(calls.map(call => call[0])).toEqual([
-        '/api/context/inject?projects=parent-project%2Crepo-project',
+        '/api/context/inject?projects=parent-project%2Crepo-project&cwd=%2Ftmp%2Frepo',
       ]);
     } finally {
       includeAllSources = false;

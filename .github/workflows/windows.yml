@@ -89,8 +89,8 @@ jobs:
           $env:USERPROFILE = Join-Path $env:RUNNER_TEMP 'log-home'
           $logs = Join-Path $env:USERPROFILE '.claude-mem\logs'
           New-Item -ItemType Directory -Force -Path $logs | Out-Null
-          $stamp = Get-Date -Format 'yyyy-MM-dd'
-          Set-Content -Path (Join-Path $logs "worker-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
+          $stamp = [DateTime]::UtcNow.ToString('yyyy-MM-dd')
+          Set-Content -Path (Join-Path $logs "claude-mem-$stamp.log") -Value (1..60 | ForEach-Object { "line $_" })
 
           $out = node scripts/worker-logs.cjs
           if ($out.Count -ne 50) { throw "expected 50 lines, got $($out.Count)" }

@@ -14,10 +14,13 @@ import {
   resolveClaudeCredentialProfile,
   deriveMacKeychainServiceName,
   readMacOsKeychain,
+  readLinuxLibsecret,
+  readClaudeCredentialsFile,
   sanitizeMacOsKeychainAccount,
 } from '../../src/shared/oauth-token.js';
 import { paths, CLAUDE_CONFIG_DIR, DEFAULT_CLAUDE_CONFIG_DIR } from '../../src/shared/paths.js';
 import { buildIsolatedEnvWithFreshOAuth } from '../../src/shared/EnvManager.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 /**
  * The implementation uses promisify(execFile), which captures execFile at
@@ -32,7 +35,18 @@ const ORIGINAL_ENV_TOKEN = process.env.CLAUDE_CODE_OAUTH_TOKEN;
 const ORIGINAL_DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR;
 
 let dataDirSpy: ReturnType<typeof spyOn> | undefined;
+let settingsSpy: ReturnType<typeof spyOn> | undefined;
 let tempDir: string;
+
+/**
+ * The credential profile dir every test resolves to: empty unless a test
+ * writes a `.credentials.json` into it. readClaudeOAuthToken reads
+ * `${configDir}/.credentials.json` (#4348), so without this every test that
+ * reaches it would read the developer's real ~/.claude login.
+ */
+function isolatedConfigDir(): string {
+  return join(tempDir, 'claude-config');
+}
 
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value, configurable: true });
@@ -65,10 +79,18 @@ beforeEach(() => {
   // Redirect DATA_DIR to a temp directory for marker file tests.
   tempDir = fs.mkdtempSync(join(fs.realpathSync(require('os').tmpdir()), 'claude-mem-oauth-test-'));
   dataDirSpy = spyOn(paths, 'dataDir').mockImplementation(() => tempDir);
+  // paths.settings() is frozen at module load, so point it at a per-test
+  // settings file whose credential profile is isolatedConfigDir(). Tests that
+  // need another profile overwrite this same file (stubSettingsFile below).
+  const settingsPath = join(tempDir, 'settings.json');
+  fs.writeFileSync(settingsPath, JSON.stringify({ CLAUDE_MEM_CLAUDE_CONFIG_DIR: isolatedConfigDir() }));
+  settingsSpy = spyOn(paths, 'settings').mockImplementation(() => settingsPath);
 });
 
 afterEach(() => {
   dataDirSpy?.mockRestore();
+  settingsSpy?.mockRestore();
+  settingsSpy = undefined;
   restorePlatform();
   if (ORIGINAL_ENV_TOKEN === undefined) {
     delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
@@ -235,7 +257,7 @@ describe('readClaudeOAuthToken — macOS keychain branch', () => {
     expect(['present', 'expired', 'absent']).toContain(result.kind);
     if (result.kind === 'present') {
       expect(result.token.length).toBeGreaterThan(0);
-      expect(['keychain', 'env-fallback']).toContain(result.source);
+      expect(['keychain', 'credentials-file', 'env-fallback']).toContain(result.source);
     }
   });
 });
@@ -731,5 +753,244 @@ describe('readMacOsKeychain (#4037) — keychain -a account follows Claude Code 
     if (result.kind === 'present') {
       expect(result.token).toBe('sk-ant-oat01-account-token');
     }
+  });
+});
+
+/**
+ * #4348 — Linux: OAuth lookup only checked libsecret, but Claude Code stores
+ * credentials at `${configDir}/.credentials.json` (configDir defaults to
+ * ~/.claude). These tests cover the file reader itself; the source order is
+ * covered through readClaudeOAuthToken further down.
+ */
+describe('readClaudeCredentialsFile (#4348) — on-disk credentials file', () => {
+  let credDir: string;
+
+  beforeEach(() => {
+    credDir = fs.mkdtempSync(join(fs.realpathSync(require('os').tmpdir()), 'claude-mem-creds-test-'));
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(credDir, { recursive: true, force: true });
+    } catch {
+      // best effort
+    }
+  });
+
+  function writeCredentials(payload: unknown): void {
+    const content = typeof payload === 'string' ? payload : JSON.stringify(payload);
+    fs.writeFileSync(join(credDir, '.credentials.json'), content);
+  }
+
+  it('returns token + expiry from the credentials file when present', () => {
+    const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+    writeCredentials({ claudeAiOauth: { accessToken: '<redacted>', expiresAt: futureExpiresAt } });
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('<redacted>');
+      expect(result.source).toBe('credentials-file');
+      expect(result.expiresAt).toBe(futureExpiresAt);
+    }
+  });
+
+  it('returns absent when the file is missing (behavior unchanged)', () => {
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('absent');
+    if (result.kind === 'absent') {
+      expect(result.reason).toContain('No credentials file');
+    }
+  });
+
+  it('handles malformed JSON gracefully (absent, no throw)', () => {
+    writeCredentials('{ this is not valid json');
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('absent');
+  });
+
+  it('returns absent when the JSON has no claudeAiOauth.accessToken', () => {
+    writeCredentials({ claudeAiOauth: { refreshToken: 'refresh-x' } });
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('absent');
+  });
+
+  it('treats a JSON null or array payload as absent instead of throwing', () => {
+    // JSON.parse('null') succeeds, and `null.claudeAiOauth` used to throw past
+    // every fallback, the env token included.
+    writeCredentials('null');
+    expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
+    writeCredentials('[]');
+    expect(readClaudeCredentialsFile(credDir).kind).toBe('absent');
+  });
+
+  it('returns expired when the file token is past the grace window', () => {
+    const pastMs = Date.now() - 10 * 60 * 1000; // 10 minutes ago, past 60s grace
+    writeCredentials({ claudeAiOauth: { accessToken: '<redacted>', expiresAt: pastMs } });
+    const result = readClaudeCredentialsFile(credDir);
+    expect(result.kind).toBe('expired');
+    if (result.kind === 'expired') {
+      expect(result.expiresAt).toBe(pastMs);
+    }
+  });
+});
+
+describe('readLinuxLibsecret (#4348) — legacy store, read only when the credentials file is absent', () => {
+  const futureExpiresAt = Date.now() + 60 * 60 * 1000;
+  const libsecretPayload = JSON.stringify({
+    claudeAiOauth: { accessToken: 'libsecret-token', expiresAt: futureExpiresAt },
+  });
+
+  it('returns the libsecret record when an entry exists', async () => {
+    const fakeExecImpl = mock(() => Promise.resolve({ stdout: libsecretPayload, stderr: '' })) as any;
+    const result = await readLinuxLibsecret(fakeExecImpl);
+    expect(result.kind).toBe('present');
+    if (result.kind === 'present') {
+      expect(result.token).toBe('libsecret-token');
+      expect(result.source).toBe('keychain');
+      expect(result.expiresAt).toBe(futureExpiresAt);
+    }
+    expect(fakeExecImpl).toHaveBeenCalledTimes(1);
+    const callArgs = fakeExecImpl.mock.calls[0][1] as string[];
+    expect(callArgs[0]).toBe('lookup');
+  });
+
+  it('a miss is absent and no longer tells users to install secret-tool (Claude Code never writes libsecret)', async () => {
+    const fakeExecImpl = mock(() => Promise.reject(new Error('spawn secret-tool ENOENT'))) as any;
+    const result = await readLinuxLibsecret(fakeExecImpl);
+    expect(result.kind).toBe('absent');
+    if (result.kind === 'absent') {
+      expect(result.reason).toContain('Linux libsecret lookup failed');
+      expect(result.reason).not.toContain('is secret-tool installed?');
+    }
+  });
+});
+
+describe('test isolation (#4369 review) — no test reads the real Claude Code login', () => {
+  it('resolves the credential profile inside the per-test temp dir', () => {
+    const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+    const profile = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
+    expect(profile.configDir.startsWith(tempDir)).toBe(true);
+  });
+});
+
+const inAnHour = () => Date.now() + 60 * 60 * 1000;
+const tenMinutesAgo = () => Date.now() - 10 * 60 * 1000;
+const credentialJson = (accessToken: string, expiresAt: number = inAnHour()) =>
+  JSON.stringify({ claudeAiOauth: { accessToken, expiresAt } });
+const storeReturns = (stdout: string) => mock(() => Promise.resolve({ stdout, stderr: '' })) as any;
+const storeMisses = () => mock(() => Promise.reject(new Error('no matching entry'))) as any;
+
+function writeCredentialsFile(content: string): void {
+  fs.mkdirSync(isolatedConfigDir(), { recursive: true });
+  fs.writeFileSync(join(isolatedConfigDir(), '.credentials.json'), content);
+}
+
+/**
+ * #4348 (Linux) / #4246 (Windows): Claude Code keeps its live login in
+ * `${configDir}/.credentials.json` everywhere but macOS, so that file is read
+ * first there, and libsecret / Credential Manager only when it is absent. On
+ * macOS the keychain stays first and the file is its fallback.
+ */
+describe('readClaudeOAuthToken (#4348, #4246) — reads the store Claude Code writes first', () => {
+  beforeEach(() => {
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+  });
+
+  it('linux: reads the credentials file first and never queries libsecret', async () => {
+    setPlatform('linux');
+    writeCredentialsFile(credentialJson('sk-ant-oat01-file'));
+    const execImpl = storeReturns(credentialJson('sk-ant-oat01-libsecret'));
+    const result = await readClaudeOAuthToken(execImpl);
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-file', source: 'credentials-file' });
+    expect(execImpl).not.toHaveBeenCalled();
+  });
+
+  it('linux: without a credentials file, a libsecret entry is still used', async () => {
+    setPlatform('linux');
+    const execImpl = storeReturns(credentialJson('sk-ant-oat01-libsecret'));
+    const result = await readClaudeOAuthToken(execImpl);
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-libsecret', source: 'keychain' });
+    expect(execImpl.mock.calls[0][0]).toBe('secret-tool');
+  });
+
+  it('linux: when both miss, the reason names the file it checked instead of sending users to install secret-tool', async () => {
+    setPlatform('linux');
+    const result = await readClaudeOAuthToken(storeMisses());
+    expect(result.kind).toBe('absent');
+    if (result.kind === 'absent') {
+      expect(result.reason).toContain(join(isolatedConfigDir(), '.credentials.json'));
+      expect(result.reason).not.toContain('is secret-tool installed?');
+    }
+  });
+
+  it('win32: the live credentials file beats a stale Credential Manager entry (#4246)', async () => {
+    setPlatform('win32');
+    writeCredentialsFile(credentialJson('sk-ant-oat01-live-login'));
+    const execImpl = storeReturns(credentialJson('sk-ant-oat01-previous-account'));
+    const result = await readClaudeOAuthToken(execImpl);
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-live-login', source: 'credentials-file' });
+    expect(execImpl).not.toHaveBeenCalled();
+  });
+
+  it('win32: without a credentials file, the Credential Manager entry is used', async () => {
+    setPlatform('win32');
+    const execImpl = storeReturns(credentialJson('sk-ant-oat01-credman'));
+    const result = await readClaudeOAuthToken(execImpl);
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-credman', source: 'keychain' });
+    expect(execImpl.mock.calls[0][0]).toBe('powershell.exe');
+  });
+
+  it('darwin: the keychain is read first and wins over the credentials file', async () => {
+    setPlatform('darwin');
+    writeCredentialsFile(credentialJson('sk-ant-oat01-file'));
+    const result = await readClaudeOAuthToken(storeReturns(credentialJson('sk-ant-oat01-keychain')));
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-keychain', source: 'keychain' });
+  });
+
+  it('darwin: a keychain miss falls back to the credentials file', async () => {
+    setPlatform('darwin');
+    writeCredentialsFile(credentialJson('sk-ant-oat01-file'));
+    const result = await readClaudeOAuthToken(storeMisses());
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-file', source: 'credentials-file' });
+  });
+});
+
+/**
+ * plan-19 (#3607) item 4: a usable CLAUDE_CODE_OAUTH_TOKEN always beats an
+ * expired stored credential, so a headless box with an old login on disk or
+ * in the keychain keeps working (#3121). With nothing usable, the stored
+ * expiry is still reported, so the "run /login" marker fires.
+ */
+describe('readClaudeOAuthToken (plan-19) — a usable env token beats an expired stored credential', () => {
+  it('linux: expired credentials file + valid CLAUDE_CODE_OAUTH_TOKEN → the env token', async () => {
+    setPlatform('linux');
+    writeCredentialsFile(credentialJson('sk-ant-oat01-stale', tenMinutesAgo()));
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-env';
+    const result = await readClaudeOAuthToken(storeMisses());
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-env', source: 'env-fallback' });
+  });
+
+  it('darwin: expired keychain entry + valid CLAUDE_CODE_OAUTH_TOKEN → the env token (#3121)', async () => {
+    setPlatform('darwin');
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-env';
+    const result = await readClaudeOAuthToken(storeReturns(credentialJson('sk-ant-oat01-stale', tenMinutesAgo())));
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-env', source: 'env-fallback' });
+  });
+
+  it('linux: expired credentials file and no env token → expired, so the stale-login marker still fires', async () => {
+    setPlatform('linux');
+    delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    const expiresAt = tenMinutesAgo();
+    writeCredentialsFile(credentialJson('sk-ant-oat01-stale', expiresAt));
+    const result = await readClaudeOAuthToken(storeMisses());
+    expect(result).toMatchObject({ kind: 'expired', expiresAt });
+  });
+
+  it('linux: a credentials file holding JSON null does not throw, and the env token is still used', async () => {
+    setPlatform('linux');
+    writeCredentialsFile('null');
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'sk-ant-oat01-env';
+    const result = await readClaudeOAuthToken(storeMisses());
+    expect(result).toMatchObject({ kind: 'present', token: 'sk-ant-oat01-env', source: 'env-fallback' });
   });
 });

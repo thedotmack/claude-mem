@@ -8,6 +8,21 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+// A Read `path` that names a session attachment rather than a file, such as
+// `kimi-file://<id>` (Kimi's read.ts accepts both).
+const KIMI_ATTACHMENT_SCHEME = 'kimi-file://';
+
+// Kimi's Read uses `path`; shared read capture and file-context use `file_path`.
+// An attachment reference is not aliased, so it is never recorded as a file read.
+function normalizeToolInput(toolName: string | undefined, input: unknown): unknown {
+  if (toolName !== 'Read' || !input || typeof input !== 'object' || Array.isArray(input)) return input;
+  const readInput = input as Record<string, unknown>;
+  if (typeof readInput.file_path === 'string' && readInput.file_path.length > 0) return input;
+  return typeof readInput.path === 'string' && !readInput.path.startsWith(KIMI_ATTACHMENT_SCHEME)
+    ? { ...readInput, file_path: readInput.path }
+    : input;
+}
+
 // Kimi session ids are opaque workDir-scoped identifiers. Restrict to a safe
 // character set so a malicious sessionId from stdin cannot escape
 // ~/.kimi-code/sessions via path separators, '..' segments, or null bytes
@@ -86,12 +101,13 @@ export const kimiAdapter: PlatformAdapter = {
       throw new AdapterRejectedInput('missing_session_id');
     }
     const source = r.source;
+    const toolName = stringOrUndefined(r.tool_name);
     return {
       sessionId,
       cwd,
       prompt: promptText(r.prompt),
-      toolName: stringOrUndefined(r.tool_name),
-      toolInput: r.tool_input,
+      toolName,
+      toolInput: normalizeToolInput(toolName, r.tool_input),
       // Kimi sends `tool_output` on PostToolUse and `error` on
       // PostToolUseFailure where Claude Code sends `tool_response`, and
       // `tool_call_id` where it sends `tool_use_id`.

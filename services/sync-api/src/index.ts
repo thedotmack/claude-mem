@@ -5,7 +5,8 @@
 import postgres from "postgres";
 import { authenticateRequest, errorResponse, json } from "./auth";
 import type { SyncApiEnv } from "./env";
-import { loadEnv } from "./env";
+import { formatHostForUrl, loadEnv } from "./env";
+import { startForwardProxy } from "./forward";
 import {
 	decimalAtLeast,
 	drainProjection,
@@ -381,6 +382,9 @@ export async function startSyncApi(
 	env: SyncApiEnv = loadEnv(),
 	timeouts: SyncApiTimeouts = DEFAULT_SYNC_API_TIMEOUTS,
 ): Promise<SyncApiApp> {
+	if (env.FORWARD_ORIGIN) {
+		throw new Error("FORWARD_ORIGIN is set: start the forward proxy (startForwardProxy), not the hub");
+	}
 	const sql = postgres(env.DATABASE_URL, {
 		max: 10,
 		idle_timeout: 20,
@@ -514,7 +518,7 @@ export async function startSyncApi(
 	});
 
 	const host = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
-	const url = `http://${host}:${server.port}`;
+	const url = `http://${formatHostForUrl(host)}:${server.port}`;
 
 	const stop = async (): Promise<void> => {
 		server.stop(true);
@@ -529,8 +533,14 @@ const isMain = typeof Bun !== "undefined"
 	&& import.meta.path === Bun.main;
 
 if (isMain) {
-	const app = await startSyncApi();
-	console.log(JSON.stringify({ event: "ready", url: app.url }));
+	const env = loadEnv();
+	const app = env.FORWARD_ORIGIN !== null ? startForwardProxy(env) : await startSyncApi(env);
+	console.log(JSON.stringify({
+		event: "ready",
+		url: app.url,
+		mode: env.FORWARD_ORIGIN !== null ? "forward" : "hub",
+		...(env.FORWARD_ORIGIN !== null ? { forward_origin: env.FORWARD_ORIGIN } : {}),
+	}));
 	const shutdown = async (): Promise<void> => {
 		await app.stop();
 		console.log(JSON.stringify({ event: "stopped" }));

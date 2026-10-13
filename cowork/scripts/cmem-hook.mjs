@@ -306,14 +306,47 @@ async function mcpRpc(methodName, params, id) {
 }
 
 function viewerPort() {
-  // the worker port lives in claude-mem's own config; the uid formula is only
-  // the documented default for installs that never set one
+  // the worker port lives in claude-mem's own config (env wins, as in claude-mem);
+  // the uid formula is only the documented default for installs that never set one
+  const envPort = Number(process.env.CLAUDE_MEM_WORKER_PORT);
+  if (Number.isFinite(envPort) && envPort > 0) return envPort;
   try {
     const st = JSON.parse(readFileSync(join(process.env.HOME || '', '.claude-mem', 'settings.json'), 'utf8'));
     const p = Number(st.CLAUDE_MEM_WORKER_PORT ?? st.workerPort ?? st.worker_port ?? st.port ?? (st.worker && st.worker.port));
     if (Number.isFinite(p) && p > 0) return p;
   } catch { /* no local settings — use default formula */ }
   try { return 37700 + ((process.getuid?.() ?? 0) % 100); } catch { return 37700; }
+}
+
+// Local-first: an agent on a machine with a local claude-mem install never
+// reads cmem.ai context; the local hook injects from the local db, which cloud
+// sync keeps current. An agent with no local install (a Cowork container, a
+// remote machine) reads the cloud.
+// The install is what Claude Code loads: an enabled plugin registered in
+// installed_plugins.json with its hook and worker files. Worker health doesn't
+// decide it, so a cold start or a worker on ::1 or a LAN address still counts.
+// A disabled plugin or an orphaned cache copy doesn't, so those sessions get
+// cloud context instead of no memory.
+function localClaudeMemInstalled() {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || '', '.claude');
+  let settings = null;
+  try {
+    settings = JSON.parse(readFileSync(join(configDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
+  } catch { /* missing or unreadable settings: the local launcher treats the plugin as enabled too */ }
+  // The same opt-out the local launcher honors (plugin/scripts/bun-runner.js).
+  if (settings?.enabledPlugins?.['claude-mem@thedotmack'] === false) return false;
+  try {
+    const registryRaw = readFileSync(join(configDir, 'plugins', 'installed_plugins.json'), 'utf8');
+    const registry = JSON.parse(registryRaw.replace(/^\uFEFF/, ''));
+    const entries = registry?.plugins?.['claude-mem@thedotmack'];
+    return Array.isArray(entries) && entries.some(entry => {
+      if (typeof entry?.installPath !== 'string' || !entry.installPath) return false;
+      const root = existsSync(join(entry.installPath, 'hooks', 'hooks.json'))
+        ? entry.installPath : join(entry.installPath, 'plugin');
+      return existsSync(join(root, 'hooks', 'hooks.json'))
+        && existsSync(join(root, 'scripts', 'worker-service.cjs'));
+    });
+  } catch { return false; /* no readable registry: nothing is registered */ }
 }
 
 // project-scoped wrapper: parses memory_search rows and keeps only this project's.
@@ -355,6 +388,9 @@ async function mcpSearch(query, limit, project) {
 async function fetchContext(scope, query, cwd) {
   const project = resolveProject(cwd);
   if (!CFG.apiKey) return null;
+  // the query leaves the machine (URL and fallback body): strip <private> regions
+  // and redact secrets first, as every capture path does, then apply the caps below
+  query = clean(query, PROMPT_CAP);
   // 1) purpose-built endpoint (see PRO-ENDPOINT-SPEC) — best quality, Pro compiles the block
   try {
     const url = `${CFG.apiBase}/api/hooks/context?project=${encodeURIComponent(project)}&scope=${scope}` +
@@ -396,6 +432,7 @@ async function onSessionStart(input) {
   // …and inject context
   if (!CFG.inject.sessionStart) return;
   if (!CFG.apiKey) return;
+  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('session-start', null, input.cwd);
   const project = resolveProject(input.cwd);
   const body = text || [
@@ -441,6 +478,7 @@ async function onAgentContext(input) {
   const prompt = typeof ti.prompt === 'string' ? ti.prompt : null;
   if (!prompt) return;
   if (prompt.includes('<claude-mem-context')) return;   // already injected upstream
+  if (localClaudeMemInstalled()) return;
   const text = await fetchContext('agent', prompt, input.cwd);
   if (!text) return;
   process.stdout.write(JSON.stringify({

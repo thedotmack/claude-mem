@@ -12,9 +12,11 @@ import {
   MAX_WORK_STATE_FIELDS_JSON_CHARS,
   WorkStateRoutes,
 } from '../../../../src/services/worker/http/routes/WorkStateRoutes.js';
-import { WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
+import { buildWorkStateContextSection, WORK_STATE_SECTION_CHARACTER_LIMIT } from '../../../../src/services/context/sections/WorkStateRenderer.js';
 import { SessionStore } from '../../../../src/services/sqlite/SessionStore.js';
 import { getProjectContext } from '../../../../src/utils/project-name.js';
+import { SearchRoutes } from '../../../../src/services/worker/http/routes/SearchRoutes.js';
+import { ModeManager } from '../../../../src/services/domain/ModeManager.js';
 import { logger } from '../../../../src/utils/logger.js';
 
 let server: Server | undefined;
@@ -38,6 +40,8 @@ beforeEach(async () => {
   const app = express();
   app.use(express.json());
   new WorkStateRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
+  ModeManager.getInstance().loadMode('code');
+  new SearchRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
   await new Promise<void>((resolve, reject) => {
     server = app.listen(0, '127.0.0.1', () => {
       const addr = server!.address();
@@ -54,6 +58,7 @@ beforeEach(async () => {
 afterEach(async () => {
   loggerSpies.forEach(spy => spy.mockRestore());
   delete process.env.CLAUDE_MEM_EXCLUDED_PROJECTS;
+  delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
   await new Promise<void>((resolve, reject) => {
     if (!server) {
       resolve();
@@ -79,6 +84,24 @@ function read(query: Record<string, string>): Promise<Response> {
 }
 
 describe('WorkStateRoutes', () => {
+  it('reads open work state from a project adopted into the checkout', async () => {
+    const adoptedProject = `${project}-merged-worktree`;
+    const session = store.createSDKSession('adopted-host', adoptedProject, 'prompt');
+    store.updateMemorySessionId(session, 'adopted-observer');
+    store.storeObservation('adopted-observer', adoptedProject, {
+      type: 'discovery', title: 'Adopted finding', subtitle: null, narrative: null,
+      facts: [], concepts: [], files_read: [], files_modified: [],
+    });
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE project = ?').run(project, adoptedProject);
+    store.appendWorkStateEntry({ project: adoptedProject, listName: 'release', fields: { task: 'finish migration', status: 'doing' } });
+
+    const response = await read({ cwd: checkout });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('[doing] finish migration');
+    expect(store.getWorkStateEntries([project]).map(entry => entry.project)).toEqual([adoptedProject]);
+    expect(store.getWorkStateEntries(['unrelated-project'])).toEqual([]);
+  });
+
   it("saves an entry under the checkout's project and answers with what is still open in the list", async () => {
     await write({ cwd: checkout, list: 'release', fields: { version: '13.25.2', blocked_on: 'npm token' } });
     await write({ cwd: checkout, list: 'release', fields: { task: 'tag', status: 'done' } });
@@ -160,9 +183,72 @@ describe('WorkStateRoutes', () => {
     ].join('\n'));
   });
 
+  it('keeps same-name tasks and list state distinct across adopted projects', async () => {
+    const oldProject = 'adopted-project';
+    const sessionId = store.createSDKSession('adopted-host', oldProject, 'prompt');
+    store.updateMemorySessionId(sessionId, 'adopted-observer');
+    const observation = store.storeObservation('adopted-observer', oldProject, { type: 'discovery', title: 'Adopted worktree', subtitle: null, narrative: 'Fact', facts: [], concepts: [], files_read: [], files_modified: [] });
+    store.db.prepare('UPDATE observations SET merged_into_project = ? WHERE id = ?').run(project, observation.id);
+    store.appendWorkStateEntry({ project, listName: 'release', fields: { task: 'ship', status: 'todo', owner: 'active' } });
+    store.appendWorkStateEntry({ project: oldProject, listName: 'release', fields: { task: 'ship', status: 'done', owner: 'adopted' } });
+    store.appendWorkStateEntry({ project: oldProject, listName: 'release', fields: { task: 'pack', status: 'doing' } });
+    const entries = store.getWorkStateEntries([project]);
+    const context = buildWorkStateContextSection(entries, Date.now());
+    const response = await (await read({ cwd: checkout, list: 'release' })).text();
+    for (const text of [context, response]) {
+      expect(text).toContain('[todo] ship (owner=active)');
+      expect(text).toContain('[doing] pack');
+      expect(text).not.toContain('[done] ship');
+      expect(text).toContain(`release [${project}]`);
+      expect(text).toContain(`release [${oldProject}]`);
+    }
+    const closed = await (await read({ cwd: checkout, list: 'release', includeClosed: 'true' })).text();
+    expect(closed).toContain('[todo] ship (owner=active)');
+    expect(closed).toContain('[done] ship (owner=adopted)');
+  });
+
+  it('closes the same checkout task after its configured project key changes', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
+    process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([{ name: 'configured-project', patterns: [checkout] }]);
+    const keys = getProjectContext(checkout).allProjects;
+    expect(keys).toContain(project);
+    expect(keys).toContain('configured-project');
+    const completed = await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'done' } });
+    expect(await completed.text()).toContain('Nothing in it is open now.');
+    const response = await (await read({ cwd: checkout, list: 'release' })).text();
+    const context = await (await fetch(`http://127.0.0.1:${port}/api/context/inject?${new URLSearchParams({ projects: keys.join(',') })}`)).text();
+    for (const text of [response, context]) expect(text).not.toContain('[todo] publish');
+    const closed = await (await read({ cwd: checkout, list: 'release', includeClosed: 'true' })).text();
+    expect(closed).toContain('[done] publish');
+    expect(closed).not.toContain('[todo] publish');
+  });
+
   it('says when nothing is open, and requires a cwd', async () => {
     expect(await (await read({ cwd: checkout })).text())
       .toBe(`Nothing open for ${project}. Pass includeClosed to see closed items.`);
     expect((await read({})).status).toBe(400);
+  });
+});
+
+
+describe('literal primitive field keys', () => {
+  it('continues to reject object values, arrays and empty keys', async () => {
+    for (const fields of [JSON.parse('{"__proto__":{"polluted":true}}'), [], { '': 'invalid' }]) {
+      const response = await write({ cwd: checkout, list: 'config', fields });
+      expect(response.status).toBe(400);
+    }
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+    expect(Object.prototype).not.toHaveProperty('polluted');
+  });
+  it('preserves prototype-named state keys through HTTP writes and reads', async () => {
+    const fields = JSON.parse('{"__proto__":"literal state","constructor":"ordinary"}');
+    const response = await write({ cwd: checkout, list: 'config', fields });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain('__proto__=literal state');
+    const stored = store.getWorkStateEntries([project], 'config')[0];
+    expect(Object.hasOwn(stored.fields, '__proto__')).toBe(true);
+    const readResponse = await read({ cwd: checkout, list: 'config' });
+    expect(await readResponse.text()).toContain('__proto__=literal state');
+    expect(Object.getPrototypeOf(stored.fields)).toBe(Object.prototype);
   });
 });

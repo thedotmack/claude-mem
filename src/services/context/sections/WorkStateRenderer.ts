@@ -1,5 +1,13 @@
 import type { WorkStateEntry, WorkStateFields, WorkStateValue } from '../../sqlite/work-state.js';
 import { describeDuration } from '../../../shared/observer-health.js';
+import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
+
+/**
+ * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
+ * the durations as placeholders that `fillContextPlaceholders` measures at read
+ * time (the cached SessionStart block, shared/context-cache.ts).
+ */
+export type WorkStateClock = number | 'placeholders';
 
 /** Keeps the section small enough to leave most of the 10K hook budget to memory. */
 export const WORK_STATE_SECTION_CHARACTER_LIMIT = 3_000;
@@ -29,7 +37,7 @@ export function foldWorkStateList(entries: WorkStateEntry[]): FoldedWorkStateLis
   for (const entry of entries) {
     const taskName = entry.fields.task;
     if (taskName === undefined || taskName === null || taskName === '') {
-      Object.assign(folded.state, entry.fields);
+      folded.state = { ...folded.state, ...entry.fields };
       folded.stateUpdatedAtEpoch = entry.created_at_epoch;
       continue;
     }
@@ -54,8 +62,9 @@ function formatFields(fields: WorkStateFields, omittedKeys: string[]): string {
     .join(', ');
 }
 
-function updatedAgo(epoch: number, nowEpoch: number): string {
-  return `updated ${describeDuration(nowEpoch - epoch)} ago`;
+function updatedAgo(epoch: number, nowEpoch: WorkStateClock): string {
+  const duration = nowEpoch === 'placeholders' ? relativeTimePlaceholder(epoch) : describeDuration(nowEpoch - epoch);
+  return `updated ${duration} ago`;
 }
 
 /**
@@ -65,7 +74,7 @@ function updatedAgo(epoch: number, nowEpoch: number): string {
 export function renderWorkStateList(
   listName: string,
   folded: FoldedWorkStateList,
-  nowEpoch: number,
+  nowEpoch: WorkStateClock,
   includeClosed: boolean = false,
 ): string[] {
   const taskLines = [...folded.tasks.entries()]
@@ -80,7 +89,8 @@ export function renderWorkStateList(
   const showState = stateFields !== '' && (includeClosed || !isClosed(folded.state.status));
   if (!showState && taskLines.length === 0) return [];
 
-  const stateUpdatedAtEpoch = folded.stateUpdatedAtEpoch ?? nowEpoch;
+  // A shown state line always has a state entry behind it; the fallback only satisfies the type.
+  const stateUpdatedAtEpoch = folded.stateUpdatedAtEpoch ?? (nowEpoch === 'placeholders' ? 0 : nowEpoch);
   const header = showState
     ? `- ${listName}: ${stateFields}, ${updatedAgo(stateUpdatedAtEpoch, nowEpoch)}`
     : `- ${listName}`;
@@ -88,23 +98,36 @@ export function renderWorkStateList(
 }
 
 /** Lines for every list in `entries`, the most recently written list first. */
-export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: number, includeClosed: boolean = false): string[] {
+export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkStateClock, includeClosed: boolean = false): string[] {
   const entriesByList = new Map<string, WorkStateEntry[]>();
+  const listProjectCounts = new Map<string, number>();
   for (const entry of entries) {
-    const listEntries = entriesByList.get(entry.list_name) ?? [];
+    // Checkout aliases share one list; adopted source projects keep separate lists.
+    const projectKey = (entry.scope_project ?? entry.project).replace(/[A-Z]/g, character => character.toLowerCase());
+    const key = JSON.stringify([projectKey, entry.list_name]);
+    let listEntries = entriesByList.get(key);
+    if (!listEntries) {
+      listEntries = [];
+      entriesByList.set(key, listEntries);
+      listProjectCounts.set(entry.list_name, (listProjectCounts.get(entry.list_name) ?? 0) + 1);
+    }
     listEntries.push(entry);
-    entriesByList.set(entry.list_name, listEntries);
   }
-  return [...entriesByList.entries()]
-    .sort(([, a], [, b]) => b[b.length - 1].id - a[a.length - 1].id)
-    .flatMap(([listName, listEntries]) =>
-      renderWorkStateList(listName, foldWorkStateList(listEntries), nowEpoch, includeClosed));
+  return [...entriesByList.values()]
+    .sort((a, b) => b[b.length - 1].id - a[a.length - 1].id)
+    .flatMap(listEntries => {
+      const first = listEntries[0];
+      const label = (listProjectCounts.get(first.list_name) ?? 0) > 1
+        ? `${first.list_name} [${first.scope_project ?? first.project}]`
+        : first.list_name;
+      return renderWorkStateList(label, foldWorkStateList(listEntries), nowEpoch, includeClosed);
+    });
 }
 
 /** The SessionStart section: the rule, then what is still open, cut to `characterLimit`. */
 export function buildWorkStateContextSection(
   entries: WorkStateEntry[],
-  nowEpoch: number,
+  nowEpoch: WorkStateClock,
   characterLimit: number = WORK_STATE_SECTION_CHARACTER_LIMIT,
 ): string {
   const openLines = renderWorkStateLines(entries, nowEpoch);

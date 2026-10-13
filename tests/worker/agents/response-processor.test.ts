@@ -1,5 +1,11 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { paths } from '../../../src/shared/paths.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { recordObserverFailure, readObserverHealth } from '../../../src/shared/observer-health.js';
+import { recordQuotaExhausted, getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../../src/shared/quota-cooldown.js';
 import { logger } from '../../../src/utils/logger.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
@@ -138,7 +144,14 @@ describe('ResponseProcessor', () => {
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
 
+  let ownedHealthDirectory: string;
+  let dataDirSpy: { mockRestore(): void };
+
   beforeEach(() => {
+    ownedHealthDirectory = mkdtempSync(join(tmpdir(), 'claude-mem-response-health-'));
+    dataDirSpy = spyOn(paths, 'dataDir').mockReturnValue(ownedHealthDirectory);
+    resetQuotaCooldownsForTesting();
+    expect(readObserverHealth()).toBeNull();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -202,6 +215,10 @@ describe('ResponseProcessor', () => {
   });
 
   afterEach(() => {
+    // Reset while the resolver still points into this test's owned directory.
+    resetQuotaCooldownsForTesting();
+    dataDirSpy.mockRestore();
+    rmSync(ownedHealthDirectory, { recursive: true, force: true });
     loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
   });
@@ -230,6 +247,62 @@ describe('ResponseProcessor', () => {
       ...overrides,
     } as ActiveSession;
   }
+
+  it('does not report a successful observer store when no memory rows were written', async () => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('empty-store-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'empty-store-memory');
+    mockDbManager = {
+      ...mockDbManager,
+      getSessionStore: () => store,
+    } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'empty-store-session', memorySessionId: 'empty-store-memory',
+    });
+    recordObserverFailure('claude', 'provider outage');
+    const cooldown = recordQuotaExhausted('claude', 'spent allowance');
+    const prior = readObserverHealth();
+    try {
+      const result = await processAgentResponse(
+        '<observation><type>discovery</type><title> </title><narrative>No storable title</narrative></observation>',
+        session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result?.observationIds).toEqual([]);
+      expect(result?.summaryId).toBeNull();
+      expect(readObserverHealth()?.consecutiveFailures).toBe(prior?.consecutiveFailures);
+      expect(readObserverHealth()?.lastSuccessAt).toBe(prior?.lastSuccessAt);
+      expect(getQuotaCooldown('claude')).toEqual(cooldown);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    '<observation><type>discovery</type><title>Useful result</title><narrative>Real finding</narrative></observation>',
+    '<summary><request>Real session summary</request><investigated>Code</investigated><learned>Finding</learned><completed>Work</completed><next_steps>Review</next_steps></summary>',
+  ])('still clears observer failure evidence after storing real memory: %s', async (text) => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('successful-store-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'successful-store-memory');
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'successful-store-session', memorySessionId: 'successful-store-memory',
+    });
+    recordObserverFailure('claude', 'provider outage');
+    recordQuotaExhausted('claude', 'spent allowance');
+    try {
+      const result = await processAgentResponse(
+        text, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result).not.toBeNull();
+      expect((result?.observationIds.length ?? 0) + (result?.summaryId ? 1 : 0)).toBeGreaterThan(0);
+      expect(readObserverHealth()?.consecutiveFailures).toBe(0);
+      expect(readObserverHealth()?.lastSuccessAt).not.toBeNull();
+      expect(getQuotaCooldown('claude')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
 
   describe('parsing observations from XML response', () => {
     it('should parse single observation from response', async () => {
@@ -416,6 +489,22 @@ describe('ResponseProcessor', () => {
       expect(observations).toHaveLength(1);
       expect(observations[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
       expect(observations[0].narrative).toContain('line-range handling aligned with the new helpers');
+    });
+
+    it('does not store an init reply or acknowledge queued work, even when it parses as an observation', async () => {
+      // Upstream's seam: with the feed paced to one unanswered prompt,
+      // lastGeneratorSource names the prompt this reply answers.
+      const session = createMockSession({ lastGeneratorSource: 'init', claimedMessageIds: [7] });
+      const text = '<observation><type>feature</type><title>Unproven deployment</title><narrative>The user asked to deploy.</narrative></observation>';
+
+      await processAgentResponse(text, session, mockDbManager, mockSessionManager,
+        mockWorker, 100, null, 'SDK');
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(mockSessionManager.confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockSessionManager.resetProcessingToPending).not.toHaveBeenCalled();
+      // The turn is kept so role alternation holds; only storage is refused.
+      expect(session.conversationHistory).toEqual([{ role: 'assistant', content: text }]);
     });
 
     it('stores observations against the dispatched prompt context when the live session has already advanced', async () => {
@@ -1254,6 +1343,45 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
+    it('confirms an explicit <skip_summary/> to an observation prompt and hands storage no rows', async () => {
+      // The file's default store stub answers with observation ids whatever it
+      // is given; a skip writes nothing, so answer as the real store would.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      const confirmClaimedMessages = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ earliestPendingTimestamp: 1700000000000 });
+
+      await processAgentResponse(
+        '<skip_summary reason="agent bookkeeping"/>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'Gemini'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      // With the memory session id known the skip still passes through the
+      // store, carrying nothing: no observations and a null summary.
+      for (const [, , observations, summary] of mockStoreObservations.mock.calls) {
+        expect(observations).toEqual([]);
+        expect(summary).toBeNull();
+      }
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it('clears pending work and does NOT call storeObservations on empty response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
       mockSessionManager = {
@@ -1523,6 +1651,33 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).toHaveBeenCalledWith(1);
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(session.abortReason).toBe('auth:observer_text');
+    });
+
+    it('preserves the batch on the org-disabled subscription notice with its own abort reason (#4677)', async () => {
+      const confirmClaimedMessages = mock(async () => 0);
+      const resetProcessingToPending = mock(async () => 1);
+      const mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ markProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_org_policy');
     });
   });
   describe('lastSummaryStored tracking (#1633)', () => {

@@ -1,3 +1,6 @@
+import { assistantText } from '../../shared/assistant-text.js';
+export { assistantText } from '../../shared/assistant-text.js';
+import { createHash } from 'crypto';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { logger } from '../../utils/logger.js';
@@ -12,13 +15,13 @@ import {
   buildContinuationPrompt,
   splitFramingPrompt,
 } from '../../sdk/prompts.js';
-import { pruneProcessedObservationPayloads } from './history-pruning.js';
 import type { ActiveSession, ConversationMessage, PendingMessageWithId } from '../worker-types.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import type { ModeConfig } from '../domain/types.js';
 import { resolveSummaryTierModel } from './model-aliases.js';
 import { accumulateObserverUsage, observerUsageLogFields } from './observer-usage.js';
-import { DEADLINE_EXCEEDED_CODE, isClassified, type ClassifiedProviderError } from './provider-errors.js';
+import { DEADLINE_EXCEEDED_CODE, PAID_SEND_BUDGET_EXHAUSTED_CODE, isClassified, paidSendOutcomeOf, type ClassifiedProviderError } from './provider-errors.js';
+import { paidSendBudgetForClaimedBatch, type PaidSendBudget } from './paid-send-budget.js';
 import {
   shouldRecycleConversation,
   describeGenerationUsage,
@@ -26,7 +29,7 @@ import {
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars, resolveObserverMaxOutputTokens } from './context-window.js';
-import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
@@ -62,6 +65,41 @@ export interface ProviderQueryResult {
   finishReason?: string;
 }
 
+/**
+ * What one request is and whose it is. OpenRouterProvider sends it to
+ * OpenRouter-family endpoints as `session_id` and `trace`; every other
+ * provider ignores it.
+ */
+export interface ObserverRequestLabel {
+  kind: 'init' | 'observation' | 'summary' | 'field_compression' | 'telegram_wrapup';
+  /** anonymousSessionId() of the observed session. */
+  sessionId: string;
+  /**
+   * session.observerGenerationId when the request belongs to an observer
+   * generation. Absent for the wrap-up, which belongs to none.
+   */
+  generationId?: string;
+}
+
+/**
+ * The observed session's id as a provider sees it: a one-way hash, so the
+ * session id itself never leaves the machine. Derived rather than stored,
+ * because it must hold for the whole session and the session object does
+ * not: an idle generator drops it and the next tool call builds a new one.
+ */
+export function anonymousSessionId(contentSessionId: string): string {
+  return createHash('sha256').update(`claude-mem observed session:${contentSessionId}`).digest('hex');
+}
+
+/** The label for a request made for the session's current observer generation. */
+function generationLabel(session: ActiveSession, kind: ObserverRequestLabel['kind']): ObserverRequestLabel {
+  return {
+    kind,
+    sessionId: anonymousSessionId(session.contentSessionId),
+    generationId: session.observerGenerationId,
+  };
+}
+
 /** The first user turn of an observer request when the framing prompt carries no request block. */
 const OBSERVER_KICKOFF = 'Start observing the primary session.';
 
@@ -74,28 +112,13 @@ export interface OpenAIChatMessage {
 /** Sent when every turn is empty, so a request never carries `messages: []`. */
 const EMPTY_HISTORY_FALLBACK = '(context unavailable)';
 
-/**
- * The answer text of an OpenAI-shaped reply's `message.content`. Gateways may
- * send content blocks instead of a string; only text blocks count, and
- * reasoning or tool-call arguments are never substituted for the answer
- * (#4017). Anything else reads as no text.
- */
-export function assistantText(content: unknown): string {
-  if (typeof content === 'string') return content;
-  if (!Array.isArray(content)) return '';
-  return content
-    .filter((part): part is { type: 'text'; text: string } =>
-      part !== null && typeof part === 'object' && part.type === 'text' && typeof part.text === 'string')
-    .map(part => part.text)
-    .join('\n');
-}
 
 /**
  * Shared scaffolding for OpenAI-compatible, multi-turn HTTP providers
  * (Gemini, OpenRouter). The session lifecycle — synthetic memory-session-id
  * generation, init/continuation prompt, the observation/summary message loop,
- * cumulative token accounting, abort-aware error handling, and history
- * truncation — is identical between them. Per-provider differences (config
+ * cumulative token accounting, abort-aware error handling, and bounded
+ * generations — is identical between them. Per-provider differences (config
  * resolution, request shape, token estimation, usage/cost reporting) are
  * supplied by abstract members.
  */
@@ -143,12 +166,18 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
    * Issue the actual HTTP request and normalize its response.
    * `perAttemptTimeoutMs` overrides the CLAUDE_MEM_LLM_TIMEOUT_MS per-attempt
    * deadline for callers racing their own, longer deadline (the field pass).
+   * `paidSendBudget` is the claimed batch's allowance (absent for an init
+   * turn, a field condensation or a wrap-up, which are not batches); its
+   * clientAttemptId goes out as `x-client-request-id`. `label` says what the
+   * request is (ObserverRequestLabel).
    */
   protected abstract query(
     history: ConversationMessage[],
     config: TConfig,
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
   ): Promise<ProviderQueryResult>;
 
   /**
@@ -164,6 +193,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     config: TConfig,
     signal: AbortSignal,
     deadlineMs?: number,
+    label?: ObserverRequestLabel,
   ): Promise<CompressedField | null> {
     // The field pass races `deadlineMs` (CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS).
     // Without it the request keeps the LLM per-attempt default, and a longer
@@ -173,6 +203,8 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       config,
       signal,
       deadlineMs,
+      undefined,
+      label,
     );
     if (!result.content) return null;
     return { text: result.content, truncated: result.finishReason === 'length' || result.finishReason === 'MAX_TOKENS' };
@@ -203,6 +235,10 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     const result = await this.query(
       [{ role: 'user', content: buildTelegramWrapupPrompt(input.summaryText) }],
       summaryConfig,
+      undefined,
+      undefined,
+      undefined,
+      { kind: 'telegram_wrapup', sessionId: anonymousSessionId(input.contentSessionId) },
     );
     if (!result.content?.trim()) {
       const error = new Error(`${this.providerName} returned no text for the Telegram wrap-up`);
@@ -363,23 +399,28 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // previous attempt's turns into the new generation.
     openObserverGeneration(session, initPrompt);
 
-    try {
-      session.lastPromptSentAt = Date.now();
-      session.lastGeneratorSource = 'init';
-      const initResponse = await this.query(session.conversationHistory, config);
-      this.handleInitResponse(initResponse, session, model);
-    } catch (error: unknown) {
-      if (await this.recycleOnContextOverflow(error, session, worker)) return;
-      // Classified errors are logged once, at SessionRoutes' `Observer failed`
-      // line; here they're debug-level so one failure isn't five error lines.
-      if (isClassified(error)) {
-        logger.debug('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
-      } else if (error instanceof Error) {
-        logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
-      } else {
-        logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
+    // By default the init prompt is not a request of its own: it stays the
+    // generation's opening user turn, and the first observation or summary
+    // request carries it (consecutive user turns merge on the wire).
+    if (observesBarePrompts()) {
+      try {
+        session.lastPromptSentAt = Date.now();
+        session.lastGeneratorSource = 'init';
+        const initResponse = await this.queryObserverTurn(session, config, undefined, 'init');
+        this.handleInitResponse(initResponse, session, model);
+      } catch (error: unknown) {
+        if (await this.recycleOnContextOverflow(error, session, worker)) return;
+        // Classified errors are logged once, at SessionRoutes' `Observer failed`
+        // line; here they're debug-level so one failure isn't five error lines.
+        if (isClassified(error)) {
+          logger.debug('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model, kind: error.kind }, error);
+        } else if (error instanceof Error) {
+          logger.error('SDK', `${this.providerName} init query failed`, { sessionId: session.sessionDbId, model }, error);
+        } else {
+          logger.error('SDK', `${this.providerName} init query failed with non-Error`, { sessionId: session.sessionDbId, model }, new Error(String(error)));
+        }
+        return this.handleSessionError(error, session, worker);
       }
-      return this.handleSessionError(error, session, worker);
     }
 
     try {
@@ -473,10 +514,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     originalTimestamp: number | null,
     lastCwd: string | undefined
   ): Promise<void> {
-    if (message.prompt_number !== undefined) {
-      session.lastPromptNumber = message.prompt_number;
-    }
-
     if (!session.memorySessionId) {
       throw new Error('Cannot process observations: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
@@ -499,10 +536,17 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     // prompt is built, so the observation carries a summary of the whole field
     // rather than a head/tail slice with the middle cut out (#3800). The field
     // cap scales with the model's window (#3625).
+    // A newer user prompt may arrive while the payload is being condensed.
+    const responseContext = {
+      ...snapshotResponseContext(session),
+      promptNumber: message.prompt_number ?? session.lastPromptNumber,
+    };
     const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
     const optimized = await optimizeObservationFields(
       { toolInput: message.tool_input, toolOutput: message.tool_response },
-      (text, budgetChars, signal, deadlineMs) => this.compressField(text, budgetChars, config, signal, deadlineMs),
+      (text, budgetChars, signal, deadlineMs) => this.compressField(
+        text, budgetChars, config, signal, deadlineMs, generationLabel(session, 'field_compression'),
+      ),
       { sessionDbId: session.sessionDbId, toolName: message.tool_name },
       fieldMaxChars,
       resolveFieldOptimizeTimeoutMs,
@@ -518,20 +562,18 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       created_at_epoch: originalTimestamp ?? Date.now(),
       cwd: message.cwd
     }, fieldMaxChars, takeObserverSchemaReminder(session));
-    const responseContext = snapshotResponseContext(session);
 
     const turnPrompt = this.observationTurnPrompt(session, message, obsPrompt);
     if (this.rejectAbortedObservation) session.abortController.signal.throwIfAborted();
     session.conversationHistory.push({ role: 'user', content: turnPrompt });
 
-    // Stub out payloads already converted to stored observations so the
-    // request below stays bounded instead of re-sending every prior tool
-    // dump (see history-pruning.ts).
-    pruneProcessedObservationPayloads(session.conversationHistory);
+    // Keep completed turns unchanged within this bounded generation so every
+    // request preserves the provider's cached prefix. Retire the generation
+    // through the existing budget/overflow paths rather than rewriting it.
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'ingest';
-    const obsResponse = await this.query(session.conversationHistory, config);
+    const obsResponse = await this.queryObserverTurn(session, config, paidSendBudgetForClaimedBatch(session), 'observation');
 
     // Billed usage counts even when the reply came back empty.
     accumulateObserverUsage(session, obsResponse);
@@ -562,7 +604,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
 
   private async processSummaryMessage(
     session: ActiveSession,
-    message: { last_assistant_message?: string },
+    message: { last_assistant_message?: string; prompt_number?: number },
     worker: WorkerRef | undefined,
     config: TConfig,
     mode: ModeConfig,
@@ -572,7 +614,6 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
     if (!session.memorySessionId) {
       throw new Error('Cannot process summary: memorySessionId not yet captured. This session may need to be reinitialized.');
     }
-
     const summaryPrompt = buildSummaryPrompt({
       id: session.sessionDbId,
       memory_session_id: session.memorySessionId,
@@ -580,13 +621,12 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       user_prompt: session.userPrompt,
       last_assistant_message: message.last_assistant_message || ''
     }, mode);
-    const responseContext = snapshotResponseContext(session);
+    const responseContext = {
+      ...snapshotResponseContext(session),
+      promptNumber: message.prompt_number ?? session.lastPromptNumber,
+    };
 
     session.conversationHistory.push({ role: 'user', content: summaryPrompt });
-
-    // Same bounding as the observation path: the summary reads the assistant
-    // observations for its narrative, not the raw tool payloads behind them.
-    pruneProcessedObservationPayloads(session.conversationHistory);
 
     session.lastPromptSentAt = Date.now();
     session.lastGeneratorSource = 'summarize';
@@ -598,7 +638,7 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
         sessionId: session.sessionDbId, model: summaryModel
       });
     }
-    const summaryResponse = await this.query(session.conversationHistory, summaryConfig);
+    const summaryResponse = await this.queryObserverTurn(session, summaryConfig, paidSendBudgetForClaimedBatch(session), 'summary');
 
     accumulateObserverUsage(session, summaryResponse);
     this.recordMeasuredContext(session, summaryResponse);
@@ -616,6 +656,39 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       logger.warn('SDK', `Empty ${this.providerName} summary response, leaving queue intact`, {
         sessionId: session.sessionDbId
       });
+    }
+  }
+
+  /**
+   * Send one observer turn (init, observation or summary) on the session's
+   * conversation. An output failure (the backend answered and billed it, but
+   * the body was unreadable, a 200 carried litellm's "Unable to get json", or
+   * Codex completed without usable output) is never resent and never ends the
+   * session: it is passed on as an empty reply, so the empty-reply handling
+   * settles this batch alone and the work buffered behind it keeps flowing.
+   * withRetry has already charged it to the batch's PaidSendBudget.
+   */
+  private async queryObserverTurn(
+    session: ActiveSession,
+    config: TConfig,
+    paidSendBudget: PaidSendBudget | undefined,
+    kind: ObserverRequestLabel['kind'],
+  ): Promise<ProviderQueryResult> {
+    try {
+      return await this.query(
+        session.conversationHistory, config, undefined, undefined, paidSendBudget, generationLabel(session, kind),
+      );
+    } catch (error: unknown) {
+      if (!isClassified(error) || paidSendOutcomeOf(error) !== 'output_failure') throw error;
+      logger.warn('SDK', `${this.providerName} answered with unusable output; passing an empty reply on, not resending`, {
+        sessionId: session.sessionDbId,
+        claimedMessageIds: [...session.claimedMessageIds],
+        code: error.code,
+        message: error.message,
+        clientAttemptId: error.clientAttemptId ?? paidSendBudget?.clientAttemptId,
+        paidSendsSpent: paidSendBudget?.spentPaidSends,
+      });
+      return { content: '' };
     }
   }
 
@@ -684,9 +757,11 @@ export abstract class OpenAICompatibleProvider<TConfig extends { apiKey: string;
       // observer-text transport path in ResponseProcessor (#3752). Our own
       // per-attempt deadline keeps its own reason, so an abandoned request
       // stays countable apart from a network fault.
+      // A batch whose paid-send budget is spent pauses the same way; the
+      // transport resume parks it instead of resending (SessionManager).
       case 'transient':
-        return error.code === DEADLINE_EXCEEDED_CODE
-          ? `transport:${DEADLINE_EXCEEDED_CODE}`
+        return error.code === DEADLINE_EXCEEDED_CODE || error.code === PAID_SEND_BUDGET_EXHAUSTED_CODE
+          ? `transport:${error.code}`
           : `transport:${error.kind}`;
       default:
         return null;

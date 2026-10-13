@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { resolveLlmTimeoutMs, resolveFieldOptimizeTimeoutMs, withRetry } from '../../src/services/worker/retry.js';
+import { DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS, resolveStreamIdleTimeoutMs } from '../../src/services/worker/streamed-chat-completion.js';
 import { DEADLINE_EXCEEDED_CODE, isClassified } from '../../src/services/worker/provider-errors.js';
 import { DEFAULT_LLM_TIMEOUT_MS, SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { FIELD_OPTIMIZE_TIMEOUT_MS } from '../../src/services/worker/field-optimizer.js';
@@ -175,6 +176,69 @@ describe('resolveFieldOptimizeTimeoutMs', () => {
   });
 });
 
+// #4737: a streamed request's idle window was a bare 90s constant ("An
+// instance field so a test can shorten it; there is no setting for it"). A
+// self-hosted backend that queues requests behind a load balancer spends its
+// early life silent — queue wait reads as idle — so the window fired before
+// the CLAUDE_MEM_LLM_TIMEOUT_MS deadline the user did raise ever mattered,
+// and the two ambiguous attempts spent the batch's paid-send budget and
+// parked it permanently. Resolved like its sibling deadlines.
+describe('resolveStreamIdleTimeoutMs', () => {
+  it('defaults to 90s, the shipped idle window', () => {
+    expect(DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS).toBe(90_000);
+    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(90_000);
+  });
+
+  // The settings default is a literal (SettingsDefaultsManager cannot import
+  // from the worker), so as for FIELD_OPTIMIZE_TIMEOUT_MS this stops it
+  // drifting from the shipped constant.
+  it('falls back to the same value the settings default ships', () => {
+    expect(String(DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS)).toBe(
+      SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS,
+    );
+  });
+
+  it('reads settings.json when the env var is unset', () => {
+    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '120000' });
+    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(120_000);
+  });
+
+  it('lets the env var override settings.json', () => {
+    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '120000' });
+    expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '150000' }, settingsPath)).toBe(150_000);
+  });
+
+  it('honors a numeric settings.json value and rejects a typo', () => {
+    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: 120000 });
+    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(120_000);
+    writeSettings({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '90000ms' });
+    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(90_000);
+  });
+
+  it('takes a value inside the shared 500..300000 bounds', () => {
+    expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '500' }, settingsPath)).toBe(500);
+    expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '300000' }, settingsPath)).toBe(300_000);
+  });
+
+  it('falls back to the default rather than trusting a value out of range', () => {
+    // A zero or a negative would disable the liveness check; a huge one would
+    // let a hung stream park a worker. Both keep the default, matching the
+    // other CLAUDE_MEM_*_TIMEOUT_MS settings.
+    for (const value of ['0', '-1', '499', '300001', 'abc', '', '90000ms']) {
+      expect(resolveStreamIdleTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: value }, settingsPath)).toBe(90_000);
+    }
+  });
+
+  // The reporter's exact shape: CLAUDE_MEM_LLM_TIMEOUT_MS raised to 120s on a
+  // queued local backend. The idle window is an independent knob, so raising
+  // it past the queue wait does not touch the deadline, and vice versa.
+  it('resolves independently of CLAUDE_MEM_LLM_TIMEOUT_MS', () => {
+    writeSettings({ CLAUDE_MEM_LLM_TIMEOUT_MS: '120000' });
+    expect(resolveStreamIdleTimeoutMs({}, settingsPath)).toBe(90_000);
+    expect(resolveLlmTimeoutMs({ CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS: '120000' }, settingsPath)).toBe(120_000);
+  });
+});
+
 describe('per-attempt deadline', () => {
   it('does not retry a request that blew the deadline', async () => {
     // The abort surfaces with no HTTP status, so it classified as transient and
@@ -258,17 +322,19 @@ describe('per-attempt deadline', () => {
     }
   });
 
-  it('still retries a genuine transient failure', async () => {
+  // Never pay twice (Phase 1): a network fault before any response is
+  // ambiguous, so it is no longer retried in place (this test used to expect a
+  // second attempt). Only a refusal before work is.
+  it('does not retry an ambiguous network failure in place', async () => {
     let attempts = 0;
-    const out = await withRetry(
+    await expect(withRetry(
       async () => {
         attempts += 1;
         if (attempts < 2) throw new Error('socket hang up');
         return 'ok';
       },
       { label: 'probe', perAttemptTimeoutMs: 5_000, maxRetries: 2, baseDelayMs: 1 },
-    );
-    expect(out).toBe('ok');
-    expect(attempts).toBe(2);
+    )).rejects.toThrow('socket hang up');
+    expect(attempts).toBe(1);
   });
 });

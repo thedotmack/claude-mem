@@ -161,7 +161,7 @@ export function buildHardenedSdkOptions(input: HardenedSdkOptionsInput): Options
     ...(input.resume ? { resume: input.resume } : {}),
     ...(input.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: input.spawnClaudeCodeProcess } : {}),
     // Observer thinking is behavior-only and does not participate in the lockdown boundary.
-    ...(input.source === 'Observer' ? { thinkingConfig: { type: 'disabled' as const } } : {}),
+    ...(input.source === 'Observer' ? { thinking: { type: 'disabled' as const } } : {}),
 
     // === Tool lockdown (defense-in-depth) ===
     tools: [],                                        // belt: disable ALL built-in tools

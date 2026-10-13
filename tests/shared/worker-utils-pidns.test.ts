@@ -7,9 +7,14 @@ import * as realSpawn from '../../src/shared/spawn.js';
 // I-4 (bwrap --unshare-pid): a caller inside a PID namespace gets ESRCH from
 // process.kill(hostPid, 0) even though the host worker is healthy, so
 // validateWorkerPidFile reports 'stale'. isWorkerPortAlive() (private to
-// worker-utils.ts, exercised here through ensureWorkerRunning) must treat a
-// 'stale' verdict as alive when the HTTP health probe already succeeded —
-// health, not pid visibility, is the ground truth once it has been proven.
+// worker-utils.ts, exercised here through ensureWorkerRunning) must treat the
+// worker as alive when the HTTP health probe already succeeded — health, not
+// pid visibility, is the ground truth once it has been proven.
+//
+// #4249: once health answered, isWorkerPortAlive() must not consult the pid
+// file at all. Every verdict but 'invalid' returned true anyway, the probe cost
+// a PowerShell CIM query per hook on Windows, and 'invalid' turned a healthy
+// worker into a lazy-spawn.
 
 const realInfrastructureSnapshot = { ...realInfrastructure };
 const realSupervisorSnapshot = { ...realSupervisor };
@@ -19,10 +24,7 @@ const realSupervisorSnapshot = { ...realSupervisor };
 const realSpawnSnapshot = { ...realSpawn };
 
 let validateWorkerPidFileResult: 'missing' | 'alive' | 'stale' | 'invalid' = 'stale';
-// Records the options every validateWorkerPidFile call received, so the test
-// fails if isWorkerPortAlive() stops passing removeStale:false (the flag is
-// what keeps the real validator from rmSync'ing the host worker's pid file).
-const validateWorkerPidFileOptions: Array<{ removeStale?: boolean } | undefined> = [];
+let validateWorkerPidFileCalls = 0;
 
 mock.module('../../src/services/infrastructure/index.js', () => ({
   checkVersionMatch: () => Promise.resolve({ matches: true, pluginVersion: '13.4.0', workerVersion: '13.4.0' }),
@@ -30,8 +32,8 @@ mock.module('../../src/services/infrastructure/index.js', () => ({
 }));
 
 mock.module('../../src/supervisor/index.js', () => ({
-  validateWorkerPidFile: (options?: { removeStale?: boolean }) => {
-    validateWorkerPidFileOptions.push(options);
+  validateWorkerPidFile: () => {
+    validateWorkerPidFileCalls += 1;
     return validateWorkerPidFileResult;
   },
   readOwnedWorkerPidInfo: () => null,
@@ -70,7 +72,7 @@ function failResponse(): Response {
   return { ok: false, status: 503, text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response;
 }
 
-describe('isWorkerPortAlive (via ensureWorkerRunning) — stale pid file but healthy port (I-4)', () => {
+describe('isWorkerPortAlive (via ensureWorkerRunning) — healthy port, pid file never consulted (I-4, #4249)', () => {
   const originalFetch = global.fetch;
   let spawnCalled = false;
 
@@ -78,12 +80,12 @@ describe('isWorkerPortAlive (via ensureWorkerRunning) — stale pid file but hea
     global.fetch = originalFetch;
     mock.module('../../src/shared/spawn.js', () => realSpawnSnapshot);
     validateWorkerPidFileResult = 'stale';
-    validateWorkerPidFileOptions.length = 0;
+    validateWorkerPidFileCalls = 0;
   });
 
-  it('treats a stale pid file as alive when the health endpoint already answered ok', async () => {
-    validateWorkerPidFileResult = 'stale';
-    validateWorkerPidFileOptions.length = 0;
+  it.each(['stale', 'missing', 'alive', 'invalid'] as const)('treats the worker as alive without reading the pid file (%s) once the health endpoint answered ok', async (pidStatus) => {
+    validateWorkerPidFileResult = pidStatus;
+    validateWorkerPidFileCalls = 0;
     global.fetch = mock((url: string | URL | Request) => {
       const u = typeof url === 'string' ? url : url.toString();
       if (u.includes('/api/health')) return Promise.resolve(okResponse({ version: '13.4.0' }));
@@ -104,10 +106,7 @@ describe('isWorkerPortAlive (via ensureWorkerRunning) — stale pid file but hea
 
     expect(result).toBe(true);
     expect(spawnCalled).toBe(false);
-    expect(validateWorkerPidFileOptions.length).toBeGreaterThan(0);
-    for (const options of validateWorkerPidFileOptions) {
-      expect(options?.removeStale).toBe(false);
-    }
+    expect(validateWorkerPidFileCalls).toBe(0);
   });
 
 });

@@ -14,6 +14,51 @@ import { resolveTierAlias } from '../model-aliases.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { buildHardenedSdkOptions } from '../../../sdk/hardened-options.js';
 
+/**
+ * The exact line the Claude Code CLI prints when `--resume <id>` names a
+ * session it has no transcript for. In stream-json mode it arrives first as the
+ * `errors` entry of an `error_during_execution` result, which
+ * `errorFromUnsuccessfulResult` keeps in its message; the Agent SDK can also
+ * repeat it inside `Claude Code process exited with code N. stderr: <tail>`
+ * (sdk.mjs `formatStderrTail`). The line itself lives in the CLI binary
+ * (@anthropic-ai/claude-agent-sdk-darwin-arm64/claude, SDK 0.3.289).
+ */
+const SDK_SESSION_RESUME_FAILURE_PATTERN = /No conversation found with session ID/;
+
+/**
+ * True only for the SDK's explicit "this session cannot be resumed" failure.
+ * Anything else (auth, network, a generic "not found", an abort) must surface
+ * as-is rather than silently paying for a fresh prime.
+ */
+export function isSessionResumeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return SDK_SESSION_RESUME_FAILURE_PATTERN.test(message);
+}
+
+/**
+ * The error for a terminal SDK result that did not succeed, carrying the
+ * result's own text: `errors` on the error subtypes, `result` on an `is_error`
+ * success (an API error). The SDK builds its "Claude Code returned an error
+ * result" error the same way (sdk.mjs). Keeping that text is what lets
+ * `isSessionResumeError` see an expired session, so `query` still reprimes.
+ */
+function errorFromUnsuccessfulResult(
+  action: 'prime' | 'query',
+  resultMessage: { subtype?: string; result?: unknown; errors?: unknown }
+): Error {
+  const details = resultMessage.subtype === 'success'
+    ? (typeof resultMessage.result === 'string' ? resultMessage.result.trim() : '')
+    : (Array.isArray(resultMessage.errors)
+      ? resultMessage.errors.map((entry) => String(entry).trim()).filter(Boolean).join('; ')
+      : '');
+  return new Error(`Knowledge ${action} failed (${resultMessage.subtype})${details ? `: ${details}` : ''}`);
+}
+
+/** Per-call options. `abortController` is passed to the Agent SDK's `Options.abortController` (sdk.d.ts). */
+export interface KnowledgeAgentCallOptions {
+  abortController?: AbortController;
+}
+
 export class KnowledgeAgent {
   private renderer: CorpusRenderer;
 
@@ -23,7 +68,7 @@ export class KnowledgeAgent {
     this.renderer = new CorpusRenderer();
   }
 
-  async prime(corpus: CorpusFile): Promise<string> {
+  async prime(corpus: CorpusFile, callOptions: KnowledgeAgentCallOptions = {}): Promise<string> {
     const renderedCorpus = this.renderer.renderCorpus(corpus);
 
     const primePrompt = [
@@ -47,19 +92,24 @@ export class KnowledgeAgent {
         model: this.getModelId(),
         env: isolatedEnv,
         pathToClaudeCodeExecutable: claudePath,
+        abortController: callOptions.abortController,
       }),
     });
 
     let sessionId: string | undefined;
+    let successfulResult = false;
     try {
       for await (const msg of queryResult) {
         if (msg.session_id) sessionId = msg.session_id;
         if (msg.type === 'result') {
+          successfulResult = msg.is_error !== true && msg.subtype === 'success';
+          if (!successfulResult) throw errorFromUnsuccessfulResult('prime', msg);
           logger.info('WORKER', `Knowledge agent primed for corpus "${corpus.name}"`);
         }
       }
     } catch (error) {
-      if (sessionId) {
+      if (callOptions.abortController?.signal.aborted) throw error;
+      if (sessionId && successfulResult) {
         if (error instanceof Error) {
           logger.debug('WORKER', `SDK process exited after priming corpus "${corpus.name}" — session captured, continuing`, {}, error);
         } else {
@@ -70,6 +120,12 @@ export class KnowledgeAgent {
       }
     }
 
+    // Never persist a session whose prime the caller abandoned, even if the SDK ended quietly.
+    callOptions.abortController?.signal.throwIfAborted();
+
+    if (!successfulResult) {
+      throw new Error(`Knowledge prime ended without a successful result for corpus "${corpus.name}"`);
+    }
     if (!sessionId) {
       throw new Error(`Failed to capture session_id while priming corpus "${corpus.name}"`);
     }
@@ -80,20 +136,22 @@ export class KnowledgeAgent {
     return sessionId;
   }
 
-  async query(corpus: CorpusFile, question: string): Promise<QueryResult> {
+  async query(corpus: CorpusFile, question: string, callOptions: KnowledgeAgentCallOptions = {}): Promise<QueryResult> {
     if (!corpus.session_id) {
       throw new Error(`Corpus "${corpus.name}" has no session — call prime first`);
     }
 
     try {
-      const result = await this.executeQuery(corpus, question);
+      const result = await this.executeQuery(corpus, question, callOptions);
       if (result.session_id !== corpus.session_id) {
         corpus.session_id = result.session_id;
         this.corpusStore.write(corpus);
       }
       return result;
     } catch (error) {
-      if (!this.isSessionResumeError(error)) {
+      // The caller walked away; the route logs that once. Not a query failure.
+      if (callOptions.abortController?.signal.aborted) throw error;
+      if (!isSessionResumeError(error)) {
         if (error instanceof Error) {
           logger.error('WORKER', `Query failed for corpus "${corpus.name}"`, {}, error);
         } else {
@@ -102,12 +160,12 @@ export class KnowledgeAgent {
         throw error;
       }
       logger.info('WORKER', `Session expired for corpus "${corpus.name}", auto-repriming...`);
-      await this.prime(corpus);
+      await this.prime(corpus, callOptions);
       const refreshedCorpus = this.corpusStore.read(corpus.name);
       if (!refreshedCorpus || !refreshedCorpus.session_id) {
         throw new Error(`Auto-reprime failed for corpus "${corpus.name}"`);
       }
-      const result = await this.executeQuery(refreshedCorpus, question);
+      const result = await this.executeQuery(refreshedCorpus, question, callOptions);
       if (result.session_id !== refreshedCorpus.session_id) {
         refreshedCorpus.session_id = result.session_id;
         this.corpusStore.write(refreshedCorpus);
@@ -116,17 +174,12 @@ export class KnowledgeAgent {
     }
   }
 
-  async reprime(corpus: CorpusFile): Promise<string> {
-    corpus.session_id = null;  
-    return this.prime(corpus);
+  async reprime(corpus: CorpusFile, callOptions: KnowledgeAgentCallOptions = {}): Promise<string> {
+    corpus.session_id = null;
+    return this.prime(corpus, callOptions);
   }
 
-  private isSessionResumeError(error: unknown): boolean {
-    const message = error instanceof Error ? error.message : String(error);
-    return /session|resume|expired|invalid.*session|not found/i.test(message);
-  }
-
-  private async executeQuery(corpus: CorpusFile, question: string): Promise<QueryResult> {
+  private async executeQuery(corpus: CorpusFile, question: string, callOptions: KnowledgeAgentCallOptions): Promise<QueryResult> {
     const claudePath = findClaudeExecutable('WORKER');
     const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
 
@@ -139,14 +192,20 @@ export class KnowledgeAgent {
         env: isolatedEnv,
         pathToClaudeCodeExecutable: claudePath,
         resume: corpus.session_id!,
+        abortController: callOptions.abortController,
       }),
     });
 
     let answer = '';
     let newSessionId = corpus.session_id!;
+    let successfulResult = false;
     try {
       for await (const msg of queryResult) {
         if (msg.session_id) newSessionId = msg.session_id;
+        if (msg.type === 'result') {
+          successfulResult = msg.is_error !== true && msg.subtype === 'success';
+          if (!successfulResult) throw errorFromUnsuccessfulResult('query', msg);
+        }
         if (msg.type === 'assistant') {
           const text = msg.message.content
             .filter((b: any) => b.type === 'text')
@@ -156,7 +215,8 @@ export class KnowledgeAgent {
         }
       }
     } catch (error) {
-      if (answer) {
+      if (callOptions.abortController?.signal.aborted) throw error;
+      if (answer && successfulResult) {
         if (error instanceof Error) {
           logger.debug('WORKER', `SDK process exited after query — answer captured, continuing`, {}, error);
         } else {
@@ -167,6 +227,9 @@ export class KnowledgeAgent {
       }
     }
 
+    if (!successfulResult) {
+      throw new Error(`Knowledge query ended without a successful result for corpus "${corpus.name}"`);
+    }
     return { answer, session_id: newSessionId };
   }
 

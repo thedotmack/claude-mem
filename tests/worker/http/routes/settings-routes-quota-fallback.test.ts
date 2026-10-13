@@ -81,7 +81,7 @@ describe('SettingsRoutes — quota fallback keys', () => {
     expect(statusSpy).toHaveBeenCalledWith(400);
     expect(jsonSpy).toHaveBeenCalledWith({
       success: false,
-      error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be empty (off), "claude", "gemini", "openrouter", or "openai-compatible"',
+      error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"',
     });
     expect(readFileSync(settingsPath, 'utf-8')).toBe(before);
   });

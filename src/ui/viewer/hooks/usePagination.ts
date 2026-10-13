@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useLayoutEffect } from 'react';
 import { Observation, Summary, UserPrompt } from '../types';
 import { UI } from '../constants/ui';
 import { API_ENDPOINTS } from '../constants/api';
@@ -25,22 +25,31 @@ function usePaginationFor<TItem extends DataItem>(
 
   const selectionKey = `${currentFilter}|${currentSession ? sessionKey(currentSession) : ''}`;
   const offsetRef = useRef(0);
-  const lastSelectionKeyRef = useRef(selectionKey);
+  const selectionRef = useRef({ key: selectionKey, version: 0 });
+  // Concurrent renders may be abandoned. Derive their prospective visit
+  // without retiring the committed visit's callbacks or pending requests.
+  const selection = selectionRef.current.key === selectionKey
+    ? selectionRef.current
+    : { key: selectionKey, version: selectionRef.current.version + 1 };
+  useLayoutEffect(() => { selectionRef.current = selection; }, [selection]);
+  const selectionVersion = selection.version;
+  const lastLoadedVersionRef = useRef(selectionVersion);
   const stateRef = useRef(state);
 
   const loadMore = useCallback(async (): Promise<TItem[]> => {
-    const filterChanged = lastSelectionKeyRef.current !== selectionKey;
+    if (selectionRef.current.version !== selectionVersion) return [];
+    const selectionChanged = lastLoadedVersionRef.current !== selectionVersion;
 
-    if (filterChanged) {
+    if (selectionChanged) {
       offsetRef.current = 0;
-      lastSelectionKeyRef.current = selectionKey;
+      lastLoadedVersionRef.current = selectionVersion;
 
       const newState = { isLoading: false, hasMore: true };
       setState(newState);
       stateRef.current = newState;
     }
 
-    if (!filterChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
+    if (!selectionChanged && (stateRef.current.isLoading || !stateRef.current.hasMore)) {
       return [];
     }
 
@@ -62,41 +71,48 @@ function usePaginationFor<TItem extends DataItem>(
       params.append('platformSource', currentSession.platformSource);
     }
 
-    // A response that lands after the selection changed (another session or
-    // project opened mid-request) belongs to the old selection: the cursor and
-    // state now serve the new one, so drop it instead of advancing them.
-    const requestSelectionKey = selectionKey;
-    const isStale = () => lastSelectionKeyRef.current !== requestSelectionKey;
+    // Each visit owns its cursor and loading state. Returning to the same
+    // project or session must not revive requests from its previous visit.
+    const isStale = () => selectionRef.current.version !== selectionVersion;
 
-    const response = await fetch(`${endpoint}?${params}`);
-    if (isStale()) return [];
+    try {
+      const response = await fetch(`${endpoint}?${params}`);
+      if (isStale()) return [];
 
-    if (!response.ok) {
-      throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
+      if (!response.ok) {
+        throw new Error(`Failed to load ${dataType}: ${response.statusText}`);
+      }
+
+      const data = await response.json() as { items: TItem[], hasMore: boolean };
+      if (isStale()) return [];
+
+      const nextState = {
+        ...stateRef.current,
+        isLoading: false,
+        hasMore: data.hasMore
+      };
+      stateRef.current = nextState;
+
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        hasMore: data.hasMore
+      }));
+
+      offsetRef.current += UI.PAGINATION_PAGE_SIZE;
+
+      return data.items;
+    } finally {
+      // The loading flag belongs to this request, even when fetch/JSON fails.
+      // Do not release loading for a different current selection.
+      if (!isStale() && stateRef.current.isLoading) {
+        stateRef.current = { ...stateRef.current, isLoading: false };
+        setState(prev => ({ ...prev, isLoading: false }));
+      }
     }
-
-    const data = await response.json() as { items: TItem[], hasMore: boolean };
-    if (isStale()) return [];
-
-    const nextState = {
-      ...stateRef.current,
-      isLoading: false,
-      hasMore: data.hasMore
-    };
-    stateRef.current = nextState;
-
-    setState(prev => ({
-      ...prev,
-      isLoading: false,
-      hasMore: data.hasMore
-    }));
-
-    offsetRef.current += UI.PAGINATION_PAGE_SIZE;
-
-    return data.items;
     // selectionKey covers currentFilter and currentSession.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectionKey, endpoint, dataType]);
+  }, [selectionKey, selectionVersion, endpoint, dataType]);
 
   // Rows from a loaded page were deleted: the server's list moved up by that
   // many, so the next page starts that much earlier or it would skip rows.

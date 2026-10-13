@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.29.0",
+  "version": "13.37.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -37,9 +37,12 @@
     ".agents/plugins/marketplace.json",
     ".claude-plugin",
     ".codex-plugin",
+    ".qoder-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
+    "plugin/.qoder-plugin",
     "plugin/.mcp.json",
+    "plugin/qoder.mcp.json",
     "plugin/package.json",
     "plugin/bun.lock",
     "plugin/hooks",
@@ -51,7 +54,10 @@
     "plugin/skills",
     "plugin/ui",
     "openclaw",
-    "omp"
+    "omp",
+    "pi",
+    "dsh",
+    "NOTICE"
   ],
   "engines": {
     "node": ">=20.12.0",
@@ -107,6 +113,7 @@
     "test:server": "bun test tests/server/",
     "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "e2e:sync-matrix": "bun scripts/sync-matrix-e2e.ts",
+    "eval:read-gate": "bun scripts/eval-read-gate.ts",
     "check:postinstall-allowlist": "node scripts/check-postinstall-allowlist.js",
     "smoke:clean-room": "node scripts/smoke-clean-room.cjs",
     "prepublishOnly": "npm run build && node scripts/check-postinstall-allowlist.js",
@@ -183,7 +190,8 @@
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "unified": "^11.0.5",
-    "unist-util-visit": "^5.1.0"
+    "unist-util-visit": "^5.1.0",
+    "typebox": "1.1.24"
   },
   "trustedDependencies": [
     "esbuild",

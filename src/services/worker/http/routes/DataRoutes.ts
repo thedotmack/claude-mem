@@ -23,6 +23,7 @@ import { getParkedSlotWaiterCount } from '../../../../supervisor/process-registr
 import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 import type { CloudSync } from '../../../sync/CloudSync.js';
+import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -63,6 +64,7 @@ const observationsBatchSchema = z.object({
 
 const sdkSessionsBatchSchema = z.object({
   memorySessionIds: stringArrayLike,
+  promptIds: z.array(z.number().int().positive().safe()).optional(),
 }).passthrough();
 
 // Layer 4 of progressive disclosure: raw tool bodies, by explicit id only.
@@ -385,10 +387,12 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleGetSdkSessionsByIds = this.wrapHandler((req: Request, res: Response): void => {
-    const { memorySessionIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
+    const { memorySessionIds, promptIds } = req.body as z.infer<typeof sdkSessionsBatchSchema>;
 
     const store = this.dbManager.getSessionStore();
-    const sessions = store.getSdkSessionsBySessionIds(memorySessionIds);
+    const sessions = promptIds === undefined
+      ? store.getSdkSessionsBySessionIds(memorySessionIds)
+      : store.getSdkSessionsBySessionIds(memorySessionIds, promptIds);
     res.json(sessions);
   });
 
@@ -496,6 +500,7 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const entityRev = this.commitRowDelete(cloudSync, store, kind, table, originLocalId);
+    emitContextInvalidation('all', `delete-${kind}`, 'removal');
 
     // Only after the delete committed: open viewer tabs drop the row live.
     this.sseBroadcaster.broadcast({ type: 'item_deleted', itemType: kind, id: Number(originLocalId) });
@@ -675,6 +680,7 @@ export class DataRoutes extends BaseRouteHandler {
       ).run(sessionRow.id, contentSessionId, platformSource).changes;
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
     })();
+    emitContextInvalidation('all', 'delete-session', 'removal');
 
     // Only after the delete committed: open viewer tabs drop the session live.
     this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });
@@ -691,8 +697,12 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private parsePaginationParams(req: Request): { offset: number; limit: number; project?: string; platformSource?: string; contentSessionId?: string } {
-    const offset = parseInt(req.query.offset as string, 10) || 0;
-    const limit = Math.min(parseInt(req.query.limit as string, 10) || 20, 100);
+    const requestedOffset = parseInt(req.query.offset as string, 10) || 0;
+    const requestedLimit = parseInt(req.query.limit as string, 10) || 20;
+    const offset = Math.max(Number.isSafeInteger(requestedOffset) ? requestedOffset : 0, 0);
+    // SQLite interprets a negative LIMIT as unbounded, including limit + 1
+    // used by PaginationHelper to detect whether another page exists.
+    const limit = Math.min(Math.max(requestedLimit, 1), 100);
     const project = req.query.project as string | undefined;
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     const contentSessionId = req.query.contentSessionId as string | undefined;
@@ -712,7 +722,9 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
     const { from, into, dryRun } = req.body as z.infer<typeof projectMergeSchema>;
-    res.json(await mergeProjectInto({ from, into, dryRun: dryRun ?? false }));
+    const mergeResult = await mergeProjectInto({ from, into, dryRun: dryRun ?? false });
+    if (!dryRun) emitContextInvalidation('all', 'project-merge', 'removal');
+    res.json(mergeResult);
   });
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
@@ -730,6 +742,11 @@ export class DataRoutes extends BaseRouteHandler {
     };
 
     const store = this.dbManager.getSessionStore();
+    const importedMemorySessionIds = new Map<string, string>();
+    const remapImportedMemorySession = <T extends { memory_session_id: string }>(row: T): T => {
+      const memorySessionId = importedMemorySessionIds.get(row.memory_session_id);
+      return memorySessionId === undefined ? row : { ...row, memory_session_id: memorySessionId };
+    };
     const sessionContextByKey = new Map<string, { id: number; platformSource: string }>();
     const sessionContextsByContentId = new Map<string, Array<{ id: number; platformSource: string }>>();
     const sessionContextKey = (platformSource: string, contentSessionId: string): string =>
@@ -773,6 +790,13 @@ export class DataRoutes extends BaseRouteHandler {
 
     importEachRow('sessions', sessions, (session) => {
       const result = store.importSdkSession(session);
+      if (typeof session.memory_session_id === 'string' && session.memory_session_id.trim() !== '') {
+        // An existing content session may already have a different observer id.
+        // Keep its registered identity and attach the imported children to it;
+        // register the exported id only when the local session has none yet.
+        const memorySessionId = store.ensureMemorySessionIdRegistered(result.id, session.memory_session_id);
+        importedMemorySessionIds.set(session.memory_session_id, memorySessionId);
+      }
       rememberSessionContext(session, result.id);
       if (result.imported) {
         stats.sessionsImported++;
@@ -782,7 +806,7 @@ export class DataRoutes extends BaseRouteHandler {
     });
 
     importEachRow('summaries', summaries, (summary) => {
-      const result = store.importSessionSummary(summary);
+      const result = store.importSessionSummary(remapImportedMemorySession(summary));
       if (result.imported) {
         stats.summariesImported++;
       } else {
@@ -793,10 +817,11 @@ export class DataRoutes extends BaseRouteHandler {
     const importedObservations: Array<{ id: number; obs: any }> = [];
     if (Array.isArray(observations)) {
       importEachRow('observations', observations, (obs) => {
-        const result = store.importObservation(obs);
+        const observation = remapImportedMemorySession(obs);
+        const result = store.importObservation(observation);
         if (result.imported) {
           stats.observationsImported++;
-          importedObservations.push({ id: result.id, obs });
+          importedObservations.push({ id: result.id, obs: observation });
         } else {
           stats.observationsSkipped++;
         }
@@ -912,6 +937,8 @@ export class DataRoutes extends BaseRouteHandler {
       logger.warn('HTTP', 'Import rejected rows', rejectedCounts);
     }
 
+    // 'removal': an import can re-key or replace rows a cached block shows.
+    emitContextInvalidation('all', 'import', 'removal');
     res.json({
       success: true,
       stats: { ...stats, ...rejectedCounts },

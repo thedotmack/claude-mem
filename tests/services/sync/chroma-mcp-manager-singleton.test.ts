@@ -14,6 +14,7 @@ import * as realLogger from '../../../src/utils/logger.js';
 import * as realSupervisor from '../../../src/supervisor/index.ts';
 import * as realEnvSanitizer from '../../../src/supervisor/env-sanitizer.js';
 import * as realKillProcessTree from '../../../src/shared/kill-process-tree.js';
+import * as realPortReclaim from '../../../src/shared/port-reclaim.js';
 import * as realSdkClientStdio from '@modelcontextprotocol/sdk/client/stdio.js';
 import * as realSdkClientIndex from '@modelcontextprotocol/sdk/client/index.js';
 const realSettingsSnapshot = { ...realSettingsDefaultsManager };
@@ -22,6 +23,7 @@ const realLoggerSnapshot = { ...realLogger };
 const realSupervisorSnapshot = { ...realSupervisor };
 const realEnvSanitizerSnapshot = { ...realEnvSanitizer };
 const realKillProcessTreeSnapshot = { ...realKillProcessTree };
+const realPortReclaimSnapshot = { ...realPortReclaim };
 const realSdkClientStdioSnapshot = { ...realSdkClientStdio };
 const realSdkClientIndexSnapshot = { ...realSdkClientIndex };
 const realChildProcess = require('node:child_process');
@@ -99,7 +101,7 @@ class FakeTransport {
   // pokes into via `(this.transport as unknown as { _process })._process`.
   _process: FakeChildProcess;
 
-  constructor(_opts: { command: string; args: string[] }) {
+  constructor(readonly opts: { command: string; args: string[] }) {
     transportCount += 1;
     this._process = new FakeChildProcess();
     transportInstances.push(this);
@@ -237,6 +239,22 @@ mock.module('../../../src/supervisor/env-sanitizer.js', () => ({
 let killProcessTreeOverride: ((pid: number) => Promise<void>) | null = null;
 /** Every killProcessTree call, so wiring of the identity token is assertable. */
 const killProcessTreeCalls: Array<{ pid: number; options?: { expectedStartToken?: string | null } }> = [];
+
+// #4608: the orphan sweep shells out to the real process table (ps / /proc /
+// CIM). Stub it exactly like kill-process-tree above — record the resolved
+// data dir so the wiring test can assert the sweep ran under the writer lock.
+const orphanSweepCalls: Array<{ dataDir: string | null }> = [];
+type OrphanSweepTestDeps = { dataDir?: () => string | null; stillOwnsStore?: () => boolean };
+/** A test can hold a sweep open (a slow process-table read) and release it by hand. */
+let orphanSweepOverride: ((deps: OrphanSweepTestDeps) => Promise<{ killedPids: number[] }>) | null = null;
+mock.module('../../../src/shared/port-reclaim.js', () => ({
+  ...realPortReclaimSnapshot,
+  reclaimOrphanChromaDataDirWriters: async (deps?: OrphanSweepTestDeps) => {
+    orphanSweepCalls.push({ dataDir: deps?.dataDir?.() ?? null });
+    if (orphanSweepOverride) return orphanSweepOverride(deps ?? {});
+    return { killedPids: [] };
+  },
+}));
 mock.module('../../../src/shared/kill-process-tree.js', () => ({
   ...realKillProcessTreeSnapshot,
   killProcessTree: (pid: number, options?: { expectedStartToken?: string | null }) =>
@@ -343,6 +361,7 @@ afterAll(() => {
   mock.module('../../../src/supervisor/index.ts', () => realSupervisorSnapshot);
   mock.module('../../../src/supervisor/env-sanitizer.js', () => realEnvSanitizerSnapshot);
   mock.module('../../../src/shared/kill-process-tree.js', () => realKillProcessTreeSnapshot);
+  mock.module('../../../src/shared/port-reclaim.js', () => realPortReclaimSnapshot);
   mock.module('child_process', () => realChildProcess);
   // The MCP SDK mocks must be re-registered too: leaking FakeClient (no
   // listTools, canned callTool) breaks tests/server/mcp/recall-mcp-server.test.ts
@@ -359,6 +378,8 @@ function resetState(): void {
   transportInstances.length = 0;
   prewarmSpawnCalls.length = 0;
   killProcessTreeCalls.length = 0;
+  orphanSweepCalls.length = 0;
+  orphanSweepOverride = null;
   killTreeCalls.length = 0;
   deadPids.clear();
   logEntries.length = 0;
@@ -453,6 +474,18 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(transportCount).toBe(1);
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('prewarms with the pydantic cap that chroma-mcp 0.2.6 needs (#4593)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+
+    const prewarmArgs = prewarmSpawnCalls[0]!.args;
+    const capIdx = prewarmArgs.indexOf('pydantic<2.14');
+    expect(capIdx).toBeGreaterThan(0);
+    expect(prewarmArgs[capIdx - 1]).toBe('--with');
+    expect(capIdx).toBeLessThan(prewarmArgs.indexOf('--from'));
+    expect(prewarmArgs.at(-1)).toBe('--help');
   });
 
   it('onclose cleanup carries the spawn-time identity token, not self-capture', async () => {
@@ -799,6 +832,72 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(killTreeCalls).toContain(firstPid);
   });
 
+  it('sweeps orphaned chroma-mcp data-dir holders under the writer lock on every connect (#4608)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    expect(transportInstances.length).toBe(1);
+
+    // The sweep runs AFTER the writer lock is acquired and BEFORE this
+    // worker's own sidecar spawns: the lock proves no live worker owns the
+    // store, so anything still holding the data dir is a dead generation's
+    // orphan. It must resolve the data dir actually in use, not a default.
+    expect(orphanSweepCalls).toEqual([{ dataDir: mockedChromaDir }]);
+  });
+
+  it('a sweep overtaken by stop() and a reconnect leaves the new connection, its lock, and its sidecar alone', async () => {
+    // Each sweep is held open like a slow process-table read; the test
+    // releases them by hand to force the stop-then-reconnect interleaving.
+    const sweepReleases: Array<() => void> = [];
+    const sweepOwnsStore: Array<() => boolean> = [];
+    orphanSweepOverride = async deps => {
+      sweepOwnsStore.push(deps.stillOwnsStore ?? (() => true));
+      await new Promise<void>(resolve => sweepReleases.push(resolve));
+      return { killedPids: [] };
+    };
+    const waitForSweeps = async (count: number): Promise<void> => {
+      for (let attempt = 0; attempt < 200 && sweepReleases.length < count; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 5));
+      }
+      expect(sweepReleases.length).toBe(count);
+    };
+    const mgr = ChromaMcpManager.getInstance();
+
+    const firstCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForSweeps(1);
+    await mgr.stop();
+
+    const secondCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    await waitForSweeps(2);
+    const secondConnectionLock = readFileSync(chromaWriterLockPath(), 'utf-8');
+
+    // The old sweep returns after the new connection took the store.
+    sweepReleases[0]();
+    await expect(firstCall).rejects.toThrow('connection cancelled during shutdown');
+
+    // (a) The cancelled attempt's cleanup must not delete the lock the new
+    // attempt acquired, or another worker could start a second writer.
+    expect(existsSync(chromaWriterLockPath())).toBe(true);
+    expect(readFileSync(chromaWriterLockPath(), 'utf-8')).toBe(secondConnectionLock);
+    // (b) The old sweep no longer owns the store, so it can kill nothing; the
+    // new one does.
+    expect(sweepOwnsStore[0]()).toBe(false);
+    expect(sweepOwnsStore[1]()).toBe(true);
+
+    // The cancelled attempt must not clear the in-flight connection either:
+    // a read now joins the second attempt instead of starting a third.
+    const thirdCall = mgr.callTool('chroma_list_collections', { limit: 1 });
+    sweepReleases[1]();
+    await secondCall;
+    await thirdCall;
+    expect(orphanSweepCalls.length).toBe(2);
+    expect(transportInstances.length).toBe(1);
+    expect(readFileSync(chromaWriterLockPath(), 'utf-8')).toBe(secondConnectionLock);
+
+    await mgr.stop();
+    expect(existsSync(chromaWriterLockPath())).toBe(false);
+  });
+
   it('ignores kill-triggered onclose while retrying after a transport error', async () => {
     transportKillEmitsOnclose = true;
     const mgr = ChromaMcpManager.getInstance();
@@ -907,6 +1006,7 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
       'onnxruntime>=1.20',
       'protobuf<7',
       'chromadb==1.5.9',
+      'pydantic<2.14',
     ]);
     expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
       .toMatchObject({ count: 1, exitCode: null, signalCode: 'SIGSEGV' });
@@ -1143,6 +1243,21 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     await expect(mgr.callTool('chroma_list_collections', { limit: 1 })).rejects.toThrow('connection in backoff');
     expect(prewarmSpawnCalls.length).toBe(1);
+  });
+
+  it('keeps the MCP 1.6 Pydantic compatibility bound in prewarm and transport launches', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const prewarmArgs = prewarmSpawnCalls[0].args;
+    const transportArgs = transportInstances[0].opts.args;
+    for (const args of [prewarmArgs, transportArgs]) {
+      expect(args.filter(arg => arg === 'pydantic<2.14')).toHaveLength(1);
+      const compatibilityAt = args.indexOf('pydantic<2.14');
+      expect(args[compatibilityAt - 1]).toBe('--with');
+      expect(compatibilityAt).toBeLessThan(args.indexOf('--from'));
+    }
+    expect(prewarmArgs.slice(0, -1)).toEqual(transportArgs.slice(0, transportArgs.indexOf('chroma-mcp') + 1));
+    expect(prewarmArgs.at(-1)).toBe('--help');
   });
 
   it('stops spawning uvx after a burst of consecutive prewarm failures (#4108)', async () => {
@@ -1754,7 +1869,7 @@ describe('ChromaMcpManager store record (refs #3012)', () => {
     expect(existsSync(chromaStoreRecordPath())).toBe(true);
     const record = JSON.parse(readFileSync(chromaStoreRecordPath(), 'utf-8'));
     expect(record.chromaMcpVersion).toBe('0.2.6');
-    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9']);
+    expect(record.depOverrides).toEqual(['onnxruntime>=1.20', 'protobuf<7', 'chromadb==1.5.9', 'pydantic<2.14']);
     // The engine version is read from the launcher pin, never kept separately.
     expect(record.chromadbVersion).toBe('1.5.9');
     expect(record.depOverrides).toContain(`chromadb==${record.chromadbVersion}`);

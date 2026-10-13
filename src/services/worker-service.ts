@@ -6,11 +6,12 @@ import { pathToFileURL } from 'url';
 import type { Database } from 'bun:sqlite';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
+import { formatHostForUrl, getWorkerPort, getWorkerHost, fetchWithTimeout, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js';
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
-import { DeferredSessionEndQueue } from '../shared/deferred-session-end.js';
+import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
+import { HookSpoolDrainer } from './worker/hook-spool-drain.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -31,6 +32,9 @@ import { telemetryBuffer } from './telemetry/buffer.js';
 import { collectInstallStats } from './telemetry/install-stats.js';
 import { runHistoricalBackfill } from './telemetry/backfill.js';
 import { runWorkerDependencyPreflight } from './worker/dependency-preflight.js';
+import { provisionTreeSitterCliForPluginRoot } from './worker/tree-sitter-cli-provisioning.js';
+import { IdleExitMonitor, MIN_IDLE_EXIT_MS, parseIdleExitMs } from './worker/idle-exit-monitor.js';
+import { isWorkerAutostartDisabled } from '../shared/worker-autostart.js';
 
 export { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
 import { isPluginDisabledInClaudeSettings } from '../shared/plugin-state.js';
@@ -59,7 +63,7 @@ import {
   getPlatformTimeout,
   runOneTimeCwdRemap,
   cleanStalePidFile,
-  verifyPidFileOwnership,
+  verifyWorkerPidFileOwnership,
   spawnDaemon,
   touchPidFile,
   pinDaemonWorkingDirectory
@@ -81,6 +85,7 @@ import { adoptMergedWorktrees, adoptMergedWorktreesForAllKnownRepos, formatAdopt
 import { runProjectMergeCommand } from './infrastructure/ProjectMerge.js';
 
 import { Server } from './server/Server.js';
+import { InitPhaseTracker } from './server/init-phase.js';
 import { buildWorkerOriginPolicy } from './worker/http/middleware.js';
 import { BetterAuthRoutes } from '../server/auth/BetterAuthRoutes.js';
 import {
@@ -126,6 +131,9 @@ import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHoo
 import { TranscriptWatcher } from './transcripts/watcher.js';
 import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
+import { ContextCacheService } from './worker/ContextCacheService.js';
+import { projectReadKeys } from './sqlite/project-read-keys.js';
+import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
@@ -137,6 +145,9 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { MemoryFileWatcher } from './memory/file-watcher.js';
+import { parseMemoryWatchRoots } from './memory/config.js';
+import { saveMemory } from './memory/save-memory.js';
 import { MemoryIngestRoutes } from './worker/http/routes/MemoryIngestRoutes.js';
 import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
@@ -242,11 +253,13 @@ export class WorkerService implements WorkerRef {
 
   private mcpReady: boolean = false;
   private initializationCompleteFlag: boolean = false;
+  /** Boot progress streamed on GET /api/ready (starting → db_ready → routes_ready → ready | failed). */
+  readonly initPhaseTracker = new InitPhaseTracker();
   private isShuttingDown: boolean = false;
   private bootWatchdog: ReturnType<typeof setTimeout> | null = null;
-  private deferredSessionEndReplayTimer: ReturnType<typeof setInterval> | null = null;
   private pendingSessionResumeTimer: ReturnType<typeof setInterval> | null = null;
-  private readonly deferredSessionEndQueue = new DeferredSessionEndQueue();
+  private readonly hookSpool = new HookSpool();
+  private readonly hookSpoolDrainer = new HookSpoolDrainer(this.hookSpool);
 
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -266,7 +279,10 @@ export class WorkerService implements WorkerRef {
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
+  private memoryFileWatcher: MemoryFileWatcher | null = null;
   private syncClient: SyncClient | null = null;
+  private contextCacheService: ContextCacheService | null = null;
+  private idleExitMonitor: IdleExitMonitor | null = null;
   private initializationComplete: Promise<void>;
   private resolveInitialization!: () => void;
 
@@ -276,6 +292,9 @@ export class WorkerService implements WorkerRef {
     provider: string;
     error?: string;
   } | null = null;
+
+  /** Queue depth of the last processing_status frame; null before the first (broadcastProcessingStatus). */
+  private lastBroadcastQueueDepth: number | null = null;
 
   constructor() {
     this.initializationComplete = new Promise((resolve) => {
@@ -328,6 +347,7 @@ export class WorkerService implements WorkerRef {
 
     this.server = new Server({
       getInitializationComplete: () => this.initializationCompleteFlag,
+      initPhaseSource: this.initPhaseTracker,
       getMcpReady: () => this.mcpReady,
       getDependencyHealth: () => snapshotDependencyHealth(),
       getChromaCrashState: () => this.chromaMcpManager
@@ -374,38 +394,91 @@ export class WorkerService implements WorkerRef {
     });
   }
 
-  private async drainDeferredSessionEndQueue(): Promise<void> {
-    const store = this.dbManager.getSessionStore();
-    const result = await this.deferredSessionEndQueue.drain(async (entry) => {
-      const sessionDbId = store.findSessionDbIdByContentSessionId(
-        entry.contentSessionId,
-        entry.platformSource,
-      );
-      if (sessionDbId === null) {
-        // Keep the durable entry: SessionStart/session-init may have been
-        // delayed by the same worker outage that deferred SessionEnd.
-        return false;
-      }
-
-      await this.sessionManager.requestSessionWrapup(sessionDbId);
-      return true;
-    });
-
-    if (result.drained > 0) {
-      logger.info('SESSION', 'Replayed deferred SessionEnd requests', { count: result.drained });
+  /**
+   * Opt-in idle exit (CLAUDE_MEM_IDLE_EXIT_SEC, default '0' = never): after
+   * the window elapses with no session activity or running generator, no
+   * queued work, no open or recent request and no AI interaction, the worker
+   * shuts itself down through the same graceful sequence as `claude-mem stop`
+   * (reason 'idle').
+   *
+   * Never armed where nothing would start the worker again: with
+   * CLAUDE_MEM_WORKER_AUTOSTART=false hooks and the MCP server never launch
+   * one (and a clean exit 0 is not restarted by an on-failure process
+   * manager), and a running transcript watcher is the only capture for the
+   * hosts it watches.
+   */
+  private startIdleExitMonitor(settings: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): void {
+    const configuredIdleExitMs = parseIdleExitMs(settings.CLAUDE_MEM_IDLE_EXIT_SEC);
+    if (configuredIdleExitMs === null) {
+      logger.warn('SYSTEM', 'Ignoring invalid CLAUDE_MEM_IDLE_EXIT_SEC (expected a non-negative integer of seconds)', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
     }
+    if (configuredIdleExitMs === 0) return;
+    if (isWorkerAutostartDisabled(settings)) {
+      logger.warn('SYSTEM', 'Idle exit stays off: CLAUDE_MEM_WORKER_AUTOSTART=false, so nothing would start the worker again', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (this.transcriptWatcher !== null) {
+      logger.warn('SYSTEM', 'Idle exit stays off: transcript watches are active, and only a running worker captures them', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    if (this.memoryFileWatcher != null) {
+      logger.warn('SYSTEM', 'Idle exit stays off: memory-file watches are active, and only a running worker captures them', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      return;
+    }
+    let idleExitMs = configuredIdleExitMs;
+    if (idleExitMs < MIN_IDLE_EXIT_MS) {
+      logger.warn('SYSTEM', 'CLAUDE_MEM_IDLE_EXIT_SEC is below the 60 s minimum; using 60', {
+        value: settings.CLAUDE_MEM_IDLE_EXIT_SEC,
+      });
+      idleExitMs = MIN_IDLE_EXIT_MS;
+    }
+
+    this.idleExitMonitor = new IdleExitMonitor({
+      idleExitMs,
+      hasSessionActivitySince: (cutoffMs) => this.sessionManager.hasSessionActivitySince(cutoffMs),
+      getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
+      getLastRequestAt: () => this.server.getLastRequestAt(),
+      getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
+      getViewerClientCount: () => this.sseBroadcaster.getClientCount(),
+      getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
+      onIdle: () => {
+        // The sequence never exits the process for non-restart reasons —
+        // the route path exits via flushResponseThen and the signal path via
+        // the supervisor's signal handler — so the idle path owns its exit.
+        void this.shutdown('idle').then(
+          () => process.exit(0),
+          () => process.exit(0),
+        );
+      },
+    });
+    this.idleExitMonitor.start();
+    logger.info('SYSTEM', 'Idle exit enabled', { idleExitSec: idleExitMs / 1000 });
   }
 
-  private startDeferredSessionEndReplay(): void {
-    if (this.deferredSessionEndReplayTimer !== null) return;
-
-    this.deferredSessionEndReplayTimer = setInterval(() => {
-      void this.drainDeferredSessionEndQueue().catch((error: unknown) => {
-        logger.warn('SESSION', 'Deferred SessionEnd replay loop failed', {},
-          error instanceof Error ? error : new Error(String(error)));
-      });
-    }, 30_000);
-    this.deferredSessionEndReplayTimer.unref?.();
+  /**
+   * Write hooks (observation, file edit, summarize, advisor calls, SessionEnd)
+   * spool one file per event and exit without waiting on the worker. Start
+   * draining as soon as SQLite is ready: migrate any leftover entries of the
+   * retired SessionEnd replay queue, then drain now and on every fs.watch
+   * event, hook nudge (POST /api/spool/nudge) and 30 s safety sweep.
+   */
+  private startHookSpoolDrain(): void {
+    try {
+      migrateLegacySessionEndReplay(this.hookSpool);
+    } catch (error: unknown) {
+      logger.error('HOOK', 'Legacy SessionEnd replay migration failed; its directory is left in place', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+    this.hookSpoolDrainer.start();
   }
 
   private startPendingSessionResume(sessionRoutes: SessionRoutes): void {
@@ -443,6 +516,7 @@ export class WorkerService implements WorkerRef {
         req.path === '/chroma/status' ||
         req.path === '/health' ||
         req.path === '/readiness' ||
+        req.path === '/ready' ||
         req.path === '/version' ||
         req.path === '/settings/dependency-health'
       ) {
@@ -461,6 +535,14 @@ export class WorkerService implements WorkerRef {
         message: 'Database is still initializing, please retry'
       });
       return;
+    });
+
+    // Hook spool nudge. Behind the init gate on purpose: before init it gets a
+    // harmless 503 (the hook ignores the result) and the boot drain covers the
+    // entry. Answers immediately; the drain is single-flight.
+    this.server.app.post('/api/spool/nudge', (_req, res) => {
+      void this.hookSpoolDrainer.requestDrain();
+      res.status(202).json({ status: 'draining' });
     });
 
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
@@ -634,6 +716,13 @@ export class WorkerService implements WorkerRef {
         logger.info('SYSTEM', 'Dependency preflight passed');
       }
 
+      // Not awaited: a download must not hold readiness. See
+      // provisionTreeSitterCliForPluginRoot for why the worker does it.
+      const pluginRoot = path.dirname(__dirname);
+      provisionTreeSitterCliForPluginRoot(pluginRoot).catch(error => {
+        logger.warn('SYSTEM', 'tree-sitter CLI provisioning failed: smart_search, smart_outline and smart_unfold cannot parse, and the File Read Gate stays off, until the next worker start retries (or npx claude-mem repair)', { pluginRoot }, error instanceof Error ? error : new Error(String(error)));
+      });
+
       logger.info('WORKER', 'Checking for one-time CWD remap...');
       runOneTimeCwdRemap();
 
@@ -647,13 +736,12 @@ export class WorkerService implements WorkerRef {
 
       logger.info('WORKER', 'Initializing database manager...');
       await this.dbManager.initialize();
+      this.initPhaseTracker.setInitPhase('db_ready');
 
-      // A SessionEnd hook gets a tiny host budget and persists its identifier
-      // when the worker is unavailable. Drain that idempotent spool as soon as
-      // SQLite is ready, then keep polling lightly for an event that raced the
-      // tail of worker startup or a transient later IPC failure.
-      await this.drainDeferredSessionEndQueue();
-      this.startDeferredSessionEndReplay();
+      // Write hooks never wait on the worker: they spool one file per event.
+      // Drain it as soon as SQLite is ready (not awaited — a backlog after an
+      // outage must not hold readiness), then on watch/nudge/sweep.
+      this.startHookSpoolDrain();
 
       runOneTimeV12_4_3Cleanup();
 
@@ -672,6 +760,7 @@ export class WorkerService implements WorkerRef {
         if (adoptions) {
           for (const adoption of adoptions) {
             if (adoption.adoptedObservations > 0 || adoption.adoptedSummaries > 0 || adoption.chromaUpdates > 0) {
+              emitContextInvalidation('all', 'worktree-adoption');
               logger.info('SYSTEM', 'Merged worktrees adopted in background', adoption);
             }
             if (adoption.errors.length > 0) {
@@ -734,8 +823,22 @@ export class WorkerService implements WorkerRef {
         formattingService,
         timelineService
       );
-      this.searchRoutes = new SearchRoutes(searchManager, this.syncClient);
+      // Precomputed SessionStart context (liveness plan, Phase 6): the route
+      // records each live render, the service re-renders on writes.
+      const contextCacheDb = this.dbManager.getConnection();
+      this.contextCacheService = new ContextCacheService({
+        renderVariant: (keys) => {
+          if (!this.searchRoutes) throw new Error('Context cache render before search routes exist');
+          return this.searchRoutes.renderContextVariant(keys);
+        },
+        expandProjectReadKeys: (projects) => projectReadKeys(contextCacheDb, projects),
+        // Local-first: the local db is the source of truth, so the files are
+        // servable with or without cloud sync. Sync applies other devices' ops in
+        // the background, and every applied op invalidates the files (SyncApply).
+      });
+      this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient);
       this.server.registerRoutes(this.searchRoutes);
+      this.contextCacheService.start();
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
 
       const corpusBuilder = new CorpusBuilder(
@@ -753,9 +856,11 @@ export class WorkerService implements WorkerRef {
       // unconfigured install answers {configured: false} instead of 404.
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      this.initPhaseTracker.setInitPhase('routes_ready');
 
       this.initializationCompleteFlag = true;
       this.resolveInitialization();
+      this.initPhaseTracker.setInitPhase('ready');
       logger.info('SYSTEM', 'Core initialization complete (DB + search ready)');
 
       // Lifecycle telemetry (person profile = anonymous install UUID). ide is
@@ -816,6 +921,15 @@ export class WorkerService implements WorkerRef {
       });
 
       await this.startTranscriptWatcher(settings);
+      try {
+        const roots = parseMemoryWatchRoots(settings.CLAUDE_MEM_MEMORY_WATCH_ROOTS);
+        if (roots.length) {
+          this.memoryFileWatcher = new MemoryFileWatcher(roots, input => saveMemory(this.dbManager, 'claude-mem', input));
+          this.memoryFileWatcher.start();
+        }
+      } catch (error) {
+        logger.warn('HOOK', 'Memory folder bridge configuration unavailable', { error: error instanceof Error ? error.message : String(error) });
+      }
 
       // Seed Grok Bot Memory INDEX files from current observations so seats
       // do not wait for the next store before the mid-attach file exists.
@@ -853,9 +967,23 @@ export class WorkerService implements WorkerRef {
         logger.debug('WORKER', 'MCP self-check failed (non-fatal)', { error: err.message });
       });
 
+      // Idle exit: arm only once the worker is fully up — the monitor's
+      // activity clock starts here, so boot can never race the window — and
+      // after startTranscriptWatcher, which decides whether it may arm at
+      // all. The next hook that reads memory (or the MCP server's next call)
+      // starts the worker again; plugin hosts that never start it (OpenCode,
+      // OpenClaw) are why the docs say to leave idle exit off there.
+      this.startIdleExitMonitor(settings);
+
       return;
     } catch (error) {
       logger.error('SYSTEM', 'Background initialization failed', {}, error instanceof Error ? error : undefined);
+      // A throw after `ready` (transcript watcher, telemetry, …) leaves a worker
+      // that serves requests; only a pre-ready failure is the wedged state that
+      // /api/ready readers must recycle.
+      if (!this.initializationCompleteFlag) {
+        this.initPhaseTracker.setInitPhase('failed', error instanceof Error ? error.message : String(error));
+      }
     }
   }
 
@@ -911,10 +1039,20 @@ export class WorkerService implements WorkerRef {
       return;
     }
 
-    const { config: transcriptConfig, scoped, removed } = scopeNativeHookBackedCodexWatches(
-      loadTranscriptWatchConfig(configPath),
-      settings,
-    );
+    let loadedConfig: ReturnType<typeof scopeNativeHookBackedCodexWatches>;
+    try {
+      loadedConfig = scopeNativeHookBackedCodexWatches(loadTranscriptWatchConfig(configPath), settings);
+    } catch (error) {
+      // Background init awaits this method, so a throw here would also skip the
+      // Chroma backfill, CloudSync, the pull loop and the MCP self-check for the
+      // worker's lifetime. An unreadable or invalid config turns off transcript
+      // capture only.
+      logger.error('TRANSCRIPT', 'Invalid transcript watch config (continuing without transcript ingestion)', {
+        configPath: resolvedConfigPath
+      }, error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+    const { config: transcriptConfig, scoped, removed } = loadedConfig;
     const statePath = expandHomePath(transcriptConfig.stateFile ?? DEFAULT_STATE_PATH);
 
     if (scoped > 0) {
@@ -982,10 +1120,18 @@ export class WorkerService implements WorkerRef {
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
         this.stopPendingSessionResume();
-        if (this.deferredSessionEndReplayTimer !== null) {
-          clearInterval(this.deferredSessionEndReplayTimer);
-          this.deferredSessionEndReplayTimer = null;
-        }
+        this.hookSpoolDrainer.stop();
+        // Stop the idle monitor before the drain: its own trigger has
+        // already disarmed it, and a route- or signal-initiated drain must
+        // not let a late tick fire into the sequence (it would be a guarded
+        // no-op, but stopped-by-construction is better).
+        this.idleExitMonitor?.stop();
+        this.idleExitMonitor = null;
+        // Before the DB closes: a pending re-render would read a closed connection.
+        this.contextCacheService?.stop();
+        this.contextCacheService = null;
+        this.memoryFileWatcher?.stop();
+        this.memoryFileWatcher = null;
 
         await this.codexAgent.close();
         if (this.transcriptWatcher) {
@@ -1038,24 +1184,34 @@ export class WorkerService implements WorkerRef {
     });
   }
 
+  /**
+   * Send viewers a processing_status frame when the queue depth changes.
+   *
+   * Only a change goes out (#4087). Every buffer mutation calls this, and a
+   * claim or a reset leaves the depth as it was (claimed messages still
+   * count), so a signed-out observer cycling one batch re-sent the same frame
+   * about 83 times a second and logged each one at INFO, until the log filled
+   * the disk. The change check is the fix; the log line is DEBUG so that real
+   * changes stay out of the default log too. A viewer that connects later
+   * gets the current status from ViewerRoutes when it connects.
+   */
   broadcastProcessingStatus(): void {
-    void (async () => {
-      const queueDepth = await this.sessionManager.getTotalActiveWork();
-      const isProcessing = queueDepth > 0;
-      const activeSessions = this.sessionManager.getActiveSessionCount();
+    const queueDepth = this.sessionManager.getTotalQueueDepth();
+    if (queueDepth === this.lastBroadcastQueueDepth) return;
+    this.lastBroadcastQueueDepth = queueDepth;
+    const isProcessing = queueDepth > 0;
 
-      logger.info('WORKER', 'Broadcasting processing status', {
-        isProcessing,
-        queueDepth,
-        activeSessions
-      });
+    logger.debug('WORKER', 'Broadcasting processing status', {
+      isProcessing,
+      queueDepth,
+      activeSessions: this.sessionManager.getActiveSessionCount()
+    });
 
-      this.sseBroadcaster.broadcast({
-        type: 'processing_status',
-        isProcessing,
-        queueDepth
-      });
-    })();
+    this.sseBroadcaster.broadcast({
+      type: 'processing_status',
+      isProcessing,
+      queueDepth
+    });
   }
 
   /**
@@ -1580,6 +1736,8 @@ async function main() {
         process.exit(1);
       }
 
+      const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+      restoreHookOriginalCwd();
       const { hookCommand } = await import('../cli/hook-command.js');
       await hookCommand(platform, event);
       break;
@@ -1752,7 +1910,7 @@ async function main() {
       // The worker itself remains the sole writer of this file
       // (writePidFile/touchPidFile stay as diagnostics).
       const existingPidInfo = readPidFile();
-      if (verifyPidFileOwnership(existingPidInfo)) {
+      if (verifyWorkerPidFileOwnership(existingPidInfo)) {
         logger.info('SYSTEM', 'Worker already running (PID alive), refusing to start duplicate', {
           existingPid: existingPidInfo.pid,
           existingPort: existingPidInfo.port,
@@ -1849,7 +2007,7 @@ export function formatDependencyHealthHint(health: WorkerHealthSnapshot): string
  */
 async function fetchWorkerHealth(port: number, timeoutMs: number): Promise<WorkerHealthSnapshot | null> {
   try {
-    const response = await fetchWithTimeout(`http://${getWorkerHost()}:${port}/api/health`, {}, timeoutMs);
+    const response = await fetchWithTimeout(`http://${formatHostForUrl(getWorkerHost())}:${port}/api/health`, {}, timeoutMs);
     return await response.json() as WorkerHealthSnapshot;
   } catch {
     // [ANTI-PATTERN IGNORED]: health probe — connection refused/timeout IS the "worker not running" answer, polled on every status check; logging would spam. null is the documented recovery value the callers branch on.

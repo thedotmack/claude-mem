@@ -2028,7 +2028,8 @@ export class CloudSync {
 
   private scheduleRetry(minDelayMs = 0): void {
     if (this.stopped || this.retryTimer) return;
-    const delay = applyBackoffJitter(Math.max(this.nextBackoffMs, minDelayMs));
+    // Jitter the local ladder, never the minimum requested by the hub.
+    const delay = Math.max(applyBackoffJitter(this.nextBackoffMs), minDelayMs);
     this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
     const timer = setTimeout(() => {
       this.retryTimer = null;

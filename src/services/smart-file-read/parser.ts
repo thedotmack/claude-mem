@@ -1,12 +1,17 @@
 
 import { execFileSync } from "node:child_process";
-import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync } from "node:fs";
+import { writeFileSync, mkdtempSync, mkdirSync, rmSync, existsSync, statSync, openSync, closeSync, readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { logger } from "../../utils/logger.js";
 import { resolveDataDir } from "../../shared/paths.js";
-import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
+import { resolveTreeSitterBinPath } from "./tree-sitter-bin-path.js";
+import { detectLanguage } from "./language-map.js";
+
+// Lives in tree-sitter-bin-path.ts so the file-context hook can check for the
+// CLI without bundling the parser; re-exported for existing importers.
+export { resolveTreeSitterBinPath };
 
 const _require = typeof __filename !== 'undefined'
   ? createRequire(__filename)
@@ -14,11 +19,13 @@ const _require = typeof __filename !== 'undefined'
 
 export interface CodeSymbol {
   name: string;
-  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "section" | "code" | "metadata" | "reference";
+  kind: "function" | "class" | "method" | "interface" | "type" | "const" | "variable" | "export" | "struct" | "enum" | "trait" | "impl" | "property" | "getter" | "setter" | "mixin" | "namespace" | "section" | "code" | "metadata" | "reference";
   signature: string;
   jsdoc?: string;
   lineStart: number;
   lineEnd: number;
+  /** Disjoint declaration/body ranges when one symbol is not contiguous. */
+  unfoldRanges?: { lineStart: number; lineEnd: number }[];
   parent?: string;
   exported: boolean;
   children?: CodeSymbol[];
@@ -31,53 +38,6 @@ export interface FoldedFile {
   imports: string[];
   totalLines: number;
   foldedTokenEstimate: number;
-}
-
-const LANG_MAP: Record<string, string> = {
-  ".js": "javascript",
-  ".mjs": "javascript",
-  ".cjs": "javascript",
-  ".jsx": "tsx",
-  ".ts": "typescript",
-  ".tsx": "tsx",
-  ".py": "python",
-  ".pyw": "python",
-  ".go": "go",
-  ".rs": "rust",
-  ".rb": "ruby",
-  ".java": "java",
-  ".c": "c",
-  ".h": "c",
-  ".cpp": "cpp",
-  ".cc": "cpp",
-  ".cxx": "cpp",
-  ".hpp": "cpp",
-  ".hh": "cpp",
-  ".kt": "kotlin",
-  ".kts": "kotlin",
-  ".swift": "swift",
-  ".php": "php",
-  ".lua": "lua",
-  ".scala": "scala",
-  ".sc": "scala",
-  ".sh": "bash",
-  ".bash": "bash",
-  ".zsh": "bash",
-  ".hs": "haskell",
-  ".zig": "zig",
-  ".css": "css",
-  ".scss": "scss",
-  ".toml": "toml",
-  ".yml": "yaml",
-  ".yaml": "yaml",
-  ".sql": "sql",
-  ".md": "markdown",
-  ".mdx": "markdown",
-};
-
-function detectLanguage(filePath: string): string {
-  const ext = filePath.slice(filePath.lastIndexOf("."));
-  return LANG_MAP[ext] ?? "unknown";
 }
 
 const GRAMMAR_PACKAGES: Record<string, string> = {
@@ -139,9 +99,13 @@ function resolveGrammarPath(language: string): string | null {
 const QUERIES: Record<string, string> = {
   jsts: `
 (function_declaration name: (identifier) @name) @func
-(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(generator_function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(public_field_definition name: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
@@ -155,14 +119,19 @@ const QUERIES: Record<string, string> = {
   // unknown node type. Class names are (identifier) here, not (type_identifier).
   js: `
 (function_declaration name: (identifier) @name) @func
-(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression)])) @const_func
+(generator_function_declaration name: (identifier) @name) @func
+(lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
+(variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (identifier) @name) @cls
-(method_definition name: (property_identifier) @name) @method
+(method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(field_definition property: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
+(field_definition property: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (import_statement) @imp
 (export_statement) @exp
 `,
 
   python: `
+(decorated_definition definition: (_) @decorated_inner) @decorated_outer
 (function_definition name: (identifier) @name) @func
 (class_definition name: (identifier) @name) @cls
 (import_statement) @imp
@@ -171,7 +140,7 @@ const QUERIES: Record<string, string> = {
 
   go: `
 (function_declaration name: (identifier) @name) @func
-(method_declaration name: (field_identifier) @name) @method
+(method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
 (import_declaration) @imp
 `,
@@ -181,26 +150,51 @@ const QUERIES: Record<string, string> = {
 (struct_item name: (type_identifier) @name) @struct_def
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
-(impl_item type: (type_identifier) @name) @impl_def
+(impl_item type: (_) @name) @impl_def
 (use_declaration) @imp
 `,
 
   ruby: `
 (method name: (identifier) @name) @func
-(class name: (constant) @name) @cls
-(module name: (constant) @name) @cls
+(singleton_method object: (_) @receiver name: (identifier) @name) @method
+(singleton_class value: (self)) @singleton_scope
+(class name: [(constant) (scope_resolution)] @name) @cls
+(module name: [(constant) (scope_resolution)] @name) @cls
 (call method: (identifier) @name) @imp
 `,
 
   java: `
 (method_declaration name: (identifier) @name) @method
+(constructor_declaration name: (identifier) @name parameters: (formal_parameters) @parameters) @ctor
 (class_declaration name: (identifier) @name) @cls
+(record_declaration name: (identifier) @name) @cls
 (interface_declaration name: (identifier) @name) @iface
 (enum_declaration name: (identifier) @name) @enm
 (import_declaration) @imp
 `,
 
+  c: `
+(function_definition) @func
+(function_declarator declarator: (identifier) @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(preproc_include) @imp
+`,
+
+  cpp: `
+(function_definition) @func
+(function_declarator declarator: [(identifier) (field_identifier) (qualified_identifier) (destructor_name) (operator_name)] @function_name)
+(type_definition type: (_) @aliased_type declarator: (type_identifier) @name) @tdef
+(class_specifier name: (type_identifier) @name body: (field_declaration_list)) @cls
+(struct_specifier name: (type_identifier) @name body: (field_declaration_list)) @struct_def
+(enum_specifier name: (type_identifier) @name body: (enumerator_list)) @enm
+(namespace_definition name: (_) @name) @namespace_def
+(preproc_include) @imp
+`,
+
   kotlin: `
+(secondary_constructor (function_value_parameters) @parameters) @kotlin_ctor
 (function_declaration (simple_identifier) @name) @func
 (class_declaration (type_identifier) @name) @cls
 (object_declaration (type_identifier) @name) @cls
@@ -208,6 +202,11 @@ const QUERIES: Record<string, string> = {
 `,
 
   swift: `
+(init_declaration name: "init" @name) @swift_init
+(init_declaration (parameter) @swift_parameter) @swift_parameters
+(init_declaration (type_parameters) @swift_generics) @swift_header
+(init_declaration (type_constraints) @swift_constraints) @swift_header
+(deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
 (protocol_declaration name: (type_identifier) @name) @iface
@@ -219,11 +218,15 @@ const QUERIES: Record<string, string> = {
 (class_declaration name: (name) @name) @cls
 (interface_declaration name: (name) @name) @iface
 (trait_declaration name: (name) @name) @trait_def
+(enum_declaration name: (name) @name) @enm
 (method_declaration name: (name) @name) @method
 (namespace_use_declaration) @imp
 `,
 
   lua: `
+(assignment_statement
+  (variable_list . name: [(identifier) (dot_index_expression) (bracket_index_expression)] @name .)
+  (expression_list . value: (function_definition) .)) @const_func
 (function_declaration name: (identifier) @name) @func
 (function_declaration name: (dot_index_expression) @name) @func
 (function_declaration name: (method_index_expression) @name) @func
@@ -242,6 +245,9 @@ const QUERIES: Record<string, string> = {
 `,
 
   haskell: `
+(class_declarations (signature name: [(variable) (prefix_id)] @name) @haskell_signature)
+(class_declarations (signature names: (binding_list [(variable) (prefix_id)] @name)) @haskell_signature)
+(class_declarations (function) @haskell_default)
 (function name: (variable) @name) @func
 (type_synomym name: (name) @name) @tdef
 (newtype name: (name) @name) @tdef
@@ -252,7 +258,9 @@ const QUERIES: Record<string, string> = {
 
   zig: `
 (function_declaration name: (identifier) @name) @func
-(test_declaration) @func
+(test_declaration (string) @name) @func
+(test_declaration (identifier) @name) @doctest
+(test_declaration . (block)) @func
 `,
 
   css: `
@@ -275,8 +283,10 @@ const QUERIES: Record<string, string> = {
   toml: `
 (table (bare_key) @name) @cls
 (table (dotted_key) @name) @cls
+(table (quoted_key) @name) @cls
 (table_array_element (bare_key) @name) @cls
 (table_array_element (dotted_key) @name) @cls
+(table_array_element (quoted_key) @name) @cls
 `,
 
   yaml: `
@@ -320,6 +330,8 @@ function getQueryKey(language: string): string {
     case "rust": return "rust";
     case "ruby": return "ruby";
     case "java": return "java";
+    case "c": return "c";
+    case "cpp": return "cpp";
     case "kotlin": return "kotlin";
     case "swift": return "swift";
     case "php": return "php";
@@ -352,35 +364,6 @@ function getQueryFile(queryKey: string): string {
   writeFileSync(filePath, QUERIES[queryKey]);
   queryFileCache.set(queryKey, filePath);
   return filePath;
-}
-
-// tree-sitter-cli installs `tree-sitter.exe` on Windows, not a bare `tree-sitter`
-// (see ChromaMcpManager.resolveUvxCommand for the same platform-suffix idiom).
-// Without the `.exe` suffix the existsSync check below always misses on Windows,
-// silently falling through to a bare `tree-sitter` that may not be on PATH —
-// smart file parsing then returns empty results with no error.
-export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
-  const binName = treeSitterBinaryName(platform);
-
-  try {
-    const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), binName);
-    if (existsSync(binPath)) {
-      return binPath;
-    }
-  } catch {
-    // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
-  }
-
-  return binName;
-}
-
-let cachedBinPath: string | null = null;
-
-function getTreeSitterBin(): string {
-  if (cachedBinPath) return cachedBinPath;
-  cachedBinPath = resolveTreeSitterBinPath();
-  return cachedBinPath;
 }
 
 // `tree-sitter query -p <grammar-dir>` implies --rebuild (#3926): the CLI
@@ -451,7 +434,7 @@ function ensureGrammarLib(language: string, grammarPath: string): string | null 
 
     if (needsBuild) {
       mkdirSync(GRAMMAR_LIB_DIR, { recursive: true });
-      execFileSync(getTreeSitterBin(), ["build", "-o", libPath, grammarPath], {
+      execFileSync(resolveTreeSitterBinPath(), ["build", "-o", libPath, grammarPath], {
         encoding: "utf-8",
         timeout: 120000,
         stdio: ["pipe", "pipe", "pipe"],
@@ -486,11 +469,21 @@ function runQuery(queryFile: string, sourceFile: string, grammarPath: string, la
 }
 
 function execQuery(execArgs: string[], sourceFileCount: number): string | null {
+  // Native capture output can exceed execFileSync's fixed pipe buffer for a
+  // language batch. Spool stdout to an owned file so valid matches survive.
+  const outputDir = mkdtempSync(join(tmpdir(), "smart-read-query-output-"));
+  const outputPath = join(outputDir, "captures.txt");
+  let outputFd: number | undefined;
   try {
-    return execFileSync(getTreeSitterBin(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", "pipe", "pipe"] });
+    outputFd = openSync(outputPath, "w");
+    execFileSync(resolveTreeSitterBinPath(), execArgs, { encoding: "utf-8", timeout: 30000, stdio: ["pipe", outputFd, "pipe"] });
+    return readFileSync(outputPath, "utf-8");
   } catch (error) {
     logger.debug('WORKER', `tree-sitter query failed for ${sourceFileCount} file(s)`, undefined, error instanceof Error ? error : undefined);
     return null;
+  } finally {
+    if (outputFd !== undefined) closeSync(outputFd);
+    rmSync(outputDir, { recursive: true, force: true });
   }
 }
 
@@ -559,27 +552,40 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   const_func: "function",
   cls: "class",
   method: "method",
+  ctor: "method",
+  kotlin_ctor: "method",
+  swift_init: "method",
+  haskell_signature: "method",
   iface: "interface",
   tdef: "type",
   enm: "enum",
   struct_def: "struct",
   trait_def: "trait",
   impl_def: "impl",
+  namespace_def: "namespace",
   mixin_def: "mixin",
   heading: "section",
   code_block: "code",
   frontmatter: "metadata",
   ref: "reference",
+  doctest: "function",
 };
 
-const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait"]);
+const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface", "namespace"]);
 
-function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200): string {
-  const firstLine = lines[startRow] || "";
+// Kinds that own nested symbols only in some languages: a PHP enum holds its
+// methods, and a Haskell function holds its `where`/`let` helpers.
+const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
+  php: new Set(["enum"]),
+  haskell: new Set(["function"]),
+};
+
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
+  const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
 
   if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
-    const chunk = lines.slice(startRow, Math.min(startRow + 10, endRow + 1)).join("\n");
+    const chunk = [firstLine, ...lines.slice(startRow + 1, Math.min(startRow + 10, endRow + 1))].join("\n");
     const braceIdx = chunk.indexOf("{");
     if (braceIdx !== -1 && braceIdx < 500) {
       sig = chunk.slice(0, braceIdx).replace(/\n/g, " ").replace(/\s+/g, " ").trim();
@@ -645,38 +651,156 @@ function isExported(
   }
 }
 
+// Tree-sitter columns are UTF-8 byte offsets, not JS string indices, and the
+// CLI prints no `text` for a capture that spans rows. Cutting the last row at
+// its end column before the first row at its start column keeps a one-row
+// capture free of offset arithmetic.
+function captureLines(lines: string[], capture: RawCapture): string[] {
+  const captured = lines.slice(capture.startRow, capture.endRow + 1);
+  if (captured.length === 0) return [];
+  const last = captured.length - 1;
+  captured[last] = Buffer.from(captured[last] ?? "").subarray(0, capture.endCol).toString();
+  captured[0] = Buffer.from(captured[0] ?? "").subarray(capture.startCol).toString();
+  return captured;
+}
+
+// A capture as one line: each row loses its indentation and CRLF, while
+// whitespace inside a row stays exact, so `"a  b"` and `"a b"` stay distinct.
+function captureText(lines: string[], capture: RawCapture): string {
+  return captureLines(lines, capture).map(line => line.trim()).filter(Boolean).join(" ");
+}
+
+// Tree-sitter ranges include columns: row-only comparisons lose methods
+// on the opening line and cannot distinguish adjacent one-line declarations.
+function rangeContains(outer: RawCapture, inner: RawCapture): boolean {
+  return (inner.startRow > outer.startRow
+      || (inner.startRow === outer.startRow && inner.startCol >= outer.startCol))
+    && (inner.endRow < outer.endRow
+      || (inner.endRow === outer.endRow && inner.endCol <= outer.endCol));
+}
+
 function buildSymbols(matches: RawMatch[], lines: string[], language: string): { symbols: CodeSymbol[]; imports: string[] } {
   const symbols: CodeSymbol[] = [];
   const imports: string[] = [];
-  const exportRanges: Array<{ startRow: number; endRow: number }> = [];
-  const containers: Array<{ sym: CodeSymbol; startRow: number; endRow: number }> = [];
+  const exportRanges: RawCapture[] = [];
+  const singletonScopes: RawCapture[] = [];
+  const decoratedRanges = new Map<string, RawCapture>();
+  const swiftParameters = new Map<string, string[]>();
+  const swiftHeaders = new Map<string, { generics?: string; constraints?: string }>();
+  const haskellSignatures = new Set<CodeSymbol>();
+  const haskellDefaults: RawCapture[] = [];
+  const ranges = new Map<CodeSymbol, RawCapture>();
+  const aliasedTypes = new Map<CodeSymbol, RawCapture>();
+  const containers: Array<{ sym: CodeSymbol; range: RawCapture }> = [];
 
   for (const match of matches) {
     for (const cap of match.captures) {
+      if (cap.tag === "haskell_default") haskellDefaults.push(cap);
       if (cap.tag === "exp") {
-        exportRanges.push({ startRow: cap.startRow, endRow: cap.endRow });
+        exportRanges.push(cap);
+      }
+      if (cap.tag === "decorated_outer") {
+        const inner = match.captures.find(capture => capture.tag === "decorated_inner");
+        if (inner) decoratedRanges.set(`${inner.startRow}:${inner.startCol}`, cap);
+      }
+      if (cap.tag === "swift_header") {
+        const key = `${cap.startRow}:${cap.startCol}`;
+        const header = swiftHeaders.get(key) ?? {};
+        for (const detail of match.captures) {
+          if (detail.tag === "swift_generics") header.generics = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+          if (detail.tag === "swift_constraints") header.constraints = captureLines(lines, detail).join(" ").replace(/\s+/g, " ").trim();
+        }
+        swiftHeaders.set(key, header);
+      }
+      if (cap.tag === "swift_parameters") {
+        const parameter = match.captures.find(capture => capture.tag === "swift_parameter");
+        if (parameter) {
+          const key = `${cap.startRow}:${cap.startCol}`;
+          const parameters = swiftParameters.get(key) ?? [];
+          parameters.push(captureLines(lines, parameter).join(" ").replace(/\s+/g, " ").trim());
+          swiftParameters.set(key, parameters);
+        }
+      }
+      if (cap.tag === "singleton_scope") {
+        singletonScopes.push(cap);
       }
       if (cap.tag === "imp") {
-        imports.push(cap.text || lines[cap.startRow]?.trim() || "");
+        // Outlines go straight into an agent's context, so each entry is one
+        // line capped at the 200-char signature budget: a Go `import ( … )`
+        // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
+        // is one capture that can span a whole file. Keep both ends, because an
+        // import's module source comes last.
+        const importText = captureText(lines, cap);
+        imports.push(importText.length > 200
+          ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
+          : importText);
       }
     }
   }
 
+  // Names are captured independently of the surrounding pointer/reference
+  // wrappers. The first native function declarator inside a definition names
+  // that function, before any callback parameters or nested definitions.
+  const functionNames = matches.flatMap(match => match.captures.filter(c => c.tag === "function_name"))
+    .sort((a, b) => a.startRow - b.startRow || a.startCol - b.startCol);
+  const findFunctionName = (definition: RawCapture): RawCapture | undefined => {
+    let low = 0;
+    let high = functionNames.length;
+    while (low < high) {
+      const mid = Math.floor((low + high) / 2);
+      const capture = functionNames[mid];
+      if (capture.startRow < definition.startRow
+        || (capture.startRow === definition.startRow && capture.startCol < definition.startCol)) low = mid + 1;
+      else high = mid;
+    }
+    const capture = functionNames[low];
+    return capture && (capture.endRow < definition.endRow
+      || (capture.endRow === definition.endRow && capture.endCol <= definition.endCol)) ? capture : undefined;
+  };
   for (const match of matches) {
     const kindCapture = match.captures.find(c => KIND_MAP[c.tag]);
-    const nameCapture = match.captures.find(c => c.tag === "name");
+    const nameCapture = match.captures.find(c => c.tag === "name")
+      ?? (kindCapture?.tag === "func" && (language === "c" || language === "cpp")
+        ? findFunctionName(kindCapture)
+        : undefined);
     if (!kindCapture) continue;
 
     const startRow = kindCapture.startRow;
     const endRow = kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
-    const name = nameCapture?.text || "anonymous";
+    // The CLI prints `text` only for one-row captures and cuts it at the first
+    // backtick, so names come from the source range. A zero-width MISSING node
+    // from error recovery leaves nothing to read and stays `anonymous`.
+    let name = (nameCapture && captureText(lines, nameCapture)) || "anonymous";
+    if (kindCapture.tag === "ctor") {
+      const parameters = match.captures.find(c => c.tag === "parameters");
+      if (parameters) name += captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim();
+    }
+    if (kindCapture.tag === "kotlin_ctor") {
+      const parameters = match.captures.find(c => c.tag === "parameters");
+      name = "constructor" + (parameters ? captureLines(lines, parameters).join(" ").replace(/\s+/g, " ").trim() : "");
+    }
+    if (kindCapture.tag === "swift_init") {
+      const key = `${startRow}:${kindCapture.startCol}`;
+      const header = swiftHeaders.get(key);
+      name = `init${header?.generics ?? ""}(${(swiftParameters.get(key) ?? []).join(", ")})${header?.constraints ? ` ${header.constraints}` : ""}`;
+    }
+    const receiver = match.captures.find(c => c.tag === "receiver");
+    let receiverText = receiver && captureLines(lines, receiver).join(" ").trim();
+    if (language === "go" && receiverText) receiverText = receiverText.replace(/^\*\s*/, "");
+    if (receiverText) name = `${receiverText}.${name}`;
 
     let signature: string;
     if (language === "markdown" && kind === "section") {
+      // Setext heading paragraphs include a trailing newline (and can span
+      // lines), so the CLI prints only their range, without a `text` value.
+      if (nameCapture && !nameCapture.text) {
+        name = captureLines(lines, nameCapture).join(" ").trim().replace(/\s+/g, " ");
+      }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const level = hashMatch ? hashMatch[1].length : 1;
+      const underline = lines[endRow - (kindCapture.endCol === 0 ? 1 : 0)] || "";
+      const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {
       const langTag = name !== "anonymous" ? name : "";
@@ -686,7 +810,28 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
     } else {
-      signature = extractSignatureFromLines(lines, startRow, endRow);
+      // Export wrappers start before their direct declaration. Preserve only
+      // the export keywords that end that prefix: decorators belong to the
+      // wrapper (`@Injectable() export class`), and a containing exported
+      // class must not prefix its methods.
+      let exportPrefix = "";
+      if (kind !== "method") {
+        for (const capture of exportRanges) {
+          if (!rangeContains(capture, kindCapture)) continue;
+          const prefix = captureLines(lines, { ...capture, endRow: startRow, endCol: kindCapture.startCol })
+            .join("\n").replace(/\/\*[\s\S]*?\*\/|\/\/[^\n]*/g, " ")
+            .replace(/\s+/g, " ").trim();
+          const exportKeywords = prefix.match(/(?:^|\s)(export(?: default)?(?: declare)?)$/);
+          if (exportKeywords) {
+            exportPrefix = `${exportKeywords[1]} `;
+            break;
+          }
+        }
+      }
+      // Extract the declaration independently: prefix comments may contain
+      // braces or span more rows than the declaration signature budget.
+      signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
+        200 - exportPrefix.length, kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
@@ -697,16 +842,20 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       kind,
       signature,
       jsdoc: comment || docstring,
-      lineStart: startRow,
+      lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
-      exported: isExported(name, startRow, endRow, exportRanges, lines, language),
+      exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
     };
 
-    if (CONTAINER_KINDS.has(kind)) {
+    if (CONTAINER_KINDS.has(kind) || LANGUAGE_CONTAINER_KINDS[language]?.has(kind)) {
       sym.children = [];
-      containers.push({ sym, startRow, endRow });
+      containers.push({ sym, range: kindCapture });
     }
 
+    if (kindCapture.tag === "haskell_signature") haskellSignatures.add(sym);
+    ranges.set(sym, decoratedRanges.get(`${startRow}:${kindCapture.startCol}`) ?? kindCapture);
+    const aliasedType = match.captures.find(c => c.tag === "aliased_type");
+    if (aliasedType) aliasedTypes.set(sym, aliasedType);
     symbols.push(sym);
   }
 
@@ -735,15 +884,106 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
   }
 
-  const nested = new Set<CodeSymbol>();
-  for (const container of containers) {
-    for (const sym of symbols) {
-      if (sym === container.sym) continue;
-      if (sym.lineStart > container.startRow && sym.lineEnd <= container.endRow) {
-        if (sym.kind === "function") sym.kind = "method";
-        container.sym.children!.push(sym);
-        nested.add(sym);
+  // A Zig doctest is named by the declaration it documents (`test add`
+  // documents `fn add`), so its identity keeps the keyword and both stay
+  // unfoldable.
+  if (language === "zig") {
+    for (const sym of symbols) if (ranges.get(sym)?.tag === "doctest") sym.name = `test ${sym.name}`;
+  }
+
+  // A named typedef can capture both the alias and its same-named struct.
+  // Retain one structural symbol, with the enclosing typedef source range.
+  const duplicateAliases = new Set<CodeSymbol>();
+  if (language === "c" || language === "cpp") {
+    const structures = new Map<string, typeof containers>();
+    for (const container of containers) {
+      const entries = structures.get(container.sym.name) ?? [];
+      entries.push(container);
+      structures.set(container.sym.name, entries);
+    }
+    for (const alias of symbols.filter(symbol => symbol.kind === "type")) {
+      const range = ranges.get(alias)!;
+      const aliasedType = aliasedTypes.get(alias);
+      if (!aliasedType) continue;
+      // Only the direct type expression denotes the typedef's underlying type.
+      // A nested struct may share the alias name while denoting a distinct type.
+      const structure = structures.get(alias.name)?.find(({ range: inner }) =>
+        inner.startRow === aliasedType.startRow && inner.startCol === aliasedType.startCol
+        && inner.endRow === aliasedType.endRow && inner.endCol === aliasedType.endCol);
+      if (!structure) continue;
+      structure.sym.lineStart = alias.lineStart;
+      structure.sym.lineEnd = alias.lineEnd;
+      structure.sym.signature = alias.signature;
+      structure.range = range;
+      ranges.set(structure.sym, range);
+      duplicateAliases.add(alias);
+    }
+  }
+
+  // The latest containing start is the nearest lexical container, so a nested
+  // class's method is attached once instead of also appearing on every ancestor.
+  containers.sort((a, b) => b.range.startRow - a.range.startRow
+    || b.range.startCol - a.range.startCol);
+  // A typeclass signature and its default implementation describe one method:
+  // the default takes the signature's type and comment. An adjacent pair
+  // unfolds as one range. When another declaration sits between them, retain
+  // both narrow ranges so unfolding includes the type without a neighbouring method.
+  // Grouped names (`f, g :: …`) share the signature's range, so they never
+  // count as being between.
+  for (const signature of haskellSignatures) {
+    const signatureRange = ranges.get(signature)!;
+    const owner = containers.find(container => rangeContains(container.range, signatureRange));
+    const implementation = symbols.find(candidate => candidate.kind === "function"
+      && candidate.name === signature.name
+      && haskellDefaults.some(capture => {
+        const range = ranges.get(candidate)!;
+        return capture.startRow === range.startRow && capture.startCol === range.startCol
+          && capture.endRow === range.endRow && capture.endCol === range.endCol;
+      })
+      && containers.find(container => container.sym !== candidate && rangeContains(container.range, ranges.get(candidate)!)) === owner);
+    if (implementation) {
+      const implementationRange = ranges.get(implementation)!;
+      implementation.signature = signature.signature;
+      implementation.jsdoc = signature.jsdoc ?? implementation.jsdoc;
+      duplicateAliases.add(signature);
+      const [earlier, later] = implementationRange.startRow < signatureRange.startRow
+        || (implementationRange.startRow === signatureRange.startRow && implementationRange.startCol <= signatureRange.startCol)
+        ? [implementationRange, signatureRange] : [signatureRange, implementationRange];
+      const separated = symbols.some(sym => {
+        const range = ranges.get(sym)!;
+        return (range.startRow > earlier.endRow || (range.startRow === earlier.endRow && range.startCol >= earlier.endCol))
+          && (range.startRow < later.startRow || (range.startRow === later.startRow && range.startCol < later.startCol));
+      });
+      if (!separated) {
+        implementation.lineStart = earlier.startRow;
+        implementation.lineEnd = later.endRow;
+        ranges.set(implementation, { ...implementationRange, startRow: earlier.startRow, startCol: earlier.startCol,
+          endRow: later.endRow, endCol: later.endCol });
+      } else {
+        implementation.unfoldRanges = [earlier, later].map(range => ({
+          lineStart: range.startRow,
+          lineEnd: range.endRow,
+        }));
       }
+    }
+  }
+  const nested = new Set<CodeSymbol>(duplicateAliases);
+  for (const sym of symbols) {
+    if (duplicateAliases.has(sym)) continue;
+    const range = ranges.get(sym)!;
+    const owner = containers.find(({ sym: candidate, range: parent }) => candidate !== sym
+      && rangeContains(parent, range));
+    // A Ruby `def` inside `class << self` defines a class method, so it is named
+    // like `def self.x` — unless a class or module opened in that block is nearer.
+    if (sym.kind === "function" && singletonScopes.some(scope => rangeContains(scope, range)
+      && (!owner || rangeContains(owner.range, scope)))) {
+      sym.name = `self.${sym.name}`;
+      sym.kind = "method";
+    }
+    if (owner) {
+      if (sym.kind === "function" && owner.sym.kind !== "namespace" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
+      owner.sym.children!.push(sym);
+      nested.add(sym);
     }
   }
 
@@ -960,7 +1200,7 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
 function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   const icons: Record<string, string> = {
     function: "ƒ", method: "ƒ", class: "◆", interface: "◇",
-    type: "◇", const: "●", variable: "○", export: "→",
+    namespace: "◈", type: "◇", const: "●", variable: "○", export: "→",
     struct: "◆", enum: "▣", trait: "◇", impl: "◈",
     property: "○", getter: "⇢", setter: "⇠", mixin: "◈",
     section: "§", code: "⌘", metadata: "◊", reference: "↗",
@@ -968,21 +1208,115 @@ function getSymbolIcon(kind: CodeSymbol["kind"]): string {
   return icons[kind] || "·";
 }
 
+// Ruby distinguishes instance methods with # and singleton methods with .
+// CSS selectors escape literal dots before adding ownership separators.
+export function qualifySymbolName(name: string, parent: string | undefined, language: string, kind?: CodeSymbol["kind"]): string {
+  if (language === "ruby" && name.startsWith("::")) return name;
+  if (language === "ruby" && kind === "method") {
+    if (name.startsWith("self.")) return parent ? `${parent}.${name.slice(5)}` : name;
+    if (name.includes(".")) return name;
+    return parent ? `${parent}#${name}` : name;
+  }
+  const segment = language === "css" || language === "scss"
+    ? name.replace(/\\/g, "\\\\").replace(/\./g, "\\.") : name;
+  return parent ? `${parent}.${segment}` : segment;
+}
+
+/**
+ * Lookup hints for a failed unfold. Every miss lands in the agent's context,
+ * so the hint stays within 1 KiB: names most like the missed one come first,
+ * and ties keep roots first, then qualified children offered fairly.
+ */
+export function formatAvailableSymbols(file: FoldedFile, missedName: string): string {
+  const marker = "  ... more symbols omitted; use smart_search to narrow the lookup.";
+  const byteBudget = 1024 - Buffer.byteLength(marker) - 1;
+  // Split like a smart_search query, plus owner separators (`Foo::bar`, `Foo#bar`).
+  const missedParts = missedName.toLowerCase().split(/[\s_\-./:#]+/).filter(part => part.length > 0);
+  const candidates: Array<{ line: string; similarity: number }> = [];
+  const groups: Array<{ symbols: CodeSymbol[]; parent: string; index: number }> = [];
+  let omitted = false;
+  const offer = (symbol: CodeSymbol, parent?: string): void => {
+    const name = qualifySymbolName(symbol.name, parent, file.language, symbol.kind);
+    candidates.push({ line: `  - ${name} (${symbol.kind})`, similarity: matchScore(name.toLowerCase(), missedParts) });
+    if (symbol.children?.length) groups.push({ symbols: symbol.children, parent: name, index: 0 });
+  };
+  // Bound traversal separately from the byte budget so roots that still fit
+  // do not disappear merely to reserve visits for their qualified children.
+  const maxVisits = 512;
+  const reservedChildVisits = Math.min(64, file.symbols.slice(0, maxVisits)
+    .reduce((count, symbol) => count + (symbol.children?.length ?? 0), 0));
+  // A large early class must not bury a later top-level entry point.
+  for (const symbol of file.symbols) {
+    if (candidates.length >= maxVisits - reservedChildVisits) { omitted = true; break; }
+    offer(symbol);
+  }
+  // Round-robin owner groups keeps qualified suggestions from multiple roots.
+  while (groups.length && candidates.length < maxVisits) {
+    const group = groups.shift()!;
+    offer(group.symbols[group.index++], group.parent);
+    if (group.index < group.symbols.length) groups.push(group);
+  }
+  if (groups.length) omitted = true;
+  // A stable sort, so equally similar names keep the traversal order above.
+  candidates.sort((a, b) => b.similarity - a.similarity);
+  const available: string[] = [];
+  let bytes = 0;
+  for (const { line } of candidates) {
+    const size = Buffer.byteLength(line) + (available.length ? 1 : 0);
+    if (bytes + size <= byteBudget) { available.push(line); bytes += size; }
+    else omitted = true;
+  }
+  if (omitted) available.push(marker);
+  return available.join("\n");
+}
+
+/** Query relevance shared by smart_search and the unfold hints: exact 10, substring 5, in-order subsequence 1, per part. */
+export function matchScore(text: string, queryParts: string[]): number {
+  let score = 0;
+  for (const part of queryParts) {
+    if (text === part) {
+      score += 10;
+    } else if (text.includes(part)) {
+      score += 5;
+    } else {
+      let ti = 0;
+      let matched = 0;
+      for (const ch of part) {
+        const idx = text.indexOf(ch, ti);
+        if (idx !== -1) {
+          matched++;
+          ti = idx + 1;
+        }
+      }
+      if (matched === part.length) {
+        score += 1;
+      }
+    }
+  }
+  return score;
+}
+
 export function unfoldSymbol(content: string, filePath: string, symbolName: string): string | null {
   const file = parseFile(content, filePath);
 
-  const findSymbol = (symbols: CodeSymbol[]): CodeSymbol | null => {
+  const findSymbol = (symbols: CodeSymbol[], qualified: boolean, parent?: string): CodeSymbol | null => {
     for (const sym of symbols) {
-      if (sym.name === symbolName) return sym;
+      const qualifiedName = qualifySymbolName(sym.name, parent, file.language, sym.kind);
+      if ((qualified ? qualifiedName : sym.name) === symbolName) return sym;
       if (sym.children) {
-        const found = findSymbol(sym.children);
+        const found = findSymbol(sym.children, qualified, qualifiedName);
         if (found) return found;
       }
     }
     return null;
   };
 
-  const symbol = findSymbol(file.symbols);
+  // Go methods are named with their receiver (`Local.Reset`), so a bare method
+  // name still unfolds the first method with that leaf, as in other languages.
+  const symbol = findSymbol(file.symbols, true) ?? findSymbol(file.symbols, false)
+    ?? (file.language === "go"
+      ? file.symbols.find(sym => sym.kind === "method" && sym.name.slice(sym.name.lastIndexOf(".") + 1) === symbolName) ?? null
+      : null);
   if (!symbol) return null;
 
   const lines = content.split("\n");
@@ -1007,6 +1341,13 @@ export function unfoldSymbol(content: string, filePath: string, symbolName: stri
 
     const extracted = lines.slice(start, end + 1).join("\n");
     return `<!-- 📍 ${filePath} L${start + 1}-${end + 1} -->\n${extracted}`;
+  }
+
+  if (symbol.unfoldRanges) {
+    return symbol.unfoldRanges.map(range => {
+      const extracted = lines.slice(range.lineStart, range.lineEnd + 1).join("\n");
+      return `// 📍 ${filePath} L${range.lineStart + 1}-${range.lineEnd + 1}\n${extracted}`;
+    }).join("\n");
   }
 
   let start = symbol.lineStart;

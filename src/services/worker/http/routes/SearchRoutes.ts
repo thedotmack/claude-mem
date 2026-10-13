@@ -12,17 +12,36 @@ import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
-import { withObserverHealthWarning } from '../../../context/ContextBuilder.js';
+import { observerHealthWarning, withObserverHealthWarning } from '../../../context/ContextBuilder.js';
+import type { ContextInjectStats } from '../../../context/ContextBuilder.js';
+import {
+  ALL_PLATFORM_SOURCES_CACHE_KEY,
+  contextCacheKeys,
+  fillContextPlaceholders,
+  type ContextCacheKeys,
+} from '../../../../shared/context-cache.js';
+import type { ContextCacheService, ContextVariantRender } from '../../ContextCacheService.js';
+
+interface ContextInjectRender {
+  /** The block with its time placeholders. */
+  body: string;
+  stats: ContextInjectStats | null;
+  cacheable: boolean;
+}
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
+import { isWorkStateEnabled } from '../../../../shared/work-state-setting.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { getViewerBaseUrl } from '../../../../shared/worker-utils.js';
 import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { currentUserSettingsSaveCount } from '../../../../shared/context-invalidation.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from '../../../sqlite/types.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
+import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 
 const ONBOARDING_EXPLAINER_PATH: string = path.resolve(__dirname, '../skills/how-it-works/onboarding-explainer.md');
 
@@ -60,6 +79,8 @@ function getOnboardingExplainer(): string | null {
 // practice and long enough to absorb hook bursts.
 const SETTINGS_CACHE_TTL_MS = 5000;
 
+/** Bound on the session-start pull when sync's Realtime channel is not live. */
+
 const WELCOME_HINT_TEMPLATE = `# claude-mem status
 
 This project has no memory yet. The current session will seed it; subsequent sessions will receive auto-injected context for relevant past work.
@@ -81,37 +102,56 @@ const semanticContextSchema = z.object({
   // Every key the checkout reads (gate P2-5); a list, or comma-separated.
   projects: z.union([z.array(z.string()), z.string()]).optional(),
   limit: z.union([z.string(), z.number()]).optional(),
+  format: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
+  private progressiveSearch?: ProgressiveMemorySearch;
   private cachedSettings: ReturnType<typeof SettingsDefaultsManager.loadFromFile> | null = null;
   private cachedSettingsAt = 0;
+  private cachedSettingsSaveCount = -1;
   // Scope this cache to the route instance so separate server/test instances do
   // not inherit each other's positive observation state through shared modules.
   private readonly projectsKnownNonEmpty = new Set<string>();
+  private projectsKnownNonEmptyGeneration: number | undefined;
 
   constructor(
     private searchManager: SearchManager,
-    // Structural type (not the SyncClient class) so tests can pass a stub and
-    // route construction stays decoupled from sync wiring. Null when sync is
-    // unconfigured — context injection then skips the session-start pull.
-    private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void> } | null = null
+    // Records each live SessionStart render so the hook can read it from disk
+    // next time (liveness plan, Phase 6). Null in tests and tools that only
+    // need the route.
+    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> | null = null,
+    // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
+    private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
   ) {
     super();
   }
 
   private getCachedSettings(): ReturnType<typeof SettingsDefaultsManager.loadFromFile> {
     const now = Date.now();
-    if (this.cachedSettings && now - this.cachedSettingsAt < SETTINGS_CACHE_TTL_MS) {
+    // A settings save (SettingsRoutes) invalidates the snapshot immediately.
+    const saveCount = currentUserSettingsSaveCount();
+    if (this.cachedSettings && now - this.cachedSettingsAt < SETTINGS_CACHE_TTL_MS && this.cachedSettingsSaveCount === saveCount) {
       return this.cachedSettings;
     }
     // Keep env overrides out of the cache so toggles remain request-local and
     // tests do not inherit a transient process.env value for the next 5 seconds.
     this.cachedSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH, false);
     this.cachedSettingsAt = now;
+    this.cachedSettingsSaveCount = saveCount;
     return this.cachedSettings;
+  }
+
+  /**
+   * "Include last message", env first like every setting (applyEnvOverrides):
+   * the hook and the renderer both read it that way, so a file-only read here
+   * missed an env-only setting and the asking session was not excluded.
+   */
+  private showLastMessageEnabled(): boolean {
+    return (process.env.CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE
+      ?? this.getCachedSettings().CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE) === 'true';
   }
 
   private projectsHaveObservations(
@@ -119,13 +159,18 @@ export class SearchRoutes extends BaseRouteHandler {
     projects: string[],
     platformSource?: string,
   ): boolean {
+    const removalGeneration = this.contextCache?.removalGenerationNow();
+    if (removalGeneration !== this.projectsKnownNonEmptyGeneration) {
+      this.projectsKnownNonEmpty.clear();
+      this.projectsKnownNonEmptyGeneration = removalGeneration;
+    }
     const cacheKey = platformSource ? `${platformSource}\0${projects.join('\0')}` : projects.join('\0');
-    if (this.projectsKnownNonEmpty.has(cacheKey)) {
+    if (removalGeneration !== undefined && this.projectsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
     const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
     if (observationCount > 0) {
-      this.projectsKnownNonEmpty.add(cacheKey);
+      if (removalGeneration !== undefined) this.projectsKnownNonEmpty.add(cacheKey);
       return true;
     }
     return false;
@@ -162,6 +207,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
+    app.post('/api/mem-search', this.handleProgressiveSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -187,6 +233,17 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json(result);
   });
 
+  private handleProgressiveSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
+    const { searchScope, projects, ...input } = req.body ?? {};
+    const scope = typeof searchScope === 'string' ? `worker/${searchScope}` : 'worker/global';
+    try {
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope, projects)));
+    } catch (error) {
+      res.json(progressiveSearchToolError(error));
+    }
+  });
+
   private handleUnifiedTimeline = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const result = await this.searchManager.timeline(this.searchArgsFromRequest(req));
     res.json(result);
@@ -204,7 +261,7 @@ export class SearchRoutes extends BaseRouteHandler {
     const rawFilePath = query.filePath ?? query.files;
     const filePath = Array.isArray(rawFilePath)
       ? rawFilePath[0]
-      : (typeof rawFilePath === 'string' && rawFilePath.includes(','))
+      : (query.filePath === undefined && typeof rawFilePath === 'string' && rawFilePath.includes(','))
         ? rawFilePath.split(',')[0].trim()
         : rawFilePath;
 
@@ -305,9 +362,13 @@ export class SearchRoutes extends BaseRouteHandler {
   private handleContextInject = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     let projectsParam = (req.query.projects as string) || (req.query.project as string);
     const hostCwd = typeof req.query.cwd === 'string' ? req.query.cwd : '';
-    // A host that cannot run the project resolver itself (the OMP hook) sends
-    // its cwd instead: read the keys the CLI context hook sends for that checkout.
-    if (!projectsParam && hostCwd.trim()) {
+    // "Include last message" picks the prior session's reply by excluding the
+    // session that asks, so only then is its id used, and that answer stays live.
+    const showLastMessage = this.showLastMessageEnabled();
+    const hostSessionId = showLastMessage && typeof req.query.sessionId === 'string' ? req.query.sessionId : undefined;
+    // An excluded checkout receives no context, whether the host names its
+    // projects itself (a DSH project override) or leaves them to the worker.
+    if (hostCwd.trim()) {
       const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
         ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
       if (isProjectExcluded(hostCwd, excludedProjects)) {
@@ -315,6 +376,10 @@ export class SearchRoutes extends BaseRouteHandler {
         res.send('');
         return;
       }
+    }
+    // A host that cannot run the project resolver itself (the OMP hook) sends
+    // its cwd instead: read the keys the CLI context hook sends for that checkout.
+    if (!projectsParam && hostCwd.trim()) {
       projectsParam = getProjectContext(hostCwd).allProjects.join(',');
     }
     const forHuman = req.query.colors === 'true';
@@ -333,17 +398,122 @@ export class SearchRoutes extends BaseRouteHandler {
       return;
     }
 
+    const injectStartedAt = Date.now();
+    // Local-first: render from the local db now, never wait on the network.
+    // The pull is only a nudge (wakes a suspended sync loop, catches up for the
+    // next session); ops it applies invalidate the cached files as usual.
+    if (this.syncClient && !this.syncClient.isSocketLive()) {
+      void this.syncClient.pullOnce();
+    }
+    // A delete that lands while this renders must not see its row written back to the cache.
+    const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
+    let rendered: ContextInjectRender;
+    try {
+      rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      // context_injected is HOOK-level (no sessionDbId in scope) → null key,
+      // routed to the 5-minute time-window rollup, NOT the per-session path.
+      telemetryBuffer.record('context_injected', null, {
+        outcome: 'error',
+        duration_ms: Date.now() - injectStartedAt,
+      });
+      logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
+      throw error;
+    }
+
+    // Stats are counts/enums computed alongside rendering (ContextInjectStats);
+    // mode/provider snapshot the settings the injection ran under. Empty-state
+    // responses (stats === null) injected no memory and are not counted.
+    if (rendered.stats) {
+      const settingsSnapshot = this.getCachedSettings();
+      // Hook-level → null key, time-window rollup (see error branch above).
+      telemetryBuffer.record('context_injected', null, {
+        outcome: 'ok',
+        duration_ms: Date.now() - injectStartedAt,
+        mode: settingsSnapshot.CLAUDE_MEM_MODE,
+        provider: settingsSnapshot.CLAUDE_MEM_PROVIDER,
+        ...rendered.stats,
+      });
+    }
+
+    // Precomputed SessionStart context (liveness plan, Phase 6): this render is
+    // what the hook reads from disk next time, and the variant is kept fresh
+    // from here on. `full` is a one-off human request and is never cached. An
+    // answer with the prior reply is not persisted either, since the reply was
+    // chosen for this session: its variant is warmed instead, without a reply.
+    const respondedAtEpochMs = Date.now();
+    if (!full && this.contextCache) {
+      const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
+      if (showLastMessage) {
+        this.contextCache.warmVariant(keys);
+      } else {
+        this.contextCache.recordLiveRender(
+          keys,
+          { body: rendered.body, cacheable: rendered.cacheable },
+          respondedAtEpochMs,
+          removalGenerationAtRenderStart,
+        );
+      }
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.send(fillContextPlaceholders(rendered.body, respondedAtEpochMs));
+  });
+
+  /**
+   * Re-render one cached variant (ContextCacheService). Same body the live
+   * route sends with "Include last message" off, before its placeholders are
+   * filled: any session may read it, so it never carries a prior reply.
+   */
+  async renderContextVariant(keys: ContextCacheKeys): Promise<ContextVariantRender> {
+    const rendered = await this.renderContextInjectBody({
+      projects: keys.projects,
+      cwd: keys.cwd,
+      platformSource: keys.platformSource === ALL_PLATFORM_SOURCES_CACHE_KEY ? undefined : keys.platformSource,
+      forHuman: keys.colors,
+      full: false,
+      includePriorMessage: false,
+    });
+    return { body: rendered.body, cacheable: rendered.cacheable };
+  }
+
+  /**
+   * The SessionStart block for one request, with its wall-clock parts left as
+   * placeholders (shared/context-cache.ts): the live route fills them on send,
+   * the hook fills them when it reads the cached copy.
+   */
+  private async renderContextInjectBody(request: {
+    projects: string[];
+    platformSource: string | undefined;
+    forHuman: boolean;
+    full: boolean;
+    cwd?: string;
+    /** The asking host session, excluded when the prior reply is chosen. */
+    sessionId?: string;
+    /** "Include last message" for this render; false for any block that may be cached. */
+    includePriorMessage: boolean;
+  }): Promise<ContextInjectRender> {
+    const { projects, platformSource, forHuman, full } = request;
+    // Health banners change with time, and a prior reply is chosen for the
+    // session that asked: a block that may carry either is served live only.
+    const cacheable = !request.includePriorMessage && observerHealthWarning(false) === '';
+
     // The agent's open to-do lists and working state lead every answer this
     // route gives a session, the welcome hint included; memory is fitted to
     // what that leaves of the 10K delivery limit. The terminal preview is for
-    // the human and goes without it.
-    const workStateSection = forHuman
+    // the human and goes without it, and so does a session whose host turned
+    // work state off (CLAUDE_MEM_WORK_STATE_ENABLED=false, #4606).
+    const settings = this.getCachedSettings();
+    const workStateEnabled = isWorkStateEnabled(
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED ?? settings.CLAUDE_MEM_WORK_STATE_ENABLED,
+    );
+    const workStateSection = forHuman || !workStateEnabled
       ? ''
-      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), Date.now());
+      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), 'placeholders');
     const withWorkState = (text: string): string =>
       workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
 
-    const settings = this.getCachedSettings();
     // Env always wins over cached settings (mirrors SettingsDefaultsManager
     // applyEnvOverrides semantics). Reading process.env is free, so honoring it
     // here keeps the welcome-hint toggle responsive without waiting out the
@@ -360,70 +530,33 @@ export class SearchRoutes extends BaseRouteHandler {
         const hintBody = WELCOME_HINT_TEMPLATE
           .replace('{viewer_url}', viewerUrl)
           .replace('{pro_trial_line}', proTrialLine('welcome-hint'));
-        res.setHeader('Content-Type', 'text/plain; charset=utf-8');
         // A project with zero observations is exactly where a failing observer
         // hides: without this the health warning (applied inside
         // generateContextWithStats) never reached the user this early-return serves.
-        res.send(withWorkState(withObserverHealthWarning(hintBody, forHuman)));
-        return;
+        return { body: withWorkState(withObserverHealthWarning(hintBody, forHuman)), stats: null, cacheable };
       }
     }
 
     const { generateContextWithStats } = await import('../../../context-generator.js');
 
-    // Immediate session-start pull (plan Phase 3 task 4, prime directive #3):
-    // catch up on other devices' ops before compiling context. Hard-bounded so
-    // a dead network can't stall injection; pullOnce never throws — failure
-    // simply proceeds with local data.
-    if (this.syncClient) {
-      await this.syncClient.pullOnce({ timeoutMs: 1500 });
-    }
-
+    // Session-start sync freshness lives in handleContextInject (the live
+    // path); a cached re-render needs none: ContextCacheService only keeps
+    // files servable while Realtime delivers ops as they happen.
     const primaryProject = projects[projects.length - 1];
-    const cwd = `/context/${primaryProject}`;
+    const cwd = request.cwd ?? `/context/${primaryProject}`;
 
-    const injectStartedAt = Date.now();
-    const injectRequest = {
-      session_id: 'context-inject-' + Date.now(),
+    const contextResult = await generateContextWithStats({
+      session_id: request.sessionId ?? 'context-inject-' + Date.now(),
       cwd: cwd,
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
       reserveChars: workStateSection ? workStateSection.length + 2 : 0,
-    };
-    let contextResult: Awaited<ReturnType<typeof generateContextWithStats>>;
-    try {
-      contextResult = await generateContextWithStats(injectRequest, forHuman);
-    } catch (error) {
-      const normalizedError = error instanceof Error ? error : new Error(String(error));
-      // context_injected is HOOK-level (no sessionDbId in scope) → null key,
-      // routed to the 5-minute time-window rollup, NOT the per-session path.
-      telemetryBuffer.record('context_injected', null, {
-        outcome: 'error',
-        duration_ms: Date.now() - injectStartedAt,
-      });
-      logger.error('HTTP', 'Context injection failed', { projects, platformSource, full }, normalizedError);
-      throw error;
-    }
-
-    // Stats are counts/enums computed alongside rendering (ContextInjectStats);
-    // mode/provider snapshot the settings the injection ran under. Empty-state
-    // responses (stats === null) injected no memory and are not counted.
-    if (contextResult.stats) {
-      const settingsSnapshot = this.getCachedSettings();
-      // Hook-level → null key, time-window rollup (see error branch above).
-      telemetryBuffer.record('context_injected', null, {
-        outcome: 'ok',
-        duration_ms: Date.now() - injectStartedAt,
-        mode: settingsSnapshot.CLAUDE_MEM_MODE,
-        provider: settingsSnapshot.CLAUDE_MEM_PROVIDER,
-        ...contextResult.stats,
-      });
-    }
-
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    res.send(withWorkState(contextResult.text));
-  });
+      timePlaceholders: true,
+      includePriorMessage: request.includePriorMessage,
+    }, forHuman);
+    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable };
+  }
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
@@ -458,6 +591,21 @@ export class SearchRoutes extends BaseRouteHandler {
     const observations = result?.observations || [];
     if (!observations.length) {
       res.json({ context: '', count: 0 });
+      return;
+    }
+
+    const format = SearchRoutes.firstString(req.body?.format) ?? SearchRoutes.firstString(req.query.format);
+    if (format === 'index') {
+      // Progressive disclosure: one line per match, expanded on demand. Costs a
+      // fraction of a narrative per match, but a match only becomes content if
+      // the model calls get_observations, which is why narrative is the default.
+      const lines: string[] = ['## Relevant Past Work (semantic match)\n'];
+      for (const obs of observations.slice(0, limit)) {
+        const date = obs.created_at?.slice(0, 10) || '';
+        lines.push(`- #${obs.id} ${obs.title || 'Observation'}${obs.subtitle ? ` — ${obs.subtitle}` : ''} (${date})`);
+      }
+      lines.push('', 'Call get_observations with the ids above to read the full details of any that bear on this prompt.');
+      res.json({ context: lines.join('\n'), count: observations.length });
       return;
     }
 

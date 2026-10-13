@@ -110,7 +110,7 @@
     "header_summary_checkpoint": "LAW STUDY SUMMARY CHECKPOINT\n============================",
 
     "continuation_greeting": "Hello memory agent, you are continuing to observe the primary Claude session doing legal study and case analysis.",
-    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure below.",
+    "continuation_instruction": "IMPORTANT: Continue generating observations from tool use messages using the XML structure above.",
 
     "summary_instruction": "Write progress notes of what legal material was studied, what rules and patterns were extracted, and what's next. This is a checkpoint to capture study progress so far. The session is ongoing - more cases or doctrines may be analyzed after this summary. Write \"next_steps\" as the current study trajectory (what topics or cases are actively being worked through), not as post-session plans. Always write at least a minimal summary explaining current progress, even if study is still early, so that users see a summary output tied to each study block.",
     "summary_context_label": "Claude's Full Response to User:",

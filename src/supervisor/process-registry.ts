@@ -108,6 +108,60 @@ export function verifyPidFileOwnership(info: PidInfo | null): info is PidInfo {
 }
 
 /**
+ * How a token-less worker PID record is checked against the live process.
+ * Injectable so the Linux branch can be tested on every platform.
+ */
+export interface WorkerCommandLineProbe {
+  platform: NodeJS.Platform;
+  readCommandLine(pid: number): string;
+}
+
+const LIVE_WORKER_COMMAND_LINE_PROBE: WorkerCommandLineProbe = {
+  platform: process.platform,
+  readCommandLine: pid => readFileSync(`/proc/${pid}/cmdline`, 'utf-8'),
+};
+
+/**
+ * verifyPidFileOwnership, plus an identity check for a worker PID record that
+ * carries no start token. Every worker since v12.3.8 writes a token, so a
+ * reused PID in a tokened record already fails the token comparison. A record
+ * written without one (an older worker, or a token capture that failed) used
+ * to pass for whatever live process inherited the PID, which refused every
+ * later worker start (#4270). On Linux such a record must now also name
+ * `worker-service.cjs` in /proc/<pid>/cmdline.
+ *
+ * A command line that cannot be read keeps the old trust, the same rule
+ * verifyPidFileOwnership applies to a start token it cannot capture: only a
+ * command line that was read and names another program proves the PID was
+ * reused. Answering "not the worker" on a failed read would delete a live
+ * worker's PID file and lose the PID that shutdown needs.
+ */
+export function verifyWorkerPidFileOwnership(
+  info: PidInfo | null,
+  probe: WorkerCommandLineProbe = LIVE_WORKER_COMMAND_LINE_PROBE
+): info is PidInfo {
+  if (!verifyPidFileOwnership(info)) return false;
+  if (info.startToken || probe.platform !== 'linux') return true;
+
+  let commandLine: string;
+  try {
+    commandLine = probe.readCommandLine(info.pid);
+  } catch (error: unknown) {
+    logger.debug('SYSTEM', 'Could not read the command line of a token-less worker PID; trusting the live PID', {
+      pid: info.pid,
+      error: error instanceof Error ? error.message : String(error)
+    });
+    return true;
+  }
+
+  const namesWorker = commandLine.split('\0').some(argument => path.basename(argument) === 'worker-service.cjs');
+  if (!namesWorker) {
+    logger.debug('SYSTEM', 'Token-less worker PID now belongs to another program (PID reused)', { pid: info.pid });
+  }
+  return namesWorker;
+}
+
+/**
  * The verified-owner PID info from the worker PID file, or null when the file
  * is missing, unparseable, or names a process that is not a live claude-mem
  * worker. Read-only sibling of validateWorkerPidFile for callers that need
@@ -123,7 +177,7 @@ export function readOwnedWorkerPidInfo(pidFilePath: string = paths.workerPid()):
   } catch {
     return null;
   }
-  return pidInfo !== null && verifyPidFileOwnership(pidInfo) ? pidInfo : null;
+  return pidInfo !== null && verifyWorkerPidFileOwnership(pidInfo) ? pidInfo : null;
 }
 
 export class ProcessRegistry {
