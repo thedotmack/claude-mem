@@ -3154,8 +3154,13 @@ export class SessionStore {
 
     if (concepts) {
       const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
+      // Match the keyword read: legacy concepts may be plain strings or JSON strings.
+      const conceptArray = `CASE WHEN json_valid(o.concepts) THEN CASE
+        WHEN json_type(o.concepts) = 'array' THEN o.concepts
+        WHEN json_type(o.concepts) = 'text' THEN json_array(json_extract(o.concepts, '$'))
+        ELSE json_array(o.concepts) END ELSE json_array(o.concepts) END`;
       const conceptConditions = conceptsList.map(() =>
-        'EXISTS (SELECT 1 FROM json_each(o.concepts) WHERE value = ?)'
+        `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`
       );
       params.push(...conceptsList);
       additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
@@ -3163,8 +3168,11 @@ export class SessionStore {
 
     if (files) {
       const filesList = Array.isArray(files) ? files : [files];
+      // Imported non-array file metadata is absent evidence, as in SessionSearch.
+      const fileArrayJson = (column: string): string =>
+        `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
       const fileConditions = filesList.map(() => {
-        return "(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ? ESCAPE '\\'))";
+        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\'))`;
       });
       filesList.forEach(file => {
         // The hydration filter receives literal file paths, like SQLite search.
