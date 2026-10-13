@@ -12,28 +12,129 @@ const TAG_NAMES = [
 ] as const;
 type TagName = (typeof TAG_NAMES)[number];
 
-const STRIP_REGEX = new RegExp(
-  `<(${TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?</\\1>`,
-  'g'
-);
+const MEMORY_TAG_NAMES = new Set<string>(TAG_NAMES);
+
+// Sticky (stateful, `y`) matchers, applied at an explicit index. The open
+// matcher captures only the tag name; the scanner checks that name against
+// MEMORY_TAG_NAMES before doing anything else, so a run of ordinary tags like
+// `'<div '` (no `>`) is rejected on the name instead of rescanning the suffix
+// at every `<`.
+const OPEN_TAG_NAME_RE = /<([A-Za-z_][A-Za-z0-9_-]*)/y;
+const CLOSE_TAG_RE = /<\/([A-Za-z_][A-Za-z0-9_-]*)\s*>/y;
+
+/**
+ * Remove every balanced memory-tag block, including blocks nested inside
+ * another memory tag of the same or a different name.
+ *
+ * An open tag spans `<name` through the first `>`, exactly the range the old
+ * `[^>]*>` matched, so attribute text may contain `<` or a `</private>` and the
+ * tag still ends where a reader expects. A close tag pairs with the earliest
+ * still-open tag of that name and removes the whole span; pairing with the
+ * earliest open (not the nearest) makes removal maximal, so a completed inner
+ * block is dropped even when its outer tag is never closed and a nested
+ * same-name block drops its whole tail. A close tag that falls inside an
+ * opener's own span is that opener's attribute text, not a real close, so it is
+ * ignored. A tag is removed only when a real close exists, so an unclosed
+ * `<private>` in ordinary prose ("explain how <private> works") is left
+ * untouched. Mis-nested close tags close the earliest matching open and drop
+ * what was opened inside, so tag ordering cannot preserve private content.
+ */
+function stripBalancedMemoryTags(input: string): {
+  text: string;
+  counts: Record<TagName, number>;
+  total: number;
+} {
+  const counts: Record<TagName, number> = Object.fromEntries(
+    TAG_NAMES.map(name => [name, 0])
+  ) as Record<TagName, number>;
+
+  // No `<` means no memory tag can start, so skip the lookup table and the
+  // scan entirely. Tool responses are usually untagged, and this keeps a large
+  // one from paying a per-character table plus a second pass.
+  if (!input.includes('<')) {
+    return { text: input, counts, total: 0 };
+  }
+
+  // `nextGt[j]` is the index of the first `>` at or after `j`, or the input
+  // length when there is none. Precomputing it keeps every opener's span lookup
+  // O(1) so the scan stays linear.
+  const len = input.length;
+  const nextGt = new Int32Array(len + 1);
+  nextGt[len] = len;
+  for (let j = len - 1; j >= 0; j--) {
+    nextGt[j] = input.charCodeAt(j) === 0x3e /* > */ ? j : nextGt[j + 1];
+  }
+
+  // Per name, the opens whose close tag has not been seen yet, consumed from
+  // `head` upward. `removed` collects the half-open ranges `[start, end)` to
+  // drop; ranges may nest or overlap, which the union below merges.
+  const opens = new Map<TagName, { items: Array<{ start: number; attrEnd: number }>; head: number }>();
+  const removed: Array<[number, number]> = [];
+  let total = 0;
+  let i = 0;
+
+  while (i < len) {
+    if (input.charCodeAt(i) !== 0x3c /* < */) {
+      i += 1;
+      continue;
+    }
+
+    CLOSE_TAG_RE.lastIndex = i;
+    const close = CLOSE_TAG_RE.exec(input);
+    if (close) {
+      const name = close[1] as TagName;
+      const entry = opens.get(name);
+      const open = entry && entry.head < entry.items.length ? entry.items[entry.head] : undefined;
+      // A close tag inside the opener's own span is that opener's attribute
+      // text (for example `note="</private>"`), not a real close.
+      if (open && i >= open.attrEnd) {
+        entry!.head += 1;
+        removed.push([open.start, i + close[0].length]);
+        counts[name] += 1;
+        total += 1;
+      }
+      i += close[0].length;
+      continue;
+    }
+
+    OPEN_TAG_NAME_RE.lastIndex = i;
+    const open = OPEN_TAG_NAME_RE.exec(input);
+    if (open && MEMORY_TAG_NAMES.has(open[1])) {
+      const name = open[1] as TagName;
+      const nameEnd = i + open[0].length;
+      const item = { start: i, attrEnd: nextGt[nameEnd] };
+      const entry = opens.get(name);
+      if (entry) {
+        entry.items.push(item);
+      } else {
+        opens.set(name, { items: [item], head: 0 });
+      }
+      // Continue past the name only, so a memory tag inside this opener's
+      // attribute is still scanned as a tag of its own.
+      i = nameEnd;
+      continue;
+    }
+    i += 1;
+  }
+
+  // Subtract the removed ranges (sorted and merged) from the input.
+  removed.sort((a, b) => a[0] - b[0]);
+  let out = '';
+  let cursor = 0;
+  for (const [start, end] of removed) {
+    if (start > cursor) out += input.slice(cursor, start);
+    if (end > cursor) cursor = end;
+  }
+  out += input.slice(cursor);
+  return { text: out, counts, total };
+}
 
 export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
 
 const MAX_TAG_COUNT = 100;
 
 export function stripTags(input: string): { stripped: string; counts: Record<TagName, number> } {
-  const counts: Record<TagName, number> = Object.fromEntries(
-    TAG_NAMES.map(name => [name, 0])
-  ) as Record<TagName, number>;
-
-  STRIP_REGEX.lastIndex = 0; 
-
-  let total = 0;
-  const stripped = input.replace(STRIP_REGEX, (_, name: TagName) => {
-    counts[name] = (counts[name] ?? 0) + 1;
-    total += 1;
-    return '';
-  });
+  const { text: stripped, counts, total } = stripBalancedMemoryTags(input);
 
   if (total > MAX_TAG_COUNT) {
     logger.warn('SYSTEM', 'tag count exceeds limit', undefined, {
