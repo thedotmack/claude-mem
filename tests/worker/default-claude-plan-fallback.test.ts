@@ -233,7 +233,14 @@ function buildRoutes(
     getSession: () => active,
     getMessageBuffer: () => ({ getPendingCount: () => 1, peekTypes: () => [] }),
     removeSessionImmediate: () => { active = undefined; },
-    getResumableSessionIds: () => [],
+    // The sweep's view: a paused session with buffered work and no generator,
+    // filtered on the same automatically-retryable reasons SessionManager uses.
+    getResumableSessionIds: () => (
+      active && !active.generatorPromise
+        && [null, undefined, 'quota', 'rate_limit', 'overflow', 'provider_switch', 'response_stall'].includes(active.pausedReason)
+        ? [active.sessionDbId]
+        : []
+    ),
   };
   return new SessionRoutes(
     sessionManager as any,
@@ -309,6 +316,53 @@ describe('default Anthropic-plan fallback: generator lifecycle', () => {
       if (original === null) writeFileSync(settingsPath, '{}');
       else writeFileSync(settingsPath, original);
     }
+  });
+
+  it('a signed-out Claude fallback is taken out of rotation, and the work returns to the recovered primary', async () => {
+    pinGatewayPrimary();
+    const session = makeSession();
+    let gatewayStarts = 0;
+    let claudeStarts = 0;
+    let gatewayDown = true;
+    const routes = buildRoutes(session, {
+      openrouter: async (s) => {
+        gatewayStarts += 1;
+        if (!gatewayDown) { await hang(); return; }
+        s.abortReason = 'transport:transient';
+        s.abortController.abort();
+        throw upstreamDown();
+      },
+      // Claude Code answers with its signed-out prose; ResponseProcessor
+      // turns that into this abort reason without throwing.
+      claude: async (s) => { claudeStarts += 1; s.abortReason = 'auth:observer_text'; },
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+    await session.generatorPromise;
+    await nextTick();
+    expect(gatewayStarts).toBe(1);
+    expect(claudeStarts).toBe(1);
+
+    // Claude is held for its refused credential, so the next event does not
+    // start it again; the gateway is still held, so nothing starts.
+    expect(getQuotaCooldown('claude')?.cause).toBe('auth');
+    expect(selectProviderForGenerator().provider).toBe('openrouter');
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await nextTick();
+    expect(claudeStarts).toBe(1);
+    expect(gatewayStarts).toBe(1);
+
+    // The session is not stranded as an auth pause: once the gateway recovers,
+    // the periodic sweep hands the work back to it.
+    expect(session.pausedReason).toBe('provider_switch');
+    gatewayDown = false;
+    clearQuotaCooldown('openrouter');
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await nextTick();
+    expect(gatewayStarts).toBe(2);
+    expect(claudeStarts).toBe(1);
   });
 
   it('with no Claude login, the gateway failure waits as before', async () => {

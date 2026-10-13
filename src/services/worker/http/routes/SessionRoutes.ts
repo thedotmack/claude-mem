@@ -516,6 +516,7 @@ export class SessionRoutes extends BaseRouteHandler {
         return;
       }
       this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
+      session.fallbackFrom = fallbackFrom;
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(

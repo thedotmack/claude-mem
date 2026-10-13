@@ -451,6 +451,16 @@ export async function startGeneratorWithProvider(
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
         });
       }
+      // A Claude fallback run that finds Claude signed out (or refused by org
+      // policy) takes Claude out of the fallback rotation for a cooldown, as a
+      // thrown auth refusal already does (bookClassifiedFailure). Otherwise each
+      // captured event would start the same signed-out fallback again while
+      // the primary is held. A Claude primary keeps retrying on the next event.
+      const claudeStandInSignedOut = provider === 'claude' && session.fallbackFrom != null && !failureBooked
+        && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy');
+      if (claudeStandInSignedOut) {
+        recordAuthCooldown('claude', 'Claude Code reported the fallback observer as signed out', session.observerProfile);
+      }
       // The org-policy refusal (#4677) goes down the same preserved auth path,
       // but logging in again cannot lift it, so it carries the notice's own
       // remedy instead of the /login advice.
@@ -489,6 +499,15 @@ export async function startGeneratorWithProvider(
         completionHandler: completionHandler,
         resumeGenerator: resumeSource => resumeGeneratorLater(session, 0, resumeSource, ensureGeneratorRunning),
       });
+
+      // A refused stand-in is not the user's provider failing: the fallback's
+      // credential was refused (and is now held), but the primary it stood in
+      // for can take the work back once it recovers. Left as an auth pause the
+      // periodic sweep would skip the session for good, so mark it resumable;
+      // the sweep paces itself on the primary's breaker.
+      if (session.fallbackFrom != null && session.pausedReason === 'auth') {
+        session.pausedReason = 'provider_switch';
+      }
 
       // Paused work that nothing else is guaranteed to pick up resumes on its
       // own — without it, a session's last event (a summarize) stays in RAM:
