@@ -93,10 +93,12 @@ export function isToolHookDisabledByEnv(
  * under CLAUDE_MEM_DISABLE_OBSERVATION=1) still read session-start context but
  * nothing they produce is worth keeping; without this switch every Stop still
  * spools a summarize event, which costs one observer-model call and lands a
- * `session_summaries` row describing an intermediate diff. When set, summarize
- * exits 0 in hookCommand before any stdin or worker work — same no-op envelope
- * as the tool-hook gate — while the SessionStart / UserPromptSubmit reads keep
- * working. Scoped to the summary on purpose: skipping the whole session-init
+ * `session_summaries` row describing an intermediate diff. When set, the
+ * summarize handler returns success without the summary or advisor capture,
+ * while the SessionStart / UserPromptSubmit reads keep working. The check runs
+ * in the handler, not in hookCommand's pre-stdin early-out, because Kimi routes
+ * PreCompact through the same handler and its context-marker clear must still
+ * run. Scoped to the summary on purpose: skipping the whole session-init
  * event would also blind the context read (SessionInitResponse carries
  * contextInjected), so that side waits until the read and write halves are
  * separable.
