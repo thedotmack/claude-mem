@@ -21,7 +21,7 @@ From **cmem.ai → Connect**, the user has three values:
 
 1. **sync token** (starts with `cm_`) — used as the bearer API key
 2. **user id** (UUID)
-3. **SyncHub URL** (a workers.dev or cmem.ai URL)
+3. **SyncHub URL** (`https://sync.cmem.ai`)
 
 If the user pastes the whole Connect blurb, extract the three values from it.
 If any are missing, ask for the sync token at minimum — the other two are
