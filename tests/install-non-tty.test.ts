@@ -266,7 +266,7 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('tells Codex users to trust the native hooks before restarting sessions', () => {
-      expect(codexInstallerSource).toContain('Review and trust the five claude-mem hooks when Codex prompts you');
+      expect(codexInstallerSource).toContain('Review and trust the six claude-mem hooks when Codex prompts you');
       expect(codexInstallerSource).toContain('Restart sessions opened before trusting the hooks');
     });
 

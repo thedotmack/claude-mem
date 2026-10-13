@@ -135,6 +135,8 @@ Claude-Mem uses lifecycle hook scripts across 5 lifecycle events. `npx claude-me
 - ✅ Progressive disclosure format (index, not full details)
 - ✅ Configurable observation count via `CLAUDE_MEM_CONTEXT_OBSERVATIONS`
 
+**Codex compaction:** A Codex compaction replaces the thread's history, timeline included. The root thread gets the timeline back from `SessionStart` (source `compact`). Codex never sends `SessionStart` to a subagent thread, and `PostCompact` output cannot carry context, so the `PostCompact` hook marks the thread (`~/.claude-mem/state/codex-compaction-pending/`) and the thread's next `PostToolUse` returns the timeline as `additionalContext`, once. A thread whose `SessionStart` already re-injected the timeline does not get it again.
+
 **Output format:**
 ```markdown
 # [claude-mem] recent context

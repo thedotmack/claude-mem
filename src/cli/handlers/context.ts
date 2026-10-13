@@ -32,6 +32,7 @@ import { resolveRuntimeContext, type ServerRuntimeContext } from '../../services
 import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
+import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
 // server, so SessionStart reads from it too, straight from this hook process.
@@ -70,6 +71,13 @@ export const contextHandler: EventHandler = {
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
+
+    // This run is the thread's re-injection, so a Codex compaction it was
+    // waiting on is answered and its next tool call does not repeat the
+    // timeline (see src/shared/codex-compaction-gate.ts).
+    if (input.platform === 'codex') {
+      clearTimelinePending(input.sessionId, input.agentId);
+    }
 
     // --continue, --resume and /resume restore the existing conversation.
     // A fresh timeline would change its prompt prefix and invalidate the cache.

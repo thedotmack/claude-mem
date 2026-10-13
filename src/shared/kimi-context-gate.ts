@@ -11,53 +11,18 @@
 //
 // Fail-open throughout: a filesystem error must never break a hook. On error
 // hasInjected reports false (prefer a duplicate injection over losing context).
-import { existsSync, mkdirSync, rmSync, writeFileSync } from 'fs';
-import { createHash } from 'crypto';
-import { dirname, join } from 'path';
-import { resolveDataDir } from './paths.js';
-import { logger } from '../utils/logger.js';
+import { sessionMarkerFiles } from './session-marker-files.js';
 
-const GATE_DIR_NAME = 'kimi-context-injected';
-const SAFE_SESSION_ID = /^[A-Za-z0-9_-]{1,128}$/;
-
-function markerPath(sessionId: string): string {
-  const name = SAFE_SESSION_ID.test(sessionId)
-    ? sessionId
-    : `sha256-${createHash('sha256').update(sessionId).digest('hex')}`;
-  // resolveDataDir() is consulted per call (not cached at module load) so
-  // CLAUDE_MEM_DATA_DIR overrides work in tests and relocated installs.
-  return join(resolveDataDir(), 'state', GATE_DIR_NAME, name);
-}
+const injectedMarkers = sessionMarkerFiles('kimi-context-injected', 'kimi-context-gate');
 
 export function hasInjected(sessionId: string): boolean {
-  try {
-    return existsSync(markerPath(sessionId));
-  } catch (error) {
-    logger.warn('HOOK', 'kimi-context-gate: hasInjected failed open', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return false;
-  }
+  return injectedMarkers.has(sessionId);
 }
 
 export function markInjected(sessionId: string): void {
-  try {
-    const marker = markerPath(sessionId);
-    mkdirSync(dirname(marker), { recursive: true });
-    writeFileSync(marker, new Date().toISOString());
-  } catch (error) {
-    logger.warn('HOOK', 'kimi-context-gate: markInjected failed open', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  injectedMarkers.mark(sessionId);
 }
 
 export function clearInjected(sessionId: string): void {
-  try {
-    rmSync(markerPath(sessionId), { force: true });
-  } catch (error) {
-    logger.warn('HOOK', 'kimi-context-gate: clearInjected failed open', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
+  injectedMarkers.clear(sessionId);
 }

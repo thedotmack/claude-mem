@@ -170,6 +170,7 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
         'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
+        'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
       },
     },
     'plugin/.mcp.json': {
@@ -823,6 +824,7 @@ async function buildHooks() {
       'PermissionRequest',
       'PostToolUse',
       'Stop',
+      'PostCompact',
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
