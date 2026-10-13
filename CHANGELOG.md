@@ -4,6 +4,29 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.37.0] - 2026-10-13
+
+This release fixes the broken 13.36.1 marketplace update. After that update, the worker, the MCP search server and the server runtime failed to start, so memory capture stopped. Upgrading is strongly recommended.
+
+## Fixes
+
+- **claude-mem starts again after the 13.36.1 marketplace update** (#4728, #4729). A change merged after the 13.36.1 release committed the built plugin files with leftover `git stash` conflict markers. The plugin installs from `main`, so auto-updated installs got those files under the same 13.36.1 version number. The worker failed with `error: Unexpected <<`, `mcp-search` closed its connection, and memory capture stopped once the older worker exited. The files are now rebuilt from clean source. The npm package `claude-mem@13.36.1` was published before that change and was not affected. Thank you @nashsibanda for the rebuild and @hirohisatanigawa for the detailed report.
+- **Worker startup waits out a locked database instead of failing** (#4725). The schema-writer check added in 13.36.0 ran before the connection's busy timeout was set. A worker starting while another process was opening the same database failed in about 1 ms with `database is locked`, and after two failures it was not restarted. The check now waits for the lock.
+
+## Changed
+
+- **Memory keeps capturing on your Anthropic plan when your selected provider can't serve** (#4727). `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` now defaults to `claude`. Settings files that saved `""` get the new default too. The fallback now also covers a provider that is still rate limited or over capacity after its retries, is down, or returns the same batch twice with no usable output. Claude is used only when a Claude Code login or an Anthropic key is available. Memory moves back to your provider once it answers again. To wait for your provider instead, set `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` to `off`.
+
+## Release safety
+
+- CI now checks the committed plugin files before it rebuilds them. It fails on merge-conflict markers anywhere in `plugin/` and runs `node --check` on every committed plugin script (#4729). Before this, CI rebuilt the bundles first and tested the rebuilt copies, which hid the broken committed ones.
+
+## If you used the 13.35.0 workaround
+
+If you followed the workaround in #4728 (auto-update turned off and the plugin pinned to 13.35.0), turn `autoUpdate` back on for the `thedotmack` marketplace and restart Claude Code to move to 13.37.0.
+
+**Full diff:** https://github.com/thedotmack/claude-mem/compare/v13.36.1...v13.37.0
+
 ## [13.36.1] - 2026-10-12
 
 A patch release that closes three issues found in review of 13.36.0, plus eight community fixes. Upgrading is recommended.
