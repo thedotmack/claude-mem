@@ -3,17 +3,17 @@ import {
   installHookStderrBuffer,
   emitDiagnostic,
   emitModelContext,
-  emitBlockingError,
   exitGraceful,
   resetHookIoState,
+  HookStdoutError,
 } from '../../src/shared/hook-io.js';
 import type { PlatformAdapter, HookResult } from '../../src/cli/types.js';
 
 // Windows Terminal tab-accumulation rationale (per CLAUDE.md):
 // Hooks that fail with non-zero exit codes cause Windows Terminal to keep the
 // tab open in an error state, which accumulates over time. The exit-0-on-error
-// policy is intentional. exitGraceful() exits 0 + drops buffered stderr;
-// emitBlockingError() exits 2 only for fail-loud / unrecoverable handler errors.
+// policy is intentional. exitGraceful() exits 0 + drops buffered stderr, and
+// no hook path exits 2 (plan-17 step 2).
 
 /** Capture real stderr by replacing the bound writer. Returns captured chunks. */
 function captureRealStderr(): { chunks: string[]; restore: () => void } {
@@ -28,9 +28,13 @@ function captureRealStderr(): { chunks: string[]; restore: () => void } {
 
 function captureStdout(): { chunks: string[]; restore: () => void } {
   const chunks: string[] = [];
-  const original = console.log;
-  console.log = (...args: unknown[]) => { chunks.push(args.join(' ')); };
-  return { chunks, restore: () => { console.log = original; } };
+  const original = process.stdout.write;
+  process.stdout.write = ((chunk: string, callback: () => void): boolean => {
+    chunks.push(String(chunk));
+    callback();
+    return true;
+  }) as typeof process.stdout.write;
+  return { chunks, restore: () => { process.stdout.write = original; } };
 }
 
 const fakeAdapter: PlatformAdapter = {
@@ -108,6 +112,21 @@ describe('emitModelContext', () => {
       emitModelContext(fakeAdapter, result);
       expect(out.chunks).toHaveLength(1);
       expect(JSON.parse(out.chunks[0])).toEqual({ ok: true, systemMessage: 'hi' });
+      expect(out.chunks[0]).toEndWith('\n');
+    } finally {
+      out.restore();
+    }
+  });
+
+  it('preserves raw-string adapter output and its trailing newline', () => {
+    const out = captureStdout();
+    const rawAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => 'plain context\nsecond line',
+    };
+    try {
+      emitModelContext(rawAdapter, {});
+      expect(out.chunks).toEqual(['plain context\nsecond line\n']);
     } finally {
       out.restore();
     }
@@ -134,46 +153,105 @@ describe('emitModelContext', () => {
       out.restore();
     }
   });
-});
 
-describe('emitBlockingError', () => {
-  it('writes msg to real stderr and does not exit when skipExit is set', () => {
-    const real = captureRealStderr();
+  it('skips stdout when the adapter returns an empty string', () => {
+    const emptyAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => '',
+    };
+    const out = captureStdout();
     try {
-      emitBlockingError('boom', { skipExit: true });
-      expect(real.chunks.join('')).toBe('boom\n');
+      emitModelContext(emptyAdapter, {});
+      expect(out.chunks).toHaveLength(0);
     } finally {
-      real.restore();
+      out.restore();
     }
   });
 
-  it('flushes buffered stderr BEFORE its own message (ordering)', () => {
-    const real = captureRealStderr();
-    const buffer = installHookStderrBuffer();
+  it('empty emit does not trip the double-emit guard', () => {
+    const emptyAdapter: PlatformAdapter = {
+      normalizeInput: (raw) => raw as never,
+      formatOutput: () => '',
+    };
+    const out = captureStdout();
     try {
-      process.stderr.write('preceding\n'); // buffered
-      emitBlockingError('boom', { skipExit: true });
-      // buffered content surfaces first, then the blocking message.
-      expect(real.chunks.join('')).toBe('preceding\nboom\n');
+      emitModelContext(emptyAdapter, {});
+      expect(() => emitModelContext(fakeAdapter, {})).not.toThrow();
+      expect(out.chunks).toHaveLength(1);
     } finally {
-      buffer.restore();
-      real.restore();
+      out.restore();
+    }
+  });
+
+  it('two real emits still throw', () => {
+    const out = captureStdout();
+    try {
+      emitModelContext(fakeAdapter, {});
+      expect(() => emitModelContext(fakeAdapter, {})).toThrow('emitModelContext called twice');
+    } finally {
+      out.restore();
     }
   });
 });
 
 describe('exitGraceful', () => {
-  it('drops the buffer (buffered bytes never reach real stderr)', () => {
+  it('drops the buffer (buffered bytes never reach real stderr)', async () => {
     const real = captureRealStderr();
     const buffer = installHookStderrBuffer();
     try {
       process.stderr.write('should-be-dropped\n');
-      exitGraceful({ skipExit: true });
+      await exitGraceful({ skipExit: true });
       buffer.flush(); // nothing left to flush
       expect(real.chunks.join('')).toBe('');
     } finally {
       buffer.restore();
       real.restore();
+    }
+  });
+
+  it('waits for the stdout callback even when skipExit is enabled', async () => {
+    const original = process.stdout.write;
+    let completeWrite: (() => void) | undefined;
+    process.stdout.write = ((_chunk: string, callback: () => void): boolean => {
+      completeWrite = callback;
+      return false;
+    }) as typeof process.stdout.write;
+    try {
+      emitModelContext(fakeAdapter, {});
+      let finished = false;
+      const exiting = exitGraceful({ skipExit: true }).then(() => { finished = true; });
+      await Promise.resolve();
+      expect(finished).toBe(false);
+      completeWrite!();
+      await exiting;
+      expect(finished).toBe(true);
+    } finally {
+      process.stdout.write = original;
+    }
+  });
+
+  it('rejects when stdout completion reports a failed write', async () => {
+    const original = process.stdout.write;
+    process.stdout.write = ((_chunk: string, callback: (error?: Error | null) => void): boolean => {
+      queueMicrotask(() => callback(new Error('stdout unavailable')));
+      return false;
+    }) as typeof process.stdout.write;
+    try {
+      emitModelContext(fakeAdapter, {});
+      await expect(exitGraceful({ skipExit: true })).rejects.toThrow('stdout unavailable');
+    } finally {
+      process.stdout.write = original;
+    }
+  });
+
+  it('rejects a synchronous stdout write failure', async () => {
+    const original = process.stdout.write;
+    process.stdout.write = (() => { throw new Error('stdout closed'); }) as typeof process.stdout.write;
+    try {
+      emitModelContext(fakeAdapter, {});
+      await expect(exitGraceful({ skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+    } finally {
+      process.stdout.write = original;
     }
   });
 });

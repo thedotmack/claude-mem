@@ -9,6 +9,15 @@ import { ModeManager } from '../src/services/domain/ModeManager';
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager';
 
 let rateLimitingEnabled = 'false';
+let queuedMessages: Array<Record<string, unknown>> = [];
+
+const toolObservationMessage = {
+  type: 'observation',
+  tool_name: 'Read',
+  tool_input: { file_path: 'src/main.ts' },
+  tool_response: 'file contents',
+  prompt_number: 1,
+};
 
 const mockMode = {
   name: 'code',
@@ -33,21 +42,12 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     cumulativeInputTokens: 0,
     cumulativeOutputTokens: 0,
     abortController: new AbortController(),
+    claimedMessageIds: [],
     generatorPromise: null,
     currentProvider: null,
     startTime: Date.now(),
     ...overrides,
   } as any;
-}
-
-function mockGeminiConfig() {
-  loadFromFileSpy.mockImplementation(() => ({
-    ...SettingsDefaultsManager.getAllDefaults(),
-    CLAUDE_MEM_GEMINI_API_KEY: 'test-api-key',
-    CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
-    CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: 'false',
-    CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
-  }));
 }
 
 function mockSuccessfulGeminiFetch() {
@@ -91,6 +91,7 @@ describe('GeminiProvider', () => {
 
   beforeEach(() => {
     rateLimitingEnabled = 'false';
+    queuedMessages = [];
 
     modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
@@ -103,6 +104,9 @@ describe('GeminiProvider', () => {
       CLAUDE_MEM_GEMINI_MODEL: 'gemini-flash-latest',
       CLAUDE_MEM_GEMINI_RATE_LIMITING_ENABLED: rateLimitingEnabled,
       CLAUDE_MEM_DATA_DIR: '/tmp/claude-mem-test',
+      // These tests drive the request shape and its failures through the
+      // generator's separate init request.
+      CLAUDE_MEM_OBSERVE_BARE_PROMPTS: 'true',
     }));
 
     getSpy = spyOn(SettingsDefaultsManager, 'get').mockImplementation((key: string) => {
@@ -156,7 +160,7 @@ describe('GeminiProvider', () => {
     };
 
     mockSessionManager = {
-      getMessageIterator: async function* () { yield* []; },
+      getMessageIterator: async function* () { yield* queuedMessages; },
       getClaimedMessages: mock(() => []),
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
@@ -187,6 +191,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -209,34 +214,58 @@ describe('GeminiProvider', () => {
     expect(url).toContain('key=test-api-key');
   });
 
-  it('should handle multi-turn conversation', async () => {
-    const session = {
-      sessionDbId: 1,
-      contentSessionId: 'test-session',
-      memorySessionId: 'mem-session-123',
-      project: 'test-project',
-      userPrompt: 'test prompt',
-      conversationHistory: [{ role: 'user', content: 'prev context' }, { role: 'assistant', content: 'prev response' }],
-      lastPromptNumber: 2,
-      cumulativeInputTokens: 0,
-      cumulativeOutputTokens: 0,
-      abortController: new AbortController(),
-      generatorPromise: null,
-      currentProvider: null,
-      startTime: Date.now(),
-    } as any;
+  // A generator start opens a new generation (#3479), so a multi-turn history
+  // only exists mid-generation. These drive query() with one directly.
+  const GEMINI_QUERY_CONFIG = { apiKey: 'test-api-key', model: 'gemini-flash-latest', rateLimitingEnabled: false };
 
+  it('should handle multi-turn conversation', async () => {
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: 'response' }] } }]
     }))));
 
-    await agent.startSession(session);
+    await (agent as any).query([
+      { role: 'user', content: 'prev context' },
+      { role: 'assistant', content: 'prev response' },
+      { role: 'user', content: 'next prompt' },
+    ], GEMINI_QUERY_CONFIG);
 
     const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
     expect(body.contents).toHaveLength(3);
     expect(body.contents[0].role).toBe('user');
     expect(body.contents[1].role).toBe('model');
     expect(body.contents[2].role).toBe('user');
+  });
+
+  it('sends an init prompt (not a continuation) when the session has no prompt anchor (#3653)', async () => {
+    // A transcript-ingested session with no user_prompts row resolves to
+    // prompt 0. Before the fix that was built as a continuation with an empty
+    // user prompt, which the model rejects as prose and the batch is dropped.
+    const markerMode = {
+      ...mockMode,
+      prompts: {
+        ...mockMode.prompts,
+        system_identity: '__INIT_MARKER__',
+        continuation_greeting: '__CONTINUATION_MARKER__',
+      },
+    };
+    modeManagerSpy.mockImplementation(() => ({
+      getActiveMode: () => markerMode,
+      loadMode: () => {},
+    } as any));
+
+    mockSuccessfulGeminiFetch();
+
+    await agent.startSession(makeSession({
+      userPrompt: '',
+      lastPromptNumber: 0,
+      conversationHistory: [],
+    }));
+
+    // The generation's framing prompt goes out as systemInstruction (#3868).
+    const body = JSON.parse((global.fetch as any).mock.calls[0][1].body);
+    const framing = body.systemInstruction.parts[0].text as string;
+    expect(framing).toContain('__INIT_MARKER__');
+    expect(framing).not.toContain('__CONTINUATION_MARKER__');
   });
 
   it('keeps Gemini roles alternating for full conversation history', async () => {
@@ -250,14 +279,12 @@ describe('GeminiProvider', () => {
     ];
 
     for (const label of ['a', 'b']) {
-      mockGeminiConfig();
       mockSuccessfulGeminiFetch();
 
-      await agent.startSession(makeSession({
-        userPrompt: `current prompt ${label}`,
-        lastPromptNumber: 2,
-        conversationHistory: history.map(message => ({ ...message })),
-      }));
+      await (agent as any).query(
+        [...history.map(message => ({ ...message })), { role: 'user', content: `current prompt ${label}` }],
+        GEMINI_QUERY_CONFIG,
+      );
 
       const contents = sentGeminiContents();
       expectAlternatingGeminiRoles(contents);
@@ -267,17 +294,14 @@ describe('GeminiProvider', () => {
   });
 
   it('merges adjacent same-role messages instead of sending repeated Gemini roles', async () => {
-    const session = makeSession({
-      conversationHistory: [
-        { role: 'user', content: 'first user turn' },
-        { role: 'user', content: 'second user turn' },
-        { role: 'assistant', content: 'model turn' },
-      ],
-    });
-
     mockSuccessfulGeminiFetch();
 
-    await agent.startSession(session);
+    await (agent as any).query([
+      { role: 'user', content: 'first user turn' },
+      { role: 'user', content: 'second user turn' },
+      { role: 'assistant', content: 'model turn' },
+      { role: 'user', content: 'next prompt' },
+    ], GEMINI_QUERY_CONFIG);
 
     const contents = sentGeminiContents();
     expectAlternatingGeminiRoles(contents);
@@ -300,6 +324,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -318,6 +343,7 @@ describe('GeminiProvider', () => {
       </observation>
     `;
 
+    queuedMessages = [toolObservationMessage];
     global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
       candidates: [{ content: { parts: [{ text: observationXml }] } }],
       usageMetadata: { totalTokenCount: 50 }
@@ -325,12 +351,77 @@ describe('GeminiProvider', () => {
 
     await agent.startSession(session);
 
-    expect(mockStoreObservations).toHaveBeenCalled();
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
     expect(mockSyncObservation).toHaveBeenCalled();
     expect(session.cumulativeInputTokens).toBeGreaterThan(0);
   });
 
-  it('stores a deferred init response under the original prompt project after the live session advances', async () => {
+  it('stores the answer, not the reasoning, when Gemini returns a thought part first', async () => {
+    const session = makeSession({ project: 'repo-a', userPrompt: 'prompt', lastPromptNumber: 1 });
+    const observationXml = `
+      <observation>
+        <type>discovery</type>
+        <title>Answer survived the reasoning part</title>
+        <narrative>Read from the part after the chain of thought.</narrative>
+        <facts></facts>
+        <concepts></concepts>
+        <files_read></files_read>
+        <files_modified></files_modified>
+      </observation>
+    `;
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            // Captured shape with `thinkingConfig.includeThoughts`: the chain of
+            // thought is parts[0] and is the only part marked `thought`.
+            { text: 'The user wants an observation, so I should emit XML with a title.', thought: true },
+            { text: observationXml },
+          ],
+        },
+      }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    // Reading parts[0] here would hand the parser the reasoning instead, and
+    // no observation would be stored at all.
+    const observations = mockStoreObservations.mock.calls[0][2];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Answer survived the reasoning part');
+  });
+
+  it('joins an answer that Gemini split across several parts', async () => {
+    const session = makeSession({ project: 'repo-a', userPrompt: 'prompt', lastPromptNumber: 1 });
+
+    queuedMessages = [toolObservationMessage];
+    global.fetch = mock(() => Promise.resolve(new Response(JSON.stringify({
+      candidates: [{
+        content: {
+          parts: [
+            { text: '<observation>\n<type>discovery</type>\n<title>Split across parts</title>' },
+            { text: '\n<narrative>The second half of the same block.</narrative>\n<facts></facts>'
+              + '\n<concepts></concepts>\n<files_read></files_read>\n<files_modified></files_modified>\n</observation>' },
+          ],
+        },
+      }],
+      usageMetadata: { totalTokenCount: 50 }
+    }))));
+
+    await agent.startSession(session);
+
+    expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+    // Taking only the first part would store a truncated block, or none.
+    const observations = mockStoreObservations.mock.calls[0][2];
+    expect(observations).toHaveLength(1);
+    expect(observations[0].title).toBe('Split across parts');
+  });
+
+  it('stores a deferred observation response under the original prompt project after the live session advances', async () => {
     const session = makeSession({
       project: 'repo-a',
       userPrompt: 'prompt 1',
@@ -339,7 +430,7 @@ describe('GeminiProvider', () => {
     const observationXml = `
       <observation>
         <type>discovery</type>
-        <title>Late init response</title>
+        <title>Late observation response</title>
         <narrative>Should stay on the original prompt project.</narrative>
         <facts></facts>
         <concepts></concepts>
@@ -348,13 +439,31 @@ describe('GeminiProvider', () => {
       </observation>
     `;
 
+    queuedMessages = [toolObservationMessage];
     let resolveFetch!: (response: Response) => void;
-    global.fetch = mock(() => new Promise<Response>(resolve => {
-      resolveFetch = resolve;
-    }));
+    let sends = 0;
+    global.fetch = mock(() => {
+      sends++;
+      // Only the observation query is held open; the init query has to complete
+      // for the message loop to reach it.
+      if (sends === 1) {
+        return Promise.resolve(new Response(JSON.stringify({
+          candidates: [{ content: { parts: [{ text: 'Ready.' }] } }],
+          usageMetadata: { totalTokenCount: 10 }
+        })));
+      }
+      return new Promise<Response>(resolve => {
+        resolveFetch = resolve;
+      });
+    });
 
     const pending = agent.startSession(session);
-    await Promise.resolve();
+    // Wait for the request to actually be in flight rather than assuming it
+    // happens within a fixed number of microtasks — the provider awaits the
+    // session-start context before its first send.
+    while (!resolveFetch) {
+      await new Promise(r => setTimeout(r, 0));
+    }
 
     session.project = 'repo-b/worktree';
     session.userPrompt = 'prompt 2';
@@ -384,6 +493,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -406,6 +516,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -438,6 +549,7 @@ describe('GeminiProvider', () => {
       cumulativeInputTokens: 0,
       cumulativeOutputTokens: 0,
       abortController: new AbortController(),
+      claimedMessageIds: [],
       generatorPromise: null,
       currentProvider: null,
       startTime: Date.now(),
@@ -482,6 +594,7 @@ describe('GeminiProvider', () => {
         cumulativeInputTokens: 0,
         cumulativeOutputTokens: 0,
         abortController: new AbortController(),
+        claimedMessageIds: [],
         generatorPromise: null,
         currentProvider: null,
         startTime: Date.now(),
@@ -530,6 +643,7 @@ describe('GeminiProvider', () => {
         cumulativeInputTokens: 0,
         cumulativeOutputTokens: 0,
         abortController: new AbortController(),
+        claimedMessageIds: [],
         generatorPromise: null,
         currentProvider: null,
         startTime: Date.now(),

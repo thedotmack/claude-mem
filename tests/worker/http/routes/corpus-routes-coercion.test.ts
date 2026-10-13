@@ -12,8 +12,8 @@ function createMockReqRes(body: any): {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
   return {
-    req: { body, path: '/api/corpus', params: {}, query: {} } as Partial<Request>,
-    res: { json: jsonSpy, status: statusSpy, headersSent: false } as unknown as Partial<Response>,
+    req: { body, path: '/api/corpus', params: {}, query: {}, headers: {}, socket: { on: mock(() => {}), off: mock(() => {}) } } as unknown as Partial<Request>,
+    res: { json: jsonSpy, status: statusSpy, headersSent: false, on: mock(() => {}), off: mock(() => {}), end: mock(() => {}) } as unknown as Partial<Response>,
     jsonSpy,
     statusSpy,
   };
@@ -128,6 +128,38 @@ describe('CorpusRoutes Type Coercion', () => {
       concepts: ['hooks', 'agent'],
       files: ['src/a.ts', 'src/b.ts'],
       limit: 25,
+    });
+  });
+
+  it('persists camelCase dateStart/dateEnd from the MCP tool into the filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'camel-dates',
+      dateStart: '2025-01-01',
+      dateEnd: '2025-03-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('camel-dates', '', {
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+  });
+
+  it('persists snake_case date_start/date_end into the filter', async () => {
+    const { req, res } = createMockReqRes({
+      name: 'snake-dates',
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
+    });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(mockBuild).toHaveBeenCalledWith('snake-dates', '', {
+      date_start: '2025-01-01',
+      date_end: '2025-03-01',
     });
   });
 

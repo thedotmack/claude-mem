@@ -510,8 +510,10 @@ describe('hookCommand - stderr discipline (plan 01 / #2292)', () => {
 
     // hookCommand orchestrates hook-io; it does not write streams directly.
     expect(hookCommandSource).toContain("emitModelContext");
-    expect(hookCommandSource).toContain("emitBlockingError");
+    expect(hookCommandSource).toContain("emitDiagnostic");
     expect(hookCommandSource).toContain("exitGraceful");
+    // plan-17 step 2: no hook path exits 2 any more.
+    expect(hookCommandSource).not.toContain("emitBlockingError");
     expect(hookCommandSource).not.toContain("console.error(`[claude-mem]");
   });
 });

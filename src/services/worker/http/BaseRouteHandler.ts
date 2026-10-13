@@ -38,19 +38,35 @@ export abstract class BaseRouteHandler {
   }
 
   protected parseIntParam(req: Request, res: Response, paramName: string): number | null {
-    const value = parseInt(this.toStringParam(req.params[paramName]), 10);
-    if (isNaN(value)) {
+    const raw = this.toStringParam(req.params[paramName]);
+    const value = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(value)) {
       this.badRequest(res, `Invalid ${paramName}`);
       return null;
     }
     return value;
   }
 
+  /** Cap the array descent in {@link firstString}. Express only ever nests one
+   * level deep (repeated query keys → `string[]`); anything deeper is malformed
+   * or hostile input, so a small bound is safe. */
+  private static readonly MAX_ARRAY_DEPTH = 8;
+
   protected static firstString(value: unknown): string | undefined {
-    if (Array.isArray(value)) {
-      return BaseRouteHandler.firstString(value[0]);
+    // Walk to the first non-array leaf. `value` is untrusted request input
+    // (req.query / req.body), so a crafted deeply-nested array — or a
+    // self-referential one (`a[0] = a`) — must never recurse without bound:
+    // that overflows the stack (RangeError: Maximum call stack size exceeded)
+    // and takes down request handling. Descend iteratively up to a fixed cap
+    // and bail rather than follow it forever.
+    let current = value;
+    for (let depth = 0; depth < BaseRouteHandler.MAX_ARRAY_DEPTH && Array.isArray(current); depth++) {
+      current = current[0];
     }
-    return typeof value === 'string' && value.trim() ? value : undefined;
+    if (Array.isArray(current)) {
+      return undefined; // still nested past the cap — treat as absent
+    }
+    return typeof current === 'string' && current.trim() ? current : undefined;
   }
 
   private static rawPlatformSourceFromRequest(req: Request): string | undefined {
@@ -82,7 +98,7 @@ export abstract class BaseRouteHandler {
   }
 
   protected handleError(res: Response, error: Error, context?: string): void {
-    const statusCode = error instanceof AppError ? error.statusCode : 500;
+    const statusCode = this.errorStatusCode(error);
     // Client errors (4xx AppErrors) are routine bad input, not server faults, so
     // they log at WARN and are NOT routed to the error sink — surfacing a
     // validation rejection like a bad corpus name as a captured $exception just
@@ -98,17 +114,26 @@ export abstract class BaseRouteHandler {
       logger.failure('WORKER', context || 'Request failed', undefined, error);
     }
     if (!res.headersSent) {
-      const response: Record<string, unknown> = { error: error.message };
-
-      if (error instanceof AppError && error.code) {
-        response.code = error.code;
-      }
-
-      if (error instanceof AppError && error.details !== undefined) {
-        response.details = error.details;
-      }
-
-      res.status(statusCode).json(response);
+      res.status(statusCode).json(this.errorResponseBody(error));
     }
+  }
+
+  /** The HTTP status and JSON body handleError sends for `error`. */
+  protected errorStatusCode(error: Error): number {
+    return error instanceof AppError ? error.statusCode : 500;
+  }
+
+  protected errorResponseBody(error: Error): Record<string, unknown> {
+    const response: Record<string, unknown> = { error: error.message };
+
+    if (error instanceof AppError && error.code) {
+      response.code = error.code;
+    }
+
+    if (error instanceof AppError && error.details !== undefined) {
+      response.details = error.details;
+    }
+
+    return response;
   }
 }

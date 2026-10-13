@@ -13,8 +13,9 @@
  * double.
  *
  * Sequence:
- *   1. Re-entrancy guard — /api/admin/restart, /api/admin/shutdown and the
- *      signal handler can all race into shutdown; only the first wins.
+ *   1. Re-entrancy guard — /api/admin/restart, /api/admin/shutdown, the
+ *      signal handler and the idle-exit monitor can all race into shutdown;
+ *      only the first wins.
  *   2. Pre-shutdown bookkeeping (watcher/heartbeat/sentinel/telemetry).
  *   3. performGracefulShutdown under a hard deadline — it has no global
  *      deadline of its own and session drain has been observed at 35-40s.
@@ -29,9 +30,12 @@ import { logger } from '../utils/logger.js';
  * Closed enum for worker_stopped telemetry. Must stay in sync with the
  * shutdown_reason whitelist documentation (scrub.ts / telemetry.mdx):
  * stop = /api/admin/shutdown (CLI `stop`), restart = /api/admin/restart or
- * CLI `restart` (tagged ?reason=restart), signal = SIGTERM/SIGINT handler.
+ * CLI `restart` (tagged ?reason=restart), signal = SIGTERM/SIGINT handler,
+ * idle = the idle-exit monitor (the CLAUDE_MEM_IDLE_EXIT_SEC window elapsed
+ * with no session activity, queued work, open or recent requests, or AI
+ * interactions).
  */
-export type WorkerShutdownReason = 'stop' | 'restart' | 'signal';
+export type WorkerShutdownReason = 'stop' | 'restart' | 'signal' | 'idle';
 
 export interface RestartHandoffDeps {
   port: number;

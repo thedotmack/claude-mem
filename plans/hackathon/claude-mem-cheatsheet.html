@@ -1,0 +1,518 @@
+<title>Claude-Mem Cheat Sheet</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,700;12..96,800&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<style>
+  :root {
+    --paper: #F7F9FC;
+    --card: #FFFFFF;
+    --ink: #101623;
+    --ink-2: #2E3A4E;
+    --muted: #52627A;
+    --line: #C9D3E0;
+    --teal: #0B6B64;
+    --teal-strong: #085A54;
+    --teal-soft: #D6F0EC;
+    --hi: #FFD43B;
+    --hi-soft: #FFF1BF;
+    --coral: #B23E24;
+    --coral-soft: #FBE0D8;
+    --focus: #0B6B64;
+    --shadow: 0 1px 0 rgba(16,22,35,.07), 0 10px 28px -18px rgba(16,22,35,.3);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --paper: #0F141C;
+      --card: #1B2330;
+      --ink: #F2F6FB;
+      --ink-2: #D3DCE8;
+      --muted: #9DACC0;
+      --line: #38455A;
+      --teal: #4FC8BC;
+      --teal-strong: #6FD9CE;
+      --teal-soft: #14403B;
+      --hi: #F5CB3E;
+      --hi-soft: #4A3D10;
+      --coral: #FF9B82;
+      --coral-soft: #4A2117;
+      --focus: #4FC8BC;
+      --shadow: 0 1px 0 rgba(0,0,0,.35), 0 10px 28px -18px rgba(0,0,0,.65);
+    }
+  }
+  :root[data-theme="dark"] {
+    --paper: #0F141C;
+    --card: #1B2330;
+    --ink: #F2F6FB;
+    --ink-2: #D3DCE8;
+    --muted: #9DACC0;
+    --line: #38455A;
+    --teal: #4FC8BC;
+    --teal-strong: #6FD9CE;
+    --teal-soft: #14403B;
+    --hi: #F5CB3E;
+    --hi-soft: #4A3D10;
+    --coral: #FF9B82;
+    --coral-soft: #4A2117;
+    --focus: #4FC8BC;
+    --shadow: 0 1px 0 rgba(0,0,0,.35), 0 10px 28px -18px rgba(0,0,0,.65);
+  }
+
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+    * { transition: none !important; animation: none !important; }
+  }
+  body {
+    margin: 0;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size: 18px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1060px; margin: 0 auto; padding: 44px 24px 80px; }
+
+  /* masthead */
+  .eyebrow { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 15px; letter-spacing: .07em; text-transform: uppercase; color: var(--teal-strong); font-weight: 600; }
+  h1 { font-family: "Bricolage Grotesque", "IBM Plex Sans", sans-serif; font-weight: 800; font-size: clamp(40px, 6vw, 62px); line-height: 1.02; letter-spacing: -.02em; margin: 8px 0 14px; text-wrap: balance; }
+  .lede { margin: 0 0 8px; color: var(--ink-2); max-width: 60ch; font-size: 20px; }
+  .mast { padding-bottom: 24px; border-bottom: 3px solid var(--ink); margin-bottom: 0; }
+  .badges { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 14px; }
+  .badge { font-family: "IBM Plex Mono", monospace; font-size: 14px; font-weight: 600; padding: 4px 12px; border-radius: 999px; background: var(--teal-soft); color: var(--teal-strong); }
+
+  /* sticky nav */
+  nav.toc {
+    position: sticky; top: 0; z-index: 50;
+    background: var(--paper);
+    border-bottom: 1px solid var(--line);
+    margin: 0 -24px 36px; padding: 10px 24px;
+    display: flex; gap: 8px; overflow-x: auto;
+  }
+  nav.toc a {
+    flex: none; text-decoration: none; color: var(--ink-2);
+    font-weight: 600; font-size: 16px;
+    padding: 8px 14px; border-radius: 999px; border: 1px solid transparent;
+  }
+  nav.toc a:hover { background: var(--teal-soft); color: var(--teal-strong); }
+  nav.toc a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+
+  section { margin-bottom: 44px; scroll-margin-top: 76px; }
+  h2 { font-family: "Bricolage Grotesque", sans-serif; font-weight: 700; font-size: clamp(26px, 3.4vw, 34px); letter-spacing: -.01em; margin: 0 0 6px; text-wrap: balance; }
+  .kicker { font-family: "IBM Plex Mono", monospace; font-size: 14px; font-weight: 600; letter-spacing: .07em; text-transform: uppercase; color: var(--muted); }
+  .sub { color: var(--ink-2); margin: 4px 0 20px; font-size: 19px; max-width: 62ch; }
+
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 10px; padding: 24px 26px; box-shadow: var(--shadow); }
+
+  mark { background: linear-gradient(transparent 40%, var(--hi) 40%, var(--hi) 92%, transparent 92%); color: var(--ink); padding: 0 3px; font-weight: 600; }
+  :root[data-theme="dark"] mark { color: #101623; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) mark { color: #101623; } }
+  code { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: .92em; background: var(--teal-soft); color: var(--teal-strong); padding: 2px 8px; border-radius: 6px; font-weight: 600; }
+
+  /* WHY table */
+  table { width: 100%; border-collapse: collapse; font-size: 18px; }
+  th { text-align: left; font-family: "IBM Plex Mono", monospace; font-size: 14px; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); font-weight: 600; padding: 0 12px 10px 0; border-bottom: 2px solid var(--line); }
+  td { padding: 14px 12px 14px 0; border-bottom: 1px solid var(--line); vertical-align: top; color: var(--ink-2); }
+  tr:last-child td { border-bottom: 0; }
+  .scroll { overflow-x: auto; }
+
+  /* two agents */
+  .agents { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  .agent { border-radius: 10px; padding: 20px 22px; border: 2px solid transparent; }
+  .agent.builder { background: var(--coral-soft); border-color: var(--coral); }
+  .agent.observer { background: var(--teal-soft); border-color: var(--teal); }
+  .agent h3 { margin: 0 0 10px; font-family: "Bricolage Grotesque", sans-serif; font-size: 23px; font-weight: 700; color: var(--ink); }
+  .agent .tag { display: inline-block; font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; padding: 2px 10px; border-radius: 999px; margin-bottom: 8px; }
+  .agent.builder .tag { background: var(--coral); color: var(--card); }
+  .agent.observer .tag { background: var(--teal); color: var(--card); }
+  .agent ul { padding-left: 20px; margin: 0; font-size: 18px; color: var(--ink-2); }
+  .agent li { margin: 6px 0; }
+
+  /* interactive: click an action */
+  .demo { display: grid; grid-template-columns: 240px 1fr; gap: 22px; align-items: start; }
+  .demo .acts { display: grid; gap: 10px; }
+  .actbtn {
+    font: inherit; font-weight: 600; font-size: 17px; text-align: left;
+    padding: 13px 16px; border-radius: 10px; cursor: pointer;
+    border: 2px solid var(--line); background: var(--card); color: var(--ink);
+    transition: transform .08s ease, border-color .12s ease, background .12s ease;
+  }
+  .actbtn:hover { border-color: var(--teal); transform: translateX(3px); }
+  .actbtn:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .actbtn[aria-pressed="true"] { border-color: var(--teal); background: var(--teal-soft); color: var(--ink); }
+  .verdict { border-radius: 10px; padding: 22px 24px; min-height: 240px; border: 2px dashed var(--line); background: var(--card); }
+  .verdict .v-head { font-family: "Bricolage Grotesque", sans-serif; font-size: 24px; font-weight: 700; margin: 0 0 8px; }
+  .verdict.yes { border-style: solid; border-color: var(--teal); }
+  .verdict.no  { border-style: solid; border-color: var(--line); }
+  .verdict .thought { font-style: italic; color: var(--muted); margin: 0 0 14px; font-size: 18px; }
+  .stamp { display: inline-block; font-family: "IBM Plex Mono", monospace; font-weight: 600; font-size: 15px; letter-spacing: .05em; padding: 4px 12px; border-radius: 999px; margin-bottom: 12px; }
+  .stamp.yes { background: var(--teal); color: var(--card); }
+  .stamp.no  { background: var(--line); color: var(--ink); }
+
+  /* note preview inside demo + anatomy */
+  .note { border: 1px solid var(--line); border-left: 6px solid var(--teal); border-radius: 10px; padding: 18px 20px; background: var(--paper); font-size: 17px; }
+  .note .meta { font-family: "IBM Plex Mono", monospace; font-size: 15px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 8px; font-weight: 600; }
+  .note .meta .type { color: var(--coral); }
+  .note .t { font-weight: 700; color: var(--ink); font-size: 20px; line-height: 1.35; }
+  .note .s { color: var(--muted); font-style: italic; margin: 4px 0 10px; }
+  .note ul { margin: 0 0 10px; padding-left: 22px; }
+  .note li { margin: 4px 0; color: var(--ink-2); }
+  .note .nar { color: var(--ink-2); margin: 0 0 10px; }
+  .note .tags { font-family: "IBM Plex Mono", monospace; font-size: 15px; color: var(--teal-strong); font-weight: 600; }
+
+  /* anatomy accordion */
+  details.field { border: 1px solid var(--line); border-radius: 10px; background: var(--card); margin-bottom: 10px; overflow: hidden; }
+  details.field summary {
+    cursor: pointer; list-style: none; display: flex; align-items: baseline; gap: 14px;
+    padding: 16px 20px; font-size: 19px; font-weight: 700; color: var(--ink);
+  }
+  details.field summary::-webkit-details-marker { display: none; }
+  details.field summary:hover { background: var(--teal-soft); }
+  details.field summary:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+  details.field summary .chip { font-family: "IBM Plex Mono", monospace; font-size: 13px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; background: var(--hi); color: #101623; padding: 2px 10px; border-radius: 999px; flex: none; }
+  details.field summary .hint { margin-left: auto; font-weight: 400; color: var(--muted); font-size: 16px; }
+  details.field[open] summary .hint { visibility: hidden; }
+  details.field .body { padding: 0 20px 18px; color: var(--ink-2); font-size: 18px; }
+  details.field .body .ex { margin-top: 8px; padding: 12px 16px; border-radius: 8px; background: var(--paper); border: 1px dashed var(--line); font-size: 17px; }
+
+  /* layers */
+  .layers { counter-reset: layer; display: grid; gap: 12px; }
+  .layer { counter-increment: layer; display: grid; grid-template-columns: 56px 130px 1fr; gap: 16px; align-items: center; padding: 16px 18px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-size: 18px; box-shadow: var(--shadow); }
+  .layer::before { content: counter(layer); font-family: "Bricolage Grotesque", sans-serif; font-size: 30px; font-weight: 800; color: var(--teal-strong); text-align: center; }
+  .layer .k { font-family: "IBM Plex Mono", monospace; font-weight: 600; color: var(--teal-strong); font-size: 16px; letter-spacing: .04em; }
+  .layer .d { color: var(--ink-2); }
+  .mantra { margin-top: 16px; font-size: 21px; font-weight: 700; text-align: center; }
+
+  /* modes: tab switcher */
+  .modetabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .modetab {
+    font: inherit; font-weight: 600; font-size: 16px; cursor: pointer;
+    padding: 9px 16px; border-radius: 999px; border: 2px solid var(--line); background: var(--card); color: var(--ink-2);
+  }
+  .modetab:hover { border-color: var(--teal); }
+  .modetab:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+  .modetab[aria-selected="true"] { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+  .modepanel { border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 22px 24px; box-shadow: var(--shadow); }
+  .modepanel h3 { margin: 0 0 4px; font-family: "Bricolage Grotesque", sans-serif; font-size: 24px; }
+  .modepanel .watch { color: var(--muted); font-size: 17px; margin: 0 0 12px; }
+  .modepanel .cats { display: flex; gap: 8px; flex-wrap: wrap; }
+  .cat { font-family: "IBM Plex Mono", monospace; font-size: 15px; font-weight: 600; padding: 5px 12px; border-radius: 999px; background: var(--teal-soft); color: var(--teal-strong); }
+
+  /* quickstart checklist */
+  .steps { display: grid; gap: 10px; }
+  .step { display: flex; gap: 14px; align-items: flex-start; padding: 15px 18px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); font-size: 18px; }
+  .step input { width: 24px; height: 24px; margin: 3px 0 0; accent-color: var(--teal); flex: none; cursor: pointer; }
+  .step label { cursor: pointer; color: var(--ink-2); }
+  .step input:checked + label { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 2px; }
+  .step b { color: var(--ink); }
+  .step input:checked + label b { color: var(--muted); }
+
+  /* prize */
+  .prize { background: var(--ink); color: var(--paper); border-radius: 12px; padding: 30px 32px; }
+  .prize h2 { color: var(--hi); }
+  .prize .money { font-family: "Bricolage Grotesque", sans-serif; font-weight: 800; font-size: 56px; line-height: 1; color: var(--hi); }
+  .prize .sub2 { color: var(--paper); opacity: .85; font-size: 18px; margin-top: 6px; }
+  .dirs { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 24px; margin: 22px 0 0; padding: 0; list-style: none; counter-reset: dir; }
+  .dirs li { counter-increment: dir; display: flex; gap: 12px; font-size: 18px; line-height: 1.5; }
+  .dirs li::before { content: counter(dir); font-family: "Bricolage Grotesque", sans-serif; font-weight: 800; color: var(--hi); font-size: 22px; flex: none; width: 26px; }
+  .dirs b { color: var(--hi); }
+  .tiebreak { margin-top: 22px; padding: 16px 20px; border-radius: 10px; background: var(--hi); color: #101623; font-weight: 700; font-size: 20px; }
+
+  /* vocab */
+  .vocab dl { margin: 0; display: grid; grid-template-columns: max-content 1fr; gap: 10px 20px; font-size: 18px; }
+  .vocab dt { font-weight: 700; color: var(--ink); }
+  .vocab dd { margin: 0; color: var(--ink-2); }
+
+  .foot { margin-top: 40px; display: flex; justify-content: space-between; gap: 18px; flex-wrap: wrap; font-size: 17px; color: var(--muted); border-top: 2px solid var(--line); padding-top: 18px; }
+
+  @media (max-width: 780px) {
+    body { font-size: 17px; }
+    .agents, .demo, .dirs, .anat2 { grid-template-columns: 1fr; }
+    .layer { grid-template-columns: 44px 1fr; }
+    .layer .k { grid-column: 2; }
+    .layer .d { grid-column: 2; }
+    .vocab dl { grid-template-columns: 1fr; gap: 2px 0; }
+    .vocab dd { margin-bottom: 10px; }
+  }
+</style>
+
+<div class="wrap">
+  <header class="mast">
+    <div class="eyebrow">Hackathon cheat sheet · no code required</div>
+    <h1>Claude-Mem Cheat Sheet</h1>
+    <p class="lede">A second agent watches your main agent work, writes structured notes about what matters, and hands them back next session — so your agent <mark>starts warm instead of cold</mark>.</p>
+    <div class="badges"><span class="badge">open source</span><span class="badge">100,000+ developers</span><span class="badge">github.com/thedotmack/claude-mem</span></div>
+  </header>
+
+  <nav class="toc" aria-label="Sections">
+    <a href="#why">Why</a>
+    <a href="#agents">Two agents</a>
+    <a href="#demo">Try it</a>
+    <a href="#note">The note</a>
+    <a href="#recall">Recall</a>
+    <a href="#modes">Modes</a>
+    <a href="#start">Quickstart</a>
+    <a href="#prize">$1,000 Prize</a>
+    <a href="#vocab">Vocab</a>
+  </nav>
+
+  <section id="why">
+    <div class="kicker">01 · The problem</div>
+    <h2>AI agents wake up with amnesia</h2>
+    <p class="sub">Every session starts from zero. That costs three things:</p>
+    <div class="card scroll">
+      <table>
+        <thead><tr><th style="width:50%">Without memory</th><th>With Claude-Mem</th></tr></thead>
+        <tbody>
+          <tr><td><b>Time</b> — the agent burns its first turns re-reading the codebase</td><td>Session opens with a <mark>timeline of what happened last time</mark></td></tr>
+          <tr><td><b>Money</b> — re-reading = tokens = dollars</td><td>Titles-first recall — startup context typically reports <mark>~99% savings</mark></td></tr>
+          <tr><td><b>Lost decisions</b> — "why did we do it this way?" Nobody wrote it down</td><td>Decisions recorded <em>with their rationale</em>, searchable forever</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section id="agents">
+    <div class="kicker">02 · The idea</div>
+    <h2>Two agents: one builds, one remembers</h2>
+    <div class="agents">
+      <div class="agent builder">
+        <span class="tag">Main agent</span>
+        <h3>The Builder</h3>
+        <ul>
+          <li>Reads, edits, runs commands, talks to you</li>
+          <li>Decides <em>what to build</em></li>
+          <li><b>Never waits</b> for the observer</li>
+        </ul>
+      </div>
+      <div class="agent observer">
+        <span class="tag">Second agent</span>
+        <h3>The Observer</h3>
+        <ul>
+          <li>Is handed <b>every tool use</b> + its result</li>
+          <li>Asks one question: <b>"is this worth a note?"</b></li>
+          <li>Works silently in the background</li>
+        </ul>
+      </div>
+    </div>
+    <p class="sub" style="margin-top:18px"><mark>It observes from outside.</mark> It never changes what the builder does. If it vanished, the builder would carry on — just with no memory afterward.</p>
+  </section>
+
+  <section id="demo">
+    <div class="kicker">03 · Try it</div>
+    <h2>You be the observer</h2>
+    <p class="sub">Click an action the builder just took. Would you take a note?</p>
+    <div class="demo">
+      <div class="acts" role="group" aria-label="Builder actions">
+        <button class="actbtn" data-act="read" aria-pressed="false">📄 Reads a config file</button>
+        <button class="actbtn" data-act="ls" aria-pressed="false">📂 Lists a directory</button>
+        <button class="actbtn" data-act="test" aria-pressed="false">✅ Tests go green after a fix</button>
+        <button class="actbtn" data-act="bug" aria-pressed="false">🐞 Fixes a nasty bug</button>
+        <button class="actbtn" data-act="decide" aria-pressed="false">⚖️ Picks SQLite over Postgres</button>
+        <button class="actbtn" data-act="end" aria-pressed="false">🏁 Session ends</button>
+      </div>
+      <div class="verdict" id="verdict" aria-live="polite">
+        <p class="v-head">👈 Pick an action</p>
+        <p class="thought">Every single tool use is handed to the observer. Most become nothing. A few become notes. This filter is the whole product.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="note">
+    <div class="kicker">04 · The unit of memory</div>
+    <h2>Anatomy of a note</h2>
+    <p class="sub">Every note has the same shape. Tap each field — the example note below updates as you explore.</p>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:22px" class="anat2">
+      <div>
+        <details class="field" open>
+          <summary><span class="chip">Title</span> One line: what happened <span class="hint">tap</span></summary>
+          <div class="body">The most important field — <b>most of the time the title is all the future agent reads</b>. Write it so the title alone tells you whether you care.</div>
+        </details>
+        <details class="field">
+          <summary><span class="chip">Subtitle</span> One more line of context <span class="hint">tap</span></summary>
+          <div class="body">Which part of the system, what the situation was.</div>
+        </details>
+        <details class="field">
+          <summary><span class="chip">Facts</span> ~3 single-sentence bullets <span class="hint">tap</span></summary>
+          <div class="body">The <b>semantic chunks</b>. Each is a standalone true statement that makes sense with zero surrounding context — shaped to be found by search and dropped into a brand-new conversation.
+            <div class="ex">Test: could this sentence be pulled out alone and still be useful? If not, it's not a fact yet.</div>
+          </div>
+        </details>
+        <details class="field">
+          <summary><span class="chip">Narrative</span> A short paragraph: the story <span class="hint">tap</span></summary>
+          <div class="body">What was happening, what was tried, what was learned, why it matters. Facts are for skimming; the narrative is for understanding.</div>
+        </details>
+        <details class="field">
+          <summary><span class="chip">Category</span> One label from the mode's list <span class="hint">tap</span></summary>
+          <div class="body">bugfix · feature · refactor · change · discovery · decision (in code mode). Answers "what kind of thing is this?" at a glance and makes the notebook filterable.</div>
+        </details>
+        <details class="field">
+          <summary><span class="chip">Tags</span> Reusable knowledge labels <span class="hint">tap</span></summary>
+          <div class="body">how-it-works · why-it-exists · what-changed · problem-solution · gotcha · pattern · trade-off. Later you can ask: <em>"show me every gotcha in this project."</em></div>
+        </details>
+        <details class="field">
+          <summary><span class="chip">Files + Time</span> Where, and when <span class="hint">tap</span></summary>
+          <div class="body">Files read/modified tell the future agent where to jump. The timestamp is automatic — it's what makes the <b>timeline</b> possible.</div>
+        </details>
+      </div>
+      <div class="note" aria-label="Example note">
+        <div class="meta"><span class="type">● bugfix</span><span>#110962</span><span>3:48 PM</span></div>
+        <div class="t">Fixed login redirect loop caused by stale session cookie</div>
+        <div class="s">Auth middleware in the web app</div>
+        <ul>
+          <li>The loop only happened when the session cookie was older than 24 hours.</li>
+          <li>The fix clears the cookie before re-issuing the login redirect.</li>
+          <li>The logic lives in the auth middleware, not the login page.</li>
+        </ul>
+        <p class="nar">Looked like a frontend routing bug; the cause was server-side. Clearing the expired cookie before redirecting broke the loop.</p>
+        <div class="tags">tags: problem-solution · gotcha &nbsp;·&nbsp; files: middleware/auth.ts</div>
+      </div>
+    </div>
+  </section>
+
+  <section id="recall">
+    <div class="kicker">05 · Getting notes back</div>
+    <h2>Recall, cheapest first</h2>
+    <div class="layers">
+      <div class="layer"><span class="k">TIMELINE</span><span class="d"><b>Automatic at session start.</b> Titles + IDs + category icons only. Fifty notes cost a few hundred tokens.</span></div>
+      <div class="layer"><span class="k">GET BY ID</span><span class="d"><b>On demand.</b> A title looks relevant → fetch that note's facts + narrative. Pay only for what you need.</span></div>
+      <div class="layer"><span class="k">SEARCH</span><span class="d"><b>For everything older.</b> By meaning, keyword, category, date, project. Titles come back first — then fetch details.</span></div>
+    </div>
+    <p class="mantra">Mantra: <mark>titles first, details on demand.</mark> Never dump everything.</p>
+  </section>
+
+  <section id="modes">
+    <div class="kicker">06 · The superpower</div>
+    <h2>Modes: swap the observer's job description</h2>
+    <p class="sub">A mode is a plain config file: who the observer is, what the categories are, what the tags are, what language to write in (30+ shipped). Pick a mode to see what changes:</p>
+    <div class="modetabs" role="tablist" aria-label="Modes">
+      <button class="modetab" role="tab" aria-selected="true" data-mode="code">Code (default)</button>
+      <button class="modetab" role="tab" aria-selected="false" data-mode="chill">Code — Chill</button>
+      <button class="modetab" role="tab" aria-selected="false" data-mode="email">Email investigation</button>
+      <button class="modetab" role="tab" aria-selected="false" data-mode="law">Law study</button>
+      <button class="modetab" role="tab" aria-selected="false" data-mode="robot">Robot monitoring</button>
+      <button class="modetab" role="tab" aria-selected="false" data-mode="yours">✨ Your mode</button>
+    </div>
+    <div class="modepanel" id="modepanel" aria-live="polite">
+      <h3 id="mp-name">Code Development</h3>
+      <p class="watch" id="mp-watch">Watches a coding session: files read, edits, commands, test runs.</p>
+      <div class="cats" id="mp-cats"></div>
+      <p style="margin:14px 0 0; color:var(--ink-2)" id="mp-note">The default. Records what got fixed, built, decided, and discovered — with rationale.</p>
+    </div>
+    <p class="sub" style="margin-top:18px">Don't write one by hand — run <code>/mode-creator</code>. It interviews you, then writes, installs, and activates the mode. <mark>Any data in, any pattern out.</mark></p>
+  </section>
+
+  <section id="start">
+    <div class="kicker">07 · Do this today</div>
+    <h2>Five-minute quickstart</h2>
+    <div class="steps">
+      <div class="step"><input type="checkbox" id="s1"><label for="s1"><b><code>npx claude-mem install</code></b> — a note-taker joins the room.</label></div>
+      <div class="step"><input type="checkbox" id="s2"><label for="s2"><b>Work in a session.</b> The observer starts taking notes immediately. (Open the local viewer to watch them land live.)</label></div>
+      <div class="step"><input type="checkbox" id="s3"><label for="s3"><b>Start a second session</b> in the same project → the timeline appears at the top. <b>That's memory.</b> First session seeds; second is where you feel it.</label></div>
+      <div class="step"><input type="checkbox" id="s4"><label for="s4"><b>Ask "did we already fix X?"</b> — watch the agent search, filter titles, fetch by ID.</label></div>
+      <div class="step"><input type="checkbox" id="s5"><label for="s5"><b>Run <code>/mode-creator</code></b> and point the observer at something that isn't code — a photo, a transcript, a chat export.</label></div>
+    </div>
+  </section>
+
+  <section id="prize">
+    <div class="prize">
+      <div class="kicker" style="color:var(--hi)">The challenge</div>
+      <h2>Build an agentic tool that actually remembers</h2>
+      <div class="money">$1,000</div>
+      <div class="sub2">cash · judged separately from overall 1st–3rd — you can win both</div>
+      <ol class="dirs">
+        <li><span><b>Warm boot</b> — instant context, no ten-turn rediscovery</span></li>
+        <li><span><b>Build on the timeline</b> — timeline + search as your retrieval layer</span></li>
+        <li><span><b>Give the skills a face</b> — UI/UX so memory can be seen, steered, shared</span></li>
+        <li><span><b>Build an integration</b> — editor, CI, chat app, another agent framework</span></li>
+        <li><span><b>Ingest anything</b> — images, transcripts, logs, tickets + a custom mode</span></li>
+        <li><span><b>Fire on what it sees</b> — react to observations in real time</span></li>
+        <li><span><b>Memory as a speed play</b> — fewer tokens, turns, seconds</span></li>
+      </ol>
+      <div class="tiebreak">Tiebreaker: would someone actually use it Monday morning?</div>
+    </div>
+    <p class="sub" style="margin-top:18px">Every hacker gets 30 days of CMEM Pro free: <code>npx claude-mem install</code>, then code <code>FASTHACK30</code> at cmem.ai.</p>
+  </section>
+
+  <section id="vocab" class="vocab">
+    <div class="kicker">08 · Speak the language</div>
+    <h2>Vocabulary</h2>
+    <div class="card">
+      <dl>
+        <dt>Observer</dt><dd>the second agent that takes notes</dd>
+        <dt>Observation</dt><dd>one note (title, facts, narrative, category, tags, files, time)</dd>
+        <dt>Tool use</dt><dd>one action the main agent takes — read, edit, run, search</dd>
+        <dt>Timeline</dt><dd>the time-ordered list of note titles injected at session start</dd>
+        <dt>Mode</dt><dd>the observer's job description — role, categories, tags, language</dd>
+        <dt>Skill</dt><dd>a small reusable helper command (text in → text out)</dd>
+        <dt>Session summary</dt><dd>the end-of-session "where we are / what's next" note</dd>
+        <dt>Warm boot</dt><dd>starting a session already knowing what happened</dd>
+      </dl>
+    </div>
+  </section>
+
+  <div class="foot">
+    <span>Repo &amp; skills: <b>github.com/thedotmack/claude-mem</b></span>
+    <span>30 days Pro free: code <b>FASTHACK30</b> at cmem.ai</span>
+  </div>
+</div>
+
+<script>
+(function () {
+  // --- observer demo ---
+  var verdicts = {
+    read:   { yes: false, thought: '"Reading a config file to check a value… routine. Nothing durable learned."', body: 'No note. A notebook full of trivia is as useless as no notebook. The observer is deliberately selective — most actions become nothing.' },
+    ls:     { yes: false, thought: '"Listing files… the builder is just looking around."', body: 'No note. Orientation moves don’t get recorded. Only things that would be painful to rediscover do.' },
+    test:   { yes: true,  thought: '"Tests went green right after the config fix — that’s the payoff moment. Worth keeping."', note: { type: '● change', id: '#110970', time: '12:30 PM', t: 'Full test suite passes after config fix: 2685 pass, 0 fail', s: 'CI pipeline for the merged branch', facts: ['All 2685 tests pass with zero failures after the fix.', 'The failure was caused by a stale config value, not the new code.', 'The suite takes about 4 minutes end to end.'], nar: 'The red suite looked like a regression in the new code, but the cause was config. Worth remembering next time the suite goes red after a merge.', tags: 'problem-solution · gotcha' } },
+    bug:    { yes: true,  thought: '"A real bug, a real cause, a real fix. Future sessions will want this."', note: { type: '● bugfix', id: '#110962', time: '3:48 PM', t: 'Fixed login redirect loop caused by stale session cookie', s: 'Auth middleware in the web app', facts: ['The loop only happened when the session cookie was older than 24 hours.', 'The fix clears the cookie before re-issuing the login redirect.', 'The logic lives in the auth middleware, not the login page.'], nar: 'Looked like a frontend routing bug; the cause was server-side. Clearing the expired cookie before redirecting broke the loop.', tags: 'problem-solution · gotcha' } },
+    decide: { yes: true,  thought: '"An architectural choice with a rationale — the #1 thing teams lose. Definitely a note."', note: { type: '⚖ decision', id: '#110975', time: '1:12 PM', t: 'Chose SQLite over Postgres for local-first storage', s: 'Storage layer decision', facts: ['SQLite needs zero setup, which matters for a plugin installed by npx.', 'The write volume is tiny — one observation every few seconds at most.', 'Postgres stays an option behind the same storage interface if scale demands it.'], nar: 'The deciding factor was install friction: users run one command and it has to just work. The rationale is recorded so nobody re-litigates this in three months.', tags: 'trade-off · why-it-exists' } },
+    end:    { yes: true,  thought: '"Session’s over — time to write the hand-off."', note: { type: '🎯 summary', id: 'session', time: '5:02 PM', t: 'Where we are & what’s next', s: 'End-of-session progress summary', facts: ['The redirect-loop bugfix shipped and the full suite is green.', 'The SQLite decision is recorded with its rationale.', 'Next: wire the timeline into the new viewer page.'], nar: 'This summary is the hand-off. The next session’s warm boot starts from exactly here.', tags: 'what-changed' } }
+  };
+  function esc(x){ var d=document.createElement('div'); d.textContent=x; return d.innerHTML; }
+  var box = document.getElementById('verdict');
+  document.querySelectorAll('.actbtn').forEach(function (b) {
+    b.addEventListener('click', function () {
+      document.querySelectorAll('.actbtn').forEach(function (o) { o.setAttribute('aria-pressed', 'false'); });
+      b.setAttribute('aria-pressed', 'true');
+      var v = verdicts[b.dataset.act];
+      var html = '<p class="v-head">Is this worth a note?</p>'
+        + '<span class="stamp ' + (v.yes ? 'yes">✎ YES — note taken' : 'no">skip — no note') + '</span>'
+        + '<p class="thought">' + v.thought + '</p>';
+      if (v.yes && v.note) {
+        var n = v.note;
+        html += '<div class="note"><div class="meta"><span class="type">' + esc(n.type) + '</span><span>' + esc(n.id) + '</span><span>' + esc(n.time) + '</span></div>'
+          + '<div class="t">' + esc(n.t) + '</div><div class="s">' + esc(n.s) + '</div><ul>'
+          + n.facts.map(function (f) { return '<li>' + esc(f) + '</li>'; }).join('')
+          + '</ul><p class="nar">' + esc(n.nar) + '</p><div class="tags">tags: ' + esc(n.tags) + '</div></div>';
+      } else {
+        html += '<p style="color:var(--ink-2)">' + v.body + '</p>';
+      }
+      box.className = 'verdict ' + (v.yes ? 'yes' : 'no');
+      box.innerHTML = html;
+    });
+  });
+
+  // --- mode tabs ---
+  var modes = {
+    code:  { name: 'Code Development', watch: 'Watches a coding session: files read, edits, commands, test runs.', cats: ['bugfix', 'feature', 'refactor', 'change', 'discovery', 'decision'], note: 'The default. Records what got fixed, built, decided, and discovered — with rationale.' },
+    chill: { name: 'Code — Chill', watch: 'Same session, calmer pen. Only records things painful to rediscover.', cats: ['shipped features', 'architecture decisions', 'non-obvious gotchas'], note: 'Skips routine work and obvious changes. Fewer, denser notes.' },
+    email: { name: 'Email Investigation', watch: 'Watches email dumps: FOIA releases, corporate archives, exports.', cats: ['entity', 'relationship', 'timeline-event', 'evidence', 'anomaly', 'conclusion'], note: 'Turns an inbox into an investigable timeline of people, connections, and events.' },
+    law:   { name: 'Law Study', watch: 'Watches study sessions: casebooks, outlines, practice exams.', cats: ['case', 'rule', 'exam point', 'concept'], note: 'A study partner that remembers every rule and where it came from.' },
+    robot: { name: 'Robot Monitoring', watch: 'Watches a live robot over rosbridge: goals, telemetry, errors.', cats: ['action-goal', 'action-result', 'topic-event', 'state-change', 'error'], note: 'A real mode someone built for their own robot — same machinery, zero code changes.' },
+    yours: { name: 'Your Mode', watch: 'Whiteboard photos? Meeting transcripts? Chat logs? Support tickets? You decide.', cats: ['you', 'pick', 'the', 'categories'], note: 'Run /mode-creator — it interviews you, writes the mode, installs it, and activates it. This is prize direction #5.' }
+  };
+  var tabs = document.querySelectorAll('.modetab');
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () {
+      tabs.forEach(function (o) { o.setAttribute('aria-selected', 'false'); });
+      t.setAttribute('aria-selected', 'true');
+      var m = modes[t.dataset.mode];
+      document.getElementById('mp-name').textContent = m.name;
+      document.getElementById('mp-watch').textContent = m.watch;
+      document.getElementById('mp-note').textContent = m.note;
+      document.getElementById('mp-cats').innerHTML = m.cats.map(function (c) { return '<span class="cat">' + esc(c) + '</span>'; }).join('');
+    });
+  });
+  document.getElementById('mp-cats').innerHTML = modes.code.cats.map(function (c) { return '<span class="cat">' + esc(c) + '</span>'; }).join('');
+})();
+</script>

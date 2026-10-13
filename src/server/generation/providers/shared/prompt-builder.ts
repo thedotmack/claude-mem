@@ -3,6 +3,7 @@
 import { ModeManager } from '../../../../services/domain/ModeManager.js';
 import type { ModeConfig, ObservationType } from '../../../../services/domain/types.js';
 import { stripTags } from '../../../../utils/tag-stripping.js';
+import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../../../../utils/redaction.js';
 import { logger } from '../../../../utils/logger.js';
 import type { PostgresAgentEvent } from '../../../../storage/postgres/agent-events.js';
 import type { ServerGenerationContext } from './types.js';
@@ -21,8 +22,8 @@ const FALLBACK_OBSERVATION_TYPES: ReadonlyArray<Pick<ObservationType, 'id'>> = [
 
 // Build a single-shot generation prompt from a list of AgentEvent records
 // plus project/session metadata. Output: a user prompt asking the provider
-// to return one or more <observation> XML blocks (or an empty response if
-// the batch should be skipped). This is intentionally a single-turn request
+// to return one or more <observation> XML blocks (or a self-closing
+// <skip_summary /> if the batch should be skipped). This is intentionally a single-turn request
 // — server-beta does NOT use the worker's multi-turn SDK conversation
 // model. parseAgentXml(...) accepts the response unchanged.
 //
@@ -36,6 +37,8 @@ export interface BuildServerPromptResult {
   readonly prompt: string;
   readonly hadPrivateContent: boolean;
   readonly skippedAll: boolean;
+  /** No events were loaded at all — distinct from "loaded, then scrubbed away". */
+  readonly noEvents: boolean;
 }
 
 const MAX_PAYLOAD_CHARS = 16 * 1024;
@@ -62,26 +65,46 @@ export function buildServerGenerationPrompt(
   }
 
   const skippedAll = context.events.length > 0 && allEventsScrubbedToEmpty;
+  // An EMPTY input is not a privacy strip, and saying so in the prompt handed
+  // the model the exact pretext the instruction below names — it answered
+  // <skip_summary /> and the job completed with nothing. Kept separate so the
+  // caller can refuse the call instead of buying that answer.
+  const noEvents = context.events.length === 0;
 
-  const sessionTag = context.project.serverSessionId
-    ? `\n  <server_session_id>${escapeXml(context.project.serverSessionId)}</server_session_id>`
-    : '';
+  // Only the folder label helps the model; the project, team, session and job
+  // ids are opaque UUIDs it never needs, and nothing reads them back from the
+  // response (the job is identified by the BullMQ payload and the outbox row).
   const projectTag = context.project.projectName
-    ? `\n  <project_name>${escapeXml(context.project.projectName)}</project_name>`
-    : '';
+    ? [`  <project_name>${escapeXml(context.project.projectName)}</project_name>`]
+    : [];
 
   const observationOutputSchema = buildObservationOutputSchema(mode);
 
-  const prompt = [
-    '<server_beta_observation_request>',
-    `  <project_id>${escapeXml(context.project.projectId)}</project_id>`,
-    `  <team_id>${escapeXml(context.project.teamId)}</team_id>` + sessionTag + projectTag,
-    `  <generation_job_id>${escapeXml(context.job.id)}</generation_job_id>`,
-    '  <agent_events>',
-    eventBlocks.length > 0 ? eventBlocks.join('\n') : '    <!-- empty after privacy stripping -->',
-    '  </agent_events>',
-    '</server_beta_observation_request>',
+  // Summary jobs are a different task from event jobs, and the persistence path
+  // for them (processGeneratedResponse -> parsed.summary) only understands a
+  // <summary> block. Asking for <observation> here yields a response the summary
+  // path silently discards, so branch the instruction on the job's source type.
+  const isSessionSummary = context.job.sourceType === 'session_summary';
+
+  const summaryInstruction = [
+    'You are reviewing a complete agent session. Return a single',
+    '<summary>...</summary> XML block describing the arc of the session. If the',
+    'session contains nothing worth recording (e.g., everything was scrubbed by',
+    'privacy filters or the activity was trivial), return a single self-closing',
+    '<skip_summary /> tag and nothing else. Do not include any prose outside the XML.',
     '',
+    'Schema for the <summary> block (at least one field must contain content):',
+    '<summary>',
+    '  <request>what the user asked for</request>',
+    '  <investigated>what was explored, and how</investigated>',
+    '  <learned>durable findings worth remembering later</learned>',
+    '  <completed>what was actually done</completed>',
+    '  <next_steps>what is left open</next_steps>',
+    '  <notes>anything else worth keeping</notes>',
+    '</summary>',
+  ];
+
+  const observationInstruction = [
     'You are observing an agent at work. Return one or more',
     '<observation>...</observation> XML blocks summarizing durable, useful',
     'discoveries from the events above. If the events contain nothing worth',
@@ -91,9 +114,28 @@ export function buildServerGenerationPrompt(
     '',
     'Schema for each <observation> block:',
     observationOutputSchema,
+  ];
+
+  // The instructions stay after the events. Placed first (so every request
+  // would share a cacheable prefix), DeepSeek V4.1 Flash wrote ~25% fewer
+  // observations on the same 40 events and skipped 12 of them instead of 2.
+  const prompt = [
+    '<server_beta_observation_request>',
+    ...projectTag,
+    '  <agent_events>',
+    eventBlocks.length > 0
+      ? eventBlocks.join('\n')
+      : noEvents
+        ? '    <!-- no agent events were loaded for this session -->'
+        : '    <!-- empty after privacy stripping -->',
+    '  </agent_events>',
+    '</server_beta_observation_request>',
+    '',
+    ...(isSessionSummary ? summaryInstruction : observationInstruction),
+    ...(eventBlocks.some(hasRedactionMarker) ? ['', REDACTION_MARKER_HINT] : []),
   ].join('\n');
 
-  return { prompt, hadPrivateContent, skippedAll };
+  return { prompt, hadPrivateContent, skippedAll, noEvents };
 }
 
 interface EventBlockResult {
@@ -102,8 +144,9 @@ interface EventBlockResult {
 }
 
 function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
+  // Compact JSON: indentation is input the model doesn't need.
   const rawPayload =
-    typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload ?? {}, null, 2);
+    typeof event.payload === 'string' ? event.payload : JSON.stringify(event.payload ?? {});
 
   const stripResult = stripTags(rawPayload);
   const hadPrivate = (stripResult.counts.private ?? 0) > 0;
@@ -118,17 +161,33 @@ function buildEventBlock(event: PostgresAgentEvent): EventBlockResult {
   return {
     body: [
       '    <agent_event>',
-      `      <id>${escapeXml(event.id)}</id>`,
       `      <event_type>${escapeXml(event.eventType)}</event_type>`,
-      `      <source_adapter>${escapeXml(event.sourceAdapter)}</source_adapter>`,
       `      <occurred_at>${new Date(event.occurredAtEpoch).toISOString()}</occurred_at>`,
       '      <payload>',
-      escapeXml(truncatedPayload),
+      escapeXmlText(truncatedPayload),
       '      </payload>',
       '    </agent_event>',
     ].join('\n'),
     hadPrivate,
   };
+}
+
+/**
+ * Bytes this event contributes to the prompt.
+ *
+ * Measured on the block the prompt actually carries, not estimated from the raw
+ * row: the payload is pretty-printed, privacy-stripped, truncated, XML-escaped
+ * and wrapped in metadata tags above, and a caller that budgets the input has to
+ * agree with all of it. Deriving the number a second time is what let the two
+ * drift apart in the first place.
+ *
+ * Returns 0 for an event whose block is dropped, so it costs no budget either.
+ */
+export function eventBlockBytes(event: PostgresAgentEvent): number {
+  const { body } = buildEventBlock(event);
+  if (body.length === 0) return 0;
+  // + 1 for the '\n' that joins this block to the next one
+  return Buffer.byteLength(body, 'utf8') + 1;
 }
 
 function loadActiveModeOrFallback(): ModeConfig | { observation_types: ReadonlyArray<Pick<ObservationType, 'id'>> } {
@@ -157,6 +216,18 @@ function buildObservationOutputSchema(mode: ModeConfig | { observation_types: Re
     '  <files_modified><file>...</file></files_modified>',
     '</observation>',
   ].join('\n');
+}
+
+/**
+ * Escaping for XML character data: only `&`, `<` and `>` need it. Quotes do
+ * not, and turning every `"` of a JSON payload into `&quot;` cost ~14% of the
+ * input tokens of a generation call.
+ */
+function escapeXmlText(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
 }
 
 function escapeXml(text: string): string {
