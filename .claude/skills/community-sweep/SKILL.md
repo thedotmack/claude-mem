@@ -1,6 +1,6 @@
 ---
 name: community-sweep
-description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open non-maintainer PR and issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
+description: Land community pull requests as the contributor and answer community issues on thedotmack/claude-mem. Takes stock of every open PR (the owner's own included; their new features wait for approval) and community issue, triages each against the owner's merge philosophy and the cmem.ai hosted-service boundary, finishes somewhat-aligned PRs on the contributor's own branch, squash-merges so the contributor stays the commit author on main, thanks them by name, closes fixed issues with credit to reporter and fixer, keeps the private ledger and contributor roster current, and reports what needs the owner. Use when asked to "go through the PRs", "merge contributor PRs", "help contributors with their PRs", "land the new community PRs", "triage new issues and PRs", "run the community sweep", "keep the momentum", or "grow the community".
 ---
 
 # Community Sweep
@@ -57,7 +57,7 @@ Put every open PR in exactly one bucket, using its last ledger row:
 
 | Bucket | Rule | What to do |
 |---|---|---|
-| Maintainer | author is `thedotmack` | Never touch it. |
+| Maintainer | author is `thedotmack` | Triage it (step 2) under the maintainer rules below. |
 | Held | last row is `held` | Never comment, push, close or approve CI. Report any new activity to the owner. |
 | Blocked | last row is `blocked` | Re-triage only if the author pushed or replied after that row. |
 | Done | last row is `merged` or `closed` | It shouldn't be open, so find out why. |
@@ -109,6 +109,18 @@ Read main's code with `git show origin/main:<path>`. Leave generated bundles out
 | `HOLD` | Crosses the hosted-service boundary, or needs a product call | Leave it untouched for the owner to decide. |
 | `DECLINE` | Wrong direction, harmful, or not worth finishing | Close with thanks and the reason. |
 | `SPAM` / `EMPTY` | Unrelated to claude-mem, or no code. This includes rewrites of SECURITY.md, README or LICENSE with someone else's details, and CLAUDE.md or AGENTS.md replaced with a tool's generated output | Close with one neutral line. |
+
+### The owner's own PRs (author `thedotmack`)
+
+The owner's PRs go through the same triage and landing as everyone's, with these differences:
+
+- **A new feature needs the owner's approval.** If the PR adds a capability that didn't exist (a new command, skill, setting, hook, host or provider integration, provider, plugin, sync or backup path, or UI surface), use `HOLD` with the line `new feature: needs owner approval`. Don't push, comment or merge. When it's unclear whether the PR is a fix or a feature, treat it as a feature.
+- **Everything else lands:** bug fixes, docs, tests, refactors, removing dead code, performance work, and fixes or follow-ups to features that already shipped. Merge main into the branch, resolve conflicts, finish gaps with our own commits, and merge.
+- **Plans, research, specs and notes** (a PR that is mostly `plans/`, or only docs for work that isn't built yet) are `HOLD` with `plan-only PR: owner's call`. The owner's rule is that these don't go in PRs.
+- **Never close the owner's PRs.** For `SUPERSEDED`, `DECLINE` or `CONSOLIDATE`, record the verdict and the evidence in the report and leave the PR open.
+- The hosted-service boundary still applies. A boundary change in the owner's own PR is the owner's intent, so it doesn't need a `HOLD` for that reason. Do check that it doesn't clash with a boundary change already on main, and list any clash for the owner.
+- **No thank-you comment.** After a merge, post a 1–3 bullet note only if we pushed changes (what we changed and why). Don't add the owner to the roster.
+- Ledger these PRs like any other, with `thedotmack` as the author.
 
 ### The hosted-service boundary (verdict `HOLD`)
 
@@ -238,6 +250,7 @@ Make them warm, specific and short: name the person, and say what changed for us
 - **Issue fixed:** "Fixed by #4162 (6cec29395): the SDK child now keeps `CLAUDE_CODE_TMPDIR`, so pointing it at a private directory works for the Observer too. Thanks @reporter for the report and @fixer for the fix."
 - **Spam:** "Closing — this doesn't relate to claude-mem."
 - **Held PRs and `OWNER` issues:** no comment. The owner handles them.
+- **The owner's PRs:** no thanks. Comment only to say what we pushed.
 
 ## 7. Record and report
 
@@ -276,7 +289,8 @@ Make them warm, specific and short: name the person, and say what changed for us
 
 ## Never
 
-- Touch a maintainer (`thedotmack`) PR, or comment on, push to, close, or approve CI for a held PR.
+- Land a new feature from a maintainer (`thedotmack`) PR without the owner's approval, or close a maintainer PR.
+- Comment on, push to, close, or approve CI for a held PR.
 - Force-push, rebase, or rewrite a contributor's commits.
 - Override the squash author or body: no `--admin`, `--body` or `--author-email`.
 - Commit generated bundles or `CHANGELOG.md`, bump the version, or publish. Releases are a separate owner step.
