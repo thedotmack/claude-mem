@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { OpenRouterProvider, classifyOpenRouterError } from '../../src/services/worker/OpenRouterProvider.js';
 import { classifyOpenAICompatError } from '../../src/services/worker/OpenAICompatProvider.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
@@ -417,7 +418,7 @@ describe('an output failure consumes only its own batch; the work behind it is s
     spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }],
         observation_concepts: [],
       }),
