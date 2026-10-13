@@ -3,7 +3,7 @@ import { getPlatformAdapter } from './adapters/index.js';
 import { AdapterRejectedInput } from './adapters/errors.js';
 import { getEventHandler } from './handlers/index.js';
 import type { HookResult } from './types.js';
-import { HOOK_EXIT_CODES, isToolHookDisabledByEnv } from '../shared/hook-constants.js';
+import { HOOK_EXIT_CODES, isToolHookDisabledByEnv, isSummarizeDisabledByEnv } from '../shared/hook-constants.js';
 import {
   installHookStderrBuffer,
   emitModelContext,
@@ -87,10 +87,11 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   // (closed enum enforced inside; non-enum events just omit hook_type).
   setActiveHookType(event);
 
-  // #3106: env opt-out for the high-frequency tool hooks. Checked before stdin
-  // and handler work, and still emits the no-op envelope so the host gets
-  // valid JSON.
-  if (isToolHookDisabledByEnv(event)) {
+  // #3106: env opt-out for the high-frequency tool hooks; #4734: the same
+  // early-out for the Stop summary behind CLAUDE_MEM_DISABLE_SUMMARY. Checked
+  // before stdin and handler work, and still emits the no-op envelope so the
+  // host gets valid JSON.
+  if (isToolHookDisabledByEnv(event) || isSummarizeDisabledByEnv(event)) {
     const adapter = getPlatformAdapter(platform);
     emitModelContext(adapter, buildNoOpResult(event));
     await exitGraceful(options);
