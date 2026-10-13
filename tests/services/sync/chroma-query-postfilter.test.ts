@@ -77,7 +77,7 @@ function fakeQuery(args: any) {
     ids: [hits.map(d => d.id)],
     metadatas: include.includes('metadatas') ? [hits.map(({ id: _id, ...metadata }) => metadata)] : null,
     distances: include.includes('distances') ? [hits.map((_, i) => i * 0.001)] : null,
-    documents: include.includes('documents') ? [hits.map(d => d.id)] : null,
+    documents: include.includes('documents') ? [hits.map(d => `${d.id}: ${'x'.repeat(2048)}`)] : null,
   };
 }
 
@@ -186,12 +186,37 @@ describe('ChromaSync.queryChroma adaptive post-filtering', () => {
     expect(qs[0].args.n_results).toBe(10);
   });
 
-  it('over-fetches only metadatas and distances, which is all it reads', async () => {
+  it('requests only metadatas and distances on both fast and filtered fallback paths', async () => {
     await sync.queryChroma('anything', 100, { project: 'tiny' });
 
     const qs = queryCalls();
     expect(qs[0].args.include).toEqual(['metadatas', 'distances']);
-    expect(qs[1].args.include).toEqual(['documents', 'metadatas', 'distances']);
+    expect(qs[1].args.include).toEqual(['metadatas', 'distances']);
+  });
+
+  it('keeps a 10,000-candidate fallback metadata-only without truncating the budget', async () => {
+    const originalLength = CORPUS.length;
+    try {
+      for (let i = originalLength; i < 10_000; i++) {
+        CORPUS.push({ id: `obs_${i}_fact_0`, project: 'big',
+          doc_type: 'observation', platform_source: 'claude' });
+      }
+      const out = await sync.queryChroma('large corpus', 10_000);
+      const qs = queryCalls();
+      expect(qs.length).toBe(1);
+      expect(qs[0].args.n_results).toBe(10_000);
+      expect(qs[0].args.include).toEqual(['metadatas', 'distances']);
+      expect(out.ids).toEqual(CORPUS.map(d => Number(d.id.split('_')[1])));
+      expect(out.metadatas.length).toBe(10_000);
+      expect(out.distances.length).toBe(10_000);
+      const response = fakeQuery(qs[0].args);
+      expect(response.documents).toBeNull();
+      const withUnusedText = fakeQuery({ ...qs[0].args,
+        include: ['documents', 'metadatas', 'distances'] });
+      expect(JSON.stringify(response).length).toBeLessThan(JSON.stringify(withUnusedText).length / 10);
+    } finally {
+      CORPUS.splice(originalLength);
+    }
   });
 
   it('never takes the fast path for a limit of zero', async () => {

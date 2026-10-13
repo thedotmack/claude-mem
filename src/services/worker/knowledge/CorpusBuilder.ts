@@ -44,7 +44,7 @@ export class CorpusBuilder {
 
     // A corpus contains observations; unrelated prompts and summaries must
     // not consume the semantic search candidate window.
-    const searchArgs: Record<string, unknown> = { searchType: 'observations' };
+    const searchArgs: Record<string, unknown> = { searchType: 'observations', limit: filter.limit ?? 500 };
     if (filter.project) searchArgs.project = filter.project;
     if (filter.types && filter.types.length > 0) searchArgs.obs_type = filter.types.join(',');
     if (filter.concepts && filter.concepts.length > 0) searchArgs.concepts = filter.concepts;
@@ -52,7 +52,6 @@ export class CorpusBuilder {
     if (filter.query) searchArgs.query = filter.query;
     if (filter.date_start) searchArgs.dateStart = filter.date_start;
     if (filter.date_end) searchArgs.dateEnd = filter.date_end;
-    if (filter.limit) searchArgs.limit = filter.limit;
     // The stored filter is the whole definition of a corpus; the 90-day window interactive
     // search applies to date-less Chroma queries would shrink it on every rebuild.
     searchArgs.ignoreDefaultRecencyWindow = true;
