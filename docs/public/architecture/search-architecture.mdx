@@ -19,6 +19,17 @@ Claude-mem uses an **MCP-based search architecture** that provides intelligent m
 5. **SQLite Database** - Persistent storage with FTS5 virtual tables
 6. **Chroma Vector DB** - Semantic search with hybrid retrieval
 
+SQLite holds the current memory content; Chroma holds its search projection.
+Live indexing and startup backfill share a writer per collection, record type,
+and SQLite ID. That writer covers obsolete-fragment cleanup, every document
+batch, and the sync checkpoint. Backfill and cloud-sync forwards re-read the
+SQLite row after obtaining their turn, so a cached older snapshot cannot
+overwrite a completed revision or restore a previous project after a remap.
+Other live callers may supply their immutable new-row content directly.
+Different records can still index concurrently. This ordering is within one
+worker process; it does not provide a transaction across SQLite and Chroma.
+SQL mutations that happen after that read still need their own reindexing path.
+
 **Token Efficiency**: ~10x savings through 3-layer workflow pattern
 
 ## How It Works
