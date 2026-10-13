@@ -5,7 +5,7 @@
 import postgres from "postgres";
 import { authenticateRequest, errorResponse, json } from "./auth";
 import type { SyncApiEnv } from "./env";
-import { loadEnv } from "./env";
+import { formatHostForUrl, loadEnv } from "./env";
 import { startForwardProxy } from "./forward";
 import {
 	decimalAtLeast,
@@ -518,7 +518,7 @@ export async function startSyncApi(
 	});
 
 	const host = env.HOST === "0.0.0.0" ? "127.0.0.1" : env.HOST;
-	const url = `http://${host}:${server.port}`;
+	const url = `http://${formatHostForUrl(host)}:${server.port}`;
 
 	const stop = async (): Promise<void> => {
 		server.stop(true);
