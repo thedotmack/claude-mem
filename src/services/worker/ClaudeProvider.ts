@@ -30,7 +30,7 @@ import {
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { buildHardenedSdkOptions } from '../../sdk/hardened-options.js';
+import { buildHardenedSdkOptions, resolveObserverThinkingOption } from '../../sdk/hardened-options.js';
 import { describeObserverOutputShape, formatEmptyOutputReason } from '../../sdk/output-classifier.js';
 import { ClassifiedProviderError, isClassified } from './provider-errors.js';
 import { resolveSummaryTierModel, resolveTierAlias } from './model-aliases.js';
@@ -66,6 +66,46 @@ import { paidSendBudgetForClaimedBatch } from './paid-send-budget.js';
 let effortHintLogged = false;
 export function __resetEffortHintLatchForTesting(): void {
   effortHintLogged = false;
+}
+
+/**
+ * Whether provider feedback says the request itself was rejected over the
+ * `thinking` parameter (#4732): an always-thinking upstream behind an
+ * Anthropic-compatible gateway refuses `thinking:{type:"disabled"}` with
+ * HTTP 400 / `invalid_request_error` (GLM words it "[1210][该模型始终思考，
+ * 不支持关闭思考…]" — no English "thinking", hence the 1210 and the Chinese
+ * phrasing in the match; the SDK's own "status 400" wrapping counts too).
+ * Both halves must agree, so ordinary prose that happens to contain
+ * "thinking", and invalid-request errors over some other parameter, never
+ * match.
+ */
+export function isThinkingRejectFeedback(text: string): boolean {
+  if (!text) return false;
+  const namesThinking = /\bthinking\b|该模型始终思考|不支持关闭思考/.test(text);
+  const invalidRequest = /\binvalid_request_error\b|\b1210\b|\bstatus:?\s*400\b|\bHTTP\s*400\b/i.test(text);
+  return namesThinking && invalidRequest;
+}
+
+/**
+ * Flatten a thrown provider error into the text the thinking-reject match runs
+ * against: the message, the structured HTTP status (`status 400`, so a thrown
+ * 400 whose message only names thinking still matches), and any structured
+ * body (the SDK attaches the 400 JSON to `.body`, mirroring the effort-hint
+ * inspection in classifyClaudeError).
+ */
+export function describeErrorFeedbackText(error: unknown): string {
+  const errAny = error as { message?: unknown; body?: unknown; status?: unknown; statusCode?: unknown } | null;
+  const parts: string[] = [];
+  if (typeof errAny?.message === 'string') parts.push(errAny.message);
+  const status = errAny?.status ?? errAny?.statusCode;
+  if (typeof status === 'number' || typeof status === 'string') parts.push(`status ${status}`);
+  const body = errAny?.body;
+  if (typeof body === 'string') {
+    parts.push(body);
+  } else if (body && typeof body === 'object') {
+    try { parts.push(JSON.stringify(body)); } catch { /* unserializable body: the message stands alone */ }
+  }
+  return parts.join('\n');
 }
 
 /**
@@ -414,6 +454,14 @@ export class ClaudeProvider {
           env: isolatedEnv,  // Use isolated credentials from ~/.claude-mem/.env, not process.env
           pathToClaudeCodeExecutable: claudePath,
           abortController: session.abortController,
+          // #4732: the thinking param is operator-configurable, and a session
+          // whose gateway already refused `disabled` sends nothing at all —
+          // re-sending a refused request would just reproduce the 400.
+          thinking: resolveObserverThinkingOption(
+            session.observerThinkingStripped
+              ? 'omit'
+              : SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_THINKING,
+          ),
           ...(shouldResume && session.memorySessionId ? { resume: session.memorySessionId } : {}),
           spawnClaudeCodeProcess: createSdkSpawnFactory(session.sessionDbId, slotReservation, observerExtraArgs),
         });
@@ -759,6 +807,37 @@ export class ClaudeProvider {
           // always pending while a batch is re-queued, so the buffer never
           // idles out, and an endlessly failing turn would spin on it.
           if (!turnDispatchedText) {
+            // #4732: an always-thinking gateway upstream rejects the
+            // thinking param with 400/1210 and the CLI reports it as a
+            // failed turn whose empty reply would flow down the
+            // no-observation-XML path and drop the claimed batch. Name the
+            // rejection on the first sight, strip the param for every later
+            // generation on this session, and pause this one as a transport
+            // exit: the claimed batch is re-queued and the transport resume
+            // opens the next generation with thinking omitted. One strip
+            // per session — if the gateway refused the param once it keeps
+            // refusing it, and a second pause here would just loop. This sits
+            // above the ordinary one-retry gate: an earlier textless failure
+            // that already used that retry must not hide the rejection.
+            const resultErrorFeedback = [
+              typeof (message as any).result === 'string' ? (message as any).result : '',
+              ...(((message as any).errors as string[] | undefined) ?? []),
+            ].join('\n');
+            if (resultIsError && !session.observerThinkingStripped && isThinkingRejectFeedback(resultErrorFeedback)) {
+              session.observerThinkingStripped = true;
+              logger.warn('SDK', 'Upstream rejected the thinking parameter; retrying the next generation with it stripped (#4732)', {
+                sessionId: session.sessionDbId,
+                claimed: session.claimedMessageIds.length,
+              });
+              await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+              session.abortReason = 'transport:thinking_rejected';
+              try {
+                session.abortController.abort();
+              } catch {
+                // best-effort
+              }
+              break;
+            }
             if (resultIsError && !retriedAfterErrorResult) {
               retriedAfterErrorResult = true;
               logger.warn('SDK', 'SDK turn failed before emitting text, re-queueing the claimed batch', {
@@ -826,6 +905,27 @@ export class ClaudeProvider {
       // goes with it, so the recheck gate does not re-run the same file. Any
       // other error keeps its own shape.
       if (isSpawnFailure(error)) this.recordAndThrowClassified(error, claudePath);
+      // #4732: the CLI can also surface the thinking rejection as a thrown
+      // 400 instead of an error result frame. Same response as the result-frame
+      // branch above: name it, strip the param for the next generation, and
+      // release the claimed batch through the transport exit so the resume
+      // retries with thinking omitted. The transport exit aborts the session
+      // controller and keeps the session, so the error rethrown below is
+      // ignored by the generator's catch (SessionRoutes: an error after abort
+      // is not booked as an observer failure) and the batch is retried.
+      if (
+        !session.abortReason &&
+        !responseProcessingThrew &&
+        !session.observerThinkingStripped &&
+        isThinkingRejectFeedback(describeErrorFeedbackText(error))
+      ) {
+        session.observerThinkingStripped = true;
+        logger.warn('SDK', 'Upstream rejected the thinking parameter; retrying the next generation with it stripped (#4732)', {
+          sessionId: session.sessionDbId,
+          claimed: session.claimedMessageIds.length,
+        });
+        await this.releaseClaimedBatchForTransportExit(session, 'transport:thinking_rejected');
+      }
       // The stream broke with the batch still claimed. Only a transient fault
       // of the stream itself is released for the transport resume. Anything
       // classifyClaudeError calls non-transient (a refused credential, a 400,
@@ -914,6 +1014,8 @@ export class ClaudeProvider {
       contentSessionId: string;
       project: string;
       signals?: AbortSignal[];
+      /** Set when the session's gateway already refused the thinking param (#4732). */
+      thinkingStripped?: boolean;
     },
     modelId: string,
     claudePath: string,
@@ -940,6 +1042,14 @@ export class ClaudeProvider {
             env: isolatedEnv,
             pathToClaudeCodeExecutable: claudePath,
             abortController: controller,
+            // Same thinking policy as the generation path (#4732): the
+            // operator's setting, overridden by a session that already had
+            // the param refused once.
+            thinking: resolveObserverThinkingOption(
+              context.thinkingStripped
+                ? 'omit'
+                : SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_OBSERVER_THINKING,
+            ),
           }),
           maxTurns: 1,
         },
@@ -976,6 +1086,7 @@ export class ClaudeProvider {
         contentSessionId: session.contentSessionId,
         project: session.project,
         signals: [signal, session.abortController.signal],
+        thinkingStripped: session.observerThinkingStripped,
       },
       modelId,
       claudePath,
