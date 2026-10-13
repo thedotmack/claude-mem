@@ -58,9 +58,10 @@ function isEnvFlagOn(value: string | undefined): boolean {
  *
  * When set, observation / file-context exit 0 in hookCommand before any stdin
  * or worker work, so users can turn off tool-call capture without editing the
- * shipped hooks.json. It does not stop the Windows console window: bash starts
- * the hook process before claude-mem runs (#3605). SessionStart /
- * UserPromptSubmit stay active here, and Stop is covered by its own switch
+ * shipped hooks.json. The on-PATH `claude-mem` launcher (exec form, no shell,
+ * #3605) checks the same tool-hook flags before starting Bun; this check is the
+ * guard for every other entry path. SessionStart / UserPromptSubmit stay
+ * active here, and Stop is covered by its own switch
  * (isSummarizeDisabledByEnv below), not by these flags.
  *
  * - CLAUDE_MEM_DISABLE_TOOL_HOOKS=1 — both tool hooks

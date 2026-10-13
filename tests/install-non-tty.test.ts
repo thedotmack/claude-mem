@@ -11,6 +11,10 @@ const installSourcePath = join(
   'install.ts',
 );
 const installSource = readFileSync(installSourcePath, 'utf-8');
+const claudeCodeVersionSource = readFileSync(
+  join(__dirname, '..', 'src', 'npx-cli', 'install', 'claude-code-version.ts'),
+  'utf-8',
+);
 const codexInstallerSourcePath = join(
   __dirname,
   '..',
@@ -309,9 +313,9 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('probes Claude Code version through the shared no-shell Windows invocation', () => {
-      const versionProbeRegion = installSource.slice(
-        installSource.indexOf('function readClaudeCodeVersionOutput'),
-        installSource.indexOf('function detectClaudeCodeVersion'),
+      const versionProbeRegion = claudeCodeVersionSource.slice(
+        claudeCodeVersionSource.indexOf('function readClaudeCodeVersionOutput'),
+        claudeCodeVersionSource.indexOf('function detectClaudeCodeVersion'),
       );
       expect(versionProbeRegion).toContain("lookupWindowsCommand('claude') ?? 'claude.cmd'");
       expect(versionProbeRegion).toContain('buildSpawnSyncInvocation(command, [');
