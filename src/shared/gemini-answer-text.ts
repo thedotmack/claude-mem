@@ -22,10 +22,10 @@ export interface GeminiPart {
  * GeminiObservationProvider, which may not import from each other.
  */
 export function readGeminiAnswerText(parts: GeminiPart[] | undefined): string {
-  if (!parts?.length) return '';
+  if (!Array.isArray(parts)) return '';
   return parts
     .filter((part): part is GeminiPart & { text: string } =>
-      part.thought !== true && typeof part.text === 'string')
+      part !== null && typeof part === 'object' && part.thought !== true && typeof part.text === 'string')
     .map(part => part.text)
     .join('');
 }

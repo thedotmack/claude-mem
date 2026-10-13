@@ -76,6 +76,8 @@ export const DEFAULT_CONTENT_BATCH_SIZE = 40;
 // The previous 30s client timeout was shorter than both, so the client
 // aborted mid-lease and retried into projection_busy. Default matches the lease.
 export const DEFAULT_REQUEST_TIMEOUT_MS = 90_000;
+/** Status checks have no projection work and must finish before upload deadlines. */
+export const DEFAULT_STATUS_TIMEOUT_MS = 20_000;
 export const CONTENT_BATCH_SIZE_MIN = 1;
 export const CONTENT_BATCH_SIZE_MAX = 500;
 export const REQUEST_TIMEOUT_MS_MIN = 5_000;
@@ -495,6 +497,8 @@ export interface CloudSyncOptions {
   backoffMaxMs?: number;
   /** Per-request timeout — a hub POST can never hang the drain. Default 90s. */
   requestTimeoutMs?: number;
+  /** Deadline for the complete read-only status probe. Default 20s. */
+  statusTimeoutMs?: number;
   /** Re-check interval while paused on a 401/403. Default 1h. */
   authRetryMs?: number;
   /**
@@ -509,6 +513,8 @@ export interface CloudSyncStatus {
   deviceId: string;
   pending: { observations: number; summaries: number; prompts: number; mutations: number; tombstones: number };
   quarantine: { count: number; latestReason: string | null };
+  /** Pulled hub ops this device set aside because they can never apply here. */
+  pullQuarantine: { count: number; latestReason: string | null };
   lastFlushAt: number | null;
   lastError: string | null;
   /** Set while paused on a 401/403; cleared by a successful re-check. */
@@ -539,6 +545,8 @@ export class CloudSync {
   private readonly backoffMaxMs: number;
   private readonly contentBatchSize: number;
   private readonly requestTimeoutMs: number;
+  private readonly statusTimeoutMs: number;
+  private statusProbePromise: Promise<void> | null = null;
   private readonly authRetryMs: number;
   private readonly healthFilePath: string | null;
 
@@ -606,6 +614,7 @@ export class CloudSync {
     this.requestTimeoutMs = options.requestTimeoutMs ?? parseRequestTimeoutMs(
       settings.CLAUDE_MEM_CLOUD_SYNC_REQUEST_TIMEOUT_MS,
     );
+    this.statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
     this.authRetryMs = options.authRetryMs ?? DEFAULT_AUTH_RETRY_MS;
     this.healthFilePath = options.healthFilePath ?? null;
     this.nextBackoffMs = this.backoffInitialMs;
@@ -780,6 +789,7 @@ export class CloudSync {
         tombstones: this.countPendingTombstones(),
       },
       quarantine: this.quarantineStatus(),
+      pullQuarantine: this.pullQuarantineStatus(),
       lastFlushAt: this.lastFlushAt,
       lastError: this.lastError,
       authError: this.authFailure
@@ -901,9 +911,19 @@ export class CloudSync {
     return this.status();
   }
 
-  private async probeHubStatus(): Promise<void> {
+  private probeHubStatus(): Promise<void> {
+    if (!this.statusProbePromise) {
+      this.statusProbePromise = this.runHubStatusProbe().finally(() => {
+        this.statusProbePromise = null;
+      });
+    }
+    return this.statusProbePromise;
+  }
+
+  private async runHubStatusProbe(): Promise<void> {
     let checkedAt = Date.now();
     try {
+      const signal = AbortSignal.timeout(this.statusTimeoutMs);
       const response = await this.fetchImpl(`${this.hubUrl}/v1/sync/status`, {
         method: 'GET',
         headers: {
@@ -912,7 +932,7 @@ export class CloudSync {
           'X-Device-Id': this.deviceId,
           ...(this.deviceName ? { 'X-Device-Name': this.deviceName } : {}),
         },
-        signal: AbortSignal.timeout(this.requestTimeoutMs),
+        signal,
       });
       checkedAt = Date.now();
       const syncMode = response.headers.get('X-Sync-Mode');
@@ -933,6 +953,7 @@ export class CloudSync {
       try {
         parsed = await response.json();
       } catch {
+        if (signal.aborted) throw signal.reason;
         throw new Error('sync hub status: response is not JSON');
       }
       if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
@@ -972,7 +993,7 @@ export class CloudSync {
       const raw = error instanceof Error ? friendlySyncError(error.message) : String(error);
       const safe = this.token === '' ? raw : raw.split(this.token).join('[REDACTED]');
       this.hubStatus = {
-        checkedAt,
+        checkedAt: Date.now(),
         reachable: false,
         epoch: null,
         headSeq: null,
@@ -1921,6 +1942,20 @@ export class CloudSync {
     }
   }
 
+  private pullQuarantineStatus(): { count: number; latestReason: string | null } {
+    try {
+      const count = (this.db.prepare(
+        'SELECT COUNT(*) AS n FROM sync_pull_quarantine'
+      ).get() as { n: number }).n;
+      const latest = this.db.prepare(
+        'SELECT reason FROM sync_pull_quarantine ORDER BY id DESC LIMIT 1'
+      ).get() as { reason: string } | undefined;
+      return { count, latestReason: latest?.reason ?? null };
+    } catch {
+      return { count: 0, latestReason: null }; // DB opened without SessionStore migrations
+    }
+  }
+
   private maxDecimal(values: string[]): string {
     let max = '0';
     for (const value of values) {
@@ -1993,7 +2028,8 @@ export class CloudSync {
 
   private scheduleRetry(minDelayMs = 0): void {
     if (this.stopped || this.retryTimer) return;
-    const delay = applyBackoffJitter(Math.max(this.nextBackoffMs, minDelayMs));
+    // Jitter the local ladder, never the minimum requested by the hub.
+    const delay = Math.max(applyBackoffJitter(this.nextBackoffMs), minDelayMs);
     this.nextBackoffMs = Math.min(this.nextBackoffMs * 2, this.backoffMaxMs);
     const timer = setTimeout(() => {
       this.retryTimer = null;

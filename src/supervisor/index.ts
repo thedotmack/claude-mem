@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { logger } from '../utils/logger.js';
 import {
   getProcessRegistry,
-  verifyPidFileOwnership,
+  verifyWorkerPidFileOwnership,
   type ManagedProcessInfo,
   type PidInfo,
   type ProcessRegistry
@@ -12,7 +12,7 @@ import { startHealthChecker, stopHealthChecker } from './health-checker.js';
 import { sweepOrphanedChromaTrees } from './orphan-chroma-sweep.js';
 import { paths } from '../shared/paths.js';
 
-// Moved beside verifyPidFileOwnership so npx-cli callers can read the PID file
+// Moved beside worker PID verification so npx-cli callers can read the PID file
 // without importing the supervisor; re-exported so existing imports keep working.
 export { readOwnedWorkerPidInfo } from './process-registry.js';
 
@@ -202,7 +202,7 @@ export function validateWorkerPidFile(options: ValidateWorkerPidOptions = {}): V
     return 'invalid';
   }
 
-  const isAlive = verifyPidFileOwnership(pidInfo);
+  const isAlive = verifyWorkerPidFileOwnership(pidInfo);
   if (isAlive && pidInfo) {
     if (options.logAlive ?? true) {
       logger.info('SYSTEM', 'Worker already running (PID alive)', {

@@ -642,7 +642,7 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     expect(result.content).toBe('');
   });
 
-  it('sends CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS as the output cap in a plain body', async () => {
+  it('sends CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS as the output cap in a plain, streamed body', async () => {
     settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '9000';
     const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(reply({ choices: [{ message: { content: 'ok' } }] }));
     spies.push(fetchSpy);
@@ -650,7 +650,9 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     await query([{ role: 'user', content: 'hi' }]);
 
     const [body] = sentBodies(fetchSpy);
-    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'temperature']);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']);
+    expect(body.stream).toBe(true);
+    expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.max_tokens).toBe(9000);
   });
 
@@ -671,6 +673,36 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     expect(second.max_completion_tokens).toBe(4096);
     expect(result.content).toBe('ok');
   });
+
+  const compressField = (signal = new AbortController().signal) =>
+    (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      compressField(t: string, b: number, c: unknown, s: AbortSignal): Promise<{ text: string; truncated: boolean } | null>;
+    }).compressField('a large payload', 1000, CONFIG, signal);
+
+  it('reports a condense reply cut at max_tokens as truncated', async () => {
+    spies.push(spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: 'the first half of a summ' }, finish_reason: 'length' }],
+    })));
+    spies.push(spyOn(logger, 'warn').mockImplementation(() => {}));
+
+    expect(await compressField()).toEqual({ text: 'the first half of a summ', truncated: true });
+  });
+
+  it('reports a condense reply that stopped on its own as complete', async () => {
+    spies.push(spyOn(globalThis, 'fetch').mockResolvedValue(reply({
+      choices: [{ message: { content: 'a whole summary' }, finish_reason: 'stop' }],
+    })));
+
+    expect(await compressField()).toEqual({ text: 'a whole summary', truncated: false });
+  });
+
+  it('bounds the condense budget by CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS', () => {
+    settingsOverrides.CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS = '3200';
+    const provider = new OpenAICompatProvider({} as never, {} as never) as unknown as {
+      fieldCompressionMaxOutputTokens(): number | undefined;
+    };
+    expect(provider.fieldCompressionMaxOutputTokens()).toBe(3200);
+  });
 });
 
 /** #3263's lesson, applied here: a 200 envelope carries the status that matters. */
@@ -685,9 +717,13 @@ describe('200 error envelopes are classified by what they report', () => {
     expect(classify({ code: 401, message: 'bad key' }).kind).toBe('auth_invalid');
   });
 
-  it('retries a litellm parse failure instead of dropping the batch', () => {
+  // Never pay twice (Phase 1): the model ran and was billed; only its output
+  // was lost, so a resend would pay for the same work again. It used to be
+  // classified transient and retried.
+  it('treats a litellm parse failure as an output failure, never retried', () => {
     const err = classify({ code: 200, message: 'Unable to get json response - Expecting value: line 45 column 1' });
-    expect(err.kind).toBe('transient');
+    expect(err.kind).toBe('unrecoverable');
+    expect(err.paidSendOutcome).toBe('output_failure');
     expect(err.message).toContain('Unable to get json response');
   });
 

@@ -128,15 +128,11 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
     let finalizeCalls = 0;
 
     class DeadlineProvider extends OpenRouterProvider {
-      private requestsThisRun = 0;
-
       protected override getConfig() {
         return { apiKey: 'test-key', model: 'test-model', apiUrl: 'https://openrouter.ai/api/v1/chat/completions' };
       }
 
       protected override async query() {
-        this.requestsThisRun += 1;
-        if (this.requestsThisRun === 1) return { content: '' };
         return withRetry(
           signal => new Promise<never>((_resolve, reject) => {
             signal.addEventListener('abort', () => reject(new Error('The operation was aborted.')), { once: true });
@@ -155,7 +151,6 @@ describe('deadline-paused observer resumes without a new hook (#4204)', () => {
           }
           return;
         }
-        this.requestsThisRun = 0;
         await super.startSession(current);
       }
     }

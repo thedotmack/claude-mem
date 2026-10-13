@@ -396,7 +396,10 @@ describe('platform-source - antigravity-cli support', () => {
     const viewer = readFileSync(join(import.meta.dir, '../src/ui/viewer-template.html'), 'utf-8');
     const tv = readFileSync(join(import.meta.dir, '../src/ui/tv.html'), 'utf-8');
     expect(viewer).toContain('.source-antigravity-cli {');
-    expect(viewer).toContain('[data-theme="dark"] .source-antigravity-cli {');
+    expect(viewer).toContain('color: var(--color-source-antigravity-cli-text);');
+    // The badge colour is a theme token, so light and dark each define it.
+    expect(viewer).toContain('--color-source-antigravity-cli-text: #0284c7;');
+    expect(viewer).toContain('--color-source-antigravity-cli-text: #38bdf8;');
     expect(tv).toContain("'antigravity-cli': '#0284c7'");
   });
 });

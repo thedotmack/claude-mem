@@ -42,16 +42,18 @@ import {
   windowAwareConversationMaxChars,
 } from '../../shared/observer-recycle.js';
 import { resolveContextWindowTokens, observationFieldMaxChars } from './context-window.js';
-import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration } from './session/recycle-conversation.js';
-import { ObserverResponsePacer } from './session/response-pacer.js';
+import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
+import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
+import { recordObserverFailure } from '../../shared/observer-health.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
-import { optimizeObservationFields, buildFieldCompressionPrompt, type FieldCompressor } from './field-optimizer.js';
+import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
 import { buildTelegramWrapupPrompt, type TelegramWrapupFormatterInput } from '../integrations/TelegramWrapupNotifier.js';
 import { telemetryBuffer } from '../telemetry/buffer.js';
 import { captureEvent } from '../telemetry/telemetry.js';
 import { clearDependencyStatus, recordClaudeCliSetupRequired, OBSERVER_DIR_UNUSABLE_CODE } from '../../shared/dependency-health.js';
 import { clearClaudeCliSelfHealAttempts } from './stale-spawn-recovery.js';
+import { paidSendBudgetForClaimedBatch } from './paid-send-budget.js';
 
 /**
  * Module-scoped guard so the "effort parameter" hint only fires once per
@@ -366,6 +368,10 @@ export class ClaudeProvider {
       session.sessionDbId
     );
 
+    // Set when processAgentResponse itself throws (storage, FK): that is not a
+    // broken stream, so the catch below leaves it to the runner, which books
+    // it in observer health.
+    let responseProcessingThrew = false;
     try {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
       const authMethod = getAuthMethodDescription();
@@ -503,7 +509,11 @@ export class ClaudeProvider {
               window: decision.window,
               authMethod,
             });
-            session.abortReason = `quota:${decision.window ?? 'unknown'}`;
+            // 'quota:<window>:<kind>': the category stays quota and the window
+            // stays the second field, and the kind travels with the abort so
+            // the runner books what the guard actually decided, whatever the
+            // shared snapshot says by the time the generator exits.
+            session.abortReason = `quota:${decision.window ?? 'unknown'}:${decision.pause?.kind ?? 'quota_exhausted'}`;
             try {
               session.abortController.abort();
             } catch {
@@ -612,9 +622,20 @@ export class ClaudeProvider {
             }, truncatedResponse);
           }
 
-          if (typeof textContent === 'string' && textContent.includes('Invalid API key')) {
+          // Only the CLI's own auth-failure status line; an observation may quote the phrase (#4253).
+          if (
+            message.error === 'authentication_failed' &&
+            /^Invalid API key(?: · (?:Fix external API key|Please run \/login))?$/.test(textContent.trim())
+          ) {
             throw new Error('Invalid API key: check your API key configuration in ~/.claude-mem/settings.json or ~/.claude-mem/.env');
           }
+
+          // The frame names the model that served the turn (an alias such as
+          // `haiku` arrives as its dated id). It is read off the CLI's stdout,
+          // so a frame without one keeps the requested model, as the other
+          // providers do.
+          const reportedModel = message.message.model;
+          const servedModel = typeof reportedModel === 'string' && reportedModel ? reportedModel : modelId;
 
           pacer.processingStarted();
           try {
@@ -628,7 +649,7 @@ export class ClaudeProvider {
               originalTimestamp,
               'SDK',
               cwdTracker.lastCwd,
-              modelId,
+              servedModel,
               activeResponseContext.current,
               emptyOutputReason
             );
@@ -636,6 +657,9 @@ export class ClaudeProvider {
               turnInsertedObservationIds.push(...(stored.insertedObservationIds ?? []));
               turnSummaryId = stored.summaryId ?? turnSummaryId;
             }
+          } catch (processingError) {
+            responseProcessingThrew = true;
+            throw processingError;
           } finally {
             pacer.processingFinished();
           }
@@ -759,6 +783,9 @@ export class ClaudeProvider {
                   activeResponseContext.current,
                   turnEmptyOutputReason ?? 'no-content-blocks'
                 );
+              } catch (processingError) {
+                responseProcessingThrew = true;
+                throw processingError;
               } finally {
                 pacer.processingFinished();
               }
@@ -778,6 +805,18 @@ export class ClaudeProvider {
           pacer.answer();
         }
       }
+      // The stream ended on its own: no result-driven exit (quota guard, stall,
+      // ResponseProcessor pause) and no abort (idle, shutdown, recycle, switch)
+      // named a reason. The SDK child exited mid-conversation, so the prompt it
+      // was answering will never be answered. Left here, the exit reaches
+      // GeneratorExitHandler as null and the buffered work is finalized away;
+      // a `transport` reason keeps the session, and releasing the claim lets
+      // the next generation re-send the batch instead of leaving it claimed.
+      // The abort also wakes a generator parked in the message drain between
+      // turns, which pacer.close() alone does not reach.
+      if (!session.abortReason) {
+        await this.releaseClaimedBatchForTransportExit(session, 'transport:sdk_eof');
+      }
     } catch (error) {
       // A missing binary (ENOENT) or a Windows .cmd/.bat shim that cannot be
       // launched without a shell (EINVAL) surfaces here as a raw spawn error.
@@ -787,6 +826,20 @@ export class ClaudeProvider {
       // goes with it, so the recheck gate does not re-run the same file. Any
       // other error keeps its own shape.
       if (isSpawnFailure(error)) this.recordAndThrowClassified(error, claudePath);
+      // The stream broke with the batch still claimed. Only a transient fault
+      // of the stream itself is released for the transport resume. Anything
+      // classifyClaudeError calls non-transient (a refused credential, a 400,
+      // "Prompt is too long", a quota) and any throw from processAgentResponse
+      // (storage) is rethrown untouched, so the runner books it in observer
+      // health exactly as before instead of resending it on the backoff.
+      if (
+        !session.abortReason &&
+        !responseProcessingThrew &&
+        !isClassified(error) &&
+        classifyClaudeError(error).kind === 'transient'
+      ) {
+        await this.releaseClaimedBatchForTransportExit(session, 'transport:sdk_stream');
+      }
       throw error;
     } finally {
       // Whatever ended the stream (throw, quota break, abort), nothing will
@@ -814,6 +867,43 @@ export class ClaudeProvider {
       duration: `${(sessionDuration / 1000).toFixed(1)}s`,
       ...observerUsageLogFields(session)
     });
+  }
+
+  /**
+   * End a generation whose SDK stream ended or broke without a result (#4066
+   * left these two exits unnamed). The `transport` category is one
+   * GeneratorExitHandler preserves, so the session and its buffer survive for
+   * the transport-backoff resume; the abort ends the feed (and wakes a
+   * generator parked in the drain); releasing the claim lets that resume
+   * re-send the batch. A reason already set (quota, auth, overflow, stall,
+   * idle, shutdown) is never overwritten: callers check before calling.
+   */
+  private async releaseClaimedBatchForTransportExit(session: ActiveSession, reason: string): Promise<void> {
+    session.abortReason = reason;
+    logger.warn('SDK', 'SDK stream ended without a result; preserving the claimed batch for the next generation', {
+      sessionId: session.sessionDbId,
+      reason,
+      claimed: session.claimedMessageIds.length,
+    });
+    try {
+      session.abortController.abort();
+    } catch {
+      // best-effort
+    }
+    if (session.claimedMessageIds.length > 0) {
+      await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+    }
+    // Transport resumes are not bounded off the gateway, so a child that keeps
+    // exiting would stall capture with nothing booked. Tell observer health
+    // once, on the exit that reaches the bound, so SessionStart warns. An
+    // answered queued-work turn resets the count (ResponseProcessor).
+    session.consecutiveSdkStreamExits = (session.consecutiveSdkStreamExits ?? 0) + 1;
+    if (session.consecutiveSdkStreamExits === MAX_CONSECUTIVE_SDK_STREAM_EXITS) {
+      recordObserverFailure('claude', {
+        kind: 'transient',
+        message: `The Claude SDK stream ended ${MAX_CONSECUTIVE_SDK_STREAM_EXITS} times in a row without answering queued work`,
+      });
+    }
   }
 
   /** One bounded, standalone SDK call on the same Observer provider path. */
@@ -877,8 +967,9 @@ export class ClaudeProvider {
     modelId: string,
     claudePath: string,
     signal: AbortSignal,
-  ): Promise<string | null> {
-    return this.runStandaloneObserverPrompt(
+  ): Promise<CompressedField | null> {
+    // The CLI reports no finish reason, so a reply it returns counts as whole.
+    const condensed = await this.runStandaloneObserverPrompt(
       buildFieldCompressionPrompt(text, budgetChars),
       {
         sessionDbId: session.sessionDbId,
@@ -889,6 +980,7 @@ export class ClaudeProvider {
       modelId,
       claudePath,
     );
+    return condensed ? { text: condensed, truncated: false } : null;
   }
 
   /** Format a stored summary through the same hardened Claude SDK path as summaries. */
@@ -955,20 +1047,34 @@ export class ClaudeProvider {
     // This SDK process never resumes, so the proxy history starts over with it.
     openObserverGeneration(session, initPrompt);
 
-    session.lastPromptSentAt = Date.now();
-    session.lastGeneratorSource = 'init';
-    let answeredBeforeSend = pacer.mark();
-    yield {
-      type: 'user',
-      message: {
-        role: 'user',
-        content: initPrompt
-      },
-      session_id: session.contentSessionId,
-      parent_tool_use_id: null,
-      isSynthetic: true
+    // By default the init prompt is not a turn of its own: it goes out in the
+    // same message as the first observation or summary prompt.
+    const observeBarePrompt = observesBarePrompts();
+    let pendingInitPrompt: string | null = observeBarePrompt ? null : initPrompt;
+    const withPendingInitPrompt = (prompt: string): string => {
+      if (pendingInitPrompt === null) return prompt;
+      const combined = `${pendingInitPrompt}\n\n${prompt}`;
+      pendingInitPrompt = null;
+      return combined;
     };
-    if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
+
+    let answeredBeforeSend: number;
+    if (observeBarePrompt) {
+      session.lastPromptSentAt = Date.now();
+      session.lastGeneratorSource = 'init';
+      answeredBeforeSend = pacer.mark();
+      yield {
+        type: 'user',
+        message: {
+          role: 'user',
+          content: initPrompt
+        },
+        session_id: session.contentSessionId,
+        parent_tool_use_id: null,
+        isSynthetic: true
+      };
+      if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
+    }
 
     // Each pass waits for the previous prompt's answer at the bottom of the loop,
     // BEFORE the iterator is pulled again, so nothing is claimed while a prompt
@@ -982,10 +1088,6 @@ export class ClaudeProvider {
       }
 
       if (message.type === 'observation') {
-        if (message.prompt_number !== undefined) {
-          session.lastPromptNumber = message.prompt_number;
-        }
-
         // Retire a full generation BEFORE yielding. The SDK holds the real
         // conversation server-side, but conversationHistory tracks every prompt
         // fed into it, so its size is the proxy for how close that conversation
@@ -1005,6 +1107,11 @@ export class ClaudeProvider {
         // prompt is built, so the observation carries a summary of the whole
         // field rather than a head/tail slice with the middle cut out (#3800).
         // The field cap scales with the model's window (#3625).
+        // A newer user prompt may arrive while the payload is being condensed.
+        activeResponseContext.current = {
+          ...snapshotResponseContext(session),
+          promptNumber: message.prompt_number ?? session.lastPromptNumber,
+        };
         const fieldMaxChars = observationFieldMaxChars(session.observerContextWindowTokens);
         const optimized = compressField
           ? await optimizeObservationFields(
@@ -1013,6 +1120,7 @@ export class ClaudeProvider {
               { sessionDbId: session.sessionDbId, toolName: message.tool_name },
               fieldMaxChars,
               resolveFieldOptimizeTimeoutMs,
+              session.observerContextWindowTokens,
             )
           : { toolInput: message.tool_input, toolOutput: message.tool_response };
 
@@ -1024,7 +1132,6 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd
         }, fieldMaxChars, takeObserverSchemaReminder(session));
-        activeResponseContext.current = snapshotResponseContext(session);
 
         session.conversationHistory.push({ role: 'user', content: obsPrompt });
 
@@ -1035,7 +1142,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: obsPrompt
+            content: withPendingInitPrompt(obsPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,
@@ -1050,7 +1157,10 @@ export class ClaudeProvider {
           user_prompt: session.userPrompt,
           last_assistant_message: message.last_assistant_message || ''
         }, mode);
-        activeResponseContext.current = snapshotResponseContext(session);
+        activeResponseContext.current = {
+          ...snapshotResponseContext(session),
+          promptNumber: message.prompt_number ?? session.lastPromptNumber,
+        };
 
         session.conversationHistory.push({ role: 'user', content: summaryPrompt });
 
@@ -1061,7 +1171,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: summaryPrompt
+            content: withPendingInitPrompt(summaryPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,
@@ -1101,6 +1211,9 @@ export class ClaudeProvider {
       // loop, and killing the stream first means no late frame can be processed
       // between the release and the abort.
       session.abortReason = 'transport:response_stall';
+      // The unanswered prompt may have been billed: it counts against the
+      // batch's paid-send budget, read before the reset forgets the claims.
+      paidSendBudgetForClaimedBatch(session)?.recordPaidSend();
       try {
         session.abortController.abort();
       } catch {

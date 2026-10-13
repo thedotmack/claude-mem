@@ -6,7 +6,7 @@
 // in-temp-dir SessionStore over an in-memory DB, injected fetchImpl, fast
 // debounce/backoff.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -21,6 +21,7 @@ import {
   parseRetryAfterMs,
   DEFAULT_CONTENT_BATCH_SIZE,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  DEFAULT_STATUS_TIMEOUT_MS,
   type CloudSyncSettingKeys,
   type CloudSyncOptions,
 } from '../../../src/services/sync/CloudSync.js';
@@ -158,6 +159,7 @@ describe('cloud sync flush knobs', () => {
   it('defaults content batch to 40 and request timeout to 90s', () => {
     expect(DEFAULT_CONTENT_BATCH_SIZE).toBe(40);
     expect(DEFAULT_REQUEST_TIMEOUT_MS).toBe(90_000);
+    expect(DEFAULT_STATUS_TIMEOUT_MS).toBe(20_000);
     expect(parseContentBatchSize(undefined)).toBe(40);
     expect(parseRequestTimeoutMs(undefined)).toBe(90_000);
   });
@@ -681,6 +683,61 @@ describe('CloudSync', () => {
       error: null,
     });
     expect(status.hub.checkedAt).toBeNumber();
+  });
+
+  it('shares concurrent status probes and probes again after completion', async () => {
+    let calls = 0;
+    let release!: () => void;
+    const impl = (async () => {
+      calls++;
+      if (calls === 1) await new Promise<void>(resolve => { release = resolve; });
+      return Response.json({ protocol_version: 2, epoch: '1', head_seq: '4', projected_seq: '4' });
+    }) as typeof fetch;
+    const sync = makeCloudSync(impl);
+    const probes = Array.from({ length: 4 }, () => sync.statusWithHubProbe());
+    expect(calls).toBe(1);
+    release();
+    const statuses = await Promise.all(probes);
+    expect(statuses.every(status => status.hub.reachable === true)).toBe(true);
+    await sync.statusWithHubProbe();
+    expect(calls).toBe(2);
+    sync.stop();
+  });
+
+  it('bounds hung status headers and bodies while preserving queued rows and retrying the probe', async () => {
+    seedObservation();
+    for (const phase of ['headers', 'body']) {
+      let calls = 0;
+      const impl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+        calls++;
+        if (calls > 1) {
+          return Response.json({ protocol_version: 2, epoch: '1', head_seq: '4', projected_seq: '4' });
+        }
+        const signal = init!.signal!;
+        if (phase === 'headers') {
+          return await new Promise<Response>((_resolve, reject) => {
+            signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+          });
+        }
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{'));
+            signal.addEventListener('abort', () => controller.error(signal.reason), { once: true });
+          },
+        }));
+      }) as typeof fetch;
+      const sync = makeCloudSync(impl, {}, { requestTimeoutMs: 90_000, statusTimeoutMs: 20 });
+      const started = Date.now();
+      const status = await sync.statusWithHubProbe();
+      expect(Date.now() - started).toBeLessThan(500);
+      expect(status.hub.reachable).toBe(false);
+      expect(status.hub.error).toMatch(/aborted|timed out|timeout/i);
+      expect(status.lastError).toBeNull();
+      expect(pendingCount('observations')).toBe(1);
+      expect((await sync.statusWithHubProbe()).hub.reachable).toBe(true);
+      expect(calls).toBe(2);
+      sync.stop();
+    }
   });
 
   it('surfaces Hub authentication, network, and malformed-status failures without leaking the token', async () => {
@@ -1788,6 +1845,29 @@ describe('CloudSync', () => {
     await sleep(80);
     expect(calls.length).toBe(afterFlush);
     sync.stop();
+  });
+
+  it.each([
+    ['rate limited', 1000],
+    ['<!DOCTYPE html><html>rate limited</html>', 600_000],
+  ])('does not shorten the retry floor for %s with negative jitter', async (body, minimumMs) => {
+    seedObservation();
+    const impl = (async () => new Response(body, {
+      status: 429,
+      headers: { 'Retry-After': '1' },
+    })) as typeof fetch;
+    const sync = makeCloudSync(impl, {}, { backoffInitialMs: 20 });
+    const random = spyOn(Math, 'random').mockReturnValue(0);
+    const timers = spyOn(globalThis, 'setTimeout');
+    try {
+      await sync.flush();
+      // The final native timer is the retry scheduled after the failed push.
+      expect(timers.mock.calls.at(-1)?.[1]).toBeGreaterThanOrEqual(minimumMs);
+    } finally {
+      sync.stop();
+      timers.mockRestore();
+      random.mockRestore();
+    }
   });
 
   it('honors Retry-After on 429 before the next push', async () => {

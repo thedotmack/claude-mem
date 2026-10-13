@@ -1,9 +1,11 @@
 
 import {
   StrategySearchOptions,
+  SearchSelection,
   StrategySearchResult,
   SEARCH_CONSTANTS,
   isCategoryRequested,
+  buildCategoryWhereFilter,
   ChromaMetadata,
   DateRange,
   ObservationSearchResult,
@@ -39,6 +41,7 @@ export class ChromaSearchStrategy {
       concepts,
       files,
       limit = SEARCH_CONSTANTS.DEFAULT_LIMIT,
+      offset = 0,
       project,
       projects,
       platformSource,
@@ -64,7 +67,7 @@ export class ChromaSearchStrategy {
 
     return await this.executeChromaSearch(query, whereFilter, {
       searchObservations, searchSessions, searchPrompts,
-      obsType, concepts, files, orderBy, limit, project,
+      obsType, concepts, files, orderBy, limit, offset, project,
       projects: readKeys.length > 0 ? readKeys : undefined,
       platformSource, dateRange, ignoreDefaultRecencyWindow
     });
@@ -82,6 +85,7 @@ export class ChromaSearchStrategy {
       files?: string | string[];
       orderBy: 'relevance' | 'date_desc' | 'date_asc';
       limit: number;
+      offset: number;
       project?: string;
       projects?: string[];
       platformSource?: string;
@@ -91,7 +95,7 @@ export class ChromaSearchStrategy {
   ): Promise<StrategySearchResult> {
     const chromaResults = await this.chromaSync.queryChroma(
       query,
-      SEARCH_CONSTANTS.CHROMA_BATCH_SIZE,
+      Math.max(SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, Number(options.offset) + Number(options.limit)),
       whereFilter
     );
 
@@ -111,6 +115,9 @@ export class ChromaSearchStrategy {
     let prompts: UserPromptSearchResult[] = [];
 
     const sqlOrderBy = options.orderBy;
+    const offset = Number(options.offset);
+    const limit = Number(options.limit);
+    const candidateLimit = offset + limit;
 
     if (categorized.obsIds.length > 0) {
       const obsOptions = {
@@ -118,7 +125,7 @@ export class ChromaSearchStrategy {
         concepts: options.concepts,
         files: options.files,
         orderBy: sqlOrderBy,
-        limit: options.limit,
+        limit: candidateLimit,
         project: options.project,
         projects: options.projects,
         platformSource: options.platformSource
@@ -129,7 +136,7 @@ export class ChromaSearchStrategy {
     if (categorized.sessionIds.length > 0) {
       sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
         orderBy: sqlOrderBy,
-        limit: options.limit,
+        limit: candidateLimit,
         project: options.project,
         projects: options.projects,
         platformSource: options.platformSource
@@ -139,7 +146,7 @@ export class ChromaSearchStrategy {
     if (categorized.promptIds.length > 0) {
       prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
         orderBy: sqlOrderBy,
-        limit: options.limit,
+        limit: candidateLimit,
         project: options.project,
         projects: options.projects,
         platformSource: options.platformSource
@@ -147,28 +154,21 @@ export class ChromaSearchStrategy {
     }
 
     return {
-      results: { observations, sessions, prompts },
+      results: {
+        observations: observations.slice(offset, offset + limit),
+        sessions: sessions.slice(offset, offset + limit),
+        prompts: prompts.slice(offset, offset + limit),
+      },
       usedChroma: true,
       strategy: 'chroma'
     };
   }
 
-  private buildWhereFilter(searchType: string, readKeys: string[], platformSource?: string): Record<string, any> | undefined {
+  private buildWhereFilter(searchType: SearchSelection, readKeys: string[], platformSource?: string): Record<string, any> | undefined {
     const filters: Array<Record<string, any>> = [];
 
-    switch (searchType) {
-      case 'observations':
-        filters.push({ doc_type: 'observation' });
-        break;
-      case 'sessions':
-        filters.push({ doc_type: 'session_summary' });
-        break;
-      case 'prompts':
-        filters.push({ doc_type: 'user_prompt' });
-        break;
-      default:
-        break;
-    }
+    const categoryFilter = buildCategoryWhereFilter(searchType);
+    if (categoryFilter) filters.push(categoryFilter);
 
     if (readKeys.length > 0) {
       filters.push(buildProjectWhereFilter(readKeys));
@@ -205,18 +205,11 @@ export class ChromaSearchStrategy {
       startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
     }
 
-    const metadataByIdMap = new Map<number, ChromaMetadata>();
-    for (const meta of chromaResults.metadatas) {
-      if (meta?.sqlite_id !== undefined && !metadataByIdMap.has(meta.sqlite_id)) {
-        metadataByIdMap.set(meta.sqlite_id, meta);
-      }
-    }
-
+    // ChromaSync deduplicates by (document type, SQLite id) and returns
+    // aligned arrays. IDs are table-local: an observation and a prompt can
+    // both be id 1, so keying metadata by the numeric id loses one category.
     return chromaResults.ids
-      .map(id => ({
-        id,
-        meta: metadataByIdMap.get(id) as ChromaMetadata
-      }))
+      .map((id, index) => ({ id, meta: chromaResults.metadatas[index] }))
       .filter(item => item.meta && item.meta.created_at_epoch != null
         && (!startEpoch || item.meta.created_at_epoch >= startEpoch)
         && (!endEpoch || item.meta.created_at_epoch <= endEpoch));

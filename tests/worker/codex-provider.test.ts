@@ -50,8 +50,11 @@ function stubCompletedAppServerTurns(provider: any, contents: Array<string | nul
   return methods;
 }
 let savedProvider: string | undefined;
+let savedMaxConcurrentAgents: string | undefined;
 beforeEach(() => {
   savedProvider = process.env.CLAUDE_MEM_PROVIDER;
+  savedMaxConcurrentAgents = process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS;
+  process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS = '2';
   process.env.CLAUDE_MEM_PROVIDER = 'codex';
   resetQuotaCooldownsForTesting();
   clearDependencyStatus('codex_cli');
@@ -61,6 +64,8 @@ afterEach(() => {
   clearDependencyStatus('codex_cli');
   if (savedProvider === undefined) delete process.env.CLAUDE_MEM_PROVIDER;
   else process.env.CLAUDE_MEM_PROVIDER = savedProvider;
+  if (savedMaxConcurrentAgents === undefined) delete process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS;
+  else process.env.CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS = savedMaxConcurrentAgents;
 });
 
 let nextSessionId = 710;
@@ -127,12 +132,19 @@ describe('Codex provider integration', () => {
     it(`preserves concurrent quota refusal through valid observation storage (failure before success: ${failureBeforeSuccess})`, async () => {
       const provider = new CodexProvider(null as any, null as any) as any;
       const pending: Array<{ options: any; resolve: (value: any) => void; reject: (error: unknown) => void }> = [];
-      provider.appServer.runTurn = (options: any) => {
+      let expectedAdmissions = 2;
+      let admitted!: () => void;
+      let ready = new Promise<void>(resolve => { admitted = resolve; });
+      for (const client of provider.appServer.clients) client.runTurn = (options: any) => {
         options.beforeSend();
-        return new Promise((resolve, reject) => { pending.push({ options, resolve, reject }); });
+        return new Promise((resolve, reject) => {
+          pending.push({ options, resolve, reject });
+          if (pending.length === expectedAdmissions) admitted();
+        });
       };
       const earlier = provider.query([], config);
       const later = provider.query([], config).catch((error: unknown) => error);
+      await ready;
       expect(pending).toHaveLength(2);
       const fail = async () => {
         const error = new Error('usage limit reached');
@@ -156,7 +168,10 @@ describe('Codex provider integration', () => {
 
       // Once the window has elapsed, the recovery probe clears the pause and stores its reply.
       recordQuotaExhausted('codex', 'usage limit reached', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
+      expectedAdmissions = 3;
+      ready = new Promise<void>(resolve => { admitted = resolve; });
       const recovery = provider.query([], config);
+      await ready;
       pending[2].resolve({ content: observation });
       await h.process((await recovery).content, { ...session(), currentProvider: 'codex' });
       expect(h.store).toHaveBeenCalledTimes(2);
@@ -195,15 +210,19 @@ describe('Codex provider integration', () => {
       const failure = new Error(message);
       let rejectOld!: (error: unknown) => void;
       let sends = 0;
-      provider.appServer.runTurn = (options: any) => {
+      let admitted!: () => void;
+      const ready = new Promise<void>(resolve => { admitted = resolve; });
+      for (const client of provider.appServer.clients) client.runTurn = (options: any) => {
         options.beforeSend();
         if (++sends === 1) {
           options.onFailure(failure);
+          admitted();
           return new Promise((_, reject) => { rejectOld = reject; });
         }
         return Promise.resolve({ content: 'Recovered' });
       };
       const old = provider.query([], config).catch((error: unknown) => error);
+      await ready;
       const published = armed();
       expect(published).not.toBeNull();
       age();
@@ -217,24 +236,28 @@ describe('Codex provider integration', () => {
       await provider.query([], config);
       expect(sends).toBe(3);
       // A new failure arms a fresh window.
-      provider.appServer.runTurn = async (options: any) => { options.onFailure(failure); throw failure; };
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => { options.onFailure(failure); throw failure; };
       await expect(provider.query([], config)).rejects.toMatchObject({ kind });
       expect(armed()).not.toBeNull();
       expect(armed()).not.toBe(published);
     });
   }
 
-  it('publishes quota failure from a retry after a transient attempt', async () => {
+  // Never pay twice (Phase 1): a transient Codex fault (connection closed) is
+  // ambiguous — the turn may have run — so it is no longer retried in place.
+  // It surfaces as the transient pause; the session's transport resume and the
+  // batch's paid-send budget decide about a resend. A refusal on the first send
+  // still publishes its breaker.
+  it('does not resend after an ambiguous transient attempt', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     let sends = 0;
-    provider.appServer.runTurn = async (options: any) => {
+    for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
       const failure = new Error(++sends === 1 ? 'connection closed' : 'usage limit reached');
       options.onFailure(failure);
       throw failure;
     };
-    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'quota_exhausted' });
-    expect(sends).toBe(2);
-    expect(getQuotaCooldown('codex')).not.toBeNull();
+    await expect(provider.query([], config)).rejects.toMatchObject({ kind: 'transient' });
+    expect(sends).toBe(1);
   });
 
   it('accepts an empty structured initialization reply without retrying', async () => {
@@ -245,12 +268,25 @@ describe('Codex provider integration', () => {
     expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
   });
 
-  it('retries a completed app-server turn without an agent message once', async () => {
+  // Never pay twice (Phase 1): a completed turn without an agent message was
+  // billed, so it is an output failure, never resent. The session turn passes
+  // it on as an empty reply (OpenAICompatibleProvider.queryObserverTurn, shared
+  // with the HTTP providers).
+  it('raises a completed app-server turn without an agent message as an output failure, without a second turn', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const methods = stubCompletedAppServerTurns(provider, [null, 'Recovered memory']);
-    const result = await provider.query([{ role: 'user', content: 'input' }], config);
-    expect(result.content).toBe('Recovered memory');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
+    await expect(provider.query([{ role: 'user', content: 'input' }], config))
+      .rejects.toMatchObject({ paidSendOutcome: 'output_failure' });
+    expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('passes an output failure on to the session as an empty reply', async () => {
+    const provider = new CodexProvider(null as any, null as any) as any;
+    stubCompletedAppServerTurns(provider, [null]);
+    const s = session();
+    s.conversationHistory = [{ role: 'user', content: 'input' }];
+    const result = await provider.queryObserverTurn(s, config, undefined);
+    expect(result.content).toBe('');
   });
 
   it('passes blank structured output on as the reply, without a second turn', async () => {
@@ -261,14 +297,6 @@ describe('Codex provider integration', () => {
     expect(methods.filter(method => method === 'turn/start')).toHaveLength(1);
   });
 
-  it('passes an empty reply on after a second turn without an agent message', async () => {
-    const provider = new CodexProvider(null as any, null as any) as any;
-    const methods = stubCompletedAppServerTurns(provider, [null, null, '<observation/>']);
-    const result = await provider.query([{ role: 'user', content: 'input' }], config);
-    expect(result.content).toBe('');
-    expect(methods.filter(method => method === 'turn/start')).toHaveLength(2);
-  });
-
   it('cancels a compression request while the session signal remains active', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const sessionController = new AbortController();
@@ -277,7 +305,7 @@ describe('Codex provider integration', () => {
     let started!: () => void;
     let nativeSignal: AbortSignal | undefined;
     const ready = new Promise<void>(resolve => { started = resolve; });
-    provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+    for (const client of provider.appServer.clients) client.runTurn = (options: any) => new Promise((_, reject) => {
       nativeSignal = options.signal;
       options.signal.addEventListener('abort', () => reject(new Error('compression aborted')), { once: true });
       started();
@@ -408,7 +436,7 @@ describe('Codex provider integration', () => {
     recordCodexCliSetupRequired('fixture');
     ageCodexSetupStatus();
     const provider = new CodexProvider(null as any, null as any) as any;
-    provider.appServer.runTurn = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
+    for (const client of provider.appServer.clients) client.runTurn = mock(async (options: any) => { options.beforeSend(); return { content: '' }; });
     await provider.query([{ role: 'user', content: 'probe' }], config);
     expect(getQuotaCooldown('codex')).toBeNull();
     expect(getDependencyStatus('codex_cli')).toBeNull();
@@ -424,7 +452,7 @@ describe('Codex provider integration', () => {
       let release!: () => void;
       const queued = new Promise<void>(resolve => { release = resolve; });
       let sends = 0;
-      provider.appServer.runTurn = async (options: any) => {
+      for (const client of provider.appServer.clients) client.runTurn = async (options: any) => {
         await queued;
         try {
           options.beforeSend();
@@ -450,7 +478,7 @@ describe('Codex provider integration', () => {
     recordQuotaExhausted('codex', 'fixture', undefined, Date.now() - QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS - 1);
     const provider = new CodexProvider(null as any, null as any) as any;
     const sends = mock(async (options: any) => { options.beforeSend(); return { content: '<observation/>' }; });
-    provider.appServer.runTurn = sends;
+    for (const client of provider.appServer.clients) client.runTurn = sends;
     await provider.query([{ role: 'user', content: 'input' }], config);
     expect(sends).toHaveBeenCalledTimes(1);
     expect(getQuotaCooldown('codex')).toBeNull();
@@ -459,7 +487,7 @@ describe('Codex provider integration', () => {
   it('forwards all conversation text and accepts successful quota-related prose', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const turn = mock(async () => ({ content: 'The application session limit is configurable.', inputTokens: 10, outputTokens: 4 }));
-    provider.appServer.runTurn = turn;
+    for (const client of provider.appServer.clients) client.runTurn = turn;
     const history = [{ role: 'user', content: 'observation input' }, { role: 'assistant', content: 'prior observation' }, { role: 'user', content: 'summary request' }];
     const result = await provider.query(history, config);
     for (const message of history) expect((turn.mock.calls[0] as any)[0].prompt).toContain(message.content);
@@ -475,7 +503,7 @@ describe('Codex provider integration', () => {
   it('uses the shared LLM deadline, or the caller\'s own (the field pass)', async () => {
     const provider = new CodexProvider(null as any, null as any) as any;
     const turn = mock(async () => ({ content: 'ok' }));
-    provider.appServer.runTurn = turn;
+    for (const client of provider.appServer.clients) client.runTurn = turn;
     const savedTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
     process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = '45000';
     try {
@@ -499,7 +527,7 @@ describe('Codex provider integration', () => {
       let started!: () => void;
       let nativeSignal: AbortSignal | undefined;
       const ready = new Promise<void>(resolve => { started = resolve; });
-      provider.appServer.runTurn = (options: any) => new Promise((_, reject) => {
+      for (const client of provider.appServer.clients) client.runTurn = (options: any) => new Promise((_, reject) => {
         nativeSignal = options.signal;
         options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true });
         started();
@@ -550,7 +578,7 @@ describe('Codex provider integration', () => {
         options.onFailure(error);
         throw error;
       });
-      provider.appServer.runTurn = sends;
+      for (const client of provider.appServer.clients) client.runTurn = sends;
       try {
         await expect(provider.query([{ role: 'user', content: 'input' }], { ...config })).rejects.toBeInstanceOf(ClassifiedProviderError);
         expect(sends).toHaveBeenCalledTimes(1);

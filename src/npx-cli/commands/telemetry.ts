@@ -76,7 +76,7 @@ const COLLECTED_FIELDS = [
   'previous_shutdown      crash / clean / unknown (detected at worker start)',
   'previous_uptime_seconds / uptime_seconds',
   '                 worker uptime in whole seconds (previous run / at stop)',
-  'shutdown_reason  stop / restart / signal',
+  'shutdown_reason  stop / restart / signal / idle',
   'process_rss_mb / heap_used_mb   worker memory, integer megabytes',
   'hook_type        context / session-init / observation / summarize / session-end / file-context',
   'error_mode       worker_unavailable / blocking_error (never a message)',

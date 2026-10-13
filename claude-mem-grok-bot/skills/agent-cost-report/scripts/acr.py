@@ -9,10 +9,24 @@ import argparse
 import json
 import os
 import sys
+from zoneinfo import ZoneInfoNotFoundError
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from acr import devices, measure, period, render, rollup, sample, sync, transcripts  # noqa: E402
-from acr import prices as prices_mod  # noqa: E402
+try:
+    from acr import devices, measure, period, render, rollup, sample, sync, transcripts  # noqa: E402
+    from acr import prices as prices_mod  # noqa: E402
+except ZoneInfoNotFoundError:
+    # The plain quoted line runs in cmd, Git Bash (Claude Code's Bash tool on Windows) and POSIX
+    # shells. PowerShell reads a leading quoted string as a value, so it needs the & call operator.
+    install_command = f'"{sys.executable}" -m pip install tzdata'
+    powershell_line = f"\nPowerShell: & {install_command}" if os.name == "nt" else ""
+    sys.exit(
+        "acr.py: IANA timezone data for America/Los_Angeles is unavailable. "
+        "Install tzdata for this Python interpreter, then rerun the command:\n"
+        f"{install_command}{powershell_line}\n"
+        "Or, without installing anything, set PYTHONTZPATH to an existing zoneinfo directory "
+        "(Git for Windows ships one) and rerun."
+    )
 
 USAGE_FILE = "usage.json"
 NOT_YET = ()
@@ -43,7 +57,7 @@ def cmd_collect(args):
         doc["project_filter"] = args.project  # applied when rows are joined to sdk_sessions (rollup)
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, USAGE_FILE)
-    with open(path, "w") as fh:
+    with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh)
     c = doc["collector"]
     tokens = sum(r["input"] + r["output"] + r["cache_write"] + r["cache_read"] for r in doc["rows"])

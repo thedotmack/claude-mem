@@ -21,13 +21,15 @@ import { isCmemGatewayUrl } from './cmem-gateway.js';
 /**
  * Fields the extra body can never set. `max_tokens` is the observer output cap
  * (CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS) that the #4003 retry reads back as
- * `max_completion_tokens`; `stream` would turn the JSON reply into SSE.
+ * `max_completion_tokens`; `stream` / `stream_options` decide how the reply is
+ * read and whether it carries usage.
  */
 export const PROTECTED_EXTRA_BODY_KEYS: readonly string[] = [
   'model',
   'models',
   'messages',
   'stream',
+  'stream_options',
   'max_tokens',
   'max_completion_tokens',
 ];

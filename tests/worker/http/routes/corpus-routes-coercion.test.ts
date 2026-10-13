@@ -12,8 +12,8 @@ function createMockReqRes(body: any): {
   const jsonSpy = mock(() => {});
   const statusSpy = mock(() => ({ json: jsonSpy }));
   return {
-    req: { body, path: '/api/corpus', params: {}, query: {} } as Partial<Request>,
-    res: { json: jsonSpy, status: statusSpy, headersSent: false } as unknown as Partial<Response>,
+    req: { body, path: '/api/corpus', params: {}, query: {}, headers: {}, socket: { on: mock(() => {}), off: mock(() => {}) } } as unknown as Partial<Request>,
+    res: { json: jsonSpy, status: statusSpy, headersSent: false, on: mock(() => {}), off: mock(() => {}), end: mock(() => {}) } as unknown as Partial<Response>,
     jsonSpy,
     statusSpy,
   };

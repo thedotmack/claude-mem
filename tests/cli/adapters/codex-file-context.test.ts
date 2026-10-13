@@ -35,6 +35,35 @@ describe('extractFilePaths', () => {
     expect(paths).toEqual(['README.md']);
   });
 
+  it('honors the option terminator before a hyphen-prefixed filename', () => {
+    writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- -notes.md' }, tmpDir)).toEqual(['-notes.md']);
+  });
+
+  it('keeps flag values before the terminator and filenames after it distinct', () => {
+    writeFileSync(join(tmpDir, '-n'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'head -n 1 -- -n' }, tmpDir)).toEqual(['-n']);
+  });
+
+  it('treats a second terminator token as a filename once options have ended', () => {
+    writeFileSync(join(tmpDir, '--'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- --' }, tmpDir)).toEqual(['--']);
+  });
+
+  it('resets option parsing at each shell command segment', () => {
+    writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- -notes.md && cat -n README.md' }, tmpDir))
+      .toEqual(['-notes.md', 'README.md']);
+  });
+
+  it.skipIf(process.platform === 'win32')('matches an actual cat read of a hyphen-prefixed file', () => {
+    writeFileSync(join(tmpDir, '-notes.md'), 'literal filename');
+    const child = Bun.spawnSync({ cmd: ['cat', '--', '-notes.md'], cwd: tmpDir });
+    expect(child.exitCode).toBe(0);
+    expect(child.stdout.toString()).toBe('literal filename');
+    expect(extractFilePaths('Bash', { command: 'cat -- -notes.md' }, tmpDir)).toEqual(['-notes.md']);
+  });
+
   it('ignores non-read Bash commands', () => {
     const paths = extractFilePaths('Bash', {
       command: 'rm README.md; echo src.ts',

@@ -132,6 +132,9 @@ describe('sessionInitHandler request timeout', () => {
         },
         isWorkerFallback: () => false,
       });
+      // This test checks the timeout arguments at the 500 ms minimum budget.
+      // Keep elapsed time deterministic; one wall-clock tick would skip the call.
+      Date.now = () => 1000;
       const runCodexPrompt = async (sessionId) => {
         await sessionInitHandler.execute({
           sessionId,

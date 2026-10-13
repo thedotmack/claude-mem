@@ -24,6 +24,7 @@ type DatabaseOwner = { db: Database };
 const OBSERVATION_SELECT = `
       o.id,
       o.memory_session_id,
+      s.content_session_id,
       COALESCE(s.platform_source, 'claude') as platform_source,
       o.type,
       o.title,
@@ -38,6 +39,40 @@ const OBSERVATION_SELECT = `
       o.created_at_epoch,
       o.project
 `;
+
+// Each project key can match on `project` or `merged_into_project`. One
+// `(project IN … OR merged_into_project IN …) ORDER BY … LIMIT n` makes SQLite
+// fetch every matching row and sort them all. Instead take the newest `limit`
+// rows per (column, key) from the v63 (key COLLATE NOCASE, created_at_epoch DESC)
+// indexes, and keep the newest `limit` ids of the union.
+const PROJECT_KEY_COLUMNS = ['project', 'merged_into_project'] as const;
+
+// SQLite accepts at most 500 terms in a compound SELECT. Each key contributes
+// one term per project column, so bound batches before applying the global cap.
+const PROJECT_KEYS_PER_QUERY = 250;
+
+function newestUniqueRows<T extends { id: number; created_at_epoch: number }>(batches: T[][], limit: number): T[] {
+  const rows = new Map<number, T>();
+  for (const batch of batches) for (const row of batch) rows.set(row.id, row);
+  return [...rows.values()].sort((a, b) => b.created_at_epoch - a.created_at_epoch).slice(0, limit);
+}
+
+function newestIdsPerProjectKeySql(
+  alias: string,
+  projectCount: number,
+  perKeySql: (keyPredicate: string) => string,
+): string {
+  const parts: string[] = [];
+  for (const column of PROJECT_KEY_COLUMNS) {
+    for (let i = 0; i < projectCount; i++) {
+      parts.push(`SELECT * FROM (${perKeySql(`${alias}.${column} COLLATE NOCASE = ?`)})`);
+    }
+  }
+  return `
+    SELECT id FROM (${parts.join(' UNION ')})
+    ORDER BY created_at_epoch DESC
+    LIMIT ?`;
+}
 
 export function queryObservationsMulti(
   db: DatabaseOwner,
@@ -91,10 +126,13 @@ export function queryObservationsNewest(
   const conceptArray = Array.from(config.observationConcepts);
   const conceptPlaceholders = conceptArray.map(() => '?').join(',');
   const projects = (options.projects ?? []).filter(project => project.trim().length > 0);
-  const projectClause = projects.length > 0
-    ? `AND (o.project COLLATE NOCASE IN (${projects.map(() => '?').join(',')})
-           OR o.merged_into_project COLLATE NOCASE IN (${projects.map(() => '?').join(',')}))`
-    : '';
+  if (projects.length > PROJECT_KEYS_PER_QUERY) {
+    const batches: LocalObservation[][] = [];
+    for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {
+      batches.push(queryObservationsNewest(db, config, { ...options, projects: projects.slice(offset, offset + PROJECT_KEYS_PER_QUERY) }));
+    }
+    return newestUniqueRows(batches, options.limit);
+  }
 
   const manualClause = options.includeManualSaves
     ? `substr(o.memory_session_id, 1, 7) = 'manual-' OR`
@@ -108,13 +146,7 @@ export function queryObservationsNewest(
 
   const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
 
-  return db.db.prepare(`
-    SELECT
-      ${OBSERVATION_SELECT}${reinforcementColumn}
-    FROM observations o
-    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
-    WHERE (? IS NULL OR s.platform_source = ?)
-      ${projectClause}
+  const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
@@ -122,17 +154,54 @@ export function queryObservationsNewest(
           SELECT 1 FROM json_each(o.concepts)
           WHERE value IN (${conceptPlaceholders})
         )
-      ))
-    ORDER BY o.created_at_epoch DESC
-    LIMIT ?
-  `).all(
+      ))`;
+  const filterParams = [
     options.platformSource ?? null,
     options.platformSource ?? null,
-    ...(projects.length > 0 ? [...projects, ...projects] : []),
     ...typeArray,
     ...conceptArray,
-    options.limit
-  ) as LocalObservation[];
+  ];
+
+  if (projects.length === 0) {
+    const statement = db.db.prepare(`
+      SELECT
+        ${OBSERVATION_SELECT}${reinforcementColumn}
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE ${filterSql}
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?
+    `);
+    try {
+      return statement.all(...filterParams, options.limit) as LocalObservation[];
+    } finally {
+      statement.finalize();
+    }
+  }
+
+  const winnersSql = newestIdsPerProjectKeySql('o', projects.length, keyPredicate => `
+      SELECT o.id, o.created_at_epoch
+      FROM observations o
+      LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+      WHERE ${keyPredicate} AND ${filterSql}
+      ORDER BY o.created_at_epoch DESC
+      LIMIT ?`);
+  const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
+    projects.flatMap(project => [project, ...filterParams, options.limit]));
+
+  const statement = db.db.prepare(`
+    SELECT
+      ${OBSERVATION_SELECT}${reinforcementColumn}
+    FROM (${winnersSql}) w
+    JOIN observations o ON o.id = w.id
+    LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+    ORDER BY o.created_at_epoch DESC
+  `);
+  try {
+    return statement.all(...perKeyParams, options.limit) as LocalObservation[];
+  } finally {
+    statement.finalize();
+  }
 }
 
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
@@ -155,9 +224,28 @@ export function querySummariesMulti(
   config: ContextConfig,
   platformSource?: string
 ): LocalSessionSummary[] {
-  const projectPlaceholders = projects.map(() => '?').join(',');
+  if (projects.length === 0) return [];
+  const limit = config.sessionCount + SUMMARY_LOOKAHEAD;
+  if (projects.length > PROJECT_KEYS_PER_QUERY) {
+    const batches: LocalSessionSummary[][] = [];
+    for (let offset = 0; offset < projects.length; offset += PROJECT_KEYS_PER_QUERY) {
+      batches.push(querySummariesMulti(db, projects.slice(offset, offset + PROJECT_KEYS_PER_QUERY), config, platformSource));
+    }
+    return newestUniqueRows(batches, limit);
+  }
+  const platformParams = [platformSource ?? null, platformSource ?? null];
 
-  return db.db.prepare(`
+  const winnersSql = newestIdsPerProjectKeySql('ss', projects.length, keyPredicate => `
+      SELECT ss.id, ss.created_at_epoch
+      FROM session_summaries ss
+      LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
+      WHERE ${keyPredicate} AND (? IS NULL OR s.platform_source = ?)
+      ORDER BY ss.created_at_epoch DESC
+      LIMIT ?`);
+  const perKeyParams = PROJECT_KEY_COLUMNS.flatMap(() =>
+    projects.flatMap(project => [project, ...platformParams, limit]));
+
+  const statement = db.db.prepare(`
     SELECT
       ss.id,
       ss.memory_session_id,
@@ -167,36 +255,51 @@ export function querySummariesMulti(
       ss.learned,
       ss.completed,
       ss.next_steps,
+      ss.notes,
       ss.created_at,
       ss.created_at_epoch,
       ss.project
-    FROM session_summaries ss
+    FROM (${winnersSql}) w
+    JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id
-    WHERE (ss.project COLLATE NOCASE IN (${projectPlaceholders})
-           OR ss.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
-      AND (? IS NULL OR s.platform_source = ?)
     ORDER BY ss.created_at_epoch DESC
-    LIMIT ?
-  `).all(
-    ...projects,
-    ...projects,
-    platformSource ?? null,
-    platformSource ?? null,
-    config.sessionCount + SUMMARY_LOOKAHEAD
-  ) as LocalSessionSummary[];
+  `);
+  try {
+    return statement.all(...perKeyParams, limit) as LocalSessionSummary[];
+  } finally {
+    statement.finalize();
+  }
+}
+
+/** Claude Code cuts a longer encoded project directory name to this length and appends a hash. */
+const CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH = 200;
+
+/** Claude Code's 32-bit string hash over UTF-16 code units, in base 36: the suffix of a cut name. */
+function claudeProjectDirNameHash(cwd: string): string {
+  let hash = 0;
+  for (let index = 0; index < cwd.length; index++) hash = ((hash << 5) - hash + cwd.charCodeAt(index)) | 0;
+  return Math.abs(hash).toString(36);
 }
 
 export function cwdToDashed(cwd: string): string {
-  // Claude Code encodes a project's transcript directory by replacing BOTH path
-  // separators AND dots with dashes (e.g. `/Users/john.doe/proj` ->
-  // `-Users-john-doe-proj`). Replacing only `/` left a literal `.` in the dir
-  // name, so "Include last message" silently no-opped for any cwd component
-  // containing a dot — Unix usernames like `john.doe`, dotted dirs, etc. (#2401).
-  return cwd.replace(/[/.]/g, '-');
+  // Claude Code encodes a project's transcript directory by replacing EVERY
+  // non-alphanumeric character with a dash, one-for-one (e.g.
+  // `/Users/john.doe/my_project` -> `-Users-john-doe-my-project`, and a real
+  // macOS temp cwd `/var/folders/m8/w_4jf2z.../T` -> `-var-folders-m8-w-4jf2z...-T`).
+  // Replacing only `/` and `.` left other characters — underscores, spaces — in
+  // the dir name, so the built path never matched the on-disk directory and
+  // "Include last message" / memory-dir resolution silently no-opped for those
+  // cwds (follow-up to the dot-only #2401 fix).
+  // One dash per UTF-16 code unit: no `u` flag, so an emoji becomes two dashes,
+  // as in Claude Code. A name longer than 200 characters is cut to 200 and gets
+  // `-<hash of the raw cwd>` (Claude Code 2.1.289).
+  const dashed = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  if (dashed.length <= CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH) return dashed;
+  return `${dashed.slice(0, CLAUDE_PROJECT_DIR_NAME_MAX_LENGTH)}-${claudeProjectDirNameHash(cwd)}`;
 }
 
 function parseAssistantTextFromLine(line: string): string | null {
-  if (!line.includes('"type":"assistant"')) return null;
+  if (!/"type"\s*:\s*"assistant"/.test(line)) return null;
 
   const entry = JSON.parse(line);
   if (entry.type === 'assistant' && entry.message?.content && Array.isArray(entry.message.content)) {
@@ -256,12 +359,13 @@ export function getPriorSessionMessages(
     return { assistantMessage: '' };
   }
 
-  const priorSessionObs = observations.find(obs => obs.memory_session_id !== currentSessionId);
+  const priorSessionObs = observations.find(obs =>
+    obs.memory_session_id !== currentSessionId && obs.content_session_id !== currentSessionId);
   if (!priorSessionObs) {
     return { assistantMessage: '' };
   }
 
-  const priorSessionId = priorSessionObs.memory_session_id;
+  const priorSessionId = priorSessionObs.content_session_id ?? priorSessionObs.memory_session_id;
   const dashedCwd = cwdToDashed(cwd);
   const transcriptPath = path.join(CLAUDE_CONFIG_DIR, 'projects', dashedCwd, `${priorSessionId}.jsonl`);
   return extractPriorMessages(transcriptPath);

@@ -11,6 +11,7 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
 
 const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
@@ -269,7 +270,7 @@ export function classifyClaudeServerError(input: ClassifyInput): ServerClassifie
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('SDK', 'Failed to read Anthropic error response body', {

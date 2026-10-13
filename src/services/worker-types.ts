@@ -1,5 +1,6 @@
 
 import type { Response } from 'express';
+import type { PaidSendBudget } from './worker/paid-send-budget.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -35,6 +36,12 @@ export interface ActiveSession {
    * changed while it ran.
    */
   observerProfile?: string;
+  /**
+   * The provider the current run stands in for when dispatch routed around it
+   * (the provider fallback), else null/undefined. A stand-in that is refused
+   * must not strand the work: the primary takes it back once it recovers.
+   */
+  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
   consecutiveRestarts: number;
   /**
    * Rejected replies (neither observation/summary XML nor the
@@ -78,6 +85,13 @@ export interface ActiveSession {
    */
   consecutiveResponseStalls?: number;
   /**
+   * Consecutive Claude generations whose SDK stream ended or broke without a
+   * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
+   * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
+   * when a queued-work turn is answered.
+   */
+  consecutiveSdkStreamExits?: number;
+  /**
    * Consecutive rate-limit pauses this session resumed from on its own, after
    * the provider's Retry-After. Bounds those resumes before the provider
    * breaker takes over; reset when a queued-work turn is answered.
@@ -91,6 +105,12 @@ export interface ActiveSession {
    * is answered.
    */
   consecutiveUnattendedGatewayResumes?: number;
+  /**
+   * The paid-send allowance of the batch most recently sent (paid-send-budget.ts),
+   * shared by withRetry, transport resumes, stall resumes and Codex retries.
+   * Spent, the batch is parked instead of resent.
+   */
+  paidSendBudget?: PaidSendBudget;
   /**
    * The delayed resume a response stall scheduled. Any generator start cancels
    * it, so a stale timer never restarts a session a newer generation paused.
@@ -142,6 +162,12 @@ export interface ActiveSession {
    * reading is never recorded (#2957).
    */
   lastContextTokens?: number;
+  /**
+   * Random id of the current observer generation, minted at every generation
+   * start (openObserverGeneration), so a recycled or restarted conversation
+   * gets a new one. OpenRouter-family requests send it as `trace.trace_id`.
+   */
+  observerGenerationId?: string;
   /**
    * The finish reason an HTTP provider reported for the reply about to be
    * processed ('length' / 'MAX_TOKENS' = cut off at the output-token cap).

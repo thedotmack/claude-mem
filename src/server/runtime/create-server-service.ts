@@ -289,7 +289,8 @@ export function resolveServerMaxOutputTokens(): number | undefined {
 // them. ServerClassifiedProviderError matters beyond convenience: the retry
 // pipeline (ProviderObservationGenerator) only treats an error as retryable
 // when it's `instanceof ServerClassifiedProviderError` with `kind`
-// `'transient'`/`'rate_limit'` — a plain Error, even with a `.kind`
+// `'rate_limit'`, or `'transient'` (ambiguous: resent only within
+// SERVER_MAX_PAID_SENDS_PER_JOB) — a plain Error, even with a `.kind`
 // property bolted on, is always treated as non-retryable.
 //
 // These helpers are internal code, not a published library, and they do change

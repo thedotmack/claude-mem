@@ -117,8 +117,8 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'respawn_triggered',
   'abort_reason',
   // Worker lifecycle health — previous_shutdown (crash | clean | unknown),
-  // shutdown_reason (stop | restart | signal), uptime in whole seconds, and
-  // process memory as integer megabytes. No paths, no PIDs.
+  // shutdown_reason (stop | restart | signal | idle), uptime in whole
+  // seconds, and process memory as integer megabytes. No paths, no PIDs.
   'previous_shutdown',
   'previous_uptime_seconds',
   'uptime_seconds',

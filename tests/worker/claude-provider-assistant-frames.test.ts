@@ -146,7 +146,14 @@ function createHarness(session: ActiveSession) {
     session.earliestPendingTimestamp = null;
     return confirmed;
   });
-  const resetProcessingToPending = mock(async () => 0);
+  // Mirrors SessionManager.resetProcessingToPending: the claim is released on
+  // the session as well as in the buffer. Without this, the stream-end release
+  // below sees a still-claimed batch and the fake counts a second reset that
+  // the real manager never makes.
+  const resetProcessingToPending = mock(async () => {
+    session.claimedMessageIds = [];
+    return 0;
+  });
   const storeObservations = mock(() => ({
     observationIds: [7],
     summaryId: null,
@@ -381,6 +388,60 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
     expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
     expect(harness.remainingClaimed()).toHaveLength(1);
+    // The scripted stream ends after the failed turn, with nothing answering
+    // the re-sent batch: that exit is named so GeneratorExitHandler keeps the
+    // session instead of finalizing the batch away.
+    expect(session.abortReason).toBe('transport:sdk_eof');
+  });
+});
+
+describe('ClaudeProvider invalid API key detection (#4253)', () => {
+  beforeEach(() => {
+    scriptedMessages = [];
+  });
+
+  it('stores an observation that quotes "Invalid API key" mid-content', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+    const quotingXml = OBSERVATION_XML.replace(
+      'The queued batch reached the parser.',
+      'The login test asserted the CLI prints "Invalid API key" for a revoked key.',
+    );
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: quotingXml }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(harness.storeObservations).toHaveBeenCalledTimes(1);
+    expect(harness.confirmClaimedMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not throw on a reply that puts ordinary narrative after an "Invalid API key ·" prefix', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: 'Invalid API key · the login test covers the revoked-key path.' }]),
+      resultFrame(),
+    ];
+
+    await expect(harness.provider.startSession(session)).resolves.toBeUndefined();
+  });
+
+  it('still throws when the CLI answers with its invalid API key status line', async () => {
+    const session = createSession();
+    const harness = createHarness(session);
+
+    scriptedMessages = [
+      { ...assistantFrame([{ type: 'text', text: 'Invalid API key · Fix external API key' }]), error: 'authentication_failed' },
+      resultFrame({ is_error: true }),
+    ];
+
+    await expect(harness.provider.startSession(session)).rejects.toThrow('Invalid API key');
+    expect(harness.storeObservations).not.toHaveBeenCalled();
   });
 });
 

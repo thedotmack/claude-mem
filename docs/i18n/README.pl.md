@@ -215,7 +215,6 @@ Instalator obsługuje zależności, konfigurację wtyczki, konfigurację dostawc
 
 - **[Konfiguracja](https://docs.claude-mem.ai/configuration)** - Zmienne środowiskowe i ustawienia
 - **[Rozwój](https://docs.claude-mem.ai/development)** - Budowanie, testowanie, współpraca
-- **[Gałęzie Wydań](https://docs.claude-mem.ai/branches)** - Przepływ gałęzi stable, core-dev i community-edge
 - **[Rozwiązywanie Problemów](https://docs.claude-mem.ai/troubleshooting)** - Typowe problemy i rozwiązania
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Zobacz [Przewodnik Narzędzi Wyszukiwania](https://docs.claude-mem.ai/usage/search-tools), aby poznać szczegółowe przykłady.
-
----
-
-## Gałęzie Wydań
-
-Stabilne wydania są publikowane z gałęzi `main` i trafiają do npm. `core-dev` i
-`community-edge` to gałęzie uruchamiane ze źródła, przeznaczone do wczesnych poprawek
-niezawodności i integracji społeczności. Zobacz **[Gałęzie Wydań](https://docs.claude-mem.ai/branches)**,
-aby poznać przepływ gałęzi i instrukcje uruchamiania wersji niestabilnych.
 
 ---
 
@@ -383,11 +373,6 @@ Wkład jest mile widziany! Proszę:
 3. Dokonaj zmian z testami
 4. Zaktualizuj dokumentację
 5. Prześlij Pull Request
-
-Claude-Mem jest wydawany z trzech gałęzi: `main` (stabilna), `core-dev` oraz
-`community-edge`. Tylko `main` jest publikowana na npm; pozostałe są uruchamiane
-ze źródła. Zobacz [Gałęzie Wydań](https://docs.claude-mem.ai/branches), aby poznać
-strategię i instrukcje lokalnego uruchamiania.
 
 Zobacz [Przewodnik Rozwoju](https://docs.claude-mem.ai/development) dla przepływu pracy współpracy.
 

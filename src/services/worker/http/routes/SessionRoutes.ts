@@ -1,7 +1,7 @@
 
 import express, { Request, Response } from 'express';
 import { z } from 'zod';
-import { ingestObservation } from '../shared.js';
+import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
@@ -516,6 +516,7 @@ export class SessionRoutes extends BaseRouteHandler {
         return;
       }
       this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
+      session.fallbackFrom = fallbackFrom;
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(
@@ -564,6 +565,10 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
+    // Read-only admission probe: older workers must not silently ignore nativePromptId.
+    app.get('/api/sessions/native-prompt-capability', (_req: Request, res: Response) => {
+      res.json({ nativePromptId: 1 });
+    });
     app.post(
       '/api/sessions/init',
       validateBody(SessionRoutes.sessionInitByClaudeIdSchema),
@@ -608,6 +613,8 @@ export class SessionRoutes extends BaseRouteHandler {
     contentSessionId: z.string().min(1),
     project: z.string().optional(),
     prompt: z.string().optional(),
+    // A host's real user-turn ID, scoped by platform + content session.
+    nativePromptId: z.string().min(1).max(256).regex(/^[^\s\x00-\x1f\x7f]+$/).optional(),
     platformSource: z.string().optional(),
     customTitle: z.string().optional(),
     // The checkout `project` was resolved from, and how (gate P1-2).
@@ -698,88 +705,45 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleSummarizeByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling } = req.body;
-    const platformSource = this.getPlatformSourceFromRequest(req);
+    const { contentSessionId, last_assistant_message, agentId, observedModel, observedBilling, cwd } = req.body;
+    const outcome = await ingestSummarize({
+      contentSessionId,
+      platformSource: this.getPlatformSourceFromRequest(req),
+      lastAssistantMessage: last_assistant_message,
+      agentId,
+      observedModel,
+      observedBilling,
+      cwd,
+    }, this.ingestDeps());
 
-    if (agentId) {
-      res.json({ status: 'skipped', reason: 'subagent_context' });
-      return;
-    }
-
-    const store = this.dbManager.getSessionStore();
-
-    // Summarize only a session the worker knows. Creating a row here gave every
-    // idle turn of a session nothing else recorded (an excluded checkout, a
-    // skipped init) an empty-project row and a paid observer call (R5-1).
-    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
-    if (sessionDbId === null) {
+    if (outcome.status === 'unknown_session') {
       res.json({ status: 'skipped', reason: 'unknown_session' });
       return;
     }
-
-    // An excluded checkout is never summarized, even one excluded after its
-    // session began (R5-1). A host that cannot check the user's exclusions
-    // itself sends its checkout; without one, the checkout the session was
-    // recorded in is checked.
-    const requestCwd = typeof req.body.cwd === 'string' ? req.body.cwd.trim() : '';
-    const checkoutCwd = requestCwd || store.getSessionCwd(sessionDbId);
-    if (checkoutCwd) {
-      const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
-      if (isProjectExcluded(checkoutCwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
-        res.json({ status: 'skipped', reason: 'project_excluded' });
-        return;
-      }
-    }
-
-    if (observedModel || observedBilling) {
-      store.setSessionObservedMetadata(sessionDbId, observedModel, observedBilling);
-      const active = this.sessionManager.getSession(sessionDbId);
-      if (active) {
-        if (observedModel) active.observedModel = observedModel;
-        if (observedBilling) active.observedBilling = observedBilling;
-      }
-    }
-
-    const promptNumber = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
-
-    const privacy = PrivacyCheckValidator.checkUserPromptPrivacy(
-      store,
-      contentSessionId,
-      promptNumber,
-      'summarize',
-      sessionDbId
-    );
-    if (!privacy.allow) {
-      res.json({ status: 'skipped', reason: 'private' });
+    if (outcome.status === 'skipped') {
+      res.json({ status: 'skipped', reason: outcome.reason });
       return;
     }
-
-    const cleanedLastAssistantMessage = last_assistant_message
-      ? stripMemoryTags(String(last_assistant_message))
-      : last_assistant_message;
-    await this.sessionManager.queueSummarize(sessionDbId, cleanedLastAssistantMessage);
-
-    await this.ensureGeneratorRunning(sessionDbId, 'summarize');
-
-    this.eventBroadcaster.broadcastSummarizeQueued();
-
     res.json({ status: 'queued' });
   });
 
   private handleSessionEnd = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
-    const { contentSessionId } = req.body;
-    const platformSource = this.getPlatformSourceFromRequest(req);
-    const store = this.dbManager.getSessionStore();
-    const sessionDbId = store.findSessionDbIdByContentSessionId(contentSessionId, platformSource);
-
-    if (sessionDbId === null) {
-      res.json({ status: 'unknown_session' });
-      return;
-    }
-
-    await this.sessionManager.requestSessionWrapup(sessionDbId);
-    res.json({ status: 'accepted' });
+    const outcome = await ingestSessionEnd({
+      contentSessionId: req.body.contentSessionId,
+      platformSource: this.getPlatformSourceFromRequest(req),
+    }, this.ingestDeps());
+    res.json({ status: outcome.status });
   });
+
+  /** The route's own collaborators, so the shared ingest behaves exactly as the inline handler did. */
+  private ingestDeps(): IngestContext {
+    return {
+      sessionManager: this.sessionManager,
+      dbManager: this.dbManager,
+      eventBroadcaster: this.eventBroadcaster,
+      ensureGeneratorRunning: (sessionDbId, source) => this.ensureGeneratorRunning(sessionDbId, source),
+    };
+  }
 
   private handleSessionInitByClaudeId = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const { contentSessionId } = req.body;
@@ -874,7 +838,7 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     const currentCount = store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId);
-    const promptNumber = currentCount + 1;
+    let promptNumber = currentCount + 1;
 
     const memorySessionId = dbSession?.memory_session_id || null;
     if (promptNumber > 1) {
@@ -901,15 +865,39 @@ export class SessionRoutes extends BaseRouteHandler {
       return;
     }
 
-    const duplicatePrompt = store.findRecentDuplicateUserPrompt(
-      contentSessionId,
-      cleanedPrompt,
-      USER_PROMPT_DEDUPE_WINDOW_MS,
-      sessionDbId
-    );
+    const nativePromptId = req.body.nativePromptId as string | undefined;
+    const normalizedSdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
+    // A native slash-only ask is still a real turn. Keep its cleaned text
+    // when SDK normalization would erase it; legacy normalization is unchanged.
+    const sdkPrompt = nativePromptId ? normalizedSdkPrompt || cleanedPrompt : normalizedSdkPrompt;
+    let nativeAnchor: { id: number; promptNumber: number; duplicate: boolean } | undefined;
+    if (nativePromptId) {
+      try {
+        nativeAnchor = store.saveNativeUserPrompt(contentSessionId, sessionDbId, nativePromptId, cleanedPrompt, rawPrompt || MEDIA_PROMPT_PLACEHOLDER);
+      } catch (error) {
+        if (error instanceof Error && error.message === 'Native prompt identity was reused with different text') {
+          res.status(409).json({ error: error.message });
+          return;
+        }
+        throw error;
+      }
+      promptNumber = nativeAnchor.promptNumber;
+    }
+    // Legacy callers retain same-text retry protection. Native IDs distinguish
+    // intentional repeated prompts without delaying the user's next turn.
+    const duplicatePrompt = nativeAnchor
+      ? (nativeAnchor.duplicate ? { id: nativeAnchor.id, prompt_number: nativeAnchor.promptNumber } : undefined)
+      : store.findRecentDuplicateUserPrompt(contentSessionId, cleanedPrompt, USER_PROMPT_DEDUPE_WINDOW_MS, sessionDbId);
 
     if (duplicatePrompt) {
-      const contextInjected = this.sessionManager.getSession(sessionDbId) !== undefined;
+      const activeSession = this.sessionManager.getSession(sessionDbId);
+      // The durable claim can survive an initialization failure. Repair only
+      // a stale live native turn; cold sessions remain lazy and older retries
+      // must never replace a newer prompt's context.
+      if (nativeAnchor && activeSession && activeSession.lastPromptNumber < duplicatePrompt.prompt_number) {
+        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, duplicatePrompt.prompt_number, project);
+      }
+      const contextInjected = activeSession !== undefined;
       logger.debug('SESSION', 'Duplicate user prompt skipped', {
         sessionId: sessionDbId,
         promptNumber: duplicatePrompt.prompt_number,
@@ -922,6 +910,9 @@ export class SessionRoutes extends BaseRouteHandler {
         promptNumber: duplicatePrompt.prompt_number,
         skipped: true,
         reason: 'duplicate',
+        ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+          store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === duplicatePrompt.prompt_number
+          && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? duplicatePrompt.prompt_number) === duplicatePrompt.prompt_number } : {}),
         contextInjected
       });
       return;
@@ -939,9 +930,13 @@ export class SessionRoutes extends BaseRouteHandler {
     // (#2373). Only this route reopens at all: the observation and summarize
     // routes can carry trailing traffic from the turn that just ended, where
     // 'completed' is the truth.
-    store.reopenCompletedSession(sessionDbId);
-
-    store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    let savedUserPromptId: number;
+    if (nativeAnchor) {
+      savedUserPromptId = nativeAnchor.id;
+    } else {
+      store.reopenCompletedSession(sessionDbId);
+      savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
+    }
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
     // saved prompt nudges — including cursor sessions, which skip the
@@ -957,45 +952,46 @@ export class SessionRoutes extends BaseRouteHandler {
     });
 
     if (platformSource !== 'cursor') {
-      const sdkPrompt = cleanedPrompt.startsWith('/') ? cleanedPrompt.substring(1) : cleanedPrompt;
       const session = this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
 
-      const latestPrompt = store.getLatestUserPrompt(session.contentSessionId, sessionDbId);
+      // The row this request saved, by id. A newest-by-timestamp lookup can
+      // return a neighbouring turn saved in the same millisecond.
+      const savedUserPrompt = store.getUserPromptById(savedUserPromptId);
 
-      if (latestPrompt) {
+      if (savedUserPrompt) {
         this.eventBroadcaster.broadcastNewPrompt({
-          id: latestPrompt.id,
-          content_session_id: latestPrompt.content_session_id,
-          project: latestPrompt.project,
-          platform_source: latestPrompt.platform_source,
-          prompt_number: latestPrompt.prompt_number,
-          prompt_text: latestPrompt.prompt_text,
-          created_at_epoch: latestPrompt.created_at_epoch
+          id: savedUserPrompt.id,
+          content_session_id: savedUserPrompt.content_session_id,
+          project: savedUserPrompt.project,
+          platform_source: savedUserPrompt.platform_source,
+          prompt_number: savedUserPrompt.prompt_number,
+          prompt_text: savedUserPrompt.prompt_text,
+          created_at_epoch: savedUserPrompt.created_at_epoch
         });
 
         const chromaStart = Date.now();
-        const promptText = latestPrompt.prompt_text;
+        const promptText = savedUserPrompt.prompt_text;
         this.dbManager.getChromaSync()?.syncUserPrompt(
-          latestPrompt.id,
-          latestPrompt.memory_session_id,
-          latestPrompt.project,
+          savedUserPrompt.id,
+          savedUserPrompt.memory_session_id,
+          savedUserPrompt.project,
           promptText,
-          latestPrompt.prompt_number,
-          latestPrompt.created_at_epoch,
-          latestPrompt.platform_source
+          savedUserPrompt.prompt_number,
+          savedUserPrompt.created_at_epoch,
+          savedUserPrompt.platform_source
         ).then(() => {
           const chromaDuration = Date.now() - chromaStart;
           const truncatedPrompt = promptText.length > 60
             ? promptText.substring(0, 60) + '...'
             : promptText;
           logger.debug('CHROMA', 'User prompt synced', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             duration: `${chromaDuration}ms`,
             prompt: truncatedPrompt
           });
         }).catch((error) => {
           logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
-            promptId: latestPrompt.id,
+            promptId: savedUserPrompt.id,
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);
         });
@@ -1005,6 +1001,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
       this.eventBroadcaster.broadcastSessionStarted(sessionDbId, session.project);
     } else {
+      // Cursor creates its observer lazily, but accepted prompts still update an existing session.
+      if (this.sessionManager.getSession(sessionDbId)) {
+        this.sessionManager.initializeSession(sessionDbId, sdkPrompt, promptNumber, project);
+      }
       logger.debug('HTTP', 'session-init: Skipping SDK agent init for Cursor platform', { sessionDbId, promptNumber });
     }
 
@@ -1012,6 +1012,9 @@ export class SessionRoutes extends BaseRouteHandler {
       sessionDbId,
       promptNumber,
       skipped: false,
+      ...(nativePromptId ? { nativePromptId, nativePromptCurrent:
+        store.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) === promptNumber
+        && (this.sessionManager.getSession(sessionDbId)?.lastPromptNumber ?? promptNumber) === promptNumber } : {}),
       contextInjected,
       status: 'initialized'
     });

@@ -59,14 +59,18 @@ export class MemoryIngestRoutes extends BaseRouteHandler {
           .get(memorySessionId, contentHash) as { id: number } | undefined;
         if (existing) return { id: existing.id, deduped: true };
 
-        // Backdate to the file mtime via overrideTimestampEpoch.
+        // Backdate to the file mtime. Native notes are already distilled:
+        // preserve changed prose under a stable title instead of treating it
+        // as a repeated generated finding. Exact content replays still skip above.
         const result = sessionStore.storeObservation(
           memorySessionId,
           obs.project,
           observation,
           0,
           0,
-          obs.createdAtEpoch
+          obs.createdAtEpoch,
+          undefined,
+          { skipTitleDedup: true }
         );
 
         // A Tier-0 merge re-confirmed an existing row whose vector already

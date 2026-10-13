@@ -55,6 +55,33 @@ export function stripMemoryTags(content: string): string {
   return stripTags(content).stripped;
 }
 
+const CONTAINS_MEMORY_TAG_REGEX = new RegExp(
+  `<(${TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?</\\1>`
+);
+
+/**
+ * The value with memory tags (<private> and the rest) removed from every
+ * string in it (object values and array items, at any depth); the caller's
+ * value is not mutated. For structured payloads that leave the hook or are
+ * stored as-is, such as server runtime events and session metadata, where the
+ * worker path's stripMemoryTags(JSON.stringify(...)) does not apply. Strings
+ * without a tag are returned unchanged, so untagged content keeps its exact
+ * whitespace.
+ */
+export function stripMemoryTagsFromJsonStrings<T>(value: T): T {
+  const walk = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      return CONTAINS_MEMORY_TAG_REGEX.test(node) ? stripMemoryTags(node) : node;
+    }
+    if (Array.isArray(node)) return node.map(walk);
+    if (node !== null && typeof node === 'object') {
+      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, walk(child)]));
+    }
+    return node;
+  };
+  return walk(value) as T;
+}
+
 const PROTOCOL_ONLY_TAGS = ['task-notification'] as const;
 
 const PROTOCOL_ONLY_REGEX = new RegExp(

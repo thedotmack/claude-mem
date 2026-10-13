@@ -10,6 +10,7 @@ import {
   emitDiagnostic,
   exitGraceful,
   resetHookIoState,
+  HookStdoutError,
 } from '../shared/hook-io.js';
 import {
   recordWorkerUnreachable,
@@ -19,6 +20,7 @@ import {
   isWorkerUnavailableError,
 } from '../shared/worker-utils.js';
 import { captureCliEvent } from '../services/telemetry/cli-telemetry.js';
+import { settleHookSpoolNudges } from './spool-hook-event.js';
 import { canonicalIntegrationId } from '../shared/integration-id.js';
 import { logger } from '../utils/logger.js';
 
@@ -70,7 +72,10 @@ async function executeHookPipeline(
   // MODEL_CONTEXT: the only stdout JSON emit, via the platform adapter.
   emitModelContext(adapter, result);
   const exitCode = result.exitCode ?? HOOK_EXIT_CODES.SUCCESS;
-  exitGraceful(options);
+  // A write hook spooled its event and started a nudge to the worker; let it
+  // land (≤ 250 ms) so the drain starts now — process.exit would kill it.
+  await settleHookSpoolNudges();
+  await exitGraceful(options);
   return exitCode;
 }
 
@@ -88,7 +93,7 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   if (isToolHookDisabledByEnv(event)) {
     const adapter = getPlatformAdapter(platform);
     emitModelContext(adapter, buildNoOpResult(event));
-    exitGraceful(options);
+    await exitGraceful(options);
     return HOOK_EXIT_CODES.SUCCESS;
   }
 
@@ -107,16 +112,19 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
   try {
     return await executeHookPipeline(adapter, handler, platform, options);
   } catch (error) {
+    // A closed or failed stdout pipe cannot accept a replacement envelope.
+    // Preserve the delivery failure instead of reporting success or double-emitting.
+    if (error instanceof HookStdoutError) throw error;
     if (error instanceof AdapterRejectedInput) {
       logger.warn('HOOK', `Adapter rejected input (${error.reason}), skipping hook`);
       emitModelContext(adapter, buildNoOpResult(event));
-      exitGraceful(options);
+      await exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isNonBlockingHookInputError(error)) {
       logger.warn('HOOK', `Hook input unavailable, skipping hook: ${error instanceof Error ? error.message : error}`);
       emitModelContext(adapter, buildNoOpResult(event));
-      exitGraceful(options);
+      await exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
     if (isWorkerUnavailableError(error)) {
@@ -127,7 +135,7 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
       // threshold it sends the hook_failed telemetry and writes a diagnostic.
       // Awaited: exitGraceful below would kill a pending POST mid-flight.
       await recordWorkerUnreachable();
-      exitGraceful(options);
+      await exitGraceful(options);
       return HOOK_EXIT_CODES.SUCCESS;
     }
 
@@ -153,7 +161,7 @@ export async function hookCommand(rawPlatform: string, event: string, options: H
     }
     emitDiagnostic(`claude-mem: hook error, continuing without memory: ${errorMessage}\n`);
     emitModelContext(adapter, buildNoOpResult(event));
-    exitGraceful(options);
+    await exitGraceful(options);
     return HOOK_EXIT_CODES.SUCCESS;
   } finally {
     stderrBuffer.restore();

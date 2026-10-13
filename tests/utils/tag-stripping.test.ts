@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, isInternalProtocolPayload, isCodexInternalPrompt } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -477,6 +477,24 @@ after`;
       expect(isCodexInternalPrompt('# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with Codex in this local project.')).toBe(true);
       expect(isCodexInternalPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
       expect(isCodexInternalPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
+    });
+  });
+
+  describe('stripMemoryTagsFromJsonStrings', () => {
+    it('removes tagged sections from strings at any depth without mutating the input', () => {
+      const input = {
+        a: 'keep <private>drop-1</private>',
+        list: ['<private>drop-2</private>', 'plain'],
+        nested: { deep: { value: 'x<claude-mem-context>drop-3</claude-mem-context>' }, n: 3, ok: true, nil: null },
+      };
+      const output = stripMemoryTagsFromJsonStrings(input);
+      expect(JSON.stringify(output)).not.toMatch(/drop-\d/);
+      expect(output).toEqual({ a: 'keep', list: ['', 'plain'], nested: { deep: { value: 'x' }, n: 3, ok: true, nil: null } });
+      expect(input.a).toBe('keep <private>drop-1</private>');
+    });
+
+    it('leaves untagged strings byte-identical', () => {
+      expect(stripMemoryTagsFromJsonStrings({ s: '\n  indented\n' })).toEqual({ s: '\n  indented\n' });
     });
   });
 });

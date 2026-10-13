@@ -22,7 +22,7 @@ export interface NormalizedHookInput {
   stopHookActive?: boolean;
   permissionMode?: string;
   model?: string;
-  sessionSource?: 'startup' | 'resume' | 'clear';
+  sessionSource?: 'startup' | 'resume' | 'clear' | 'compact';
   /** Raw hook event name from the payload (e.g. Kimi binds both Stop and PreCompact to the same internal event — handlers use this to tell them apart). */
   hookEventName?: string;
   filePath?: string;

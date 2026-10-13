@@ -18,6 +18,7 @@ import { join } from 'path';
 import { paths } from './paths.js';
 import { describeDuration, scrubErrorMessage } from './observer-health.js';
 import { logger } from '../utils/logger.js';
+import { emitContextInvalidation } from './context-invalidation.js';
 
 export const SYNC_HEALTH_FILENAME = 'sync-health.json';
 
@@ -50,9 +51,16 @@ export const SYNC_AUTH_MESSAGES: Record<SyncAuthCode, string> = {
  * so the client stops its retry loop. The server passes the Pro app's
  * machine-readable `code` through; older servers only say "invalid token",
  * which maps to `invalid_token`.
+ *
+ * An HTML 401/403 is never the sync server: it answers in JSON. It is a
+ * filter in front of it (Supabase's Cloudflare WAF blocks some memory
+ * pushes with an "Attention Required!" page), so it is an ordinary retryable
+ * failure, not a reason to tell the user their token is bad.
  */
 export function classifySyncAuthFailure(status: number, body: string): SyncAuthFailure | null {
   if (status !== 401 && status !== 403) return null;
+  const bodyStart = body.replace(/^\s*(?:<!--[\s\S]*?-->\s*)*/, '');
+  if (/^<(?:!DOCTYPE|html)/i.test(bodyStart)) return null;
   let code: SyncAuthCode = 'invalid_token';
   let parsedCode: unknown = null;
   try {
@@ -131,6 +139,8 @@ export function writeSyncHealth(state: SyncHealthState, filePath: string = defau
     const tmp = `${filePath}.${process.pid}.tmp`;
     writeFileSync(tmp, JSON.stringify(state, null, 2), { encoding: 'utf-8', mode: 0o600 });
     renameSync(tmp, filePath);
+    // The sync banner rides inside the SessionStart block.
+    emitContextInvalidation('all', 'sync-health');
   } catch (error) {
     logger.debug('CLOUD_SYNC', 'Failed to write sync-health file', { filePath },
       error instanceof Error ? error : new Error(String(error)));
@@ -140,7 +150,10 @@ export function writeSyncHealth(state: SyncHealthState, filePath: string = defau
 /** Remove the ledger (sync turned off: no stale banner for a feature not in use). */
 export function clearSyncHealth(filePath: string = defaultSyncHealthFilePath()): void {
   try {
-    if (existsSync(filePath)) unlinkSync(filePath);
+    if (existsSync(filePath)) {
+      unlinkSync(filePath);
+      emitContextInvalidation('all', 'sync-health');
+    }
   } catch { /* best effort */ }
 }
 

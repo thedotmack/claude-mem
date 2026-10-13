@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, mock, setSystemTime, spyOn } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { OpenRouterProvider } from '../../src/services/worker/OpenRouterProvider.js';
@@ -10,6 +10,7 @@ import {
   DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
 } from '../../src/services/worker/context-window.js';
 import { processAgentResponse } from '../../src/services/worker/agents/ResponseProcessor.js';
+import type { OpenAIChatMessage } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { openObserverGeneration } from '../../src/services/worker/session/recycle-conversation.js';
 import { logger } from '../../src/utils/logger.js';
 import type { ModeConfig } from '../../src/services/domain/types.js';
@@ -139,6 +140,83 @@ describe('OpenRouter requests anchor the framing prompt as the system message', 
     expect(provider.buildMessages([{ role: 'user', content: 'Condense the tool payload below.' }])).toEqual([
       { role: 'user', content: 'Condense the tool payload below.' },
     ]);
+  });
+});
+
+// A provider prompt cache (OpenRouter, the cmem.ai gateway) hits only on a
+// byte-identical prefix. Whatever differs between sessions (project, date,
+// prior context, the continuation greeting) must follow the fixed observer
+// instructions, or no two sessions share a cached start.
+describe('every observer system message opens with the same fixed instructions', () => {
+  const provider = new TestOpenRouterProvider({} as never, {} as never);
+
+  /** The fixed pieces in prompt order; the observation schema's footer closes the block. */
+  const FIXED_PIECES = [
+    'system_identity', 'observer_role', 'spatial_awareness', 'recording_focus', 'skip_guidance',
+    'output_format_header', 'type_guidance', 'field_guidance', 'concept_guidance', 'footer',
+  ] as const;
+
+  const BRIEFING_A = '# [acme-api] recent context, 2026-10-04 2:18pm PDT\nMode: Code Development (code)\n\n111 2:18p Fixed the auth redirect loop';
+  const BRIEFING_B = '# [billing-web] recent context, 2026-10-05 9:02am PDT\nMode: Code Development (code)\n\n7 9:02a Traced the invoice rounding to toFixed(2)';
+
+  /** The messages a provider sends for a generation opened on `day`. */
+  function requestOn(day: string, framingPrompt: () => string): OpenAIChatMessage[] {
+    setSystemTime(new Date(`${day}T12:00:00Z`));
+    try {
+      return provider.buildMessages([{ role: 'user', content: framingPrompt(), framing: true }]) as OpenAIChatMessage[];
+    } finally {
+      setSystemTime();
+    }
+  }
+
+  const initA = () => requestOn('2026-10-04', () =>
+    buildInitPrompt('acme-api', 'content-a', 'fix the login redirect', CODE_MODE, BRIEFING_A));
+  const initB = () => requestOn('2026-10-05', () =>
+    buildInitPrompt('billing-web', 'content-b', 'why are invoices off by a cent?', CODE_MODE, BRIEFING_B));
+  const continuationB = () => requestOn('2026-10-05', () =>
+    buildContinuationPrompt('now add a regression test', 4, 'content-b', CODE_MODE, BRIEFING_B));
+
+  function systemOf(request: OpenAIChatMessage[]): string {
+    expect(request[0].role).toBe('system');
+    return request[0].content;
+  }
+
+  function sharedStart(a: string, b: string): string {
+    let length = 0;
+    while (length < a.length && length < b.length && a[length] === b[length]) length++;
+    return a.slice(0, length);
+  }
+
+  function fixedBlockEnd(system: string): number {
+    const footer = CODE_MODE.prompts.footer;
+    return system.indexOf(footer) + footer.length;
+  }
+
+  function expectWholeFixedBlockShared(a: string, b: string): void {
+    const shared = sharedStart(a, b);
+    expect(FIXED_PIECES.filter(key => !shared.includes(CODE_MODE.prompts[key]))).toEqual([]);
+    expect(shared.length).toBeGreaterThanOrEqual(fixedBlockEnd(a));
+  }
+
+  it('two sessions share the whole fixed block across their init generations', () => {
+    expectWholeFixedBlockShared(systemOf(initA()), systemOf(initB()));
+  });
+
+  it('an init and a continuation generation share it too', () => {
+    expectWholeFixedBlockShared(systemOf(initA()), systemOf(continuationB()));
+  });
+
+  it('sends the per-session text after the block and the dated request as the first user turn', () => {
+    const init = initA();
+    const continuation = continuationB();
+    const initSystem = systemOf(init);
+    const continuationSystem = systemOf(continuation);
+
+    expect(initSystem.indexOf(BRIEFING_A)).toBeGreaterThan(fixedBlockEnd(initSystem));
+    expect(continuationSystem.indexOf(CODE_MODE.prompts.continuation_greeting)).toBeGreaterThan(fixedBlockEnd(continuationSystem));
+    expect(continuationSystem.indexOf(BRIEFING_B)).toBeGreaterThan(fixedBlockEnd(continuationSystem));
+    expect(init[1].content).toContain('<requested_at>2026-10-04</requested_at>');
+    expect(continuation[1].content).toContain('<requested_at>2026-10-05</requested_at>');
   });
 });
 

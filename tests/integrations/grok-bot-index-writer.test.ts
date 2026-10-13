@@ -162,13 +162,13 @@ describe('mergeIndexObservations', () => {
 describe('queryObservationsNewest manual saves', () => {
   function seedDb(): Database {
     const db = new Database(':memory:');
-    db.run(`CREATE TABLE sdk_sessions (memory_session_id TEXT, platform_source TEXT)`);
+    db.run(`CREATE TABLE sdk_sessions (memory_session_id TEXT, platform_source TEXT, content_session_id TEXT)`);
     db.run(`CREATE TABLE observations (
       id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT,
       narrative TEXT, facts TEXT, concepts TEXT, files_read TEXT, files_modified TEXT,
       discovery_tokens INTEGER, created_at TEXT, created_at_epoch INTEGER, project TEXT,
       merged_into_project TEXT)`);
-    db.run(`INSERT INTO sdk_sessions VALUES ('manual-seat', 'claude'), ('sdk-1', 'claude')`);
+    db.run(`INSERT INTO sdk_sessions VALUES ('manual-seat', 'claude', 'manual-host'), ('sdk-1', 'claude', 'observed-host')`);
     const insert = db.prepare(`INSERT INTO observations
       (id, memory_session_id, type, title, concepts, created_at, created_at_epoch, project)
       VALUES (?, ?, ?, ?, ?, '', ?, ?)`);

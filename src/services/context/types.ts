@@ -16,6 +16,22 @@ export interface ContextInput {
    * itself must opt out (#4221).
    */
   includeHealthWarning?: boolean;
+  /**
+   * False renders without the prior session's reply whatever the setting says:
+   * for a block that may be cached, which any session can read.
+   */
+  includePriorMessage?: boolean;
+  /**
+   * Characters delivered beside this block (the work-state section), taken off
+   * the 10K delivery limit so the combined output still fits it.
+   */
+  reserveChars?: number;
+  /**
+   * Render the header time as a placeholder that `fillContextPlaceholders`
+   * fills at read time, so the block can be cached (shared/context-cache.ts).
+   * The fitter's limit shrinks by what the placeholder can grow by.
+   */
+  timePlaceholders?: boolean;
   [key: string]: any;
 }
 
@@ -55,6 +71,8 @@ export interface Observation {
   // A numeric SQLite id, or the server's string id in server runtime.
   id: number | string;
   memory_session_id: string;
+  /** Observed host session identity, used to resolve its transcript. */
+  content_session_id?: string | null;
   platform_source?: string;
   type: string;
   title: string | null;
@@ -82,6 +100,7 @@ export interface SessionSummary {
   learned: string | null;
   completed: string | null;
   next_steps: string | null;
+  notes?: string | null;
   created_at: string;
   created_at_epoch: number;
   project?: string;

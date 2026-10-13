@@ -87,12 +87,12 @@ describe('#2292 — fail-loud diagnostic is no longer swallowed', () => {
 });
 
 describe('worker-unavailable transient path stays quiet (exit 0)', () => {
-  it('exitGraceful drops buffered stderr so transient failures never leak', () => {
+  it('exitGraceful drops buffered stderr so transient failures never leak', async () => {
     const real = captureRealStderr();
     const buffer = installHookStderrBuffer();
     try {
       process.stderr.write('transient connection refused noise\n');
-      exitGraceful({ skipExit: true });
+      await exitGraceful({ skipExit: true });
       buffer.flush();
       expect(real.chunks.join('')).toBe('');
     } finally {
@@ -121,8 +121,12 @@ describe('stream separation invariant', () => {
   it('emitModelContext sends MODEL_CONTEXT to stdout (never stderr)', () => {
     const real = captureRealStderr();
     const stdoutChunks: string[] = [];
-    const originalLog = console.log;
-    console.log = (...args: unknown[]) => { stdoutChunks.push(args.join(' ')); };
+    const originalWrite = process.stdout.write;
+    process.stdout.write = ((chunk: string, callback: () => void): boolean => {
+      stdoutChunks.push(String(chunk));
+      callback();
+      return true;
+    }) as typeof process.stdout.write;
     try {
       emitModelContext(claudeCodeAdapter, {
         hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: 'MODEL-ONLY-PAYLOAD' },
@@ -132,7 +136,7 @@ describe('stream separation invariant', () => {
       // The model-bound text must not leak to stderr.
       expect(real.chunks.join('')).not.toContain('MODEL-ONLY-PAYLOAD');
     } finally {
-      console.log = originalLog;
+      process.stdout.write = originalWrite;
       real.restore();
     }
   });

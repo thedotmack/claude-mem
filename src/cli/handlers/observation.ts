@@ -3,42 +3,31 @@
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
 // caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
 import { redactForLog } from '../../utils/redaction.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { shouldSkipAgentObservation } from '../../shared/should-skip-agent-observation.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
+import { isToolSkipped } from '../../shared/is-tool-skipped.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
+import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
 
-async function dispatchToWorker(
-  input: NormalizedHookInput,
-  platformSource: string,
-): Promise<HookResult> {
-  const result = await executeWithWorkerFallback<{ status?: string }>(
-    '/api/sessions/observations',
-    'POST',
-    {
-      contentSessionId: input.sessionId,
-      platformSource,
-      tool_name: input.toolName,
-      tool_input: input.toolInput,
-      tool_response: input.toolResponse,
-      cwd: input.cwd,
-      agentId: input.agentId,
-      agentType: input.agentType,
-      tool_use_id: input.toolUseId,
-    },
-  );
-
-  if (isWorkerFallback(result)) {
-    return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-  }
-
-  logger.debug('HOOK', 'Observation sent successfully via worker', { toolName: input.toolName });
+function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
+  spoolHookEvent('observation', {
+    contentSessionId: input.sessionId,
+    platformSource,
+    toolName: input.toolName!,
+    toolInput: input.toolInput,
+    toolResponse: input.toolResponse,
+    cwd: input.cwd,
+    agentId: input.agentId,
+    agentType: input.agentType,
+    toolUseId: input.toolUseId,
+  });
   return { continue: true, suppressOutput: true };
 }
 
@@ -48,6 +37,10 @@ export const observationHandler: EventHandler = {
     const platformSource = normalizePlatformSource(input.platform);
 
     if (!toolName) {
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    if (isRecursiveMemoryTool(toolName)) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
@@ -79,11 +72,23 @@ export const observationHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
+    // Save echoes go through the worker spool so ingest can retain a write
+    // receipt, without generating a second observation of the explicit note.
+    if (isExplicitMemoryWrite(toolName)) {
+      return spoolObservation(input, platformSource);
+    }
+
     const runtime = resolveRuntimeContext();
     // Phase 1a (cmem-sdk rename): `runtime.runtime` is the canonical `'server'`
     // value. `runtime-selector.selectRuntime()` continues to accept the legacy
     // `'server-beta'` literal in settings.json and normalizes it to `'server'`.
     if (runtime.runtime === 'server') {
+      // Server events never pass through worker ingest, which is where
+      // CLAUDE_MEM_SKIP_TOOLS applies in worker runtime, so apply it here.
+      if (isToolSkipped(toolName, loadFromFileOnce().CLAUDE_MEM_SKIP_TOOLS)) {
+        logger.debug('HOOK', 'Server runtime: tool excluded by CLAUDE_MEM_SKIP_TOOLS', { toolName });
+        return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+      }
       const event: ServerRecordEventRequest = {
         projectId: runtime.projectId,
         contentSessionId: sessionId,
@@ -109,7 +114,7 @@ export const observationHandler: EventHandler = {
       } catch (error: unknown) {
         if (isServerClientError(error) && error.isFallbackEligible()) {
           logServerFallback(error.kind, { status: error.status, message: error.message, route: '/v1/events' });
-          // fall through to worker fallback
+          // fall through to the worker spool
         } else {
           logger.error('HOOK', 'Server event failed (non-recoverable)', {
             error: error instanceof Error ? error.message : String(error),
@@ -119,6 +124,6 @@ export const observationHandler: EventHandler = {
       }
     }
 
-    return dispatchToWorker(input, platformSource);
+    return spoolObservation(input, platformSource);
   },
 };

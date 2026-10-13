@@ -114,6 +114,27 @@ describe('replaceTaggedContent', () => {
     expect(result).toBe('Some content\n</claude-mem-context>\nMore content\n\n<claude-mem-context>\nNew content\n</claude-mem-context>');
   });
 
+  it('replaces only the block when a closing tag comes before it, and does not grow on refresh', () => {
+    // A closing tag taken for the end of the block copied the text between it
+    // and the block, and kept the old block, on every refresh of an
+    // auto-loaded CLAUDE.md or AGENTS.md.
+    const before = 'Notes\n</claude-mem-context>\nKeep this line.\n';
+    let content = `${before}<claude-mem-context>\nold\n</claude-mem-context>\n## After\n`;
+
+    content = replaceTaggedContent(content, 'first refresh');
+    content = replaceTaggedContent(content, 'second refresh');
+
+    expect(content).toBe(`${before}<claude-mem-context>\nsecond refresh\n</claude-mem-context>\n## After\n`);
+  });
+
+  it('keeps the text after a dangling opening tag once a later refresh finds the block', () => {
+    const appended = replaceTaggedContent('Some content\n<claude-mem-context>\nIncomplete tag section', 'first');
+
+    expect(replaceTaggedContent(appended, 'second')).toBe(
+      'Some content\n<claude-mem-context>\nIncomplete tag section\n\n<claude-mem-context>\nsecond\n</claude-mem-context>',
+    );
+  });
+
   it('should preserve newlines in new content', () => {
     const existingContent = '<claude-mem-context>\nOld content\n</claude-mem-context>';
     const newContent = 'Line 1\nLine 2\nLine 3';

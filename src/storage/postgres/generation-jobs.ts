@@ -39,6 +39,8 @@ export interface PostgresObservationGenerationJob {
   maxAttempts: number;
   nextAttemptAtEpoch: number | null;
   lockedAtEpoch: number | null;
+  /** Lossless Postgres lock timestamp; JS Date truncates microseconds. */
+  lockedAtToken?: string | null;
   lockedBy: string | null;
   completedAtEpoch: number | null;
   failedAtEpoch: number | null;
@@ -75,6 +77,7 @@ interface JobRow {
   max_attempts: number;
   next_attempt_at: Date | null;
   locked_at: Date | null;
+  locked_at_token?: string | null;
   locked_by: string | null;
   completed_at: Date | null;
   failed_at: Date | null;
@@ -136,7 +139,7 @@ export class PostgresObservationGenerationJobRepository {
                     || excluded.payload
                     || jsonb_build_object('generation_job_id', observation_generation_jobs.id),
           updated_at = now()
-        RETURNING *
+        RETURNING *, extract(epoch from locked_at)::text AS locked_at_token
       `,
       [
         input.id ?? newId(),
@@ -161,10 +164,14 @@ export class PostgresObservationGenerationJobRepository {
     id: string;
     projectId: string;
     teamId: string;
+    /** Hold ownership through a write transaction; use only on its client. */
+    forUpdate?: boolean;
   }): Promise<PostgresObservationGenerationJob | null> {
     const row = await queryOne<JobRow>(
       this.client,
-      'SELECT * FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3',
+      `SELECT *, extract(epoch from locked_at)::text AS locked_at_token
+       FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3
+       ${input.forUpdate ? 'FOR UPDATE' : ''}`,
       [input.id, input.projectId, input.teamId]
     );
     return row ? mapJobRow(row) : null;
@@ -204,7 +211,7 @@ export class PostgresObservationGenerationJobRepository {
           )
           AND ($2 <> 'processing' OR attempts < max_attempts)
           AND ($2 <> 'queued' OR attempts < max_attempts)
-        RETURNING *
+        RETURNING *, extract(epoch from locked_at)::text AS locked_at_token
       `,
       [
         input.id,
@@ -222,7 +229,8 @@ export class PostgresObservationGenerationJobRepository {
 
     const current = await queryOne<JobRow>(
       this.client,
-      'SELECT * FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3',
+      `SELECT *, extract(epoch from locked_at)::text AS locked_at_token
+       FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3`,
       [input.id, input.projectId, input.teamId]
     );
     if (!current) {
@@ -230,6 +238,63 @@ export class PostgresObservationGenerationJobRepository {
     }
     assertValidJobStatusTransition(mapJobRow(current), input.status);
     throw new Error('observation generation job status transition was not applied');
+  }
+
+  // Rows left in `processing` by a worker that died mid-job. Nothing else
+  // moves them: lockOutbox skips a `processing` row on redelivery and retry
+  // refuses one with 409. Server-wide by design.
+  //
+  // One statement selects and moves them, so the reclaim can't overwrite live
+  // work: the rows are locked with SKIP LOCKED (a concurrent sweeper takes
+  // other rows or none), and the stale predicate is re-checked under the row
+  // lock, so a worker that re-locked the row in between (locked_at = now())
+  // keeps it. Rows with attempts left go back to `queued`; spent ones go to
+  // `failed`. Returns each moved row with the lock it was reclaimed from.
+  async reclaimStaleProcessing(input: {
+    staleAfterMs: number;
+    limit?: number;
+  }): Promise<Array<{ job: PostgresObservationGenerationJob; previousLockedBy: string | null; previousLockedAtEpoch: number | null }>> {
+    const result = await this.client.query<JobRow & { previous_locked_by: string | null; previous_locked_at_epoch: string | null }>(
+      `
+        WITH stale AS (
+          SELECT id, locked_by AS previous_locked_by, locked_at AS previous_locked_at
+          FROM observation_generation_jobs
+          WHERE status = 'processing'
+            AND locked_at < now() - ($1::double precision * interval '1 millisecond')
+          ORDER BY locked_at ASC
+          LIMIT $2
+          FOR UPDATE SKIP LOCKED
+        )
+        UPDATE observation_generation_jobs AS j
+        SET
+          status = CASE WHEN j.attempts >= j.max_attempts THEN 'failed' ELSE 'queued' END,
+          locked_at = NULL,
+          locked_by = NULL,
+          next_attempt_at = NULL,
+          failed_at = CASE WHEN j.attempts >= j.max_attempts THEN now() ELSE NULL END,
+          last_error = CASE WHEN j.attempts >= j.max_attempts
+            THEN jsonb_build_object(
+              'reason', 'stale_processing_lock',
+              'lockedBy', stale.previous_locked_by,
+              'lockedAtEpoch', (extract(epoch from stale.previous_locked_at) * 1000)::bigint
+            )
+            ELSE NULL END,
+          updated_at = now()
+        FROM stale
+        WHERE j.id = stale.id
+          AND j.status = 'processing'
+          AND j.locked_at < now() - ($1::double precision * interval '1 millisecond')
+        RETURNING j.*, extract(epoch from j.locked_at)::text AS locked_at_token,
+          stale.previous_locked_by,
+          (extract(epoch from stale.previous_locked_at) * 1000)::bigint AS previous_locked_at_epoch
+      `,
+      [input.staleAfterMs, input.limit ?? 100]
+    );
+    return result.rows.map(row => ({
+      job: mapJobRow(row),
+      previousLockedBy: row.previous_locked_by,
+      previousLockedAtEpoch: row.previous_locked_at_epoch == null ? null : Number(row.previous_locked_at_epoch),
+    }));
   }
 
   async listByStatusForScope(input: {
@@ -240,7 +305,7 @@ export class PostgresObservationGenerationJobRepository {
   }): Promise<PostgresObservationGenerationJob[]> {
     const result = await this.client.query<JobRow>(
       `
-        SELECT * FROM observation_generation_jobs
+        SELECT *, extract(epoch from locked_at)::text AS locked_at_token FROM observation_generation_jobs
         WHERE status = $1 AND project_id = $2 AND team_id = $3
         ORDER BY created_at ASC
         LIMIT $4
@@ -442,6 +507,7 @@ function mapJobRow(row: JobRow): PostgresObservationGenerationJob {
     maxAttempts: row.max_attempts,
     nextAttemptAtEpoch: toDate(row.next_attempt_at)?.getTime() ?? null,
     lockedAtEpoch: toDate(row.locked_at)?.getTime() ?? null,
+    lockedAtToken: row.locked_at_token ?? null,
     lockedBy: row.locked_by,
     completedAtEpoch: toDate(row.completed_at)?.getTime() ?? null,
     failedAtEpoch: toDate(row.failed_at)?.getTime() ?? null,

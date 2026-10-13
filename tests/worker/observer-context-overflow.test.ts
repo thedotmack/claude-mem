@@ -297,12 +297,6 @@ describe('an HTTP context-length refusal recycles the generation', () => {
     let chatRequests = 0;
     const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
       chatRequests += 1;
-      if (chatRequests === 1) {
-        return new Response(JSON.stringify({ model: 'test/model', choices: [{ message: { content: 'ready' }, finish_reason: 'stop' }] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
       return new Response(LLAMA_CPP_CONTEXT_BODY, { status: 400, headers: { 'Content-Type': 'application/json' } });
     }) as unknown as typeof fetch);
 
@@ -313,8 +307,8 @@ describe('an HTTP context-length refusal recycles the generation', () => {
 
       await provider.startSession(session);
 
-      // One init request, one refused observation request, no retries of it.
-      expect(chatRequests).toBe(2);
+      // One refused observation request (the init prompt rode on it), no retries of it.
+      expect(chatRequests).toBe(1);
       expect(session.abortReason).toBe('overflow:recycle');
       expect(queue.pending).toHaveLength(1);
     } finally {
@@ -340,12 +334,6 @@ describe('an openai-compatible context-length refusal recycles the generation', 
     let chatRequests = 0;
     const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async () => {
       chatRequests += 1;
-      if (chatRequests === 1) {
-        return new Response(JSON.stringify({ model: 'local-model', choices: [{ message: { content: 'ready' }, finish_reason: 'stop' }] }), {
-          status: 200,
-          headers: { 'Content-Type': 'application/json' },
-        });
-      }
       return new Response(VLLM_CONTEXT_BODY, { status: 400, headers: { 'Content-Type': 'application/json' } });
     }) as unknown as typeof fetch);
 
@@ -357,7 +345,7 @@ describe('an openai-compatible context-length refusal recycles the generation', 
 
       await provider.startSession(session);
 
-      expect(chatRequests).toBe(2);
+      expect(chatRequests).toBe(1);
       expect(session.abortReason).toBe('overflow:recycle');
       expect(queue.pending).toHaveLength(1);
     } finally {

@@ -238,6 +238,58 @@ export function observationFieldMaxChars(contextWindowTokens: number | undefined
   return Math.min(OBS_PROMPT_FIELD_MAX_CHARS, Math.floor(contextWindowTokens * FIELD_WINDOW_SHARE * CHARS_PER_TOKEN));
 }
 
+/**
+ * Share of the window one condense prompt's payload may take: the request also
+ * carries the instructions, and the condensed reply has to fit in it too.
+ */
+const CONDENSE_INPUT_SHARE = 0.5;
+
+/**
+ * A whitespace-free run longer than this is dense text (code, minified JSON,
+ * logs without spaces, base64), which tokenizes far worse than prose.
+ */
+const DENSE_RUN_CHARS = 12;
+
+/**
+ * Chars per token for dense text. greptile measured 1.02M tokens from under
+ * 2M dense chars, so ~4 chars/token admitted requests the model then refused.
+ */
+const DENSE_CHARS_PER_TOKEN = 2.5;
+
+/**
+ * Cheap token estimate for a condense payload, with no tokenizer: one linear
+ * pass that counts whitespace-free runs longer than DENSE_RUN_CHARS at
+ * DENSE_CHARS_PER_TOKEN and everything else at CHARS_PER_TOKEN. Classified per
+ * run, so one base64 blob inside prose is still counted as dense. The payload
+ * is JSON text, so an escaped \n, \t or \r ends a run like the whitespace it
+ * stands for; otherwise every line break would glue two words into one run.
+ */
+export function estimateCondenseTokens(text: string): number {
+  let denseChars = 0;
+  let runStart = -1;
+  for (let i = 0; i <= text.length; i++) {
+    const code = i < text.length ? text.charCodeAt(i) : 32;
+    const next = code === 92 ? text.charCodeAt(i + 1) : 0;
+    if (code === 32 || code === 10 || code === 9 || code === 13 || next === 110 || next === 116 || next === 114) {
+      if (runStart >= 0 && i - runStart > DENSE_RUN_CHARS) denseChars += i - runStart;
+      runStart = -1;
+    } else if (runStart < 0) {
+      runStart = i;
+    }
+  }
+  return Math.ceil((text.length - denseChars) / CHARS_PER_TOKEN + denseChars / DENSE_CHARS_PER_TOKEN);
+}
+
+/**
+ * Largest condense payload, in estimated tokens, worth sending to the observer
+ * model in one pass (#3800). Above it the request cannot be served (a local
+ * 32k server refused 300k-631k-token condense prompts), so the field is
+ * truncated without a model call. An unknown window uses the fallback window.
+ */
+export function condenseInputMaxTokens(contextWindowTokens: number | undefined): number {
+  return Math.floor((contextWindowTokens || FALLBACK_CONTEXT_WINDOW_TOKENS) * CONDENSE_INPUT_SHARE);
+}
+
 /** Output-token cap per observer reply when CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS is unset or invalid. */
 export const DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS = 4096;
 

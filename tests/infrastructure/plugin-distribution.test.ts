@@ -6,6 +6,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { buildCodexWindowsCommand, buildShellCommand } from '../../src/build/hook-shell-template.js';
 import { HOOK_TIMEOUTS } from '../../src/shared/hook-constants.js';
+import { FILE_CONTEXT_WORKER_BUDGET_MS } from '../../src/cli/handlers/file-context.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -135,8 +136,13 @@ describe('Plugin Distribution - Required Files', () => {
   const requiredFiles = [
     'plugin/hooks/hooks.json',
     'plugin/hooks/codex-hooks.json',
+    'plugin/hooks/qoder-hooks.json',
+    'plugin/hooks/qoder-repo-hooks.json',
     'plugin/.claude-plugin/plugin.json',
     'plugin/.codex-plugin/plugin.json',
+    'plugin/.qoder-plugin/plugin.json',
+    'plugin/qoder.mcp.json',
+    'plugin/scripts/qoder-hook-launcher.cjs',
     'plugin/.mcp.json',
     'plugin/sqlite/SessionStore.js',
     'plugin/sqlite/observations/files.js',
@@ -158,6 +164,48 @@ describe('Plugin Distribution - Required Files', () => {
       expect(existsSync(fullPath)).toBe(true);
     });
   }
+});
+
+describe('Plugin Distribution - Qoder', () => {
+  it('ships root and bundled manifests with the correct relative paths', () => {
+    const root = readJson('.qoder-plugin/plugin.json');
+    const bundled = readJson('plugin/.qoder-plugin/plugin.json');
+    expect(root.hooks).toBe('./plugin/hooks/qoder-repo-hooks.json');
+    expect(root.mcpServers).toBe('./plugin/qoder.mcp.json');
+    expect(bundled.hooks).toBe('./hooks/qoder-hooks.json');
+    expect(bundled.mcpServers).toBe('./qoder.mcp.json');
+  });
+
+  it('runs every Qoder hook through the structured hook launcher', () => {
+    for (const file of ['plugin/hooks/qoder-hooks.json', 'plugin/hooks/qoder-repo-hooks.json']) {
+      const entries = commandHookEntriesFrom(file);
+      expect(entries.length).toBeGreaterThan(0);
+      for (const entry of entries) {
+        expect(entry.command).toBe('node');
+        expect(entry.args.join(' ')).toContain('qoder-hook-launcher.cjs');
+        expect(entry.env.CLAUDE_MEM_CODEX_HOOK).toBe('1');
+      }
+    }
+  });
+
+  it('routes Qoder through the compatible Codex hook adapter', () => {
+    const launcher = readFileSync(
+      path.join(projectRoot, 'plugin/scripts/qoder-hook-launcher.cjs'),
+      'utf-8',
+    );
+    expect(launcher).toContain("'hook',\n    'codex'");
+    expect(launcher.indexOf("version-check.js")).toBeLessThan(
+      launcher.indexOf("bun-runner.js"),
+    );
+    expect(launcher).toContain("event === 'context'");
+  });
+
+  it('gives first-session dependency setup enough time to complete', () => {
+    for (const file of ['plugin/hooks/qoder-hooks.json', 'plugin/hooks/qoder-repo-hooks.json']) {
+      const hooks = readJson(file);
+      expect(hooks.hooks.SessionStart[0].hooks[0].timeout).toBe(180);
+    }
+  });
 });
 
 describe('Plugin Distribution - Codex Marketplace', () => {
@@ -307,7 +355,7 @@ describe('Plugin Distribution - hooks.json Integrity', () => {
 describe('Plugin Distribution - Startup Root Resolution', () => {
   it('MCP startup command resolves the plugin root cross-platform (#2792)', () => {
     // The launcher is now a cross-platform `node -e` payload (no `sh`), so it
-    // spawns on Windows without Git Bash. It must still resolve the plugin root
+    // runs on Windows without Git Bash. It must still resolve the plugin root
     // with config-dir + env fallbacks and try cache roots before marketplaces.
     const command = mcpStartupCommandFrom('plugin/.mcp.json');
 
@@ -318,6 +366,9 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     expect(command).toContain('plugins/marketplaces/thedotmack/plugin');
     expect(command).toContain('plugins/cache/thedotmack/claude-mem');
     expect(command).toContain('mcp-server.cjs');
+    expect(command).toMatch(/require\(p\.resolve\(R,'scripts',["']mcp-server\.cjs["']\)\)/);
+    expect(command).not.toContain('child_process');
+    expect(command).not.toContain('.spawn(');
     // No bare absolute "/scripts/..." path leaks through.
     expect(command).not.toContain('"/scripts/mcp-server.cjs"');
     expect(command.indexOf('plugins/cache/thedotmack/claude-mem')).toBeLessThan(
@@ -369,6 +420,52 @@ describe('Plugin Distribution - Startup Root Resolution', () => {
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
+  });
+});
+
+describe('Plugin Distribution - MCP launcher process (#4269)', () => {
+  // Runs the shipped plugin/.mcp.json entry against a fixture server that
+  // prints its own pid. Loaded in-process, the server's pid is the launcher's,
+  // so each MCP session costs one Node process rather than an idle launcher
+  // plus a child.
+  const { command, args } = readJson('plugin/.mcp.json').mcpServers['mcp-search'];
+
+  function launchMcpServer(pluginRootFor: ((sandbox: string) => string) | null) {
+    const sandbox = mkdtempSync(path.join(tmpdir(), 'claude-mem-mcp-launch-'));
+    try {
+      mkdirSync(path.join(sandbox, 'fixture', 'scripts'), { recursive: true });
+      writeFileSync(path.join(sandbox, 'fixture', 'scripts', 'mcp-server.cjs'), 'process.stdout.write(String(process.pid));\n');
+      // An empty HOME and config dir, so no real install can satisfy a candidate.
+      const home = path.join(sandbox, 'home');
+      const configDir = path.join(sandbox, 'claude-config');
+      mkdirSync(home);
+      mkdirSync(configDir);
+      const env: Record<string, string | undefined> = { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir };
+      delete env.CLAUDE_PLUGIN_ROOT;
+      delete env.PLUGIN_ROOT;
+      if (pluginRootFor) env.CLAUDE_PLUGIN_ROOT = pluginRootFor(sandbox);
+      return spawnSync(command, args, { cwd: sandbox, env, encoding: 'utf-8', timeout: 20000 });
+    } finally {
+      rmSync(sandbox, { recursive: true, force: true });
+    }
+  }
+
+  it('runs the server inside the launcher process for an absolute plugin root', () => {
+    const result = launchMcpServer(sandbox => path.join(sandbox, 'fixture'));
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(String(result.pid));
+  });
+
+  it('resolves a relative plugin root against the working directory', () => {
+    const result = launchMcpServer(() => './fixture');
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe(String(result.pid));
+  });
+
+  it('exits 1 with the not-found message when no candidate has the server', () => {
+    const result = launchMcpServer(null);
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain('claude-mem: mcp server not found');
   });
 });
 
@@ -455,19 +552,20 @@ describe('Plugin Distribution - Setup Hook (#1547)', () => {
 });
 
 describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
-  it('runs observation, file context, summarization, and SessionEnd asynchronously', () => {
+  it('runs observation, summarization, and SessionEnd asynchronously', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
     const postToolUse = parsed.hooks.PostToolUse[0].hooks[0];
-    const preToolUse = parsed.hooks.PreToolUse[0].hooks[0];
+    const postToolUseFailure = parsed.hooks.PostToolUseFailure[0].hooks[0];
     const stop = parsed.hooks.Stop[0].hooks[0];
     const sessionEnd = parsed.hooks.SessionEnd[0].hooks[0];
 
     expect(postToolUse.command).toContain('observation');
     expect(postToolUse.async).toBe(true);
-    expect(preToolUse.command).toContain('file-context');
-    expect(preToolUse.async).toBe(true);
+    expect(parsed.hooks.PostToolUseFailure[0].matcher).toBe('*');
+    expect(postToolUseFailure.command).toContain('observation');
+    expect(postToolUseFailure.async).toBe(true);
     expect(stop.command).toContain('summarize');
     expect(stop.async).toBe(true);
     expect(sessionEnd.command).toContain('session-end');
@@ -478,23 +576,43 @@ describe('Plugin Distribution - Non-blocking bookkeeping hooks (#3206)', () => {
     const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
     const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
 
-    const sessionStart = parsed.hooks.SessionStart[0].hooks;
+    const sessionStart = parsed.hooks.SessionStart.flatMap((group: any) => group.hooks);
+    const workerStart = sessionStart.find((hook: any) => hook.command.includes('"$_P/scripts/worker-service.cjs" start'));
+    const context = sessionStart.find((hook: any) => hook.command.includes(' hook claude-code context'));
     const userPromptSubmit = parsed.hooks.UserPromptSubmit[0].hooks[0];
 
     expect(sessionStart).toHaveLength(2);
     // `start` only prints a status envelope, and the context hook lazily
     // spawns the worker itself, so session start need not wait for it.
-    expect(sessionStart[0].command).toContain(' start');
-    expect(sessionStart[0].async).toBe(true);
+    expect(workerStart.command).toContain(' start');
+    expect(workerStart.async).toBe(true);
     // `context` must stay synchronous: Claude Code hands an async hook's
     // additionalContext / systemMessage to the model on the next turn and never
     // shows the systemMessage to the user, which would hide the startup
     // timeline, the viewer link and the trial notice.
-    expect(sessionStart[1].command).toContain(' hook claude-code context');
-    expect(sessionStart[1]).not.toHaveProperty('async');
+    expect(context.command).toContain(' hook claude-code context');
+    expect(context).not.toHaveProperty('async');
     expect(userPromptSubmit.command).toContain(' hook claude-code session-init');
     // Keep prompt-row persistence ordered before downstream hooks consume it.
     expect(userPromptSubmit).not.toHaveProperty('async');
+  });
+
+  it('keeps the PreToolUse Read file-context hook synchronous so the File Read Gate can deny', () => {
+    const hooksPath = path.join(projectRoot, 'plugin/hooks/hooks.json');
+    const parsed = JSON.parse(readFileSync(hooksPath, 'utf-8'));
+
+    const preToolUseGroup = parsed.hooks.PreToolUse[0];
+    const fileContext = preToolUseGroup.hooks[0];
+
+    const matcher = new RegExp(preToolUseGroup.matcher);
+    for (const tool of ['Read', 'Grep', 'Glob', 'memory_search', 'memory', 'mcp__native__memory_search']) {
+      expect(matcher.test(tool)).toBe(true);
+    }
+    expect(matcher.test('save_memory')).toBe(false);
+    expect(fileContext.command).toContain(' hook claude-code file-context');
+    // Claude Code ignores permissionDecision from an async hook, so an async
+    // file-context hook could never block a whole-file Read.
+    expect(fileContext).not.toHaveProperty('async');
   });
 });
 
@@ -521,6 +639,8 @@ const codexHookPair = (tail: string[]) => ({
 
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
 const SESSION_INIT_HOOK_PATH = 'UserPromptSubmit.0.0';
+const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
+const FILE_CONTEXT_HOOK_PATH = 'PreToolUse.0.0';
 
 type RuleAExpectation = string | { command: string; commandWindows?: string; timeout?: number };
 
@@ -538,13 +658,17 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     // causing it to ignore suppressOutput and render the raw JSON at the top of
     // every session.
     'SessionStart.0.0': claudeHook(['start']),
-    'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
+    'SessionStart.1.0': claudeHook(['hook', 'claude-code', 'context']),
     'UserPromptSubmit.0.0': {
       command: claudeHook(['hook', 'claude-code', 'session-init']),
       timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS,
     },
     'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
-    'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
+    'PostToolUseFailure.0.0': claudeHook(['hook', 'claude-code', 'observation']),
+    'PreToolUse.0.0': {
+      command: claudeHook(['hook', 'claude-code', 'file-context']),
+      timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS,
+    },
     'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
     'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
   },
@@ -558,7 +682,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
 };
 
 const MCP_EXPECTED = buildShellCommand({
-  // The mcp Node launcher derives its spawn target from requireFile; it ignores
+  // The mcp Node launcher derives its module target from requireFile; it ignores
   // trailingCommand, so none is passed (see buildMcpNodeLauncher).
   host: 'mcp', requireFile: 'mcp-server.cjs',
   notFoundMessage: 'claude-mem: mcp server not found',
@@ -609,6 +733,15 @@ describe('Spawn-Contract Templating - Rule A generator parity', () => {
     expect(hookEntryByPath(codex, SESSION_INIT_HOOK_PATH)?.timeout).toBeGreaterThan(
       (HOOK_TIMEOUTS.POST_SPAWN_WAIT + 2_000) / 1000,
     );
+  });
+
+  it('bounds the synchronous Claude Code PreToolUse Read hook below the legacy 60 second stall', () => {
+    const parsed = readJson('plugin/hooks/hooks.json');
+    const timeoutSeconds = hookEntryByPath(parsed, FILE_CONTEXT_HOOK_PATH)?.timeout;
+    expect(timeoutSeconds).toBe(FILE_CONTEXT_HOOK_TIMEOUT_SECONDS);
+    // The handler's worker budget must fit inside the host timeout with room
+    // for shell, node and bun startup.
+    expect(timeoutSeconds).toBeGreaterThan(FILE_CONTEXT_WORKER_BUDGET_MS / 1000 + 5);
   });
 
   it('never leaks a raw ${CLAUDE_PLUGIN_ROOT} into the resolved trailing command', () => {
@@ -712,7 +845,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       // so the shim above would have caught a fast path that never engaged.
       rmSync(cacheScanMarker, { force: true });
       const [{ command: sessionStartCommand }] = claudeCommands().filter(
-        ({ dottedPath }) => dottedPath === 'SessionStart.0.1',
+        ({ dottedPath }) => dottedPath === 'SessionStart.1.0',
       );
       shellEval(instrument(sessionStartCommand), {
         CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),

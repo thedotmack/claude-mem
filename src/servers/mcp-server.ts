@@ -17,7 +17,7 @@ import {
 import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../shared/worker-utils.js';
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
-import { parseFile, formatFoldedView, unfoldSymbol } from '../services/smart-file-read/parser.js';
+import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } from '../services/smart-file-read/parser.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -39,9 +39,15 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
-import { getAdvertisedMcpToolsForRuntime } from './mcp-tool-visibility.js';
+import { getAdvertisedMcpToolsForRuntime, withoutDisabledWorkStateTools, WORK_STATE_TOOL_NAMES } from './mcp-tool-visibility.js';
+import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
+import { postCorpusRequestOverSse } from './corpus-worker-stream.js';
+import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
+import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
+import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 
 /** This server's checkout (Claude Code starts it in the workspace), resolved once. */
 let workspaceCheckout: ProjectContext | null = null;
@@ -79,54 +85,88 @@ function errorIfWorkerScriptMissing(): void {
   );
 }
 
-async function callWorker(
-  endpoint: string,
-  opts: { query?: Record<string, any>; body?: Record<string, any>; text?: boolean } = {}
-): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+interface WorkerCallOptions {
+  query?: Record<string, any>;
+  body?: Record<string, any>;
+  text?: boolean;
+  /** Long corpus work: read the worker's SSE heartbeat stream instead of one JSON reply. */
+  streamCorpusProgress?: boolean;
+}
+
+type WorkerToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+
+function workerResultPurpose(endpoint: string, writes: boolean): McpTextPurpose {
+  if (endpoint === '/api/memory/save') return 'save';
+  if (endpoint === '/api/observations/batch') return 'observations';
+  if (endpoint === '/api/tool-uses/batch') return 'tool-uses';
+  if (endpoint === '/api/corpus') return writes ? 'corpus-build' : 'corpus-list';
+  if (/\/corpus\/[^/]+\/(?:prime|reprime)$/.test(endpoint)) return 'corpus-prime';
+  if (/\/corpus\/[^/]+\/rebuild$/.test(endpoint)) return 'corpus-build';
+  if (/\/corpus\/[^/]+\/query$/.test(endpoint)) return 'corpus-query';
+  return endpoint === '/api/search' ? 'search' : 'context';
+}
+
+async function callWorker(endpoint: string, opts: WorkerCallOptions = {}): Promise<WorkerToolResult> {
   logger.debug('SYSTEM', '→ Worker API', undefined, { endpoint });
 
   try {
-    let response: Response;
-    if (opts.body) {
-      response = await workerHttpRequest(endpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(opts.body)
-      });
-    } else {
-      const searchParams = new URLSearchParams();
-      for (const [key, value] of Object.entries(opts.query ?? {})) {
-        if (value !== undefined && value !== null) {
-          searchParams.append(key, String(value));
-        }
-      }
-      response = await workerHttpRequest(`${endpoint}?${searchParams}`);
-    }
-
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`Worker API error (${response.status}): ${errorText}`);
-    }
-
-    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
-
-    if (opts.text) {
-      return { content: [{ type: 'text' as const, text: await response.text() }] };
-    }
-    if (opts.body) {
-      return { content: [{ type: 'text' as const, text: JSON.stringify(await response.json(), null, 2) }] };
-    }
-    return await response.json() as { content: Array<{ type: 'text'; text: string }>; isError?: boolean };
+    // The worker can exit while this server runs (idle exit, a crash,
+    // `claude-mem stop`); a refused connection starts it once and resends.
+    return await withWorkerRestartOnRefusedConnection(
+      () => requestWorker(endpoint, opts),
+      startWorkerAfterRefusedConnection,
+    );
   } catch (error: unknown) {
     logger.error('SYSTEM', '← Worker API error', { endpoint }, error instanceof Error ? error : new Error(String(error)));
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Error calling Worker API: ${error instanceof Error ? error.message : String(error)}`
-      }],
-      isError: true
-    };
+    return mcpTextResult(workerFailureText(error instanceof Error ? error.message : ''), true);
   }
+}
+
+async function requestWorker(endpoint: string, opts: WorkerCallOptions): Promise<WorkerToolResult> {
+  if (opts.streamCorpusProgress && opts.body) {
+    const corpusResult = await postCorpusRequestOverSse(endpoint, opts.body);
+    logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+    return formatWorkerMcpResponse(workerResultPurpose(endpoint, true), corpusResult);
+  }
+
+  let response: Response;
+  if (opts.body) {
+    response = await workerHttpRequest(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(opts.body)
+    });
+  } else {
+    const searchParams = new URLSearchParams();
+    for (const [key, value] of Object.entries(opts.query ?? {})) {
+      if (value !== undefined && value !== null) {
+        searchParams.append(key, String(value));
+      }
+    }
+    response = await workerHttpRequest(`${endpoint}?${searchParams}`);
+  }
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Worker API error (${response.status}): ${errorText}`);
+  }
+
+  logger.debug('SYSTEM', '← Worker API success', undefined, { endpoint });
+
+  if (opts.text) {
+    return mcpTextResult(await response.text());
+  }
+  return formatWorkerMcpResponse(workerResultPurpose(endpoint, Boolean(opts.body)), await response.json());
+}
+
+/**
+ * Start the worker after it refused a tool call. Same rule as startup: with
+ * CLAUDE_MEM_RUNTIME=server the MCP server never starts it, and
+ * ensureWorkerStarted itself honors CLAUDE_MEM_WORKER_AUTOSTART=false.
+ */
+async function startWorkerAfterRefusedConnection(): Promise<boolean> {
+  if (selectRuntime() === 'server') return false;
+  return ensureWorkerConnection();
 }
 
 async function verifyWorkerConnection(): Promise<boolean> {
@@ -184,13 +224,9 @@ function resolveServerToolContext(): ServerResolution | null {
 
 function formatToolError(error: unknown): { content: Array<{ type: 'text'; text: string }>; isError: true } {
   if (isServerClientError(error)) {
-    return {
-      content: [{
-        type: 'text' as const,
-        text: `Server error (${error.kind}${error.status ? ` ${error.status}` : ''}): ${error.message}`,
-      }],
-      isError: true as const,
-    };
+    const text = error.kind === 'transport' && error.message.includes(' requires CLAUDE_MEM_RUNTIME=server.')
+      ? error.message : serverFailureText(error.kind, error.status);
+    return { content: mcpTextResult(text).content, isError: true };
   }
   return {
     content: [{
@@ -201,21 +237,12 @@ function formatToolError(error: unknown): { content: Array<{ type: 'text'; text:
   };
 }
 
-function formatJsonResult(payload: unknown): { content: Array<{ type: 'text'; text: string }> } {
-  return {
-    content: [{
-      type: 'text' as const,
-      text: JSON.stringify(payload, null, 2),
-    }],
-  };
-}
-
 function requireServerForObservationTool(toolName: string): ServerAvailable {
   const resolution = resolveServerToolContext();
   if (!resolution) {
     throw new ServerClientError(
       'transport',
-      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use mem_search for worker-mode memory access.`,
     );
   }
   if (!resolution.available) {
@@ -232,8 +259,8 @@ function wrapHandler<Args>(
     try {
       return await execute(args);
     } catch (error) {
-      const err = error instanceof Error ? error : new Error(String(error));
-      logger.warn('SYSTEM', `${toolName} failed`, undefined, err);
+      if (isServerClientError(error)) logger.warn('SYSTEM', `${toolName} failed`, { errorKind: error.kind, status: error.status });
+      else logger.warn('SYSTEM', `${toolName} failed`, undefined, error instanceof Error ? error : new Error(String(error)));
       return formatToolError(error);
     }
   };
@@ -265,7 +292,7 @@ const handleObservationAdd = wrapHandler('observation_add', async (args: Observa
     ...(args.metadata !== undefined ? { metadata: args.metadata } : {}),
   };
   const response = await ctx.client.addObservation(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('observation-add', response);
 });
 
 interface ObservationRecordEventArgs {
@@ -304,7 +331,7 @@ const handleObservationRecordEvent = wrapHandler('observation_record_event', asy
     ...(args.generate !== undefined ? { generate: args.generate } : {}),
   };
   const response = await ctx.client.recordEvent(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('event', response);
 });
 
 interface ObservationSearchArgs {
@@ -327,7 +354,7 @@ const handleObservationSearch = wrapHandler('observation_search', async (args: O
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.searchObservations(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('server-search', response);
 });
 
 interface ObservationContextArgs {
@@ -350,7 +377,7 @@ const handleObservationContext = wrapHandler('observation_context', async (args:
     ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
   };
   const response = await ctx.client.contextObservations(request);
-  return formatJsonResult(response);
+  return formatMcpPayload('context', response);
 });
 
 interface ObservationGenerationStatusArgs {
@@ -416,7 +443,7 @@ const handleObservationGenerationStatus = wrapHandler('observation_generation_st
     throw new Error('observation_generation_status: "jobId" is required');
   }
   const response = await ctx.client.getJobStatus(jobId);
-  return formatJsonResult(response);
+  return formatMcpPayload('job', response);
 });
 
 async function ensureWorkerConnection(): Promise<boolean> {
@@ -449,10 +476,76 @@ async function ensureWorkerConnection(): Promise<boolean> {
   }
 }
 
+// Plan mode lets an MCP tool run without a prompt only when it declares
+// readOnlyHint (#3483). The File Read Gate sends Claude to smart_outline,
+// smart_unfold and get_observations, so those must work in plan mode too.
+// Tools that write (work_state_write, observation_add, the corpus builders and
+// query_corpus, which appends to the corpus session) keep prompting.
+const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
+
 const tools = [
   {
+    name: 'mem_search',
+    description: 'Search memory through enforced progressive disclosure. Guided mode returns readable mem-search step 1 of 3 (index), a short continuation for step 2 (context), then step 3 (selected details). Follow the next-call instructions and choose only IDs shown in the previous result. Auto mode completes the same bounded pipeline in one call. Use this tool for every memory search.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        mode: { type: 'string', enum: ['guided', 'auto'], description: 'Guided by default; auto completes index, context and filtered details in one call.' },
+        query: { type: 'string', description: 'Search query; required for a new search, up to 500 characters.' },
+        project: { type: 'string', description: 'Optional project filter.' },
+        limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Index result count, default 20.' },
+        maxDetails: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum full details, default 3.' },
+        depthBefore: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows before each selected anchor, default 2.' },
+        depthAfter: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows after each selected anchor, default 2.' },
+        continuation: { type: 'string', minLength: 27, maxLength: 27, pattern: '^ms_[A-Za-z0-9_-]{24}$', description: 'Short opaque continuation from the previous mem_search response.' },
+        selectedIds: { type: 'array', items: { type: ['string', 'number'] }, description: 'Only relevant IDs from the previous response.' },
+      },
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => {
+      try {
+        if (selectRuntime() === 'server') {
+          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local mem_search.');
+        }
+        const checkout = currentCheckout();
+        const body = { ...withCheckoutProjects(args ?? {}, checkout), searchScope: checkout.allProjects.join(',') };
+        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/mem-search', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        }), startWorkerAfterRefusedConnection);
+        if (!response.ok) throw new Error(`Worker API error (${response.status})`);
+        const result = await response.json() as WorkerToolResult;
+        return {
+          content: result.content.filter(item => item.type === 'text' && typeof item.text === 'string').map(item => ({ type: 'text' as const, text: item.text })),
+          ...(result.isError ? { isError: true } : {}),
+        };
+      } catch (error) {
+        return progressiveSearchToolError(error);
+      }
+    },
+  },
+  {
+    name: 'save_memory',
+    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching with mem_search for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        text: { type: 'string', description: 'Durable memory text.' },
+        title: { type: 'string', description: 'Concise searchable title.' },
+        project: { type: 'string', description: 'Project receiving the note; defaults to the active checkout.' },
+        metadata: { type: 'object', additionalProperties: true, description: 'Optional provenance or source metadata.' },
+      },
+      required: ['text'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => {
+      if (selectRuntime() === 'server') return mcpTextResult('save_memory requires worker runtime. To save a note in the selected server, use observation_add with content and optional projectId.', true);
+      return callWorker('/api/memory/save', { body: { ...args, project: args?.project || currentCheckout().primary } });
+    },
+  },
+  {
     name: 'important_workflow',
-    description: `LAYERED WORKFLOW (ALWAYS FOLLOW):
+    description: `Use mem_search for all memory search. Guided mode enforces index -> context -> selected details with short opaque continuations. Auto mode performs the same bounded pipeline. Legacy layered workflow:
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
 3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
@@ -462,12 +555,15 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       type: 'object',
       properties: {}
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async () => ({
       content: [{
         type: 'text' as const,
         text: `# Memory Search Workflow
 
-**3-Layer Pattern (ALWAYS follow this):**
+Use mem_search for every memory search. Guided mode returns readable mem-search step 1 of 3 (index), step 2 of 3 (context), then step 3 of 3 (filtered details). Follow the next-call instructions with the short continuation and only relevant selectedIds shown in the previous response. Auto mode performs that same bounded progression in one call. Local and remote MCP share this contract.
+
+**Compatibility pattern for older clients or advanced filters:**
 
 1. **Search** - Get index of results with IDs
    \`search(query="...", limit=20, project="...")\`
@@ -491,7 +587,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
   },
   {
     name: 'search',
-    description: 'Step 1: Search memory. Returns index with IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Legacy index search for advanced filters. Prefer mem_search for enforced progressive disclosure and guided next steps. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
@@ -508,6 +604,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       // In server-beta runtime the local worker /api/search reads the local SQLite via
       // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
@@ -535,14 +632,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
         };
-        return formatJsonResult(await sb.client.searchObservations(request));
+        return formatMcpPayload('server-search', await sb.client.searchObservations(request));
       }
       return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
     name: 'timeline',
-    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+    description: 'Legacy context lookup. Prefer mem_search continuations for enforced progressive disclosure. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
       properties: {
@@ -554,13 +651,14 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/timeline', { query: args });
     }
   },
   {
     name: 'get_observations',
-    description: 'Step 3: Fetch full details for filtered IDs. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Legacy detail lookup for IDs already filtered through memory search or the injected session index. Prefer mem_search continuations for enforced progressive disclosure. Params: ids (array of observation IDs, required), orderBy, limit, project',
     inputSchema: {
       type: 'object',
       properties: {
@@ -573,6 +671,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/observations/batch', { body: args });
     }
@@ -595,9 +694,48 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['ids'],
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/tool-uses/batch', { body: args });
     }
+  },
+  {
+    name: 'work_state_write',
+    description: 'Your canonical to-do list and working state for this project, kept across sessions: whatever is still open is shown at the start of every session. Each call appends one entry to a list. To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...details}. State on the list itself: any other fields (the latest value of each key wins; null clears a key; "status": "done" closes the list). Returns what is still open in the list. Params: list (required), fields (required).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'The to-do list or tracked thing this entry belongs to, e.g. "release" or "auth-refactor"' },
+        fields: {
+          type: 'object',
+          description: 'Keys to set. Include "task" to update a to-do item. Values are strings, numbers, booleans, or null to clear a key.',
+          additionalProperties: { type: ['string', 'number', 'boolean', 'null'] },
+        },
+      },
+      required: ['list', 'fields'],
+      additionalProperties: false,
+    },
+    handler: async (args: any) => callWorker('/api/work-state/entries', {
+      body: { cwd: process.cwd(), list: args?.list, fields: args?.fields },
+      text: true,
+    }),
+  },
+  {
+    name: 'work_state_read',
+    description: "Read this project's to-do lists and working state written with work_state_write: every open item, or one list, with done and dropped items when includeClosed is true. Params: list, includeClosed.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        list: { type: 'string', description: 'Read only this list' },
+        includeClosed: { type: 'boolean', description: 'Also show done and dropped items and closed lists' },
+      },
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => callWorker('/api/work-state', {
+      query: { cwd: process.cwd(), list: args?.list, includeClosed: args?.includeClosed },
+      text: true,
+    }),
   },
   {
     name: 'session_start_context',
@@ -619,6 +757,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleSessionStartContext(args ?? {}),
   },
   // Phase 8 — observation_* tools backed by server REST core.
@@ -675,6 +814,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['query'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationSearch(args ?? {}),
   },
   {
@@ -690,11 +830,12 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationContext(args ?? {}),
   },
   {
     name: 'observation_generation_status',
-    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns the same payload as REST.',
+    description: 'Look up the status of an observation generation job by id. Calls /v1/jobs/:id. Server runtime only. Returns a concise job receipt.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -703,6 +844,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       required: ['jobId'],
       additionalProperties: false,
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => handleObservationGenerationStatus(args ?? {}),
   },
   {
@@ -730,6 +872,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['query']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
       const result = await searchCodebase(rootDir, args.query, {
@@ -759,6 +902,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path', 'symbol_name']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
@@ -770,7 +914,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
-        const available = parsed.symbols.map(s => `  - ${s.name} (${s.kind})`).join('\n');
+        const available = formatAvailableSymbols(parsed, args.symbol_name);
         return {
           content: [{
             type: 'text' as const,
@@ -799,6 +943,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       },
       required: ['file_path']
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
@@ -837,7 +982,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       additionalProperties: true
     },
     handler: async (args: any) => {
-      return await callWorker('/api/corpus', { body: args });
+      return await callWorker('/api/corpus', { body: args, streamCorpusProgress: true });
     }
   },
   {
@@ -848,6 +993,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
       properties: {},
       additionalProperties: true
     },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       return await callWorker('/api/corpus', { query: args });
     }
@@ -866,7 +1012,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/prime`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -884,7 +1030,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/query`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -902,7 +1048,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/rebuild`, { body: rest, streamCorpusProgress: true });
     }
   },
   {
@@ -919,7 +1065,7 @@ NEVER fetch full details without filtering first. 10x token savings.`,
     handler: async (args: any) => {
       const { name, ...rest } = args;
       if (typeof name !== 'string' || name.trim() === '') throw new Error('Missing required argument: name');
-      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest });
+      return await callWorker(`/api/corpus/${encodeURIComponent(name)}/reprime`, { body: rest, streamCorpusProgress: true });
     }
   }
 ];
@@ -936,13 +1082,21 @@ const server = new Server(
   }
 );
 
+function workStateEnabled(): boolean {
+  return isWorkStateEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_ENABLED);
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const advertisedTools = getAdvertisedMcpToolsForRuntime(tools, selectRuntime());
+  const advertisedTools = withoutDisabledWorkStateTools(
+    getAdvertisedMcpToolsForRuntime(tools, selectRuntime()),
+    workStateEnabled(),
+  );
   return {
     tools: advertisedTools.map(tool => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema
+      inputSchema: tool.inputSchema,
+      annotations: tool.annotations
     }))
   };
 });
@@ -952,6 +1106,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (!tool) {
     throw new Error(`Unknown tool: ${request.params.name}`);
+  }
+
+  if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
+    return {
+      content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
+      isError: true
+    };
   }
 
   try {

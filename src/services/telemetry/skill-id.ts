@@ -25,6 +25,7 @@ export const FIRST_PARTY_SKILL_IDS = [
   'mode-creator',
   'oh-my-issues',
   'pathfinder',
+  'screenpipe',
   'smart-explore',
   'standup',
   'timeline-report',

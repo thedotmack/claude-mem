@@ -1,4 +1,5 @@
 
+import { retainTextHeadTail } from '../shared/text-truncation.js';
 import { logger } from '../utils/logger.js';
 import { REDACTION_MARKER_HINT, hasRedactionMarker } from '../utils/redaction.js';
 import type { ModeConfig } from '../services/domain/types.js';
@@ -72,20 +73,17 @@ ${getPrompt(mode, 'format_examples')}
 ${getPrompt(mode, 'footer')}`;
 }
 
-export function buildInitPrompt(
-  project: string,
-  sessionId: string,
-  userPrompt: string,
-  mode: ModeConfig,
-  priorContext: string = '',
-): string {
+/**
+ * The observer instructions every init and continuation prompt opens with.
+ *
+ * A provider prompt cache (OpenRouter, the cmem.ai gateway) hits only on a
+ * byte-identical prefix. This block depends on the mode alone, so it goes
+ * first and everything per-session (prior context, the user's request, the
+ * continuation greeting, dates, project names) follows it: every generation,
+ * session and user then shares one cacheable start.
+ */
+function observerInstructions(mode: ModeConfig): string {
   return `${getPrompt(mode, 'system_identity')}
-${wrapPriorContext(priorContext)}
-
-<observed_from_primary_session>
-  <user_request>${userPrompt}</user_request>
-  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
-</observed_from_primary_session>
 
 ${getPrompt(mode, 'observer_role')}
 
@@ -95,7 +93,23 @@ ${getPrompt(mode, 'recording_focus')}
 
 ${getPrompt(mode, 'skip_guidance')}
 
-${observationSkeleton(mode)}
+${observationSkeleton(mode)}`;
+}
+
+export function buildInitPrompt(
+  project: string,
+  sessionId: string,
+  userPrompt: string,
+  mode: ModeConfig,
+  priorContext: string = '',
+): string {
+  return `${observerInstructions(mode)}
+${wrapPriorContext(priorContext)}
+
+<observed_from_primary_session>
+  <user_request>${userPrompt}</user_request>
+  <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
+</observed_from_primary_session>
 
 ${getPrompt(mode, 'header_memory_start')}`;
 }
@@ -186,7 +200,53 @@ function elideImageSource(source: Record<string, unknown>, dataKey: string = 'da
   return elided;
 }
 
+// A screenshot can also arrive as a bare string field of an ordinary object
+// ({ screenshot: { pageUrl, tabId, url: 'data:image/jpeg;base64,…' } }), with
+// no content block around it. Below this size a data URL is an icon, not a
+// payload worth withholding.
+const DATA_IMAGE_URL_ELIDE_MIN_CHARS = 1024;
+const DATA_IMAGE_URL_PREFIX = /^data:(image\/[^;,]+)[^,]*;base64,/i;
+
+function elideDataImageUrl(value: string): string {
+  if (value.length < DATA_IMAGE_URL_ELIDE_MIN_CHARS) return value;
+  // Matched on the head only: the prefix is short, and a regex run over a
+  // few hundred KB of base64 is the cost this exists to avoid.
+  const prefix = DATA_IMAGE_URL_PREFIX.exec(value.slice(0, 256));
+  if (!prefix) return value;
+  return `data:${prefix[1]};base64,<elided ${value.length - prefix[0].length} bytes>`;
+}
+
+// A tool result can reach the observer serialized twice, or carry its content
+// blocks as JSON text inside a string field. The image is then a string, not
+// an object, and no shape above can match it. Only a long string that opens
+// like JSON is worth a parse; it is re-serialized only when something in it
+// was stripped, so every other string keeps the encoding it arrived with.
+const NESTED_JSON_MIN_CHARS = 256;
+
+// Every shape stripped here names an image: an `"image"` type (its closing
+// quote escaped once per level of encoding), `image_url`, or a data:image URL.
+// A string with none of them holds no payload, so it is not worth a parse and
+// a walk, which would otherwise run twice per field (greptile review).
+const IMAGE_PAYLOAD_MARKER = /image(?:"|\\|_url)|data:image\//i;
+
+function stripImagePayloadsFromString(value: string, depth: number): string {
+  const elided = elideDataImageUrl(value);
+  if (elided !== value) return elided;
+  if (depth > MAX_SANITIZE_DEPTH || value.length <= NESTED_JSON_MIN_CHARS) return value;
+  if (value[0] !== '{' && value[0] !== '[') return value;
+  if (!IMAGE_PAYLOAD_MARKER.test(value)) return value;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(value);
+  } catch {
+    return value;
+  }
+  const stripped = stripImagePayloads(parsed, depth + 1);
+  return stripped === parsed ? value : JSON.stringify(stripped);
+}
+
 function stripImagePayloads(value: unknown, depth = 0): unknown {
+  if (typeof value === 'string') return stripImagePayloadsFromString(value, depth);
   if (depth > MAX_SANITIZE_DEPTH || value === null || typeof value !== 'object') return value;
 
   if (Array.isArray(value)) {
@@ -226,6 +286,15 @@ function stripImagePayloads(value: unknown, depth = 0): unknown {
     if (typeof record_file.base64 === 'string') {
       return { type: 'image', file: elideImageSource(record_file, 'base64') };
     }
+  }
+
+  // MCP tool result: { type: 'image', data: '<base64>', mimeType } — the bytes
+  // sit on the block itself, so neither branch above matched it and a
+  // browser-automation screenshot went to the condense pass whole.
+  if (record.type === 'image' && typeof record.data === 'string') {
+    const elided: Record<string, unknown> = { type: 'image', ...elideImageSource(record) };
+    if (typeof record.mimeType === 'string') elided.mimeType = record.mimeType;
+    return elided;
   }
 
   // OpenAI content block: { type: 'image_url', image_url: { url: 'data:...' } }.
@@ -292,8 +361,7 @@ function truncateObservationField(value: unknown, maxChars: number = OBS_PROMPT_
   if (raw.length <= maxChars) return raw;
   const headChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_HEAD_RATIO));
   const tailChars = Math.max(0, Math.floor(maxChars * OBS_PROMPT_FIELD_TAIL_RATIO));
-  const head = raw.slice(0, headChars);
-  const tail = tailChars > 0 ? raw.slice(-tailChars) : '';
+  const { head, tail } = retainTextHeadTail(raw, headChars, tailChars);
   const elidedChars = Math.max(0, raw.length - head.length - tail.length);
   return `${head}\n... <elided chars="${elidedChars}" original_size_chars="${raw.length}" reason="oversize" /> ...\n${tail}`;
 }
@@ -421,7 +489,9 @@ export function buildContinuationPrompt(
   mode: ModeConfig,
   priorContext: string = '',
 ): string {
-  return `${getPrompt(mode, 'continuation_greeting')}
+  return `${observerInstructions(mode)}
+
+${getPrompt(mode, 'continuation_greeting')}
 ${wrapPriorContext(priorContext)}
 
 <observed_from_primary_session>
@@ -429,19 +499,7 @@ ${wrapPriorContext(priorContext)}
   <requested_at>${new Date().toISOString().split('T')[0]}</requested_at>
 </observed_from_primary_session>
 
-${getPrompt(mode, 'system_identity')}
-
-${getPrompt(mode, 'observer_role')}
-
-${getPrompt(mode, 'spatial_awareness')}
-
-${getPrompt(mode, 'recording_focus')}
-
-${getPrompt(mode, 'skip_guidance')}
-
 ${getPrompt(mode, 'continuation_instruction')}
-
-${observationSkeleton(mode)}
 
 ${getPrompt(mode, 'header_memory_continued')}`;
 }

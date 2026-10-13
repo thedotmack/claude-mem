@@ -23,6 +23,7 @@ const { ClaudeProvider } = await import('../../src/services/worker/ClaudeProvide
 const { GeminiProvider } = await import('../../src/services/worker/GeminiProvider.js');
 const { OpenRouterProvider } = await import('../../src/services/worker/OpenRouterProvider.js');
 const { CodexProvider } = await import('../../src/services/worker/CodexProvider.js');
+const { anonymousSessionId } = await import('../../src/services/worker/OpenAICompatibleProvider.js');
 
 const input: TelegramWrapupFormatterInput = {
   sessionDbId: 42,
@@ -105,6 +106,10 @@ describe('Telegram wrap-up provider reuse', () => {
       expect(query).toHaveBeenCalledWith(
         [{ role: 'user', content: `${prompt}\n\n${input.summaryText}` }],
         { ...config, model: 'configured-summary-model', plainText: true },
+        undefined,
+        undefined,
+        undefined,
+        { kind: 'telegram_wrapup', sessionId: anonymousSessionId(input.contentSessionId) },
       );
       expect(config.model).toBe('default-model');
     });
@@ -116,7 +121,9 @@ describe('Telegram wrap-up provider reuse', () => {
       spyOn(provider as any, 'getConfig').mockReturnValue(config);
       const query = spyOn(provider as any, 'query').mockResolvedValue({ content: '• Finished' });
       await provider.formatTelegramWrapup(input, 'active-model');
-      expect(query).toHaveBeenCalledWith(expect.any(Array), { ...config, model: 'active-model', plainText: true });
+      expect(query).toHaveBeenCalledWith(
+        expect.any(Array), { ...config, model: 'active-model', plainText: true }, undefined, undefined, undefined, expect.anything(),
+      );
     });
 
     it(`${Provider.name} does not query without its existing credentials`, async () => {

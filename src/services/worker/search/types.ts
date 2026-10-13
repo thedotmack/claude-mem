@@ -15,11 +15,23 @@ export const SEARCH_CATEGORIES = ['observations', 'sessions', 'prompts'] as cons
 
 export type SearchCategory = typeof SEARCH_CATEGORIES[number];
 
+export type SearchSelection = SearchCategory | SearchCategory[] | 'all';
+
 export function isCategoryRequested(
-  searchType: 'observations' | 'sessions' | 'prompts' | 'all' | undefined,
+  searchType: SearchSelection | undefined,
   category: SearchCategory
 ): boolean {
-  return !searchType || searchType === 'all' || searchType === category;
+  return !searchType || searchType === 'all' || (Array.isArray(searchType) ? searchType.includes(category) : searchType === category);
+}
+
+/** Scope the candidate budget to the selected document categories. */
+export function buildCategoryWhereFilter(searchType: SearchSelection | undefined): Record<string, unknown> | undefined {
+  if (!searchType || searchType === 'all') return undefined;
+  const docTypes: Record<SearchCategory, ChromaDocType> = {
+    observations: 'observation', sessions: 'session_summary', prompts: 'user_prompt'
+  };
+  const selected = Array.isArray(searchType) ? [...new Set(searchType)] : [searchType];
+  return { doc_type: selected.length === 1 ? docTypes[selected[0]] : { $in: selected.map(category => docTypes[category]) } };
 }
 
 export interface ChromaMetadata {
@@ -48,7 +60,7 @@ export interface SearchResults {
 }
 
 export interface ExtendedSearchOptions extends SearchOptions {
-  searchType?: 'observations' | 'sessions' | 'prompts' | 'all';
+  searchType?: SearchSelection;
   obsType?: string | string[];
   concepts?: string | string[];
   files?: string | string[];

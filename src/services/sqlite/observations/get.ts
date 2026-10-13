@@ -1,5 +1,6 @@
 
 import { Database } from 'bun:sqlite';
+import { projectScopeSql } from '../project-read-keys.js';
 import type { ObservationRecord } from '../../../types/database.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../../shared/platform-source.js';
 import { logger } from '../../../utils/logger.js';
@@ -33,9 +34,9 @@ export function getObservationsByFilePath(
 
   let projectClause = '';
   if (options?.projects?.length) {
-    const placeholders = options.projects.map(() => '?').join(',');
-    projectClause = `AND o.project COLLATE NOCASE IN (${placeholders})`;
-    params.push(...options.projects);
+    const scope = projectScopeSql('o', options.projects, { includeMerged: true });
+    projectClause = `AND ${scope.sql}`;
+    params.push(...scope.params);
   }
 
   let platformClause = '';
@@ -46,13 +47,19 @@ export function getObservationsByFilePath(
 
   params.push(limit);
 
+  // An array can start with '[' or one of JSON's four whitespace characters.
+  // This inexpensive prefix filter skips other shapes before JSON parsing;
+  // validity and array-type checks still reject padded non-arrays below.
+  const arrayJson = (column: string): string =>
+    `CASE WHEN ${column} GLOB '[' || char(32, 9, 10, 13) || '[]*' THEN CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END ELSE '[]' END`;
+
   const stmt = db.prepare(`
     SELECT o.*
     FROM observations o
     LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
     WHERE (
-      (o.files_read LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value IN (${pathPlaceholders})))
-      OR (o.files_modified LIKE '[%' AND EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value IN (${pathPlaceholders})))
+      EXISTS (SELECT 1 FROM json_each(${arrayJson('o.files_read')}) WHERE value IN (${pathPlaceholders}))
+      OR EXISTS (SELECT 1 FROM json_each(${arrayJson('o.files_modified')}) WHERE value IN (${pathPlaceholders}))
     )
     ${projectClause}
     ${platformClause}

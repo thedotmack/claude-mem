@@ -98,7 +98,7 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
 
     await provider.startSession(makeSession());
 
-    expect(provider.queriedModels).toEqual(['session-model', 'session-model', 'summary-model']);
+    expect(provider.queriedModels).toEqual(['session-model', 'summary-model']);
   });
 
   it('keeps summarize on the session model when routing is disabled', async () => {
@@ -116,7 +116,7 @@ describe('OpenAICompatibleProvider summary tier routing', () => {
 
     await provider.startSession(makeSession());
 
-    expect(provider.queriedModels).toEqual(['session-model', 'session-model']);
+    expect(provider.queriedModels).toEqual(['session-model']);
   });
 
   it('reuses the persisted synthetic id when an in-memory session restarts', async () => {
