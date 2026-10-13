@@ -44,6 +44,7 @@ export type ProcessGeneratedResponseOutcome =
       privateContentDetected: boolean;
     }
   | { kind: 'parse_error'; jobId: string; reason: string }
+  | { kind: 'superseded'; jobId: string }
   // Distinct from parse_error: the provider returned no content at all
   // (safety block, MAX_TOKENS truncation, gateway hiccup). Detected before
   // parsing so the failure is attributed to the provider, not the parser,
@@ -137,6 +138,8 @@ export interface MarkGenerationFailedInput {
   classification?: string;
   retryable: boolean;
   workerId?: string;
+  /** Required for worker failures after claiming; absent for pre-claim guards. */
+  expectedAttempt?: PostgresObservationGenerationJob;
 }
 
 /**
@@ -154,8 +157,12 @@ export async function markGenerationFailed(input: MarkGenerationFailedInput): Pr
       id: input.job.id,
       projectId: input.job.projectId,
       teamId: input.job.teamId,
+      forUpdate: true,
     });
     if (!fresh || fresh.status === 'completed' || fresh.status === 'cancelled') {
+      return;
+    }
+    if (input.expectedAttempt && !ownsProcessingAttempt(fresh, input.expectedAttempt)) {
       return;
     }
 
@@ -261,6 +268,20 @@ interface RenderedObservation {
   metadata: Record<string, unknown>;
 }
 
+function ownsProcessingAttempt(
+  current: PostgresObservationGenerationJob,
+  expected: PostgresObservationGenerationJob,
+): boolean {
+  // Operator retry can reuse an attempt number, and the same worker can claim
+  // again. Include the lossless lock timestamp rather than its JS Date value.
+  return current.status === 'processing'
+    && expected.status === 'processing'
+    && expected.lockedAtToken != null
+    && current.lockedAtToken === expected.lockedAtToken
+    && current.lockedBy === expected.lockedBy
+    && current.attempts === expected.attempts;
+}
+
 // Shared persist transaction for both the per-event and session-summary
 // pipelines: reload + terminal-status check, persist each rendered
 // observation (+ source link + observation.created audit), then advance the
@@ -282,12 +303,13 @@ async function persistGeneratedObservations(
     const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
     const auditRepo = new PostgresAuthRepository(client);
 
-    // Reload the job inside the transaction. If it was already completed
-    // by another worker, return its existing observations idempotently.
+    // Lock before checking ownership, keeping reclaim/retry/cancellation out
+    // until observations, sources, audit and the outbox transition commit.
     const fresh = await jobsRepo.getByIdForScope({
       id: job.id,
       projectId: job.projectId,
       teamId: job.teamId,
+      forUpdate: true,
     });
     if (!fresh) {
       throw new Error(`generation job ${job.id} not found in scope`);
@@ -303,6 +325,11 @@ async function persistGeneratedObservations(
         observations: [],
         privateContentDetected,
       };
+    }
+
+    if (!ownsProcessingAttempt(fresh, job)) {
+      logger.info('SYSTEM', 'generation attempt superseded; discarding response', { jobId: job.id });
+      return { kind: 'superseded', jobId: job.id };
     }
 
     // Folder label travels on the server_session: the worker derives it from
