@@ -3157,8 +3157,10 @@ export class SessionStore {
       const conceptConditions = conceptsList.map(() =>
         'EXISTS (SELECT 1 FROM json_each(o.concepts) WHERE value = ?)'
       );
-      params.push(...conceptsList);
-      additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
+      if (conceptConditions.length > 0) {
+        params.push(...conceptsList);
+        additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
+      }
     }
 
     if (files) {
@@ -3166,12 +3168,14 @@ export class SessionStore {
       const fileConditions = filesList.map(() => {
         return "(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ? ESCAPE '\\'))";
       });
-      filesList.forEach(file => {
-        // The hydration filter receives literal file paths, like SQLite search.
-        const literal = file.replace(/[\\%_]/g, '\\$&');
-        params.push(`%${literal}%`, `%${literal}%`);
-      });
-      additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+      if (fileConditions.length > 0) {
+        filesList.forEach(file => {
+          // The hydration filter receives literal file paths, like SQLite search.
+          const literal = file.replace(/[\\%_]/g, '\\$&');
+          params.push(`%${literal}%`, `%${literal}%`);
+        });
+        additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+      }
     }
 
     const whereClause = additionalConditions.length > 0
