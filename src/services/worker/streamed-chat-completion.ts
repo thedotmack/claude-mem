@@ -28,11 +28,37 @@ import { fetchStreamWithIdleTimeout } from '../../shared/worker-utils.js';
 import { isCmemGatewayUrl } from '../../shared/cmem-gateway.js';
 import { isMaxCompletionTokensCompatibilityError } from '../../shared/openrouter-token-compatibility.js';
 import { ClassifiedProviderError, MAX_ERROR_BODY_BYTES } from './provider-errors.js';
-import { MAX_LLM_TIMEOUT_MS } from './retry.js';
+import { MAX_LLM_TIMEOUT_MS, parseTimeoutMs } from './retry.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 
 /** Silence after which a streamed LLM request is given up (no token, no ping). */
 export const DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS = 90_000;
+
+/**
+ * The streamed request's idle window, resolved like every other CLAUDE_MEM_*
+ * setting — CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS in the environment first,
+ * then ~/.claude-mem/settings.json, then the default — and on every call, so a
+ * settings change takes effect without a restart (#4737).
+ *
+ * Before this the window was frozen in the shipped bundle ("An instance field
+ * so a test can shorten it; there is no setting for it"), and on a self-hosted
+ * backend that queues requests behind a load balancer the whole queue wait is
+ * silent: the fixed window fired while requests the server completed in well
+ * under 90s were still waiting, spending the batch's paid-send budget on
+ * ambiguous failures and parking batches permanently. The bounds are the
+ * sibling deadlines' (retry.ts), so the window stays a liveness check — it can
+ * be raised past a queue wait, but not switched off.
+ */
+export function resolveStreamIdleTimeoutMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false).CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS;
+  return parseTimeoutMs(raw, 'CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS', DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS);
+}
 
 /** `code` on a streamed reply that broke off after output had started. */
 export const STREAM_INTERRUPTED_CODE = 'stream_interrupted';
