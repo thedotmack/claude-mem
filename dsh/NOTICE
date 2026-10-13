@@ -1,0 +1,11 @@
+Derived from Bleed00/dsh-claude-mem, copyright 2026 Bleed00, Apache-2.0.
+Native transcript capture remains authoritative; plugin ingestion is off to avoid duplicate observer calls.
+
+Claude-Mem
+Copyright 2026 Alex Newman
+
+This product includes software developed for the Claude-Mem project.
+
+Licensed under the Apache License, Version 2.0.
+
+If other attributions are required by dependencies or included code, add them here.

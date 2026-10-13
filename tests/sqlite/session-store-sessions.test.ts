@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
-import { MAX_STORED_PROMPT_CHARS } from '../../src/services/sqlite/prompt-storage.js';
+import { MAX_STORED_PROMPT_CHARS, MEDIA_PROMPT_PLACEHOLDER } from '../../src/services/sqlite/prompt-storage.js';
 
 describe('SessionStore session lifecycle', () => {
   let store: SessionStore;
@@ -23,6 +23,7 @@ describe('SessionStore session lifecycle', () => {
       const a = store.createSDKSession('content-same', 'project', 'prompt');
       const b = store.createSDKSession('content-same', 'project', 'different prompt');
       expect(b).toBe(a);
+      expect(store.getSessionById(a)?.user_prompt).toBe('prompt');
     });
 
     it('returns different ids for different content_session_ids', () => {
@@ -39,6 +40,34 @@ describe('SessionStore session lifecycle', () => {
       expect(session?.user_prompt.startsWith('<private>')).toBe(false);
       expect(session?.user_prompt.length).toBe(MAX_STORED_PROMPT_CHARS);
       expect(session?.user_prompt.endsWith('…')).toBe(true);
+    });
+
+    it('repairs a media prompt placeholder when a real prompt arrives', () => {
+      const id = store.createSDKSession('content-media-placeholder', 'project', MEDIA_PROMPT_PLACEHOLDER);
+      store.createSDKSession('content-media-placeholder', 'project', 'real user prompt');
+
+      expect(store.getSessionById(id)?.user_prompt).toBe('real user prompt');
+    });
+
+    it('repairs an empty stored prompt when a real prompt arrives', () => {
+      const id = store.createSDKSession('content-empty-prompt', 'project', '');
+      store.createSDKSession('content-empty-prompt', 'project', 'real user prompt');
+
+      expect(store.getSessionById(id)?.user_prompt).toBe('real user prompt');
+    });
+
+    it('never replaces a real stored prompt with a later real prompt', () => {
+      const id = store.createSDKSession('content-real-prompt', 'project', 'first real prompt');
+      store.createSDKSession('content-real-prompt', 'project', 'second real prompt');
+
+      expect(store.getSessionById(id)?.user_prompt).toBe('first real prompt');
+    });
+
+    it('does not let the media prompt placeholder overwrite a real prompt', () => {
+      const id = store.createSDKSession('content-real-then-placeholder', 'project', 'a real prompt');
+      store.createSDKSession('content-real-then-placeholder', 'project', MEDIA_PROMPT_PLACEHOLDER);
+
+      expect(store.getSessionById(id)?.user_prompt).toBe('a real prompt');
     });
   });
 

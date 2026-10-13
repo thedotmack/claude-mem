@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[কনফিগারেশন](https://docs.claude-mem.ai/configuration)** - পরিবেশ ভেরিয়েবল এবং সেটিংস
 - **[ডেভেলপমেন্ট](https://docs.claude-mem.ai/development)** - বিল্ডিং, টেস্টিং, অবদান
-- **[রিলিজ ব্র্যাঞ্চ](https://docs.claude-mem.ai/branches)** - স্টেবল, core-dev, এবং community-edge ব্র্যাঞ্চ ফ্লো
 - **[সমস্যা সমাধান](https://docs.claude-mem.ai/troubleshooting)** - সাধারণ সমস্যা এবং সমাধান
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 বিস্তারিত উদাহরণের জন্য [অনুসন্ধান টুল গাইড](https://docs.claude-mem.ai/usage/search-tools) দেখুন।
-
----
-
-## Release Branches
-
-স্টেবল রিলিজগুলো `main` থেকে চালু হয় এবং npm-এ প্রকাশিত হয়। `core-dev` এবং
-`community-edge` হলো প্রাথমিক নির্ভরযোগ্যতা সংশোধন এবং সম্প্রদায় ইন্টিগ্রেশনের জন্য
-সোর্স-থেকে-চালানো ব্র্যাঞ্চ। ব্র্যাঞ্চ ফ্লো এবং নন-স্টেবল রান নির্দেশাবলীর জন্য
-**[রিলিজ ব্র্যাঞ্চ](https://docs.claude-mem.ai/branches)** দেখুন।
 
 ---
 
@@ -383,10 +373,6 @@ npm run bug-report
 3. টেস্ট সহ আপনার পরিবর্তনগুলি করুন
 4. ডকুমেন্টেশন আপডেট করুন
 5. একটি Pull Request জমা দিন
-
-Claude-Mem তিনটি ব্র্যাঞ্চ থেকে শিপ হয়: `main` (স্টেবল), `core-dev`, এবং
-`community-edge`। শুধুমাত্র `main` npm-এ প্রকাশিত হয়; বাকিগুলো সোর্স থেকে চালানো হয়।
-কৌশল এবং লোকাল রান নির্দেশাবলীর জন্য [রিলিজ ব্র্যাঞ্চ](https://docs.claude-mem.ai/branches) দেখুন।
 
 অবদান ওয়ার্কফ্লোর জন্য [ডেভেলপমেন্ট গাইড](https://docs.claude-mem.ai/development) দেখুন।
 

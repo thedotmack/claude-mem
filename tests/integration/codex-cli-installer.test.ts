@@ -1,86 +1,32 @@
-import { describe, expect, it } from 'bun:test';
+import { describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import {
-  isStaleLocalMarketplace,
-  readRegisteredMarketplace,
+  readAndStripContextTags,
   removeLegacyCodexMcpSearchConfig,
   setTomlFeatureEnabled,
   setTomlPluginEnabled,
-  stableMarketplaceRoot,
 } from '../../src/services/integrations/CodexCliInstaller.js';
 
-describe('Codex marketplace staleness detection', () => {
-  const CONFIG = [
-    '[marketplaces.claude-mem-local]',
-    'last_updated = "2026-06-24T23:24:37Z"',
-    'source_type = "local"',
-    'source = "/gone/worktrees/night-parsnip"',
-    '',
-    '[marketplaces.openai-bundled]',
-    'source_type = "local"',
-    'source = "/present/openai-bundled"',
-    '',
-  ].join('\n');
-
-  it('reads the registered source and source_type for a marketplace', () => {
-    expect(readRegisteredMarketplace(CONFIG, 'claude-mem-local')).toEqual({
-      source: '/gone/worktrees/night-parsnip',
-      sourceType: 'local',
-    });
-  });
-
-  it('does not bleed into the next marketplace section', () => {
-    expect(readRegisteredMarketplace(CONFIG, 'openai-bundled')).toEqual({
-      source: '/present/openai-bundled',
-      sourceType: 'local',
-    });
-  });
-
-  it('returns null when the marketplace is not registered', () => {
-    expect(readRegisteredMarketplace(CONFIG, 'never-added')).toBeNull();
-  });
-
-  it('reads a quoted marketplace header', () => {
-    const quoted = '[marketplaces."claude-mem-local"]\nsource = "/somewhere"\n';
-    expect(readRegisteredMarketplace(quoted, 'claude-mem-local')?.source).toBe('/somewhere');
-  });
-
-  it('flags a local source whose directory is gone', () => {
-    const entry = readRegisteredMarketplace(CONFIG, 'claude-mem-local');
-    expect(isStaleLocalMarketplace(entry, () => false)).toBe(true);
-  });
-
-  it('leaves a healthy local source alone', () => {
-    const entry = readRegisteredMarketplace(CONFIG, 'claude-mem-local');
-    expect(isStaleLocalMarketplace(entry, () => true)).toBe(false);
-  });
-
-  it('never treats a git source as stale', () => {
-    // Git/npm sources are fetched into a cache, so their `source` is a URL that
-    // will never exist on disk — removing them would break a working install.
-    const gitConfig = [
-      '[marketplaces.claude-mem-local]',
-      'source_type = "git"',
-      'source = "https://github.com/thedotmack/claude-mem.git"',
-      '',
-    ].join('\n');
-    const entry = readRegisteredMarketplace(gitConfig, 'claude-mem-local');
-
-    expect(isStaleLocalMarketplace(entry, () => false)).toBe(false);
-  });
-
-  it('is a no-op when the marketplace is absent or sourceless', () => {
-    expect(isStaleLocalMarketplace(null, () => false)).toBe(false);
-    expect(isStaleLocalMarketplace({ source: null, sourceType: 'local' }, () => false)).toBe(false);
-  });
-
-  it('resolves the stable marketplace root under the Claude config directory', () => {
-    const previous = process.env.CLAUDE_CONFIG_DIR;
-    process.env.CLAUDE_CONFIG_DIR = '/tmp/claude-config';
+describe('Codex legacy AGENTS.md context cleanup', () => {
+  it('strips only the old block when the user text mentions a closing tag before it', () => {
+    const directory = mkdtempSync(join(tmpdir(), 'codex-agents-md-'));
+    const consoleLog = spyOn(console, 'log').mockImplementation(() => {});
     try {
-      expect(stableMarketplaceRoot()).toBe('/tmp/claude-config/plugins/marketplaces/thedotmack');
+      const agentsMdPath = join(directory, 'AGENTS.md');
+      writeFileSync(
+        agentsMdPath,
+        '# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n<claude-mem-context>\nstale memory\n</claude-mem-context>\n\n## After\n',
+      );
+
+      readAndStripContextTags(agentsMdPath);
+
+      expect(readFileSync(agentsMdPath, 'utf-8'))
+        .toBe('# My rules\n\nNever edit the </claude-mem-context> tag by hand.\n\n## After\n');
     } finally {
-      if (previous === undefined) delete process.env.CLAUDE_CONFIG_DIR;
-      else process.env.CLAUDE_CONFIG_DIR = previous;
+      consoleLog.mockRestore();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 });
