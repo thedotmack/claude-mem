@@ -402,6 +402,14 @@ These switches are read from the hook's environment only, not from `~/.claude-me
 
 Claude Code still launches each hook. Its shell launcher checks these switches before resolving the plugin or starting Node and Bun, so a disabled tool hook does not load the worker bundle. The Codex Windows launcher still starts Node, then checks the switch before resolving scripts or starting Bun. These switches do not change the feature settings in `settings.json`.
 
+#### Turning off the end-of-session summary
+
+| Variable | Effect when set to `1` |
+|----------|------------------------|
+| `CLAUDE_MEM_DISABLE_SUMMARY` | The Stop hook (`summarize`) skips the end-of-session summary and advisor-call capture: no observer-model call and no `session_summaries` row. SessionStart and UserPromptSubmit keep working, and Kimi's context refresh after a compaction still happens. |
+
+Orchestrators that launch short headless runs (a `codex exec` review of a staged diff, say) usually set `CLAUDE_MEM_DISABLE_OBSERVATION=1` so nothing the run observes is captured. The summary switch completes the picture for those runs: they keep **reading** claude-mem context at session start, but their Stop no longer writes a summary of an intermediate diff into the project's recent summaries. Unlike the tool-hook switches, this check runs inside the summarize handler, so the hook process still starts and reads its input before the summary is skipped.
+
 ### Search Configuration
 
 Claude-Mem provides MCP search tools for querying your project history.
