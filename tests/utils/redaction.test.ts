@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { redactSensitive, loadRedactionConfig, hasRedactionMarker, OVERSIZE_MARKER } from '../../src/utils/redaction.js';
+import { redactSensitive, redactJsonStrings, loadRedactionConfig, hasRedactionMarker, OVERSIZE_MARKER } from '../../src/utils/redaction.js';
 
 describe('redactSensitive', () => {
   it('returns input unchanged when config.enabled is false', () => {
@@ -76,6 +76,91 @@ text after`;
       const result = redactSensitive(input, cfg);
       expect(Object.keys(result.counts)).toHaveLength(0);
     }
+  });
+});
+
+// Issue #4745: the vendor-shaped built-ins missed generic credentials such as
+// `password=…`, `*_TOKEN=…` / `*_SECRET=…` / `*_API_KEY=…` and
+// `Authorization: Bearer …`. The generic built-ins run AFTER every vendor
+// pattern, so a vendor-shaped value keeps its specific marker (pinned by the
+// `Authorization: Bearer sk-…` case above).
+describe('redactSensitive generic built-in patterns', () => {
+  const cfg = { enabled: true };
+
+  it.each([
+    ['shell assignment',      'login password=Hunter22Example done',        'Hunter22Example'],
+    ['yaml value',            'db_password: hunter22Example',               'hunter22Example'],
+    ['json style',            '{"password": "hunter22Example"}',            'hunter22Example'],
+    ['quoted shell value',    "set DB_PASSWD='hunter22Example' here",       'hunter22Example'],
+    ['uppercase key',         'DB_PASSWORD=Sup3rSecretValue',               'Sup3rSecretValue'],
+  ])('generic_password redacts a %s', (_style, input, secret) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.counts.generic_password).toBe(1);
+    expect(result.redacted).not.toContain(secret);
+  });
+
+  it.each([
+    ['json style',   '{"client_secret": "GOCSPXabc12345"}',   'GOCSPXabc12345'],
+    ['shell export', 'export AUTH_TOKEN=abc12345defghi',      'abc12345defghi'],
+    ['yaml value',   'MY_API_KEY: uvwxyz123456',              'uvwxyz123456'],
+  ])('generic_token redacts a %s', (_style, input, secret) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.counts.generic_token).toBe(1);
+    expect(result.redacted).not.toContain(secret);
+  });
+
+  it.each([
+    ['in a curl header', 'curl -H "Authorization: Bearer abc12345defghi" https://x', 'abc12345defghi'],
+    ['lowercase header', 'authorization: bearer ABCDEFGH123456',                     'ABCDEFGH123456'],
+  ])('bearer_token redacts a %s', (_style, input, secret) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.counts.bearer_token).toBe(1);
+    expect(result.redacted).not.toContain(secret);
+  });
+
+  it('does NOT redact numeric, short or non-secret lookalikes', () => {
+    const inputs = [
+      'password=12345678',        // purely numeric
+      'password=abc',             // under the 8-char minimum
+      'max_tokens=4096',          // `_TOKENS`, not `*_TOKEN`
+      'max_password_length=32',   // the key merely contains "password"
+      'Bearer 12345678',          // numeric, and not anchored to Authorization
+      'AUTH_TOKEN=short',         // under the minimum
+    ];
+    for (const input of inputs) {
+      const result = redactSensitive(input, cfg);
+      expect(result.redacted).toBe(input);
+      expect(Object.keys(result.counts)).toHaveLength(0);
+    }
+  });
+
+  it('still redacts a vendor-shaped value with only its specific marker', () => {
+    const result = redactSensitive('Authorization: Bearer sk-ABCDEFGHIJ1234567890abcdef', cfg);
+    expect(Object.keys(result.counts)).toEqual(['openai_key']);
+  });
+
+  it('lets a generic built-in be disabled by name while vendor patterns stay on', () => {
+    const result = redactSensitive('password=Hunter22Example AKIAIOSFODNN7EXAMPLE', {
+      enabled: true,
+      disabledBuiltinPatterns: ['generic_password'],
+    });
+    expect(result.redacted).toContain('Hunter22Example');
+    expect(result.counts.generic_password).toBeUndefined();
+    expect(result.counts.aws_access_key).toBe(1);
+  });
+
+  it('is idempotent on its own markers', () => {
+    const r1 = redactSensitive('echo password=Hunter22Example', cfg);
+    expect(r1.counts.generic_password).toBe(1);
+    const r2 = redactSensitive(r1.redacted, cfg);
+    expect(r2.redacted).toBe(r1.redacted);
+    expect(r2.counts).toEqual({});
+  });
+
+  it('redacts generic credentials flowing through redactJsonStrings', () => {
+    const payload = { tool_input: { command: 'echo password=Hunter22Example' } };
+    const result = redactJsonStrings(payload, { enabled: true });
+    expect(JSON.stringify(result)).not.toContain('Hunter22Example');
   });
 });
 

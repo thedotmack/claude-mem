@@ -23,6 +23,22 @@ export interface RedactionResult {
   oversize: boolean;
 }
 
+// The value shape shared by the generic built-ins below (issue #4745): a
+// lookahead demands 8 value-class chars, then the match itself demands at
+// least one letter — so purely numeric values (`max_tokens=4096`) and shorter
+// strings never redact. The class holds only bytes found in real secrets and
+// stops at whitespace/quotes/angle brackets, so `<redacted …/>` markers can
+// never re-match and a value never swallows surrounding shell/JSON syntax.
+const GENERIC_VALUE_CLASS = String.raw`[A-Za-z0-9_.\-+/=~@#$%^*!?]`;
+const GENERIC_VALUE = `(?=${GENERIC_VALUE_CLASS}{8})${GENERIC_VALUE_CLASS}*[A-Za-z]${GENERIC_VALUE_CLASS}*`;
+
+function genericBuiltinRegex(lookbehind: string): RegExp {
+  // 'i' because the key spellings above are lowercase while captured keys are
+  // not (`db_password:`, `authorization:`); every entry stays disable-able by
+  // name via CLAUDE_MEM_REDACT_DISABLED_BUILTINS like the vendor built-ins.
+  return new RegExp(`${lookbehind}${GENERIC_VALUE}`, 'gi');
+}
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'aws_access_key',  regex: /AKIA[0-9A-Z]{16}/g },
   // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
@@ -40,6 +56,14 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
+  // Generic, lower-confidence built-ins (issue #4745): credentials that carry
+  // no vendor prefix. Deliberately LAST so a vendor-shaped value is claimed
+  // by its specific pattern above and keeps that marker; GENERIC_VALUE bounds
+  // false positives. These are built-ins of the opt-in redaction feature, so
+  // each can be turned off by name via CLAUDE_MEM_REDACT_DISABLED_BUILTINS.
+  { name: 'generic_password', regex: genericBuiltinRegex(String.raw`(?<=\b\w*_?(?:password|passwd|pwd)["']?\s*[=:]\s*["']?)`) },
+  { name: 'generic_token',    regex: genericBuiltinRegex(String.raw`(?<=\b\w*_(?:token|secret|api_key)["']?\s*[=:]\s*["']?)`) },
+  { name: 'bearer_token',     regex: genericBuiltinRegex(String.raw`(?<=\bAuthorization\s*:\s*Bearer\s*)`) },
 ];
 
 // Measured in UTF-16 code units (string.length). Bounds the regex work per
