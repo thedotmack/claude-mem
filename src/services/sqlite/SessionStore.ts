@@ -4644,6 +4644,8 @@ export class SessionStore {
     prompt_text: string;
     created_at: string;
     created_at_epoch: number;
+    native_prompt_id?: string | null;
+    native_prompt_hash?: string | null;
   }): { imported: boolean; id: number } {
     let sessionDbId: number | null = null;
     const normalizedPlatformSource = prompt.platform_source
@@ -4687,8 +4689,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (
         session_db_id, content_session_id, prompt_number, prompt_text,
-        created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        created_at, created_at_epoch, native_prompt_id, native_prompt_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -4697,7 +4699,9 @@ export class SessionStore {
       prompt.prompt_number,
       coerceBindValue(prompt.prompt_text),
       prompt.created_at,
-      prompt.created_at_epoch
+      prompt.created_at_epoch,
+      prompt.native_prompt_id ?? null,
+      prompt.native_prompt_hash ?? null
     );
 
     return { imported: true, id: result.lastInsertRowid as number };
