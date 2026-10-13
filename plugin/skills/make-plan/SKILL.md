@@ -63,7 +63,7 @@ The orchestrator consolidates findings into a single Phase 0 output.
 
 ## Presenting the Plan to the User
 
-After writing the plan file, present it in chat using this exact format — and only this format. Under 15 lines total. Emojis are the section markers. One line per step. Define jargon in the line where it first appears; assume the reader has none of the conversation's context.
+After writing the plan file, present it in chat using this exact format — and only this format. Length is the five fixed sections plus exactly one line per phase in Steps, so a plan with any number of phases fits. Emojis are the section markers. One line per step. Define jargon in the line where it first appears; assume the reader has none of the conversation's context.
 
 ```
 ## 🎯 Goal
@@ -99,3 +99,7 @@ Do not add sections. Do not add sub-bullets. Do not restate file paths or line n
 - Adding parameters not in documentation
 - Skipping verification steps
 - Assuming structure without checking examples
+
+## See Also
+
+- `oh-my-issues` — the issue-side sibling. When the plan you're being asked to make is rooted in a bug or feature backlog rather than a fresh idea, route through `oh-my-issues` first to cluster issues by root cause into plan masters and `plans/0X-*.md` design docs. `make-plan` then operates on the design doc for one plan slice.
