@@ -39,6 +39,8 @@ export interface PostgresObservationGenerationJob {
   maxAttempts: number;
   nextAttemptAtEpoch: number | null;
   lockedAtEpoch: number | null;
+  /** Lossless Postgres lock timestamp; JS Date truncates microseconds. */
+  lockedAtToken?: string | null;
   lockedBy: string | null;
   completedAtEpoch: number | null;
   failedAtEpoch: number | null;
@@ -75,6 +77,7 @@ interface JobRow {
   max_attempts: number;
   next_attempt_at: Date | null;
   locked_at: Date | null;
+  locked_at_token?: string | null;
   locked_by: string | null;
   completed_at: Date | null;
   failed_at: Date | null;
@@ -136,7 +139,7 @@ export class PostgresObservationGenerationJobRepository {
                     || excluded.payload
                     || jsonb_build_object('generation_job_id', observation_generation_jobs.id),
           updated_at = now()
-        RETURNING *
+        RETURNING *, extract(epoch from locked_at)::text AS locked_at_token
       `,
       [
         input.id ?? newId(),
@@ -161,10 +164,14 @@ export class PostgresObservationGenerationJobRepository {
     id: string;
     projectId: string;
     teamId: string;
+    /** Hold ownership through a write transaction; use only on its client. */
+    forUpdate?: boolean;
   }): Promise<PostgresObservationGenerationJob | null> {
     const row = await queryOne<JobRow>(
       this.client,
-      'SELECT * FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3',
+      `SELECT *, extract(epoch from locked_at)::text AS locked_at_token
+       FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3
+       ${input.forUpdate ? 'FOR UPDATE' : ''}`,
       [input.id, input.projectId, input.teamId]
     );
     return row ? mapJobRow(row) : null;
@@ -204,7 +211,7 @@ export class PostgresObservationGenerationJobRepository {
           )
           AND ($2 <> 'processing' OR attempts < max_attempts)
           AND ($2 <> 'queued' OR attempts < max_attempts)
-        RETURNING *
+        RETURNING *, extract(epoch from locked_at)::text AS locked_at_token
       `,
       [
         input.id,
@@ -222,7 +229,8 @@ export class PostgresObservationGenerationJobRepository {
 
     const current = await queryOne<JobRow>(
       this.client,
-      'SELECT * FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3',
+      `SELECT *, extract(epoch from locked_at)::text AS locked_at_token
+       FROM observation_generation_jobs WHERE id = $1 AND project_id = $2 AND team_id = $3`,
       [input.id, input.projectId, input.teamId]
     );
     if (!current) {
@@ -276,7 +284,7 @@ export class PostgresObservationGenerationJobRepository {
         WHERE j.id = stale.id
           AND j.status = 'processing'
           AND j.locked_at < now() - ($1::double precision * interval '1 millisecond')
-        RETURNING j.*,
+        RETURNING j.*, extract(epoch from j.locked_at)::text AS locked_at_token,
           stale.previous_locked_by,
           (extract(epoch from stale.previous_locked_at) * 1000)::bigint AS previous_locked_at_epoch
       `,
@@ -297,7 +305,7 @@ export class PostgresObservationGenerationJobRepository {
   }): Promise<PostgresObservationGenerationJob[]> {
     const result = await this.client.query<JobRow>(
       `
-        SELECT * FROM observation_generation_jobs
+        SELECT *, extract(epoch from locked_at)::text AS locked_at_token FROM observation_generation_jobs
         WHERE status = $1 AND project_id = $2 AND team_id = $3
         ORDER BY created_at ASC
         LIMIT $4
@@ -499,6 +507,7 @@ function mapJobRow(row: JobRow): PostgresObservationGenerationJob {
     maxAttempts: row.max_attempts,
     nextAttemptAtEpoch: toDate(row.next_attempt_at)?.getTime() ?? null,
     lockedAtEpoch: toDate(row.locked_at)?.getTime() ?? null,
+    lockedAtToken: row.locked_at_token ?? null,
     lockedBy: row.locked_by,
     completedAtEpoch: toDate(row.completed_at)?.getTime() ?? null,
     failedAtEpoch: toDate(row.failed_at)?.getTime() ?? null,

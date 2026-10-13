@@ -175,6 +175,7 @@
 
 import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import type { Database } from 'bun:sqlite';
+import type { CurrentRow, StoredObservation, StoredSummary, StoredUserPrompt } from './ChromaSync.js';
 import { logger } from '../../utils/logger.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { parseFileList } from '../sqlite/observations/files.js';
@@ -239,7 +240,8 @@ export interface ChromaSyncLike {
     promptNumber: number,
     createdAtEpoch: number,
     platformSource?: string,
-    replaceExisting?: boolean
+    replaceExisting?: boolean,
+    loadCurrent?: () => CurrentRow<StoredObservation> | undefined
   ): Promise<void>;
   syncSummary(
     summaryId: number,
@@ -257,7 +259,8 @@ export interface ChromaSyncLike {
     promptNumber: number,
     createdAtEpoch: number,
     platformSource?: string,
-    replaceExisting?: boolean
+    replaceExisting?: boolean,
+    loadCurrent?: () => CurrentRow<StoredSummary> | undefined
   ): Promise<void>;
   syncUserPrompt(
     promptId: number,
@@ -266,7 +269,8 @@ export interface ChromaSyncLike {
     promptText: string,
     promptNumber: number,
     createdAtEpoch: number,
-    platformSource?: string
+    platformSource?: string,
+    loadCurrent?: () => StoredUserPrompt | undefined
   ): Promise<void>;
 }
 
@@ -1079,6 +1083,8 @@ export class SyncApply {
   // Forwards hand Chroma the committed row's stored values, parsed as backfill
   // parses them. A revision deletes every fragment the new documents lack, so
   // any difference from backfill's documents would delete indexed content.
+  // The synchronous loader runs inside ChromaSync's row writer: an op can
+  // wait in either queue while a newer revision, remap or deletion commits.
   private forwardObservation(id: number, op: SyncOp, body: Record<string, unknown>, chromaJobs: ChromaJob[], replaceExisting = false): void {
     const memorySessionId = fieldString(op, body, 'memory_session_id')!;
     const project = fieldString(op, body, 'project')!;
@@ -1106,7 +1112,14 @@ export class SyncApply {
         fieldNumber(op, body, 'prompt_number') ?? 0,
         createdAtEpoch,
         platformSource,
-        replaceExisting
+        replaceExisting,
+        () => {
+          const row = this.db.query('SELECT * FROM observations WHERE id = ?').get(id) as
+            (StoredObservation & { sync_rev: string }) | undefined;
+          return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
+            platform_source: this.sessionPlatformSource(row.memory_session_id) },
+            replaceExisting: row.sync_rev !== op.rev };
+        }
       )));
     }
   }
@@ -1184,7 +1197,14 @@ export class SyncApply {
         fieldNumber(op, body, 'prompt_number') ?? 0,
         createdAtEpoch,
         platformSource,
-        replaceExisting
+        replaceExisting,
+        () => {
+          const row = this.db.query('SELECT * FROM session_summaries WHERE id = ?').get(id) as
+            (StoredSummary & { sync_rev: string }) | undefined;
+          return row && { row: { ...row, prompt_number: row.prompt_number ?? 0,
+            platform_source: this.sessionPlatformSource(row.memory_session_id) },
+            replaceExisting: row.sync_rev !== op.rev };
+        }
       )));
     }
   }
@@ -1282,7 +1302,14 @@ export class SyncApply {
         promptText,
         promptNumber,
         createdAtEpoch,
-        fieldString(op, body, 'platform_source') ?? undefined
+        fieldString(op, body, 'platform_source') ?? undefined,
+        () => this.db.query(`
+          SELECT up.*, COALESCE(s.memory_session_id, up.content_session_id) AS memory_session_id,
+            COALESCE(s.project, 'unknown') AS project,
+            COALESCE(NULLIF(s.platform_source, ''), ?) AS platform_source
+          FROM user_prompts up LEFT JOIN sdk_sessions s ON up.session_db_id = s.id
+          WHERE up.id = ?
+        `).get(normalizePlatformSource(fieldString(op, body, 'platform_source') ?? undefined), id) as StoredUserPrompt | undefined
       )));
     }
   }

@@ -1,5 +1,4 @@
 import type { DatabaseManager } from '../worker/DatabaseManager.js';
-import '../sqlite/manual-session.js';
 import { logger } from '../../utils/logger.js';
 import { notifyGrokBotIndex } from '../integrations/GrokBotIndexWriter.js';
 

@@ -59,7 +59,7 @@ describe('memory PreToolUse transport and platform output', () => {
       const registrations=JSON.parse(readFileSync(path.join(plugin,'hooks',platform==='codex'?'codex-hooks.json':'hooks.json'),'utf8')).hooks.PreToolUse;
       const matches=registrations.filter((entry:{matcher:string})=>new RegExp(entry.matcher).test('Bash'));
       expect(matches).toHaveLength(1);
-      const registered=matches[0].hooks.find((entry:{command:string})=>entry.command.includes(`hook ${platform} file-context`));
+      const registered=matches[0].hooks.find((entry:{command:string;args?:string[]})=>[entry.command,...(entry.args??[])].join(' ').includes(`hook ${platform} file-context`));
       expect(registered).toBeDefined();
       const root=mkdtempSync(path.join(tmpdir(),'cmem-memory-hook-registration-')); roots.push(root);
       const data=path.join(root,'data'), project=path.join(root,'project'), notes=path.join(root,'notes with spaces');
@@ -78,7 +78,9 @@ describe('memory PreToolUse transport and platform output', () => {
       for(const [key,value] of Object.entries(process.env)) if(value!==undefined&&!key.startsWith('CLAUDE_MEM_')) env[key]=value;
       env.CLAUDE_MEM_DATA_DIR=data; env.CLAUDE_CONFIG_DIR=path.join(root,'claude'); env.CLAUDE_PLUGIN_ROOT=plugin; env.DO_NOT_TRACK='1';
       const invoke=async (command:string) => {
-        const launch=process.platform==='win32'&&registered.commandWindows?['cmd.exe','/c',registered.commandWindows]:['bash','-c',registered.command];
+        // Claude Code runs the exec-form entry (`claude-mem` + args) through the on-PATH launcher; run its bundle the same way.
+        const launch=registered.args?[process.execPath,path.join(plugin,'scripts','claude-mem-launcher.cjs'),...registered.args]
+          :process.platform==='win32'&&registered.commandWindows?['cmd.exe','/c',registered.commandWindows]:['bash','-c',registered.command];
         const child=Bun.spawn(launch,{cwd:project,env,stdin:'pipe',stdout:'pipe',stderr:'pipe'});
         child.stdin.write(JSON.stringify({session_id:'memory-registration-test',cwd:project,hook_event_name:'PreToolUse',tool_name:'Bash',tool_input:{command}})); child.stdin.end();
         const [stdout,stderr,status]=await Promise.all([new Response(child.stdout).text(),new Response(child.stderr).text(),child.exited]);

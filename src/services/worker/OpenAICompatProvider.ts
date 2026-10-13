@@ -41,8 +41,8 @@ import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { resolveObserverMaxOutputTokens } from './context-window.js';
 import {
-  DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS,
   STREAMED_REQUEST_FIELDS,
+  resolveStreamIdleTimeoutMs,
   resolveStreamLiveness,
   sendChatCompletion,
   streamsChatCompletion,
@@ -498,10 +498,12 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
   }
 
   /**
-   * Silence after which a streamed request is given up. An instance field so a
-   * test can shorten it; there is no setting for it.
+   * Overrides the streamed request's idle window when set — a test hook, the
+   * only reason this is a field. Unset, every request resolves
+   * CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS (#4737), so a settings change takes
+   * effect without a restart.
    */
-  protected streamIdleTimeoutMs: number = DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS;
+  protected streamIdleTimeoutMs: number | undefined;
 
   /**
    * POST the request and read its (streamed) reply. A model that only takes
@@ -571,7 +573,9 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
 
     // Decided once, so every attempt is bounded the way withRetry was told.
     const streamed = streamsChatCompletion(config.apiUrl);
-    const liveness = streamed ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs) : null;
+    const liveness = streamed
+      ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
+      : null;
     const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId);
       const responseData = exchange.body as ChatCompletionResponse;

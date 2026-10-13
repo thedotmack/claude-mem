@@ -2934,7 +2934,7 @@ export class SessionStore {
     const params: SQLQueryBindings[] = [OBSERVER_SESSIONS_PROJECT];
 
     if (options.project) {
-      query += ' AND s.project = ?';
+      query += ' AND s.project COLLATE NOCASE = ?';
       params.push(options.project);
     }
     if (options.platformSource) {
@@ -3154,24 +3154,36 @@ export class SessionStore {
 
     if (concepts) {
       const conceptsList = Array.isArray(concepts) ? concepts : [concepts];
+      // Match the keyword read: legacy concepts may be plain strings or JSON strings.
+      const conceptArray = `CASE WHEN json_valid(o.concepts) THEN CASE
+        WHEN json_type(o.concepts) = 'array' THEN o.concepts
+        WHEN json_type(o.concepts) = 'text' THEN json_array(json_extract(o.concepts, '$'))
+        ELSE json_array(o.concepts) END ELSE json_array(o.concepts) END`;
       const conceptConditions = conceptsList.map(() =>
-        'EXISTS (SELECT 1 FROM json_each(o.concepts) WHERE value = ?)'
+        `EXISTS (SELECT 1 FROM json_each(${conceptArray}) WHERE type = 'text' AND value = ?)`
       );
-      params.push(...conceptsList);
-      additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
+      if (conceptConditions.length > 0) {
+        params.push(...conceptsList);
+        additionalConditions.push(`(${conceptConditions.join(' OR ')})`);
+      }
     }
 
     if (files) {
       const filesList = Array.isArray(files) ? files : [files];
+      // Imported non-array file metadata is absent evidence, as in SessionSearch.
+      const fileArrayJson = (column: string): string =>
+        `CASE WHEN json_valid(${column}) THEN CASE WHEN json_type(${column}) = 'array' THEN ${column} ELSE '[]' END ELSE '[]' END`;
       const fileConditions = filesList.map(() => {
-        return "(EXISTS (SELECT 1 FROM json_each(o.files_read) WHERE value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(o.files_modified) WHERE value LIKE ? ESCAPE '\\'))";
+        return `(EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_read')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\') OR EXISTS (SELECT 1 FROM json_each(${fileArrayJson('o.files_modified')}) WHERE type = 'text' AND value LIKE ? ESCAPE '\\'))`;
       });
-      filesList.forEach(file => {
-        // The hydration filter receives literal file paths, like SQLite search.
-        const literal = file.replace(/[\\%_]/g, '\\$&');
-        params.push(`%${literal}%`, `%${literal}%`);
-      });
-      additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+      if (fileConditions.length > 0) {
+        filesList.forEach(file => {
+          // The hydration filter receives literal file paths, like SQLite search.
+          const literal = file.replace(/[\\%_]/g, '\\$&');
+          params.push(`%${literal}%`, `%${literal}%`);
+        });
+        additionalConditions.push(`(${fileConditions.join(' OR ')})`);
+      }
     }
 
     const whereClause = additionalConditions.length > 0
@@ -4355,19 +4367,15 @@ export class SessionStore {
   }
 
   getOrCreateManualSession(project: string, platformSource = DEFAULT_PLATFORM_SOURCE): string {
-    const memorySessionId = `manual-${project}`;
-    const contentSessionId = `manual-content-${project}`;
+    const normalizedPlatformSource = normalizePlatformSource(platformSource);
+    const memorySessionId = `manual-${project}-${normalizedPlatformSource}`;
+    const contentSessionId = `manual-content-${project}-${normalizedPlatformSource}`;
 
     const existing = this.db.prepare(
       'SELECT memory_session_id FROM sdk_sessions WHERE memory_session_id = ?'
     ).get(memorySessionId) as { memory_session_id: string } | undefined;
 
     if (existing) {
-      if (platformSource && platformSource !== DEFAULT_PLATFORM_SOURCE) {
-        this.db.prepare(
-          'UPDATE sdk_sessions SET platform_source = ? WHERE memory_session_id = ?'
-        ).run(platformSource, memorySessionId);
-      }
       return memorySessionId;
     }
 
@@ -4375,9 +4383,9 @@ export class SessionStore {
     this.db.prepare(`
       INSERT INTO sdk_sessions (memory_session_id, content_session_id, project, platform_source, started_at, started_at_epoch, status)
       VALUES (?, ?, ?, ?, ?, ?, 'active')
-    `).run(memorySessionId, contentSessionId, project, DEFAULT_PLATFORM_SOURCE, now.toISOString(), now.getTime());
+    `).run(memorySessionId, contentSessionId, project, normalizedPlatformSource, now.toISOString(), now.getTime());
 
-    logger.info('SESSION', 'Created manual session', { memorySessionId, project });
+    logger.info('SESSION', 'Created manual session', { memorySessionId, project, platformSource: normalizedPlatformSource });
 
     return memorySessionId;
   }
@@ -4644,6 +4652,8 @@ export class SessionStore {
     prompt_text: string;
     created_at: string;
     created_at_epoch: number;
+    native_prompt_id?: string | null;
+    native_prompt_hash?: string | null;
   }): { imported: boolean; id: number } {
     let sessionDbId: number | null = null;
     const normalizedPlatformSource = prompt.platform_source
@@ -4687,8 +4697,8 @@ export class SessionStore {
     const stmt = this.db.prepare(`
       INSERT INTO user_prompts (
         session_db_id, content_session_id, prompt_number, prompt_text,
-        created_at, created_at_epoch
-      ) VALUES (?, ?, ?, ?, ?, ?)
+        created_at, created_at_epoch, native_prompt_id, native_prompt_hash
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     const result = stmt.run(
@@ -4697,7 +4707,9 @@ export class SessionStore {
       prompt.prompt_number,
       coerceBindValue(prompt.prompt_text),
       prompt.created_at,
-      prompt.created_at_epoch
+      prompt.created_at_epoch,
+      prompt.native_prompt_id ?? null,
+      prompt.native_prompt_hash ?? null
     );
 
     return { imported: true, id: result.lastInsertRowid as number };

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 import * as observerHealth from '../../src/shared/observer-health.js';
 
@@ -169,7 +170,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }],
         observation_concepts: [],
       }),

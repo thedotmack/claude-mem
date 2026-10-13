@@ -18,14 +18,21 @@ function setPlatform(platform: NodeJS.Platform): void {
 
 afterEach(() => setPlatform(originalPlatform));
 
-/** The `timeout` (seconds) of the SessionStart hook whose command runs `hookInvocation`. */
+type RegisteredHook = { command: string; args?: string[]; timeout?: number };
+
+/**
+ * The `timeout` (seconds) of the SessionStart hook that runs `hookInvocation`:
+ * Claude Code hooks are exec form (`args`), Codex hooks are shell strings.
+ */
 function registeredSessionStartTimeoutSeconds(hooksFile: string, hookInvocation: string): number | undefined {
   const parsed = JSON.parse(readFileSync(join(REPO_ROOT, hooksFile), 'utf-8')) as {
-    hooks: Record<string, Array<{ hooks: Array<{ command: string; timeout?: number }> }>>;
+    hooks: Record<string, Array<{ hooks: RegisteredHook[] }>>;
   };
   const entry = parsed.hooks.SessionStart
     .flatMap(group => group.hooks)
-    .find(hook => hook.command.includes(`"$_P/scripts/worker-service.cjs" ${hookInvocation}`));
+    .find(hook => Array.isArray(hook.args)
+      ? hook.args.join(' ') === hookInvocation
+      : hook.command.includes(`"$_P/scripts/worker-service.cjs" ${hookInvocation}`));
   return entry?.timeout;
 }
 

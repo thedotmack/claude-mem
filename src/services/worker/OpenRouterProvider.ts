@@ -16,8 +16,8 @@ import { ClassifiedProviderError, rateLimitUntilNextKey, type ProviderErrorClass
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import {
-  DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS,
   STREAMED_REQUEST_FIELDS,
+  resolveStreamIdleTimeoutMs,
   resolveStreamLiveness,
   sendChatCompletion,
   streamsChatCompletion,
@@ -798,10 +798,12 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
   }
 
   /**
-   * Silence after which a streamed request is given up. An instance field so a
-   * test can shorten it; there is no setting for it.
+   * Overrides the streamed request's idle window when set — a test hook, the
+   * only reason this is a field. Unset, every request resolves
+   * CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS (#4737), so a settings change takes
+   * effect without a restart.
    */
-  protected streamIdleTimeoutMs: number = DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS;
+  protected streamIdleTimeoutMs: number | undefined;
 
   /** POST the chat-completions request and read its (streamed) reply. */
   private requestChatCompletion(
@@ -879,7 +881,9 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
 
     // Decided once, so every attempt is bounded the way withRetry was told.
     const streamed = streamsChatCompletion(apiUrl);
-    const liveness = streamed ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs) : null;
+    const liveness = streamed
+      ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
+      : null;
     const data = await withRetry<OpenRouterResponse>(async (attemptSignal) => {
       const exchange = await this.requestChatCompletion(
         apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, attemptSignal,
