@@ -153,9 +153,9 @@ export class ContextCacheService {
       this.evictOldestVariants();
       this.writeIndex();
       logger.debug('CONTEXT_CACHE', 'Learned a SessionStart context variant', { variantId, keys });
-    } else {
-      // A newer live render owns this existing variant too. Replace its entry
-      // so an older queued render cannot overwrite or remove the live body.
+    } else if (removalGenerationAtRenderStart === undefined || removalGenerationAtRenderStart === this.removalGeneration) {
+      // Only an accepted live render owns this existing variant. A stale live
+      // result must not cancel queued work that began after the removal.
       this.variants.set(variantId, { ...this.variants.get(variantId)! });
     }
     this.refreshReadKeys(variantId);

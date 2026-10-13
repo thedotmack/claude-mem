@@ -54,3 +54,38 @@ describe('context cache in-flight lifecycle', () => {
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
+
+// A stale live result must not cancel a queued render that began after removal.
+it('retains post-removal queued work when an older live result is rejected', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'context-cache-removal-order-'));
+  try {
+    const run = Bun.spawnSync([process.execPath, '-e', String.raw`
+      import { ContextCacheService } from './src/services/worker/ContextCacheService.ts';
+      import { contextCacheKeys, readContextCache } from './src/shared/context-cache.ts';
+      import { emitContextInvalidation } from './src/shared/context-invalidation.ts';
+      const keys = contextCacheKeys(['removal-order'], 'claude', false);
+      let release; const gate = new Promise(resolve => release = resolve);
+      let began; const started = new Promise(resolve => began = resolve);
+      const service = new ContextCacheService({ debounceMs: 60000, expandProjectReadKeys: projects => projects,
+        renderVariant: async () => { began(); await gate; return { body: 'VALID POST-REMOVAL', cacheable: true }; }
+      });
+      service.start();
+      service.recordLiveRender(keys, { body: 'ORIGINAL', cacheable: true }, Date.now());
+      const oldGeneration = service.removalGenerationNow();
+      emitContextInvalidation({ projects: ['removal-order'] }, 'delete', 'removal');
+      const flushing = service.flushPendingRenders(); await started;
+      service.recordLiveRender(keys, { body: 'OUTDATED LIVE', cacheable: true }, Date.now(), oldGeneration);
+      const beforeRelease = readContextCache(keys)?.body ?? null;
+      release(); await flushing;
+      const afterRelease = readContextCache(keys)?.body ?? null;
+      service.stop();
+      console.log(JSON.stringify({ beforeRelease, afterRelease }));
+    `], { cwd: join(import.meta.dir, '../..'),
+      env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(dir, 'data'), CLAUDE_CONFIG_DIR: join(dir, 'config') },
+      stdout: 'pipe', stderr: 'pipe' });
+    if (run.exitCode !== 0) throw new Error(new TextDecoder().decode(run.stderr));
+    const result = JSON.parse(new TextDecoder().decode(run.stdout).trim().split('\n').at(-1)!);
+    expect(result.beforeRelease).toBeNull();
+    expect(result.afterRelease).toBe('VALID POST-REMOVAL');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
