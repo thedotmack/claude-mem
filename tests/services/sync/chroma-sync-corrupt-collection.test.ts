@@ -367,7 +367,9 @@ describe('ChromaSync rebuild after a dropped collection (#3202)', () => {
               }
               return [];
             },
-            get: () => ({ count: rows.length }),
+            get: (...params: Array<string | number>) => query.includes('o.id = ?')
+              ? rows.find(row => row.id === params[1]) : { count: rows.length },
+            finalize: () => {},
           };
         },
       },
