@@ -14,6 +14,7 @@ import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { fileContextHandler } from './file-context.js';
 import { postCompactHandler } from './post-compact.js';
+import { subagentContextHandler } from './subagent-context.js';
 
 export type EventType =
   | 'context'
@@ -25,7 +26,8 @@ export type EventType =
   | 'user-message'
   | 'file-edit'
   | 'file-context'
-  | 'post-compact';
+  | 'post-compact'
+  | 'subagent-context';
 
 export const sessionInitContextHandler: EventHandler = {
   async execute(input) {
@@ -136,7 +138,8 @@ const handlers: Record<EventType, EventHandler> = {
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler,
   'file-context': fileContextHandler,
-  'post-compact': postCompactHandler
+  'post-compact': postCompactHandler,
+  'subagent-context': subagentContextHandler
 };
 
 export function getEventHandler(eventType: string): EventHandler {
@@ -161,3 +164,4 @@ export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { fileContextHandler } from './file-context.js';
 export { postCompactHandler } from './post-compact.js';
+export { subagentContextHandler } from './subagent-context.js';
