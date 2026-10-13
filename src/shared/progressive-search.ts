@@ -295,7 +295,7 @@ function indexLine(row: MemoryIndexRow, includeProject: boolean): string {
     + (includeProject ? ` · ${oneLine(row.project) || "No project"}` : "")
     + (when ? ` · ${when}` : "");
 }
-const MEM_SEARCH_WORKFLOW = "the mem-search workflow (search → timeline → get_observations)";
+const MEM_SEARCH_WORKFLOW = "the mem-search workflow (index search → timeline → get_observations)";
 export function renderProgressiveSearchResult(result: ProgressiveSearchResult): string {
   const phase = result.step === 1 ? "index" : result.step === 2 ? "context" : "selected details";
   const performed = [...new Set(result.trace.map(item => item.operation === "search" ? "index" : item.operation === "timeline" ? "context" : "selected details"))];
