@@ -310,12 +310,14 @@ prefix model ids differently from the vendor's own docs.
 
 **Repeated timeouts.** Requests are streamed, so a request is given up only
 after 90 seconds with no token and no keep-alive from the endpoint, or after
-300 seconds in total. `CLAUDE_MEM_LLM_TIMEOUT_MS` does not apply to streamed
-requests; it is the deadline only for an endpoint that refuses streaming (a 400
-naming `stream` or `stream_options`), which claude-mem then calls non-streamed
-for the rest of the worker's life. If requests keep timing out, prefer a small,
-fast model: observation extraction is a high-volume structured task, not a
-reasoning benchmark.
+300 seconds in total. A self-hosted endpoint that queues requests behind a load
+balancer spends that queue wait silent, so the wait reads as idle; raise
+`CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS` past it. `CLAUDE_MEM_LLM_TIMEOUT_MS`
+does not apply to streamed requests; it is the deadline only for an endpoint
+that refuses streaming (a 400 naming `stream` or `stream_options`), which
+claude-mem then calls non-streamed for the rest of the worker's life. If
+requests keep timing out, prefer a small, fast model: observation extraction is
+a high-volume structured task, not a reasoning benchmark.
 
 **Empty or cut-off observations.** A model that will not hold to the output
 schema produces nothing usable. Small instruct-tuned models generally do better
