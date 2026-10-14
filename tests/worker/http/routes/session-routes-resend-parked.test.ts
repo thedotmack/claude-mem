@@ -12,6 +12,12 @@ import type { ActiveSession } from '../../../../src/services/worker-types.js';
  * pay twice"), so the route must reach resendParkedBatch and nothing else —
  * localhost-only like the other admin routes, and 404 (not a silent ok) when
  * there is nothing parked to resend.
+ *
+ * Resending risks a second bill, so it needs operator consent, and a loopback
+ * connection is not consent: CORS admits any http://localhost:* page, and
+ * requireLocalhost only checks the socket peer. A browser Origin from another
+ * port is refused the way settings writes and project merges are; origin-less
+ * local clients keep the loopback-trust model.
  */
 
 const clock: TransportResumeClock = {
@@ -95,5 +101,64 @@ describe('POST /api/sessions/resend-parked', () => {
   it('400s on a malformed body', async () => {
     const reply = await post('/api/sessions/resend-parked', { sessionDbId: 'nope' });
     expect(reply.status).toBe(400);
+  });
+});
+
+describe('POST /api/sessions/resend-parked origin guard', () => {
+  // A fresh worker per case: a successful resend unparks the only batch, so
+  // the cases cannot share one fixture.
+  const makeApp = () => {
+    const { sessionManager, sessionDbId } = makeSessionManagerWithParkedBatch();
+    const routes = new SessionRoutes(
+      sessionManager,
+      {} as never, {} as never, {} as never, {} as never, {} as never, {} as never, {} as never,
+    );
+    const app = express();
+    app.use(express.json());
+    routes.setupRoutes(app);
+    const server = app.listen(0);
+    const port = (server.address() as AddressInfo).port;
+    const postWithOrigin = (origin?: string) =>
+      fetch(`http://127.0.0.1:${port}/api/sessions/resend-parked`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(origin === undefined ? {} : { origin }),
+        },
+        body: JSON.stringify({ sessionDbId }),
+      });
+    return { sessionManager, sessionDbId, port, postWithOrigin, close: () => server.close() };
+  };
+
+  it('403s a page on another localhost port and keeps the batch parked', async () => {
+    const harness = makeApp();
+    try {
+      const reply = await harness.postWithOrigin(`http://localhost:${harness.port + 1}`);
+      expect(reply.status).toBe(403);
+      expect(harness.sessionManager.getMessageBuffer().getParkedMessages(harness.sessionDbId)).toHaveLength(1);
+      expect(harness.sessionManager.getMessageBuffer().getPendingCount(harness.sessionDbId)).toBe(0);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('accepts the worker viewer posting from its own origin', async () => {
+    const harness = makeApp();
+    try {
+      const reply = await harness.postWithOrigin(`http://127.0.0.1:${harness.port}`);
+      expect(reply.status).toBe(200);
+    } finally {
+      harness.close();
+    }
+  });
+
+  it('accepts an origin-less local client (hooks, CLI, curl)', async () => {
+    const harness = makeApp();
+    try {
+      const reply = await harness.postWithOrigin();
+      expect(reply.status).toBe(200);
+    } finally {
+      harness.close();
+    }
   });
 });

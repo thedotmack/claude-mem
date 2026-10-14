@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContext } from '../shared.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { logger } from '../../../../utils/logger.js';
 import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
@@ -568,7 +569,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // Operator repair route: the automatic paths never resend a parked batch
     // ("never pay twice" — the earlier send may already have been billed), so
     // this one exists for an explicit operator decision to risk a second bill.
-    // Localhost-only like the other admin routes.
+    // Localhost-only like the other admin routes, and a foreign browser page is
+    // not that operator (see handleResendParked).
     app.post(
       '/api/sessions/resend-parked',
       requireLocalhost,
@@ -610,6 +612,18 @@ export class SessionRoutes extends BaseRouteHandler {
   });
 
   private handleResendParked = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    // The resend risks a second bill, so it takes an operator decision, and a
+    // loopback connection is not that decision: the global CORS policy admits
+    // any http://localhost:* page, whose script could unpark a batch and spend
+    // a fresh paid-send budget. requireLocalhost checks the socket peer, not
+    // the browser origin. Browser POSTs always send Origin, so reject the
+    // cross-port ones the way settings writes and project merges do;
+    // origin-less local clients (hooks, CLI, curl) keep the loopback-trust
+    // model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Parked-batch resends from a different localhost origin are not allowed' });
+      return;
+    }
     const sessionDbId = req.body.sessionDbId;
     const unparkedMessageIds = this.sessionManager.resendParkedBatch(sessionDbId);
     if (unparkedMessageIds.length === 0) {
