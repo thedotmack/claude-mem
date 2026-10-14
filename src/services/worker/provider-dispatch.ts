@@ -102,7 +102,7 @@ export interface ProviderSelection {
 }
 
 /** What CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER may name. */
-export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible'] as const;
+export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'aimlapi'] as const;
 export type QuotaFallbackProvider = typeof QUOTA_FALLBACK_PROVIDERS[number];
 
 /** The CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER value that turns the fallback off. */
@@ -151,6 +151,10 @@ function isFallbackAvailable(provider: QuotaFallbackProvider): boolean {
     case 'openai-compatible': return isOpenAICompatAvailable();
     case 'claude': return canClaudeServeAsFallback();
     case 'openrouter': return isOpenRouterAvailable() && gatewayFallbackState() !== 'refusing';
+    // aimlapi needs only a key, like the other OpenAI-compatible targets:
+    // it is a paid gateway with no free tier to exhaust and no CLI to fail
+    // to start, so "configured" is the whole availability test.
+    case 'aimlapi': return isAimlapiAvailable();
   }
 }
 

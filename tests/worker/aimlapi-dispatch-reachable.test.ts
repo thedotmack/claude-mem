@@ -6,6 +6,8 @@ import {
   getSelectedProvider,
   selectProviderForGenerator,
   resetQuotaFallbackStateForTesting,
+  readQuotaFallbackProvider,
+  QUOTA_FALLBACK_PROVIDERS,
 } from '../../src/services/worker/provider-dispatch.js';
 import { isAimlapiAvailable, isAimlapiSelected } from '../../src/services/worker/AimlapiProvider.js';
 import type { ActiveSession } from '../../src/services/worker-types.js';
@@ -104,6 +106,27 @@ describe('aimlapi.com dispatch reachability', () => {
     process.env.AIMLAPI_API_KEY = 'aimlapi-test-key';
     expect(getSelectedProvider()).toBe('gemini');
     expect(selectProviderForGenerator().provider).toBe('gemini');
+  });
+
+  // Lives in THIS describe on purpose: it writes CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER,
+  // and only this block saves and restores the environment. Written under the
+  // next describe it leaked the last value ('off') into every later file.
+  it('can be NAMED as the quota fallback, not silently ignored', () => {
+    // CLAUDE_MEM_PROVIDER accepted 'aimlapi' while QUOTA_FALLBACK_PROVIDERS
+    // did not, and an unrecognised fallback name reads back as null — i.e.
+    // "no fallback". So a user who pointed the fallback at aimlapi got no
+    // fallback at all, with nothing saying so.
+    expect(QUOTA_FALLBACK_PROVIDERS).toContain('aimlapi');
+
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'aimlapi';
+    expect(readQuotaFallbackProvider()).toBe('aimlapi');
+
+    // the names it still refuses, so this widened the union rather than
+    // opening it
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'not-a-provider';
+    expect(readQuotaFallbackProvider()).toBe(null);
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'off';
+    expect(readQuotaFallbackProvider()).toBe(null);
   });
 });
 

@@ -143,7 +143,7 @@ See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets a
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, `aimlapi`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
 
 See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
@@ -187,7 +187,9 @@ For these HTTP providers, the observer's instructions and output format are sent
 | `CLAUDE_MEM_AIMLAPI_SITE_URL`                | —                           | Optional: URL sent as `HTTP-Referer` |
 | `CLAUDE_MEM_AIMLAPI_APP_NAME`                | `Claude-Mem`                | Optional: App name sent as `X-Title` |
 
-Select it with `npx claude-mem install --provider aimlapi`. The `AIMLAPI_API_KEY` environment variable is honored as a fallback for the key.
+Select it with `npx claude-mem install --provider aimlapi`, or set `CLAUDE_MEM_PROVIDER=aimlapi` in `~/.claude-mem/settings.json`. The interactive installer's provider prompt offers CMEM Pro and your Anthropic plan only, so the flag (or the settings file) is how this provider is chosen. The `AIMLAPI_API_KEY` environment variable is honored as a fallback for the key.
+
+It can also be named as the quota fallback (`CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER=aimlapi`), which takes observer work while the selected provider can't serve. Availability is just "a key is configured": a paid gateway has no free tier to exhaust and no CLI that can fail to start.
 
 ### Claude Gateway Settings
 
