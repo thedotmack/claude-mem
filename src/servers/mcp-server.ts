@@ -892,14 +892,18 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
+      // Check the CLI before any parsing (#4758): with a broken install,
+      // symbol extraction stalls on build/query timeouts, so skip it up
+      // front while keeping path matches, which need no tree-sitter.
+      const brokenCli = treeSitterCliBrokenMessage();
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
-        filePattern: args.file_pattern
+        filePattern: args.file_pattern,
+        skipSymbolExtraction: brokenCli !== null,
       });
       const formatted = formatSearchResults(result, args.query);
       // Path matches need no tree-sitter, so a broken CLI only degrades symbol
       // extraction: keep the results and warn instead of blocking the search.
-      const brokenCli = treeSitterCliBrokenMessage();
       const text = brokenCli
         ? `Note: symbol extraction is unavailable (${brokenCli}); path matches below are unaffected.\n\n${formatted}`
         : formatted;
