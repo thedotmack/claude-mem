@@ -411,6 +411,12 @@ export function selectProviderForGenerator(): ProviderSelection {
   }
   if (isGeminiSelected() && isGeminiAvailable()) return selectWithQuotaFallback('gemini');
   if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return selectWithQuotaFallback('openai-compatible');
+  // Must mirror getSelectedProvider's branch order exactly. This is the
+  // function that starts generators; without this branch an aimlapi install
+  // read back as 'aimlapi' everywhere it was reported (getAiStatus, the
+  // settings route, the session-start notice) and still ran every observation
+  // on Claude, because the start path fell through to the default below.
+  if (isAimlapiSelected() && isAimlapiAvailable()) return selectWithQuotaFallback('aimlapi');
   return selectWithQuotaFallback('claude');
 }
 
