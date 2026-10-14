@@ -1,6 +1,7 @@
 
 import { logger } from './logger.js';
 import { getRedactionConfig, redactSensitive } from './redaction.js';
+import { isObserverPromptSentinel } from '../shared/observer-sentinel.js';
 
 const TAG_NAMES = [
   'private',
@@ -93,4 +94,14 @@ const CODEX_INTERNAL_PROMPT_OPENINGS: readonly RegExp[] = [
 export function isCodexInternalPrompt(text: string): boolean {
   const opening = text.trimStart();
   return CODEX_INTERNAL_PROMPT_OPENINGS.some(pattern => pattern.test(opening));
+}
+
+/**
+ * Whether a prompt is a claude-mem opencode-observer sub-session turn. Every
+ * prompt OpencodeProvider spawns opens with the sentinel — never a phrase a
+ * person would type. Callers apply it only to platformSource 'opencode' (see
+ * the plugin's captureUserPrompt, which forwards full text).
+ */
+export function isOpencodeObserverPrompt(text: string): boolean {
+  return isObserverPromptSentinel(text);
 }

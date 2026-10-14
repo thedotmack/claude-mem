@@ -5,7 +5,8 @@ import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContex
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isOpencodeObserverPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { isObserverContentSession } from '../../opencode-observer.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -13,6 +14,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
+import type { OpencodeProvider } from '../../OpencodeProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -88,6 +90,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private codexAgent?: CodexProvider,
     // After codexAgent, so every existing positional caller keeps its argument order.
     private openAICompatAgent?: OpenAICompatProvider,
+    // After openAICompatAgent, for the same reason.
+    private opencodeAgent?: OpencodeProvider,
   ) {
     super();
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
@@ -160,6 +164,9 @@ export class SessionRoutes extends BaseRouteHandler {
         case 'openai-compatible':
           if (!this.openAICompatAgent) throw new Error('OpenAI-compatible provider is not available');
           return await this.openAICompatAgent.formatTelegramWrapup(input, activeModelId);
+        case 'opencode':
+          if (!this.opencodeAgent) throw new Error('Opencode provider is not available');
+          return await this.opencodeAgent.formatTelegramWrapup(input, activeModelId);
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
@@ -547,6 +554,7 @@ export class SessionRoutes extends BaseRouteHandler {
       openRouterAgent: this.openRouterAgent,
       codexAgent: this.codexAgent,
       openAICompatAgent: this.openAICompatAgent,
+      opencodeAgent: this.opencodeAgent,
       workerService: this.workerService,
       completionHandler: this.completionHandler,
       ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),
@@ -762,6 +770,21 @@ export class SessionRoutes extends BaseRouteHandler {
     if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
+    // The opencode observer provider's own sub-sessions arrive like a user
+    // turn through the OpenCode plugin. Every spawned prompt starts with the
+    // sentinel, and the reused session id is archived — skip before any
+    // session row exists, or the observer would observe itself forever.
+    if (rawPrompt && platformSource === 'opencode' && isOpencodeObserverPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping an opencode observer sub-session before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'observer_subsession' });
+      return;
+    }
+    if (platformSource === 'opencode' && await isObserverContentSession(contentSessionId)) {
+      logger.debug('HTTP', 'session-init: skipping an archived opencode observer session before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'observer_subsession' });
       return;
     }
 

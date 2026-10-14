@@ -14,6 +14,7 @@ import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
+import { isObserverContentSession } from '../opencode-observer.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -137,6 +138,13 @@ export interface ObservationPayload {
 export async function ingestObservation(payload: ObservationPayload, handoff: IngestHandoff = {}): Promise<IngestResult> {
   if (isRecursiveMemoryTool(payload.toolName)) {
     return { ok: true, status: 'skipped', reason: 'memory_retrieval' };
+  }
+  // The opencode observer provider's own sub-session: its init was skipped, so
+  // no row exists — and this path must not create one, or the observer would
+  // observe itself forever. Checked before createSDKSession below.
+  if (normalizePlatformSource(payload.platformSource) === 'opencode'
+    && await isObserverContentSession(payload.contentSessionId)) {
+    return { ok: true, status: 'skipped', reason: 'observer_subsession' };
   }
   const { sessionManager, dbManager, eventBroadcaster, ensureGeneratorRunning } = requireIngestContext();
 
@@ -342,6 +350,12 @@ export async function ingestSummarize(
 
   if (payload.agentId) {
     return { status: 'skipped', reason: 'subagent_context' };
+  }
+
+  // Same observer-sub-session guard as ingestObservation: never summarize the
+  // provider's own runs.
+  if (normalizePlatformSource(platformSource) === 'opencode' && await isObserverContentSession(contentSessionId)) {
+    return { status: 'skipped', reason: 'observer_subsession' };
   }
 
   const store = dbManager.getSessionStore();

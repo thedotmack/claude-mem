@@ -30,6 +30,7 @@ import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
+import { isOpencodeAvailable, isOpencodeSelected } from './OpencodeProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import {
@@ -50,7 +51,7 @@ import {
  * src/shared/openai-compat-presets.ts for why it is not folded into
  * openrouter.
  */
-export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible';
+export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'opencode';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -95,7 +96,7 @@ export interface ProviderSelection {
 }
 
 /** What CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER may name. */
-export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible'] as const;
+export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'opencode'] as const;
 export type QuotaFallbackProvider = typeof QUOTA_FALLBACK_PROVIDERS[number];
 
 /** The configured quota fallback, or null when the setting is empty or unrecognised. */
@@ -133,6 +134,7 @@ function isFallbackAvailable(provider: QuotaFallbackProvider): boolean {
   switch (provider) {
     case 'gemini': return isGeminiAvailable();
     case 'openai-compatible': return isOpenAICompatAvailable();
+    case 'opencode': return isOpencodeAvailable();
     case 'claude': return true;
     case 'openrouter': return isOpenRouterAvailable() && gatewayFallbackState() !== 'refusing';
   }
@@ -287,6 +289,7 @@ export function getSelectedProvider(): SelectableProvider {
   }
   if (isGeminiSelected() && isGeminiAvailable()) return applyQuotaFallback('gemini').provider;
   if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return applyQuotaFallback('openai-compatible').provider;
+  if (isOpencodeSelected() && isOpencodeAvailable()) return applyQuotaFallback('opencode').provider;
   return applyQuotaFallback('claude').provider;
 }
 
@@ -361,6 +364,7 @@ export function selectProviderForGenerator(): ProviderSelection {
   }
   if (isGeminiSelected() && isGeminiAvailable()) return selectWithQuotaFallback('gemini');
   if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return selectWithQuotaFallback('openai-compatible');
+  if (isOpencodeSelected() && isOpencodeAvailable()) return selectWithQuotaFallback('opencode');
   return selectWithQuotaFallback('claude');
 }
 

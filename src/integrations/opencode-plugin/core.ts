@@ -14,6 +14,7 @@ import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
 import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
+import { isObserverPromptSentinel } from "../../shared/observer-sentinel.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
 import { formatHostForUrl } from "../../shared/worker-url.js";
 import { retryWhileRefused } from "./worker-retry.js";
@@ -132,6 +133,17 @@ async function workerGetText(path: string): Promise<string | null> {
 const contentSessionIdsByOpenCodeSessionId = new Map<string, string>();
 
 const MAX_SESSION_MAP_ENTRIES = 1000;
+
+// OpenCode sessions that ARE the observer (OpencodeProvider's `opencode run`
+// sub-sessions): their prompts start with the sentinel. Nothing is ever posted
+// for them — no init, no tool/assistant observations, no summaries, no memory
+// context — or the observer would observe itself forever. The worker skips
+// them too (defense in depth for older plugin builds).
+const observerSessionIds = new Set<string>();
+
+function isObserverPrompt(promptText: string): boolean {
+  return isObserverPromptSentinel(promptText);
+}
 
 // Memory context per OpenCode session: fetched on the session's first system
 // prompt build and reused for its later turns, as Claude Code injects once per
@@ -281,6 +293,9 @@ export interface ClaudeMemCore {
 
 export function createCore(ctx: CoreContext): ClaudeMemCore {
   function memoryContextFor(openCodeSessionId: string, cwd: string): Promise<string | null> {
+    // An observer sub-session needs no memories; injecting them only pollutes
+    // its extraction turns (and spends its context).
+    if (observerSessionIds.has(openCodeSessionId)) return Promise.resolve(null);
     const cached = contextByOpenCodeSessionId.get(openCodeSessionId);
     if (cached && (cached.failedAt === undefined || Date.now() - cached.failedAt < FAILED_CONTEXT_RETRY_MS)) {
       return cached.request;
@@ -309,6 +324,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     sessionID: string,
     options: { lastAssistantMessage?: string } = {},
   ): Promise<void> {
+    if (observerSessionIds.has(sessionID)) return;
     const contentSessionId = resolveContentSessionId(sessionID);
     await workerPost("/api/sessions/summarize", {
       contentSessionId,
@@ -322,6 +338,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
 
   return {
     async captureTool({ tool, sessionID, args, output }) {
+      if (observerSessionIds.has(sessionID)) return;
       const contentSessionId = resolveContentSessionId(sessionID);
       // apply_patch carries its patch as `patchText`, and the worker's file
       // evidence reads `patch`. Renamed rather than copied, so the observer
@@ -345,10 +362,15 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     },
 
     async captureUserPrompt(sessionID, promptText) {
+      if (isObserverPrompt(promptText)) {
+        observerSessionIds.add(sessionID);
+        return;
+      }
       await initializeSessionForUserPrompt(sessionID, ctx.directory, promptText);
     },
 
     async captureAssistantMessage(sessionID, messageText) {
+      if (observerSessionIds.has(sessionID)) return;
       const contentSessionId = resolveContentSessionId(sessionID);
       if (!messageText) return;
       await workerPost("/api/sessions/observations", {
@@ -370,6 +392,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
     forgetSession(sessionID) {
       contentSessionIdsByOpenCodeSessionId.delete(sessionID);
       contextByOpenCodeSessionId.delete(sessionID);
+      observerSessionIds.delete(sessionID);
     },
 
     memoryContext(sessionID) {
