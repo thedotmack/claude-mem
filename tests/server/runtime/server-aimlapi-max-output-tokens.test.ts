@@ -51,6 +51,10 @@ const CONTEXT = {
 
 /** The cap that reaches the wire when the factory builds the provider. */
 async function sentCap(configured?: string): Promise<number | undefined> {
+  // A staging URL inherited from the shell or CI must not move the request
+  // off the default endpoint asserted below; afterEach restores both.
+  delete process.env.CLAUDE_MEM_AIMLAPI_BASE_URL;
+  delete process.env.AIMLAPI_BASE_URL;
   process.env.AIMLAPI_API_KEY = 'test-key-never-leaves-this-process';
   if (configured === undefined) delete process.env.CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS;
   else process.env.CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS = configured;

@@ -23,7 +23,13 @@ const ENV_KEYS = [
   'CLAUDE_MEM_AIMLAPI_API_KEY',
   'CLAUDE_MEM_AIMLAPI_MODEL',
   'CLAUDE_MEM_AIMLAPI_BASE_URL',
+  'AIMLAPI_BASE_URL',
 ] as const;
+
+/** Endpoint overrides are DELETED, not blanked, for the length of each case:
+ *  a staging URL exported in a contributor's shell or a CI job must not move
+ *  the request off the default endpoint these cases assert. */
+const URL_OVERRIDES = ['CLAUDE_MEM_AIMLAPI_BASE_URL', 'AIMLAPI_BASE_URL'] as const;
 
 const WRAPUP = {
   sessionDbId: 1,
@@ -43,6 +49,7 @@ describe('aimlapi.com observer output cap', () => {
       saved[key] = process.env[key];
       process.env[key] = '';
     }
+    for (const key of URL_OVERRIDES) delete process.env[key];
     process.env.AIMLAPI_API_KEY = 'test-key-never-leaves-this-process';
     realFetch = globalThis.fetch;
   });
