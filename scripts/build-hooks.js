@@ -530,7 +530,6 @@ async function buildHooks() {
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -566,6 +565,14 @@ async function buildHooks() {
     });
 
     assertBundleIntegrity(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+
+    const workerZodRequire = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8')
+      .match(/require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/);
+    if (workerZodRequire) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequire[0]}. Codex plugin caches may have no node_modules, so Zod must be bundled into the worker.`
+      );
+    }
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
