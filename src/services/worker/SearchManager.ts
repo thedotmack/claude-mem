@@ -45,12 +45,20 @@ export class SearchManager {
     private sessionStore: SessionStore,
     private chromaSync: ChromaSync | null,
     private formatter: FormattingService,
-    private timelineService: TimelineService
+    private timelineService: TimelineService,
+    /**
+     * Implicit window, in milliseconds, that date-less semantic searches
+     * apply (CLAUDE_MEM_SEARCH_RECENCY_DAYS). Defaults to the shipped 90
+     * days; 0 disables the window so every semantic match stays eligible.
+     * An explicit `dateRange` on a request always wins over it.
+     */
+    private searchRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS
   ) {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
       sessionStore,
-      chromaSync
+      chromaSync,
+      searchRecencyWindowMs
     );
   }
 
@@ -118,7 +126,7 @@ export class SearchManager {
     const whereFilter = this.buildDocTypeWhereFilter(docType, readKeys, platformSource);
     const startEpoch = dateRange
       ? dateRange.start != null ? resolveDateBound(dateRange.start, 'start') : undefined
-      : Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      : this.searchRecencyWindowMs > 0 ? Date.now() - this.searchRecencyWindowMs : undefined;
     const endEpoch = dateRange?.end != null ? resolveDateBound(dateRange.end, 'end') : undefined;
     let candidateLimit: number = SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
     // Five ranked windows (100..1600), at most ten Chroma transport calls.
@@ -427,8 +435,8 @@ export class SearchManager {
         if (dateRange.end) {
           endEpoch = resolveDateBound(dateRange.end, 'end');
         }
-      } else {
-        startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+      } else if (this.searchRecencyWindowMs > 0) {
+        startEpoch = Date.now() - this.searchRecencyWindowMs;
       }
 
       const recentMetadata = chromaResults.metadatas.map((meta, idx) => ({
