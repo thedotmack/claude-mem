@@ -12,6 +12,7 @@ import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
+import { resolveObserverMaxOutputTokens } from './context-window.js';
 import {
   OpenAICompatibleProvider,
   type ObserverRequestLabel,
@@ -292,7 +293,9 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     priorRequestId: string | null,
     /** Tracing only; never treated as server-side idempotency. */
     clientAttemptId: string,
-    attemptSignal: AbortSignal
+    attemptSignal: AbortSignal,
+    /** CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS, resolved by the caller. */
+    maxOutputTokens: number,
   ): Promise<Response> {
     return fetch(apiUrl, {
       method: 'POST',
@@ -307,7 +310,7 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
         model,
         messages,
         temperature: 0.3,  // Lower temperature for structured extraction
-        max_tokens: 4096,
+        max_tokens: maxOutputTokens,
       }),
       signal: attemptSignal,
     });
@@ -327,6 +330,13 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     // The claimed batch's attempt id when this request belongs to one, so the
     // budget's accounting and the header on the wire name the same send.
     const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
+    // The user's own cap, as every sibling HTTP provider reads it. Its default
+    // IS 4096 (DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS), so this changes nothing
+    // until someone raises the setting — and a hardcoded 4096 was not a
+    // conservative choice but a lossy one: a reply cut off inside the
+    // observation XML is rejected, and two of them in a row made the worker
+    // acknowledge the queued batch and drop it with nothing stored.
+    const maxOutputTokens = resolveObserverMaxOutputTokens();
 
     logger.debug('SDK', `Querying aimlapi.com multi-turn (${model})`, {
       turns: history.length,
@@ -339,7 +349,7 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     const data = await withRetry<AimlapiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, clientAttemptId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, clientAttemptId, attemptSignal, maxOutputTokens);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyAimlapiError({ cause: err });
