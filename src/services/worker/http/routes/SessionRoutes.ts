@@ -565,6 +565,16 @@ export class SessionRoutes extends BaseRouteHandler {
       validateBody(SessionRoutes.processingSchema),
       this.handleProcessing.bind(this)
     );
+    // Operator repair route: the automatic paths never resend a parked batch
+    // ("never pay twice" — the earlier send may already have been billed), so
+    // this one exists for an explicit operator decision to risk a second bill.
+    // Localhost-only like the other admin routes.
+    app.post(
+      '/api/sessions/resend-parked',
+      requireLocalhost,
+      validateBody(SessionRoutes.resendParkedSchema),
+      this.handleResendParked.bind(this)
+    );
     // Read-only admission probe: older workers must not silently ignore nativePromptId.
     app.get('/api/sessions/native-prompt-capability', (_req: Request, res: Response) => {
       res.json({ nativePromptId: 1 });
@@ -593,6 +603,20 @@ export class SessionRoutes extends BaseRouteHandler {
 
   private static readonly processingSchema = z.object({
     isProcessing: z.boolean(),
+  });
+
+  private static readonly resendParkedSchema = z.object({
+    sessionDbId: z.number().int().positive(),
+  });
+
+  private handleResendParked = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+    const sessionDbId = req.body.sessionDbId;
+    const unparkedMessageIds = this.sessionManager.resendParkedBatch(sessionDbId);
+    if (unparkedMessageIds.length === 0) {
+      res.status(404).json({ error: `No parked batch to resend for session ${sessionDbId}` });
+      return;
+    }
+    res.json({ status: 'ok', sessionDbId, unparkedMessageIds });
   });
 
   private handleProcessing = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

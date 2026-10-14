@@ -135,6 +135,32 @@ export class SessionMessageBuffer {
       .map(m => ({ messageId: m.id, clientAttemptId: m.parkedClientAttemptId }));
   }
 
+  /**
+   * Operator-consented recovery for parked batches (#4737): return parked
+   * messages to the pending pool so the next generator can claim and send them
+   * again. This is the one path that unparks; the automatic ones never do. The
+   * spent PaidSendBudget was cleared when the batch parked, so re-claiming the
+   * same head gets a fresh one — the operator, not the retry loop, has decided
+   * that a possible second bill is worth it. Returns the ids actually
+   * unparked; all parked messages of the session when no ids are given.
+   */
+  unpark(sessionDbId: number, messageIds?: readonly number[]): number[] {
+    const wanted = messageIds ? new Set(messageIds) : undefined;
+    const unparkedIds: number[] = [];
+    for (const m of this.buffers.get(sessionDbId) ?? []) {
+      if (m.parked && (!wanted || wanted.has(m.id))) {
+        m.parked = false;
+        m.parkedClientAttemptId = undefined;
+        unparkedIds.push(m.id);
+      }
+    }
+    if (unparkedIds.length > 0) {
+      this.onMutate?.();
+      this.signal(sessionDbId);
+    }
+    return unparkedIds;
+  }
+
   /** Drop everything buffered for a session. */
   clear(sessionDbId: number): number {
     const cleared = this.buffers.get(sessionDbId)?.length ?? 0;
