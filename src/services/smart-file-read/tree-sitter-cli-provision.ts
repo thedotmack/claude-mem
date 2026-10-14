@@ -10,6 +10,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
+import { isExecutableFile } from "./tree-sitter-bin-path.js";
 import { pinnedTreeSitterExecutableSha256 } from "./tree-sitter-cli-checksums.js";
 
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
@@ -128,7 +129,8 @@ export async function ensureTreeSitterCliBinary(
   // Ubuntu 22.04 / Debian 12 / RHEL 9 do not have (#4758). Downloading the
   // same release asset again cannot help, so fail fast with the real reason
   // instead of burning a download on every worker start. A corrupt or stale
-  // binary (SHA mismatch) still falls through to the download below.
+  // binary (SHA mismatch) still falls through to the download below, as does
+  // a binary that merely lost its executable bit: the download restores 755.
   if (existsSync(existingBinaryPath)) {
     let existingSha256 = "(unreadable)";
     try {
@@ -136,7 +138,7 @@ export async function ensureTreeSitterCliBinary(
     } catch {
       // Fall through to the download; it cannot make things worse.
     }
-    if (existingSha256 === pinnedSha256) {
+    if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
       throw new Error(
         `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
         + `but cannot run on this system${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `

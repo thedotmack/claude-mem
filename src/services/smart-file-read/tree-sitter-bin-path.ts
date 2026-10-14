@@ -5,7 +5,7 @@
 // plugin root, so the hook's answer matches what the parser will find.
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { accessSync, constants, existsSync, statSync } from "node:fs";
 import { delimiter, dirname, isAbsolute, join } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 
@@ -58,7 +58,7 @@ export function isTreeSitterCliAvailable(
     .some(directory => directory !== '' && existsSync(join(directory, resolvedBinPath)));
 }
 
-const TREE_SITTER_LOAD_PROBE_TIMEOUT_MS = 10_000;
+const TREE_SITTER_LOAD_PROBE_TIMEOUT_MS = 2_000;
 const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
 
 export interface TreeSitterCliLoadCheck {
@@ -72,14 +72,32 @@ export interface TreeSitterCliLoadCheck {
 
 interface CachedLoadCheck {
   mtimeMs: number;
+  mode: number;
   check: TreeSitterCliLoadCheck;
 }
 
-// The --version probe spawns a process, so it runs at most once per binary:
-// results are cached per process keyed by resolved path + mtime. A worker
-// provisioning a replacement (new mtime) is re-probed, while the hot path
-// (the File Read Gate runs this per Read) pays one statSync + Map lookup.
+// The --version probe spawns a process, so it runs at most once per binary
+// state: results are cached per process keyed by resolved path + mtime + mode.
+// A worker provisioning a replacement (new mtime) or a `chmod +x` repairing
+// permissions (new mode) is re-probed, while the hot path pays one statSync +
+// Map lookup. Note the cache is per process: each PreToolUse hook invocation
+// is a fresh process, so a qualifying Read pays one ~millisecond spawn; the
+// 2s probe timeout above bounds the worst case of a stalled binary.
 const loadCheckCache = new Map<string, CachedLoadCheck>();
+
+/**
+ * True when the OS would execute this file. On Windows there is no POSIX exec
+ * bit, so existence decides and CreateProcess reports the real failure.
+ */
+export function isExecutableFile(filePath: string): boolean {
+  if (process.platform === 'win32') return true;
+  try {
+    accessSync(filePath, constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function firstStderrLine(error: unknown): string {
   const stderr = (error as { stderr?: unknown } | null)?.stderr;
@@ -122,7 +140,10 @@ function resolveOnPath(binName: string, searchPath: string): string | undefined 
     if (directory === '') continue;
     const candidate = join(directory, binName);
     try {
-      if (statSync(candidate).isFile()) return candidate;
+      // Mirror the OS's own PATH lookup: a non-executable file does not shadow
+      // a working executable later in PATH (the parser's bare-name spawn skips
+      // it the same way).
+      if (statSync(candidate).isFile() && isExecutableFile(candidate)) return candidate;
     } catch {
       // Not in this directory; keep looking.
     }
@@ -139,7 +160,12 @@ function resolveOnPath(binName: string, searchPath: string): string | undefined 
  * present-but-not-loadable as "smart parsing unavailable" and say why
  * (reason) instead of the misleading "unsupported language" fallbacks.
  *
- * Synchronous so the PreToolUse File Read Gate can use it per Read.
+ * Synchronous so the PreToolUse File Read Gate can use it per Read. The --version
+ * probe runs at most once per binary state (path + mtime + mode), so a
+ * provisioned replacement or a `chmod +x` repair is re-probed while the hot
+ * path pays one statSync + Map lookup; each hook invocation is a fresh
+ * process, so a qualifying Read pays one short spawn, bounded by the 2s probe
+ * timeout.
  * The parameters exist for tests; callers pass none.
  */
 export function checkTreeSitterCliLoadable(
@@ -156,9 +182,10 @@ export function checkTreeSitterCliLoadable(
       reason: `tree-sitter CLI not found (looked for ${resolvedBinPath})`,
     };
   }
-  let mtimeMs: number;
+  let stats: { mtimeMs: number; mode: number };
   try {
-    mtimeMs = statSync(absoluteBinPath).mtimeMs;
+    const s = statSync(absoluteBinPath);
+    stats = { mtimeMs: s.mtimeMs, mode: s.mode };
   } catch {
     return {
       present: false,
@@ -167,8 +194,8 @@ export function checkTreeSitterCliLoadable(
     };
   }
   const cached = loadCheckCache.get(absoluteBinPath);
-  if (cached && cached.mtimeMs === mtimeMs) return cached.check;
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.mode === stats.mode) return cached.check;
   const check = probeTreeSitterCliLoadable(absoluteBinPath);
-  loadCheckCache.set(absoluteBinPath, { mtimeMs, check });
+  loadCheckCache.set(absoluteBinPath, { mtimeMs: stats.mtimeMs, mode: stats.mode, check });
   return check;
 }

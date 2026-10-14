@@ -123,4 +123,39 @@ describe.skipIf(process.platform === 'win32')('checkTreeSitterCliLoadable with e
     expect(check.present).toBe(true);
     expect(check.loadable).toBe(true);
   });
+
+  it('re-probes after chmod +x repairs the executable bit (mode-keyed cache)', () => {
+    const dir = join(scratchRoot, 'chmod-repair');
+    mkdirSync(dir, { recursive: true });
+    const binPath = join(dir, binaryName);
+    writeFileSync(binPath, '#!/bin/sh\necho "tree-sitter 0.26.9"\n');
+    chmodSync(binPath, 0o644);
+
+    const before = checkTreeSitterCliLoadable(binPath);
+    expect(before.present).toBe(true);
+    expect(before.loadable).toBe(false);
+
+    chmodSync(binPath, 0o755);
+    const after = checkTreeSitterCliLoadable(binPath);
+    expect(after.loadable).toBe(true);
+    expect(after.reason).toBeUndefined();
+  });
+
+  it('skips a non-executable file shadowing a working executable on PATH', () => {
+    const shadowDir = join(scratchRoot, 'shadow-bin');
+    const workingDir = join(scratchRoot, 'working-bin');
+    mkdirSync(shadowDir, { recursive: true });
+    // A non-executable regular file with the binary name comes first on PATH;
+    // the OS's own lookup would skip it, so the check must too.
+    writeFileSync(join(shadowDir, binaryName), 'not executable');
+    chmodSync(join(shadowDir, binaryName), 0o644);
+    writeExecutable(workingDir, binaryName, 'echo "tree-sitter 0.26.9"');
+
+    const check = checkTreeSitterCliLoadable(
+      binaryName,
+      [shadowDir, workingDir].join(delimiter),
+    );
+    expect(check.present).toBe(true);
+    expect(check.loadable).toBe(true);
+  });
 });

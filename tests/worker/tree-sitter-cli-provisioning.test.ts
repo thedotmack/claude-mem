@@ -100,4 +100,19 @@ describe('worker tree-sitter CLI provisioning', () => {
     await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => undefined))
       .rejects.toThrow(/No SHA-256 is pinned/);
   });
+
+  // Greptile P1 on #4777: a copied/restored binary can lose its executable bit
+  // while keeping a matching SHA-256. That is repairable (the download restores
+  // 755), so it must fall through to the download, not fail fast. POSIX-only:
+  // Windows has no exec bit to lose.
+  it.skipIf(process.platform === 'win32')('re-downloads when the intact executable merely lost its executable bit', async () => {
+    const cliDir = writeMarketplaceCliPackage(downloadingInstallScript);
+    const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+    copyFileSync(REPO_TREE_SITTER_BINARY, binaryPath);
+    chmodSync(binaryPath, 0o644);
+    const pinIntact = () => createHash('sha256').update(readFileSync(binaryPath)).digest('hex');
+
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinIntact)).toBe('provisioned');
+    expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
+  });
 });
