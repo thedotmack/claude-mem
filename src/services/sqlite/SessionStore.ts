@@ -3502,10 +3502,16 @@ export class SessionStore {
       if (project) {
         // 'unknown' is the placeholder ingest paths register when a payload has
         // no cwd (#4772); a later init with the real project must repair it, but
-        // a real project is never demoted back to the placeholder.
+        // a real project is never demoted back to the placeholder. 'unknown' is
+        // also a legitimate path-mode project name — a non-git checkout literally
+        // named `unknown` resolves to it (#4774 review) — so only repair rows
+        // that provably hold the placeholder: every ingest/init path that
+        // resolves a real cwd also records it via setSessionCwd (first-write-wins,
+        // guarded on cwd IS NULL), so a stored 'unknown' with a NULL cwd can only
+        // come from a no-cwd payload.
         this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
-          WHERE id = ? AND (project IS NULL OR project = '' OR project = 'unknown')
+          WHERE id = ? AND (project IS NULL OR project = '' OR (project = 'unknown' AND cwd IS NULL))
         `).run(project, existing.id);
       }
       // A tool-first init persists the placeholder; the first real prompt repairs it.

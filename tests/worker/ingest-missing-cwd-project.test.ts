@@ -6,6 +6,7 @@
 // only repair NULL/'' so the placeholder must stay repairable too.
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { ingestAdvisorCalls, ingestObservation, setIngestContext } from '../../src/services/worker/http/shared.js';
 import { logger } from '../../src/utils/logger.js';
@@ -23,6 +24,7 @@ let eventBroadcaster: {
   broadcastSummarizeQueued: ReturnType<typeof mock>;
 };
 let ensureGeneratorRunning: ReturnType<typeof mock>;
+let settingsSpies: Array<ReturnType<typeof spyOn>> = [];
 
 function projectOf(contentSessionId: string): string | null | undefined {
   const row = store.db.prepare(
@@ -32,6 +34,16 @@ function projectOf(contentSessionId: string): string | null | undefined {
 }
 
 beforeEach(() => {
+  // Hermetic settings (#4774 review): ingest reads the real user settings file
+  // and applies CLAUDE_MEM_* env overrides, so a developer with
+  // CLAUDE_MEM_SKIP_TOOLS=Bash, a matching CLAUDE_MEM_SKIP_BASH_PATTERNS entry,
+  // or an excluded project would see these tests skip ingest and fail. Pin
+  // loadFromFile to the built-in defaults — no env merge, no user file.
+  settingsSpies = [
+    spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(
+      () => SettingsDefaultsManager.getAllDefaults()
+    ),
+  ];
   loggerSpies = [
     spyOn(logger, 'debug').mockImplementation(() => {}),
     spyOn(logger, 'info').mockImplementation(() => {}),
@@ -60,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   loggerSpies.forEach(spy => spy.mockRestore());
+  settingsSpies.forEach(spy => spy.mockRestore());
   store.close();
 });
 
@@ -134,5 +147,45 @@ describe('ingest without a cwd registers the project as unknown (#4772)', () => 
     });
 
     expect(projectOf('init-first')).toBe('/real/project');
+  });
+
+  it('a real project literally named unknown is never replaced by a later real project (#4774 review)', () => {
+    // Path mode resolves a non-git checkout literally named `unknown` to the
+    // project key 'unknown' — by project alone it is indistinguishable from the
+    // no-cwd placeholder. The recorded launch cwd is what proves the row is a
+    // real project, so the repair must leave it untouched.
+    const sessionDbId = store.createSDKSession('real-unknown', 'unknown', 'first prompt');
+    store.setSessionCwd(sessionDbId, '/work/unknown', 'path');
+
+    store.createSDKSession('real-unknown', '/other/project', 'second prompt');
+
+    expect(projectOf('real-unknown')).toBe('unknown');
+  });
+
+  it('a real project named unknown survives a later no-cwd observation ingest (#4774 review)', async () => {
+    const sessionDbId = store.createSDKSession('real-unknown-obs', 'unknown', 'first prompt');
+    store.setSessionCwd(sessionDbId, '/work/unknown', 'path');
+
+    await ingestObservation({
+      contentSessionId: 'real-unknown-obs',
+      platformSource: 'claude',
+      toolName: 'Bash',
+      toolInput: { command: 'ls' },
+      toolResponse: { stdout: 'x' },
+      toolUseId: 'toolu_real_unknown',
+    });
+
+    expect(projectOf('real-unknown-obs')).toBe('unknown');
+  });
+
+  it('an unknown-project row with a recorded cwd is a real project, not a repairable placeholder', () => {
+    // Same guard, stated from the placeholder side: once a cwd is on the row,
+    // the stored 'unknown' is never swapped for a later different project.
+    const sessionDbId = store.createSDKSession('unknown-with-cwd', 'unknown', 'first prompt');
+    store.setSessionCwd(sessionDbId, '/work/unknown', 'path');
+
+    store.createSDKSession('unknown-with-cwd', '/different/project', '');
+
+    expect(projectOf('unknown-with-cwd')).toBe('unknown');
   });
 });
