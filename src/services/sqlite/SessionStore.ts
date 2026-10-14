@@ -3500,9 +3500,12 @@ export class SessionStore {
 
     if (existing) {
       if (project) {
+        // 'unknown' is the placeholder ingest paths register when a payload has
+        // no cwd (#4772); a later init with the real project must repair it, but
+        // a real project is never demoted back to the placeholder.
         this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
-          WHERE id = ? AND (project IS NULL OR project = '')
+          WHERE id = ? AND (project IS NULL OR project = '' OR project = 'unknown')
         `).run(project, existing.id);
       }
       // A tool-first init persists the placeholder; the first real prompt repairs it.
