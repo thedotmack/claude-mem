@@ -215,7 +215,6 @@ A telepítő kezeli a függőségeket, a plugin beállítását, az AI szolgált
 
 - **[Konfiguráció](https://docs.claude-mem.ai/configuration)** - Környezeti változók és beállítások
 - **[Fejlesztés](https://docs.claude-mem.ai/development)** - Építés, tesztelés, hozzájárulás
-- **[Kiadási ágak](https://docs.claude-mem.ai/branches)** - A stable, core-dev és community-edge ágak folyamata
 - **[Hibaelhárítás](https://docs.claude-mem.ai/troubleshooting)** - Gyakori problémák és megoldások
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Részletes példákért lásd a [Keresési eszközök útmutatót](https://docs.claude-mem.ai/usage/search-tools).
-
----
-
-## Kiadási ágak
-
-A stabil kiadások a `main` ágból jelennek meg, és az npm-re kerülnek publikálásra. A `core-dev` és a
-`community-edge` forráskódból futtatott ágak a korai megbízhatósági javításokhoz és a
-közösségi integrációkhoz. Lásd a **[Kiadási ágak](https://docs.claude-mem.ai/branches)** oldalt
-az ágfolyamatért és a nem-stabil futtatási utasításokért.
 
 ---
 
@@ -383,11 +373,6 @@ A hozzájárulásokat szívesen fogadjuk! Kérjük:
 3. Végezze el változtatásait tesztekkel
 4. Frissítse a dokumentációt
 5. Nyújtson be egy Pull Requestet
-
-A Claude-Mem három ágból jelenik meg: `main` (stabil), `core-dev` és
-`community-edge`. Kizárólag a `main` kerül publikálásra az npm-en; a többi
-forráskódból fut. Lásd a [Kiadási ágak](https://docs.claude-mem.ai/branches) oldalt a
-stratégiáért és a helyi futtatási utasításokért.
 
 Lásd a [Fejlesztési útmutatót](https://docs.claude-mem.ai/development) a hozzájárulási munkafolyamatért.
 

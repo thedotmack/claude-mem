@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[Конфігурація](https://docs.claude-mem.ai/configuration)** - Змінні середовища та налаштування
 - **[Розробка](https://docs.claude-mem.ai/development)** - Збірка, тестування, внесок
-- **[Гілки релізів](https://docs.claude-mem.ai/branches)** - Потік гілок stable, core-dev та community-edge
 - **[Усунення несправностей](https://docs.claude-mem.ai/troubleshooting)** - Поширені проблеми та рішення
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Дивіться [Посібник з інструментів пошуку](https://docs.claude-mem.ai/usage/search-tools) для детальних прикладів.
-
----
-
-## Гілки релізів
-
-Стабільні релізи випускаються з `main` і публікуються в npm. `core-dev` та
-`community-edge` — це гілки, що запускаються з вихідного коду, для ранніх виправлень надійності та
-інтеграцій зі спільнотою. Дивіться **[Гілки релізів](https://docs.claude-mem.ai/branches)**
-для потоку гілок та інструкцій із запуску нестабільних версій.
 
 ---
 
@@ -383,11 +373,6 @@ npm run bug-report
 3. Внесіть зміни з тестами
 4. Оновіть документацію
 5. Надішліть Pull Request
-
-Claude-Mem випускається з трьох гілок: `main` (стабільна), `core-dev` та
-`community-edge`. Лише `main` публікується в npm; інші запускаються з
-вихідного коду. Дивіться [Гілки релізів](https://docs.claude-mem.ai/branches) щодо
-стратегії та інструкцій із локального запуску.
 
 Дивіться [Посібник з розробки](https://docs.claude-mem.ai/development) для робочого процесу внеску.
 

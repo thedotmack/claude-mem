@@ -16,13 +16,18 @@ Settings are managed in `~/.claude-mem/settings.json`. The file is auto-created 
 | `CLAUDE_MEM_MODEL`            | `claude-haiku-4-5-20251001`     | Claude model used to compress observations (when using the Claude provider) |
 | `CLAUDE_MEM_PROVIDER`         | `claude`                        | AI provider: `claude`, `codex`, `gemini`, `openrouter`, or `openai-compatible` |
 | `CLAUDE_MEM_CLAUDE_AUTH_METHOD` | `subscription`                | Claude provider auth mode: `subscription`, `api-key`, or `gateway` |
-| `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for non-streamed observer requests: Gemini, Codex, and the cmem.ai gateway (plus any OpenAI-compatible endpoint that refuses streaming). It exists to catch a hung request; a slow backend just needs a higher value. OpenRouter and OpenAI-compatible requests are streamed and are not bounded by this setting: they end after 90 seconds with no token or keep-alive, with a 300-second cap on the whole request. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
+| `CLAUDE_MEM_LLM_TIMEOUT_MS`   | `180000`                        | Per-request deadline (ms, 500–300000) for non-streamed observer requests: Gemini, Codex, and the cmem.ai gateway (plus any OpenAI-compatible endpoint that refuses streaming). It exists to catch a hung request; a slow backend just needs a higher value. OpenRouter and OpenAI-compatible requests are streamed and are not bounded by this setting: they end after the idle window (`CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS`) with no token or keep-alive, with a 300-second cap on the whole request. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS` | `180000` | Deadline (ms, 500–300000) for condensing one oversized tool field before its observation is sent; on expiry the field is truncated instead. It is a request to the same backend as the observer request, so it has the same default. A `settings.json` still holding the old `30000` default is moved to the new default once; a `30000` you set after that is kept. An environment variable of the same name overrides `settings.json`. |
+| `CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS` | `90000` | Silence (ms, 500–300000) that ends a streamed OpenRouter or OpenAI-compatible request: no token and no keep-alive for this long, and the request is abandoned (a 300-second cap bounds the whole request). Raise it when a self-hosted backend queues requests behind a load balancer — the queue wait is silent, so it reads as idle and the shipped 90 seconds can fire before the backend even starts generating. It is an independent knob, so it does not move `CLAUDE_MEM_LLM_TIMEOUT_MS` (which streamed requests ignore). An environment variable of the same name overrides `settings.json`. |
 | `CLAUDE_MEM_MODE`             | `code`                          | Active mode profile (e.g., `code--es`, `email-investigation`) |
 | `CLAUDE_MEM_CONTEXT_OBSERVATIONS` | `50`                        | Number of observations to inject      |
 | `CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES` | `false` | Include observations from every harness in SessionStart context |
 | `CLAUDE_MEM_CONTEXT_MAIN_AGENT_ONLY` | `true`                   | Leave subagent observations out of SessionStart context so their step-logs don't crowd durable main-session memory out of the window. A subagent row carries both an agent id and an agent type; transcript-watch rows (e.g. Grok Bot seats) stay in. Applies in the server runtime too, where a row counts as a subagent row when the hook event it was generated from carried both. Search and the viewer still show everything. |
 | `CLAUDE_MEM_REINFORCE_ALPHA` | `0`                              | Opt-in ACT-R ranking for SessionStart context. `0` (default) keeps the N most recent observations, unchanged. Above `0` (try `0.5`), observations the write path saw re-confirmed on later days can climb into the window: each observation's creation and re-confirmation days are scored with power-law decay, `ln(1 + age^-0.5 + ALPHA · Σ age_k^-0.5)`. The newest quarter of the window is always kept by recency. |
+| `CLAUDE_MEM_WORK_STATE_ENABLED` | `true`                        | `false` turns work state off for hosts that track work their own way: SessionStart context leaves out the work-state section (the rule that `work_state_write` is your canonical to-do list, and the open lists), and the MCP server neither lists nor runs `work_state_write` and `work_state_read`. Lists already written stay in the database and come back when it is turned on again. An environment variable of the same name overrides `settings.json`. Restart the worker after changing it, and start a new session so the MCP server reads it. |
+| `CLAUDE_MEM_SEMANTIC_INJECT` | `false`                         | Add the observations that best match each prompt to that prompt's context (`UserPromptSubmit`), on top of SessionStart context. |
+| `CLAUDE_MEM_SEMANTIC_INJECT_LIMIT` | `5`                       | Number of observations added per prompt (1–20). |
+| `CLAUDE_MEM_SEMANTIC_INJECT_FORMAT` | `narrative`              | `narrative` adds each match's title and full narrative. `index` adds one line per match with its id, title and subtitle and points Claude to `get_observations` for the details. `narrative` is the default because it works without Claude making a tool call: in `index` mode a match it does not expand only contributes its title and subtitle. An `index` line costs a fraction of a narrative, so `index` can carry more matches for the same tokens; pair it with a higher limit. |
 | `CLAUDE_MEM_FILE_READ_GATE_ENABLED` | `true`                    | Block whole-file Reads of code files of 32 KB and up that have observation history and send Claude to `smart_outline` / `smart_unfold` / `get_observations` instead (Claude Code only). Targeted Reads with `offset`/`limit` still work. `false` lets every Read through and still adds the file's timeline as context. See [File Read Gate](/file-read-gate). |
 | `CLAUDE_MEM_WORKER_PORT`      | `37700 + (uid % 100)`           | Worker service port (per-user default; override for fixed port) |
 | `CLAUDE_MEM_WORKER_HOST`      | `127.0.0.1`                     | Worker service host address           |
@@ -140,7 +145,7 @@ See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets a
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | — (off) | Where observer work goes while the selected provider's quota breaker holds (a spent allowance, or rate limits that outlast their retries): `claude`, `gemini`, `openrouter`, or `openai-compatible`. Empty = off |
+| `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
 
 See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
@@ -186,6 +191,12 @@ Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
 
 Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
 
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_OBSERVER_THINKING` | `disabled` | The `thinking` parameter the Claude observer sends. `disabled` saves tokens on Anthropic-native endpoints. `omit` sends no `thinking` field, for a gateway whose upstream model always thinks and rejects `disabled` (for example GLM's error 1210). `enabled` or `enabled:<budget>` (default budget `1024`) turns thinking on and spends thinking tokens on every observer request |
+
+If an Anthropic-compatible gateway rejects the `thinking` parameter with a 400, the observer drops the parameter for the rest of that session and retries the same batch, so nothing is lost while you change the setting.
+
 ### System Configuration
 
 | Setting                       | Default                         | Description                           |
@@ -195,11 +206,14 @@ Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_P
 | `CLAUDE_MEM_FETCH_VERBOSE`    | _(unset / off)_                 | Opt-in worker-IPC `fetch()` diagnostics (`1`/`true`/`on`/`yes`). Passes Node/undici `{ verbose: true }` and writes the error cause chain on socket-level hook failures. Default stays off. |
 | `CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS` | `10000` (`7000` on Windows) | Total time the UserPromptSubmit hook may spend reaching the worker for each prompt (startup check, session init, semantic context). When it runs out, the prompt goes through without memory for that turn. Accepts 500–14000; it has to stay under Claude Code's 15 s timeout for that hook. The clock starts after the hook process has loaded, which takes 4–5 s on Windows, so on Windows the default is 7000 and any higher value is cut to 7000. Codex keeps its own bounded worker-startup wait, and its requests stay within this budget. Also read from the environment. |
 | `CLAUDE_MEM_IDLE_EXIT_SEC`    | `0` (off)                       | Opt-in worker idle exit, in seconds. `0` (the default) never exits, and values from 1 to 59 are raised to 60. Once this long passes with no session activity or running observer, no queued work, no open or recent request (a viewer tab, a memory search, a corpus build) and no AI interaction, the worker stops through the same graceful shutdown as `claude-mem stop` (telemetry `shutdown_reason: idle`). The next hook that reads memory, such as session start or your next prompt, starts it again. That first prompt pays a cold start and goes without memory if the boot outlasts the hook's time budget, and observations captured in between wait in the hook spool until the worker is back. Turn it on only where claude-mem's hooks run, such as Claude Code and Codex. Leave it off for OpenCode plugin capture and OpenClaw, which never start the worker, and for MCP-only hosts, where the first memory call after each idle exit waits for a worker boot. It stays off with `CLAUDE_MEM_WORKER_AUTOSTART=false` or while transcript watches are active, since nothing would start the worker again. Cloud sync and transcript capture run only while the worker is up. Also read from the environment. |
+| `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` | `0` (keep forever) | Opt-in retention for the raw tool input/response index behind `get_tool_uses`. With a positive number of days, the worker deletes `tool_uses` rows older than that **and** linked to an observation that still exists, once at start. Rows with no observation, or whose observation was deleted, are the only copy of that tool I/O and are never deleted. A purged id returns the usual not-found result from `get_tool_uses`. Freed pages are reused by SQLite; shrinking the file on disk needs a `VACUUM`. `30` and `"30"` both work. Anything that is not a whole number of days (empty, negative, `abc`) keeps everything. |
 | `CLAUDE_MEM_PYTHON_VERSION`   | `3.13`                          | Python version for chroma-mcp         |
+| `CLAUDE_MEM_CHROMA_UVX_PATH`  | _(empty — search uv's install folders, then PATH)_ | The `uvx` that launches chroma-mcp, as the full path to the binary (on Windows, e.g. `C:\Users\you\AppData\Local\Programs\Python\Python313\Scripts\uvx.exe`) or its folder. Set it when `pip install uv` put `uvx` outside uv's usual folders, or when another tool's `uvx` comes first on PATH. An environment variable of the same name overrides `settings.json`. File/env only — not writable via the viewer HTTP API. Restart the worker after changing it. |
 | `CLAUDE_CODE_PATH`            | _(auto-detect)_                 | Path to Claude Code CLI (for Windows). File/env only — not writable via the viewer HTTP API. |
 | `CLAUDE_MEM_PROJECT_NAME_SOURCE` | `path`                       | How a git repository's project name is derived: `path` (the repository folder's name) or `git-remote` (a stable `org/repo` slug from the `origin` remote, which survives renaming the folder and tells same-named repositories apart; every worktree of the repository shares it). Opt-in. Memory stored under the folder name before you switch stays readable. See [Project Names](#project-names). |
 | `CLAUDE_MEM_PROJECT_ENVIRONMENTS` | `[]`                       | Named environments: a JSON array of `{"name", "patterns"}`. Folders matching an environment's glob patterns (the same rules as `CLAUDE_MEM_EXCLUDED_PROJECTS`) share one project named after it. See [Project Names](#project-names). |
 | `CLAUDE_MEM_CLAUDE_CONFIG_DIR`| _(unset — falls through to `CLAUDE_CONFIG_DIR`/`~/.claude`)_ | Override which `CLAUDE_CONFIG_DIR` profile's OAuth keychain entry to read, and which `CLAUDE_CONFIG_DIR` the spawned SDK subprocess sees. For running multiple named Claude Code profiles (e.g. `~/.claude-profiles/<name>`, each logged in separately) side by side on one machine. macOS only for the keychain lookup; Windows/Linux credential stores are not profile-aware yet. |
+| `CLAUDE_MEM_OBSERVER_CLAUDE_CONFIG_DIR` | _(unset — transcripts follow the credential profile dir)_ | Transcript-only `CLAUDE_CONFIG_DIR` for claude-mem's internal SDK sessions (observer, knowledge corpus). By default they persist under `~/.claude/projects/`, where importers like Codex pick them up as user chats; set this to a dedicated directory (e.g. `~/.claude-mem/observer-claude`) to keep them out. Credentials are unaffected — the worker keeps reading your default login and injects a fresh OAuth token at each spawn, so the directory itself never needs to be logged in. Only honored while `CLAUDE_MEM_CLAUDE_CONFIG_DIR` is unset (an explicit profile keeps its transcripts beside its credentials by design). Two things to know: a token-injected subprocess cannot refresh the token itself — capture pauses with the usual re-login notice if your Claude Code login expires — and sessions recorded before you set this cannot be resumed — a corpus primed before enabling this misses its resume once, and its next query recovers automatically through the existing reprime path into a fresh session here. To carry the old session over instead of starting fresh, move the store first: `mkdir -p <dir>/projects && mv ~/.claude/projects/-<munged-home>-claude-mem-observer-sessions <dir>/projects/`. |
 
 ### Grok Bot Brainbeat Webhook
 
@@ -259,7 +273,9 @@ Two deterministic tiers:
 
 After enabling on an existing database, run a one-time scan to backfill the IDF model and
 surface accumulated near-duplicates: `POST /api/dedup/scan` (worker, localhost-only).
-Review candidates via `GET /api/dedup/candidates?project=<name>`.
+Review candidates via `GET /api/dedup/candidates?project=<name>` (add `&status=pending` to see only
+unreviewed ones), and record a verdict with `POST /api/dedup/candidates/<id>/resolve` and a body of
+`{"status": "distinct"}` or `{"status": "dismissed"}`. A later scan keeps the verdict.
 
 ## Model Configuration
 
@@ -350,12 +366,10 @@ ${CLAUDE_PLUGIN_ROOT}/
 ├── hooks/
 │   └── hooks.json          # Hook configuration
 ├── scripts/                # Built executables
-│   ├── version-check.js    # Setup hook: completes missing dependencies, records the install marker
-│   ├── context-hook.js     # Context injection hook
-│   ├── new-hook.js         # Session creation hook
-│   ├── save-hook.js        # Observation capture hook
-│   ├── summary-hook.js     # Summary generation hook
-│   ├── worker-service.cjs  # Worker service (CJS)
+│   ├── claude-mem-launcher.cjs # Compiled at install into the on-PATH `claude-mem` hook launcher
+│   ├── ensure-launcher.cjs # Startup SessionStart self-heal for the launcher
+│   ├── version-check.js    # Setup hook (--init / --maintenance): completes missing dependencies, records the install marker
+│   ├── worker-service.cjs  # Worker service + hook dispatcher (CJS)
 │   └── mcp-server.cjs      # MCP search server (CJS)
 └── ui/
     └── viewer.html         # Web viewer UI bundle
@@ -365,16 +379,17 @@ ${CLAUDE_PLUGIN_ROOT}/
 
 ### Hooks Configuration
 
-Hooks are registered in `plugin/hooks/hooks.json`. The current shape uses a single dispatcher (`worker-service.cjs hook claude-code <event>`) launched through `bun-runner.js`, plus a fast Setup-phase `version-check.js`. The events wired up are:
+Hooks are registered in `plugin/hooks/hooks.json`. Each runtime hook is one exec-form entry with no shell, `{"command": "claude-mem", "args": ["hook", "claude-code", "<event>"]}`. Claude Code finds `claude-mem` on PATH: a small compiled launcher that `npx claude-mem install` / `update` place at `~/.local/bin` (POSIX) or `%LOCALAPPDATA%\claude-mem\bin` (Windows). The launcher runs the single dispatcher, `worker-service.cjs hook claude-code <event>`, under Bun. The events wired up are:
 
-- `Setup` → `version-check.js` (installs missing plugin dependencies, records `.install-version`)
-- `SessionStart` → start the worker, then `hook claude-code context` (context injection)
+- `Setup` → `version-check.js` (installs missing plugin dependencies, records `.install-version`). The only bash entry; Claude Code fires it only for `claude --init` / `--maintenance`.
+- `SessionStart` → `claude-mem start` (worker, async), then `hook claude-code context` (context injection); at startup also `node ${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs`, which places or refreshes the launcher for marketplace-only installs
 - `UserPromptSubmit` → `hook claude-code session-init`
 - `PreToolUse` (matcher `Read`) → `hook claude-code file-context` (synchronous: adds the file's observation timeline as context and can block whole-file Reads; see [File Read Gate](/file-read-gate))
 - `PostToolUse` (matcher `*`) → `hook claude-code observation`
 - `Stop` → `hook claude-code summarize`
+- `SessionEnd` → `hook claude-code session-end`
 
-The exact `hooks.json` entries are written by the installer; do not hand-edit them in the marketplace copy unless you know what you're doing.
+The exact `hooks.json` entries are generated by `scripts/build-hooks.js` and shipped with the plugin; do not hand-edit them in the marketplace copy unless you know what you're doing. `npx claude-mem doctor` shows a **Hook launcher** row for the `claude-mem` the hooks will run.
 
 #### Turning off the tool hooks
 
@@ -386,7 +401,15 @@ These switches are read from the hook's environment only, not from `~/.claude-me
 | `CLAUDE_MEM_DISABLE_OBSERVATION` | Only PostToolUse `observation` returns a no-op (tool calls are no longer captured). |
 | `CLAUDE_MEM_DISABLE_FILE_CONTEXT` | Only PreToolUse `file-context` returns a no-op: no file history is injected before `Read`, and the [File Read Gate](/file-read-gate) never blocks a Read. |
 
-Claude Code still launches each hook, so these switches turn off claude-mem's per-tool work, not the hook process itself.
+Claude Code still launches each hook. The `claude-mem` hook launcher checks these switches before resolving the plugin or starting Bun, so a disabled tool hook does not load the worker bundle. The Codex shell hooks check them before starting Node; the Codex Windows launcher still starts Node, then checks the switch before resolving scripts or starting Bun. These switches do not change the feature settings in `settings.json`.
+
+#### Turning off the end-of-session summary
+
+| Variable | Effect when set to `1` |
+|----------|------------------------|
+| `CLAUDE_MEM_DISABLE_SUMMARY` | The Stop hook (`summarize`) skips the end-of-session summary and advisor-call capture: no observer-model call and no `session_summaries` row. SessionStart and UserPromptSubmit keep working, and Kimi's context refresh after a compaction still happens. |
+
+Orchestrators that launch short headless runs (a `codex exec` review of a staged diff, say) usually set `CLAUDE_MEM_DISABLE_OBSERVATION=1` so nothing the run observes is captured. The summary switch completes the picture for those runs: they keep **reading** claude-mem context at session start, but their Stop no longer writes a summary of an intermediate diff into the project's recent summaries. Unlike the tool-hook switches, this check runs inside the summarize handler, so the hook process still starts and reads its input before the summary is skipped.
 
 ### Search Configuration
 
@@ -677,16 +700,17 @@ Changes take effect on the next tool execution (no worker restart needed).
 
 ### Hook Timeouts
 
-Hook timeouts are written into `plugin/hooks/hooks.json` by the installer. The current defaults match the shape of the workload at each lifecycle stage:
+Hook timeouts are set in `plugin/hooks/hooks.json`. The current defaults match the shape of the workload at each lifecycle stage:
 
-- Setup (`version-check.js`): 300s ceiling; fast when the plugin's dependencies are complete, up to 120s when it has to run `bun install`
+- Setup (`version-check.js`, `claude --init` / `--maintenance` only): 300s ceiling; fast when the plugin's dependencies are complete, up to 120s when it has to run `bun install`
 - SessionStart (worker-start + context): 60s
+- SessionStart (ensure-launcher, startup only, synchronous): 180s, enough to compile the launcher
 - UserPromptSubmit: 15s
 - PreToolUse (file-context, Read matcher): 15s, synchronous so the [File Read Gate](/file-read-gate) can block a Read; its worker lookup gives up after 3s
 - PostToolUse (observation): 120s
 - Stop (summary): 120s
 
-`npx claude-mem install` / `npx claude-mem repair` install the runtime (Bun, uv, `bun install`) outside the session lifecycle. The Setup hook only runs `bun install` when the loaded plugin's dependencies are missing — typically a plugin-marketplace install or `claude plugin update` — and writes the `.install-version` marker once they are complete.
+`npx claude-mem install` / `npx claude-mem repair` install the runtime (Bun, uv, `bun install`) outside the session lifecycle. The Setup hook only runs `bun install` when the loaded plugin's dependencies are missing — typically a plugin-marketplace install or `claude plugin update` — and writes the `.install-version` marker once they are complete. Claude Code does not fire Setup on plugin install or update, so run `claude --init-only` or `npx claude-mem install` to trigger that repair.
 
 ### Worker Memory Limit
 

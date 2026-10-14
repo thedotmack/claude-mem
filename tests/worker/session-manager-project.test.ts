@@ -10,6 +10,13 @@ mock.module('../../src/services/worker-service.js', () => ({
   updateCursorContextForProject: () => Promise.resolve(),
 }));
 
+// Snapshot worker-utils before the stub below replaces it, and restore it in
+// afterAll (see the ModeManager note): left in place, the getWorkerPort-only
+// stub hands 37777 to every later file that reads the worker port.
+import * as realWorkerUtilsModule from '../../src/shared/worker-utils.js';
+
+const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
+
 mock.module('../../src/shared/worker-utils.js', () => ({
   getWorkerPort: () => 37777,
 }));
@@ -27,6 +34,7 @@ const realModeManagerSnapshot = { ...realModeManagerModule };
 
 afterAll(() => {
   mock.module('../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+  mock.module('../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
 });
 
 mock.module('../../src/services/domain/ModeManager.js', () => ({

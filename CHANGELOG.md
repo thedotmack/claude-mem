@@ -4,6 +4,205 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.39.0] - 2026-10-13
+
+## Codex: memory timeline returns to subagent threads after compaction
+
+When Codex compacts a thread, the memory timeline drops out of its history. The root thread already got it back through `SessionStart` (source `compact`). Codex never sends `SessionStart` to subagent threads, though, so a subagent that compacted kept working without its memory.
+
+- A new **PostCompact** hook marks the compacted thread, keyed by `session_id` plus `agent_id`.
+- That thread's next **PostToolUse** records the observation as usual, consumes the marker, and returns the timeline once as `additionalContext`.
+- **SessionStart** clears the marker, so the root thread never gets the timeline twice.
+- Shared session-marker file handling now backs both the Codex compaction gate and the Kimi context gate.
+
+PR: #4733
+
+## [13.38.0] - 2026-10-13
+
+No more console window flashing on Windows. Every Claude Code hook now calls claude-mem directly instead of going through bash, and this release also carries 16 community fixes from five contributors.
+
+## Hooks call claude-mem directly (#4345)
+
+Every Claude Code runtime hook now runs a small `claude-mem` launcher in exec form (`"command": "claude-mem", "args": [...]`), with no shell in between. On Windows that ends the console window that used to flash and steal focus on every tool call (#3605, #3559, #3521, #3396, #3248).
+
+- `npx claude-mem install` / `update` compile the launcher on your machine. It goes to `~/.local/bin/claude-mem` on macOS and Linux, or `%LOCALAPPDATA%\claude-mem\bin\claude-mem.exe` on Windows, and that folder is added to your PATH if it isn't there already. `npx claude-mem uninstall` removes the launcher.
+- Marketplace-only installs repair themselves. A startup step places or refreshes the launcher and tells you when Claude Code needs a restart.
+- The launcher fails open. On any problem it prints one line, `claude-mem: <reason>, continuing without memory`, and your session carries on.
+- The environment opt-outs (`CLAUDE_MEM_DISABLE_TOOL_HOOKS`, `CLAUDE_MEM_DISABLE_OBSERVATION`, `CLAUDE_MEM_DISABLE_FILE_CONTEXT`) still take effect before anything heavy starts.
+
+**Before you upgrade:**
+- Hooks in exec form need **Claude Code 2.1.139 or newer**. `install` and `doctor` warn on older versions.
+- If the launcher's folder wasn't on your PATH yet, the first session after updating will tell you to **restart Claude Code from a new terminal**. After that, everything works as before.
+
+Thanks @bagr001 for testing it on Windows 11.
+
+## Observer and worker
+
+- **Gateways that reject the `thinking` parameter no longer stall the observer** (#4735, @akushonkamen). The observer retries once without the parameter. The token-saving default is unchanged, and `CLAUDE_MEM_OBSERVER_THINKING` is now documented.
+- **The worker no longer wedges for hours on big repos** (#4753, @akushonkamen). Git commands during worktree adoption now run without blocking the event loop.
+- **The streamed-request idle window is configurable** (#4752, @akushonkamen) with `CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS`, for self-hosted backends with long queue waits. The default is still 90 seconds.
+- **`CLAUDE_MEM_DISABLE_SUMMARY=1`** skips the end-of-session summary for headless or read-only runs (#4736, @akushonkamen).
+- **Mode prompts are validated**, and a user mode file can no longer shadow a bundled mode (#4326).
+- **Three platform fixes** (#3851):
+  - manual sessions keep their platform;
+  - an error-shaped response is no longer taken for a host observer;
+  - Grok agents added after install are watched.
+- **The Codex installer drops a dead local marketplace registration**, and install fails when Codex doesn't list the plugin afterwards (#3494).
+
+## Search, viewer and data, thank you @rudycelekli
+
+- Semantic search no longer breaks on empty filters (#4754) or on malformed stored concept or file data (#4750). It now matches keyword search.
+- The Sessions list matches project names regardless of case (#4749).
+- Feed rows with the same timestamp come back in a stable newest-first order (#4747).
+- Repeated prompts with their own native turn ids are no longer merged into one (#4748).
+- Restoring an export keeps each prompt's native turn id (#4751).
+- Deleting a project's last memories brings the welcome hint back right away (#4742).
+- A corpus built without a limit gets the documented 500 observations, and limits above 100 are no longer capped at 100 (#4746).
+
+## Sync and server
+
+- **Chroma writes for the same memory are serialized and re-read the current row** (#4731, @junnhwan). A startup backfill or a delayed cloud forward can no longer index an old body or old project.
+- **On the self-hosted server, a reclaimed generation attempt can't complete or fail its replacement** (#4739, @junnhwan). Postgres regression tests now run in CI.
+- **The self-hosted sync server puts brackets around IPv6 hosts** in its advertised URL (#4723, @DeryFerd).
+
+## Viewer
+
+- The NOTES section icon is sized like its siblings (#4744, @phant0um, first contribution). It used to render about 20× too large.
+
+## Claude app (cowork) plugin
+
+- Session-init now runs in the background, and the plugin's hooks stand down when a local claude-mem install is present (#4755).
+
+## Docs and skills
+
+- The make-plan skill has a Primary Goal section and a fixed short chat summary (#3600).
+- The wowerpoint skill stops once the deck has started and no longer uploads (#4342).
+- Docs no longer mention workers.dev for the sync hub (#4366).
+
+Thanks to everyone who reported and fixed things this round: @rudycelekli, @junnhwan, @akushonkamen, @DeryFerd, @phant0um, @valerianbbragi, @smashingtags, @wuding129, @chris-yyau, @bagr001.
+
+**Full diff:** https://github.com/thedotmack/claude-mem/compare/v13.37.0...v13.38.0
+
+## [13.37.0] - 2026-10-13
+
+This release fixes the broken 13.36.1 marketplace update. After that update, the worker, the MCP search server and the server runtime failed to start, so memory capture stopped. Upgrading is strongly recommended.
+
+## Fixes
+
+- **claude-mem starts again after the 13.36.1 marketplace update** (#4728, #4729). A change merged after the 13.36.1 release committed the built plugin files with leftover `git stash` conflict markers. The plugin installs from `main`, so auto-updated installs got those files under the same 13.36.1 version number. The worker failed with `error: Unexpected <<`, `mcp-search` closed its connection, and memory capture stopped once the older worker exited. The files are now rebuilt from clean source. The npm package `claude-mem@13.36.1` was published before that change and was not affected. Thank you @nashsibanda for the rebuild and @hirohisatanigawa for the detailed report.
+- **Worker startup waits out a locked database instead of failing** (#4725). The schema-writer check added in 13.36.0 ran before the connection's busy timeout was set. A worker starting while another process was opening the same database failed in about 1 ms with `database is locked`, and after two failures it was not restarted. The check now waits for the lock.
+
+## Changed
+
+- **Memory keeps capturing on your Anthropic plan when your selected provider can't serve** (#4727). `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` now defaults to `claude`. Settings files that saved `""` get the new default too. The fallback now also covers a provider that is still rate limited or over capacity after its retries, is down, or returns the same batch twice with no usable output. Claude is used only when a Claude Code login or an Anthropic key is available. Memory moves back to your provider once it answers again. To wait for your provider instead, set `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` to `off`.
+
+## Release safety
+
+- CI now checks the committed plugin files before it rebuilds them. It fails on merge-conflict markers anywhere in `plugin/` and runs `node --check` on every committed plugin script (#4729). Before this, CI rebuilt the bundles first and tested the rebuilt copies, which hid the broken committed ones.
+
+## If you used the 13.35.0 workaround
+
+If you followed the workaround in #4728 (auto-update turned off and the plugin pinned to 13.35.0), turn `autoUpdate` back on for the `thedotmack` marketplace and restart Claude Code to move to 13.37.0.
+
+**Full diff:** https://github.com/thedotmack/claude-mem/compare/v13.36.1...v13.37.0
+
+## [13.36.1] - 2026-10-12
+
+A patch release that closes three issues found in review of 13.36.0, plus eight community fixes. Upgrading is recommended.
+
+## Privacy and data safety
+
+- **`<private>` content no longer leaves the hook in server runtime** (#4721). In server runtime, file edits, tool inputs and outputs, and session-start prompts were sent to the server with `<private>` sections still inside, and the server kept them in the raw event record (they were removed only later, when the model prompt was built). Private sections are now removed before anything leaves the hook, and the server removes them again before it stores events or session metadata. Worker runtime (the default) was not affected.
+- **Older and newer workers can no longer race on a database upgrade** (#4724). The check that stops an older claude-mem from opening a database a newer version upgraded now reads and records the schema writer inside one SQLite write lock, before any migration runs. Before, two workers opening the database at the same moment could both pass the check.
+- **A cancelled Chroma connection can no longer release a newer connection's lock** (#4722). Each Chroma connection now owns its writer-lock token and releases only that lock, so a reconnect during shutdown can't leave the new sidecar unlocked and allow a second writer on the same store. Process-table parsing for the orphan sweep now has fixture tests.
+
+## Community fixes — thank you @rudycelekli
+
+- Integration ids such as `constructor` no longer resolve through the alias table (#4712)
+- Postgres numeric settings accept only whole positive numbers; values like `5ms` fall back to the default (#4713)
+- Gemini retry hints too large to represent are ignored, so a key isn't parked indefinitely (#4714)
+- The billing-type file is read correctly when it starts with a UTF-8 BOM (#4715)
+- API-key settings arrays keep only string entries (#4716)
+- A malformed part in a Gemini response no longer discards the whole answer (#4717)
+- Refused connections are recognized inside wrapped errors, so recovery kicks in (#4718)
+- Hook launchers honor the environment opt-out flags before starting Node or Bun (#4719)
+
+**Full diff:** https://github.com/thedotmack/claude-mem/compare/v13.36.0...v13.36.1
+
+## [13.36.0] - 2026-10-12
+
+A community release: nearly every change since v13.35.0 came from outside contributors and is merged under their own name. Thank you all.
+
+## Highlights
+
+- **Memories are no longer dropped when the provider says no.** An empty Anthropic credit balance, an organization blocking subscription access, or a local model server that is down now pauses the observer and keeps the work instead of discarding it (@Mola-maker). When the observer stream ends early, its batch is handed back for reprocessing (@shantanukhanwalkar).
+- **Windows home folders with non-ASCII names work again.** Bun and Claude are found when your user folder name contains Korean, Japanese or other non-ASCII characters (@akushonkamen).
+- **Hooks don't report your project's tsconfig as errors.** This affected React Native and Expo projects (@Totopo27).
+- **The viewer saves only what you changed,** so an old settings tab can't undo a change you made elsewhere (@Cassian433).
+- **Search improvements:**
+  - Correct paging (@junnhwan).
+  - Chinese, Japanese, Korean and Thai words are found inside sentences (@rudycelekli).
+  - Long natural-language queries fall back to any-term matching when no memory matches every word (@devkancheti4-design).
+- **Chroma reliability:**
+  - No more stalls after a reboot on large stores (@akushonkamen).
+  - Orphaned chroma-mcp processes that hold your data directory are cleaned up safely before starting, so they no longer cause lock fights (@akushonkamen).
+
+## New
+
+- **Qoder** plugin support (@shouldnotappearcalm).
+- **Screenpipe** skill for searching meeting and screen history and saving it to memory (@EzraEllette).
+- **Atlas Cloud** preset for the OpenAI-compatible provider (@binyangzhu000-sudo).
+- **`CLAUDE_MEM_OPENROUTER_TEMPERATURE`** setting (@aeneasr).
+- **`CLAUDE_MEM_SEMANTIC_INJECT_FORMAT=index`:** compact per-prompt memory injection (@ktdrv).
+- **`CLAUDE_MEM_WORK_STATE_ENABLED=false`** to turn off the work-state to-do rule (@noesis-bot).
+- **`CLAUDE_MEM_TOOL_USES_RETENTION_DAYS`:** opt-in pruning of the raw tool log. The default keeps everything (@Montinou).
+- **Duplicate review:** record a "distinct" or "dismissed" verdict on duplicate candidates (@Montinou).
+- **Viewer:** a Claude auth method control in settings (@akushonkamen).
+- **Server runtime:** idempotent memory uploads (@escooterclinic).
+
+## Fixes
+
+- **Capture and sessions:**
+  - Original capture timestamps are kept for delayed events (@junnhwan).
+  - Stale session-end events are retired (@akushonkamen).
+  - Warnings are logged before queued work is discarded (@Boulea7).
+  - Tool calls whose input is `null` are captured, logging recovers when the log folder appears later, and every shutdown step runs (@rudycelekli).
+  - Search triggers are restored after database upgrades (@akushonkamen).
+  - Fewer SQLite warnings on macOS (@CCCLL).
+- **Database safety:** the database records the newest schema version that has written to it, and an older claude-mem refuses to open a database a newer one has upgraded (@akushonkamen).
+- **Memory import and notes:**
+  - Restored memories attach to existing sessions (@junnhwan).
+  - Native note revisions survive title dedup (@junnhwan).
+  - Explicit notes keep their platform source in the search index (@junnhwan).
+  - Notes that start with `----` are no longer mangled (@akushonkamen).
+- **Search robustness:** malformed file lists, plain-text concepts, folder search against absolute paths, consistent date parsing, and better patterns for native search commands (@rudycelekli).
+- **Installers and integrations:**
+  - Cursor configs with a BOM and commented Codex TOML are read correctly, and npm can no longer hang the installer (@rudycelekli).
+  - Worker ports and IPv6 addresses are honored everywhere, and the uvx path can be set in settings (@Ravencloned).
+- **Providers and streaming:**
+  - OpenCode Go session header (@Cassian433).
+  - Sturdier streamed replies, emoji never split when long output is trimmed, and Zstandard transcripts keep their text intact (@rudycelekli).
+- **Server runtime:**
+  - Fresh installs no longer get 403 errors (@DeryFerd).
+  - File edits reach the server, and `CLAUDE_MEM_SKIP_TOOLS` is honored in server mode (@DeryFerd).
+  - Stuck jobs are reclaimed (@escooterclinic).
+  - No stray local database (@vinay121314).
+  - Leaner prompts (@rich-murphey).
+  - Postgres keeps literal `__proto__` keys in stored JSON (@rudycelekli).
+  - Stricter Redis settings (@rudycelekli).
+- **Sync, Chroma and duplicates:**
+  - Prompts from other devices are linked (@necatisozer).
+  - Turning Chroma off is fully honored (@CCCLL).
+  - Fewer Chroma rewrites at startup (@Montinou).
+  - Accent-aware duplicate detection (@rudycelekli) and a corrected similarity threshold (@udsy19).
+- **Viewer:**
+  - "Select all" in the Logs drawer works (@DrDLyuan).
+  - The context preview opens on a project that has data (@rudycelekli).
+
+## Project
+
+- `main` is now the only branch. `core-dev` and `community-edge` are retired, so please open pull requests against `main`.
+
 ## [13.35.0] - 2026-10-09
 
 ## New: progressive memory search, curated tool replies, and native memory notes

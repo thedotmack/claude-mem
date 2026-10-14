@@ -48,8 +48,10 @@ function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (!value) {
     return fallback;
   }
-  const parsed = Number.parseInt(value, 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  const normalized = value.trim();
+  if (!/^\d+$/.test(normalized)) return fallback;
+  const parsed = Number(normalized);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
 }
 
 function parseSsl(connectionString: string, env: NodeJS.ProcessEnv): boolean | { rejectUnauthorized: boolean } {

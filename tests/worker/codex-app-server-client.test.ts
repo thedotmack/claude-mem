@@ -12,6 +12,7 @@ import {
   CODEX_NO_AGENT_MESSAGE_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
 import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
+import { CodexAppServerPool } from '../../src/services/worker/CodexAppServerPool.js';
 import { logger } from '../../src/utils/logger.js';
 
 const itPosix = process.platform === 'win32' ? it.skip : it;
@@ -172,7 +173,7 @@ itPosix('passes an empty structured reply on in one turn and logs counts, never 
   const fake = createFakeCodex({ mode: 'empty-always' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   const provider = new CodexProvider(null as any, null as any) as any;
-  provider.appServer = client;
+  provider.appServer = new CodexAppServerPool(1, () => client);
   const warn = spyOn(logger, 'warn');
   try {
     const result = await provider.query([{ role: 'user', content: 'Remember this.' }], {
@@ -197,7 +198,7 @@ itPosix('passes a turn without an agent message on as an empty reply, without a 
   const fake = createFakeCodex({ mode: 'missing-message' });
   const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
   const provider = new CodexProvider(null as any, null as any) as any;
-  provider.appServer = client;
+  provider.appServer = new CodexAppServerPool(1, () => client);
   try {
     const session = { sessionDbId: 9101, claimedMessageIds: [], conversationHistory: [{ role: 'user', content: 'Remember this.' }] };
     const result = await provider.queryObserverTurn(session, {

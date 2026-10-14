@@ -14,8 +14,8 @@ const commonPayload = z.object({
 }).passthrough();
 const observationPayload = commonPayload.extend({
   toolName: z.string().min(1).max(512),
-  toolInput: z.unknown(),
-  toolResponse: z.unknown(),
+  toolInput: z.unknown().optional(),
+  toolResponse: z.unknown().optional(),
   toolUseId: z.string().max(2048).optional(),
   agentId: z.string().max(128).optional(),
   agentType: z.string().max(128).optional(),

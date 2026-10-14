@@ -22,10 +22,12 @@ function runHook(event, input, env) {
   });
 }
 
-// The rule: an agent on a machine with a local claude-mem install never reads
-// cmem.ai context, and an agent with no local install reads the cloud. The
-// install is an enabled plugin registered in installed_plugins.json with its
-// hook and worker files. The worker's health never decides it.
+// The rule: on a machine with a local claude-mem install every Cowork hook is a
+// no-op (no cmem.ai context read, no capture), and an agent with no local
+// install talks to the cloud. The install is an enabled plugin registered in
+// installed_plugins.json with its hook and worker files. The worker's health
+// never decides it.
+const CAPTURE_EVENTS = ['session-init', 'observation', 'subagent-stop', 'summarize', 'session-end'];
 const cases = [
   // No local install: cloud context.
   { name: 'no local install or worker', worker: 'down', cloud: true },
@@ -49,7 +51,7 @@ const cases = [
 ];
 
 for (const scenario of cases) {
-  test(`Cowork session and agent context: ${scenario.name}`, async () => {
+  test(`Cowork hooks: ${scenario.name}`, async () => {
     const home = mkdtempSync(join(tmpdir(), 'owned-cowork-injector-'));
     const configDir = join(home, 'claude-config');
     mkdirSync(configDir);
@@ -74,17 +76,25 @@ for (const scenario of cases) {
       }));
     }
     const cloudRequests = [];
+    const ingestedEvents = [];
     const healthRequests = [];
     const cloud = createServer((request, response) => {
-      request.resume();
-      if (request.url.startsWith('/api/hooks/context')) {
-        cloudRequests.push(new URL(request.url, 'http://owned.local'));
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify({ context: 'owned prior memory' }));
-      } else {
+      let body = '';
+      request.on('data', chunk => { body += chunk; });
+      request.on('end', () => {
+        const url = new URL(request.url, 'http://owned.local');
+        cloudRequests.push(url);
+        if (url.pathname === '/api/hooks/context') {
+          response.writeHead(200, { 'content-type': 'application/json' });
+          response.end(JSON.stringify({ context: 'owned prior memory' }));
+          return;
+        }
+        if (url.pathname === '/api/hooks/ingest') {
+          try { ingestedEvents.push(JSON.parse(body).event); } catch { /* cut off by the hook's exit */ }
+        }
         response.writeHead(202);
         response.end('{}');
-      }
+      });
     });
     const worker = createServer((request, response) => {
       healthRequests.push(request.url);
@@ -121,19 +131,28 @@ for (const scenario of cases) {
       const agent = await runHook('agent-context', {
         ...input, tool_input: { prompt: 'owned agent task', subagent_type: 'general-purpose' },
       }, env);
-      assert.equal(cloudRequests.length, scenario.cloud ? 2 : 0);
+      for (const event of CAPTURE_EVENTS) {
+        await runHook(event, {
+          ...input, prompt: 'owned prompt', tool_name: 'Read', tool_use_id: `owned-${event}`,
+          tool_input: { file_path: '/owned/owned-project/a.md' }, tool_response: 'owned',
+        }, env);
+      }
+      const contextRequests = cloudRequests.filter(url => url.pathname === '/api/hooks/context');
+      assert.equal(contextRequests.length, scenario.cloud ? 2 : 0);
       assert.deepEqual(healthRequests, [], 'worker health must not decide local-first');
       if (scenario.cloud) {
-        assert.deepEqual(cloudRequests.map(url => url.searchParams.get('scope')), ['session-start', 'agent']);
-        assert.ok(cloudRequests.every(url => url.searchParams.get('project') === 'cmem_work_owned-project'));
+        assert.deepEqual(contextRequests.map(url => url.searchParams.get('scope')), ['session-start', 'agent']);
+        assert.ok(contextRequests.every(url => url.searchParams.get('project') === 'cmem_work_owned-project'));
         assert.ok(JSON.parse(start).hookSpecificOutput.additionalContext.includes('owned prior memory'));
         const updated = JSON.parse(agent).hookSpecificOutput.updatedInput;
         assert.ok(updated.prompt.includes('owned prior memory'));
         assert.ok(updated.prompt.endsWith('\n\nowned agent task'));
         assert.equal(updated.subagent_type, 'general-purpose');
+        for (const event of CAPTURE_EVENTS) assert.ok(ingestedEvents.includes(event), `${event} reaches cmem.ai`);
       } else {
         assert.equal(start, '');
         assert.equal(agent, '');
+        assert.deepEqual(cloudRequests.map(String), [], 'a local install keeps every hook off cmem.ai');
       }
     } finally {
       await close(cloud);

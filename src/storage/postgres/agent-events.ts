@@ -13,6 +13,7 @@ import {
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 import { redactJsonStrings } from '../../utils/redaction.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 export interface PostgresAgentEvent {
   id: string;
@@ -98,10 +99,11 @@ export class PostgresAgentEventsRepository {
         idempotencyKey,
         input.eventType,
         platformSource,
-        // Opt-in secret redaction (#2616) for the raw event body, at the one
-        // write every ingest path goes through.
-        JSON.stringify(redactJsonStrings(input.payload ?? {})),
-        JSON.stringify(input.metadata ?? {}),
+        // <private> sections are removed and opt-in secret redaction (#2616)
+        // applied to the raw event body, at the one write every ingest path
+        // goes through, so a client that did not strip still stores none.
+        JSON.stringify(redactJsonStrings(stripMemoryTagsFromJsonStrings(input.payload ?? {}))),
+        JSON.stringify(stripMemoryTagsFromJsonStrings(input.metadata ?? {})),
         new Date(input.occurredAt)
       ]
     );

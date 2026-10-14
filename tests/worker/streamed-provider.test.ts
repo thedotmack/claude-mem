@@ -52,6 +52,18 @@ class TestOpenRouterProvider extends OpenRouterProvider {
   }
 }
 
+// The test hook (streamIdleTimeoutMs) stays untouched, so the idle window is
+// whatever CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS resolves to per request —
+// the path every production send takes (#4737).
+class LiveConfigOpenRouterProvider extends OpenRouterProvider {
+  constructor() {
+    super({} as never, {} as never);
+  }
+  runQuery(paidSendBudget?: PaidSendBudget): Promise<ProviderQueryResult> {
+    return this.query(HISTORY, OPENROUTER_CONFIG as never, undefined, undefined, paidSendBudget);
+  }
+}
+
 class TestOpenAICompatProvider extends OpenAICompatProvider {
   constructor() {
     super({} as never, {} as never);
@@ -84,6 +96,7 @@ const sentBody = (mock: ReturnType<typeof createStreamFetchMock>, index = 0) =>
 
 let timers: LiveTimerTracker | null = null;
 const priorLlmTimeout = process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
+const priorStreamIdleTimeout = process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS;
 
 afterEach(() => {
   resetStreamingEndpointMemoryForTests();
@@ -92,6 +105,8 @@ afterEach(() => {
   (globalThis.fetch as unknown as { mockRestore?: () => void }).mockRestore?.();
   if (priorLlmTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_TIMEOUT_MS;
   else process.env.CLAUDE_MEM_LLM_TIMEOUT_MS = priorLlmTimeout;
+  if (priorStreamIdleTimeout === undefined) delete process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS;
+  else process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS = priorStreamIdleTimeout;
 });
 
 describe('OpenRouter secret stream', () => {
@@ -179,6 +194,23 @@ describe('OpenRouter secret stream', () => {
     for (const call of mock.calls) {
       expect((call.init?.headers as Record<string, string>)['x-client-request-id']).toBe(budget.clientAttemptId);
     }
+  });
+
+  // #4737: a self-hosted backend spends its queue wait silent, so the queue
+  // wait reads as idle and the fixed window fired before the deadline the
+  // user raised. With the test hook unset, the window must come from
+  // CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS — here its 500ms floor, tripping
+  // during a 600ms silent stretch that the shipped 90s default sails through.
+  it('takes the idle window from CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS when the test hook is unset', async () => {
+    process.env.CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS = '500';
+    timers = trackLiveTimers();
+    const mock = installFetch(streamScript([{ ...delta('<observation/>'), delayMs: 600 }]));
+    const budget = new PaidSendBudget(1);
+    budget.recordPaidSend(); // a spent budget keeps the aborted send from being resent
+    const error = await new LiveConfigOpenRouterProvider().runQuery(budget).catch((caught: unknown) => caught);
+    expect(mock.calls).toHaveLength(1);
+    expect(String((error as Error).message)).toContain('timed out after 500ms idle');
+    expect(timers.liveCount()).toBe(0);
   });
 
   it('a network failure before the first delta is resent only once', async () => {

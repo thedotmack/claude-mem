@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // bun's mock.module is process-global and sticky: it is never auto-unregistered
@@ -49,7 +50,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }, { id: 'bugfix' }, { id: 'refactor' }],
         observation_concepts: [],
       }),
@@ -145,7 +146,14 @@ function createHarness(session: ActiveSession) {
     session.earliestPendingTimestamp = null;
     return confirmed;
   });
-  const resetProcessingToPending = mock(async () => 0);
+  // Mirrors SessionManager.resetProcessingToPending: the claim is released on
+  // the session as well as in the buffer. Without this, the stream-end release
+  // below sees a still-claimed batch and the fake counts a second reset that
+  // the real manager never makes.
+  const resetProcessingToPending = mock(async () => {
+    session.claimedMessageIds = [];
+    return 0;
+  });
   const storeObservations = mock(() => ({
     observationIds: [7],
     summaryId: null,
@@ -380,6 +388,10 @@ describe('ClaudeProvider assistant frame dispatch (#3492)', () => {
     expect(harness.confirmClaimedMessages).not.toHaveBeenCalled();
     expect(harness.resetProcessingToPending).toHaveBeenCalledTimes(1);
     expect(harness.remainingClaimed()).toHaveLength(1);
+    // The scripted stream ends after the failed turn, with nothing answering
+    // the re-sent batch: that exit is named so GeneratorExitHandler keeps the
+    // session instead of finalizing the batch away.
+    expect(session.abortReason).toBe('transport:sdk_eof');
   });
 });
 

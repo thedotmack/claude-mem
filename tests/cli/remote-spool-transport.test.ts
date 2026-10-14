@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import express from 'express';
 import type { Server } from 'http';
-import { mkdtempSync, rmSync } from 'fs';
+import { existsSync, mkdtempSync, readdirSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { pathToFileURL } from 'url';
@@ -65,9 +65,17 @@ afterEach(async () => {
   rmSync(directory, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 });
 
-async function child(action: 'observation' | 'stop' | 'flush' | 'poison', token: string = 'test-ingest-token') {
+async function child(action: 'observation' | 'stop' | 'flush' | 'poison' | 'post_run_command' | 'post_cascade_response', token: string = 'test-ingest-token') {
   const source = `
-    const { uploadRemoteHookSpool } = await import(${JSON.stringify(moduleUrl('src/cli/spool-hook-event.ts'))});
+    const { spyOn } = await import('bun:test');
+    const childProcess = await import('child_process');
+    const { EventEmitter } = await import('events');
+    spyOn(childProcess, 'spawn').mockImplementation(() => {
+      const child = new EventEmitter();
+      child.unref = () => child;
+      return child;
+    });
+    const { uploadRemoteHookSpool, settleHookSpoolNudges } = await import(${JSON.stringify(moduleUrl('src/cli/spool-hook-event.ts'))});
     const { HookSpool } = await import(${JSON.stringify(moduleUrl('src/shared/hook-spool.ts'))});
     const common = { contentSessionId: 'remote-client', platformSource: 'codex', cwd: '/project' };
     const started = performance.now();
@@ -80,6 +88,14 @@ async function child(action: 'observation' | 'stop' | 'flush' | 'poison', token:
       new HookSpool().enqueue('advisor_calls', { ...common, calls: [{ toolUseId: 'advisor-1', advice: 'keep the queued event', occurredAtEpoch: Date.now() }] });
       new HookSpool().enqueue('summarize', { ...common, lastAssistantMessage: 'done' });
       new HookSpool().enqueue('session_end', common);
+    } else if (${JSON.stringify(action)}.startsWith('post_')) {
+      const { windsurfAdapter } = await import(${JSON.stringify(moduleUrl('src/cli/adapters/windsurf.ts'))});
+      const { observationHandler } = await import(${JSON.stringify(moduleUrl('src/cli/handlers/observation.ts'))});
+      await observationHandler.execute(windsurfAdapter.normalizeInput({
+        trajectory_id: 'windsurf-remote-session', agent_action_name: ${JSON.stringify(action)},
+        tool_info: { cwd: ${JSON.stringify(root)}, command_line: 'git status', response: 'The checkout is clean.' },
+      }));
+      await settleHookSpoolNudges();
     }
     await uploadRemoteHookSpool();
     console.log(JSON.stringify({ elapsedMs: performance.now() - started, entries: new HookSpool().entries() }));
@@ -100,6 +116,24 @@ async function child(action: 'observation' | 'stop' | 'flush' | 'poison', token:
 }
 
 describe('remote hook spool forwarding', () => {
+  for (const [action, expected] of [
+    ['post_run_command', { toolName: 'Bash', toolInput: { command: 'git status' } }],
+    ['post_cascade_response', { toolName: 'cascade_response', toolResponse: 'The checkout is clean.' }],
+  ] as const) {
+    it(`delivers a Windsurf ${action} with omitted tool fields without quarantining it`, async () => {
+      expect((await child(action)).entries).toEqual([]);
+      expect(spool.entries()).toHaveLength(1);
+      expect(spool.entries()[0].payload).toMatchObject({
+        contentSessionId: 'windsurf-remote-session', platformSource: 'windsurf', ...expected,
+      });
+      const corrupt = join(directory, 'client/state/hook-spool/corrupt');
+      expect(existsSync(corrupt) ? readdirSync(corrupt) : []).toEqual([]);
+      expect(requestPaths).toEqual(['/api/spool/ingest']);
+      expect((await child('flush')).entries).toEqual([]);
+      expect(requestPaths).toEqual(['/api/spool/ingest']);
+    });
+  }
+
   it('hands the event to a different spool and removes the acknowledged client copy', async () => {
     expect((await child('observation')).entries).toEqual([]);
     expect(spool.entries()).toHaveLength(1);

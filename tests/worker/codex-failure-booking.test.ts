@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
@@ -39,7 +40,7 @@ import type { SessionCompletionHandler } from '../../src/services/worker/session
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };

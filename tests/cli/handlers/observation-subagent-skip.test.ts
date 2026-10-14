@@ -237,4 +237,14 @@ describe('observationHandler — subagent observation filtering (#2736)', () => 
     expect(recordEventLog.length).toBe(1);
     expect(spooled().length).toBe(0);
   });
+
+  it('honors CLAUDE_MEM_SKIP_TOOLS on the server runtime (worker ingest never sees server events)', async () => {
+    mockRuntime = serverRuntime();
+    mockSettings.CLAUDE_MEM_SKIP_TOOLS = 'TodoWrite, bash';
+    const { observationHandler } = await import('../../../src/cli/handlers/observation.js');
+    const result = await observationHandler.execute(baseInput()); // toolName 'Bash'
+    expect(result.continue).toBe(true);
+    expect(recordEventLog.length).toBe(0);
+    expect(spooled().length).toBe(0);
+  });
 });

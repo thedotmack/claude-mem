@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../../../plugin/modes/code.json';
 import { existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { SettingsDefaultsManager } from '../../../../src/shared/SettingsDefaultsManager.js';
@@ -168,7 +169,7 @@ const ENV_KEYS = [
 
 const mockMode = {
   name: 'code',
-  prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -998,6 +999,28 @@ describe('SessionRoutes — cmem gateway integrity', () => {
       const notice = observerHealthWarning();
       expect(notice).toContain('What to do: Run /login in Claude Code');
       expect(notice).not.toContain('npx claude-mem restart');
+    });
+
+    it('an org that disabled subscription access is booked with the API-key / admin remedy, not /login (#4677)', async () => {
+      const id = 924004;
+      seedSettings({ CLAUDE_MEM_PROVIDER: 'claude' });
+      const { routes, claudeAgent, completionHandler } = makeHarness([id]);
+      claudeAgent.startSession.mockImplementationOnce((s: ActiveSession) => {
+        s.abortReason = 'auth:observer_org_policy';
+        s.abortController.abort();
+        return Promise.resolve();
+      });
+
+      await routes.ensureGeneratorRunning(id, 'observation');
+      await settle(id);
+
+      const health = readObserverHealth();
+      expect(health?.consecutiveFailures).toBe(1);
+      expect(health?.lastErrorKind).toBe('auth_invalid');
+      expect(health?.lastErrorMessage).toContain('organization has disabled Claude subscription access');
+      expect(health?.lastErrorAction).toContain('ANTHROPIC_API_KEY');
+      expect(health?.lastErrorAction).not.toContain('/login');
+      expect(completionHandler.finalizeSession).not.toHaveBeenCalled();
     });
 
     it('a classified refusal that also paused on the prose is booked once, by the catch', async () => {

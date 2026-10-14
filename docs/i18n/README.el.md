@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[Διαμόρφωση](https://docs.claude-mem.ai/configuration)** - Μεταβλητές περιβάλλοντος & ρυθμίσεις
 - **[Ανάπτυξη](https://docs.claude-mem.ai/development)** - Κατασκευή, δοκιμή, συνεισφορά
-- **[Κλάδοι Έκδοσης](https://docs.claude-mem.ai/branches)** - Ροή κλάδων stable, core-dev, και community-edge
 - **[Αντιμετώπιση Προβλημάτων](https://docs.claude-mem.ai/troubleshooting)** - Συνήθη προβλήματα & λύσεις
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Δείτε τον [Οδηγό Εργαλείων Αναζήτησης](https://docs.claude-mem.ai/usage/search-tools) για λεπτομερή παραδείγματα.
-
----
-
-## Κλάδοι Έκδοσης
-
-Οι σταθερές εκδόσεις κυκλοφορούν από τον κλάδο `main` και δημοσιεύονται στο npm. Οι κλάδοι `core-dev` και
-`community-edge` εκτελούνται από τον πηγαίο κώδικα για πρώιμες διορθώσεις αξιοπιστίας και
-ενσωματώσεις της κοινότητας. Δείτε τους **[Κλάδους Έκδοσης](https://docs.claude-mem.ai/branches)**
-για τη ροή κλάδων και τις οδηγίες εκτέλεσης μη σταθερών εκδόσεων.
 
 ---
 
@@ -383,11 +373,6 @@ npm run bug-report
 3. Κάντε τις αλλαγές σας με δοκιμές
 4. Ενημερώστε την τεκμηρίωση
 5. Υποβάλετε ένα Pull Request
-
-Το Claude-Mem κυκλοφορεί από τρεις κλάδους: `main` (σταθερός), `core-dev`, και
-`community-edge`. Μόνο ο `main` δημοσιεύεται στο npm· οι υπόλοιποι εκτελούνται από
-τον πηγαίο κώδικα. Δείτε τους [Κλάδους Έκδοσης](https://docs.claude-mem.ai/branches) για τη
-στρατηγική και τις οδηγίες τοπικής εκτέλεσης.
 
 Δείτε τον [Οδηγό Ανάπτυξης](https://docs.claude-mem.ai/development) για τη ροή εργασίας συνεισφοράς.
 

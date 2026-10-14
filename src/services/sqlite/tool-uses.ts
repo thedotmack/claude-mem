@@ -489,3 +489,61 @@ export function toolUsesTableExists(db: Database): boolean {
   }
   return true;
 }
+
+/**
+ * `CLAUDE_MEM_TOOL_USES_RETENTION_DAYS` as a whole number of days. 0 means keep
+ * forever, and so does anything that is not a plain non-negative integer: a
+ * typo in a hand-edited settings.json must never turn into a purge, and must
+ * never stop the worker from starting. settings.json is hand-editable JSON, so
+ * the value may arrive as an unquoted number (`30`) as well as a string (`"30"`);
+ * both mean 30 days. Any other type is ignored.
+ */
+export function resolveToolUsesRetentionDays(raw: unknown): number {
+  if (typeof raw === 'number') {
+    return Number.isSafeInteger(raw) && raw > 0 ? raw : 0;
+  }
+  if (typeof raw !== 'string') return 0;
+  const trimmed = raw.trim();
+  if (!/^\d+$/.test(trimmed)) return 0;
+  const days = Number(trimmed);
+  return Number.isSafeInteger(days) ? days : 0;
+}
+
+/**
+ * Opt-in retention for the raw tool I/O index. Deletes rows older than
+ * `retentionDays` that are linked to an observation that still exists, because
+ * that observation carries the distilled result. `observation_id` is not a
+ * foreign key, so deleting an observation leaves the link behind: a row whose
+ * observation is gone is, like a row with no `observation_id` at all, the only
+ * copy of that I/O and is never touched. `retentionDays` of 0 keeps
+ * everything. Freed pages are reused by SQLite; returning disk space to the OS
+ * is the job of VACUUM / auto_vacuum, not of this purge.
+ *
+ * Returns the number of rows removed.
+ */
+export function purgeLinkedToolUses(db: Database, retentionDays: number, nowEpoch: number = Date.now()): number {
+  if (!Number.isSafeInteger(retentionDays) || retentionDays <= 0) return 0;
+  try {
+    if (!toolUsesTableExists(db)) return 0;
+    const cutoffEpoch = nowEpoch - retentionDays * 24 * 60 * 60 * 1000;
+    const { changes } = db
+      .prepare(
+        `DELETE FROM tool_uses
+          WHERE observation_id IS NOT NULL
+            AND created_at_epoch < ?
+            AND EXISTS (SELECT 1 FROM observations WHERE observations.id = tool_uses.observation_id)`
+      )
+      .run(cutoffEpoch);
+    if (changes > 0) {
+      logger.info('DB', 'Purged tool_uses rows past retention that are already linked to an observation', {
+        rows: changes,
+        retentionDays,
+      });
+    }
+    return changes;
+  } catch (error) {
+    logger.debug('DB', 'tool_uses retention purge skipped', {},
+      error instanceof Error ? error : new Error(String(error)));
+    return 0;
+  }
+}

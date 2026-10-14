@@ -17,12 +17,19 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { shutdownWorkerAndWait, type ShutdownResult } from '../../services/install/shutdown-helper.js';
+import { getWorkerPort } from '../../shared/worker-utils.js';
 import {
   normalizeRuntimeFlag,
   SERVER_RUNTIME_SETTINGS_KEYS,
   type InstallRuntimeId,
 } from './server-runtime-setup.js';
 import { captureCliEvent } from '../../services/telemetry/cli-telemetry.js';
+import {
+  currentLauncherHostEnvironment,
+  removeInstalledLauncher,
+  resolveLauncherBinaryPath,
+  type LauncherRemovalResult,
+} from '../../launcher/install-launcher.js';
 
 // #2568 — read the runtime the operator installed so uninstall can dispatch to
 // the matching teardown. The worker path is the default and is unchanged: only
@@ -276,7 +283,7 @@ export async function runUninstallCommand(): Promise<void> {
     }
   }
 
-  const workerPort = SettingsDefaultsManager.get('CLAUDE_MEM_WORKER_PORT');
+  const workerPort = getWorkerPort();
   try {
     const notice = uninstallShutdownNotice(await shutdownWorkerAndWait(workerPort, 10000));
     if (notice?.level === 'warn') p.log.warn(notice.message);
@@ -324,6 +331,8 @@ export async function runUninstallCommand(): Promise<void> {
     process.exitCode = 1;
   }
 
+  // Shell rc files and the Windows user Path are left alone; the hint names the line to remove.
+  const launcherRemovalOutcome: { result: LauncherRemovalResult | null } = { result: null };
   await p.tasks([
     {
       title: 'Removing marketplace directory',
@@ -372,6 +381,25 @@ export async function runUninstallCommand(): Promise<void> {
       task: async () => {
         stripLegacyClaudeMemAlias();
         return `Legacy alias check complete ${styleText('green', 'OK')}`;
+      },
+    },
+    {
+      title: 'Removing the claude-mem hook launcher',
+      task: async () => {
+        let launcherRemoval: LauncherRemovalResult;
+        try {
+          launcherRemoval = removeInstalledLauncher();
+        } catch (error: unknown) {
+          // [ANTI-PATTERN IGNORED]: reported as this task's result so the remaining
+          // uninstall tasks still run; on Windows a running claude-mem.exe cannot be deleted.
+          const launcherBinaryPath = resolveLauncherBinaryPath(currentLauncherHostEnvironment());
+          const failureMessage = error instanceof Error ? error.message : String(error);
+          return `Hook launcher in use; remove ${launcherBinaryPath} after closing Claude Code (${failureMessage}) ${styleText('yellow', 'WARN')}`;
+        }
+        launcherRemovalOutcome.result = launcherRemoval;
+        return launcherRemoval.removedBinaryPath
+          ? `Hook launcher removed (${launcherRemoval.removedBinaryPath}) ${styleText('green', 'OK')}`
+          : `Hook launcher not found ${styleText('dim', 'skipped')}`;
       },
     },
     {
@@ -433,6 +461,10 @@ export async function runUninstallCommand(): Promise<void> {
     } catch (error: unknown) {
       console.warn(`[uninstall] ${label} cleanup failed:`, error instanceof Error ? error.message : String(error));
     }
+  }
+
+  if (launcherRemovalOutcome.result?.pathCleanupHint) {
+    p.log.info(launcherRemovalOutcome.result.pathCleanupHint);
   }
 
   p.note(

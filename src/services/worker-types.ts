@@ -36,6 +36,12 @@ export interface ActiveSession {
    * changed while it ran.
    */
   observerProfile?: string;
+  /**
+   * The provider the current run stands in for when dispatch routed around it
+   * (the provider fallback), else null/undefined. A stand-in that is refused
+   * must not strand the work: the primary takes it back once it recovers.
+   */
+  fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
   consecutiveRestarts: number;
   /**
    * Rejected replies (neither observation/summary XML nor the
@@ -78,6 +84,22 @@ export interface ActiveSession {
    * queued-work turn is answered (#4066).
    */
   consecutiveResponseStalls?: number;
+  /**
+   * Consecutive Claude generations whose SDK stream ended or broke without a
+   * result ('transport:sdk_eof' / 'transport:sdk_stream'). Reported in
+   * observer health once it reaches MAX_CONSECUTIVE_SDK_STREAM_EXITS; reset
+   * when a queued-work turn is answered.
+   */
+  consecutiveSdkStreamExits?: number;
+  /**
+   * Set once an upstream rejected the observer's thinking param with an
+   * invalid-request error (always-thinking gateway, #4732): every later
+   * generation on this session builds its SDK options with the thinking field
+   * stripped, instead of re-sending a request the gateway will refuse again.
+   * Not reset for the life of the session — a gateway that refused the param
+   * once keeps refusing it.
+   */
+  observerThinkingStripped?: boolean;
   /**
    * Consecutive rate-limit pauses this session resumed from on its own, after
    * the provider's Retry-After. Bounds those resumes before the provider

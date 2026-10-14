@@ -18,8 +18,10 @@ Local hosts keep filesystem capture. A loopback SSH port forward needs
 client that the worker has a different disk. Use `filesystem` only where both
 processes actually share the spool directory.
 
-Keep the worker reachable only through a trusted private network or a protected
-proxy. The ingest token protects this endpoint, not every existing worker API.
+The ingest token authenticates only `POST /api/spool/ingest`. It does not protect
+the rest of the worker API. Keep the worker reachable only over a network you
+trust, such as a private network or an authenticated tunnel; do not expose the
+worker directly to the public internet.
 The optional TV read-only guard continues rejecting remote mutations, including
 spool ingestion; an observation-TV endpoint is not a capture endpoint.
 
@@ -35,7 +37,11 @@ The client outbox is temporary delivery state, not a local memory database or
 processing worker. Each hook's exit can retry a pending outbox after connectivity
 returns. A short-lived detached uploader discovers the oldest pending entries
 and sends up to 16 with a shared one-second network budget. It runs no listener,
-observer, local memory database or vector index. Concurrent uploaders are safe:
+observer, local memory database or vector index. Events in the same process
+share one scheduled uploader per burst. Events arriving during delivery request
+one follow-up pass when that uploader exits, without making hooks wait for the
+network. A later hook can retry after a launch or delivery failure.
+Concurrent uploaders from separate hook processes are safe:
 the receiver deduplicates receipts and the client claims files atomically before
 removing them. A refused
 connection, authentication failure, missing endpoint on an older worker, or

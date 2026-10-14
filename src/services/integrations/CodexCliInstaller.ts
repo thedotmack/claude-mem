@@ -235,10 +235,62 @@ function registerCodexMarketplace(marketplaceRoot: string, run = runCodex): void
   run(['plugin', 'marketplace', 'add', marketplaceRoot]);
 }
 
+/** A header's trailing comment is not part of its name; quoted hashes are. */
+function stripTomlComment(line: string): string {
+  let quote: '"' | "'" | null = null;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (quote !== null) {
+      if (quote === '"' && character === '\\') index++;
+      else if (character === quote) quote = null;
+    } else if (character === '"' || character === "'") {
+      quote = character;
+    } else if (character === '#') {
+      return line.slice(0, index);
+    }
+  }
+  return line;
+}
+
+/** Preserve line indices while excluding multiline string contents from table/key recognition. */
+function tomlStructuralLines(lines: string[]): string[] {
+  let multiline: '"""' | "'''" | null = null;
+  return lines.map((line) => {
+    const structural = multiline === null ? stripTomlComment(line) : '';
+    let quote: '"' | "'" | null = null;
+    for (let index = 0; index < line.length; index++) {
+      if (multiline !== null) {
+        if (multiline === '"""' && line[index] === '\\') {
+          index++;
+        } else if (line.startsWith(multiline, index)) {
+          // TOML permits one or two quote characters immediately before the closing delimiter.
+          const character = multiline[0];
+          let count = 3;
+          while (count < 5 && line[index + count] === character) count++;
+          index += count - 1;
+          multiline = null;
+        }
+      } else if (quote !== null) {
+        if (quote === '"' && line[index] === '\\') index++;
+        else if (line[index] === quote) quote = null;
+      } else if (line[index] === '#') {
+        break;
+      } else if (line.startsWith('"""', index) || line.startsWith("'''", index)) {
+        multiline = line.slice(index, index + 3) as '"""' | "'''";
+        index += 2;
+      } else if (line[index] === '"' || line[index] === "'") {
+        quote = line[index] as '"' | "'";
+      }
+    }
+    return structural;
+  });
+}
+
 export function setTomlBooleanInTable(content: string, header: string, key: string, enabled: boolean): string {
   const booleanLine = `${key} = ${enabled ? 'true' : 'false'}`;
   const lines = content.split('\n');
-  const headerIndex = lines.findIndex((line) => line.trim() === header);
+  const structuralLines = tomlStructuralLines(lines);
+  const headerIndex = structuralLines.findIndex((line) => line.trim() === header);
 
   if (headerIndex === -1) {
     const trimmed = content.trimEnd();
@@ -246,13 +298,13 @@ export function setTomlBooleanInTable(content: string, header: string, key: stri
   }
 
   let sectionEnd = headerIndex + 1;
-  while (sectionEnd < lines.length && !/^\s*\[/.test(lines[sectionEnd])) {
+  while (sectionEnd < lines.length && !/^\s*\[/.test(structuralLines[sectionEnd])) {
     sectionEnd += 1;
   }
 
   const escapedKey = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   const keyPattern = new RegExp(`^\\s*${escapedKey}\\s*=`);
-  const keyIndex = lines.findIndex(
+  const keyIndex = structuralLines.findIndex(
     (line, index) => index > headerIndex && index < sectionEnd && keyPattern.test(line),
   );
 
@@ -275,9 +327,85 @@ export function setTomlFeatureEnabled(content: string, featureName: string, enab
 }
 
 function normalizeTomlHeader(line: string): string | null {
-  const match = line.trim().match(/^\[([^\]]+)\]\s*$/);
+  const match = stripTomlComment(line).trim().match(/^\[([^\]]+)\]\s*$/);
   if (!match) return null;
   return match[1].replace(/\s+/g, '').replace(/"/g, '');
+}
+
+/**
+ * Read a `[marketplaces.<name>]` entry out of Codex's config.toml.
+ *
+ * Returns null when the marketplace is not registered. `source` is null when
+ * the entry exists but declares no source. Headers and values may carry
+ * trailing comments, as in the rest of this file's TOML handling.
+ */
+export function readRegisteredMarketplace(
+  content: string,
+  marketplaceName: string,
+): { source: string | null; sourceType: string | null } | null {
+  const structuralLines = tomlStructuralLines(content.split('\n'));
+  const headerIndex = structuralLines.findIndex(
+    (line) => normalizeTomlHeader(line) === `marketplaces.${marketplaceName}`,
+  );
+  if (headerIndex === -1) return null;
+
+  let source: string | null = null;
+  let sourceType: string | null = null;
+  for (let index = headerIndex + 1; index < structuralLines.length; index += 1) {
+    const line = structuralLines[index];
+    if (/^\s*\[/.test(line)) break;
+    const sourceMatch = line.match(/^\s*source\s*=\s*"(.*)"\s*$/);
+    if (sourceMatch) source = sourceMatch[1];
+    const typeMatch = line.match(/^\s*source_type\s*=\s*"(.*)"\s*$/);
+    if (typeMatch) sourceType = typeMatch[1];
+  }
+  return { source, sourceType };
+}
+
+/**
+ * A registered local marketplace whose directory has been deleted or gutted.
+ *
+ * Only `local` sources are checked: git/npm sources are fetched into a cache,
+ * so their `source` is a URL that will never exist on disk and must not be
+ * mistaken for a broken path.
+ */
+export function isStaleLocalMarketplace(
+  entry: { source: string | null; sourceType: string | null } | null,
+  isUsableRoot: (root: string) => boolean,
+): boolean {
+  if (!entry?.source) return false;
+  if (entry.sourceType !== null && entry.sourceType !== 'local') return false;
+  return !isUsableRoot(entry.source);
+}
+
+function isUsableMarketplaceRoot(root: string): boolean {
+  return existsSync(root) && missingMarketplaceFiles(root).length === 0;
+}
+
+/**
+ * Codex refuses to load ANY marketplace while one registered source is
+ * unreadable: `codex plugin list` hard-errors and every plugin silently stops
+ * loading, claude-mem included. Drop a stale registration before re-adding so
+ * a moved or deleted checkout self-heals instead of wedging the whole CLI.
+ */
+function repairStaleMarketplaceRegistration(): void {
+  if (!existsSync(CODEX_CONFIG_PATH)) return;
+
+  let entry: ReturnType<typeof readRegisteredMarketplace>;
+  try {
+    entry = readRegisteredMarketplace(readFileSync(CODEX_CONFIG_PATH, 'utf-8'), MARKETPLACE_NAME);
+  } catch (error) {
+    logger.warn('WORKER', 'Could not read Codex config while checking for a stale marketplace', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+
+  if (!isStaleLocalMarketplace(entry, isUsableMarketplaceRoot)) return;
+
+  console.warn(`  Codex marketplace ${MARKETPLACE_NAME} points at ${entry?.source}, which is missing or incomplete.`);
+  console.warn('  Removing the stale registration so Codex can load plugins again.');
+  runCodex(['plugin', 'marketplace', 'remove', MARKETPLACE_NAME]);
 }
 
 function isLegacyMcpSearchHeader(normalizedHeader: string | null): boolean {
@@ -294,12 +422,13 @@ function isClaudeMemMcpSearchBlock(block: string): boolean {
 
 export function removeLegacyCodexMcpSearchConfig(content: string): string {
   const lines = content.split('\n');
+  const structuralLines = tomlStructuralLines(lines);
   const blocks: Array<{ header: string | null; text: string }> = [];
   let currentHeader: string | null = null;
   let currentLines: string[] = [];
 
-  for (const line of lines) {
-    const header = normalizeTomlHeader(line);
+  for (const [index, line] of lines.entries()) {
+    const header = normalizeTomlHeader(structuralLines[index]);
     if (header !== null) {
       blocks.push({ header: currentHeader, text: currentLines.join('\n') });
       currentHeader = header;
@@ -519,6 +648,7 @@ function performCodexInstall(marketplaceRootOverride?: string): number {
   const marketplaceRoot = resolvePluginMarketplaceRoot(marketplaceRootOverride);
 
   console.log(`  Registering Codex plugin marketplace: ${marketplaceRoot}`);
+  repairStaleMarketplaceRegistration();
   registerCodexMarketplace(marketplaceRoot);
   enableCodexPluginConfig();
   runCodex(['plugin', 'add', CODEX_PLUGIN_ID]);
@@ -530,6 +660,17 @@ function performCodexInstall(marketplaceRootOverride?: string): number {
     console.warn(`  Native Codex hooks registered, but failed to disable legacy transcript AGENTS.md context in ${CODEX_TRANSCRIPT_WATCH_CONFIG_PATH}.`);
   }
 
+  if (!verifyCodexPluginLoaded()) {
+    console.error(`
+Installation failed: Codex does not list ${CODEX_PLUGIN_ID}.
+
+Codex will not load the plugin, so no memory context will be injected.
+Inspect the plugin and marketplace state with:
+  codex plugin list
+`);
+    return 1;
+  }
+
   console.log(`
 Installation complete!
 
@@ -538,13 +679,41 @@ Plugin source:     ${marketplaceRoot}
 
 Next steps:
   1. Open Codex CLI in your project
-  2. Review and trust the five claude-mem hooks when Codex prompts you
+  2. Review and trust the six claude-mem hooks when Codex prompts you
   3. Restart sessions opened before trusting the hooks
 
 For a fresh setup, the supported entry point is:
   npx claude-mem@latest install
 `);
   return 0;
+}
+
+/**
+ * Surface a failed install instead of reporting success into a void: a plugin
+ * that Codex cannot list will silently never inject context.
+ *
+ * Returns false only when Codex positively reported the plugin as absent. An
+ * unusable `plugin list` (spawn error, non-zero exit) means the state is
+ * unknown, not broken; the install steps themselves succeeded, so that warns
+ * and continues rather than failing a good install on an unrelated CLI hiccup.
+ */
+export function verifyCodexPluginLoaded(spawn: CodexSpawn = codexSpawn): boolean {
+  const result = spawn(['plugin', 'list']);
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`.trim();
+
+  if (result.error || result.status !== 0) {
+    console.warn('  Could not verify the Codex plugin list. Check with: codex plugin list');
+    if (output) console.warn(`  ${output.split('\n')[0]}`);
+    return true;
+  }
+
+  if (!output.includes(CODEX_PLUGIN_ID)) {
+    console.error(`  Codex did not list ${CODEX_PLUGIN_ID} after install.`);
+    return false;
+  }
+
+  console.log(`  Verified Codex lists ${CODEX_PLUGIN_ID}.`);
+  return true;
 }
 
 export function uninstallCodexCli(): number {

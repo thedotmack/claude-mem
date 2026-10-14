@@ -26,7 +26,7 @@ import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js
 import { USER_SETTINGS_PATH, paths } from '../../shared/paths.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
-import { describeNetworkFailure, networkFailureSuffix } from '../../shared/network-failure.js';
+import { describeNetworkFailure, isConnectionRefused, networkFailureSuffix } from '../../shared/network-failure.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
 import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
@@ -41,8 +41,8 @@ import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
 import { resolveObserverMaxOutputTokens } from './context-window.js';
 import {
-  DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS,
   STREAMED_REQUEST_FIELDS,
+  resolveStreamIdleTimeoutMs,
   resolveStreamLiveness,
   sendChatCompletion,
   streamsChatCompletion,
@@ -52,6 +52,7 @@ import {
 import {
   OpenAICompatibleProvider,
   assistantText,
+  type ObserverRequestLabel,
   type OpenAIChatMessage,
   type ProviderQueryResult,
 } from './OpenAICompatibleProvider.js';
@@ -323,6 +324,10 @@ export function classifyOpenAICompatError(input: {
     return new ClassifiedProviderError(`${label} network error: ${message}${networkFailureSuffix(network)}`, {
       kind: 'transient',
       cause: input.cause,
+      // A refused connection never sent the request, so it is pre-send: it
+      // must not spend the batch's paid-send budget (#4604). Resets and
+      // timeouts stay ambiguous — they can land after the server took it.
+      ...(isConnectionRefused(network) ? { paidSendOutcome: 'refused_before_work' as const } : {}),
       ...(network.localNetworkHint ? { action: network.localNetworkHint } : {}),
     });
   }
@@ -481,21 +486,24 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
+    label?: ObserverRequestLabel,
   ): Promise<ProviderQueryResult> {
     if (!config.apiUrl || !config.model) {
       throw this.missingApiKeyError();
     }
     return withKeyPool(
       { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
-      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget),
+      ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
     );
   }
 
   /**
-   * Silence after which a streamed request is given up. An instance field so a
-   * test can shorten it; there is no setting for it.
+   * Overrides the streamed request's idle window when set — a test hook, the
+   * only reason this is a field. Unset, every request resolves
+   * CLAUDE_MEM_LLM_STREAM_IDLE_TIMEOUT_MS (#4737), so a settings change takes
+   * effect without a restart.
    */
-  protected streamIdleTimeoutMs: number = DEFAULT_LLM_STREAM_IDLE_TIMEOUT_MS;
+  protected streamIdleTimeoutMs: number | undefined;
 
   /**
    * POST the request and read its (streamed) reply. A model that only takes
@@ -509,8 +517,10 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     clientAttemptId: string,
     attemptSignal: AbortSignal,
     liveness: StreamLiveness | null,
+    sessionId: string | undefined,
   ): Promise<ChatCompletionExchange> {
     const label = config.preset.label;
+    const sessionHeader = config.preset.sessionHeader;
     return sendChatCompletion({
       url: config.apiUrl,
       headers: {
@@ -520,6 +530,9 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         // Local servers accept any token or none; sending an empty bearer to
         // them is worse than sending no header at all.
         ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        // Per request, from the observed session: one provider instance serves
+        // every session, so this can't be a field on it.
+        ...(sessionHeader && sessionId ? { [sessionHeader]: sessionId } : {}),
       },
       body: {
         model: config.model,
@@ -544,6 +557,8 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     signal?: AbortSignal,
     perAttemptTimeoutMs?: number,
     paidSendBudget?: PaidSendBudget,
+    /** anonymousSessionId() of the observed session, for preset.sessionHeader. */
+    sessionId?: string,
   ): Promise<ProviderQueryResult> {
     const messages = this.conversationToOpenAIMessages(history);
     const label = config.preset.label;
@@ -558,9 +573,11 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
 
     // Decided once, so every attempt is bounded the way withRetry was told.
     const streamed = streamsChatCompletion(config.apiUrl);
-    const liveness = streamed ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs) : null;
+    const liveness = streamed
+      ? resolveStreamLiveness(perAttemptTimeoutMs, this.streamIdleTimeoutMs ?? resolveStreamIdleTimeoutMs())
+      : null;
     const data = await withRetry<ChatCompletionResponse>(async (attemptSignal) => {
-      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness);
+      const exchange = await this.requestChatCompletion(config, apiKey, messages, maxOutputTokens, clientAttemptId, attemptSignal, liveness, sessionId);
       const responseData = exchange.body as ChatCompletionResponse;
 
       // Some gateways report failure in a 200 body (the case #3263 hit through

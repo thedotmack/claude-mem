@@ -16,6 +16,9 @@ export const SPOOL_NUDGE_TIMEOUT_MS = 250;
 const nudgesInFlight = new Set<Promise<void>>();
 let pendingNudge: Promise<void> | null = null;
 let remoteUploadRequested = false;
+let pendingRemoteUpload: Promise<void> | null = null;
+let remoteUploadInFlight = false;
+let remoteUploadAgain = false;
 
 export async function uploadRemoteHookSpool(): Promise<void> {
   const settings = loadFromFileOnce();
@@ -71,7 +74,31 @@ export async function uploadRemoteHookSpool(): Promise<void> {
   }, undefined, { shouldContinue: canContinue, verifyUnchanged: true, maxEntries: REMOTE_SPOOL_MAX_ENTRIES });
 }
 
-function scheduleRemoteHookSpoolUpload(): void {
+function scheduleRemoteHookSpoolUpload(): Promise<void> {
+  if (pendingRemoteUpload) return pendingRemoteUpload;
+  if (remoteUploadInFlight) {
+    remoteUploadAgain = true;
+    return Promise.resolve();
+  }
+  const upload = new Promise<void>(resolve => {
+    setImmediate(() => {
+      try {
+        startRemoteHookSpoolUpload();
+      } catch {
+        logger.warn('HOOK', 'Remote hook uploader could not start; retaining the outbox');
+      } finally { resolve(); }
+    });
+  });
+  pendingRemoteUpload = upload;
+  nudgesInFlight.add(upload);
+  void upload.finally(() => {
+    nudgesInFlight.delete(upload);
+    if (pendingRemoteUpload === upload) pendingRemoteUpload = null;
+  });
+  return upload;
+}
+
+function startRemoteHookSpoolUpload(): void {
   const token = remoteHookSpoolToken(loadFromFileOnce().CLAUDE_MEM_WORKER_INGEST_TOKEN);
   if (!token) {
     logger.warn('HOOK', 'Remote hook capture is queued locally; configure CLAUDE_MEM_WORKER_INGEST_TOKEN on the client and worker');
@@ -84,15 +111,34 @@ function scheduleRemoteHookSpoolUpload(): void {
     logger.warn('HOOK', 'Remote hook upload entrypoint is unavailable; retaining the outbox');
     return;
   }
+  remoteUploadInFlight = true;
+  let completed = false;
+  const finish = () => {
+    if (completed) return;
+    completed = true;
+    remoteUploadInFlight = false;
+    if (remoteUploadAgain) {
+      remoteUploadAgain = false;
+      void scheduleRemoteHookSpoolUpload();
+    }
+  };
   try {
     const child = spawn(process.execPath, [script, 'upload-spool'], {
       cwd: resolveDataDir(), env: sanitizeEnv(process.env),
       detached: true, windowsHide: true, stdio: 'ignore',
     });
-    child.on('error', () => logger.warn('HOOK', 'Remote hook uploader could not start; retaining the outbox'));
+    child.once('error', () => {
+      logger.warn('HOOK', 'Remote hook uploader could not start; retaining the outbox');
+      finish();
+    });
+    child.once('exit', code => {
+      if (code !== 0) logger.warn('HOOK', 'Remote hook uploader exited unsuccessfully; retaining the outbox', { code });
+      finish();
+    });
     child.unref();
   } catch {
     logger.warn('HOOK', 'Remote hook uploader could not start; retaining the outbox');
+    finish();
   }
 }
 
@@ -111,8 +157,7 @@ export function nudgeWorkerToDrainHookSpool(): Promise<void> {
   const settings = loadFromFileOnce();
   if (usesRemoteHookSpool(getWorkerHost(), settings.CLAUDE_MEM_HOOK_SPOOL_TRANSPORT)) {
     remoteUploadRequested = true;
-    scheduleRemoteHookSpoolUpload();
-    return Promise.resolve();
+    return scheduleRemoteHookSpoolUpload();
   }
   if (pendingNudge) return pendingNudge;
   const nudge = (async () => {

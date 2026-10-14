@@ -292,9 +292,30 @@ function discoverCandidates(): string[] {
           windowsHide: true,
           stdio: ['ignore', 'pipe', 'ignore'],
         });
-        candidates.push(...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean));
+        // where.exe writes the console's active code page (cp949 on ko-KR) but
+        // the `encoding: 'utf8'` above decodes the bytes as UTF-8, so a
+        // non-ASCII profile folder name arrives as U+FFFD and the reported
+        // path does not exist (#4694, #3865). Keep only lines that resolve on
+        // disk — a garbled candidate would only die at the probe with ENOENT.
+        candidates.push(
+          ...output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).filter((line) => _internals.existsSync(line)),
+        );
       } catch {
         // Not found via this lookup — try the next discovery source.
+      }
+    }
+    // The native installer puts the CLI at ~/.local/bin/claude.exe (and the
+    // legacy local install at ~/.claude/local/claude.exe), which may not be on
+    // the worker's PATH at all — or where.exe may only report garbled lines
+    // (#4694). Without these, a perfectly installed CLI wedges the worker in
+    // setup_required. The .exe suffix matters: Windows has no shebang, so an
+    // extension-less file is not spawnable here.
+    for (const knownPath of [
+      join(_internals.homedir(), '.local', 'bin', 'claude.exe'),
+      join(_internals.homedir(), '.claude', 'local', 'claude.exe'),
+    ]) {
+      if (_internals.existsSync(knownPath)) {
+        candidates.push(knownPath);
       }
     }
   } else {

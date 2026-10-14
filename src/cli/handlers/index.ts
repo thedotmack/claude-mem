@@ -6,23 +6,26 @@ import { logger } from '../../utils/logger.js';
 import { contextHandler } from './context.js';
 import { sessionInitHandler } from './session-init.js';
 import { hasInjected, markInjected } from '../../shared/kimi-context-gate.js';
+import { takeTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { observationHandler } from './observation.js';
 import { summarizeHandler } from './summarize.js';
 import { sessionEndHandler } from './session-end.js';
 import { userMessageHandler } from './user-message.js';
 import { fileEditHandler } from './file-edit.js';
 import { fileContextHandler } from './file-context.js';
+import { postCompactHandler } from './post-compact.js';
 
 export type EventType =
-  | 'context'           
-  | 'session-init'      
+  | 'context'
+  | 'session-init'
   | 'session-init-context'
-  | 'observation'       
-  | 'summarize'         
+  | 'observation'
+  | 'summarize'
   | 'session-end'
-  | 'user-message'      
-  | 'file-edit'         
-  | 'file-context';     
+  | 'user-message'
+  | 'file-edit'
+  | 'file-context'
+  | 'post-compact';
 
 export const sessionInitContextHandler: EventHandler = {
   async execute(input) {
@@ -91,16 +94,49 @@ export const sessionInitContextHandler: EventHandler = {
   }
 };
 
+// Codex PostToolUse: a thread that compacted and has had no SessionStart since
+// (every subagent thread, since Codex sends SessionStart only to the root)
+// gets its memory timeline back here, once, as PostToolUse additionalContext.
+// The observation is recorded first, so the context fetch can never cost the
+// write. See src/shared/codex-compaction-gate.ts.
+export const observationWithPendingTimelineHandler: EventHandler = {
+  async execute(input) {
+    const observationResult = await observationHandler.execute(input);
+    if (input.platform !== 'codex' || !takeTimelinePending(input.sessionId, input.agentId)) {
+      return observationResult;
+    }
+
+    const contextResult = await contextHandler.execute(input);
+    // The once-per-session worker-outage notice, if the context hook consumed
+    // it. It is passed on even without a timeline, or nobody would see it.
+    const outageNotice = contextResult.systemMessage ? { systemMessage: contextResult.systemMessage } : {};
+    const timeline = contextResult.hookSpecificOutput?.additionalContext;
+    if (!timeline) {
+      return { ...observationResult, ...outageNotice };
+    }
+    logger.debug('HOOK', 'Re-injecting the memory timeline after a Codex compaction', {
+      sessionId: input.sessionId,
+      agentId: input.agentId,
+    });
+    return {
+      ...observationResult,
+      hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: timeline },
+      ...outageNotice,
+    };
+  }
+};
+
 const handlers: Record<EventType, EventHandler> = {
   'context': contextHandler,
   'session-init': sessionInitHandler,
   'session-init-context': sessionInitContextHandler,
-  'observation': observationHandler,
+  'observation': observationWithPendingTimelineHandler,
   'summarize': summarizeHandler,
   'session-end': sessionEndHandler,
   'user-message': userMessageHandler,
   'file-edit': fileEditHandler,
-  'file-context': fileContextHandler
+  'file-context': fileContextHandler,
+  'post-compact': postCompactHandler
 };
 
 export function getEventHandler(eventType: string): EventHandler {
@@ -124,3 +160,4 @@ export { sessionEndHandler } from './session-end.js';
 export { userMessageHandler } from './user-message.js';
 export { fileEditHandler } from './file-edit.js';
 export { fileContextHandler } from './file-context.js';
+export { postCompactHandler } from './post-compact.js';

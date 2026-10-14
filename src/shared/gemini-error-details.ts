@@ -31,7 +31,8 @@ export function parseRetryDelayMs(value: string | null | undefined): number | un
   if (!value) return undefined;
   const match = /^(\d+(?:\.\d+)?)s$/.exec(value.trim());
   if (!match) return undefined;
-  return Math.round(Number(match[1]) * 1000);
+  const milliseconds = Math.round(Number(match[1]) * 1000);
+  return Number.isSafeInteger(milliseconds) ? milliseconds : undefined;
 }
 
 function typeOf(detail: unknown): string {

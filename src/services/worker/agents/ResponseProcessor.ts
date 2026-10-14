@@ -6,6 +6,7 @@ import {
   classifyObserverOutput,
   isAuthFailureObserverOutput,
   isContextOverflowObserverOutput,
+  isOrgDisabledSubscriptionObserverOutput,
   isQuotaLimitedObserverOutput,
   isTransportFailureObserverOutput,
   previewOutput,
@@ -18,7 +19,7 @@ import { notifyGrokBotIndex } from '../../integrations/GrokBotIndexWriter.js';
 import { updateFolderClaudeMdFiles } from '../../../utils/claude-md-utils.js';
 import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
-import { clearQuotaCooldown } from '../../../shared/quota-cooldown.js';
+import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
@@ -387,6 +388,7 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   if (session.lastGeneratorSource === 'init') return;
   session.consecutiveContextOverflows = 0;
   session.consecutiveResponseStalls = 0;
+  session.consecutiveSdkStreamExits = 0;
   session.consecutiveRateLimitResumes = 0;
   session.consecutiveUnattendedGatewayResumes = 0;
 }
@@ -472,8 +474,12 @@ export async function processAgentResponse(
     }
 
     if (isAuthFailureObserverOutput(text)) {
+      // An org that disabled subscription access is refused like a signed-out
+      // observer, but /login cannot fix it (#4677): keep it apart so the
+      // runner books the API-key / admin remedy instead.
+      const orgDisabledSubscription = isOrgDisabledSubscriptionObserverOutput(text);
       await sessionManager.resetProcessingToPending(session.sessionDbId);
-      session.abortReason = 'auth:observer_text';
+      session.abortReason = orgDisabledSubscription ? 'auth:observer_org_policy' : 'auth:observer_text';
       try {
         session.abortController.abort();
       } catch {
@@ -483,10 +489,12 @@ export async function processAgentResponse(
       // /api/health's ai.lastInteraction: the observer is signed out and will
       // keep producing nothing until re-auth, so say so instead of "ok".
       worker?.recordAiInteraction?.({ success: false, error: 'unauthenticated', provider: providerName });
-      logger.error('PARSER', `${agentName} authentication failed; run /login to preserve queued batch`, {
+      logger.error('PARSER', orgDisabledSubscription
+        ? `${agentName} refused: the organization has disabled Claude subscription access; queued batch preserved`
+        : `${agentName} authentication failed; run /login to preserve queued batch`, {
         sessionId: session.sessionDbId,
         outputClass: 'prose',
-        remediation: '/login',
+        remediation: orgDisabledSubscription ? 'api_key_or_admin' : '/login',
         preview: previewOutput(text),
       });
       return null;
@@ -561,6 +569,36 @@ export async function processAgentResponse(
 
     if (answersQueuedWork) {
       clearRejectedOutput(session);
+      // A provider that answers the same batch twice without usable output is
+      // not serving it. When the fallback (by default the Anthropic plan) can
+      // take the work, hold the provider briefly and hand the batch there in a
+      // fresh generation instead of dropping it. Once there, the batch gets
+      // the same one retry; the fallback is never routed around itself.
+      const fallback = session.currentProvider
+        ? routeAroundUnservableProviderIfLoaded(
+          session.currentProvider,
+          `The observer answered a queued batch twice without observation XML (${outputClass})`,
+          'unavailable',
+          session.observerProfile,
+        )
+        : null;
+      if (fallback !== null) {
+        logger.warn('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — handing it to the ${fallback} fallback`, {
+          sessionId: session.sessionDbId,
+          outputClass,
+          preview,
+          ...replyDiagnostics,
+        });
+        await sessionManager.resetProcessingToPending(session.sessionDbId);
+        session.abortReason = `output_retry:${outputClass}`;
+        try {
+          session.abortController.abort();
+        } catch {
+          // best-effort; AbortController.abort() should not throw in normal use.
+        }
+        worker?.broadcastProcessingStatus?.();
+        return null;
+      }
       logger.error('PARSER', `${agentName} returned non-XML ${outputClass} response again for the same queued batch — dropping it`, {
         sessionId: session.sessionDbId,
         outputClass,
@@ -579,6 +617,21 @@ export async function processAgentResponse(
     }
     await sessionManager.confirmClaimedMessages(session.sessionDbId);
     session.earliestPendingTimestamp = null;
+    return null;
+  }
+
+  // A reply to the init prompt answers the user's request, not a tool call: an
+  // <observation> in it was invented from <user_request> alone and would be
+  // stored as memory for work that never happened. The OpenAI-compatible
+  // providers never hand that reply here; the Claude feed does when it observes
+  // bare prompts, and with the feed paced to one unanswered prompt,
+  // lastGeneratorSource names the prompt this reply answers. The turn is kept
+  // (appended above, so role alternation holds); nothing is stored, no batch is
+  // acknowledged, and no batch state is touched.
+  if (session.lastGeneratorSource === 'init') {
+    logger.debug('PARSER', `${agentName} answered the init prompt with XML; nothing to store before tool evidence`, {
+      sessionId: session.sessionDbId,
+    });
     return null;
   }
 

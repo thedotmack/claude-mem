@@ -62,13 +62,14 @@
  */
 
 import { execFile } from 'node:child_process';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
 import { isPidAlive, type PidInfo } from '../supervisor/process-registry.js';
 import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
-import { captureProcessStartToken, isSameProcess } from './process-identity.js';
+import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
 import { DATA_DIR } from './paths.js';
 
@@ -88,6 +89,28 @@ export function isChromaSidecarName(name: string): boolean {
   return CHROMA_SIDECAR_NAME_PATTERN.test(name.trim());
 }
 
+/**
+ * The chroma-mcp entry point anywhere in a command line, in either spelling
+ * (`chroma-mcp` console script, `chroma_mcp` module form).
+ *
+ * Needed alongside isChromaSidecarName because the chain's LEAF is an
+ * interpreter: on POSIX the python running the chroma-mcp console script
+ * reports comm `python3.13` — 15-char kernel truncation and version suffix
+ * keep it off the name whitelist — while its argv still names chroma-mcp and
+ * carries the data-dir fingerprint.
+ */
+const CHROMA_MCP_CMDLINE_PATTERN = /chroma[-_]mcp/i;
+
+/**
+ * A process-table row names a chroma-mcp sidecar chain member: by executable
+ * name (the uvx/uv/uvx.exe/... launchers) or by the chroma-mcp entry point in
+ * its command line (the python leaf). Only ever combined with a data-dir
+ * fingerprint match — the name alone never justifies a kill.
+ */
+function isChromaSidecarCandidate(row: WindowsProcessRow): boolean {
+  return isChromaSidecarName(row.name) || (row.cmdline !== null && CHROMA_MCP_CMDLINE_PATTERN.test(row.cmdline));
+}
+
 export interface WindowsProcessRow {
   pid: number;
   ppid: number;
@@ -95,6 +118,8 @@ export interface WindowsProcessRow {
   startToken: string | null;
   /** Full command line; null when the OS did not expose it. */
   cmdline: string | null;
+  /** Owning uid (POSIX readers only; Windows rows leave it undefined). */
+  uid?: number | null;
 }
 
 /**
@@ -176,6 +201,138 @@ async function readWindowsProcessTableWithNames(capMs?: number): Promise<Windows
     );
     return null;
   }
+}
+
+/**
+ * Linux counterpart of readWindowsProcessTableWithNames: one readdir plus up
+ * to three small reads per pid. Identity comes from /proc/<pid>/stat, which
+ * yields ppid and starttime (the token format captureProcessStartToken()
+ * revalidates against on this platform) from the SAME read — the atomicity
+ * rule that keeps a discovered PID from being certified with a replacement's
+ * token (see readProcessTable in kill-process-tree.ts).
+ */
+function readLinuxProcessTableWithNames(): WindowsProcessRow[] {
+  let entries: string[];
+  try {
+    entries = readdirSync('/proc');
+  } catch (error) {
+    logger.warn(
+      'PROCESS',
+      'Cannot read /proc — orphan chroma-mcp sweep disabled for this attempt',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    return [];
+  }
+
+  const rows: WindowsProcessRow[] = [];
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    const pid = Number.parseInt(entry, 10);
+    let raw: string;
+    try {
+      raw = readFileSync(`/proc/${entry}/stat`, 'utf-8');
+    } catch {
+      // Exited between readdir and read. Safe: a row we never observed simply
+      // is not a target.
+      continue;
+    }
+    const stat = parseLinuxProcStat(raw);
+    if (!stat) continue;
+    let name = '';
+    let cmdline: string | null = null;
+    let uid: number | null = null;
+    try {
+      uid = statSync(`/proc/${entry}`).uid;
+    } catch { /* exited — an unknown owner is never a target */ }
+    try {
+      name = readFileSync(`/proc/${entry}/comm`, 'utf-8').trim();
+    } catch { /* name is supplementary evidence; the cmdline marker still applies */ }
+    try {
+      cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf-8').split('\0').filter(Boolean).join(' ') || null;
+    } catch { /* kernel thread or exited — nothing to fingerprint */ }
+    rows.push({ pid, ppid: stat.ppid, name, cmdline, uid, startToken: stat.startToken });
+  }
+  return rows;
+}
+
+/**
+ * ppid and starttime from one /proc/<pid>/stat line. comm (field 2) is
+ * parenthesised and may itself contain spaces or `) `, so fields are read
+ * after its LAST closing paren. Pure and exported for tests.
+ */
+export function parseLinuxProcStat(raw: string): { ppid: number; startToken: string | null } | null {
+  const tailStart = raw.lastIndexOf(') ');
+  if (tailStart < 0) return null;
+  const fields = raw.slice(tailStart + 2).split(' ');
+  const ppid = Number.parseInt(fields[1] ?? '', 10);
+  if (!Number.isFinite(ppid)) return null;
+  const starttime = fields[19];
+  return { ppid, startToken: starttime && /^\d+$/.test(starttime) ? starttime : null };
+}
+
+/**
+ * macOS/BSD counterpart: `ps -eo pid=,ppid=,uid=,lstart=,command=` is one snapshot
+ * carrying discovery and identity. Its lstart is byte-identical to
+ * `ps -p <pid> -o lstart=`, which is what captureProcessStartToken() uses on
+ * this platform — the same agreement readProcessTablePosix() in
+ * kill-process-tree.ts relies on (and asserts by test). LC_ALL/LANG are
+ * pinned so a locale-formatted date would not compare unequal on the
+ * revalidation.
+ */
+async function readMacProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[]> {
+  let stdout: string;
+  try {
+    const result = await execFileAsync('ps', ['-eo', 'pid=,ppid=,uid=,lstart=,command='], {
+      timeout: cappedTimeoutMs(10_000, capMs),
+      maxBuffer: 32 * 1024 * 1024,
+      env: { ...process.env, LC_ALL: 'C', LANG: 'C' },
+    });
+    stdout = result.stdout;
+  } catch (error) {
+    logger.warn(
+      'PROCESS',
+      'Cannot enumerate the process table with names — orphan chroma-mcp sweep disabled for this attempt',
+      { error: error instanceof Error ? error.message : String(error) }
+    );
+    return [];
+  }
+  return parseMacProcessTable(stdout);
+}
+
+/** Rows from `ps -eo pid=,ppid=,uid=,lstart=,command=` output. Pure and exported for tests. */
+export function parseMacProcessTable(stdout: string): WindowsProcessRow[] {
+  const rows: WindowsProcessRow[] = [];
+  for (const line of stdout.split('\n')) {
+    // lstart is `EEE MMM d HH:mm:ss yyyy` — five fields with whatever internal
+    // padding ps printed, preserved verbatim so the token byte-matches the
+    // later revalidation read. The command line follows it.
+    const match = line.trim().match(
+      /^(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]{3}\s+[A-Za-z]{3}\s+\d{1,2}\s+\d{2}:\d{2}:\d{2}\s+\d{4})\s+(.*)$/
+    );
+    if (!match) continue;
+    rows.push({
+      pid: Number.parseInt(match[1]!, 10),
+      ppid: Number.parseInt(match[2]!, 10),
+      uid: Number.parseInt(match[3]!, 10),
+      name: normalizeProcessName(match[5]!.split(' ')[0] ?? ''),
+      cmdline: match[5]!.trim().length > 0 ? match[5]! : null,
+      startToken: match[4]!.trim(),
+    });
+  }
+  return rows;
+}
+
+/**
+ * Cross-platform process table with names and command lines.
+ *
+ * Null means "cannot enumerate" — only the Windows reader signals that (it is
+ * shared with the ghost-listener path); the POSIX readers degrade to an empty
+ * table and log. Callers must refuse to kill on null, never guess.
+ */
+function readProcessTableWithNames(capMs?: number): Promise<WindowsProcessRow[] | null> {
+  if (process.platform === 'win32') return readWindowsProcessTableWithNames(capMs);
+  if (process.platform === 'linux') return Promise.resolve(readLinuxProcessTableWithNames());
+  return readMacProcessTableWithNames(capMs);
 }
 
 /** Owner PIDs currently LISTENING on `port`, or null when netstat failed. */
@@ -679,4 +836,150 @@ export async function reclaimGhostListeningPort(
     stillOwnedBy: after,
   });
   return { reclaimed: false, reason: 'still-bound', killedPids };
+}
+
+/**
+ * Injectable seams for the orphan sweep, mirroring GhostPortReclaimDeps: the
+ * suite injects a fake table and kill so every decision branch runs on every
+ * CI platform without touching real processes.
+ */
+export interface OrphanSweepDeps {
+  /** The exact chroma store this worker holds the writer lock for. Required: no root default. */
+  dataDir: () => string | null;
+  /**
+   * Re-checked after the (possibly slow) table read and before every kill:
+   * false once this connection was cancelled or lost its writer lock, so a
+   * sweep overtaken by stop() can never kill a replacement worker's sidecar.
+   */
+  stillOwnsStore?: () => boolean;
+  readTable?: (capMs?: number) => Promise<WindowsProcessRow[] | null>;
+  killTree?: (pid: number, options: KillTreeOptions) => Promise<void>;
+  /** Our uid on POSIX, null on Windows (rows there carry no owner). */
+  ownUid?: () => number | null;
+  platform?: NodeJS.Platform;
+}
+
+/**
+ * Does a command line's --data-dir name EXACTLY this store?
+ *
+ * Stricter than chromaCmdlineMatchesDataDir (which the ghost-port path calls
+ * with the DATA_DIR root and so must accept children): a machine-wide kill
+ * may only target the store whose writer lock we hold. A child directory, or
+ * a path differing only in case on a case-sensitive filesystem (Linux), is a
+ * different store with its own lock.
+ */
+export function chromaCmdlineNamesExactDataDir(
+  cmdline: string | null,
+  dataDir: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  if (!cmdline) return false;
+  const flagIndex = cmdline.indexOf('--data-dir');
+  if (flagIndex < 0) return false;
+  let value = cmdline.slice(flagIndex + '--data-dir'.length).trim();
+  if (value.startsWith('=')) value = value.slice(1);
+  // A value containing spaces is double-quoted by the spawner.
+  if (value.startsWith('"')) {
+    const endQuote = value.indexOf('"', 1);
+    value = endQuote < 0 ? value.slice(1) : value.slice(1, endQuote);
+  }
+  const caseInsensitive = platform === 'win32' || platform === 'darwin';
+  const normalize = (dir: string): string => {
+    const slashed = dir.replace(/\\/g, '/').replace(/\/+$/, '');
+    return caseInsensitive ? slashed.toLowerCase() : slashed;
+  };
+  return normalize(value) === normalize(dataDir);
+}
+
+/**
+ * Kill every chroma-mcp sidecar still holding THIS install's chroma data dir
+ * (#4608).
+ *
+ * When a worker dies out of band — crash, SIGKILL without tree teardown, a
+ * package upgrade replacing it — its chroma-mcp sidecar chain survives
+ * re-parented to init (PPID=1). It holds no port (POSIX sockets died with the
+ * worker), so the Windows ghost-listener path above never sees it, and the
+ * chroma writer lock cannot help either: the lock only governs lock-file
+ * lifetime, while the orphan keeps the DATA DIR open and accepts nothing that
+ * would tell it to stop. The next worker then spawns its own chroma-mcp on
+ * the same store — two concurrent writers, which is what the reporter logged
+ * for 16 days (110 failed batch adds, 84 transport errors, a store once
+ * judged corrupt).
+ *
+ * Call it while holding the chroma writer lock: the lock proves no LIVE
+ * worker owns this store, so any process still carrying our --data-dir
+ * fingerprint is by definition an orphan of a dead generation. Every kill
+ * target is evidence-matched four ways — chroma sidecar by name or by the
+ * chroma-mcp entry point in its command line, PLUS exactly our data dir
+ * in its command line, PLUS our uid on POSIX, PLUS not our own pid — and goes through killProcessTree with
+ * the start token from the SAME table read that discovered it, so PID reuse
+ * between discovery and kill is never signalled.
+ *
+ * Fail-soft by design: an unreadable table or a failed tree-kill is logged
+ * and skipped, never thrown — the sweep is a pre-spawn cleanup, and turning
+ * a ps hiccup into a chroma outage would trade one degradation for another.
+ * Graceful teardown (SIGTERM first) leaves uv its builds-scratch cleanup.
+ */
+export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps): Promise<{ killedPids: number[] }> {
+  const dataDir = deps.dataDir;
+  const stillOwnsStore = deps.stillOwnsStore ?? (() => true);
+  const platform = deps.platform ?? process.platform;
+  const ownUid = (deps.ownUid ?? (() => (typeof process.getuid === 'function' ? process.getuid() : null)))();
+  const readTable = deps.readTable ?? readProcessTableWithNames;
+  const killTree = deps.killTree ?? ((pid: number, options: KillTreeOptions) => killProcessTree(pid, options));
+
+  const ownDataDir = dataDir();
+  if (!ownDataDir) return { killedPids: [] };
+
+  const table = await readTable();
+  if (table === null) {
+    logger.warn('PROCESS', 'Cannot enumerate the process table — refusing to guess at chroma orphans');
+    return { killedPids: [] };
+  }
+  if (!stillOwnsStore()) {
+    logger.debug('PROCESS', 'Chroma connection cancelled during the orphan sweep table read; killing nothing');
+    return { killedPids: [] };
+  }
+
+  const targets = table.filter(
+    row =>
+      row.pid !== process.pid &&
+      // POSIX: only our own uid's processes. A row with an unknown owner is
+      // never a target. Windows rows carry no owner; the exact data-dir match
+      // below binds them to this profile's store.
+      (ownUid === null || row.uid === ownUid) &&
+      isChromaSidecarCandidate(row) &&
+      chromaCmdlineNamesExactDataDir(row.cmdline, ownDataDir, platform)
+  );
+  if (targets.length === 0) return { killedPids: [] };
+
+  logger.warn('PROCESS', 'Killing orphaned chroma-mcp sidecar(s) still holding this install\'s chroma data dir', {
+    dataDir: ownDataDir,
+    targets: targets.map(target => ({ pid: target.pid, ppid: target.ppid, name: target.name })),
+  });
+
+  const killedPids: number[] = [];
+  for (const target of targets) {
+    if (!stillOwnsStore()) {
+      logger.debug('PROCESS', 'Chroma connection cancelled mid-sweep; leaving the remaining targets alone');
+      break;
+    }
+    try {
+      await killTree(target.pid, {
+        // Identity from the discovery read — never re-probed against a
+        // different observation, and never self-captured after an await.
+        expectedStartToken: target.startToken,
+        signalMode: 'graceful',
+      });
+      killedPids.push(target.pid);
+    } catch (error) {
+      logger.error(
+        'PROCESS',
+        'Orphan chroma-mcp tree-kill failed; leaving the rest of the sweep to proceed',
+        { pid: target.pid },
+        error instanceof Error ? error : new Error(String(error))
+      );
+    }
+  }
+  return { killedPids };
 }

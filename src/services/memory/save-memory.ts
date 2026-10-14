@@ -1,5 +1,4 @@
 import type { DatabaseManager } from '../worker/DatabaseManager.js';
-import '../sqlite/manual-session.js';
 import { logger } from '../../utils/logger.js';
 import { notifyGrokBotIndex } from '../integrations/GrokBotIndexWriter.js';
 
@@ -48,7 +47,7 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   notifyGrokBotIndex();
   // A merged row keeps its original text and vector; never index the proposed
   // replacement content under the existing id.
-  if (!result.mergedIntoExisting) dbManager.getChromaSync()?.syncObservation(result.id, sessionId, project, observation, 0, result.createdAtEpoch).catch(error => {
+  if (!result.mergedIntoExisting) dbManager.getChromaSync()?.syncObservation(result.id, sessionId, project, observation, 0, result.createdAtEpoch, platformSource).catch(error => {
       logger.error('CHROMA', 'Manual memory sync failed', { id: result.id }, error as Error);
     });
   return { success: true, id: result.id, title: observation.title, project,
