@@ -447,7 +447,12 @@ export class SearchManager {
           && (!endEpoch || meta.created_at_epoch <= endEpoch)
       })).filter(item => item.isRecent);
 
-      logger.debug('SEARCH', dateRange ? 'Results within user date range' : 'Results within 90-day window', { count: recentMetadata.length });
+      const windowLabel = dateRange
+        ? 'Results within user date range'
+        : this.searchRecencyWindowMs > 0
+          ? `Results within ${this.searchRecencyWindowMs / 86_400_000}-day window`
+          : 'Results across full history (recency window disabled)';
+      logger.debug('SEARCH', windowLabel, { count: recentMetadata.length });
 
       const obsIds: number[] = [];
       const sessionIds: number[] = [];

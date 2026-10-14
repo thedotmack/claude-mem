@@ -578,5 +578,26 @@ describe('ChromaSearchStrategy', () => {
       expect(parseSearchRecencyWindowMs('-3')).toBe(null);
       expect(parseSearchRecencyWindowMs('NaN')).toBe(null);
     });
+
+    // settings.json is hand-editable JSON and SettingsDefaultsManager leaves
+    // JSON numbers untouched, so a hand-written `0` arrives here as a real
+    // number; these must parse like their string spelling, not throw.
+    it('parses JSON-numeric values like their string spelling', () => {
+      expect(parseSearchRecencyWindowMs(0)).toBe(0);
+      expect(parseSearchRecencyWindowMs(30)).toBe(30 * DAY_MS);
+      expect(parseSearchRecencyWindowMs(90)).toBe(90 * DAY_MS);
+    });
+
+    it('rejects malformed numeric values with null (caller keeps the default)', () => {
+      expect(parseSearchRecencyWindowMs(-3)).toBe(null);
+      expect(parseSearchRecencyWindowMs(1.5)).toBe(null);
+    });
+
+    it('rejects null and other non-string types with null (caller keeps the default)', () => {
+      expect(parseSearchRecencyWindowMs(null)).toBe(null);
+      expect(parseSearchRecencyWindowMs(false)).toBe(null);
+      expect(parseSearchRecencyWindowMs({ days: 30 })).toBe(null);
+      expect(parseSearchRecencyWindowMs(['30'])).toBe(null);
+    });
   });
 });
