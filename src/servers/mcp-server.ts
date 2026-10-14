@@ -18,6 +18,7 @@ import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../sh
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } from '../services/smart-file-read/parser.js';
+import { checkTreeSitterCliLoadable } from '../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -54,6 +55,22 @@ let workspaceCheckout: ProjectContext | null = null;
 function currentCheckout(): ProjectContext {
   workspaceCheckout ??= getProjectContext(process.cwd());
   return workspaceCheckout;
+}
+
+/**
+ * Non-null when a tree-sitter CLI binary is present but cannot run on this
+ * system (#4758 — e.g. linked against a newer glibc than the OS provides).
+ * Without this, smart_outline answers "Could not parse … unsupported language
+ * or empty" and smart_search reports "found 0 symbols", which read like a
+ * grammar problem instead of the broken install they are.
+ */
+function treeSitterCliBrokenMessage(): string | null {
+  const check = checkTreeSitterCliLoadable();
+  if (check.present && !check.loadable) {
+    return `the installed tree-sitter CLI cannot run on this system${check.reason ? ` (${check.reason})` : ""}`
+      + ": this is a broken-install/environment issue, not an unsupported language";
+  }
+  return null;
 }
 
 let mcpServerDirResolutionFailed = false;
@@ -875,6 +892,12 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       const rootDir = await resolveWithinWorkspace(args.path || process.cwd());
+      const brokenCli = treeSitterCliBrokenMessage();
+      if (brokenCli) {
+        return {
+          content: [{ type: 'text' as const, text: `Smart Search unavailable: ${brokenCli}.` }]
+        };
+      }
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
         filePattern: args.file_pattern
@@ -906,6 +929,12 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
+      const brokenCli = treeSitterCliBrokenMessage();
+      if (brokenCli) {
+        return {
+          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${brokenCli}.` }]
+        };
+      }
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
       if (unfolded) {
         return {
@@ -947,6 +976,12 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
+      const brokenCli = treeSitterCliBrokenMessage();
+      if (brokenCli) {
+        return {
+          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${brokenCli}.` }]
+        };
+      }
       const parsed = parseFile(content, filePath);
       if (parsed.symbols.length > 0) {
         return {
