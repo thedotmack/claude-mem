@@ -5,7 +5,16 @@ import * as fs from 'fs';
 import path from 'path';
 import { ALLOWED_OPERATIONS, ALLOWED_TOPICS } from './allowed-constants.js';
 import { logger } from '../../utils/logger.js';
-import { createCorsMiddleware, createMiddleware, requireLocalhost } from '../worker/http/middleware.js';
+import {
+  createCorsMiddleware,
+  createForeignPageDeleteGuard,
+  createMiddleware,
+  createRemoteReadOnlyGuard,
+  createWorkerHostGuard,
+  requireLocalhost,
+  type RemoteReadOnlyOptions,
+  type WorkerOriginPolicy,
+} from '../worker/http/middleware.js';
 import { errorHandler, notFoundHandler } from './ErrorHandler.js';
 import { getSupervisor } from '../../supervisor/index.js';
 import { isPidAlive } from '../../supervisor/process-registry.js';
@@ -15,49 +24,76 @@ import { getUptimeSeconds } from '../../shared/uptime.js';
 import { snapshotDependencyHealth, type DependencyHealthSnapshot } from '../../shared/dependency-health.js';
 import { globalRateLimitStore } from '../worker/RateLimitStore.js';
 import type { ObservationQueueHealth } from '../../server/queue/queue-health-types.js';
+import type { ChromaCrashState } from '../sync/ChromaMcpManager.js';
+import { clearWindowsListenSocketInherit } from '../../shared/windows-listen-socket.js';
+import { TERMINAL_INIT_PHASES, type InitPhaseSource, type InitPhaseState } from './init-phase.js';
+
+/**
+ * Keep-alive comment cadence on GET /api/ready. Clients treat 5 s of silence
+ * as wedged (READY_STREAM_IDLE_TIMEOUT_MS in worker-utils.ts), so the ping
+ * must be comfortably shorter than that: equal values would race.
+ */
+const READY_STREAM_PING_INTERVAL_MS = 2000;
 
 const INSTRUCTIONS_BASE_DIR: string = path.resolve(__dirname, '../skills/mem-search');
 const INSTRUCTIONS_OPERATIONS_DIR: string = path.join(INSTRUCTIONS_BASE_DIR, 'operations');
 const INSTRUCTIONS_SKILL_PATH: string = path.join(INSTRUCTIONS_BASE_DIR, 'SKILL.md');
 
-const cachedSkillMd: string | null = (() => {
+// Read on first request, not at import. Hook processes import this module but
+// never serve /api/instructions, so caching at import made every hook spawn
+// read SKILL.md plus every operation file and log boot lines for nothing
+// (#3665).
+let skillMdCache: { text: string | null } | undefined;
+
+function getSkillMd(): string | null {
+  if (skillMdCache) {
+    return skillMdCache.text;
+  }
+  let text: string | null;
   try {
-    const text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
-    logger.info('SYSTEM', 'Cached SKILL.md at boot', {
+    text = fs.readFileSync(INSTRUCTIONS_SKILL_PATH, 'utf-8');
+    logger.debug('SYSTEM', 'Cached SKILL.md on first request', {
       path: INSTRUCTIONS_SKILL_PATH,
       bytes: Buffer.byteLength(text, 'utf-8'),
     });
-    return text;
   } catch (error: unknown) {
-    logger.debug('SYSTEM', 'SKILL.md not present at boot, /api/instructions will 404 for topic queries', {
+    logger.debug('SYSTEM', 'SKILL.md not present, /api/instructions will 404 for topic queries', {
       path: INSTRUCTIONS_SKILL_PATH,
       message: error instanceof Error ? error.message : String(error),
     });
-    return null;
+    text = null;
   }
-})();
+  skillMdCache = { text };
+  return text;
+}
 
-const cachedOperationContent: ReadonlyMap<string, string> = (() => {
+let operationContentCache: ReadonlyMap<string, string> | undefined;
+
+function getOperationContent(): ReadonlyMap<string, string> {
+  if (operationContentCache) {
+    return operationContentCache;
+  }
   const map = new Map<string, string>();
   for (const operation of ALLOWED_OPERATIONS) {
     const operationPath = path.join(INSTRUCTIONS_OPERATIONS_DIR, `${operation}.md`);
     try {
       map.set(operation, fs.readFileSync(operationPath, 'utf-8'));
     } catch (error: unknown) {
-      logger.debug('SYSTEM', 'Operation instruction file not present at boot', {
+      logger.debug('SYSTEM', 'Operation instruction file not present', {
         path: operationPath,
         message: error instanceof Error ? error.message : String(error),
       });
     }
   }
   if (map.size > 0) {
-    logger.info('SYSTEM', 'Cached operation instruction files at boot', {
+    logger.debug('SYSTEM', 'Cached operation instruction files on first request', {
       count: map.size,
       operations: Array.from(map.keys()),
     });
   }
+  operationContentCache = map;
   return map;
-})();
+}
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 const BUILT_IN_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -80,6 +116,14 @@ export interface AiStatus {
 
 export interface ServerOptions {
   getInitializationComplete: () => boolean;
+  /**
+   * Boot progress for GET /api/ready (the worker's InitPhaseTracker). Absent
+   * (server runtime, tests) ⇒ the phase is derived from
+   * getInitializationComplete(): `ready` or `starting`, re-checked on each ping.
+   */
+  initPhaseSource?: InitPhaseSource;
+  /** Test hook: /api/ready keep-alive cadence. Default 2000 ms. */
+  readyStreamPingIntervalMs?: number;
   getMcpReady: () => boolean;
   // reason feeds worker_stopped telemetry: 'restart' when the CLI restart
   // path tags /api/admin/shutdown with ?reason=restart, 'stop' otherwise.
@@ -89,12 +133,29 @@ export interface ServerOptions {
   runtime?: string;
   getAiStatus: () => AiStatus;
   getDependencyHealth?: () => DependencyHealthSnapshot;
+  getChromaCrashState?: () => ChromaCrashState | undefined;
   preBodyParserRoutes?: RouteHandler[];
   getQueueHealth?: () => ObservationQueueHealth | null | Promise<ObservationQueueHealth | null>;
   // #2572 — when true, install a minimal set of hardening response headers
   // (the same headers helmet's defaults emit) before any route runs. Opt-in so
   // the in-plugin worker runtime is unchanged; the server runtime sets it.
   securityHeaders?: boolean;
+  /**
+   * Observation TV remote broadcast. When present, a guard runs BEFORE every
+   * other middleware and route: loopback requests are untouched, and non-loopback
+   * requests may reach only /tv, /tv.html, /stream and GET /api/observations, and
+   * only with the shared secret. Absent (the default, and the server runtime's
+   * choice — it has its own API-key auth) ⇒ nothing is mounted and behavior is
+   * unchanged.
+   */
+  remoteReadOnly?: RemoteReadOnlyOptions;
+  /**
+   * Worker only: trusted browser origins and Host names (plan-23 step 4). When
+   * present, a DNS-rebinding Host check runs before CORS, and CORS also admits
+   * same-host and explicitly allowlisted origins. The server runtime leaves it
+   * unset: it authenticates with API keys and serves public DNS names.
+   */
+  originPolicy?: WorkerOriginPolicy;
 }
 
 // #2572 — hand-rolled security headers.
@@ -119,6 +180,22 @@ export function applySecurityHeaders(res: Response): void {
 export class Server {
   readonly app: Application;
   private server: http.Server | null = null;
+  /**
+   * The idle-exit monitor's client-activity signals: when a request last
+   * started or finished (epoch ms; null before the first), and how many
+   * requests are still open.
+   *
+   * Counted per request, deliberately NOT per socket. Under Bun the server's
+   * 'connection' event yields wrapper objects with undefined addresses that
+   * never emit 'close', so a socket tally reads as permanently busy on a Bun
+   * install (the runtime claude-mem ships on) while the OS shows no
+   * connections at all. A request settles on its response's 'finish' or
+   * 'close', or its socket's 'close', the event Bun emits when a streaming
+   * client disconnects (SSEBroadcaster.addClient relies on the same one).
+   * A count that never settles only keeps the worker up, which fails safe.
+   */
+  private lastRequestAt: number | null = null;
+  private inFlightRequests = 0;
   private readonly options: ServerOptions;
   private readonly startTime: number = Date.now();
 
@@ -126,6 +203,11 @@ export class Server {
     this.options = options;
     this.app = express();
     this.app.disable('x-powered-by');
+    // Position zero is load-bearing: /api/auth/*splat (setupPreBodyParserRoutes),
+    // the express.static mount (setupMiddleware), /api/admin/* (setupCoreRoutes)
+    // and every route registered later all mount after this point. Anything
+    // mounted afterwards leaves earlier routes uncovered.
+    this.setupRemoteReadOnlyGuard();
     this.setupSecurityHeaders();
     this.setupCors();
     this.setupPreBodyParserRoutes();
@@ -135,6 +217,45 @@ export class Server {
 
   getHttpServer(): http.Server | null {
     return this.server;
+  }
+
+  /**
+   * When a request last started or finished (epoch ms), or null if none has.
+   *
+   * A request that stays open, such as a viewer tab on the SSE stream or a
+   * corpus prime, stamps this only when it starts and when it ends, so the
+   * idle-exit monitor reads it together with getInFlightRequestCount().
+   */
+  getLastRequestAt(): number | null {
+    return this.lastRequestAt;
+  }
+
+  /** Requests that have started and not yet finished or closed. */
+  getInFlightRequestCount(): number {
+    return this.inFlightRequests;
+  }
+
+  /**
+   * Count one request as in flight until its response finishes or its
+   * connection closes, whichever comes first, and stamp both ends.
+   */
+  private trackRequestActivity(res: Response): void {
+    this.lastRequestAt = Date.now();
+    this.inFlightRequests++;
+    const socket = res.socket;
+    let settled = false;
+    const settle = (): void => {
+      if (settled) return;
+      settled = true;
+      res.off('finish', settle);
+      res.off('close', settle);
+      socket?.off('close', settle);
+      this.inFlightRequests--;
+      this.lastRequestAt = Date.now();
+    };
+    res.on('finish', settle);
+    res.on('close', settle);
+    socket?.on('close', settle);
   }
 
   async listen(port: number, host: string): Promise<void> {
@@ -150,6 +271,9 @@ export class Server {
         // failed bind (e.g. EADDRINUSE) must never leave a non-listening
         // handle behind for graceful shutdown to trip on.
         this.server = server;
+        // #3300: stop Windows children from inheriting the listen socket so a
+        // crashed daemon's port frees instead of staying LISTENING under a dead PID.
+        clearWindowsListenSocketInherit(server);
         logger.info('SYSTEM', 'HTTP server started', { host, port, pid: process.pid });
         resolve();
       };
@@ -191,8 +315,24 @@ export class Server {
   }
 
   private setupMiddleware(): void {
+    // Idle-exit request tracking, ahead of the body parsers and every route
+    // registered from here on. The remote read-only guard, security headers,
+    // host/CORS guards and the /api/auth routes mount before it (position
+    // zero belongs to the read-only guard), so a request that only they
+    // answer is not counted; none of those stays open.
+    this.app.use((_req: Request, res: Response, next: () => void) => {
+      this.trackRequestActivity(res);
+      next();
+    });
     const middlewares = createMiddleware();
     middlewares.forEach(mw => this.app.use(mw));
+  }
+
+  private setupRemoteReadOnlyGuard(): void {
+    if (!this.options.remoteReadOnly) {
+      return;
+    }
+    this.app.use(createRemoteReadOnlyGuard(this.options.remoteReadOnly));
   }
 
   private setupSecurityHeaders(): void {
@@ -206,11 +346,82 @@ export class Server {
   }
 
   private setupCors(): void {
-    this.app.use(createCorsMiddleware());
+    if (this.options.originPolicy) {
+      this.app.use(createWorkerHostGuard(this.options.originPolicy));
+      // Every DELETE (memories, sessions, corpora, and any route added later),
+      // not a list of the ones someone remembered.
+      this.app.use(createForeignPageDeleteGuard(this.options.originPolicy));
+    }
+    this.app.use(createCorsMiddleware(this.options.originPolicy));
   }
 
   private setupPreBodyParserRoutes(): void {
     this.options.preBodyParserRoutes?.forEach(handler => handler.setupRoutes(this.app));
+  }
+
+  /**
+   * GET /api/ready — SSE boot progress. Sends the current phase at once, then
+   * every transition, with a `: ping` comment between them, and ENDS the
+   * response after `ready` or `failed`. A client that reads silence or a close
+   * without a terminal phase must treat the worker as wedged, never as ready.
+   */
+  private handleReadyStream(req: Request, res: Response): void {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const source = this.options.initPhaseSource;
+    const readPhase = (): InitPhaseState => source
+      ? source.getInitPhase()
+      : { phase: this.options.getInitializationComplete() ? 'ready' : 'starting' };
+
+    let finished = false;
+    let lastSentPhase: string | null = null;
+    let unsubscribe: (() => void) | null = null;
+    let pingTimer: ReturnType<typeof setInterval> | null = null;
+
+    const socket = req.socket;
+    const cleanup = () => {
+      finished = true;
+      if (pingTimer !== null) { clearInterval(pingTimer); pingTimer = null; }
+      if (unsubscribe !== null) { unsubscribe(); unsubscribe = null; }
+      res.off('close', cleanup);
+      socket.off('close', cleanup);
+    };
+
+    const send = (state: InitPhaseState) => {
+      if (finished || state.phase === lastSentPhase) return;
+      lastSentPhase = state.phase;
+      const payload = {
+        phase: state.phase,
+        ...(state.message !== undefined ? { message: state.message } : {}),
+        version: BUILT_IN_VERSION,
+        pid: process.pid,
+      };
+      res.write(`event: phase\ndata: ${JSON.stringify(payload)}\n\n`);
+      if (TERMINAL_INIT_PHASES.includes(state.phase)) {
+        cleanup();
+        res.end();
+      }
+    };
+
+    // Client disconnect: Node emits res 'close'; Bun's node:http does not
+    // (only the socket closes), so listen to both. req 'close' is avoided: on
+    // Node it can fire as soon as a GET body is consumed.
+    res.on('close', cleanup);
+    socket.on('close', cleanup);
+    if (source) unsubscribe = source.subscribeInitPhase(send);
+    send(readPhase());
+    if (finished) return;
+
+    pingTimer = setInterval(() => {
+      if (finished) return;
+      res.write(': ping\n\n');
+      // Without a transition source, the ping tick is the only time the
+      // derived phase can be re-read.
+      if (!source) send(readPhase());
+    }, this.options.readyStreamPingIntervalMs ?? READY_STREAM_PING_INTERVAL_MS);
   }
 
   private setupCoreRoutes(): void {
@@ -255,6 +466,8 @@ export class Server {
       }
     });
 
+    this.app.get('/api/ready', (req: Request, res: Response) => this.handleReadyStream(req, res));
+
     this.app.get('/api/version', (_req: Request, res: Response) => {
       res.status(200).json({ version: BUILT_IN_VERSION });
     });
@@ -272,16 +485,17 @@ export class Server {
       }
 
       if (operation) {
-        const cached = cachedOperationContent.get(operation);
+        const cached = getOperationContent().get(operation);
         if (cached === undefined) {
-          logger.debug('HTTP', 'Instruction file not cached at boot', { operation });
+          logger.debug('HTTP', 'Instruction file not available', { operation });
           return res.status(404).json({ error: 'Instruction not found' });
         }
         return res.json({ content: [{ type: 'text', text: cached }] });
       }
 
+      const cachedSkillMd = getSkillMd();
       if (cachedSkillMd === null) {
-        logger.debug('HTTP', 'SKILL.md not cached at boot', { topic });
+        logger.debug('HTTP', 'SKILL.md not available', { topic });
         return res.status(404).json({ error: 'Instruction not found' });
       }
       const sectionText = this.extractInstructionSection(cachedSkillMd, topic);
@@ -346,6 +560,7 @@ export class Server {
       const hours = Math.floor(uptimeSeconds / 3600);
       const minutes = Math.floor((uptimeSeconds % 3600) / 60);
       const formattedUptime = hours > 0 ? `${hours}h ${minutes}m` : `${minutes}m`;
+      const chromaCrashState = this.options.getChromaCrashState?.();
 
       res.json({
         supervisor: {
@@ -360,6 +575,9 @@ export class Server {
           dependencies: this.options.getDependencyHealth
             ? this.options.getDependencyHealth()
             : snapshotDependencyHealth(),
+          ...(chromaCrashState
+            ? { chroma: chromaCrashState }
+            : {}),
         },
       });
     });

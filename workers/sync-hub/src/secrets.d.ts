@@ -5,9 +5,16 @@
  * at deploy time. `wrangler types` only generates config-declared bindings,
  * so the secrets are typed here via global interface merging with the
  * generated `Env` (worker-configuration.d.ts). Optional on purpose: the
- * watchdog treats absence as "unconfigured" and skips instead of crashing.
+ * watchdog treats absence as "unconfigured": it logs loudly, Discord-pages
+ * when the webhook secret is set, and never fabricates a metrics breach.
  */
 interface Env {
+	/**
+	 * When set (non-empty), the Worker proxies every request — including
+	 * WebSocket upgrades — to this origin and touches zero DO and zero KV.
+	 * Empty / unset keeps today's Durable Object + KV path.
+	 */
+	FORWARD_ORIGIN?: string;
 	/** Shared Hub/Pro internal projector and payload-free metadata credential. */
 	CMEM_INTERNAL_PROJECTOR_SECRET?: string;
 	/**

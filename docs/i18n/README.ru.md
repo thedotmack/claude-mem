@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[Конфигурация](https://docs.claude-mem.ai/configuration)** - Переменные окружения и настройки
 - **[Разработка](https://docs.claude-mem.ai/development)** - Сборка, тестирование, участие в разработке
-- **[Ветки релизов](https://docs.claude-mem.ai/branches)** - Поток веток stable, core-dev и community-edge
 - **[Устранение неполадок](https://docs.claude-mem.ai/troubleshooting)** - Распространенные проблемы и решения
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Подробные примеры см. в [Руководстве по инструментам поиска](https://docs.claude-mem.ai/usage/search-tools).
-
----
-
-## Ветки релизов
-
-Стабильные релизы выпускаются из `main` и публикуются в npm. `core-dev` и
-`community-edge` — это ветки, запускаемые из исходного кода, для ранних исправлений
-надежности и интеграций сообщества. См. **[Ветки релизов](https://docs.claude-mem.ai/branches)**
-для описания потока веток и инструкций по запуску нестабильных версий.
 
 ---
 
@@ -383,11 +373,6 @@ npm run bug-report
 3. Внесите изменения с тестами
 4. Обновите документацию
 5. Отправьте Pull Request
-
-Claude-Mem выпускается из трёх веток: `main` (стабильная), `core-dev` и
-`community-edge`. Только `main` публикуется в npm; остальные запускаются из
-исходного кода. См. [Ветки релизов](https://docs.claude-mem.ai/branches) для
-описания стратегии и инструкций по локальному запуску.
 
 Процесс участия см. в [Руководстве по разработке](https://docs.claude-mem.ai/development).
 

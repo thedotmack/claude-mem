@@ -2,17 +2,20 @@
 // Test harness for claude-mem-cowork hooks. Mock cmem.ai server + assertions.
 import http from 'node:http';
 import { execFile } from 'node:child_process';
-import { existsSync, rmSync, readFileSync, statSync, mkdirSync, appendFileSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { existsSync, rmSync, readFileSync, writeFileSync, statSync, mkdirSync, appendFileSync, mkdtempSync, cpSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { fileURLToPath } from 'node:url';
 const PLUGIN_DIR = fileURLToPath(new URL('..', import.meta.url)).replace(/\/$/, '');
 const HOOK = PLUGIN_DIR + '/scripts/cmem-hook.mjs';
 // hermetic HOME so the suite never touches the real ~/.claude-mem
-const TESTHOME = '/tmp/cmem-testhome';
+const TESTHOME = mkdtempSync(join(tmpdir(), 'owned-cmem-testhome-'));
 const SPOOL = TESTHOME + '/.claude-mem/cowork-spool.jsonl';
 let received = [];
 let mode = 'full'; // 'full' | 'no-hooks-endpoints' (404s, mcp only)
+let holdIngest = null; // predicate: matching ingest requests stay open until released from `held`
+const held = [];
 
 const server = http.createServer((req, res) => {
   let body = '';
@@ -22,6 +25,7 @@ const server = http.createServer((req, res) => {
     received.push(rec);
     if (req.url.startsWith('/api/hooks/ingest')) {
       if (mode === 'no-hooks-endpoints') { res.writeHead(404); return res.end('{}'); }
+      if (holdIngest?.(rec.body)) { held.push(res); return; }
       res.writeHead(202, { 'content-type': 'application/json' });
       return res.end('{"accepted":1}');
     }
@@ -49,12 +53,18 @@ const server = http.createServer((req, res) => {
 
 function run(event, stdinObj, env = {}) {
   return new Promise((resolve, reject) => {
-    const child = execFile('node', [HOOK, event], {
-      env: { ...process.env, HOME: TESTHOME, CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', ...env },
+    const child = execFile(process.execPath, [HOOK, event], {
+      env: { ...process.env, HOME: TESTHOME, USERPROFILE: TESTHOME, CLAUDE_CONFIG_DIR: TESTHOME + '/.claude', CLAUDE_MEM_DATA_DIR: TESTHOME + '/.claude-mem', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: 'test-key-1234', CMEM_USER_ID: 'test-user', CMEM_SYNC_HUB_URL: '', CLAUDE_MEM_WORKER_PORT: '1', ...env },
       encoding: 'utf8', timeout: 45000
     }, (err, stdout) => err && err.code !== 0 && err.killed ? reject(err) : resolve({ out: stdout, code: err?.code || 0 }));
     child.stdin.end(typeof stdinObj === 'string' ? stdinObj : stdinObj ? JSON.stringify(stdinObj) : '');
   });
+}
+
+async function until(cond, ms = 5000) {
+  const end = Date.now() + ms;
+  while (!cond() && Date.now() < end) await new Promise(r => setTimeout(r, 20));
+  return cond();
 }
 
 let pass = 0, fail = 0;
@@ -197,6 +207,27 @@ check('other input fields preserved', j.hookSpecificOutput?.updatedInput.descrip
 out = (await run('agent-context', { session_id: 's1', tool_name: 'Agent', tool_input: { prompt: '<claude-mem-context>already</claude-mem-context> do it' } })).out;
 check('no double-injection', out.trim() === '');
 
+// ---- 5b. the spawned agent's prompt is cleaned before it is sent as the context query ----
+console.log('\n[5b] agent context query: private tags + secrets');
+const agentPromptWithPrivateParts = 'Fix the login flow <private>customer SSN 123-45-6789</private> with key sk-ant-api03-Zx9AbCdEfGh12345678 today';
+const privatePartsSent = requests => requests.filter(r => {
+  const sentText = decodeURIComponent(r.url) + JSON.stringify(r.body ?? '');
+  return sentText.includes('123-45-6789') || sentText.includes('<private>') || sentText.includes('sk-ant-api03');
+});
+received = [];
+out = (await run('agent-context', { session_id: 's1', cwd: '/home/claude', tool_name: 'Agent', tool_input: { prompt: agentPromptWithPrivateParts } })).out;
+const contextQuery = new URL(received.find(r => r.url.startsWith('/api/hooks/context'))?.url || '/', 'http://x').searchParams.get('q') || '';
+check('context URL query has no private region or secret', privatePartsSent(received).length === 0, contextQuery);
+check('context URL query keeps the rest of the prompt', contextQuery.startsWith('Fix the login flow') && contextQuery.includes('[cmem-redacted]') && contextQuery.endsWith('today'), contextQuery);
+check('agent still gets its full original prompt', !!out.trim() && JSON.parse(out).hookSpecificOutput?.updatedInput?.prompt.endsWith(agentPromptWithPrivateParts), out.slice(0, 120));
+mode = 'no-hooks-endpoints';
+received = [];
+await run('agent-context', { session_id: 's1', cwd: '/home/claude', tool_name: 'Agent', tool_input: { prompt: agentPromptWithPrivateParts } });
+const fallbackQuery = String(received.find(r => r.body?.method === 'tools/call')?.body.params.arguments.query || '');
+check('memory_search fallback body has no private region or secret', privatePartsSent(received).length === 0, fallbackQuery);
+check('memory_search fallback keeps the rest of the prompt', fallbackQuery.startsWith('Fix the login flow') && fallbackQuery.includes('[cmem-redacted]'), fallbackQuery);
+mode = 'full';
+
 // ---- 6. MCP fallback when /api/hooks/* is 404 ----
 console.log('\n[6] MCP fallback (endpoints not deployed)');
 mode = 'no-hooks-endpoints';
@@ -215,13 +246,18 @@ mode = 'full';
 
 // ---- 7. no key → inert (blank-config plugin copy, isolated HOME) ----
 console.log('\n[7] unpaired = inert');
-const { execSync } = await import('node:child_process');
-execSync(`rm -rf /tmp/plugin-blank /tmp/emptyhome && mkdir -p /tmp/emptyhome && cp -r ${PLUGIN_DIR} /tmp/plugin-blank`);
-execSync(`node -e "const f='/tmp/plugin-blank/config.json',fs=require('fs'),c=JSON.parse(fs.readFileSync(f));c.apiKey='';c.userId='';c.syncHubUrl='';fs.writeFileSync(f,JSON.stringify(c))"`);
+const blankPlugin = join(TESTHOME, 'plugin-blank');
+const unpairedHome = join(TESTHOME, 'unpaired');
+mkdirSync(unpairedHome, { recursive: true });
+cpSync(PLUGIN_DIR, blankPlugin, { recursive: true });
+const blankConfigPath = join(blankPlugin, 'config.json');
+const blankConfig = JSON.parse(readFileSync(blankConfigPath, 'utf8'));
+blankConfig.apiKey = ''; blankConfig.userId = ''; blankConfig.syncHubUrl = '';
+writeFileSync(blankConfigPath, JSON.stringify(blankConfig));
 received = [];
 out = (await new Promise((resolve) => {
-  const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
-    env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
+  const child = execFile(process.execPath, [join(blankPlugin, 'scripts/cmem-hook.mjs'), 'observation'], {
+    env: { ...process.env, HOME: unpairedHome, USERPROFILE: unpairedHome, CLAUDE_CONFIG_DIR: unpairedHome + '/.claude', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '', CMEM_USER_ID: '', CMEM_SYNC_HUB_URL: '' },
     encoding: 'utf8', timeout: 45000
   }, (err, stdout) => resolve({ out: stdout }));
   child.stdin.end(JSON.stringify({ session_id: 's1', tool_name: 'Write', tool_use_id: 'tu_9' }));
@@ -230,11 +266,13 @@ check('no requests without key', received.length === 0);
 check('no stdout', out.trim() === '');
 // 7b: ~/.claude-mem/settings.json fallback supplies credentials when config is blank
 received = [];
-execSync('mkdir -p /tmp/emptyhome/.claude-mem');
-execSync(`node -e "require('fs').writeFileSync('/tmp/emptyhome/.claude-mem/settings.json',JSON.stringify({CLAUDE_MEM_CLOUD_SYNC_TOKEN:'cm_test_fallback',CLAUDE_MEM_CLOUD_SYNC_USER_ID:'u-1',CLAUDE_MEM_WORKER_PORT:'37777'}))"`);
+mkdirSync(join(unpairedHome, '.claude-mem'), { recursive: true });
+writeFileSync(join(unpairedHome, '.claude-mem/settings.json'), JSON.stringify({
+  CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'cm_test_fallback', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u-1', CLAUDE_MEM_WORKER_PORT: '37777',
+}));
 await new Promise((resolve) => {
-  const child = (execFile)('node', ['/tmp/plugin-blank/scripts/cmem-hook.mjs', 'observation'], {
-    env: { ...process.env, HOME: '/tmp/emptyhome', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '' },
+  const child = execFile(process.execPath, [join(blankPlugin, 'scripts/cmem-hook.mjs'), 'observation'], {
+    env: { ...process.env, HOME: unpairedHome, USERPROFILE: unpairedHome, CLAUDE_CONFIG_DIR: unpairedHome + '/.claude', CMEM_API_BASE: `http://127.0.0.1:${PORT}`, CMEM_API_KEY: '', CMEM_USER_ID: '', CMEM_SYNC_HUB_URL: '' },
     encoding: 'utf8', timeout: 45000
   }, () => resolve());
   child.stdin.end(JSON.stringify({ session_id: 's1', tool_name: 'Write', tool_use_id: 'tu_9b' }));
@@ -284,6 +322,24 @@ const tailBatch = received.find(r => r.body?.batch)?.body.batch.map(e => e.paylo
 check('next flush delivers the remainder', tailBatch.includes('e201'), JSON.stringify(tailBatch));
 check('spool empty after full drain', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
 
+// ---- 8d. session-init runs async, so a slow one overlaps later events ----
+console.log('\n[8d] slow session-init overlapping later events');
+rmSync(SPOOL, { force: true });
+received = [];
+holdIngest = env => env?.event === 'session-init';
+const slowInit = run('session-init', { session_id: 's5', cwd: '/home/claude', prompt: 'held prompt' });
+check('session-init request held open', await until(() => held.length === 1));
+await run('observation', { session_id: 's5', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_16', tool_input: { command: 'ls' } });
+check('a later event is delivered meanwhile', received.some(r => r.body?.payload?.tool_use_id === 'tu_16'));
+holdIngest = null;
+held.shift()?.writeHead(503).end('{}');
+await slowInit;
+check('the failed session-init is spooled', existsSync(SPOOL) && readFileSync(SPOOL, 'utf8').includes('held prompt'));
+received = [];
+await run('summarize', { session_id: 's5', cwd: '/home/claude' });
+check('and delivered by the next flush', received.some(r => r.body?.batch?.some(e => e.event === 'session-init' && e.payload.prompt === 'held prompt')), JSON.stringify(received.map(r => r.body?.event ?? 'batch')));
+check('spool empty afterwards', !existsSync(SPOOL) || readFileSync(SPOOL, 'utf8').trim() === '');
+
 // ---- 9. remaining lifecycle events ----
 console.log('\n[9] lifecycle events');
 received = [];
@@ -295,6 +351,10 @@ const evs = received.filter(r => r.url.startsWith('/api/hooks/ingest')).map(r =>
 check('session-init/subagent-stop/summarize/session-end all sent', ['session-init', 'subagent-stop', 'summarize', 'session-end'].every(e => evs.includes(e)), JSON.stringify(evs));
 const initEv = received.find(r => r.body?.event === 'session-init');
 check('prompt included in session-init', initEv?.body.payload.prompt === 'hello world');
+// UserPromptSubmit holds the prompt until its hooks finish and cancels one at
+// its timeout; session-init only sends, so it must run in the background
+const promptHooks = JSON.parse(readFileSync(PLUGIN_DIR + '/hooks/hooks.json', 'utf8')).hooks.UserPromptSubmit.flatMap(g => g.hooks);
+check('session-init hook is async (never holds the prompt)', promptHooks.length === 1 && promptHooks[0].command.endsWith(' session-init') && promptHooks[0].async === true, JSON.stringify(promptHooks));
 
 // ---- 9b. project auto-naming (cmem_work_ prefix) ----
 console.log('\n[9b] project auto-naming');
@@ -310,6 +370,36 @@ received = [];
 await run('observation', { session_id: 's3', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_23' }, { CMEM_PROJECT: 'my-explicit' });
 check('project is NOT a setting — env override ignored', received[0]?.body.project === 'cmem_work_root', received[0]?.body.project);
 
+// ---- 9c. local-first: an enabled plugin registered in installed_plugins.json
+// with its hook and worker files means no cmem.ai traffic at all (no context
+// read, no capture), worker up or down ----
+console.log('\n[9c] local-first');
+const LOCAL_PLUGIN = TESTHOME + '/.claude/plugins/cache/thedotmack/claude-mem/13.30.0';
+mkdirSync(LOCAL_PLUGIN + '/hooks', { recursive: true });
+mkdirSync(LOCAL_PLUGIN + '/scripts', { recursive: true });
+writeFileSync(LOCAL_PLUGIN + '/hooks/hooks.json', '{}');
+writeFileSync(LOCAL_PLUGIN + '/scripts/worker-service.cjs', '// owned injector fixture');
+writeFileSync(TESTHOME + '/.claude/settings.json', JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': true } }));
+writeFileSync(TESTHOME + '/.claude/plugins/installed_plugins.json', JSON.stringify({ version: 2, plugins: { 'claude-mem@thedotmack': [{ installPath: LOCAL_PLUGIN }] } }));
+received = [];
+// run() points CLAUDE_MEM_WORKER_PORT at port 1, so the local worker is down (a cold start)
+const localStart = await run('context', { session_id: 's9', cwd: '/home/claude', source: 'startup' });
+check('no /api/hooks/context request when claude-mem is installed locally', !received.some(r => r.url.startsWith('/api/hooks/context')));
+check('no cloud context block injected', !localStart.out.includes('claude-mem-context'), localStart.out.slice(0, 120));
+received = [];
+await run('agent-context', { session_id: 's9', cwd: '/home/claude', tool_input: { prompt: 'find the auth bug' } });
+check('agent prompts skip the cloud read too', !received.some(r => r.url.startsWith('/api/hooks/context') || r.url.startsWith('/api/mcp')));
+received = [];
+await run('session-init', { session_id: 's9', cwd: '/home/claude', prompt: 'hello' });
+await run('observation', { session_id: 's9', cwd: '/home/claude', tool_name: 'Bash', tool_use_id: 'tu_30', tool_input: { command: 'ls' } });
+check('capture is skipped too (the local plugin and its cloud sync own it)', received.length === 0, JSON.stringify(received.map(r => r.url)));
+const localStatus = await run('status', '');
+check('status says the hooks are off', localStatus.out.includes('hooks    : off'), localStatus.out);
+rmSync(TESTHOME + '/.claude', { recursive: true, force: true });
+received = [];
+const cloudStart = await run('context', { session_id: 's10', cwd: '/home/claude', source: 'startup' });
+check('without a local install the cloud context is still read', received.some(r => r.url.startsWith('/api/hooks/context')) && cloudStart.out.includes('claude-mem-context'));
+
 // ---- 10. malformed stdin never crashes ----
 console.log('\n[10] resilience');
 const r1 = await run('observation', '{{{not json');
@@ -318,5 +408,6 @@ const r2 = await run('unknown-event', '{}');
 check('unknown event exits 0', r2.code === 0);
 
 server.close();
+rmSync(TESTHOME, { recursive: true, force: true });
 console.log(`\n===== ${pass} passed, ${fail} failed =====`);
 process.exit(fail ? 1 : 0);

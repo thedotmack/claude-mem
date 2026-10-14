@@ -29,6 +29,13 @@ function stringOrUndefined(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
+const MAX_AGENT_FIELD_LEN = 128;
+
+function agentFieldOrUndefined(value: unknown): string | undefined {
+  const field = stringOrUndefined(value);
+  return field && field.length <= MAX_AGENT_FIELD_LEN ? field : undefined;
+}
+
 function booleanOrUndefined(value: unknown): boolean | undefined {
   if (typeof value === 'boolean') return value;
   if (value === 'true') return true;
@@ -59,7 +66,7 @@ function inferOutputEvent(result: HookResult): CodexEventName | undefined {
 export const codexAdapter: PlatformAdapter = {
   normalizeInput(raw): NormalizedHookInput {
     const r = (raw ?? {}) as Record<string, unknown>;
-    const cwd = typeof r.cwd === 'string' ? r.cwd : process.cwd();
+    const cwd = (typeof r.cwd === 'string' && r.cwd) || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
@@ -92,6 +99,9 @@ export const codexAdapter: PlatformAdapter = {
       toolName,
       toolInput,
       toolResponse: r.tool_response,
+      toolUseId: stringOrUndefined(r.tool_use_id),
+      agentId: agentFieldOrUndefined(r.agent_id),
+      agentType: agentFieldOrUndefined(r.agent_type),
       transcriptPath: stringOrUndefined(r.transcript_path),
       lastAssistantMessage: stringOrUndefined(r.last_assistant_message),
       turnId: stringOrUndefined(r.turn_id),

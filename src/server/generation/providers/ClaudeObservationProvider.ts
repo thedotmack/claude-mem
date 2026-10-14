@@ -11,8 +11,9 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
 
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+const ANTHROPIC_DEFAULT_BASE_URL = 'https://api.anthropic.com';
 const ANTHROPIC_VERSION = '2023-06-01';
 // #2554 — the previous default `claude-3-5-sonnet-latest` is stale and 404s on
 // the current Anthropic Messages API. Align with the repo's canonical default
@@ -27,6 +28,10 @@ export interface ClaudeObservationProviderOptions {
   model?: string;
   maxOutputTokens?: number;
   fetchImpl?: typeof fetch;
+  // Anthropic-API-compatible gateway base URL (no path suffix — `/v1/messages`
+  // is appended), for deployments that don't call api.anthropic.com directly.
+  // Defaults to the real Anthropic API.
+  baseUrl?: string;
 }
 
 interface AnthropicMessagesResponse {
@@ -41,6 +46,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   private readonly model: string;
   private readonly maxOutputTokens: number;
   private readonly fetchImpl: typeof fetch;
+  private readonly messagesUrl: string;
 
   constructor(options: ClaudeObservationProviderOptions) {
     if (!options.apiKey) {
@@ -53,13 +59,25 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
     this.model = options.model ?? DEFAULT_MODEL;
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.fetchImpl = options.fetchImpl ?? fetch;
+    const baseUrl = (options.baseUrl?.trim() || ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, '');
+    this.messagesUrl = `${baseUrl}/v1/messages`;
   }
 
   async generate(
     context: ServerGenerationContext,
     signal?: AbortSignal,
   ): Promise<ServerGenerationResult> {
-    const { prompt, skippedAll } = buildServerGenerationPrompt(context);
+    const { prompt, skippedAll, noEvents } = buildServerGenerationPrompt(context);
+    // Nothing was loaded, so there is nothing to summarise and no question to
+    // ask a model. Answering it anyway bought `<skip_summary />` and recorded
+    // the result as an ordinary completion; the reason below names it instead.
+    if (noEvents) {
+      return {
+        rawText: '<skip_summary reason="no_events_loaded" />',
+        providerLabel: this.providerLabel,
+        modelId: this.model,
+      };
+    }
     if (skippedAll) {
       // All events were scrubbed by privacy stripping. Don't bill the
       // provider — return a synthetic skip response that parser accepts.
@@ -139,7 +157,7 @@ export class ClaudeObservationProvider implements ServerGenerationProvider {
   }
 
   private postMessages(prompt: string, signal?: AbortSignal): Promise<Response> {
-    return this.fetchImpl(ANTHROPIC_API_URL, {
+    return this.fetchImpl(this.messagesUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -252,7 +270,7 @@ export function classifyClaudeServerError(input: ClassifyInput): ServerClassifie
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.warn('SDK', 'Failed to read Anthropic error response body', {

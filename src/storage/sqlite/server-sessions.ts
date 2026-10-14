@@ -5,6 +5,7 @@ import { Database } from 'bun:sqlite';
 import { CreateServerSessionSchema, ServerSessionSchema, type CreateServerSession, type ServerSession, type ServerSessionStatus } from '../../core/schemas/session.js';
 import { ensureServerStorageSchema } from './schema.js';
 import { parseJsonObject, stringifyJson } from './serde.js';
+import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 interface ServerSessionRow {
   id: string;
@@ -60,7 +61,7 @@ export class ServerSessionsRepository {
       session.platformSource ?? 'claude',
       session.title ?? null,
       'active',
-      stringifyJson(session.metadata),
+      stringifyJson(stripMemoryTagsFromJsonStrings(session.metadata)),
       now,
       null,
       now

@@ -31,7 +31,7 @@ export const cursorAdapter: PlatformAdapter = {
   normalizeInput(raw) {
     const r = (raw ?? {}) as any;
     const isShellCommand = !!r.command && !r.tool_name;
-    const cwd = r.workspace_roots?.[0] ?? r.cwd ?? process.cwd();
+    const cwd = r.workspace_roots?.[0] || r.cwd || process.cwd();
     if (!isValidCwd(cwd)) {
       throw new AdapterRejectedInput('invalid_cwd');
     }
@@ -43,6 +43,7 @@ export const cursorAdapter: PlatformAdapter = {
       toolName: isShellCommand ? 'Bash' : r.tool_name,
       toolInput: isShellCommand ? { command: r.command } : r.tool_input,
       toolResponse: isShellCommand ? { output: r.output } : r.result_json,  // result_json not tool_response
+      toolUseId: typeof r.tool_use_id === 'string' ? r.tool_use_id : (typeof r.tool_call_id === 'string' ? r.tool_call_id : undefined),
       // Cursor's stop hook does not pass a transcript path on stdin, but it
       // does write a JSONL transcript to disk under ~/.cursor/projects/...,
       // so we derive the path from cwd + conversation id.

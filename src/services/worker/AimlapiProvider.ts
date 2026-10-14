@@ -1,4 +1,5 @@
 
+import { randomUUID } from 'crypto';
 import { getCredential } from '../../shared/EnvManager.js';
 import { AIMLAPI_DEFAULT_MODEL, resolveAimlapiChatCompletionsUrl } from '../../shared/aimlapi-base-url.js';
 import { aimlapiAttributionHeaders, AIMLAPI_APP_TITLE } from '../../shared/aimlapi-attribution.js';
@@ -9,8 +10,14 @@ import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
 import { SessionManager } from './SessionManager.js';
 import { ClassifiedProviderError, type ProviderErrorClass } from './provider-errors.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
 import { withRetry, parseRetryAfterMs } from './retry.js';
-import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
+import {
+  OpenAICompatibleProvider,
+  type ObserverRequestLabel,
+  type OpenAIChatMessage,
+  type ProviderQueryResult,
+} from './OpenAICompatibleProvider.js';
 
 /**
  * OpenAI-compatible client configuration.
@@ -176,11 +183,6 @@ export function classifyAimlapiError(input: {
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
-interface OpenAIMessage {
-  role: 'user' | 'assistant' | 'system';
-  content: string;
-}
-
 interface AimlapiResponse {
   /** The model that actually served the request — not the configured string. */
   model?: string;
@@ -259,15 +261,24 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     };
   }
 
-  private conversationToOpenAIMessages(history: ConversationMessage[]): OpenAIMessage[] {
-    return history.map(msg => ({
-      role: msg.role === 'assistant' ? 'assistant' : 'user',
-      content: msg.content
-    }));
-  }
+  /**
+   * The base class owns message building now: the framing prompt goes out as
+   * the system message with its user request as the first user turn (#3868),
+   * empty turns are dropped and consecutive same-role turns merged (#3491).
+   * This provider kept a private copy of the old straight `history.map`, which
+   * both shadowed the inherited member (TS2415) and sent every observer
+   * generation's schema as a user turn a small model forgets.
+   */
 
-  protected async query(history: ConversationMessage[], config: AimlapiConfig): Promise<ProviderQueryResult> {
-    return this.queryAimlapiMultiTurn(history, config.apiKey, config.model, config.apiUrl, config.siteUrl, config.appName);
+  protected async query(
+    history: ConversationMessage[],
+    config: AimlapiConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
+    _label?: ObserverRequestLabel,
+  ): Promise<ProviderQueryResult> {
+    return this.queryAimlapiMultiTurn(history, config, signal, perAttemptTimeoutMs, paidSendBudget);
   }
 
   /** POST the chat-completions request. Extracted so the retry try block stays narrow. */
@@ -275,10 +286,12 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     apiUrl: string,
     apiKey: string,
     model: string,
-    messages: OpenAIMessage[],
+    messages: OpenAIChatMessage[],
     siteUrl: string | undefined,
     appName: string | undefined,
     priorRequestId: string | null,
+    /** Tracing only; never treated as server-side idempotency. */
+    clientAttemptId: string,
     attemptSignal: AbortSignal
   ): Promise<Response> {
     return fetch(apiUrl, {
@@ -287,6 +300,7 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
         'Authorization': `Bearer ${apiKey}`,
         ...aimlapiAttributionHeaders(siteUrl, appName),
         'Content-Type': 'application/json',
+        'x-client-request-id': clientAttemptId,
         ...(priorRequestId ? { 'x-claude-mem-prior-request-id': priorRequestId } : {}),
       },
       body: JSON.stringify({
@@ -301,15 +315,18 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
 
   private async queryAimlapiMultiTurn(
     history: ConversationMessage[],
-    apiKey: string,
-    model: string,
-    apiUrl: string,
-    siteUrl?: string,
-    appName?: string
+    config: AimlapiConfig,
+    signal?: AbortSignal,
+    perAttemptTimeoutMs?: number,
+    paidSendBudget?: PaidSendBudget,
   ): Promise<ProviderQueryResult> {
+    const { apiKey, model, apiUrl, siteUrl, appName } = config;
     const messages = this.conversationToOpenAIMessages(history);
     const totalChars = history.reduce((sum, m) => sum + m.content.length, 0);
     const estimatedTokens = this.estimateTokens(history.map(m => m.content).join(''));
+    // The claimed batch's attempt id when this request belongs to one, so the
+    // budget's accounting and the header on the wire name the same send.
+    const clientAttemptId = paidSendBudget?.clientAttemptId ?? randomUUID();
 
     logger.debug('SDK', `Querying aimlapi.com multi-turn (${model})`, {
       turns: history.length,
@@ -322,7 +339,7 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
     const data = await withRetry<AimlapiResponse>(async (attemptSignal) => {
       let response: Response;
       try {
-        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, attemptSignal);
+        response = await this.fetchChatCompletion(apiUrl, apiKey, model, messages, siteUrl, appName, priorRequestId, clientAttemptId, attemptSignal);
       } catch (networkError: unknown) {
         const err = networkError instanceof Error ? networkError : new Error(String(networkError));
         throw classifyAimlapiError({ cause: err });
@@ -360,7 +377,19 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
       }
 
       return responseData;
-    }, { label: `aimlapi.com ${model}` });
+    }, {
+      label: `aimlapi.com ${model}`,
+      // The base class races its own deadline on the field-compression pass and
+      // aborts a cancelled session; a request that ignored these outlived both.
+      abortSignal: signal,
+      perAttemptTimeoutMs,
+      // Every send that may have been billed spends one of the claimed batch's
+      // allowance, and a spent budget refuses to send at all — the same cap
+      // every other OpenAI-compatible provider is under.
+      paidSendBudget,
+      clientAttemptId,
+      ...(signal ? { maxRetries: 0 } : {}),
+    });
 
     if (!data.choices?.[0]?.message?.content) {
       logger.error('SDK', 'Empty response from aimlapi.com');
@@ -381,6 +410,12 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
       ? (orCost ?? 0) + (upstreamCost ?? 0)
       : undefined;
     const servedModel = typeof data.model === 'string' && data.model ? data.model : undefined;
+    // 'length' is what tells the base class a reply was cut off at the
+    // output-token cap: it marks a condensed field truncated (compressField)
+    // and reaches the response path as session.lastFinishReason.
+    const finishReason = typeof data.choices[0].finish_reason === 'string'
+      ? data.choices[0].finish_reason
+      : undefined;
 
     if (tokensUsed) {
       logger.info('SDK', 'aimlapi.com API usage', {
@@ -400,14 +435,21 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
       }
     }
 
-    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel };
+    return { content, tokensUsed, inputTokens: realInputTokens, outputTokens: realOutputTokens, costUsd, servedModel, finishReason };
   }
 
   private getAimlapiConfig(): AimlapiConfig {
     const settingsPath = USER_SETTINGS_PATH;
     const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
 
-    const apiKey = settings.CLAUDE_MEM_AIMLAPI_API_KEY || getCredential('AIMLAPI_API_KEY') || '';
+    // `getCredential` reads the Claude Mem credential file only, so a deployment that
+    // exports the documented AIMLAPI_API_KEY (and nothing else) was configuring no
+    // provider at all: selection fell through to Claude with a valid key present.
+    const apiKey = settings.CLAUDE_MEM_AIMLAPI_API_KEY
+      || process.env.AIMLAPI_API_KEY?.trim()
+      || process.env.CLAUDE_MEM_AIMLAPI_API_KEY?.trim()
+      || getCredential('AIMLAPI_API_KEY')
+      || '';
 
     // Model is passed verbatim — any aimlapi.com model id is accepted.
     // Settings are raw JSON passthrough, so coerce non-string spellings (e.g. a
@@ -436,7 +478,10 @@ export class AimlapiProvider extends OpenAICompatibleProvider<AimlapiConfig> {
 export function isAimlapiAvailable(): boolean {
   const settingsPath = USER_SETTINGS_PATH;
   const settings = SettingsDefaultsManager.loadFromFile(settingsPath);
-  return !!(settings.CLAUDE_MEM_AIMLAPI_API_KEY || getCredential('AIMLAPI_API_KEY'));
+  return !!(settings.CLAUDE_MEM_AIMLAPI_API_KEY
+    || process.env.AIMLAPI_API_KEY?.trim()
+    || process.env.CLAUDE_MEM_AIMLAPI_API_KEY?.trim()
+    || getCredential('AIMLAPI_API_KEY'));
 }
 
 export function isAimlapiSelected(): boolean {

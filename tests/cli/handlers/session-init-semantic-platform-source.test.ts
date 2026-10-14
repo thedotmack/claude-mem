@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, it, mock, spyOn } from 'bun:tes
 import { homedir } from 'os';
 import { join } from 'path';
 
+import { HOOK_TIMEOUTS } from '../../../src/shared/hook-constants.js';
 import * as realSettingsDefaultsManager from '../../../src/shared/SettingsDefaultsManager.js';
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
 import * as realWorkerUtils from '../../../src/shared/worker-utils.js';
@@ -10,6 +11,7 @@ const realSettingsSnapshot = { ...realSettingsDefaultsManager };
 const realHookSettingsSnapshot = { ...realHookSettings };
 const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 const originalInternalEnv = process.env.CLAUDE_MEM_INTERNAL;
+const SESSION_INIT_TIMEOUT_MS = HOOK_TIMEOUTS.SESSION_INIT_REQUEST;
 
 mock.module('../../../src/shared/SettingsDefaultsManager.js', () => ({
   SettingsDefaultsManager: {
@@ -97,9 +99,12 @@ describe('sessionInitHandler semantic injection platform source', () => {
           CLAUDE_MEM_SEMANTIC_INJECT_LIMIT: '7',
         }),
         resolveRuntimeContext: () => ({ runtime: 'worker' }),
+        // Stubbed with its siblings: the real reader touches settings.json,
+        // which prints a creation notice on stderr in a fresh data dir.
+        getSessionInitRequestTimeoutMs: () => ${SESSION_INIT_TIMEOUT_MS},
         shouldTrackProject: () => true,
-        executeWithWorkerFallback: async (apiPath, method, body) => {
-          workerCallLog.push({ path: apiPath, method, body });
+        executeWithWorkerFallback: async (apiPath, method, body, options) => {
+          workerCallLog.push({ path: apiPath, method, body, options });
           if (apiPath === '/api/sessions/init') return { sessionDbId: 42, promptNumber: 1 };
           if (apiPath === '/api/context/semantic') return { context: 'semantic context', count: 1 };
           throw new Error('Unexpected worker call: ' + apiPath);
@@ -113,12 +118,18 @@ describe('sessionInitHandler semantic injection platform source', () => {
         prompt: ${JSON.stringify(prompt)},
       });
       const semanticCall = workerCallLog.find(call => call.path === '/api/context/semantic');
+      const initCall = workerCallLog.find(call => call.path === '/api/sessions/init');
       if (!result.continue || !result.suppressOutput) throw new Error('unexpected result ' + JSON.stringify(result));
       if (!semanticCall) throw new Error('semantic call missing: ' + JSON.stringify(workerCallLog));
+      if (!initCall) throw new Error('init call missing: ' + JSON.stringify(workerCallLog));
       if (semanticCall.method !== 'POST') throw new Error('semantic method mismatch: ' + semanticCall.method);
       const body = semanticCall.body;
       if (body.q !== ${JSON.stringify(prompt)} || body.limit !== '7' || body.platformSource !== 'codex') {
         throw new Error('semantic body mismatch: ' + JSON.stringify(body));
+      }
+      const expectedOptions = JSON.stringify({ workerStartupTimeoutMs: 15000, timeoutMs: 2000 });
+      if (JSON.stringify(initCall.options) !== expectedOptions || JSON.stringify(semanticCall.options) !== expectedOptions) {
+        throw new Error('Codex hook options mismatch: ' + JSON.stringify(workerCallLog));
       }
     `;
 

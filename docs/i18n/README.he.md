@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[הגדרות](https://docs.claude-mem.ai/configuration)** - משתני סביבה והגדרות
 - **[פיתוח](https://docs.claude-mem.ai/development)** - בנייה, בדיקה, תרומה
-- **[ענפי שחרור](https://docs.claude-mem.ai/branches)** - זרימת הענפים Stable, core-dev, ו-community-edge
 - **[פתרון בעיות](https://docs.claude-mem.ai/troubleshooting)** - בעיות נפוצות ופתרונות
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 ראה [מדריך כלי חיפוש](https://docs.claude-mem.ai/usage/search-tools) לדוגמאות מפורטות.
-
----
-
-## ענפי שחרור
-
-שחרורים יציבים משוחררים מהענף `main` ומפורסמים ל-npm. `core-dev` ו-
-`community-edge` הם ענפים המורצים ממקור, המיועדים לתיקוני יציבות מוקדמים ולשילובים
-קהילתיים. ראה **[ענפי שחרור](https://docs.claude-mem.ai/branches)**
-לזרימת הענפים ולהוראות הרצה לא-יציבות.
 
 ---
 
@@ -383,11 +373,6 @@ npm run bug-report
 3. בצע את השינויים שלך עם בדיקות
 4. עדכן תיעוד
 5. שלח Pull Request
-
-Claude-Mem משוחרר משלושה ענפים: `main` (יציב), `core-dev`, ו-
-`community-edge`. רק `main` מפורסם ל-npm; האחרים מורצים ממקור.
-ראה [ענפי שחרור](https://docs.claude-mem.ai/branches) לאסטרטגיה ולהוראות
-הרצה מקומיות.
 
 ראה [מדריך פיתוח](https://docs.claude-mem.ai/development) לתהליך תרומה.
 
