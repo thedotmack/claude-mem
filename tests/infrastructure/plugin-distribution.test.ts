@@ -669,10 +669,11 @@ const codexHook = (tail: string[]) => buildShellCommand({
   host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
   trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
   extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+  requireDependencies: true,
 });
 const codexHookPair = (tail: string[]) => ({
   command: codexHook(tail),
-  commandWindows: buildCodexWindowsCommand(tail),
+  commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
 });
 
 const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
@@ -861,6 +862,9 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     const shimBin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
     const cacheScanMarker = path.join(home, 'cache-scan-ran');
     mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    // The Codex hooks require the host root's dependencies (#4763), so this
+    // "valid root" carries node_modules like an installer-prepared copy.
+    mkdirSync(path.join(root, 'node_modules'), { recursive: true });
     for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
       writeFileSync(path.join(root, 'scripts', file), '');
     }
@@ -911,14 +915,53 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     }
   });
 
+  it('skips a Codex host root whose dependencies are missing and falls back to the cache (#4763)', () => {
+    // Codex's own plugin copy carries the scripts but never its dependencies:
+    // the CLI rebuilds that folder on every `codex plugin add`, so a hook that
+    // resolves to it dies with `Cannot find module 'zod/v3'` and the session
+    // records nothing. The resolver must reject that root and fall back to the
+    // installer-prepared cache copy instead. One hook proves the resolver
+    // behavior; running all six only multiplies shell spawns.
+    const codexRoot = mkdtempSync(path.join(tmpdir(), 'cm-codex-root-'));
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
+    const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+    mkdirSync(path.join(codexRoot, 'scripts'), { recursive: true });
+    for (const file of ['bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(codexRoot, 'scripts', file), '');
+    }
+    // The Codex copy deliberately has no node_modules — that is the bug shape.
+    mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
+    // The prepared cache copy has the dependencies (the installer ran bun
+    // install there); only the host root is dependency-checked, so it still
+    // resolves.
+    mkdirSync(path.join(cacheRoot, 'node_modules'), { recursive: true });
+    for (const file of ['bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(cacheRoot, 'scripts', file), '');
+    }
+
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const command = hookCommandByPath(codexHooks, 'SessionStart.0.0')!;
+
+    try {
+      const { status, stdout } = shellEval(instrument(command), {
+        CLAUDE_PLUGIN_ROOT: codexRoot,
+        HOME: home,
+      });
+      expect(status).toBe(0);
+      expectResolvedPath(stdout, cacheRoot);
+    } finally {
+      rmSync(codexRoot, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
     mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
     writeFileSync(path.join(cacheRoot, 'scripts', 'version-check.js'), '');
     writeFileSync(path.join(cacheRoot, 'scripts', 'bun-runner.js'), '');
-    writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');
-    try {
+    writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');    try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
         // The version-sort producer yields a trailing slash; the hook trims it
