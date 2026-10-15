@@ -3,6 +3,7 @@ import path from 'path';
 import { homedir } from 'os';
 import { existsSync, readFileSync, writeFileSync, unlinkSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
+import { parseJsonWithBom } from '../../shared/atomic-json.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
@@ -181,6 +182,70 @@ export async function installCursorHooks(target: CursorInstallTarget): Promise<n
   }
 }
 
+type CursorHookEntry = { command?: unknown };
+
+/**
+ * A hook entry is ours when it runs `worker-service ... hook cursor <command>`.
+ * Anything else in hooks.json belongs to the user (or another tool).
+ */
+function isClaudeMemCursorHook(hook: unknown): boolean {
+  const command = (hook as CursorHookEntry | null)?.command;
+  return typeof command === 'string' && command.includes('worker-service') && command.includes('hook cursor');
+}
+
+function readExistingCursorHooksJson(hooksJsonPath: string): Record<string, any> | null {
+  if (!existsSync(hooksJsonPath)) return null;
+  try {
+    const parsed = parseJsonWithBom<unknown>(readFileSync(hooksJsonPath, 'utf-8'));
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new Error('top-level value is not an object');
+    }
+    return parsed as Record<string, any>;
+  } catch (error) {
+    const cause = error instanceof Error ? error : new Error(String(error));
+    logger.error('WORKER', 'Corrupt hooks.json, refusing to overwrite', { path: hooksJsonPath }, cause);
+    throw new Error(`Corrupt hooks.json at ${hooksJsonPath}, refusing to overwrite (${cause.message})`);
+  }
+}
+
+/** Merge our hooks into whatever the user already has, replacing only our own earlier entries. */
+function mergeCursorHooksJson(existing: Record<string, any> | null, ours: CursorHooksJson): Record<string, any> {
+  const merged: Record<string, any> = { ...(existing ?? {}) };
+  if (typeof merged.version !== 'number') merged.version = ours.version;
+  const existingHooks: Record<string, any> =
+    merged.hooks && typeof merged.hooks === 'object' && !Array.isArray(merged.hooks) ? merged.hooks : {};
+  const mergedHooks: Record<string, any> = { ...existingHooks };
+
+  for (const [eventName, entries] of Object.entries(ours.hooks)) {
+    const kept = Array.isArray(existingHooks[eventName])
+      ? existingHooks[eventName].filter((hook: unknown) => !isClaudeMemCursorHook(hook))
+      : [];
+    mergedHooks[eventName] = [...kept, ...(entries ?? [])];
+  }
+
+  merged.hooks = mergedHooks;
+  return merged;
+}
+
+/** Drop only our entries. Returns the file's remaining content, or null when no hooks remain. */
+function removeClaudeMemCursorHooks(existing: Record<string, any>): Record<string, any> | null {
+  const hooks: Record<string, any> =
+    existing.hooks && typeof existing.hooks === 'object' && !Array.isArray(existing.hooks) ? { ...existing.hooks } : {};
+
+  for (const [eventName, entries] of Object.entries(hooks)) {
+    if (!Array.isArray(entries)) continue;
+    const kept = entries.filter((hook) => !isClaudeMemCursorHook(hook));
+    if (kept.length === 0) {
+      delete hooks[eventName];
+    } else {
+      hooks[eventName] = kept;
+    }
+  }
+
+  if (Object.keys(hooks).length === 0) return null;
+  return { ...existing, hooks };
+}
+
 async function writeHooksJsonAndSetupProject(
   hooksJsonPath: string,
   hooksJson: CursorHooksJson,
@@ -189,8 +254,9 @@ async function writeHooksJsonAndSetupProject(
   targetDir: string,
   workspaceRoot: string,
 ): Promise<void> {
-  writeFileSync(hooksJsonPath, JSON.stringify(hooksJson, null, 2));
-  console.log(`  Created hooks.json (unified CLI mode)`);
+  const merged = mergeCursorHooksJson(readExistingCursorHooksJson(hooksJsonPath), hooksJson);
+  writeFileSync(hooksJsonPath, JSON.stringify(merged, null, 2));
+  console.log(`  Wrote hooks.json (unified CLI mode, existing hooks preserved)`);
   console.log(`  Worker service: ${workerServicePath}`);
 
   if (target === 'project') {
@@ -320,8 +386,23 @@ function removeCursorHooksFiles(
   }
 
   if (existsSync(hooksJsonPath)) {
-    unlinkSync(hooksJsonPath);
-    console.log(`  Removed hooks.json`);
+    let remaining: Record<string, any> | null = null;
+    let parsed = true;
+    try {
+      remaining = removeClaudeMemCursorHooks(readExistingCursorHooksJson(hooksJsonPath)!);
+    } catch {
+      parsed = false;
+      console.log(`  Warning: could not parse hooks.json — leaving file intact to preserve other hooks`);
+    }
+    if (parsed) {
+      if (remaining === null) {
+        unlinkSync(hooksJsonPath);
+        console.log(`  Removed hooks.json (no hooks remaining)`);
+      } else {
+        writeFileSync(hooksJsonPath, JSON.stringify(remaining, null, 2));
+        console.log(`  Removed claude-mem entries from hooks.json (other hooks preserved)`);
+      }
+    }
   }
 
   if (target === 'project') {
