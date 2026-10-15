@@ -1,6 +1,6 @@
 import { describe, expect, it, afterAll } from 'bun:test';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
-import { delimiter, join } from 'node:path';
+import { delimiter, isAbsolute, join } from 'node:path';
 import { resolveDataDir } from '../../../src/shared/paths.js';
 import { treeSitterBinaryName } from '../../../src/services/smart-file-read/tree-sitter-bin-name.js';
 import { checkTreeSitterCliLoadable, pickTreeSitterBinPath } from '../../../src/services/smart-file-read/tree-sitter-bin-path.js';
@@ -200,6 +200,21 @@ describe.skipIf(process.platform === 'win32')('pickTreeSitterBinPath', () => {
     const picked = pickTreeSitterBinPath(local, binaryName, pathDir);
     expect(picked).toBe(local);
     expect(checkTreeSitterCliLoadable(picked).reason).toContain('GLIBC_2.39');
+  });
+
+  it('returns an absolute path when the working binary comes from a relative PATH entry', () => {
+    const local = writeExecutable(join(scratchRoot, 'pick-rel', 'pkg'), glibcFailure);
+    writeExecutable(join(scratchRoot, 'pick-rel', 'bin'), working);
+    const originalCwd = process.cwd();
+    process.chdir(join(scratchRoot, 'pick-rel'));
+    try {
+      const picked = pickTreeSitterBinPath(local, binaryName, 'bin');
+      expect(isAbsolute(picked)).toBe(true);
+      // Callers re-check the picked path with no PATH help: it must still load.
+      expect(checkTreeSitterCliLoadable(picked, '').loadable).toBe(true);
+    } finally {
+      process.chdir(originalCwd);
+    }
   });
 
   it('keeps the package-local binary when PATH has no tree-sitter', () => {

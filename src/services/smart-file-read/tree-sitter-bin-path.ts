@@ -6,7 +6,7 @@
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { accessSync, constants, existsSync, statSync } from "node:fs";
-import { delimiter, dirname, isAbsolute, join } from "node:path";
+import { delimiter, dirname, isAbsolute, join, resolve } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 
 const _require = typeof __filename !== 'undefined'
@@ -175,7 +175,7 @@ function resolveOnPath(binName: string, searchPath: string): string | undefined 
       // Mirror the OS's own PATH lookup: a non-executable file does not shadow
       // a working executable later in PATH (the parser's bare-name spawn skips
       // it the same way).
-      if (statSync(candidate).isFile() && isExecutableFile(candidate)) return candidate;
+      if (statSync(candidate).isFile() && isExecutableFile(candidate)) return resolve(candidate);
     } catch {
       // Not in this directory; keep looking.
     }
