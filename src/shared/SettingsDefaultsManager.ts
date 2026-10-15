@@ -401,6 +401,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_HOST: string;
   CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: string;
   CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: string;
 }
 
 export class SettingsDefaultsManager {
@@ -660,6 +661,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_HOST: '127.0.0.1',
     CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: 'true',             // worker starts the wire gateway at boot while routes.json has a route
     CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: '600000',    // stop/restart waits this long for in-flight streams before force-closing
+    CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: '67108864', // 64 MiB: largest request body the relay reads; larger ones get a protocol-native 413
   };
 
   static getAllDefaults(): SettingsDefaults {

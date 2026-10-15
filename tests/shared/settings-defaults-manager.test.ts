@@ -1043,12 +1043,13 @@ describe('SettingsDefaultsManager', () => {
       expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CLAUDE_CONFIG_DIR).toBe('');
     });
 
-    it('wire gateway defaults: uid-derived port below the worker range, loopback, autostart, 10 min drain', () => {
+    it('wire gateway defaults: uid-derived port below the worker range, loopback, autostart, 10 min drain, 64 MiB body limit', () => {
       const defaults = SettingsDefaultsManager.getAllDefaults();
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_PORT).toBe(String(37600 + ((process.getuid?.() ?? 77) % 100)));
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_HOST).toBe('127.0.0.1');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART).toBe('true');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS).toBe('600000');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES).toBe('67108864');
     });
 
     it('cloud sync content flush knobs default to 40 ops / 90s', () => {

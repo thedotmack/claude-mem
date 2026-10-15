@@ -38,9 +38,19 @@ import {
   wireGatewayIdentity,
 } from './router.js';
 import { installWireGatewayOsService, uninstallWireGatewayOsService } from './os-service.js';
+import {
+  WireGatewayRoutesStore,
+  addWireGatewayRoute,
+  readWireGatewayRoutesFile,
+  removeWireGatewayRoute,
+  type WireGatewayCaptureSource,
+} from './routes.js';
+import { isLoopbackAddress } from './network-guard.js';
+import { createWireGatewayRelay, type RelayObserver } from './relay/relay.js';
+import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
 
 // Bun.serve's idle timer, in seconds (max 255). It also bounds the wait before
-// response headers; Phase 2 disables it per relayed request with
+// response headers; the relay disables it per relayed request with
 // server.timeout(req, 0). Report 08 §Q2.
 const WIRE_GATEWAY_IDLE_TIMEOUT_SECONDS = 255;
 
@@ -57,6 +67,18 @@ export interface WireGatewayServiceOptions {
   host: string;
   port: number;
   drainTimeoutMs: number;
+  /** CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES. */
+  maxRequestBytes: number;
+  /** A request body silent this long is answered 408. Test seam; defaults to 60 s. */
+  requestBodyIdleTimeoutMs?: number;
+  /** Test seam: routes.json path; defaults to <DATA_DIR>/wire-gateway/routes.json. */
+  routesFilePath?: string;
+  /** Test seam: how often routes.json's stamp is looked at; defaults to once a second. */
+  routesReloadCheckIntervalMs?: number;
+  /** The capture seam later phases record through. */
+  relayObserver?: RelayObserver;
+  /** Test seam: Bun.serve's idle timer in seconds; defaults to 255. */
+  idleTimeoutSeconds?: number;
   /** Write PID/port/state files and the process-registry entry. Off for in-process tests. */
   persistRuntimeState?: boolean;
   /** Test seam for the Bun gate; defaults to Bun.version. */
@@ -100,12 +122,25 @@ export class WireGatewayService {
     }
     ensureWireGatewayDirs();
 
-    const handleRequest = this.options.fetchHandler ?? createWireGatewayFetchHandler({ listenHost: this.options.host });
+    const relay = createWireGatewayRelay({
+      routesStore: new WireGatewayRoutesStore({
+        routesFilePath: this.options.routesFilePath,
+        reloadCheckIntervalMs: this.options.routesReloadCheckIntervalMs,
+      }),
+      maxRequestBytes: this.options.maxRequestBytes,
+      requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs ?? DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS,
+      observer: this.options.relayObserver,
+    });
+    const handleRequest = this.options.fetchHandler ?? createWireGatewayFetchHandler({ listenHost: this.options.host, relay });
     this.draining = false;
     this.server = Bun.serve({
       hostname: this.options.host,
       port: this.options.port,
-      idleTimeout: WIRE_GATEWAY_IDLE_TIMEOUT_SECONDS,
+      idleTimeout: this.options.idleTimeoutSeconds ?? WIRE_GATEWAY_IDLE_TIMEOUT_SECONDS,
+      // Bun answers a Content-Length over this with its own 413 before the
+      // handler runs, so it sits above the relay's limit: the relay enforces
+      // the real one (chunked bodies too) and answers in the agent's protocol.
+      maxRequestBodySize: this.options.maxRequestBytes * 2,
       fetch: (request, server) => {
         if (this.draining) {
           return jsonErrorResponse(503, 'api_error', 'the claude-mem wire gateway is shutting down; retry in a moment');
@@ -382,15 +417,8 @@ export async function startWireGatewayDaemon(
 
 /** Number of routes in routes.json; 0 when the file is absent; null when it cannot be read. */
 export function countWireGatewayRoutes(routesPath: string = paths.wireGatewayRoutes()): number | null {
-  if (!existsSync(routesPath)) {
-    return 0;
-  }
   try {
-    const parsed = JSON.parse(readFileSync(routesPath, 'utf-8')) as { routes?: unknown };
-    if (!parsed.routes || typeof parsed.routes !== 'object' || Array.isArray(parsed.routes)) {
-      return null;
-    }
-    return Object.keys(parsed.routes).length;
+    return Object.keys(readWireGatewayRoutesFile(routesPath).routes).length;
   } catch (error) {
     logger.warn('WIRE', 'Failed to read wire gateway routes', { path: routesPath }, error instanceof Error ? error : new Error(String(error)));
     return null;
@@ -472,6 +500,96 @@ function printWireGatewayUsage(): void {
   writeStderrLine('  status             print whether it runs, and where');
   writeStderrLine('  service install    start it at login (launchd, systemd --user, or a logon task)');
   writeStderrLine('  service uninstall  remove that login item');
+  writeStderrLine('  routes add <routeId> --agent <id> --upstream <url> [--capture wire|native]');
+  writeStderrLine('                     relay http://<host>:<port>/r/<routeId>/… to <url>/…');
+  writeStderrLine('  routes list        print every route');
+  writeStderrLine('  routes remove <routeId>');
+}
+
+/** `--name value` pairs after the positional arguments. Throws on a flag with no value. */
+function parseFlagValues(args: string[]): { positional: string[]; flags: Record<string, string> } {
+  const positional: string[] = [];
+  const flags: Record<string, string> = {};
+  for (let index = 0; index < args.length; index++) {
+    const arg = args[index];
+    if (!arg.startsWith('--')) {
+      positional.push(arg);
+      continue;
+    }
+    const value = args[index + 1];
+    if (value === undefined || value.startsWith('--')) {
+      throw new Error(`${arg} needs a value`);
+    }
+    flags[arg.slice(2)] = value;
+    index++;
+  }
+  return { positional, flags };
+}
+
+/** A route whose upstream is this gateway would relay to itself forever. */
+function assertUpstreamIsNotThisGateway(upstreamBaseUrl: string, config: WireGatewayConfig): void {
+  let upstream: URL;
+  try {
+    upstream = new URL(upstreamBaseUrl);
+  } catch {
+    return; // addWireGatewayRoute reports the bad URL
+  }
+  const upstreamHost = upstream.hostname.replace(/^\[|\]$/g, '');
+  const upstreamPort = upstream.port || (upstream.protocol === 'https:' ? '443' : '80');
+  const pointsAtLoopback = upstreamHost === 'localhost' || isLoopbackAddress(upstreamHost);
+  if (pointsAtLoopback && upstreamPort === String(config.port)) {
+    throw new Error(`Upstream ${upstreamBaseUrl} is this wire gateway (port ${config.port}); a route must point at the provider.`);
+  }
+}
+
+function runWireGatewayRoutesCli(args: string[], config: WireGatewayConfig): void {
+  const action = args[0];
+  const { positional, flags } = parseFlagValues(args.slice(1));
+
+  if (action === 'add') {
+    const routeId = positional[0];
+    if (!routeId || !flags.agent || !flags.upstream) {
+      throw new Error('Usage: routes add <routeId> --agent <id> --upstream <url> [--capture wire|native]');
+    }
+    const captureSource = flags.capture ?? 'wire';
+    if (captureSource !== 'wire' && captureSource !== 'native') {
+      throw new Error('--capture must be "wire" or "native"');
+    }
+    assertUpstreamIsNotThisGateway(flags.upstream, config);
+    const route = addWireGatewayRoute({
+      routeId,
+      agentId: flags.agent,
+      upstreamBaseUrl: flags.upstream,
+      captureSource: captureSource as WireGatewayCaptureSource,
+    });
+    writeStdoutLine(`Route ${routeId} → ${route.upstreamBaseUrl} (agent ${route.agentId}, capture ${route.captureSource})`);
+    writeStdoutLine(`  Base URL for the agent: http://${formatHostForUrl(config.host)}:${config.port}/r/${routeId}`);
+    return;
+  }
+
+  if (action === 'list') {
+    const routes = Object.entries(readWireGatewayRoutesFile().routes);
+    if (routes.length === 0) {
+      writeStdoutLine('No wire gateway routes');
+      return;
+    }
+    for (const [routeId, route] of routes) {
+      writeStdoutLine(`${routeId}  agent=${route.agentId}  capture=${route.captureSource}  upstream=${route.upstreamBaseUrl}`);
+    }
+    return;
+  }
+
+  if (action === 'remove') {
+    const routeId = positional[0];
+    if (!routeId) {
+      throw new Error('Usage: routes remove <routeId>');
+    }
+    writeStdoutLine(removeWireGatewayRoute(routeId) ? `Removed route ${routeId}` : `No route ${routeId}`);
+    return;
+  }
+
+  printWireGatewayUsage();
+  process.exitCode = 1;
 }
 
 export async function runWireGatewayServiceCli(argv: string[] = process.argv.slice(2)): Promise<void> {
@@ -535,6 +653,11 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
       }
       printWireGatewayUsage();
       process.exitCode = 1;
+      return;
+    }
+
+    case 'routes': {
+      runWireGatewayRoutesCli(argv.slice(1), config);
       return;
     }
 

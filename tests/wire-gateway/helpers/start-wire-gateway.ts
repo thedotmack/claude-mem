@@ -22,6 +22,7 @@ export async function startWireGatewayForTest(
     host: '127.0.0.1',
     port: 0,
     drainTimeoutMs: 5_000,
+    maxRequestBytes: 64 * 1024 * 1024,
     persistRuntimeState: false,
     ...options,
   });

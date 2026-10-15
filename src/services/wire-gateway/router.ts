@@ -30,7 +30,6 @@ export function wireGatewayIdentity(): WireGatewayIdentity {
  * that builds it lands.
  */
 const RESERVED_PATH_FAMILIES: Array<{ matches: (pathname: string) => boolean; label: string }> = [
-  { matches: pathname => pathname === '/r' || pathname.startsWith('/r/'), label: 'the relay (/r/<route>/…)' },
   { matches: pathname => pathname === '/v1/traces', label: 'the OTLP/HTTP receiver (/v1/traces)' },
   { matches: pathname => pathname === '/v1/claude-mem/events', label: 'the push endpoint (/v1/claude-mem/events)' },
   { matches: pathname => pathname === '/mcp' || pathname.startsWith('/mcp/'), label: 'MCP over HTTP (/mcp)' },
@@ -45,8 +44,12 @@ export function jsonErrorResponse(status: number, type: string, message: string)
  * The gateway's one fetch handler. The network guard runs before routing, and
  * no response carries CORS headers.
  */
-export function createWireGatewayFetchHandler(options: { listenHost: string }) {
-  return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response {
+export function createWireGatewayFetchHandler(options: {
+  listenHost: string;
+  /** The relay for /r/<routeId>/… (Phase 2); without one, /r/ answers 404. */
+  relay?: (request: Request, server: Server<undefined>) => Promise<Response>;
+}) {
+  return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response | Promise<Response> {
     const refusal = checkLoopbackRequest(request, {
       peerAddress: server.requestIP(request)?.address ?? null,
       listenHost: options.listenHost,
@@ -60,6 +63,12 @@ export function createWireGatewayFetchHandler(options: { listenHost: string }) {
 
     if (request.method === 'GET' && (pathname === '/' || pathname === '/wire/identity')) {
       return Response.json(wireGatewayIdentity());
+    }
+
+    if (pathname === '/r' || pathname.startsWith('/r/')) {
+      return options.relay
+        ? options.relay(request, server)
+        : jsonErrorResponse(404, 'not_found_error', 'the relay (/r/<route>/…) is not available in this claude-mem wire gateway');
     }
 
     const family = RESERVED_PATH_FAMILIES.find(candidate => candidate.matches(pathname));

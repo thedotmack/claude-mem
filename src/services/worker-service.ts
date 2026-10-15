@@ -1280,7 +1280,7 @@ export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   }
 
   if (rawCommand === 'wire') {
-    const wireCommands = new Set(['start', 'stop', 'restart', 'status', 'service']);
+    const wireCommands = new Set(['start', 'stop', 'restart', 'status', 'service', 'routes']);
     return {
       command: maybeSubCommand && wireCommands.has(maybeSubCommand) ? `wire-${maybeSubCommand}` : 'wire-help',
       args: rest,
@@ -1349,7 +1349,7 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
 
 function printWireCommandHelp(): never {
   console.error('Usage: worker-service wire <command>');
-  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall');
+  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove');
   process.exit(1);
 }
 
@@ -1761,7 +1761,8 @@ async function main() {
     case 'wire-stop':
     case 'wire-restart':
     case 'wire-status':
-    case 'wire-service': {
+    case 'wire-service':
+    case 'wire-routes': {
       runWireGatewayServiceCli(command.slice('wire-'.length), commandArgs);
       break;
     }

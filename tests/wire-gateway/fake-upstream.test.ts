@@ -45,6 +45,7 @@ describe('fake upstream', () => {
     expect(recorded.query).toBe('?beta=true');
     expect(recorded.headers['x-api-key']).toBe('sk-test');
     expect(Array.from(recorded.body)).toEqual(Array.from(body));
+    expect(recorded.aborted).toBe(false);
   });
 
   it('streams SSE chunks with per-chunk delays', async () => {
@@ -55,6 +56,8 @@ describe('fake upstream', () => {
     expect(chunkTimes.length).toBeGreaterThanOrEqual(2);
     expect(chunkTimes[0] - startedAt).toBeLessThan(150);
     expect(chunkTimes.at(-1)! - startedAt).toBeGreaterThanOrEqual(140);
+    // A reply that finished is no abort, however long it streamed.
+    expect(upstream.requests.at(-1)!.aborted).toBe(false);
   });
 
   it('sends gzip-encoded bytes labelled content-encoding: gzip', async () => {
@@ -88,6 +91,15 @@ describe('fake upstream', () => {
     expect(received).toBe('event: message_start\n\n');
     expect(outcome).toBe('errored');
     expect(upstream.requests.length - requestsBefore).toBe(1);
+    expect(upstream.requests.at(-1)!.aborted).toBe(false);
+  });
+
+  it('keeps connections alive, so reuse is observable', async () => {
+    upstream.setReply({ kind: 'json', body: { ok: true } });
+    await (await fetch(`${upstream.url}/one`)).text();
+    await (await fetch(`${upstream.url}/two`)).text();
+    const [first, second] = upstream.requests.slice(-2);
+    expect(second.connectionNumber).toBe(first.connectionNumber);
   });
 
   it('plays an error event after HTTP 200', async () => {

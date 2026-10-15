@@ -46,6 +46,12 @@ describe('wire gateway listen settings validation', () => {
     expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_HOST: '192.168.1.2' })).toContain('loopback');
     expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: '10s' })).toContain('whole number');
   });
+
+  it('refuses a request byte limit that is not a positive whole number', () => {
+    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: '67108864' })).toBeNull();
+    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: '0' })).toContain('above 0');
+    expect(validateWireGatewayListenSettings({ CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: '64MB' })).toContain('above 0');
+  });
 });
 
 describe('wire gateway routes.json counting (worker autostart)', () => {
@@ -58,7 +64,8 @@ describe('wire gateway routes.json counting (worker autostart)', () => {
 
   it('counts routes', () => {
     const file = join(dir, 'two.json');
-    writeFileSync(file, JSON.stringify({ version: 1, routes: { a: {}, b: {} } }));
+    const route = { agentId: 'codex', upstreamBaseUrl: 'https://api.openai.com/v1', captureSource: 'wire', features: {}, createdAt: '2026-10-15T00:00:00.000Z' };
+    writeFileSync(file, JSON.stringify({ version: 1, routes: { a: route, b: route } }));
     expect(countWireGatewayRoutes(file)).toBe(2);
   });
 

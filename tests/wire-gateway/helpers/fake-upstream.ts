@@ -1,12 +1,23 @@
 import { gzipSync } from 'node:zlib';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type Server, type Socket } from 'node:net';
 
 /**
- * A fake model vendor for wire gateway tests, on node:http (an HTTP stack
- * independent of the gateway's Bun.serve). It records what it got (method,
+ * A fake model vendor for wire gateway tests. It records what it got (method,
  * path, query, headers, raw body bytes, whether the client went away) and
  * plays a scripted reply. The idea is magpie's `fake` upstream
  * (internal/gateway/gateway_test.go:23-70, MIT, Copyright (c) 2026 yetone).
+ *
+ * It speaks HTTP/1.1 straight over node:net, because both of Bun's HTTP
+ * servers hide something these tests must see (probed on Bun 1.3.9):
+ * - Bun.serve ends a response cleanly even when its body stream errors, so it
+ *   cannot cut a stream mid-way.
+ * - Bun's node:http server reports no client disconnect at all once the
+ *   request body has been read (no 'close', 'aborted' or socket event), and
+ *   fires the request's 'close' on every normal request, so an abort cannot
+ *   be told apart.
+ * A raw socket shows both: destroy() cuts, and 'close' before the reply
+ * finished is an abort. Keep-alive is supported, so connection reuse (and
+ * fetch's replay-on-reuse) is observable.
  */
 
 export interface RecordedUpstreamRequest {
@@ -15,8 +26,10 @@ export interface RecordedUpstreamRequest {
   query: string;
   headers: Record<string, string>;
   body: Uint8Array;
-  /** Set when the request's signal aborted (the gateway cancelled upstream). */
+  /** Set when the client closed the connection before the reply finished (the gateway cancelled upstream). */
   aborted: boolean;
+  /** Which TCP connection carried it (1-based, in accept order). */
+  connectionNumber: number;
 }
 
 export type FakeUpstreamReply =
@@ -52,80 +65,156 @@ function sleep(ms: number): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function writeChunks(response: ServerResponse, chunks: string[], delayMs: number): Promise<void> {
-  for (let index = 0; index < chunks.length; index++) {
-    if (index > 0 && delayMs > 0) await sleep(delayMs);
-    if (response.destroyed) return;
-    response.write(chunks[index]);
-  }
+const STATUS_TEXT: Record<number, string> = { 200: 'OK', 400: 'Bad Request', 401: 'Unauthorized', 404: 'Not Found', 429: 'Too Many Requests', 500: 'Internal Server Error', 529: 'Overloaded' };
+
+function headBlock(status: number, headers: Record<string, string>): string {
+  const lines = [`HTTP/1.1 ${status} ${STATUS_TEXT[status] ?? 'Status'}`];
+  for (const [name, value] of Object.entries(headers)) lines.push(`${name}: ${value}`);
+  return `${lines.join('\r\n')}\r\n\r\n`;
 }
 
-async function playReply(reply: FakeUpstreamReply, response: ServerResponse): Promise<void> {
-  switch (reply.kind) {
-    case 'json': {
-      const body = typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body);
-      response.writeHead(reply.status ?? 200, { 'content-type': 'application/json', ...reply.headers });
-      response.end(body);
-      return;
-    }
-    case 'sse':
-      response.writeHead(reply.status ?? 200, { 'content-type': 'text/event-stream', ...reply.headers });
-      await writeChunks(response, reply.chunks, reply.delayMs ?? 0);
-      response.end();
-      return;
-    case 'gzip':
-      response.writeHead(reply.status ?? 200, { 'content-type': reply.contentType ?? 'application/json', 'content-encoding': 'gzip' });
-      response.end(gzipSync(reply.body));
-      return;
-    case 'cut':
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
-      await writeChunks(response, reply.chunks, reply.delayMs ?? 0);
-      await sleep(reply.delayMs ?? 0);
-      // Tear the TCP connection down before the terminating chunk. Bun.serve
-      // cannot do this: on Bun 1.3.9 an errored body stream still ends with a
-      // clean `0\r\n\r\n`, which is why this fake runs on node:http.
-      response.socket?.destroy();
-      return;
-    case 'error-after-200':
-      response.writeHead(200, { 'content-type': 'text/event-stream' });
-      await writeChunks(response, [...reply.chunks, reply.errorEvent], 0);
-      response.end();
-      return;
-    case 'hang':
-      // Never answer; the client's disconnect closes the response.
-      return;
+function chunkFrame(text: string): Buffer {
+  const bytes = Buffer.from(text);
+  return Buffer.concat([Buffer.from(`${bytes.length.toString(16)}\r\n`), bytes, Buffer.from('\r\n')]);
+}
+
+interface ParsedRequestHead {
+  method: string;
+  target: string;
+  headers: Record<string, string>;
+  headerBytes: number;
+}
+
+function parseRequestHead(buffered: Buffer): ParsedRequestHead | null {
+  const end = buffered.indexOf('\r\n\r\n');
+  if (end === -1) return null;
+  const [requestLine, ...headerLines] = buffered.subarray(0, end).toString('latin1').split('\r\n');
+  const [method, target] = requestLine.split(' ');
+  const headers: Record<string, string> = {};
+  for (const line of headerLines) {
+    const colon = line.indexOf(':');
+    const name = line.slice(0, colon).trim().toLowerCase();
+    const value = line.slice(colon + 1).trim();
+    headers[name] = headers[name] === undefined ? value : `${headers[name]}, ${value}`;
   }
+  return { method, target, headers, headerBytes: end + 4 };
 }
 
 export async function startFakeUpstream(initialScript: FakeUpstreamScript = { kind: 'json', body: { ok: true } }): Promise<FakeUpstream> {
   let script = initialScript;
   const requests: RecordedUpstreamRequest[] = [];
+  const sockets = new Set<Socket>();
+  let connectionCount = 0;
 
-  const server = createServer((request: IncomingMessage, response: ServerResponse) => {
-    const url = new URL(request.url ?? '/', 'http://fake-upstream');
-    const bodyChunks: Buffer[] = [];
-    request.on('data', (chunk: Buffer) => bodyChunks.push(chunk));
-    request.on('end', () => {
-      const headers: Record<string, string> = {};
-      for (const [name, value] of Object.entries(request.headers)) {
-        if (value !== undefined) headers[name] = Array.isArray(value) ? value.join(', ') : value;
+  async function playReply(reply: FakeUpstreamReply, socket: Socket, isHead: boolean, markReplyFinished: () => void): Promise<'keep' | 'closed'> {
+    const write = (data: string | Buffer) => {
+      if (!socket.destroyed) socket.write(data);
+    };
+    const sendWhole = (status: number, headers: Record<string, string>, body: Buffer) => {
+      write(headBlock(status, { ...headers, 'content-length': String(body.length) }));
+      if (!isHead) write(body);
+    };
+    const streamChunks = async (chunks: string[], delayMs: number) => {
+      for (let index = 0; index < chunks.length; index++) {
+        if (index > 0 && delayMs > 0) await sleep(delayMs);
+        write(chunkFrame(chunks[index]));
       }
-      const recorded: RecordedUpstreamRequest = {
-        method: request.method ?? 'GET',
-        path: url.pathname,
-        query: url.search,
-        headers,
-        body: new Uint8Array(Buffer.concat(bodyChunks)),
-        aborted: false,
-      };
-      // On Bun's node:http only the request's 'close' fires when the client
-      // goes away (probed on 1.3.9); a finished response is not an abort.
-      request.on('close', () => {
-        if (!response.writableFinished) recorded.aborted = true;
-      });
-      requests.push(recorded);
-      const reply = typeof script === 'function' ? script(recorded) : script;
-      void playReply(reply, response);
+    };
+    switch (reply.kind) {
+      case 'json': {
+        const body = typeof reply.body === 'string' ? reply.body : JSON.stringify(reply.body);
+        sendWhole(reply.status ?? 200, { 'content-type': 'application/json', ...reply.headers }, Buffer.from(body));
+        return 'keep';
+      }
+      case 'gzip':
+        sendWhole(reply.status ?? 200, { 'content-type': reply.contentType ?? 'application/json', 'content-encoding': 'gzip' }, gzipSync(reply.body));
+        return 'keep';
+      case 'sse':
+        write(headBlock(reply.status ?? 200, { 'content-type': 'text/event-stream', 'transfer-encoding': 'chunked', ...reply.headers }));
+        await streamChunks(reply.chunks, reply.delayMs ?? 0);
+        write('0\r\n\r\n');
+        return 'keep';
+      case 'error-after-200':
+        write(headBlock(200, { 'content-type': 'text/event-stream', 'transfer-encoding': 'chunked' }));
+        await streamChunks([...reply.chunks, reply.errorEvent], 0);
+        write('0\r\n\r\n');
+        return 'keep';
+      case 'cut':
+        write(headBlock(200, { 'content-type': 'text/event-stream', 'transfer-encoding': 'chunked' }));
+        await streamChunks(reply.chunks, reply.delayMs ?? 0);
+        await sleep(reply.delayMs ?? 0);
+        // Tear the TCP connection down before the terminating chunk. The
+        // fake did this itself, so it is no client abort.
+        markReplyFinished();
+        socket.destroy();
+        return 'closed';
+      case 'hang':
+        // Never answer; the client's disconnect closes the connection.
+        await new Promise<void>(resolve => socket.once('close', () => resolve()));
+        return 'closed';
+    }
+  }
+
+  const server: Server = createServer(socket => {
+    connectionCount++;
+    const connectionNumber = connectionCount;
+    sockets.add(socket);
+    let buffered = Buffer.alloc(0);
+    let inFlight: RecordedUpstreamRequest | null = null;
+    let busy = false;
+
+    socket.on('close', () => {
+      sockets.delete(socket);
+      if (inFlight) inFlight.aborted = true;
+    });
+    socket.on('error', () => undefined);
+
+    const serveBuffered = async () => {
+      if (busy) return;
+      busy = true;
+      try {
+        for (;;) {
+          const head = parseRequestHead(buffered);
+          if (!head) return;
+          if (head.headers['transfer-encoding']) {
+            throw new Error('fake upstream reads Content-Length bodies only');
+          }
+          const bodyLength = Number(head.headers['content-length'] ?? 0);
+          if (buffered.length < head.headerBytes + bodyLength) return;
+          const body = new Uint8Array(buffered.subarray(head.headerBytes, head.headerBytes + bodyLength));
+          buffered = buffered.subarray(head.headerBytes + bodyLength);
+
+          const url = new URL(head.target, 'http://fake-upstream');
+          const recorded: RecordedUpstreamRequest = {
+            method: head.method,
+            path: url.pathname,
+            query: url.search,
+            headers: head.headers,
+            body,
+            aborted: false,
+            connectionNumber,
+          };
+          requests.push(recorded);
+          inFlight = recorded;
+          const reply = typeof script === 'function' ? script(recorded) : script;
+          const connection = await playReply(reply, socket, head.method === 'HEAD', () => {
+            inFlight = null;
+          });
+          if (connection === 'closed') return;
+          inFlight = null;
+          if (head.headers.connection?.toLowerCase() === 'close') {
+            socket.end();
+            return;
+          }
+        }
+      } finally {
+        busy = false;
+      }
+    };
+
+    socket.on('data', (data: Buffer) => {
+      buffered = Buffer.concat([buffered, data]);
+      void serveBuffered();
     });
   });
 
@@ -142,7 +231,7 @@ export async function startFakeUpstream(initialScript: FakeUpstreamScript = { ki
       script = next;
     },
     async stop() {
-      server.closeAllConnections();
+      for (const socket of sockets) socket.destroy();
       await new Promise<void>(resolve => server.close(() => resolve()));
     },
   };
