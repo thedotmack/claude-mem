@@ -100,4 +100,105 @@ describe('Cursor hooks.json install/uninstall preserves user hooks', () => {
     expect(uninstallCursorHooks('project')).toBe(0);
     expect(readFileSync(hooksJsonPath, 'utf-8')).toBe('{ not json');
   });
+
+  // Older installers pointed hooks.json at scripts copied into .cursor/hooks/.
+  const legacyEntry = { command: './.cursor/hooks/session-init.sh' };
+  const legacyPowerShellEntry = { command: 'powershell.exe -ExecutionPolicy Bypass -File "C:\\Users\\me\\.cursor\\hooks/session-summary.ps1"' };
+  const lookalikeUserHook = { command: './my-session-init.sh' };
+
+  it('install replaces legacy script entries instead of running both', async () => {
+    writeFileSync(hooksJsonPath, JSON.stringify({
+      version: 1,
+      hooks: { beforeSubmitPrompt: [legacyEntry, lookalikeUserHook], stop: [legacyPowerShellEntry] },
+    }));
+    const { installCursorHooks } = await installer();
+
+    expect(await installCursorHooks('project')).toBe(0);
+
+    const config = read();
+    expect(config.hooks.beforeSubmitPrompt).not.toContainEqual(legacyEntry);
+    expect(config.hooks.beforeSubmitPrompt).toContainEqual(lookalikeUserHook);
+    expect(config.hooks.beforeSubmitPrompt.filter(isOurs)).toHaveLength(2);
+    expect(config.hooks.stop).not.toContainEqual(legacyPowerShellEntry);
+    expect(config.hooks.stop.filter(isOurs)).toHaveLength(1);
+  });
+
+  it('uninstall removes legacy script entries along with their scripts', async () => {
+    const legacyScript = path.join(home, '.cursor', 'hooks', 'session-init.sh');
+    mkdirSync(path.dirname(legacyScript), { recursive: true });
+    writeFileSync(legacyScript, '#!/bin/sh\n');
+    writeFileSync(hooksJsonPath, JSON.stringify({
+      version: 1,
+      hooks: { beforeSubmitPrompt: [legacyEntry, lookalikeUserHook] },
+    }));
+    const { uninstallCursorHooks } = await installer();
+
+    expect(uninstallCursorHooks('project')).toBe(0);
+
+    expect(read()).toEqual({ version: 1, hooks: { beforeSubmitPrompt: [lookalikeUserHook] } });
+    expect(existsSync(legacyScript)).toBe(false);
+  });
+
+  for (const [label, malformed] of [
+    ['an event value that is not an array', { version: 1, hooks: { stop: { command: 'x' } } }],
+    ['a hooks value that is not an object', { version: 1, hooks: ['x'] }],
+  ] as const) {
+    it(`install and uninstall leave hooks.json untouched when it has ${label}`, async () => {
+      const original = JSON.stringify(malformed);
+      writeFileSync(hooksJsonPath, original);
+      const { installCursorHooks, uninstallCursorHooks } = await installer();
+
+      expect(await installCursorHooks('project')).toBe(1);
+      expect(readFileSync(hooksJsonPath, 'utf-8')).toBe(original);
+
+      expect(uninstallCursorHooks('project')).toBe(0);
+      expect(readFileSync(hooksJsonPath, 'utf-8')).toBe(original);
+    });
+  }
+
+  async function projectStatusLines(): Promise<string[]> {
+    const { checkCursorHooksStatus } = await installer();
+    const lines: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => { lines.push(args.join(' ')); };
+    try {
+      expect(checkCursorHooksStatus()).toBe(0);
+    } finally {
+      console.log = originalLog;
+    }
+    const start = lines.findIndex((line) => line.startsWith('Project:'));
+    const end = lines.indexOf('', start);
+    return lines.slice(start, end);
+  }
+
+  it('status reports not installed when only the user\'s hooks remain after uninstall', async () => {
+    writeFileSync(hooksJsonPath, JSON.stringify({ version: 1, hooks: { stop: [userHook] } }));
+    const { installCursorHooks, uninstallCursorHooks } = await installer();
+    expect(await installCursorHooks('project')).toBe(0);
+    expect(uninstallCursorHooks('project')).toBe(0);
+
+    expect((await projectStatusLines())[0]).toBe('Project: Not installed (hooks.json has 1 user hook)');
+  });
+
+  it('status reports unified mode even when a user hook comes first', async () => {
+    const { installCursorHooks } = await installer();
+    expect(await installCursorHooks('project')).toBe(0);
+    const config = read();
+    config.hooks.beforeSubmitPrompt.unshift(userHook);
+    writeFileSync(hooksJsonPath, JSON.stringify(config));
+
+    const status = await projectStatusLines();
+    expect(status[0]).toBe('Project: Installed');
+    expect(status).toContain('   Mode: Unified CLI (bun worker-service.cjs)');
+    expect(status).toContain('   Other hooks: 1 (preserved)');
+  });
+
+  it('status recognises a legacy script install', async () => {
+    writeFileSync(hooksJsonPath, JSON.stringify({ version: 1, hooks: { beforeSubmitPrompt: [legacyEntry] } }));
+
+    const status = await projectStatusLines();
+    expect(status[0]).toBe('Project: Installed');
+    expect(status).toContain('   Mode: Legacy shell scripts (consider reinstalling for unified CLI)');
+    expect(status).toContain('   Platform: Unix (bash)');
+  });
 });
