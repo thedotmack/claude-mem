@@ -1,7 +1,8 @@
 
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, writeFileSync, renameSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
@@ -15,31 +16,6 @@ const SETTINGS_PATH = paths.settings();
 const CLAUDE_MD_FILENAME = 'CLAUDE.md';
 
 const CLAUDE_LOCAL_MD_FILENAME = 'CLAUDE.local.md';
-
-/**
- * Where an atomic write must land so a symlinked CLAUDE.md/AGENTS.md stays a
- * symlink: the final target of the link chain (also when that target does not
- * exist yet). Renaming a temp file over the link itself would replace the link
- * with a regular file and orphan the file it pointed to.
- */
-export function resolveSymlinkWriteTarget(filePath: string): string {
-  let current = filePath;
-  for (let hops = 0; hops < 40; hops++) {
-    let isLink: boolean;
-    try {
-      isLink = lstatSync(current).isSymbolicLink();
-    } catch {
-      return current;
-    }
-    if (!isLink) return current;
-    try {
-      return realpathSync(current);
-    } catch {
-      current = path.resolve(path.dirname(current), readlinkSync(current));
-    }
-  }
-  return filePath;
-}
 
 export function getTargetFilename(settings?: ReturnType<typeof SettingsDefaultsManager.loadFromFile>): string {
   const s = settings ?? SettingsDefaultsManager.loadFromFile(SETTINGS_PATH);
@@ -120,7 +96,10 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // context — a Claude Code truncation can split a pair and brick the session.
   const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target. A
+  // symlink loop or an unwritable target throws, as any write failure does.
   const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
   const tempFile = `${writeTarget}.tmp`;
   writeFileSync(tempFile, finalContent);
   renameSync(tempFile, writeTarget);

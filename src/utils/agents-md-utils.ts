@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, writeFileSync, renameSync, mkdirSync } from 'fs';
 import { dirname, resolve } from 'path';
-import { replaceTaggedContent, resolveSymlinkWriteTarget } from './claude-md-utils.js';
+import { replaceTaggedContent } from './claude-md-utils.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { logger } from './logger.js';
 
 export function writeAgentsMd(agentsPath: string, context: string): void {
@@ -24,6 +25,7 @@ export function writeAgentsMd(agentsPath: string, context: string): void {
 
   try {
     const writeTarget = resolveSymlinkWriteTarget(agentsPath);
+    ensureDirectoryExists(dirname(writeTarget));
     const tempFile = `${writeTarget}.tmp`;
     writeFileSync(tempFile, finalContent);
     renameSync(tempFile, writeTarget);
