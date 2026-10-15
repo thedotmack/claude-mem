@@ -2,7 +2,7 @@ import { describe, expect, it, spyOn } from 'bun:test';
 import { getSupervisor } from '../../src/supervisor/index.js';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import {
   buildCodexAppServerArgs,
   buildCodexAppServerEnv,
@@ -26,8 +26,9 @@ interface FakeCodex {
 
 interface FakeCodexOptions {
   instructionSources?: string[];
+  writeOnShutdown?: boolean;
   mode?: 'normal' | 'terminal-response' | 'slow-first-turn' | 'reject-first-init' | 'usage-limit' | 'retried-error'
-    | 'empty-first-turn' | 'empty-always' | 'missing-message';
+    | 'empty-first-turn' | 'empty-always' | 'missing-message' | 'silent-init';
 }
 
 function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
@@ -41,13 +42,20 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
   writeFileSync(join(authHome, 'auth.json'), JSON.stringify({ auth_mode: 'chatgpt', tokens: {} }), { mode: 0o600 });
   const source = [
     '#!/usr/bin/env bun',
-    "import { appendFileSync, statSync, existsSync } from 'node:fs';",
+    "import { appendFileSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';",
+    "import { join } from 'node:path';",
     `const trace = ${JSON.stringify(trace)};`,
     `const instructionSources = ${JSON.stringify(instructionSources)};`,
     `const mode = ${JSON.stringify(mode)};`,
     "const rejectInit = mode === 'reject-first-init' && !existsSync(trace);",
     "const record = value => appendFileSync(trace, JSON.stringify(value) + '\\n');",
     "record({ method: 'process/start', args: process.argv.slice(2), codexHome: process.env.CODEX_HOME, pid: process.pid });",
+    `if (${options.writeOnShutdown === true}) process.on('SIGTERM', () => {`,
+    "  mkdirSync(process.env.CODEX_HOME, { recursive: true });",
+    "  writeFileSync(join(process.env.CODEX_HOME, 'shutdown-state.json'), '{}');",
+    "  record({ method: 'process/shutdown' });",
+    "  process.exit(0);",
+    "});",
     "const send = value => process.stdout.write(JSON.stringify(value) + '\\n');",
     'let buffer = "";',
     'let turn = 0;',
@@ -60,6 +68,7 @@ function createFakeCodex(options: FakeCodexOptions = {}): FakeCodex {
     '    const message = JSON.parse(line);',
     '    record(message);',
     "    if (message.method === 'initialized') continue;",
+    "    if (message.method === 'initialize' && mode === 'silent-init') continue;",
     "    if (message.method === 'initialize') send(rejectInit ? { id: message.id, error: { code: -32600, message: 'initialize rejected' } } : { id: message.id, result: { userAgent: 'fake-codex' } });",
     "    else if (message.method === 'config/read') send({ id: message.id, result: { config: { mcp_servers: { inherited: { command: 'false' } } }, layers: [] } });",
     "    else if (message.method === 'thread/start') {",
@@ -268,7 +277,7 @@ describe('CodexAppServerClient configuration', () => {
 
 describe('CodexAppServerClient transport', () => {
   itPosix('reaps a rejected handshake and initializes a fresh supervised child', async () => {
-    const fake = createFakeCodex({ mode: 'reject-first-init' });
+    const fake = createFakeCodex({ mode: 'reject-first-init', writeOnShutdown: true });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const register = spyOn(getSupervisor(), 'registerProcess');
     const unregister = spyOn(getSupervisor(), 'unregisterProcess');
@@ -278,8 +287,10 @@ describe('CodexAppServerClient transport', () => {
       await expect(client.runTurn(options)).rejects.toThrow('initialize rejected');
       expect((client as any).child).toBeNull();
       expect((client as any).privateRoot).toBeNull();
-      const firstPid = readTrace(fake.trace).find(entry => entry.method === 'process/start')!.pid;
+      const firstStart = readTrace(fake.trace).find(entry => entry.method === 'process/start')!;
+      const firstPid = firstStart.pid;
       expect(() => process.kill(firstPid, 0)).toThrow();
+      expect(existsSync(dirname(firstStart.codexHome))).toBe(false);
       expect((await client.runTurn(options)).content).toContain('Captured.');
       const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
       expect(starts).toHaveLength(2);
@@ -300,6 +311,9 @@ describe('CodexAppServerClient transport', () => {
       await client.close();
       register.mockRestore();
       unregister.mockRestore();
+      for (const start of readTrace(fake.trace).filter(entry => entry.method === 'process/start')) {
+        rmSync(dirname(start.codexHome), { recursive: true, force: true });
+      }
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
@@ -449,7 +463,7 @@ describe('CodexAppServerClient transport', () => {
   });
 
   itPosix('ignores stale close events after a binary replacement', async () => {
-    const fake = createFakeCodex();
+    const fake = createFakeCodex({ writeOnShutdown: true });
     const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
     const options = {
       codexPath: fake.executable,
@@ -462,11 +476,21 @@ describe('CodexAppServerClient transport', () => {
       await client.runTurn(options);
       writeFileSync(fake.executable, `${readFileSync(fake.executable, 'utf8')}\n`);
       await client.runTurn(options);
-      await Bun.sleep(100);
+      const starts = readTrace(fake.trace).filter(entry => entry.method === 'process/start');
+      expect(starts).toHaveLength(2);
+      const previousRoot = dirname(starts[0].codexHome);
+      const currentRoot = dirname(starts[1].codexHome);
+      await waitForTrace(fake.trace, () => !existsSync(previousRoot));
+      expect(existsSync(currentRoot)).toBe(true);
       await client.runTurn(options);
       expect(readTrace(fake.trace).filter(entry => entry.method === 'process/start')).toHaveLength(2);
+      await client.close();
+      expect(existsSync(currentRoot)).toBe(false);
     } finally {
       await client.close();
+      for (const start of readTrace(fake.trace).filter(entry => entry.method === 'process/start')) {
+        rmSync(dirname(start.codexHome), { recursive: true, force: true });
+      }
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
@@ -488,6 +512,62 @@ describe('CodexAppServerClient transport', () => {
       expect(() => process.kill(pid, 0)).toThrow();
     } finally {
       await client.close();
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('removes the private runtime after the child finishes writing on shutdown', async () => {
+    const fake = createFakeCodex({ writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    let runtimeRoot: string | undefined;
+    try {
+      await client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 5_000,
+      });
+      const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+      runtimeRoot = dirname(started!.codexHome);
+      expect(existsSync(runtimeRoot)).toBe(true);
+
+      await client.close();
+
+      expect(readTrace(fake.trace).some(entry => entry.method === 'process/shutdown')).toBe(true);
+      expect(existsSync(runtimeRoot)).toBe(false);
+      expect(existsSync(join(fake.authHome, 'auth.json'))).toBe(true);
+    } finally {
+      await client.close();
+      if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
+      rmSync(fake.root, { recursive: true, force: true });
+    }
+  });
+
+  itPosix('awaits cleanup already started by a handshake timeout when closed', async () => {
+    const fake = createFakeCodex({ mode: 'silent-init', writeOnShutdown: true });
+    const client = new CodexAppServerClient({ nativeCodexHome: fake.authHome });
+    let runtimeRoot: string | undefined;
+    try {
+      await expect(client.runTurn({
+        codexPath: fake.executable,
+        model: 'test-model',
+        reasoningEffort: 'low',
+        prompt: 'Return one durable observation.',
+        timeoutMs: 1_000,
+      })).rejects.toThrow('initialize timed out');
+      const started = readTrace(fake.trace).find(entry => entry.method === 'process/start');
+      runtimeRoot = dirname(started!.codexHome);
+
+      await client.close();
+
+      expect(() => process.kill(started!.pid, 0)).toThrow();
+      expect(existsSync(runtimeRoot)).toBe(false);
+    } finally {
+      await client.close();
+      // On the regressed implementation, the first teardown is still pending.
+      await waitForTrace(fake.trace, trace => trace.some(entry => entry.method === 'process/shutdown'));
+      if (runtimeRoot) rmSync(runtimeRoot, { recursive: true, force: true });
       rmSync(fake.root, { recursive: true, force: true });
     }
   });
