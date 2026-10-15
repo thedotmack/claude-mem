@@ -4,7 +4,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSy
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { provisionTreeSitterCliForPluginRoot } from '../../src/services/worker/tree-sitter-cli-provisioning.js';
-import { treeSitterCliBinaryPath } from '../../src/services/smart-file-read/tree-sitter-cli-provision.js';
+import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../src/services/smart-file-read/tree-sitter-cli-provision.js';
 
 // Claude Code's marketplace install leaves node_modules/tree-sitter-cli with
 // its install.js but no executable (lifecycle scripts off), and the Setup hook
@@ -65,5 +65,54 @@ describe('worker tree-sitter CLI provisioning', () => {
 
     await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary)).rejects.toMatchObject({ code: 1 });
     expect(existsSync(treeSitterCliBinaryPath(pluginRoot))).toBe(false);
+  });
+
+  it('re-downloads when the existing executable is corrupt (SHA mismatch)', async () => {
+    const cliDir = writeMarketplaceCliPackage(downloadingInstallScript);
+    // Garbage bytes: intact check fails on the SHA, so the download path runs.
+    writeFileSync(join(cliDir, TREE_SITTER_BINARY_NAME), Buffer.from([0x7f, 0x45, 0x4c, 0x46, 0x99]));
+
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinRepoBinary)).toBe('provisioned');
+    expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
+  });
+
+  // #4758: the executable is intact (matches the pinned SHA-256) but the OS
+  // cannot run it (e.g. linked against a newer glibc). Downloading the same
+  // release asset again cannot help, so provisioning fails fast with the real
+  // reason instead of burning a download on every worker start.
+  it('fails fast with the reason when the intact executable cannot run (no re-download)', async () => {
+    const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+    const intactButBroken = readFileSync(REPO_TREE_SITTER_BINARY).subarray(0, 1024);
+    const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+    writeFileSync(binaryPath, intactButBroken);
+    if (process.platform !== 'win32') chmodSync(binaryPath, 0o755);
+    const pinTruncated = () => createHash('sha256').update(intactButBroken).digest('hex');
+
+    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, pinTruncated))
+      .rejects.toThrow(/is intact \(SHA-256 matches the pinned value\) but cannot run on this system/);
+    // The binary is untouched: no download was attempted.
+    expect(readFileSync(binaryPath).equals(intactButBroken)).toBe(true);
+  });
+
+  it('fails fast when the binary is absent but the package version has no pinned SHA', async () => {
+    writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+
+    await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => undefined))
+      .rejects.toThrow(/No SHA-256 is pinned/);
+  });
+
+  // Greptile P1 on #4777: a copied/restored binary can lose its executable bit
+  // while keeping a matching SHA-256. That is repairable (the download restores
+  // 755), so it must fall through to the download, not fail fast. POSIX-only:
+  // Windows has no exec bit to lose.
+  it.skipIf(process.platform === 'win32')('re-downloads when the intact executable merely lost its executable bit', async () => {
+    const cliDir = writeMarketplaceCliPackage(downloadingInstallScript);
+    const binaryPath = join(cliDir, TREE_SITTER_BINARY_NAME);
+    copyFileSync(REPO_TREE_SITTER_BINARY, binaryPath);
+    chmodSync(binaryPath, 0o644);
+    const pinIntact = () => createHash('sha256').update(readFileSync(binaryPath)).digest('hex');
+
+    expect(await provisionTreeSitterCliForPluginRoot(pluginRoot, pinIntact)).toBe('provisioned');
+    expect(await isTreeSitterCliBinaryUsable(pluginRoot)).toBe(true);
   });
 });

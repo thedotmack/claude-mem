@@ -68,4 +68,19 @@ describe('dedupeRenderedTable', () => {
   it('passes through empty/plain text unchanged', () => {
     expect(dedupeRenderedTable('No results found.')).toBe('No results found.')
   })
+
+  it('keeps the header and separator of every per-file table', () => {
+    const text = [
+      '**src/a.ts**',
+      '| ID | Time | T | Title | Read |',
+      '|----|------|---|-------|------|',
+      '| #1 | 9:00 AM | ◆ | First change | ~10 |',
+      '',
+      '**src/b.ts**',
+      '| ID | Time | T | Title | Read |',
+      '|----|------|---|-------|------|',
+      '| #2 | 9:05 AM | ◆ | Second change | ~12 |',
+    ].join('\n')
+    expect(dedupeRenderedTable(text)).toBe(text)
+  })
 })

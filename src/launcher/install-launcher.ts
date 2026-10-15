@@ -24,6 +24,7 @@ import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 const LAUNCHER_VERSION_PROBE_TIMEOUT_MS = 10_000;
 const LAUNCHER_COMPILE_TIMEOUT_MS = 120_000;
 const POWERSHELL_TIMEOUT_MS = 30_000;
+const LAUNCHER_CODESIGN_TIMEOUT_MS = 30_000;
 const LAUNCHER_DIRECTORY_ENVIRONMENT_VARIABLE = 'CLAUDE_MEM_LAUNCHER_DIRECTORY';
 
 export interface LauncherHostEnvironment {
@@ -389,6 +390,33 @@ const runBunCompile: LauncherCompileRunner = (bunPath, compileArguments, working
   };
 };
 
+export type LauncherCodesignRunner = (binaryPath: string) => {
+  status: number | null;
+  stderr: string;
+};
+
+/**
+ * Ad-hoc re-signs the freshly compiled launcher (`codesign --force --sign -`).
+ * Bun's `--compile` output carries an invalid code signature, and macOS 27
+ * enforces signatures: the kernel SIGKILLs the binary on exec, before it can
+ * print the protocol for the check that follows (#4778). Ad-hoc signing makes
+ * the signature valid without any developer identity.
+ */
+const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
+  const invocation = buildSpawnSyncInvocation('codesign', ['--force', '--sign', '-', binaryPath], {
+    encoding: 'utf-8',
+    // stdout is piped, never inherited: in a SessionStart hook it would be
+    // injected into Claude's context.
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: LAUNCHER_CODESIGN_TIMEOUT_MS,
+  });
+  const codesignResult = spawnSync(invocation.command, invocation.args, invocation.options);
+  return {
+    status: codesignResult.status,
+    stderr: codesignResult.stderr || (codesignResult.error ? codesignResult.error.message : ''),
+  };
+};
+
 /**
  * Who runs the ensure flow. The SessionStart self-heal never downgrades (an
  * installed protocol >= ours is current) and skips the Windows registry
@@ -518,6 +546,7 @@ export function ensureLauncherOnPath(options: {
   invocationContext: LauncherEnsureInvocationContext;
   host?: LauncherHostEnvironment;
   runCompile?: LauncherCompileRunner;
+  runCodesign?: LauncherCodesignRunner;
   runPowerShell?: PowerShellRunner;
 }): LauncherEnsureResult {
   const { logger, invocationContext } = options;
@@ -565,6 +594,7 @@ export function ensureLauncherOnPath(options: {
   const executableSuffix = host.platform === 'win32' ? '.exe' : '';
   const temporaryOutfilePath = platformPath.join(binDirectory, `.claude-mem-${process.pid}.tmp${executableSuffix}`);
   const runCompile = options.runCompile ?? runBunCompile;
+  const runCodesign = options.runCodesign ?? runAdhocCodesign;
   try {
     const compileResult = runCompile(
       bunPath,
@@ -575,6 +605,15 @@ export function ensureLauncherOnPath(options: {
       throw new Error(`bun build --compile failed (exit ${compileResult.status}): ${compileResult.stderr.trim().split('\n').pop() ?? ''}`);
     }
     if (host.platform !== 'win32') chmodSync(temporaryOutfilePath, 0o755);
+    // Best effort: when signing is unavailable or fails (no codesign on the
+    // machine, odd filesystem), probe anyway and report through the existing
+    // errors — the probe, not the signing, decides whether the binary runs.
+    if (host.platform === 'darwin') {
+      const codesignResult = runCodesign(temporaryOutfilePath);
+      if (codesignResult.status !== 0) {
+        logger.warn(`codesign --force --sign - failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}; the launcher may not start on macOS versions that enforce valid code signatures`);
+      }
+    }
     // Verified before the move: after it, a concurrent session may already
     // have renamed its own build over the target.
     const compiledProtocol = readLauncherProtocol(temporaryOutfilePath);

@@ -11,7 +11,8 @@ import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js'
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
-import { HookSpoolDrainer } from './worker/hook-spool-drain.js';
+import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
+import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -122,6 +123,7 @@ import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from '
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
+import { parseSearchRecencyWindowMs, SEARCH_CONSTANTS } from './worker/search/types.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
@@ -545,6 +547,13 @@ export class WorkerService implements WorkerRef {
       res.status(202).json({ status: 'draining' });
     });
 
+    this.server.registerRoutes(new HookSpoolRoutes(
+      this.hookSpool,
+      () => hookSpoolConsumedMarkers(this.dbManager.getSessionStore()),
+      () => { void this.hookSpoolDrainer.requestDrain(); },
+      () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_TOKEN,
+    ));
+
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
@@ -816,12 +825,18 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
+      const parsedRecencyWindowMs = parseSearchRecencyWindowMs(settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS);
+      if (parsedRecencyWindowMs === null) {
+        logger.warn('WORKER', `CLAUDE_MEM_SEARCH_RECENCY_DAYS: invalid value "${settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS}" — keeping the default ${SEARCH_CONSTANTS.RECENCY_WINDOW_MS / 86_400_000}-day window. Use a non-negative integer of days; 0 disables the window.`, { value: settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS });
+      }
+      const searchRecencyWindowMs = parsedRecencyWindowMs ?? SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
         this.dbManager.getChromaSync(),
         formattingService,
-        timelineService
+        timelineService,
+        searchRecencyWindowMs
       );
       // Precomputed SessionStart context (liveness plan, Phase 6): the route
       // records each live render, the service re-renders on writes.
@@ -1456,6 +1471,12 @@ async function main() {
   }
 
   switch (command) {
+    case 'upload-spool': {
+      const { uploadRemoteHookSpool } = await import('../cli/spool-hook-event.js');
+      await uploadRemoteHookSpool();
+      process.exit(0);
+      break;
+    }
     case 'start': {
       // hooks.json runs `start` at every SessionStart, whatever the runtime. In
       // server runtime the hooks talk to the shared server and nothing uses a

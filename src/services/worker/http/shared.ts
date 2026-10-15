@@ -69,7 +69,10 @@ function getBashSkipPattern(pattern: string): RegExp | null {
 function shellCommandOf(toolName: string, toolInput: unknown): string {
   if (!toolInput || typeof toolInput !== 'object') return '';
   const input = toolInput as { command?: unknown; cmd?: unknown };
-  const command = toolName === 'Bash' ? input.command : toolName === 'exec_command' ? input.cmd : undefined;
+  const command =
+    toolName === 'Bash' || toolName === 'PowerShell' ? input.command
+    : toolName === 'exec_command' ? input.cmd
+    : undefined;
   return typeof command === 'string' ? command : '';
 }
 
@@ -112,8 +115,8 @@ export type IngestResult =
 export interface ObservationPayload {
   contentSessionId: string;
   toolName: string;
-  toolInput: unknown;
-  toolResponse: unknown;
+  toolInput?: unknown;
+  toolResponse?: unknown;
   cwd?: string;
   platformSource?: string;
   agentId?: string;

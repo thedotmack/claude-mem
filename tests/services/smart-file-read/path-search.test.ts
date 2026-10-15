@@ -116,3 +116,43 @@ test('ranks file-name hits above directory-only hits before capping', async () =
   const capped = await searchFiles(files, 'billing', { maxResults: 1 });
   expect(capped.matchingFiles.map(file => file.filePath)).toEqual(['reports/billing.js']);
 }, 120000);
+
+describe('skipSymbolExtraction (broken tree-sitter CLI, #4758)', () => {
+  test('returns path matches without attempting symbol extraction', async () => {
+    const result = await search('invoice-ledger', { skipSymbolExtraction: true });
+    expect(result.matchingFiles.map(file => file.filePath)).toEqual(['billing/invoice-ledger.js']);
+    expect(result.matchingSymbols).toEqual([]);
+    expect(result.foldedFiles).toEqual([]);
+    expect(result.totalSymbolsFound).toBe(0);
+    expect(result.tokenEstimate).toBe(0);
+    expect(result.totalFilesScanned).toBe(2);
+    const [file] = result.matchingFiles;
+    expect(file.language).toBe('javascript');
+    expect(file.totalLines).toBe(2);
+    expect(file.foldedTokenEstimate).toBe(0);
+  }, 120000);
+  test('a symbol-name query finds nothing when extraction is skipped', async () => {
+    // 'salutation' matches only a symbol name, never a path: the full-mode
+    // search finds it, the skipped mode must not (proves the parser is bypassed).
+    const skipped = await search('salutation', { skipSymbolExtraction: true });
+    expect(skipped.matchingSymbols).toEqual([]);
+    expect(skipped.foldedFiles).toEqual([]);
+    expect(skipped.matchingFiles).toEqual([]);
+    const full = await search('salutation');
+    expect(full.matchingSymbols.map(symbol => symbol.symbolName)).toEqual(['salutation']);
+  }, 120000);
+  test('honours maxResults and file patterns in path-only mode', async () => {
+    const capped = await search('billing', { maxResults: 1, skipSymbolExtraction: true });
+    expect(capped.matchingFiles).toHaveLength(1);
+    const patterned = await search('invoice-ledger', { filePattern: 'receipt', skipSymbolExtraction: true });
+    expect(patterned.matchingFiles).toEqual([]);
+  }, 120000);
+  test('formats a path-only result without symbol sections', async () => {
+    const result = await search('invoice-ledger', { skipSymbolExtraction: true });
+    const output = formatSearchResults(result, 'invoice-ledger');
+    expect(output).toContain('0 symbol matches; 0 matched files (~0 tokens for folded view); 1 file matched by path only');
+    expect(output).toContain('── Matching Files ──');
+    expect(output).not.toContain('── Folded File Views ──');
+    expect(output).not.toContain('── Matching Symbols ──');
+  }, 120000);
+});

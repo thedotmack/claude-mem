@@ -338,6 +338,7 @@ export class CodexAppServerClient {
   private queueTail: Promise<void> = Promise.resolve();
   private closed = false;
   private closePromise: Promise<void> | null = null;
+  private cleanupPromise: Promise<void> = Promise.resolve();
 
   constructor(options: CodexAppServerClientOptions = {}) {
     this.nativeCodexHome = resolveNativeCodexHome(options.nativeCodexHome);
@@ -870,7 +871,7 @@ export class CodexAppServerClient {
   }
 
   private invalidate(error: Error, expectedChild?: ChildProcessWithoutNullStreams): Promise<void> {
-    if (expectedChild && this.child !== expectedChild) return Promise.resolve();
+    if (expectedChild && this.child !== expectedChild) return this.cleanupPromise;
     const child = this.child;
     if (child) logger.debug('SDK', 'Stopping persistent Codex app-server', { pid: child.pid }, error);
     this.child = null;
@@ -896,12 +897,19 @@ export class CodexAppServerClient {
       this.activeTurn.protocolError = error;
       this.activeTurn.complete();
     }
-    if (this.privateRoot) {
-      try { rmSync(this.privateRoot, { recursive: true, force: true }); } catch { /* best effort */ }
-      this.privateRoot = null;
-      this.workspace = null;
-    }
-    return termination;
+    const privateRoot = this.privateRoot;
+    this.privateRoot = null;
+    this.workspace = null;
+    // Codex can still write state, or hold files open on Windows, until its
+    // process tree exits. Capture this generation's root before a new start.
+    const cleanup = termination.then(() => {
+      if (privateRoot) {
+        try { rmSync(privateRoot, { recursive: true, force: true }); } catch { /* best effort */ }
+      }
+    });
+    // A timeout or protocol error may have already started teardown before close.
+    this.cleanupPromise = Promise.all([this.cleanupPromise, cleanup]).then(() => {});
+    return this.cleanupPromise;
   }
 }
 

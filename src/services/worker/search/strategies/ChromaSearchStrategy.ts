@@ -22,7 +22,13 @@ import { buildProjectWhereFilter, projectReadKeysFor } from '../project-where-fi
 export class ChromaSearchStrategy {
   constructor(
     private chromaSync: ChromaSync,
-    private sessionStore: SessionStore
+    private sessionStore: SessionStore,
+    /**
+     * Implicit window, in milliseconds, that date-less searches apply to
+     * Chroma matches (CLAUDE_MEM_SEARCH_RECENCY_DAYS). 0 disables it; an
+     * explicit `dateRange` on a request always wins over it.
+     */
+    private defaultRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS
   ) {}
 
   private emptyResult(strategy: 'chroma'): StrategySearchResult {
@@ -201,8 +207,8 @@ export class ChromaSearchStrategy {
       if (dateRange.end) {
         endEpoch = resolveDateBound(dateRange.end, 'end');
       }
-    } else if (!ignoreDefaultRecencyWindow) {
-      startEpoch = Date.now() - SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+    } else if (!ignoreDefaultRecencyWindow && this.defaultRecencyWindowMs > 0) {
+      startEpoch = Date.now() - this.defaultRecencyWindowMs;
     }
 
     // ChromaSync deduplicates by (document type, SQLite id) and returns
