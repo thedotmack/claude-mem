@@ -72,8 +72,8 @@ function shellCommandOf(toolName: string, toolInput: unknown): string {
   if (!toolInput || typeof toolInput !== 'object') return '';
   const input = toolInput as { command?: unknown; cmd?: unknown };
   const command =
-    toolName === 'exec_command' ? input.cmd
-    : toolName === 'Bash' || toolName === 'PowerShell' ? input.command
+    toolName === 'Bash' || toolName === 'PowerShell' ? input.command
+    : toolName === 'exec_command' ? input.cmd
     : undefined;
   return typeof command === 'string' ? command : '';
 }

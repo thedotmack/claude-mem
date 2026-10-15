@@ -13,6 +13,7 @@ import {
   removeInstalledLauncher,
   resolveLauncherBinaryPath,
   shellPathSetupMarkerComment,
+  type LauncherCodesignRunner,
   type LauncherCompileRunner,
   type LauncherHostEnvironment,
   type LauncherInstallLogger,
@@ -76,6 +77,25 @@ const compileMustNotRun: LauncherCompileRunner = () => {
   throw new Error('compile must not run when the launcher is current');
 };
 
+/** Records the codesign invocation; optionally rewrites the binary to `printedVersion` (stand-in for a valid signature). */
+function fakeCodesign(rewritePrintedVersion?: string): LauncherCodesignRunner & { calls: string[] } {
+  const calls: string[] = [];
+  const runner = ((binaryPath: string) => {
+    calls.push(binaryPath);
+    if (rewritePrintedVersion !== undefined) writeFakeLauncher(binaryPath, rewritePrintedVersion);
+    return { status: 0, stderr: '' };
+  }) as LauncherCodesignRunner & { calls: typeof calls };
+  runner.calls = calls;
+  return runner;
+}
+
+const codesignMustNotRun: LauncherCodesignRunner = () => {
+  throw new Error('codesign must not run off darwin');
+};
+
+/** Signing is a no-op for fake compiles, so no test reaches the real `codesign`. */
+const codesignNoop: LauncherCodesignRunner = () => ({ status: 0, stderr: '' });
+
 beforeAll(() => {
   mkdirSync(scratchParentDirectory, { recursive: true });
 });
@@ -116,7 +136,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     const logger = recordingLogger();
 
     const ensureResult = ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger, host, runCompile: compile, invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger, host, runCompile: compile, runCodesign: codesignNoop, invocationContext: 'npx-installer',
     });
 
     const binDirectory = path.join(scratchHome, '.local', 'bin');
@@ -134,6 +154,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(path.dirname(compileArguments[6])).toBe(binDirectory);
     // The temp outfile was renamed over the target; nothing else is left behind.
     expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
+    expect(logger.lines.filter((line) => line.includes('codesign'))).toEqual([]);
 
     const zshrc = readFileSync(path.join(scratchHome, '.zshrc'), 'utf-8');
     expect(zshrc).toContain(shellPathSetupMarkerComment('claude-mem'));
@@ -232,7 +253,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     symlinkSync(path.join(scratchHome, 'plugins', 'cache', '12.0.0', 'bin', 'claude-mem'), binaryPath);
 
     const ensureResult = ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: fakeCompile(), invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: fakeCompile(), runCodesign: codesignNoop, invocationContext: 'npx-installer',
     });
 
     expect(ensureResult.status).toBe('installed');
@@ -247,7 +268,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     const compile = fakeCompile();
 
     const ensureResult = ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compile, invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compile, runCodesign: codesignNoop, invocationContext: 'npx-installer',
     });
 
     expect(compile.calls).toHaveLength(1);
@@ -266,7 +287,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     const scratchHome = makeScratchHome();
     const failingCompile: LauncherCompileRunner = () => ({ status: 1, stderr: 'error: boom\n' });
     expect(() => ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome), runCompile: failingCompile, invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome), runCompile: failingCompile, runCodesign: codesignNoop, invocationContext: 'npx-installer',
     })).toThrow('bun build --compile failed (exit 1): error: boom');
     expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual([]);
   });
@@ -282,7 +303,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
       return { status: 0, stderr: '' };
     };
     expect(() => ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compileThenBlockTarget, invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compileThenBlockTarget, runCodesign: codesignNoop, invocationContext: 'npx-installer',
     })).toThrow();
     expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual(['claude-mem']);
   });
@@ -291,9 +312,66 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
     expect(() => ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: fakeCompile('garbage'), invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: fakeCompile('garbage'), runCodesign: codesignNoop, invocationContext: 'npx-installer',
     })).toThrow(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
     expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual([]);
+  });
+
+  it('ad-hoc re-signs the compiled binary before the protocol probe (macOS 27 kills invalidly-signed builds, #4778)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const binDirectory = path.join(scratchHome, '.local', 'bin');
+    // The compile output prints garbage — what readLauncherProtocol sees when
+    // macOS kills the binary — and only the signing step, which must run
+    // first, repairs it.
+    const compileThenResign: LauncherCompileRunner = (_bunPath, compileArguments) => {
+      writeFakeLauncher(compileArguments[compileArguments.indexOf('--outfile') + 1], 'garbage');
+      return { status: 0, stderr: '' };
+    };
+    const codesign = fakeCodesign(String(LAUNCHER_PROTOCOL));
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host,
+      runCompile: compileThenResign, runCodesign: codesign, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(codesign.calls).toEqual([path.join(binDirectory, `.claude-mem-${process.pid}.tmp`)]);
+    expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
+  });
+
+  it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const compile = fakeCompile();
+    const failingCodesign: LauncherCodesignRunner = () => ({ status: 1, stderr: 'fake codesign failure\n' });
+    const logger = recordingLogger();
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger, host,
+      runCompile: compile, runCodesign: failingCodesign, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(logger.lines.some((line) => line.startsWith('warn:')
+      && line.includes('codesign --force --sign - failed (exit 1): fake codesign failure')
+      && line.includes('may not start on macOS'))).toBe(true);
+    expect(spawnSync(resolveLauncherBinaryPath(host), ['--version'], { encoding: 'utf-8' }).stdout.trim())
+      .toBe(String(LAUNCHER_PROTOCOL));
+  });
+
+  it('only signs on darwin', () => {
+    const scratchHome = makeScratchHome();
+    const linuxHost: LauncherHostEnvironment = {
+      homeDirectory: scratchHome, platform: 'linux', environmentVariables: { PATH: '/usr/bin', SHELL: '/bin/bash' },
+    };
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: linuxHost,
+      runCompile: fakeCompile(), runCodesign: codesignMustNotRun, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
   });
 
   it('cleans stale placement leftovers but keeps a temp file a concurrent compile may own', () => {
@@ -313,7 +391,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     utimesSync(staleTemporaryPath, anHourAgo, anHourAgo);
 
     ensureLauncherOnPath({
-      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: fakeCompile(), invocationContext: 'npx-installer',
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: fakeCompile(), runCodesign: codesignNoop, invocationContext: 'npx-installer',
     });
 
     expect(readdirSync(binDirectory).sort()).toEqual(['.claude-mem-222.tmp', 'claude-mem', liveRenamedAsideName].sort());
