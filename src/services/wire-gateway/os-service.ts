@@ -24,10 +24,22 @@ export const LAUNCH_AGENT_LABEL = 'ai.claude-mem.wire-gateway';
 export const SYSTEMD_UNIT_NAME = 'claude-mem-wire-gateway.service';
 export const WINDOWS_TASK_NAME = 'claude-mem wire gateway';
 
+// How long past the drain budget a supervisor waits after SIGTERM before it
+// SIGKILLs the gateway. `wire stop` waits the same window.
+export const WIRE_GATEWAY_STOP_EXIT_MARGIN_MS = 15_000;
+
 export interface WireGatewayServiceCommand {
   bunPath: string;
   scriptPath: string;
+  /** CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: the supervisor's stop timeout covers it. */
+  drainTimeoutMs: number;
+  /** Defaults to the resolved DATA_DIR, so a shell-only CLAUDE_MEM_DATA_DIR survives a reboot. */
   dataDir?: string;
+}
+
+/** Seconds a supervisor must allow between SIGTERM and exit: the drain plus a margin. */
+export function serviceStopTimeoutSeconds(drainTimeoutMs: number): number {
+  return Math.ceil((drainTimeoutMs + WIRE_GATEWAY_STOP_EXIT_MARGIN_MS) / 1000);
 }
 
 function serviceArguments(command: WireGatewayServiceCommand): string[] {
@@ -79,6 +91,8 @@ ${programArguments}
   <string>${escapeXml(dataDir)}</string>
   <key>RunAtLoad</key>
   <true/>
+  <key>ExitTimeOut</key>
+  <integer>${serviceStopTimeoutSeconds(command.drainTimeoutMs)}</integer>
   <key>KeepAlive</key>
   <dict>
     <key>SuccessfulExit</key>
@@ -105,14 +119,23 @@ ExecStart=${serviceArguments(command).map(quoteSystemdArgument).join(' ')}
 Environment=${quoteSystemdArgument(`CLAUDE_MEM_DATA_DIR=${dataDir}`)}
 WorkingDirectory=${quoteSystemdArgument(dataDir)}
 Restart=on-failure
+TimeoutStopSec=${serviceStopTimeoutSeconds(command.drainTimeoutMs)}
 
 [Install]
 WantedBy=default.target
 `;
 }
 
+/**
+ * A logon task has no environment of its own, so the task runs cmd.exe to set
+ * CLAUDE_MEM_DATA_DIR before it starts Bun. `/s` makes cmd strip only the
+ * outer quotes. Windows has no SIGTERM drain to wait for (stop tree-kills).
+ * https://learn.microsoft.com/windows-server/administration/windows-commands/cmd
+ */
 export function buildSchtasksCreateArguments(command: WireGatewayServiceCommand): string[] {
-  const taskRun = serviceArguments(command).map(argument => (argument.includes(' ') ? `"${argument}"` : argument)).join(' ');
+  const dataDir = command.dataDir ?? DATA_DIR;
+  const bunCommand = serviceArguments(command).map(argument => (argument.includes(' ') ? `"${argument}"` : argument)).join(' ');
+  const taskRun = `cmd.exe /d /s /c "set "CLAUDE_MEM_DATA_DIR=${dataDir}"&& ${bunCommand}"`;
   return ['/Create', '/F', '/SC', 'ONLOGON', '/RL', 'LIMITED', '/TN', WINDOWS_TASK_NAME, '/TR', taskRun];
 }
 

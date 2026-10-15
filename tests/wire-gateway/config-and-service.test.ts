@@ -11,6 +11,7 @@ import {
   buildLaunchAgentPlist,
   buildSchtasksCreateArguments,
   buildSystemdUnit,
+  serviceStopTimeoutSeconds,
 } from '../../src/services/wire-gateway/os-service.js';
 import { parseWorkerServiceCommand } from '../../src/services/worker-service.js';
 import { DATA_DIR, ensureWireGatewayDirs, paths } from '../../src/shared/paths.js';
@@ -80,7 +81,17 @@ describe('wire gateway routes.json counting (worker autostart)', () => {
 });
 
 describe('wire gateway OS service definitions', () => {
-  const command = { bunPath: '/Users/me/.bun/bin/bun', scriptPath: '/plugin dir/scripts/wire-gateway-service.cjs', dataDir: '/Users/me/.claude-mem' };
+  const command = {
+    bunPath: '/Users/me/.bun/bin/bun',
+    scriptPath: '/plugin dir/scripts/wire-gateway-service.cjs',
+    dataDir: '/Users/me/.claude-mem',
+    drainTimeoutMs: 600_000,
+  };
+
+  it('stop timeout is the drain budget plus a margin, in whole seconds', () => {
+    expect(serviceStopTimeoutSeconds(600_000)).toBe(615);
+    expect(serviceStopTimeoutSeconds(1_500)).toBe(17);
+  });
 
   it('launchd plist runs `start --foreground` at load and restarts only after a failure', () => {
     const plist = buildLaunchAgentPlist(command);
@@ -92,6 +103,16 @@ describe('wire gateway OS service definitions', () => {
     expect(buildLaunchAgentPlist({ ...command, dataDir: '/a&b' })).toContain('/a&amp;b');
   });
 
+  it('launchd plist waits past the drain budget before SIGKILL (ExitTimeOut)', () => {
+    expect(buildLaunchAgentPlist(command)).toContain('<key>ExitTimeOut</key>\n  <integer>615</integer>');
+    expect(buildLaunchAgentPlist({ ...command, drainTimeoutMs: 10_000 })).toContain('<integer>25</integer>');
+  });
+
+  it('launchd plist defaults CLAUDE_MEM_DATA_DIR to the resolved data dir', () => {
+    const { dataDir: _omitted, ...withoutDataDir } = command;
+    expect(buildLaunchAgentPlist(withoutDataDir)).toContain(`<key>CLAUDE_MEM_DATA_DIR</key>\n    <string>${DATA_DIR}</string>`);
+  });
+
   it('systemd user unit quotes paths with spaces', () => {
     const unit = buildSystemdUnit(command);
     expect(unit).toContain('ExecStart="/Users/me/.bun/bin/bun" "/plugin dir/scripts/wire-gateway-service.cjs" "start" "--foreground"');
@@ -99,10 +120,26 @@ describe('wire gateway OS service definitions', () => {
     expect(unit).toContain('WantedBy=default.target');
   });
 
-  it('schtasks creates an ONLOGON task', () => {
-    const args = buildSchtasksCreateArguments(command);
+  it('systemd user unit waits past the drain budget before SIGKILL and keeps the data dir', () => {
+    const unit = buildSystemdUnit(command);
+    expect(unit).toContain('TimeoutStopSec=615\n');
+    expect(unit).toContain('Environment="CLAUDE_MEM_DATA_DIR=/Users/me/.claude-mem"');
+    const { dataDir: _omitted, ...withoutDataDir } = command;
+    expect(buildSystemdUnit(withoutDataDir)).toContain(`Environment="CLAUDE_MEM_DATA_DIR=${DATA_DIR}"`);
+  });
+
+  it('schtasks creates an ONLOGON task that sets CLAUDE_MEM_DATA_DIR before starting Bun', () => {
+    const args = buildSchtasksCreateArguments({ ...command, dataDir: 'C:\\Users\\me\\mem data' });
     expect(args.slice(0, 4)).toEqual(['/Create', '/F', '/SC', 'ONLOGON']);
-    expect(args[args.length - 1]).toBe('/Users/me/.bun/bin/bun "/plugin dir/scripts/wire-gateway-service.cjs" start --foreground');
+    expect(args[args.length - 1]).toBe(
+      'cmd.exe /d /s /c "set "CLAUDE_MEM_DATA_DIR=C:\\Users\\me\\mem data"&& /Users/me/.bun/bin/bun "/plugin dir/scripts/wire-gateway-service.cjs" start --foreground"',
+    );
+  });
+
+  it('schtasks task defaults CLAUDE_MEM_DATA_DIR to the resolved data dir', () => {
+    const { dataDir: _omitted, ...withoutDataDir } = command;
+    const args = buildSchtasksCreateArguments(withoutDataDir);
+    expect(args[args.length - 1]).toContain(`set "CLAUDE_MEM_DATA_DIR=${DATA_DIR}"&& `);
   });
 });
 

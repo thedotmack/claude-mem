@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, it } from 'bun:test';
-import { existsSync, readFileSync, statSync } from 'fs';
-import { paths, wireGatewaySubdirPath } from '../../src/shared/paths.js';
+import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { ensureWireGatewayDirs, paths, wireGatewaySubdirPath } from '../../src/shared/paths.js';
 import { WIRE_GATEWAY_VERSION } from '../../src/services/wire-gateway/router.js';
+import {
+  removeWireGatewayStateIfOwnedBy,
+  stopRunningWireGateway,
+} from '../../src/services/wire-gateway/WireGatewayService.js';
+import { captureProcessStartToken, type PidInfo } from '../../src/supervisor/process-registry.js';
 import { startWireGatewayForTest, type StartedWireGateway } from './helpers/start-wire-gateway.js';
 
 const started: StartedWireGateway[] = [];
@@ -131,5 +136,74 @@ describe('wire gateway lifecycle', () => {
     await expect(startWireGatewayForTest({ bunVersion: '1.3.5' })).rejects.toThrow(
       'claude-mem wire gateway needs Bun ≥ 1.3.6 (found 1.3.5). Run: bun upgrade',
     );
+  });
+});
+
+/** Writes PID/port/runtime files the way a gateway instance does. */
+function writeInstanceStateFiles(pidInfo: PidInfo): void {
+  ensureWireGatewayDirs();
+  writeFileSync(paths.wireGatewayPid(), JSON.stringify(pidInfo));
+  writeFileSync(paths.wireGatewayPort(), `${pidInfo.port}\n`);
+  writeFileSync(paths.wireGatewayRuntime(), JSON.stringify({ pid: pidInfo.pid, port: pidInfo.port, startedAt: pidInfo.startedAt }));
+}
+
+function removeStateFiles(): void {
+  for (const file of [paths.wireGatewayPid(), paths.wireGatewayPort(), paths.wireGatewayRuntime()]) rmSync(file, { force: true });
+}
+
+describe('wire gateway state-file ownership on stop', () => {
+  afterEach(removeStateFiles);
+
+  const replacement: PidInfo = { pid: process.pid, port: 40002, startedAt: '2026-10-15T00:00:02.000Z', startToken: captureProcessStartToken(process.pid) ?? undefined };
+
+  it('removeWireGatewayStateIfOwnedBy leaves files another instance wrote', () => {
+    writeInstanceStateFiles(replacement);
+    const stoppedInstance: PidInfo = { ...replacement, startedAt: '2026-10-15T00:00:01.000Z' };
+    expect(removeWireGatewayStateIfOwnedBy(stoppedInstance)).toBe(false);
+    expect(removeWireGatewayStateIfOwnedBy(null)).toBe(false);
+    expect(existsSync(paths.wireGatewayPid())).toBe(true);
+    expect(existsSync(paths.wireGatewayRuntime())).toBe(true);
+
+    expect(removeWireGatewayStateIfOwnedBy(replacement)).toBe(true);
+    for (const file of [paths.wireGatewayPid(), paths.wireGatewayPort(), paths.wireGatewayRuntime()]) {
+      expect(existsSync(file)).toBe(false);
+    }
+  });
+
+  it.skipIf(process.platform === 'win32')('stop keeps the state of a replacement that started while the old gateway drained', async () => {
+    // The "old gateway": takes 500 ms to exit after SIGTERM, like a drain.
+    const oldGateway = Bun.spawn([process.execPath, '-e', `
+      process.on('SIGTERM', () => setTimeout(() => process.exit(0), 500));
+      process.stdout.write('ready\\n');
+      setInterval(() => {}, 1000);
+    `], { stdout: 'pipe' });
+    const reader = oldGateway.stdout.getReader();
+    await reader.read();
+    reader.releaseLock();
+
+    writeInstanceStateFiles({
+      pid: oldGateway.pid,
+      port: 40001,
+      startedAt: '2026-10-15T00:00:01.000Z',
+      startToken: captureProcessStartToken(oldGateway.pid) ?? undefined,
+    });
+
+    const stopping = stopRunningWireGateway(5_000);
+    // A replacement (worker autostart, another `wire start`) writes its state mid-drain.
+    await new Promise(resolve => setTimeout(resolve, 150));
+    writeInstanceStateFiles(replacement);
+
+    await expect(stopping).resolves.toBe(true);
+    await oldGateway.exited;
+    expect(JSON.parse(readFileSync(paths.wireGatewayPid(), 'utf-8'))).toMatchObject({ pid: process.pid, port: 40002 });
+    expect(readFileSync(paths.wireGatewayPort(), 'utf-8').trim()).toBe('40002');
+    expect(existsSync(paths.wireGatewayRuntime())).toBe(true);
+  });
+
+  it('stop removes stale files of a gateway that is gone', async () => {
+    writeInstanceStateFiles({ pid: 2 ** 22 + 12345, port: 40003, startedAt: '2026-10-15T00:00:03.000Z' });
+    await expect(stopRunningWireGateway(1_000)).resolves.toBe(false);
+    expect(existsSync(paths.wireGatewayPid())).toBe(false);
+    expect(existsSync(paths.wireGatewayPort())).toBe(false);
   });
 });

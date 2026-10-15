@@ -37,7 +37,11 @@ import {
   jsonErrorResponse,
   wireGatewayIdentity,
 } from './router.js';
-import { installWireGatewayOsService, uninstallWireGatewayOsService } from './os-service.js';
+import {
+  WIRE_GATEWAY_STOP_EXIT_MARGIN_MS,
+  installWireGatewayOsService,
+  uninstallWireGatewayOsService,
+} from './os-service.js';
 import {
   WireGatewayRoutesStore,
   addWireGatewayRoute,
@@ -54,10 +58,6 @@ import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
 // server.timeout(req, 0). Report 08 §Q2.
 const WIRE_GATEWAY_IDLE_TIMEOUT_SECONDS = 255;
 
-// The CLI's `stop` waits for the daemon's drain plus this margin before it
-// reports a failure (ServerService SERVER_STOP_EXIT_TIMEOUT_MS covers the same
-// SIGTERM-to-exit window).
-const STOP_EXIT_MARGIN_MS = 15_000;
 const START_READY_TIMEOUT_MS = 10_000;
 const DRAIN_POLL_INTERVAL_MS = 50;
 
@@ -105,6 +105,8 @@ export class WireGatewayService {
   private readonly persistRuntimeState: boolean;
   private server: Server<undefined> | null = null;
   private processRegistry: ProcessRegistry | null = null;
+  /** What this instance wrote to the PID file; stop removes the state files only while they still say this. */
+  private writtenPidInfo: PidInfo | null = null;
   private stopPromise: Promise<void> | null = null;
   private startedAt: string | null = null;
   private draining = false;
@@ -156,7 +158,7 @@ export class WireGatewayService {
 
     if (this.persistRuntimeState) {
       const state = this.runtimeState();
-      writeWireGatewayState(state);
+      this.writtenPidInfo = writeWireGatewayState(state);
       this.processRegistry = createProcessRegistry(paths.wireGatewayProcessRegistry());
       this.processRegistry.register(PROCESS_REGISTRY_ID, {
         pid: process.pid,
@@ -224,7 +226,8 @@ export class WireGatewayService {
       this.startedAt = null;
       this.draining = false;
       if (this.persistRuntimeState) {
-        removeWireGatewayState();
+        removeWireGatewayStateIfOwnedBy(this.writtenPidInfo);
+        this.writtenPidInfo = null;
         this.processRegistry?.unregister(PROCESS_REGISTRY_ID, process.pid);
         this.processRegistry = null;
         restrictToOwner(paths.wireGatewayProcessRegistry());
@@ -257,7 +260,7 @@ function writePrivateFile(filePath: string, content: string): void {
   restrictToOwner(filePath);
 }
 
-function writeWireGatewayState(state: WireGatewayRuntimeState): void {
+function writeWireGatewayState(state: WireGatewayRuntimeState): PidInfo {
   ensureWireGatewayDirs();
   const pidInfo: PidInfo = {
     pid: state.pid,
@@ -268,6 +271,7 @@ function writeWireGatewayState(state: WireGatewayRuntimeState): void {
   writePrivateFile(paths.wireGatewayPid(), JSON.stringify(pidInfo, null, 2));
   writePrivateFile(paths.wireGatewayPort(), `${state.port}\n`);
   writePrivateFile(paths.wireGatewayRuntime(), JSON.stringify(state, null, 2));
+  return pidInfo;
 }
 
 function readJsonStateFile<T>(filePath: string, label: string): T | null {
@@ -291,10 +295,26 @@ export function readWireGatewayRuntimeState(): WireGatewayRuntimeState | null {
   return readJsonStateFile<WireGatewayRuntimeState>(paths.wireGatewayRuntime(), 'runtime state file');
 }
 
-function removeWireGatewayState(): void {
+function sameWireGatewayInstance(a: PidInfo, b: PidInfo): boolean {
+  return a.pid === b.pid && a.startedAt === b.startedAt && a.startToken === b.startToken;
+}
+
+/**
+ * Remove the PID/port/runtime files only while the PID file still names
+ * `owner` (or is gone). A replacement that started in the meantime (worker
+ * autostart, another `wire start`) has rewritten the PID file, and its state
+ * stays. Returns whether the files were removed.
+ */
+export function removeWireGatewayStateIfOwnedBy(owner: PidInfo | null): boolean {
+  const current = readWireGatewayPidFile();
+  if (current && !(owner && sameWireGatewayInstance(current, owner))) {
+    logger.debug('WIRE', 'Wire gateway state files belong to another instance; leaving them', { ownerPid: owner?.pid, currentPid: current.pid });
+    return false;
+  }
   rmSync(paths.wireGatewayPid(), { force: true });
   rmSync(paths.wireGatewayPort(), { force: true });
   rmSync(paths.wireGatewayRuntime(), { force: true });
+  return true;
 }
 
 /** The live gateway's PID info, or null when none of ours is running. */
@@ -357,9 +377,11 @@ async function waitForPidExit(pidInfo: PidInfo, timeoutMs: number): Promise<void
  * file in place so the next `start` cannot race a live daemon.
  */
 export async function stopRunningWireGateway(drainTimeoutMs: number): Promise<boolean> {
-  const existing = readRunningWireGatewayPid();
+  const recorded = readWireGatewayPidFile();
+  const existing = verifyPidFileOwnership(recorded) ? recorded : null;
   if (!existing) {
-    removeWireGatewayState();
+    // Stale files from a gateway that died without cleanup.
+    removeWireGatewayStateIfOwnedBy(recorded);
     return false;
   }
   if (process.platform === 'win32') {
@@ -369,11 +391,11 @@ export async function stopRunningWireGateway(drainTimeoutMs: number): Promise<bo
   } else {
     process.kill(existing.pid, 'SIGTERM');
   }
-  await waitForPidExit(existing, drainTimeoutMs + STOP_EXIT_MARGIN_MS);
+  await waitForPidExit(existing, drainTimeoutMs + WIRE_GATEWAY_STOP_EXIT_MARGIN_MS);
   if (verifyPidFileOwnership(existing)) {
     throw new Error(`Wire gateway PID ${existing.pid} did not exit; leaving its PID file in place.`);
   }
-  removeWireGatewayState();
+  removeWireGatewayStateIfOwnedBy(existing);
   return true;
 }
 
@@ -644,7 +666,11 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
     case 'service': {
       const action = argv[1];
       if (action === 'install') {
-        writeStdoutLine(installWireGatewayOsService({ bunPath: process.execPath, scriptPath: wireGatewayScriptPath() }));
+        writeStdoutLine(installWireGatewayOsService({
+          bunPath: process.execPath,
+          scriptPath: wireGatewayScriptPath(),
+          drainTimeoutMs: config.drainTimeoutMs,
+        }));
         return;
       }
       if (action === 'uninstall') {
