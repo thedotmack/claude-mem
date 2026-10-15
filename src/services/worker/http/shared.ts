@@ -115,8 +115,8 @@ export type IngestResult =
 export interface ObservationPayload {
   contentSessionId: string;
   toolName: string;
-  toolInput: unknown;
-  toolResponse: unknown;
+  toolInput?: unknown;
+  toolResponse?: unknown;
   cwd?: string;
   platformSource?: string;
   agentId?: string;
