@@ -27,6 +27,20 @@ function globToRegex(pattern: string): RegExp {
 }
 
 /**
+ * `dir/**` means "everything under dir" and users also expect it to cover `dir`
+ * itself, but the regex needs a character after `dir/`. Match the pattern with
+ * its trailing `/**` removed against the path as well.
+ */
+function matchesGlobPattern(pattern: string, normalizedPath: string, pathBasename: string): boolean {
+  const regex = globToRegex(pattern);
+  if (regex.test(normalizedPath) || regex.test(pathBasename)) return true;
+  if (pattern.replace(/\\/g, '/').endsWith('/**')) {
+    return globToRegex(pattern.slice(0, -3)).test(normalizedPath.replace(/\/+$/, ''));
+  }
+  return false;
+}
+
+/**
  * Returns true when `folderPath` matches any of the supplied glob patterns.
  * Patterns support `*`, `**`, `?`, and a leading `~`. Matches against both the
  * full normalized path and the basename. Reuses the same glob semantics as
@@ -40,8 +54,7 @@ export function matchesAnyGlob(folderPath: string, patterns: string[]): boolean 
     const pattern = rawPattern.trim();
     if (!pattern) continue;
     try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedPath) || regex.test(pathBasename)) {
+      if (matchesGlobPattern(pattern, normalizedPath, pathBasename)) {
         return true;
       }
     } catch (error: unknown) {
@@ -67,8 +80,7 @@ export function isProjectExcluded(projectPath: string, exclusionPatterns: string
 
   for (const pattern of patternList) {
     try {
-      const regex = globToRegex(pattern);
-      if (regex.test(normalizedProjectPath) || regex.test(projectBasename)) {
+      if (matchesGlobPattern(pattern, normalizedProjectPath, projectBasename)) {
         return true;
       }
     } catch (error: unknown) {
