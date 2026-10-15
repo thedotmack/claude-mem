@@ -367,6 +367,10 @@ interface WedgedOverrides {
   listenersAfter?: number[] | null;
   identity?: { startToken: string | null; cmdline: string | null };
   killFails?: boolean;
+  /** Age of the worker's heartbeat file in ms; null = no heartbeat file. */
+  heartbeatAgeMs?: number | null;
+  /** How long this worker has already been seen silent, in ms (default 0: first silent probe). */
+  silentForMs?: number;
 }
 
 function wedgedDeps(overrides: WedgedOverrides = {}): {
@@ -374,17 +378,20 @@ function wedgedDeps(overrides: WedgedOverrides = {}): {
   killed: Array<{ pid: number; signalMode: string; expectedStartToken?: string | null }>;
   healthProbes: () => number;
   sleeps: number[];
+  episodesEnded: () => number;
 } {
   const killed: Array<{ pid: number; signalMode: string; expectedStartToken?: string | null }> = [];
   const sleeps: number[] = [];
   const healthAnswers = [...(overrides.healthAnswers ?? [false, false])];
   let healthProbes = 0;
   let listOwnersCalls = 0;
+  let episodesEnded = 0;
   const startedAt = new Date(NOW_MS - (overrides.ageSeconds ?? 3_600) * 1000).toISOString();
   return {
     killed,
     sleeps,
     healthProbes: () => healthProbes,
+    episodesEnded: () => episodesEnded,
     deps: {
       isWin32: () => overrides.isWin32 ?? false,
       readOwnedWorker: () => (overrides.owned === undefined
@@ -393,6 +400,11 @@ function wedgedDeps(overrides: WedgedOverrides = {}): {
       now: () => NOW_MS,
       sleep: async (ms: number) => { sleeps.push(ms); },
       minOwnerAgeSeconds: 300,
+      heartbeatStaleMs: 120_000,
+      readHeartbeatAgeMs: () => (overrides.heartbeatAgeMs === undefined ? null : overrides.heartbeatAgeMs),
+      silentEpisodeStartMs: () => NOW_MS - (overrides.silentForMs ?? 0),
+      endSilentEpisode: () => { episodesEnded += 1; },
+      maxSilentProtectionMs: 600_000,
       probeHealth: async () => {
         healthProbes += 1;
         return healthAnswers.shift() ?? false;
@@ -420,6 +432,65 @@ function wedgedDeps(overrides: WedgedOverrides = {}): {
     },
   };
 }
+
+describe('a slow worker is not a dead worker (heartbeat)', () => {
+  // On a machine with on-access antivirus the worker's event loop was held in
+  // file opens long enough for both health probes to fail, and the hooks
+  // killed a worker that was still making progress. The restart then re-ran
+  // the backfill: health came back about 9 minutes after the kill. The worker
+  // now refreshes a heartbeat file from a timer; a fresh heartbeat means its
+  // loop is still turning, so silence alone is not a reason to kill it.
+  it('never kills a silent worker whose heartbeat is fresh', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeatAgeMs: 10_000 });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('still kills a silent worker whose heartbeat is stale', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeatAgeMs: 600_000 });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('still kills a silent worker that writes no heartbeat (an older worker)', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeatAgeMs: null });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('stops protecting a worker that stays silent past the protection window, even with a fresh heartbeat', async () => {
+    // A loop that turns while every request hangs (an async deadlock) keeps the
+    // heartbeat fresh; the window bounds how long silence is forgiven.
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeatAgeMs: 10_000, silentForMs: 600_001 });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed.map(k => k.pid)).toEqual([WEDGED_WORKER_PID]);
+  });
+
+  it('ends the silent episode when the worker answers a probe', async () => {
+    const { deps: testDeps, episodesEnded } = wedgedDeps({ healthAnswers: [false, true] });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-responding', killedPids: [] });
+    expect(episodesEnded()).toBe(1);
+  });
+
+  it('still protects a worker silent for less than the window', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeatAgeMs: 10_000, silentForMs: 599_000 });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result).toEqual({ reclaimed: false, reason: 'owner-progressing', killedPids: [] });
+    expect(killed).toEqual([]);
+  });
+
+  it('a heartbeat cannot save a worker that answers nothing for longer than the stale limit', async () => {
+    const { deps: testDeps, killed } = wedgedDeps({ heartbeatAgeMs: 120_001 });
+    const result = await reclaimGhostListeningPort(37777, testDeps);
+    expect(result.reclaimed).toBe(true);
+    expect(killed).toHaveLength(1);
+  });
+});
 
 describe('reclaimWedgedOwnedWorker (via reclaimGhostListeningPort)', () => {
   it('reclaims a wedged worker we own on POSIX: graceful tree-kill pinned to the recorded start token', async () => {

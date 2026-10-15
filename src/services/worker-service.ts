@@ -70,7 +70,7 @@ import {
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
-import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
+import { reclaimGhostListeningPort, startWorkerHeartbeat } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
   probePortBind,
@@ -668,6 +668,8 @@ export class WorkerService implements WorkerRef {
       port,
       startedAt: new Date().toISOString()
     });
+    // Liveness heartbeat: hooks read its age, and a fresh one means a silent worker is slow, not dead.
+    startWorkerHeartbeat();
 
     getSupervisor().registerProcess('worker', {
       pid: process.pid,

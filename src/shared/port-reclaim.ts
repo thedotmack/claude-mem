@@ -62,7 +62,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, unlinkSync, writeFileSync, promises as fsPromises } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
@@ -71,7 +71,8 @@ import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
 import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
-import { DATA_DIR } from './paths.js';
+import { DATA_DIR, USER_SETTINGS_PATH, paths } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -440,6 +441,7 @@ export type GhostPortReclaimResult =
         // Wedged-worker path refusals — our worker is alive but not provably wedged:
         | 'owner-booting' // inside its boot/migration grace (pid-file age)
         | 'owner-responding' // answered a health re-probe
+        | 'owner-progressing' // silent, but its heartbeat is fresh: slow, not dead
         | 'owner-identity-mismatch' // start token or command line is not our worker
         | 'out-of-budget'; // a caller's hook deadline leaves too little to finish (RECLAIM_MIN_BUDGET_MS)
       killedPids?: number[];
@@ -500,6 +502,16 @@ export interface GhostPortReclaimDeps {
   readIdentity?: (pid: number, capMs?: number) => Promise<ProcessIdentity>;
   /** Minimum worker age (seconds) before a silent worker may count as wedged. */
   minOwnerAgeSeconds?: number;
+  /** Age of the worker's heartbeat file in ms, or null when it has none. */
+  readHeartbeatAgeMs?: () => number | null;
+  /** A heartbeat younger than this (ms) means the worker's event loop still turns. */
+  heartbeatStaleMs?: number;
+  /** When this worker's current run of failed health probes began (ms epoch); records the first. */
+  silentEpisodeStartMs?: (pid: number, nowMs: number) => number;
+  /** A fresh heartbeat forgives silence for at most this long. */
+  maxSilentProtectionMs?: number;
+  /** Forget the current silent episode (the worker answered). */
+  endSilentEpisode?: () => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** Deadline (read with `now`) of a caller spending a hook budget; absent or null for none. */
@@ -513,6 +525,11 @@ interface WedgedReclaimDeps {
   probeHealth: (port: number) => Promise<boolean>;
   readIdentity: (pid: number) => Promise<ProcessIdentity>;
   minOwnerAgeSeconds: number;
+  readHeartbeatAgeMs: () => number | null;
+  heartbeatStaleMs: number;
+  silentEpisodeStartMs: (pid: number, nowMs: number) => number;
+  maxSilentProtectionMs: number;
+  endSilentEpisode: () => void;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   /** False when a kill could no longer finish inside the caller's deadline. */
@@ -554,7 +571,7 @@ async function reclaimWedgedOwnedWorker(
   const owned = deps.readOwnedWorker();
   if (owned === null || owned.port !== port) return null;
   const refuse = (
-    reason: 'owner-booting' | 'owner-responding' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
+    reason: 'owner-booting' | 'owner-responding' | 'owner-progressing' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
     details: Record<string, unknown> = {},
   ): GhostPortReclaimResult => {
     logger.info('PROCESS', 'Wedged-worker reclaim declined', { port, pid: owned.pid, reason, ...details });
@@ -568,8 +585,12 @@ async function reclaimWedgedOwnedWorker(
 
   for (let probe = 0; probe < 2; probe++) {
     if (probe > 0) await deps.sleep(WEDGED_HEALTH_PROBE_SPACING_MS);
-    if (await deps.probeHealth(port)) return refuse('owner-responding');
+    if (await deps.probeHealth(port)) {
+      deps.endSilentEpisode();
+      return refuse('owner-responding');
+    }
   }
+
 
   const listeners = await deps.listOwners(port);
   if (listeners === null) return refuse('netstat-unreadable');
@@ -583,6 +604,33 @@ async function reclaimWedgedOwnedWorker(
       listeners,
     });
     return null;
+  }
+
+  // Silence is not death. Under on-access antivirus a worker's event loop can
+  // be held in slow synchronous file opens (traced up to 2 s each), and a held
+  // loop misses health probes. After one such reclaim the restart re-ran the
+  // backfill, and health came back about 9 minutes after the kill. The liveness
+  // heartbeat is refreshed by a timer, which runs only when the loop turns, so
+  // a fresh heartbeat means the loop is alive. That alone cannot tell a slow
+  // worker from one whose loop turns while every request hangs, so the
+  // forgiveness is bounded: once the same worker has been silent longer than
+  // maxSilentProtectionMs, it is judged as before. No heartbeat file (an older
+  // worker) also keeps the previous verdict.
+  const heartbeatAgeMs = deps.readHeartbeatAgeMs();
+  if (heartbeatAgeMs !== null && heartbeatAgeMs < deps.heartbeatStaleMs) {
+    const silentForMs = deps.now() - deps.silentEpisodeStartMs(owned.pid, deps.now());
+    if (silentForMs < deps.maxSilentProtectionMs) {
+      return refuse('owner-progressing', {
+        heartbeatAgeMs: Math.round(heartbeatAgeMs),
+        silentForMs: Math.round(silentForMs),
+      });
+    }
+    logger.warn('PROCESS', 'Worker is silent past the protection window despite a fresh liveness heartbeat', {
+      port,
+      pid: owned.pid,
+      silentForMs: Math.round(silentForMs),
+      maxSilentProtectionMs: deps.maxSilentProtectionMs,
+    });
   }
 
   const identity = await deps.readIdentity(owned.pid);
@@ -717,6 +765,11 @@ export async function reclaimGhostListeningPort(
     probeHealth: deps.probeHealth ?? ((p: number) => waitForHealth(p, WEDGED_HEALTH_PROBE_TIMEOUT_MS)),
     readIdentity: (pid: number) => readIdentity(pid, readCapMs()),
     minOwnerAgeSeconds: deps.minOwnerAgeSeconds ?? readWedgedWorkerUptimeSeconds(),
+    readHeartbeatAgeMs: deps.readHeartbeatAgeMs ?? (() => readWorkerHeartbeatAgeMs(now())),
+    heartbeatStaleMs: deps.heartbeatStaleMs ?? readWorkerHeartbeatStaleMs(),
+    silentEpisodeStartMs: deps.silentEpisodeStartMs ?? ((pid: number, nowMs: number) => silentEpisodeStartMs(pid, nowMs)),
+    maxSilentProtectionMs: deps.maxSilentProtectionMs ?? MAX_SILENT_PROTECTION_MS,
+    endSilentEpisode: deps.endSilentEpisode ?? (() => endSilentEpisode()),
     now,
     sleep: deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))),
     hasKillBudget: () => !lacksBudget(RECLAIM_KILL_BUDGET_MS),
@@ -982,4 +1035,107 @@ export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps): 
     }
   }
   return { killedPids };
+}
+
+/** How often the worker refreshes its liveness heartbeat file. */
+export const WORKER_HEARTBEAT_INTERVAL_MS = 5_000;
+export const WORKER_HEARTBEAT_STALE_DEFAULT_MS = 120_000;
+const WORKER_HEARTBEAT_STALE_BOUNDS_MS = { min: 10_000, max: 3_600_000 } as const;
+
+/**
+ * CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS from the environment, else settings.json,
+ * else the default. Hooks are short processes, so each reclaim reads it afresh.
+ */
+export function readWorkerHeartbeatStaleMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true }).CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS;
+  const value = Number(raw);
+  return Number.isSafeInteger(value)
+    && value >= WORKER_HEARTBEAT_STALE_BOUNDS_MS.min
+    && value <= WORKER_HEARTBEAT_STALE_BOUNDS_MS.max
+    ? value
+    : WORKER_HEARTBEAT_STALE_DEFAULT_MS;
+}
+
+/** A fresh liveness heartbeat forgives a silent worker for at most this long. */
+export const MAX_SILENT_PROTECTION_MS = 600_000;
+/**
+ * A gap this long with no silent probe ends an episode. Hooks may run minutes
+ * apart on a quiet machine, so it is much longer than MAX_SILENT_PROTECTION_MS;
+ * an answered probe ends the episode at once (endSilentEpisode).
+ */
+const SILENT_EPISODE_GAP_MS = 30 * 60_000;
+
+/**
+ * When the current run of failed health probes for `pid` began. Hooks are
+ * short processes, so the start is kept in a small state file: the first
+ * silent probe records it, and later ones return it while the silence
+ * continues. A different pid, a gap longer than SILENT_EPISODE_GAP_MS since
+ * the last silent probe, or an answered probe starts a new episode. Errors start a new episode too,
+ * so a broken file can only make the window longer, never kill early.
+ */
+export function silentEpisodeStartMs(
+  pid: number,
+  nowMs: number,
+  statePath: string = paths.workerSilentSince(),
+): number {
+  let since = nowMs;
+  try {
+    const prior = JSON.parse(readFileSync(statePath, 'utf8')) as { pid?: number; since?: number; last?: number };
+    if (prior.pid === pid && typeof prior.since === 'number' && typeof prior.last === 'number'
+      && nowMs - prior.last <= SILENT_EPISODE_GAP_MS && prior.since <= nowMs) {
+      since = prior.since;
+    }
+  } catch {
+    // No episode yet, or an unreadable file: start one now.
+  }
+  try {
+    writeFileSync(statePath, JSON.stringify({ pid, since, last: nowMs }));
+  } catch {
+    // Unwritable: the next probe starts a new episode, which only delays a kill.
+  }
+  return since;
+}
+
+/** Forget the current silent episode; a missing file is already forgotten. */
+export function endSilentEpisode(statePath: string = paths.workerSilentSince()): void {
+  try {
+    unlinkSync(statePath);
+  } catch {
+    // Nothing to forget.
+  }
+}
+
+/** Milliseconds since the worker last refreshed its liveness heartbeat file, or null when there is none. */
+export function readWorkerHeartbeatAgeMs(nowMs: number, heartbeatPath: string = paths.workerHeartbeat()): number | null {
+  try {
+    return Math.max(0, nowMs - statSync(heartbeatPath).mtimeMs);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Refresh the heartbeat file from an unref'd timer. The timer fires only when
+ * the event loop turns, so the file's age measures progress. The write is
+ * async (a thread-pool thread waits on a slow filesystem, not the loop), and a
+ * failed write is ignored: a missing heartbeat only restores the old verdict.
+ */
+export function startWorkerHeartbeat(
+  heartbeatPath: string = paths.workerHeartbeat(),
+  intervalMs: number = WORKER_HEARTBEAT_INTERVAL_MS,
+): () => void {
+  const beat = () => {
+    const now = new Date();
+    void fsPromises.utimes(heartbeatPath, now, now)
+      .catch(() => fsPromises.writeFile(heartbeatPath, ''))
+      .catch(() => {});
+  };
+  beat();
+  const timer = setInterval(beat, intervalMs);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }
