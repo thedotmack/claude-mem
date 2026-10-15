@@ -638,6 +638,7 @@ export class SearchRoutes extends BaseRouteHandler {
     } else {
       delete searchArgs.projects;
     }
+    SearchRoutes.assertValidPagination(searchArgs);
     return searchArgs;
   }
 
@@ -659,6 +660,31 @@ export class SearchRoutes extends BaseRouteHandler {
         }
         resolveDateBound(value, boundary);
       }
+    }
+  }
+
+  /**
+   * `limit` and `offset` come straight from the query string and reach SQLite's
+   * LIMIT/OFFSET: `limit=-1` returned every row and `limit=abc` became NaN
+   * (no results). Accept only digits, with `limit >= 1`, like /api/logs does
+   * for `lines`; an empty value counts as absent.
+   */
+  private static assertValidPagination(searchArgs: Record<string, any>): void {
+    for (const [key, minimum] of [['limit', 1], ['offset', 0]] as const) {
+      const value = searchArgs[key];
+      if (value === undefined || value === '') {
+        delete searchArgs[key];
+        continue;
+      }
+      const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+      if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+        throw new AppError(
+          `${key} must be ${minimum === 1 ? 'a positive' : 'a non-negative'} integer`,
+          400,
+          'INVALID_PAGINATION'
+        );
+      }
+      searchArgs[key] = String(parsed);
     }
   }
 

@@ -174,6 +174,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
+  CLAUDE_MEM_WORKER_INGEST_TOKEN: string;
+  CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: string;
   CLAUDE_MEM_ALLOWED_ORIGINS: string;
   CLAUDE_MEM_PUBLIC_URL: string;
   CLAUDE_MEM_API_TIMEOUT_MS: string;
@@ -190,6 +192,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CODEX_REASONING_EFFORT: string;
   CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS: string;
   CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: string;
+  CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE: string;
   CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: string;
   CLAUDE_MEM_CLAUDE_AUTH_METHOD: string;  
   CLAUDE_MEM_GEMINI_API_KEY: string;
@@ -287,6 +290,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
+  CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
   // non-empty — there is no separate enabled flag. HUB_URL points at the
   // two-lane sync hub (workers/sync-hub); while it is empty, sync is OFF
@@ -402,6 +406,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
+    CLAUDE_MEM_WORKER_INGEST_TOKEN: '',
+    CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'auto',
     CLAUDE_MEM_ALLOWED_ORIGINS: '',  // Comma-separated browser origins allowed to call the worker
                                      // cross-origin besides http://localhost:* / http://127.0.0.1:*.
                                      // Their host names also pass the DNS-rebinding Host check.
@@ -433,6 +439,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_CODEX_MAX_CONCURRENT_AGENTS: '2',
     CLAUDE_MEM_CODEX_OBSERVATION_BATCH_SIZE: '8',
     CLAUDE_MEM_CODEX_OBSERVATION_BATCH_MAX_CHARS: '32000',
+    CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE: '1', // Queued same-context events per Claude observer prompt (1-32). 1 = one event per prompt.
     CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',  // Default to logged-in Claude SDK auth (not API key)
     CLAUDE_MEM_GEMINI_API_KEY: '',  // Empty by default, can be set via UI or env
     CLAUDE_MEM_GEMINI_API_KEYS: '',  // Optional extra keys (newline/comma separated). Rotates on rate_limit/quota_exhausted/auth_invalid — see src/shared/api-key-pool.ts.
@@ -542,6 +549,7 @@ export class SettingsDefaultsManager {
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
     CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
+    CLAUDE_MEM_SEARCH_RECENCY_DAYS: '90',      // Date-less semantic search only ranks matches from the last N days (#4770). 0 = no window (every match eligible); an explicit dateStart/dateEnd always wins. Restart the worker after changing it
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: '',
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: '',

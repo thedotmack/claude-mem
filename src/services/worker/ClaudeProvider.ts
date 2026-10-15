@@ -11,7 +11,9 @@ import {
   resolveConfigDirProfileKey,
 } from '../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
-import type { ActiveSession, SDKUserMessage } from '../worker-types.js';
+import type { ActiveSession, PendingMessageWithId, SDKUserMessage } from '../worker-types.js';
+import { sameObservationContext } from './codex-observation-batch.js';
+import { boundedInteger } from './CodexAppServerPool.js';
 import { ModeManager } from '../domain/ModeManager.js';
 import { processAgentResponse, snapshotResponseContext, takeObserverSchemaReminder, type WorkerRef } from './agents/index.js';
 import {
@@ -1243,8 +1245,9 @@ export class ClaudeProvider {
           created_at_epoch: Date.now(),
           cwd: message.cwd
         }, fieldMaxChars, takeObserverSchemaReminder(session));
+        const batchPrompt = this.withQueuedObservations(session, message, obsPrompt, fieldMaxChars);
 
-        session.conversationHistory.push({ role: 'user', content: obsPrompt });
+        session.conversationHistory.push({ role: 'user', content: batchPrompt });
 
         session.lastPromptSentAt = Date.now();
         session.lastGeneratorSource = 'ingest';
@@ -1253,7 +1256,7 @@ export class ClaudeProvider {
           type: 'user',
           message: {
             role: 'user',
-            content: withPendingInitPrompt(obsPrompt)
+            content: withPendingInitPrompt(batchPrompt)
           },
           session_id: session.contentSessionId,
           parent_tool_use_id: null,
@@ -1291,6 +1294,50 @@ export class ClaudeProvider {
         if (!(await this.awaitObserverAnswer(session, pacer, answeredBeforeSend))) return;
       }
     }
+  }
+
+  /**
+   * One prompt per queued event let a busy session's backlog grow faster than
+   * its single observer could drain it. Claim the queued observations already
+   * at the FIFO head that share this one's prompt number, agent and cwd into
+   * the same prompt, within a count and character budget, without waiting for
+   * more (the CodexProvider pattern). The claimed ids ride on the session, so
+   * the normal confirm/reset covers the whole batch. A field too large for the
+   * cap needs its own condensing pass, so it ends the batch.
+   */
+  private withQueuedObservations(
+    session: ActiveSession,
+    first: PendingMessageWithId,
+    firstPrompt: string,
+    fieldMaxChars: number,
+  ): string {
+    const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    const count = boundedInteger(settings.CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE, 1, 32);
+    // Add queued events only while the prompt stays within two capped fields,
+    // the size one event's prompt can already reach, so a fresh generation
+    // still fits one prompt and the recycle limit keeps holding.
+    const maxChars = 2 * fieldMaxChars;
+    let combined = firstPrompt;
+    for (let size = 1; size < count; size++) {
+      let addition = '';
+      const next = this.sessionManager.claimNextObservation(session.sessionDbId, candidate => {
+        if (!sameObservationContext(first, candidate)) return false;
+        if ([candidate.tool_input, candidate.tool_response].some(field =>
+          (JSON.stringify(field, null, 2) ?? '').length > fieldMaxChars)) return false;
+        addition = buildObservationPrompt({
+          id: 0,
+          tool_name: candidate.tool_name!,
+          tool_input: JSON.stringify(candidate.tool_input),
+          tool_output: JSON.stringify(candidate.tool_response),
+          created_at_epoch: Date.now(),
+          cwd: candidate.cwd,
+        }, fieldMaxChars);
+        return combined.length + 2 + addition.length <= maxChars;
+      });
+      if (!next) break;
+      combined += '\n\n' + addition;
+    }
+    return combined;
   }
 
   /**
