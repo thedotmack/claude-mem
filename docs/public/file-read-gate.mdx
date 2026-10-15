@@ -275,7 +275,7 @@ A change made in the settings file or the viewer applies from the next Read, wit
 
 With the gate off, every Read goes through and the file's timeline is still added as context, once per session for each file.
 
-To turn off the whole hook, timeline included, set `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1` in the hook's environment (see [Turning off the tool hooks](/configuration#turning-off-the-tool-hooks)). Claude Code still starts the shell hook for each Read, but the launcher exits before starting Node, Bun or the worker bundle.
+To turn off the whole hook, timeline included, set `CLAUDE_MEM_DISABLE_FILE_CONTEXT=1` in the hook's environment (see [Turning off the tool hooks](/configuration#turning-off-the-tool-hooks)). Claude Code still starts the `claude-mem` hook launcher for each Read, but it exits before starting Bun or the worker bundle.
 
 <Note>
 With the gate off, Claude reads whole files whenever it chooses. That costs more tokens on large files but saves the extra tool calls, which can be the better trade for small projects or when observations are sparse.

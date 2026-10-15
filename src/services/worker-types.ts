@@ -92,6 +92,15 @@ export interface ActiveSession {
    */
   consecutiveSdkStreamExits?: number;
   /**
+   * Set once an upstream rejected the observer's thinking param with an
+   * invalid-request error (always-thinking gateway, #4732): every later
+   * generation on this session builds its SDK options with the thinking field
+   * stripped, instead of re-sending a request the gateway will refuse again.
+   * Not reset for the life of the session — a gateway that refused the param
+   * once keeps refusing it.
+   */
+  observerThinkingStripped?: boolean;
+  /**
    * Consecutive rate-limit pauses this session resumed from on its own, after
    * the provider's Retry-After. Bounds those resumes before the provider
    * breaker takes over; reset when a queued-work turn is answered.

@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
@@ -6,11 +7,7 @@ import type { ActiveSession, ConversationMessage } from '../../src/services/work
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt',
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };

@@ -7,6 +7,7 @@ import {
   defaultSessionInitRequestTimeoutMs,
   getTimeout,
   isToolHookDisabledByEnv,
+  isSummarizeDisabledByEnv,
 } from '../src/shared/hook-constants.js';
 
 describe('session-init budget vs the UserPromptSubmit host timeout', () => {
@@ -147,6 +148,42 @@ describe('hook-constants', () => {
       expect(isToolHookDisabledByEnv('file-context', { CLAUDE_MEM_DISABLE_OBSERVATION: '1' })).toBe(false);
       expect(isToolHookDisabledByEnv('file-context', { CLAUDE_MEM_DISABLE_FILE_CONTEXT: '1' })).toBe(true);
       expect(isToolHookDisabledByEnv('observation', { CLAUDE_MEM_DISABLE_FILE_CONTEXT: '1' })).toBe(false);
+    });
+  });
+
+  describe('isSummarizeDisabledByEnv (#4734)', () => {
+    it('is off by default for every event', () => {
+      const env = {};
+      expect(isSummarizeDisabledByEnv('summarize', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('context', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('session-init', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('observation', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('file-context', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('session-end', env)).toBe(false);
+    });
+
+    it('CLAUDE_MEM_DISABLE_SUMMARY=1 disables summarize only', () => {
+      const env = { CLAUDE_MEM_DISABLE_SUMMARY: '1' };
+      expect(isSummarizeDisabledByEnv('summarize', env)).toBe(true);
+      // The reads stay on: SessionStart context and UserPromptSubmit session-init
+      // are the point of keeping claude-mem enabled for headless runs.
+      expect(isSummarizeDisabledByEnv('context', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('session-init', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('observation', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('file-context', env)).toBe(false);
+      expect(isSummarizeDisabledByEnv('session-end', env)).toBe(false);
+    });
+
+    it('keeps the switches separate: the tool-hook flags never stop the summary', () => {
+      expect(isSummarizeDisabledByEnv('summarize', { CLAUDE_MEM_DISABLE_TOOL_HOOKS: '1' })).toBe(false);
+      expect(isSummarizeDisabledByEnv('summarize', { CLAUDE_MEM_DISABLE_OBSERVATION: '1' })).toBe(false);
+      expect(isSummarizeDisabledByEnv('summarize', { CLAUDE_MEM_DISABLE_FILE_CONTEXT: '1' })).toBe(false);
+    });
+
+    it('ignores non-1 values', () => {
+      expect(isSummarizeDisabledByEnv('summarize', { CLAUDE_MEM_DISABLE_SUMMARY: 'true' })).toBe(false);
+      expect(isSummarizeDisabledByEnv('summarize', { CLAUDE_MEM_DISABLE_SUMMARY: '0' })).toBe(false);
+      expect(isSummarizeDisabledByEnv('summarize', { CLAUDE_MEM_DISABLE_SUMMARY: '' })).toBe(false);
     });
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
+import codeMode from '../plugin/modes/code.json';
 import { writeFileSync, mkdirSync, rmSync, existsSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -21,11 +22,7 @@ const toolObservationMessage = {
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt'
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }, { id: 'bugfix' }],
   observation_concepts: []
 };
