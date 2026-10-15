@@ -73,7 +73,8 @@ describe('slow-fs harness', () => {
     });
     try {
       expect(Object.keys(run.opens)).toEqual([]);
-      expect(run.maxTickGapMs).toBeLessThan(500);
+      // Deterministic: wall-clock gaps also include OS scheduling pauses on a busy runner.
+      expect(run.blockedMs).toBe(0);
     } finally {
       run.cleanup();
     }
