@@ -1,6 +1,6 @@
 import { join, dirname, basename, sep } from 'path';
 import { homedir } from 'os';
-import { existsSync, mkdirSync, readFileSync } from 'fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { readJsonFileWithBom } from './atomic-json.js';
@@ -75,6 +75,35 @@ export function ensureDir(dirPath: string): void {
   mkdirSync(dirPath, { recursive: true });
 }
 
+/**
+ * Wire gateway data root (plan D1/D12). Everything the gateway writes lives
+ * here, temp files included (`tmp/`): never the OS temp dir.
+ */
+export const WIRE_GATEWAY_DIR = join(DATA_DIR, 'wire-gateway');
+export const WIRE_GATEWAY_SUBDIRS = ['state', 'recordings', 'ledger', 'usage', 'wiring', 'agents', 'tmp', 'keys'] as const;
+export type WireGatewaySubdir = typeof WIRE_GATEWAY_SUBDIRS[number];
+
+/** Folders the gateway creates are owner-only; files are written 0600 by their writers. */
+export const WIRE_GATEWAY_DIR_MODE = 0o700;
+export const WIRE_GATEWAY_FILE_MODE = 0o600;
+
+export function wireGatewaySubdirPath(subdir: WireGatewaySubdir): string {
+  return join(WIRE_GATEWAY_DIR, subdir);
+}
+
+/**
+ * Create the wire gateway root and every subdir as 0700. chmod after mkdir
+ * because mkdir's mode is masked by the umask and is ignored for a folder
+ * that already exists. Idempotent.
+ */
+export function ensureWireGatewayDirs(root: string = WIRE_GATEWAY_DIR): string {
+  for (const dir of [root, ...WIRE_GATEWAY_SUBDIRS.map(subdir => join(root, subdir))]) {
+    mkdirSync(dir, { recursive: true, mode: WIRE_GATEWAY_DIR_MODE });
+    if (process.platform !== 'win32') chmodSync(dir, WIRE_GATEWAY_DIR_MODE);
+  }
+  return root;
+}
+
 /** mkdir failures that retrying can never fix: the data dir is a file, sits under one, or is not writable. */
 const PERMANENT_DIRECTORY_ERROR_CODES = new Set(['ENOTDIR', 'EEXIST', 'EACCES', 'EPERM', 'EROFS']);
 
@@ -147,4 +176,10 @@ export const paths = {
   supervisorRegistry: () => join(DATA_DIR, 'supervisor.json'),
   envFile: () => join(DATA_DIR, '.env'),
   logsDir: () => LOGS_DIR,
+  wireGateway: () => WIRE_GATEWAY_DIR,
+  wireGatewayRoutes: () => join(WIRE_GATEWAY_DIR, 'routes.json'),
+  wireGatewayPid: () => join(WIRE_GATEWAY_DIR, 'state', 'wire-gateway.pid'),
+  wireGatewayPort: () => join(WIRE_GATEWAY_DIR, 'state', 'wire-gateway.port'),
+  wireGatewayRuntime: () => join(WIRE_GATEWAY_DIR, 'state', 'wire-gateway.runtime.json'),
+  wireGatewayProcessRegistry: () => join(WIRE_GATEWAY_DIR, 'state', 'supervisor.json'),
 } as const;

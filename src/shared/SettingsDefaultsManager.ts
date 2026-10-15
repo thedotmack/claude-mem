@@ -395,6 +395,12 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
+  // Wire gateway (src/services/wire-gateway/): a separate loopback daemon that
+  // relays agent model traffic. Never the worker's port or process.
+  CLAUDE_MEM_WIRE_GATEWAY_PORT: string;
+  CLAUDE_MEM_WIRE_GATEWAY_HOST: string;
+  CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: string;
+  CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -648,6 +654,12 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
+    // Mirrors the worker formula above, 100 ports lower: 37600–37699 sits below
+    // the worker (37700–37799) and the server runtime (37877+). 37677 on Windows.
+    CLAUDE_MEM_WIRE_GATEWAY_PORT: String(37600 + ((process.getuid?.() ?? 77) % 100)),
+    CLAUDE_MEM_WIRE_GATEWAY_HOST: '127.0.0.1',
+    CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: 'true',             // worker starts the wire gateway at boot while routes.json has a route
+    CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: '600000',    // stop/restart waits this long for in-flight streams before force-closing
   };
 
   static getAllDefaults(): SettingsDefaults {

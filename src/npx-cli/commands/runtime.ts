@@ -128,6 +128,12 @@ export function runServerWorkerStartCommand(): void {
   spawnBunServerCommand('worker', ['start']);
 }
 
+// The wire gateway's lifecycle runs through the worker script, which maps
+// `wire <sub>` to the gateway's own wire-gateway-service.cjs.
+export function runWireGatewayCommand(extraArgs: string[] = []): void {
+  spawnBunWorkerCommand('wire', extraArgs);
+}
+
 export function runStartCommand(): void {
   spawnBunWorkerCommand('start');
 }
