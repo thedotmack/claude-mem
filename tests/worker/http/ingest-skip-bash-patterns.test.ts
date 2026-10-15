@@ -67,6 +67,26 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
     expect(result).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
   });
 
+  it('does not skip a PowerShell command that fails to match', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '^(ls|cat|pwd)\\b';
+    await expect(ingestObservation({
+      contentSessionId: 'test-session',
+      toolName: 'PowerShell',
+      toolInput: { command: 'Get-ChildItem -Force' },
+      toolResponse: {},
+    })).rejects.toThrow();
+  });
+
+  it('reads the PowerShell command from `command`, not other keys', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '.*';
+    await expect(ingestObservation({
+      contentSessionId: 'test-session',
+      toolName: 'PowerShell',
+      toolInput: { script: 'pwd' },
+      toolResponse: {},
+    })).rejects.toThrow();
+  });
+
   it('never applies the pattern to non-shell tools', async () => {
     process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '.*';
     await expect(ingestObservation({

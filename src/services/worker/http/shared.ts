@@ -65,7 +65,9 @@ function getBashSkipPattern(pattern: string): RegExp | null {
 
 // The shell command CLAUDE_MEM_SKIP_BASH_PATTERNS is matched against. Claude
 // Code sends `Bash` + `command` (Cursor and Windsurf adapters normalize to the
-// same shape); the Codex transcript watcher sends `exec_command` + `cmd`.
+// same shape); the Codex transcript watcher sends `exec_command` + `cmd`; on
+// Windows the primary shell arrives as `PowerShell` + `command` (issue #4745 —
+// without this branch the setting silently did nothing there).
 function shellCommandOf(toolName: string, toolInput: unknown): string {
   if (!toolInput || typeof toolInput !== 'object') return '';
   const input = toolInput as { command?: unknown; cmd?: unknown };

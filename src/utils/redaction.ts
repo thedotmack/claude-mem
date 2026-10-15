@@ -14,6 +14,8 @@ export interface RedactionConfig {
   disabledBuiltinPatterns?: string[];
   customPatterns?: { name: string; regex: string }[];
   logMatches?: boolean;
+  /** CLAUDE_MEM_REDACT_GENERIC_ENABLED: also run GENERIC_REDACTION_PATTERNS. Off by default. */
+  genericEnabled?: boolean;
 }
 
 export interface RedactionResult {
@@ -23,12 +25,44 @@ export interface RedactionResult {
   oversize: boolean;
 }
 
+// The value shape shared by the generic built-ins below (issue #4745): a
+// lookahead demands 8 value-class chars, then the match itself demands at
+// least one letter — so purely numeric values (`max_tokens=4096`) and shorter
+// strings never redact. The class holds only bytes found in real secrets and
+// stops at whitespace/quotes/angle brackets, so `<redacted …/>` markers can
+// never re-match and a value never swallows surrounding shell/JSON syntax.
+const GENERIC_VALUE_CLASS = String.raw`[A-Za-z0-9_.\-+/=~@#$%^*!?]`;
+const GENERIC_VALUE = `(?=${GENERIC_VALUE_CLASS}{8})${GENERIC_VALUE_CLASS}*[A-Za-z]${GENERIC_VALUE_CLASS}*`;
+
+// An optional quote, possibly JSON-escaped: the worker scans
+// `JSON.stringify(toolInput)`, where `DB_PASSWORD="x"` arrives as
+// `DB_PASSWORD=\"x\"`. The backslash stays out of GENERIC_VALUE_CLASS, so a
+// value still ends at the escaped closing quote.
+const OPTIONAL_QUOTE = String.raw`(?:\\{0,3}["'])?`;
+// Bounded on purpose: an unbounded `\s*` inside a lookbehind re-scans the
+// whole whitespace run at every position in it, which is quadratic and
+// stalled the synchronous capture path for seconds on padded output.
+const BOUNDED_SPACE = String.raw`\s{0,8}`;
+
+function genericBuiltinRegex(lookbehind: string): RegExp {
+  // 'i' because the key spellings above are lowercase while captured keys are
+  // not (`db_password:`, `authorization:`); every entry stays disable-able by
+  // name via CLAUDE_MEM_REDACT_DISABLED_BUILTINS like the vendor built-ins.
+  return new RegExp(`${lookbehind}${GENERIC_VALUE}`, 'gi');
+}
+
+/** `key=value`, `key: value`, `"key": "value"`, with JSON-escaped quotes too. */
+function keyedLookbehind(key: string): string {
+  return `(?<=${key}${OPTIONAL_QUOTE}${BOUNDED_SPACE}[=:]${BOUNDED_SPACE}${OPTIONAL_QUOTE})`;
+}
+
 export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   { name: 'aws_access_key',  regex: /AKIA[0-9A-Z]{16}/g },
   // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
   // yaml-style (`KEY: val`); JSON-style `"KEY": "val"` is not anchored
   // because the lookbehind expects `=`/`:` directly after the key name.
-  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s*[=:]\s*['"]?)[A-Za-z0-9/+=]{40}/g },
+  // Whitespace is bounded for the same reason as BOUNDED_SPACE.
+  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/g },
   { name: 'github_pat',      regex: /\bgh[oprs]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
   { name: 'openai_key',      regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\b/g },
   { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g },
@@ -40,6 +74,20 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },
+];
+
+// Generic, lower-confidence built-ins (issue #4745): credentials that carry no
+// vendor prefix. Opt-in on top of redaction (CLAUDE_MEM_REDACT_GENERIC_ENABLED,
+// default off), and run LAST so a vendor-shaped value is claimed by its
+// specific pattern above and keeps that marker; GENERIC_VALUE bounds false
+// positives. Each can still be turned off by name via
+// CLAUDE_MEM_REDACT_DISABLED_BUILTINS.
+export const GENERIC_REDACTION_PATTERNS: RedactionPattern[] = [
+  // `pwd` only as a suffix (`DB_PWD`, `MYSQL_PWD`): the bare `PWD` and
+  // `OLDPWD` environment variables hold a working directory, not a secret.
+  { name: 'generic_password', regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b(?:\w*_?(?:password|passwd)|\w+_pwd)`)) },
+  { name: 'generic_token',    regex: genericBuiltinRegex(keyedLookbehind(String.raw`\b\w*_(?:token|secret|api_key)`)) },
+  { name: 'bearer_token',     regex: genericBuiltinRegex(`(?<=\\bAuthorization${OPTIONAL_QUOTE}${BOUNDED_SPACE}:${BOUNDED_SPACE}${OPTIONAL_QUOTE}Bearer${BOUNDED_SPACE})`) },
 ];
 
 // Measured in UTF-16 code units (string.length). Bounds the regex work per
@@ -78,7 +126,11 @@ export function redactSensitive(input: string, config: RedactionConfig): Redacti
     }
   }
 
-  const allPatterns: RedactionPattern[] = [...compiledCustom, ...BUILTIN_REDACTION_PATTERNS];
+  const allPatterns: RedactionPattern[] = [
+    ...compiledCustom,
+    ...BUILTIN_REDACTION_PATTERNS,
+    ...(config.genericEnabled ? GENERIC_REDACTION_PATTERNS : []),
+  ];
 
   // Every match is redacted: there is no match cap, so a field with many
   // secrets never lets the tail through.
@@ -115,6 +167,7 @@ interface RedactionSettings {
   CLAUDE_MEM_REDACT_DISABLED_BUILTINS: string;
   CLAUDE_MEM_REDACT_CUSTOM_PATTERNS: string;
   CLAUDE_MEM_REDACT_LOG_MATCHES: string;
+  CLAUDE_MEM_REDACT_GENERIC_ENABLED: string;
   [key: string]: string;
 }
 
@@ -147,6 +200,7 @@ export function loadRedactionConfig(settings: Partial<RedactionSettings>): Redac
       .filter(Boolean),
     customPatterns: safeParseCustomPatterns(settings.CLAUDE_MEM_REDACT_CUSTOM_PATTERNS ?? '[]'),
     logMatches: settings.CLAUDE_MEM_REDACT_LOG_MATCHES === 'true',
+    genericEnabled: settings.CLAUDE_MEM_REDACT_GENERIC_ENABLED === 'true',
   };
 }
 
@@ -237,6 +291,22 @@ export function redactForLog(text: string): string {
   return redactSensitive(text, getRedactionConfig()).redacted;
 }
 
+// A structured payload holds the key and the value apart
+// (`{client_secret: "…"}`), so the text patterns, which anchor on `key=`,
+// never see them together; this pairs them again for the generic group.
+const GENERIC_CREDENTIAL_KEY = /(?:^|_)(password|passwd|secret|token|api_key)$/i;
+const WHOLE_GENERIC_VALUE = new RegExp(`^${GENERIC_VALUE_CLASS}{8,}$`);
+
+function genericMarkerForKeyedValue(key: string, value: string, config: RedactionConfig): string | null {
+  if (!config.genericEnabled) return null;
+  const keyMatch = GENERIC_CREDENTIAL_KEY.exec(key);
+  if (!keyMatch) return null;
+  const name = keyMatch[1].toLowerCase().startsWith('passw') ? 'generic_password' : 'generic_token';
+  if (config.disabledBuiltinPatterns?.includes(name)) return null;
+  if (!WHOLE_GENERIC_VALUE.test(value) || !/[A-Za-z]/.test(value)) return null;
+  return `<redacted type='${name}'/>`;
+}
+
 /**
  * The value with every string in it (object values and array items, at any
  * depth) redacted, while redaction is on; the caller's value is not mutated.
@@ -245,11 +315,15 @@ export function redactForLog(text: string): string {
  */
 export function redactJsonStrings<T>(value: T, config: RedactionConfig = getRedactionConfig()): T {
   if (!config.enabled) return value;
-  const walk = (node: unknown): unknown => {
-    if (typeof node === 'string') return redactSensitive(node, config).redacted;
-    if (Array.isArray(node)) return node.map(walk);
+  const walk = (node: unknown, key?: string): unknown => {
+    if (typeof node === 'string') {
+      const result = redactSensitive(node, config);
+      if (key === undefined || Object.keys(result.counts).length > 0) return result.redacted;
+      return genericMarkerForKeyedValue(key, node, config) ?? result.redacted;
+    }
+    if (Array.isArray(node)) return node.map((child) => walk(child));
     if (node !== null && typeof node === 'object') {
-      return Object.fromEntries(Object.entries(node).map(([key, child]) => [key, walk(child)]));
+      return Object.fromEntries(Object.entries(node).map(([childKey, child]) => [childKey, walk(child, childKey)]));
     }
     return node;
   };
