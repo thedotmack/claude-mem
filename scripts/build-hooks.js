@@ -168,10 +168,16 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
     extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+    // Codex's own plugin copy carries the scripts but never `node_modules`
+    // (the CLI rebuilds that folder on every `codex plugin add`), so a hook
+    // resolving to it dies on its first import. Require the host-injected
+    // root to have its dependencies; without them the resolver falls back to
+    // the installer-prepared copies (#4763).
+    requireDependencies: true,
   });
   const codexHookPair = (tail) => ({
     command: codexHook(tail),
-    commandWindows: buildCodexWindowsCommand(tail),
+    commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
   });
 
   return {
