@@ -29,13 +29,25 @@ afterAll(() => {
 function runCli(args: string[]) {
   // Isolated HOME so a regression that runs the real command cannot touch a real install.
   const home = mkdtempSync(join(tmpdir(), 'claude-mem-help-'));
+  // Drop inherited pointers at a real install so every path resolves inside the temp home.
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    HOME: home,
+    USERPROFILE: home,
+    CLAUDE_CONFIG_DIR: join(home, '.claude'),
+    CLAUDE_MEM_DATA_DIR: join(home, '.claude-mem'),
+    // Bun's transpiler cache lands in ~/Library/Caches/bun on macOS; it is not CLI output.
+    BUN_RUNTIME_TRANSPILER_CACHE_PATH: '0',
+  };
+  delete env.CLAUDE_MEM_WORKER_SCRIPT_PATH;
+  delete env.CLAUDE_PLUGIN_ROOT;
   try {
     const result = spawnSync(process.execPath, [cliEntry, ...args], {
       encoding: 'utf-8',
       timeout: 30_000,
       stdin: 'ignore',
       cwd: home,
-      env: { ...process.env, HOME: home, USERPROFILE: home, CLAUDE_MEM_DATA_DIR: join(home, '.claude-mem') },
+      env,
     });
     // Bun itself creates ~/.bun for its runtime cache; that is not CLI output.
     return { ...result, homeEntries: readdirSync(home).filter((entry) => entry !== '.bun') };
