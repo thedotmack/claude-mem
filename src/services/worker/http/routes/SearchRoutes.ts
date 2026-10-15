@@ -7,6 +7,7 @@ import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { AppError } from '../../../server/ErrorHandler.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -626,6 +627,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private searchArgsFromRequest(req: Request): Record<string, any> {
     const searchArgs: Record<string, any> = { ...(req.query as Record<string, any>) };
+    SearchRoutes.assertValidDateBounds(searchArgs);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     if (platformSource) {
       searchArgs.platformSource = platformSource;
@@ -638,6 +640,27 @@ export class SearchRoutes extends BaseRouteHandler {
     }
     SearchRoutes.assertValidPagination(searchArgs);
     return searchArgs;
+  }
+
+  /**
+   * Reject an unparseable date bound up front. Left alone it reaches the search
+   * strategies, where it matches nothing on the SQLite path and filters nothing
+   * on the Chroma path, and the strategies' own error handling would swallow it.
+   */
+  private static assertValidDateBounds(searchArgs: Record<string, any>): void {
+    for (const [keys, boundary] of [
+      [['dateStart', 'date_start', 'date_from'], 'start'],
+      [['dateEnd', 'date_end', 'date_to'], 'end'],
+    ] as const) {
+      for (const key of keys) {
+        const value = searchArgs[key];
+        if (value === undefined || value === '') continue;
+        if (typeof value !== 'string') {
+          throw new AppError(`${key} must be a single date string`, 400, 'INVALID_DATE');
+        }
+        resolveDateBound(value, boundary);
+      }
+    }
   }
 
   /**

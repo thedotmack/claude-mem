@@ -194,6 +194,22 @@ describe('CorpusRoutes Type Coercion', () => {
     expect(mockBuild).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ['dateStart', 'not-a-date'],
+    ['date_start', 'not-a-date'],
+    ['dateEnd', '2025-13-45'],
+    ['date_end', 'yesterday-ish'],
+  ])('rejects an unparseable %s with 400 INVALID_DATE before calling CorpusBuilder', async (key, value) => {
+    const { req, res, statusSpy, jsonSpy } = createMockReqRes({ name: 'bad-date', [key]: value });
+
+    handler(req as Request, res as Response);
+    await flushPromises();
+
+    expect(statusSpy).toHaveBeenCalledWith(400);
+    expect(jsonSpy).toHaveBeenCalledWith(expect.objectContaining({ code: 'INVALID_DATE' }));
+    expect(mockBuild).not.toHaveBeenCalled();
+  });
+
   it('rejects unsupported corpus types before calling CorpusBuilder', async () => {
     const { req, res, statusSpy } = createMockReqRes({
       name: 'bad-type',
