@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [13.39.0] - 2026-10-13
+
+## Codex: memory timeline returns to subagent threads after compaction
+
+When Codex compacts a thread, the memory timeline drops out of its history. The root thread already got it back through `SessionStart` (source `compact`). Codex never sends `SessionStart` to subagent threads, though, so a subagent that compacted kept working without its memory.
+
+- A new **PostCompact** hook marks the compacted thread, keyed by `session_id` plus `agent_id`.
+- That thread's next **PostToolUse** records the observation as usual, consumes the marker, and returns the timeline once as `additionalContext`.
+- **SessionStart** clears the marker, so the root thread never gets the timeline twice.
+- Shared session-marker file handling now backs both the Codex compaction gate and the Kimi context gate.
+
+PR: #4733
+
 ## [13.38.0] - 2026-10-13
 
 No more console window flashing on Windows. Every Claude Code hook now calls claude-mem directly instead of going through bash, and this release also carries 16 community fixes from five contributors.
