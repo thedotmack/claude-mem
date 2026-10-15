@@ -54,6 +54,7 @@ const SECRET_SETTING_KEYS = new Set([
   // or query tokens). Both are file/env only — never on the POST whitelist.
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET',
   'CLAUDE_MEM_GROK_BOT_WEBHOOK_URL',
+  'CLAUDE_MEM_NOTION_TOKEN',
 ]);
 
 function maskSecretString(value: string): string {

@@ -350,6 +350,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_CONCEPTS: string;
   CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: string;
   CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: string;
+  CLAUDE_MEM_NOTION_ENABLED: string;
+  CLAUDE_MEM_NOTION_TOKEN: string;
+  CLAUDE_MEM_NOTION_DATABASE_ID: string;
+  CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES: string;
   CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: string;
   CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS: string;
   CLAUDE_MEM_GROK_BOT_INJECT_TIER: string;
@@ -601,6 +605,13 @@ export class SettingsDefaultsManager {
     // (off while empty). File/env only; both are masked on GET /api/settings.
     CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: '',
     CLAUDE_MEM_GROK_BOT_WEBHOOK_SECRET: '',
+    // Optional Notion export: each new observation is upserted into a Notion
+    // database. Off by default; a no-op until the token and database id are set.
+    // The token is file/env only and masked on GET /api/settings.
+    CLAUDE_MEM_NOTION_ENABLED: 'false',
+    CLAUDE_MEM_NOTION_TOKEN: '',
+    CLAUDE_MEM_NOTION_DATABASE_ID: '',
+    CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES: 'true',
     // Live Grok Bot Memory INDEX. Worker writes zz-claude-mem-inject.md as
     // observations land. Default on; no-op when no Grok Bot seats exist.
     CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
