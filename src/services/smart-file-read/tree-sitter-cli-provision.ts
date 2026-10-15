@@ -33,21 +33,29 @@ export interface TreeSitterCliVersionProbe {
 
 async function answersTreeSitterVersion(executablePath: string): Promise<TreeSitterCliVersionProbe> {
   return await new Promise<TreeSitterCliVersionProbe>((resolve) => {
-    const child = execFile(executablePath, ["--version"], {
-      encoding: "utf-8",
-      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
-      windowsHide: true,
-    }, (error, stdout, stderr) => {
-      if (!error && TREE_SITTER_VERSION_OUTPUT.test((stdout ?? "").trim())) {
-        resolve({ usable: true });
-        return;
-      }
-      const detail = (stderr ?? "").trim().split("\n")[0]
-        || (error?.message ?? "").split("\n")[0]
-        || undefined;
-      resolve({ usable: false, reason: detail });
-    });
-    child.stdin?.end();
+    // Bun can throw synchronously when the OS refuses the file outright (a
+    // truncated Mach-O is EBADMACHO on macOS); that is "not usable", the same
+    // as a spawn failure reported through the callback.
+    try {
+      const child = execFile(executablePath, ["--version"], {
+        encoding: "utf-8",
+        timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+        windowsHide: true,
+      }, (error, stdout, stderr) => {
+        if (!error && TREE_SITTER_VERSION_OUTPUT.test((stdout ?? "").trim())) {
+          resolve({ usable: true });
+          return;
+        }
+        const detail = (stderr ?? "").trim().split("\n")[0]
+          || (error?.message ?? "").split("\n")[0]
+          || undefined;
+        resolve({ usable: false, reason: detail });
+      });
+      child.stdin?.end();
+    } catch (spawnError) {
+      const message = spawnError instanceof Error ? spawnError.message : String(spawnError);
+      resolve({ usable: false, reason: message.split("\n")[0] || undefined });
+    }
   });
 }
 
