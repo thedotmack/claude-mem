@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } 
 import { delimiter, join } from 'node:path';
 import { resolveDataDir } from '../../../src/shared/paths.js';
 import { treeSitterBinaryName } from '../../../src/services/smart-file-read/tree-sitter-bin-name.js';
-import { checkTreeSitterCliLoadable } from '../../../src/services/smart-file-read/tree-sitter-bin-path.js';
+import { checkTreeSitterCliLoadable, pickTreeSitterBinPath } from '../../../src/services/smart-file-read/tree-sitter-bin-path.js';
 
 // #4758: existsSync is not enough — a tree-sitter CLI binary can be present
 // yet unable to run (e.g. linked against GLIBC_2.39 on Ubuntu 22.04's glibc
@@ -157,5 +157,66 @@ describe.skipIf(process.platform === 'win32')('checkTreeSitterCliLoadable with e
     );
     expect(check.present).toBe(true);
     expect(check.loadable).toBe(true);
+  });
+});
+
+// #4758 follow-up: a package-local binary the OS cannot run must not shadow a
+// working tree-sitter on PATH (e.g. a conda-forge build linked against an
+// older glibc), or the smart tools stay broken even though a fix is installed.
+describe.skipIf(process.platform === 'win32')('pickTreeSitterBinPath', () => {
+  function writeExecutable(dir: string, script: string): string {
+    mkdirSync(dir, { recursive: true });
+    const binPath = join(dir, binaryName);
+    writeFileSync(binPath, `#!/bin/sh\n${script}\n`);
+    chmodSync(binPath, 0o755);
+    return binPath;
+  }
+  const working = 'echo "tree-sitter 0.26.9"';
+  const glibcFailure = "echo 'tree-sitter: version GLIBC_2.39 not found' >&2\nexit 1";
+
+  it('keeps the package-local binary when it runs, even if PATH has another', () => {
+    const local = writeExecutable(join(scratchRoot, 'pick-1', 'pkg'), working);
+    const pathDir = join(scratchRoot, 'pick-1', 'path');
+    writeExecutable(pathDir, working);
+
+    expect(pickTreeSitterBinPath(local, binaryName, pathDir)).toBe(local);
+  });
+
+  it('falls back to a working binary on PATH when the package-local one cannot run', () => {
+    const local = writeExecutable(join(scratchRoot, 'pick-2', 'pkg'), glibcFailure);
+    const pathDir = join(scratchRoot, 'pick-2', 'path');
+    const onPath = writeExecutable(pathDir, working);
+
+    const picked = pickTreeSitterBinPath(local, binaryName, pathDir);
+    expect(picked).toBe(onPath);
+    expect(checkTreeSitterCliLoadable(picked).loadable).toBe(true);
+  });
+
+  it('keeps the package-local binary (and its reason) when nothing runs', () => {
+    const local = writeExecutable(join(scratchRoot, 'pick-3', 'pkg'), glibcFailure);
+    const pathDir = join(scratchRoot, 'pick-3', 'path');
+    writeExecutable(pathDir, glibcFailure);
+
+    const picked = pickTreeSitterBinPath(local, binaryName, pathDir);
+    expect(picked).toBe(local);
+    expect(checkTreeSitterCliLoadable(picked).reason).toContain('GLIBC_2.39');
+  });
+
+  it('keeps the package-local binary when PATH has no tree-sitter', () => {
+    const local = writeExecutable(join(scratchRoot, 'pick-4', 'pkg'), glibcFailure);
+
+    expect(pickTreeSitterBinPath(local, binaryName, join(scratchRoot, 'pick-4', 'empty'))).toBe(local);
+  });
+
+  it('switches back to the package-local binary once it is replaced by one that runs', () => {
+    const local = writeExecutable(join(scratchRoot, 'pick-5', 'pkg'), glibcFailure);
+    const pathDir = join(scratchRoot, 'pick-5', 'path');
+    const onPath = writeExecutable(pathDir, working);
+    expect(pickTreeSitterBinPath(local, binaryName, pathDir)).toBe(onPath);
+
+    writeFileSync(local, `#!/bin/sh\n${working}\n`);
+    const mtime = new Date(Date.now() + 5000);
+    utimesSync(local, mtime, mtime);
+    expect(pickTreeSitterBinPath(local, binaryName, pathDir)).toBe(local);
   });
 });

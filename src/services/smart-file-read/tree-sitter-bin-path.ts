@@ -26,17 +26,49 @@ const _require = typeof __filename !== 'undefined'
 export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.platform): string {
   const binName = treeSitterBinaryName(platform);
 
+  let packageLocalBinPath: string | undefined;
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
     const binPath = join(dirname(pkgPath), binName);
     if (existsSync(binPath)) {
-      return binPath;
+      packageLocalBinPath = binPath;
     }
   } catch {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
   }
 
-  return binName;
+  if (packageLocalBinPath === undefined) return binName;
+  // Probing only means something for the platform we are running on; the
+  // platform parameter exists so tests can check other platforms' names.
+  if (platform !== process.platform) return packageLocalBinPath;
+  return pickTreeSitterBinPath(packageLocalBinPath, binName, process.env.PATH ?? '');
+}
+
+/**
+ * Which binary should the parser run when tree-sitter-cli has one on disk?
+ * The package-local binary, unless the OS cannot run it and a tree-sitter on
+ * PATH can (#4758: the 0.26.9 release asset needs GLIBC_2.39, so on Ubuntu
+ * 22.04 / Debian 12 / RHEL 9 it is present but every spawn fails, and a
+ * working build the user installed on PATH would otherwise never be used).
+ * Both probes are cached per path + mtime + mode (see loadCheckFor), so this
+ * stays cheap on the per-parse and per-Read paths, and a binary the worker
+ * provisions later (new mtime) is re-probed.
+ *
+ * Exported for tests; callers use resolveTreeSitterBinPath.
+ */
+export function pickTreeSitterBinPath(
+  packageLocalBinPath: string,
+  binName: string,
+  searchPath: string,
+): string {
+  if (loadCheckFor(packageLocalBinPath).loadable) return packageLocalBinPath;
+  const onPath = resolveOnPath(binName, searchPath);
+  if (onPath !== undefined && onPath !== packageLocalBinPath && loadCheckFor(onPath).loadable) {
+    return onPath;
+  }
+  // Nothing runs: keep the package-local path so checkTreeSitterCliLoadable
+  // reports why that binary fails, which is the actionable reason.
+  return packageLocalBinPath;
 }
 
 /**
@@ -182,6 +214,11 @@ export function checkTreeSitterCliLoadable(
       reason: `tree-sitter CLI not found (looked for ${resolvedBinPath})`,
     };
   }
+  return loadCheckFor(absoluteBinPath);
+}
+
+/** The cached --version probe for one absolute binary path. */
+function loadCheckFor(absoluteBinPath: string): TreeSitterCliLoadCheck {
   let stats: { mtimeMs: number; mode: number };
   try {
     const s = statSync(absoluteBinPath);
