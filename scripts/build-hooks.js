@@ -790,10 +790,11 @@ async function buildHooks() {
       minify: true,
       ...SOURCEMAP_OPTS,
       logLevel: 'error',
-      // Externalize zod for consistency with worker-service / server-beta-service —
-      // any zod usage in the processor.ts import chain should resolve at runtime
-      // against plugin/node_modules instead of being inlined (avoids duplicate-
-      // instance hazards and keeps the bundle slim).
+      // Externalize zod for consistency with server-service, context-generator and the other plugin bundles —
+      // any zod usage in the processor.ts import chain resolves at runtime against
+      // plugin/node_modules instead of being inlined (keeps the bundle slim). The
+      // worker and MCP server inline zod because a Codex or Claude Desktop copy of
+      // the plugin may have no node_modules.
       external: ['bun:sqlite', 'zod'],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
