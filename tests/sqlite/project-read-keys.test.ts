@@ -50,11 +50,12 @@ describe('projectReadKeys adopted-row scoping (#4782)', () => {
 
       const scope = projectScopeSql('o', ['nuviapel'], { includeMerged: true });
       const titles = (store.db.prepare(
-        `SELECT title FROM observations o WHERE ${scope.sql} ORDER BY created_at_epoch DESC`
+        `SELECT title FROM observations o WHERE ${scope.sql} ORDER BY title`
       ).all(...scope.params) as Array<{ title: string }>).map(row => row.title);
 
       // The stamped row and the project's own rows, never the unstamped ones.
-      expect(titles).toEqual(['NUVIAPEL_ROW', 'ADOPTED']);
+      // (Ordered by title: both seeds share one epoch, so an epoch order ties.)
+      expect(titles).toEqual(['ADOPTED', 'NUVIAPEL_ROW']);
     } finally {
       store.close();
     }
