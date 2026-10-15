@@ -196,6 +196,10 @@ See [claude-mem: command not found in hooks](/troubleshooting#claude-mem-command
 
 **Codex compaction:** A Codex compaction replaces the thread's history, timeline included. The root thread gets the timeline back from `SessionStart` (source `compact`). Codex never sends `SessionStart` to a subagent thread, and `PostCompact` output cannot carry context, so the `PostCompact` hook marks the thread (`~/.claude-mem/state/codex-compaction-pending/`) and the thread's next `PostToolUse` returns the timeline as `additionalContext`, once. A thread whose `SessionStart` already re-injected the timeline does not get it again.
 
+**Codex subagents:** Codex starts a subagent it spawns with `SubagentStart`, not `SessionStart`, so the `SubagentStart` hook gives the subagent the timeline. A forked subagent starts from a copy of its parent's conversation, timeline included, so the hook skips it: it reads `forked_from_id` from the first line of the subagent's rollout (`transcript_path`). A subagent whose rollout can't be read gets the timeline.
+
+**Trusting new Codex hooks:** Codex runs a plugin hook only after you trust it, and it treats a new or changed hook as untrusted. After an update that adds or changes a claude-mem hook, Codex says at startup that hooks need review. Trust them, or those hooks won't run. `codex exec` can't ask, so trust them once in interactive Codex first.
+
 **Output format:**
 ```markdown
 # [claude-mem] recent context

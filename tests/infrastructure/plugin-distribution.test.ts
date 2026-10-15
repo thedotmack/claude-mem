@@ -255,6 +255,19 @@ describe('Plugin Distribution - Codex Marketplace', () => {
     expect(codexHooks.hooks.PostToolUse[0].matcher).toBe('.*');
   });
 
+  it('gives a subagent Codex starts its memory timeline', () => {
+    // Codex starts a spawned subagent with SubagentStart instead of SessionStart
+    // (run_pending_session_start_hooks in codex-rs/core/src/hook_runtime.rs).
+    const codexHooks = readJson('plugin/hooks/codex-hooks.json');
+    const subagentStart = codexHooks.hooks.SubagentStart;
+
+    expect(subagentStart).toHaveLength(1);
+    // No matcher: Codex matches it against the agent type, and every type gets memory.
+    expect(subagentStart[0].matcher).toBeUndefined();
+    expect(subagentStart[0].hooks).toHaveLength(1);
+    expect(subagentStart[0].hooks[0].command).toContain('hook codex subagent-context');
+  });
+
   it('sets the Codex hook marker on every Codex command', () => {
     for (const command of commandHooksFrom('plugin/hooks/codex-hooks.json')) {
       expect(command).toContain('CLAUDE_MEM_CODEX_HOOK=1');
@@ -720,6 +733,7 @@ const RULE_A_EXPECTATIONS: Record<string, Record<string, RuleAExpectation>> = {
     'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
     'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
     'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
+    'SubagentStart.0.0': codexHookPair(['hook', 'codex', 'subagent-context']),
   },
 };
 
