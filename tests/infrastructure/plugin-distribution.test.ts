@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync } from 'fs';
+import { readFileSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, chmodSync, realpathSync } from 'fs';
 import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
@@ -955,13 +955,69 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     }
   }, 30_000);
 
+  describe('Codex Windows payload dependency check (#4763)', () => {
+    // Runs the generated `node -e` payload for real. Each candidate root's
+    // bun-runner.js is a stub that prints its own plugin root, so stdout names
+    // the root the payload resolved and spawned.
+    function runCodexWindowsPayload(hostRootHasDependencies: boolean) {
+      const sandbox = mkdtempSync(path.join(tmpdir(), 'cm-codex-win-'));
+      const makeRoot = (root: string, withDependencies: boolean) => {
+        mkdirSync(path.join(root, 'scripts'), { recursive: true });
+        writeFileSync(
+          path.join(root, 'scripts', 'bun-runner.js'),
+          "process.stdout.write(require('path').dirname(require('path').dirname(process.argv[1])));\n",
+        );
+        writeFileSync(path.join(root, 'scripts', 'worker-service.cjs'), '');
+        if (withDependencies) mkdirSync(path.join(root, 'node_modules'));
+        return root;
+      };
+      try {
+        const home = path.join(sandbox, 'home');
+        const configDir = path.join(home, '.claude');
+        const hostRoot = makeRoot(path.join(sandbox, 'codex-plugin'), hostRootHasDependencies);
+        const cacheRoot = makeRoot(path.join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0'), true);
+        const command = buildCodexWindowsCommand(['hook', 'codex', 'session-init'], { requireDependencies: true });
+        expect(command.startsWith('node -e "')).toBe(true);
+        const payload = command.slice('node -e "'.length, -1);
+        const env: Record<string, string | undefined> = {
+          ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir, CLAUDE_PLUGIN_ROOT: hostRoot,
+        };
+        delete env.PLUGIN_ROOT;
+        delete env.CLAUDE_MEM_DISABLE_TOOL_HOOKS;
+        const result = spawnSync('node', ['-e', payload], { cwd: sandbox, env, encoding: 'utf-8', timeout: 20000 });
+        return {
+          status: result.status,
+          stderr: result.stderr,
+          resolvedRoot: result.stdout ? realpathSync(result.stdout) : '',
+          hostRoot: realpathSync(hostRoot),
+          cacheRoot: realpathSync(cacheRoot),
+        };
+      } finally {
+        rmSync(sandbox, { recursive: true, force: true });
+      }
+    }
+
+    it('falls back to the cache when the host root has no node_modules', () => {
+      const run = runCodexWindowsPayload(false);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.resolvedRoot).toBe(run.cacheRoot);
+    });
+
+    it('still prefers a host root that has its dependencies', () => {
+      const run = runCodexWindowsPayload(true);
+      expect(run.status, run.stderr).toBe(0);
+      expect(run.resolvedRoot).toBe(run.hostRoot);
+    });
+  });
+
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
     mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
     writeFileSync(path.join(cacheRoot, 'scripts', 'version-check.js'), '');
     writeFileSync(path.join(cacheRoot, 'scripts', 'bun-runner.js'), '');
-    writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');    try {
+    writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');
+    try {
       for (const { command } of claudeCommands()) {
         const { stdout } = shellEval(instrument(command), { HOME: home });
         // The version-sort producer yields a trailing slash; the hook trims it
