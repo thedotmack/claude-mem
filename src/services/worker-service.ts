@@ -668,8 +668,10 @@ export class WorkerService implements WorkerRef {
       port,
       startedAt: new Date().toISOString()
     });
-    // Liveness heartbeat: hooks read its age, and a fresh one means a silent worker is slow, not dead.
-    startWorkerHeartbeat();
+    // Liveness heartbeat: a fresh beat with a recently finished response means
+    // a silent worker is slow, not dead, so the hooks' wedged-worker reclaim spares it.
+    const server = this.server;
+    startWorkerHeartbeat({ readLastResponseAtMs: () => server.getLastResponseFinishedAt() });
 
     getSupervisor().registerProcess('worker', {
       pid: process.pid,
