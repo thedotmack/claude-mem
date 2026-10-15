@@ -1,5 +1,6 @@
 import { describe, it, expect, mock, beforeEach } from 'bun:test';
 import { ChromaSearchStrategy } from '../../../../src/services/worker/search/strategies/ChromaSearchStrategy.js';
+import { parseSearchRecencyWindowMs } from '../../../../src/services/worker/search/types.js';
 import type { StrategySearchOptions, ObservationSearchResult, SessionSummarySearchResult, UserPromptSearchResult } from '../../../../src/services/worker/search/types.js';
 
 const mockObservation: ObservationSearchResult = {
@@ -456,6 +457,147 @@ describe('ChromaSearchStrategy', () => {
       expect(mockSessionStore.getObservationsByIds).toHaveBeenCalled();
       const calledWith = mockSessionStore.getObservationsByIds.mock.calls[0][0];
       expect(calledWith).toEqual([100]);
+    });
+  });
+
+  // The implicit window date-less searches apply (#4770). filterByRecency is
+  // a pure function over the aligned {ids, metadatas} arrays Chroma returns,
+  // so these cases run fully offline against constructed arrays.
+  describe('default recency window (#4770)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    interface Hit { id: number; docType: string; ageDays: number }
+
+    function makeResults(hits: Hit[]) {
+      const now = Date.now();
+      return {
+        ids: hits.map(hit => hit.id),
+        metadatas: hits.map(hit => ({
+          sqlite_id: hit.id,
+          doc_type: hit.docType,
+          created_at_epoch: now - hit.ageDays * DAY_MS
+        }))
+      };
+    }
+
+    function strategyWithWindow(defaultRecencyWindowMs?: number): ChromaSearchStrategy {
+      const chromaSync: any = { queryChroma: mock(() => Promise.resolve({ ids: [], distances: [], metadatas: [] })) };
+      const sessionStore: any = {
+        getObservationsByIds: mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: mock((projects: string[]) => projects)
+      };
+      return defaultRecencyWindowMs === undefined
+        ? new ChromaSearchStrategy(chromaSync, sessionStore)
+        : new ChromaSearchStrategy(chromaSync, sessionStore, defaultRecencyWindowMs);
+    }
+
+    const survivingIds = (strategy: ChromaSearchStrategy, hits: Hit[], dateRange?: any, ignoreWindow?: boolean) => {
+      const kept = (strategy as any).filterByRecency(makeResults(hits), dateRange, ignoreWindow ?? false);
+      return kept.map((item: { id: number }) => item.id);
+    };
+
+    it('keeps the shipped 90-day window when no window is configured', () => {
+      const strategy = strategyWithWindow();
+      const kept = survivingIds(strategy, [
+        { id: 1, docType: 'observation', ageDays: 1 },
+        { id: 2, docType: 'observation', ageDays: 91 }
+      ]);
+      expect(kept).toEqual([1]);
+    });
+
+    it('drops the window entirely when configured with 0 days', () => {
+      const strategy = strategyWithWindow(0);
+      const kept = survivingIds(strategy, [
+        { id: 1, docType: 'observation', ageDays: 1 },
+        { id: 2, docType: 'observation', ageDays: 365 }
+      ]);
+      expect(kept).toEqual([1, 2]);
+    });
+
+    it('honors a custom window of N days', () => {
+      const strategy = strategyWithWindow(30 * DAY_MS);
+      const kept = survivingIds(strategy, [
+        { id: 1, docType: 'observation', ageDays: 10 },
+        { id: 2, docType: 'observation', ageDays: 31 }
+      ]);
+      expect(kept).toEqual([1]);
+    });
+
+    it('applies an explicit dateRange instead of the configured window', () => {
+      const strategy = strategyWithWindow(30 * DAY_MS);
+      const now = Date.now();
+      const kept = survivingIds(
+        strategy,
+        [
+          { id: 1, docType: 'observation', ageDays: 1 },
+          { id: 2, docType: 'observation', ageDays: 200 }
+        ],
+        { start: now - 300 * DAY_MS, end: now }
+      );
+      // The 200-day-old hit fails the 30-day window but sits inside the
+      // requested range, so the range — not the window — decided.
+      expect(kept).toEqual([1, 2]);
+    });
+
+    it('still bypasses the window for corpus builds (ignoreDefaultRecencyWindow)', () => {
+      const strategy = strategyWithWindow(30 * DAY_MS);
+      const kept = survivingIds(
+        strategy,
+        [{ id: 1, docType: 'observation', ageDays: 365 }],
+        undefined,
+        true
+      );
+      expect(kept).toEqual([1]);
+    });
+  });
+
+  describe('parseSearchRecencyWindowMs (#4770)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    it('keeps the 90-day default for an absent or empty value', () => {
+      expect(parseSearchRecencyWindowMs(undefined)).toBe(90 * DAY_MS);
+      expect(parseSearchRecencyWindowMs('')).toBe(90 * DAY_MS);
+      expect(parseSearchRecencyWindowMs('  ')).toBe(90 * DAY_MS);
+    });
+
+    it('parses 0 as "window disabled"', () => {
+      expect(parseSearchRecencyWindowMs('0')).toBe(0);
+      expect(parseSearchRecencyWindowMs(' 0 ')).toBe(0);
+    });
+
+    it('parses a positive integer of days to milliseconds', () => {
+      expect(parseSearchRecencyWindowMs('30')).toBe(30 * DAY_MS);
+      expect(parseSearchRecencyWindowMs(' 365 ')).toBe(365 * DAY_MS);
+    });
+
+    it('rejects malformed values with null (caller keeps the default)', () => {
+      expect(parseSearchRecencyWindowMs('abc')).toBe(null);
+      expect(parseSearchRecencyWindowMs('1.5')).toBe(null);
+      expect(parseSearchRecencyWindowMs('-3')).toBe(null);
+      expect(parseSearchRecencyWindowMs('NaN')).toBe(null);
+    });
+
+    // settings.json is hand-editable JSON and SettingsDefaultsManager leaves
+    // JSON numbers untouched, so a hand-written `0` arrives here as a real
+    // number; these must parse like their string spelling, not throw.
+    it('parses JSON-numeric values like their string spelling', () => {
+      expect(parseSearchRecencyWindowMs(0)).toBe(0);
+      expect(parseSearchRecencyWindowMs(30)).toBe(30 * DAY_MS);
+      expect(parseSearchRecencyWindowMs(90)).toBe(90 * DAY_MS);
+    });
+
+    it('rejects malformed numeric values with null (caller keeps the default)', () => {
+      expect(parseSearchRecencyWindowMs(-3)).toBe(null);
+      expect(parseSearchRecencyWindowMs(1.5)).toBe(null);
+    });
+
+    it('rejects null and other non-string types with null (caller keeps the default)', () => {
+      expect(parseSearchRecencyWindowMs(null)).toBe(null);
+      expect(parseSearchRecencyWindowMs(false)).toBe(null);
+      expect(parseSearchRecencyWindowMs({ days: 30 })).toBe(null);
+      expect(parseSearchRecencyWindowMs(['30'])).toBe(null);
     });
   });
 });
