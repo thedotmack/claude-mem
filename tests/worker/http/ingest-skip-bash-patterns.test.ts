@@ -55,6 +55,18 @@ describe('ingestObservation — CLAUDE_MEM_SKIP_BASH_PATTERNS', () => {
     expect(result).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
   });
 
+  // #4745: on Windows, Claude Code runs shell commands through the PowerShell tool.
+  it('skips a PowerShell command that matches the pattern', async () => {
+    process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = 'password';
+    const result = await ingestObservation({
+      contentSessionId: 'test-session',
+      toolName: 'PowerShell',
+      toolInput: { command: 'echo password=Hunter22Example' },
+      toolResponse: {},
+    });
+    expect(result).toEqual({ ok: true, status: 'skipped', reason: 'bash_pattern_excluded' });
+  });
+
   it('never applies the pattern to non-shell tools', async () => {
     process.env.CLAUDE_MEM_SKIP_BASH_PATTERNS = '.*';
     await expect(ingestObservation({
