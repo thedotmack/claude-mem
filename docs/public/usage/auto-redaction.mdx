@@ -9,7 +9,7 @@ claude-mem can automatically detect and redact common secrets before observation
 
 ## How it works
 
-When enabled, redaction runs at the same single point where `<private>` tags are stripped, so it covers every capture path at once: tool inputs and outputs, your prompts (including stored prompt history) and the assistant's last message used for summaries. The [server runtime](/hosted-server) also redacts every text value of an event body before it stores the event, and the worker and hook logs redact the tool line they write (for example a `Bash` command). Content is scanned for a curated set of high-confidence secret patterns, and matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
+When enabled, redaction runs at the same single point where `<private>` tags are stripped, so it covers the capture paths at once: tool inputs and outputs, your prompts (including stored prompt history) and the assistant's last message used for summaries. The [server runtime](/hosted-server) also redacts every text value of an event body before it stores the event, and the worker and hook logs redact the tool line they write (for example a `Bash` command). One exception: server-runtime session and event **metadata** (such as the opening `prompt` in session metadata) is tag-stripped only when a string contains a tag, so redaction does not run on it. Content is scanned for a curated set of high-confidence secret patterns, and matches are replaced inline with a self-closing `<redacted type='...'/>` placeholder, preserving the surrounding context so search and observation quality stay intact.
 
 ```
 Before:  curl -H "Authorization: Bearer sk-abc123def456..." …
@@ -28,7 +28,7 @@ Add to `~/.claude-mem/settings.json`:
 }
 ```
 
-That is all you need for the 14 built-in patterns to kick in.
+That is all you need for the 11 built-in patterns to kick in. Add `"CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"` to also turn on the 3 [generic patterns](#generic-patterns).
 
 ## Built-in patterns
 
@@ -45,11 +45,25 @@ That is all you need for the 14 built-in patterns to kick in.
 | `stripe_key` | `sk_live_…`, `pk_live_…`, `rk_test_…` |
 | `google_api_key` | `AIza…` (35 trailing chars) |
 | `claude_mem_key` | claude-mem's own server API keys (`cmem_…`) and cmem.ai Pro memory keys (`cm_pro_…`) |
-| `generic_password` | values assigned to a `password` / `passwd` / `pwd` key (including `DB_PASSWORD=…`), in shell, yaml or JSON style |
+
+## Generic patterns
+
+Credentials without a vendor prefix (a database password, an internal token) need a lower-confidence match on the key name. These three patterns are off until you opt in:
+
+```json
+{
+  "CLAUDE_MEM_REDACT_ENABLED": "true",
+  "CLAUDE_MEM_REDACT_GENERIC_ENABLED": "true"
+}
+```
+
+| Name | Catches |
+|---|---|
+| `generic_password` | values assigned to a `password` / `passwd` key or a `*_PWD` key (`DB_PASSWORD=…`, `MYSQL_PWD=…`), in shell, yaml or JSON style |
 | `generic_token` | values assigned to a `*_TOKEN` / `*_SECRET` / `*_API_KEY` key (e.g. `AUTH_TOKEN=…`, `"client_secret": "…"`) |
 | `bearer_token` | the value after `Authorization: Bearer …` |
 
-The three generic rows are lower-confidence and run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs and purely numeric values are left alone. Like every built-in, each can be disabled by name.
+They run **after** every vendor pattern, so a vendor-shaped value (a `sk-…` key, a JWT, …) keeps its specific marker. To keep false positives away they only fire when the value is 8+ characters, contains at least one letter, and consists solely of secret-typical characters — so `max_tokens=4096`, short PINs, purely numeric values and the `PWD` / `OLDPWD` working-directory variables are left alone. In server-runtime event bodies, a string value under a credential-named key (`client_secret`, `db_password`, `token`, …) is redacted whole. Like every built-in, each can be disabled by name.
 
 ## Disable a single built-in
 
