@@ -132,6 +132,19 @@ function parseInstallOptions(argv: string[]): InstallOptions {
 }
 
 async function main(): Promise<void> {
+  // Check if help or version flags appear anywhere in args for commands that
+  // accept flags. This fixes issue #4764 where `install --help` would run
+  // the install instead of showing help.
+  const hasHelpOrVersion = args.some(arg => HELP_OR_VERSION_FLAGS.has(arg.toLowerCase()));
+  if (hasHelpOrVersion && (command === '' || command === 'install' || command === 'repair' || command === 'update' || command === 'upgrade')) {
+    if (args.some(arg => arg.toLowerCase() === '-v' || arg.toLowerCase() === '--version')) {
+      console.log(readPluginVersion());
+    } else {
+      printHelp();
+    }
+    return;
+  }
+
   switch (command) {
     case '':
     case 'install': {
