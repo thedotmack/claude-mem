@@ -97,6 +97,7 @@ let treeSitterCliAvailable = true;
 mock.module('../../src/services/smart-file-read/tree-sitter-bin-path.js', () => ({
   ...realTreeSitterBinPathSnapshot,
   isTreeSitterCliAvailable: () => treeSitterCliAvailable,
+  checkTreeSitterCliLoadable: () => ({ present: treeSitterCliAvailable, loadable: treeSitterCliAvailable }),
 }));
 
 // The gate asks the smart tools' own containment check (realpath on both
