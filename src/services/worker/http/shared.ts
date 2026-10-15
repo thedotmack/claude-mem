@@ -147,7 +147,9 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const projectContext = cwd.trim() ? getProjectContext(cwd) : null;
-  const project = projectContext?.primary ?? '';
+  // Same fallback as session init: an empty project makes cloud sync quarantine
+  // every content line the session produces (#4772).
+  const project = projectContext?.primary || 'unknown';
 
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
@@ -456,7 +458,8 @@ export function ingestAdvisorCalls(
     return { status: 'skipped', reason: 'project_excluded' };
   }
 
-  const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
+  // Same fallback as session init — an empty project gets quarantined by cloud sync (#4772).
+  const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : 'unknown';
 
   const store = dbManager.getSessionStore();
   const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);
