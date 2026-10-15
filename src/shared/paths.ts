@@ -130,6 +130,7 @@ export function expandTilde(
 export const paths = {
   dataDir: () => DATA_DIR,
   workerPid: () => join(DATA_DIR, 'worker.pid'),
+  workerHeartbeat: () => join(DATA_DIR, 'worker-heartbeat.json'),
   // Phase 1b: identifier renamed to `server*`; the on-disk file basenames
   // remain `.server-beta.*` so existing installations keep finding their
   // pid/port/runtime state. Plan §1d will migrate the basenames.

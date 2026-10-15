@@ -71,7 +71,7 @@ import {
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
-import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
+import { reclaimGhostListeningPort, startWorkerHeartbeat } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
   probePortBind,
@@ -677,6 +677,10 @@ export class WorkerService implements WorkerRef {
       port,
       startedAt: new Date().toISOString()
     });
+    // Liveness heartbeat: a fresh beat with a recently finished response means
+    // a silent worker is slow, not dead, so the hooks' wedged-worker reclaim spares it.
+    const server = this.server;
+    startWorkerHeartbeat({ readLastResponseAtMs: () => server.getLastResponseFinishedAt() });
 
     getSupervisor().registerProcess('worker', {
       pid: process.pid,
