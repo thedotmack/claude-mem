@@ -12,7 +12,7 @@ import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { detectLanguage } from '../../services/smart-file-read/language-map.js';
-import { isTreeSitterCliAvailable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+import { checkTreeSitterCliLoadable } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../../services/smart-file-read/workspace-path.js';
 import { claimFileContextInjection } from './file-context-dedupe.js';
 import { memorySearchHandler } from './memory-search.js';
@@ -309,6 +309,8 @@ export function shouldDenyFullFileRead(
   // An install whose tree-sitter-cli never downloaded its binary answers
   // "Could not parse" to every smart_outline call, so routing Claude there
   // would strand it; the Read goes through with the timeline as context.
+  // The same holds for a present-but-unloadable binary (#4758): the file
+  // exists, but the smart tools cannot parse with it.
   return isSmartReadAvailable();
 }
 
@@ -377,7 +379,10 @@ export const fileContextHandler: EventHandler = {
         fileReadGateSetting,
         fileIsInsideWorkspace,
         fileHasMoreLinesThan,
-        isTreeSitterCliAvailable,
+        // The gate denies only where the smart tools can actually parse: a
+        // present-but-unloadable tree-sitter CLI (#4758) must not route Reads
+        // to smart_outline.
+        () => checkTreeSitterCliLoadable().loadable,
       )) {
         // Record the claim so a targeted Read that follows this denial does not
         // re-inject the timeline it already carried. The result is ignored on

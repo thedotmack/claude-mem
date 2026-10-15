@@ -9,6 +9,33 @@ export const SEARCH_CONSTANTS = {
   CHROMA_BATCH_SIZE: 100
 } as const;
 
+/**
+ * Parse CLAUDE_MEM_SEARCH_RECENCY_DAYS into the implicit recency window, in
+ * milliseconds, that date-less semantic searches apply (the 90-day default).
+ * Absent or empty keeps the default; `0` disables the window so every
+ * semantic match stays eligible; a positive integer sets the window in days.
+ * settings.json is hand-editable JSON and SettingsDefaultsManager leaves JSON
+ * numbers untouched, so the value can also arrive as a real number: numeric
+ * days parse exactly like their string spelling. A present but malformed
+ * value — including an explicit null or any other non-string type — returns
+ * null: the caller warns and keeps the default. An explicit `dateRange` on a
+ * request always wins over this.
+ */
+export function parseSearchRecencyWindowMs(raw: unknown): number | null {
+  if (raw === undefined || (typeof raw === 'string' && raw.trim() === '')) return SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
+  if (typeof raw === 'number') {
+    const milliseconds = raw * 86_400_000;
+    if (!Number.isInteger(raw) || raw < 0 || !Number.isSafeInteger(milliseconds)) return null;
+    return milliseconds;
+  }
+  if (typeof raw !== 'string') return null;
+  if (raw.trim() === '0') return 0;
+  const days = Number(raw.trim());
+  const milliseconds = days * 86_400_000;
+  if (!Number.isInteger(days) || days < 0 || !Number.isSafeInteger(milliseconds)) return null;
+  return milliseconds;
+}
+
 export type ChromaDocType = 'observation' | 'session_summary' | 'user_prompt';
 
 export const SEARCH_CATEGORIES = ['observations', 'sessions', 'prompts'] as const;

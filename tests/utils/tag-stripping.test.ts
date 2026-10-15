@@ -73,6 +73,120 @@ describe('Tag Stripping Utilities', () => {
       });
     });
 
+    describe('nested and overlapping memory tags', () => {
+      it('should strip a same-name tag nested inside itself', () => {
+        const input = '<private>outer<private>inner</private>TAIL_SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip a nested same-name tag and preserve the surrounding public text', () => {
+        const input = 'before <private>outer<private>inner</private>secret tail</private> after';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('before  after');
+      });
+
+      it('should strip nested <claude-mem-context> tags', () => {
+        const input = '<claude-mem-context>a<claude-mem-context>b</claude-mem-context>LEAK</claude-mem-context>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip a tag nested three levels deep', () => {
+        const input = '<private>1<private>2<private>3</private>tail3</private>tail2</private>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should strip a memory tag nested inside a different memory tag', () => {
+        const input = '<system-reminder>keep<claude-mem-context>drop</claude-mem-context>TAIL</system-reminder>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('');
+      });
+
+      it('should keep text between two balanced nested blocks', () => {
+        const input = '<private>a<private>b</private>c</private> KEEP <private>d</private>';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('KEEP');
+      });
+
+      it('should strip a mis-nested block rather than letting tag order preserve private content', () => {
+        const input = '<private>a<claude-mem-context>b</private>c</claude-mem-context>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('<private>');
+        expect(result).not.toContain('b');
+      });
+
+      it('should strip a memory tag whose attribute contains a less-than sign', () => {
+        const input = '<private note="<">SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should strip a memory tag whose attribute contains angle brackets', () => {
+        const input = 'keep <private data-x="a<b>c">SECRET</private> end';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('keep  end');
+      });
+
+      it('should strip a memory tag whose attribute contains closing-tag text', () => {
+        const input = '<private note="</private>">SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should strip a memory tag whose attribute contains closing-tag text', () => {
+        const input = '<private note="</private>">SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should strip a completed inner block when an outer opener is never terminated', () => {
+        const input = '<claude-mem-context prose <private>SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('<claude-mem-context prose');
+      });
+
+      it('should strip a private block nested inside an unfinished outer attribute', () => {
+        const input = '<claude-mem-context note="<private>SECRET</private>">';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('<claude-mem-context note="">');
+      });
+
+      it('should strip a private block after an unquoted apostrophe in an attribute', () => {
+        const input = "<private note=don't>SECRET</private> public ' >";
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe("public ' >");
+      });
+
+      it('should strip the outer tail when a same-name opener is left unclosed before a completed one', () => {
+        const input = '<private>SECRET1<private>SECRET2</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('');
+      });
+
+      it('should leave an unclosed tag untouched so ordinary prose mentioning the tag is not swallowed', () => {
+        const input = 'Explain how <private> works in this project';
+        const result = stripMemoryTags(input);
+        expect(result).toBe('Explain how <private> works in this project');
+      });
+
+      it('should strip a completed inner block even when the outer memory tag is unfinished', () => {
+        const input = '<claude-mem-context>prose<private>SECRET</private>';
+        const result = stripMemoryTags(input);
+        expect(result).not.toContain('SECRET');
+        expect(result).toBe('<claude-mem-context>prose');
+      });
+    });
+
     describe('empty and private-only prompts', () => {
       it('should return empty string for entirely private prompt', () => {
         const input = '<private>entire prompt is private</private>';
@@ -175,6 +289,48 @@ finish`;
 
         expect(duration).toBeLessThan(1000);
         expect(result).toBe('keep this');
+      });
+
+      it('should stay linear on many unclosed opens and non-matching close tags', () => {
+        // Adversarial input for the depth scanner: unbalanced opens plus close
+        // tags that match nothing, repeated enough that a stack scan per close
+        // tag would be quadratic.
+        const content = '<private>'.repeat(20000) + '</nope>'.repeat(20000) + ' tail';
+
+        const startTime = Date.now();
+        const result = stripMemoryTags(content);
+        const duration = Date.now() - startTime;
+
+        expect(duration).toBeLessThan(2000);
+        expect(result).toContain('tail');
+      });
+
+      it('should stay linear on repeated non-memory open tags with no closing bracket', () => {
+        // `'<div '` has no `>`, so an attribute scan that runs before the name
+        // check re-reads the whole suffix at every `<` and goes quadratic.
+        const content = '<div '.repeat(60000) + ' tail';
+
+        const startTime = Date.now();
+        const result = stripMemoryTags(content);
+        const duration = Date.now() - startTime;
+
+        expect(duration).toBeLessThan(2000);
+        expect(result).toContain('tail');
+      });
+
+      it('should stay fast on a large untagged input that contains no tag opener', () => {
+        // Ordinary tool output with no `<` at all must not pay for the tag
+        // scanner: no per-character lookup table, no second pass over the
+        // whole string. 64 MiB is the shape Greptile measured; the bound is
+        // generous so the test is about the fast path, not the machine.
+        const content = 'x'.repeat(64 * 1024 * 1024);
+
+        const startTime = Date.now();
+        const result = stripMemoryTags(content);
+        const duration = Date.now() - startTime;
+
+        expect(result).toBe(content);
+        expect(duration).toBeLessThan(500);
       });
     });
   });

@@ -74,12 +74,19 @@ export class SearchOrchestrator {
   constructor(
     private sessionSearch: SessionSearch,
     private sessionStore: SessionStore,
-    private chromaSync: ChromaSync | null
+    private chromaSync: ChromaSync | null,
+    /**
+     * Implicit window, in milliseconds, that date-less semantic searches
+     * apply (CLAUDE_MEM_SEARCH_RECENCY_DAYS); 0 disables it. Forwarded to the
+     * Chroma strategy; corpus builds bypass it per request via
+     * `ignoreDefaultRecencyWindow`.
+     */
+    private defaultRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS
   ) {
     this.sqliteStrategy = new SQLiteSearchStrategy(sessionSearch);
 
     if (chromaSync) {
-      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore);
+      this.chromaStrategy = new ChromaSearchStrategy(chromaSync, sessionStore, defaultRecencyWindowMs);
       this.hybridStrategy = new HybridSearchStrategy(chromaSync, sessionStore, sessionSearch);
     }
   }

@@ -80,7 +80,9 @@ export function dedupeRenderedTable(content: string): string {
     // the id cell always differs and the time cell is often a ditto marker ("″"),
     // so both are excluded from the key.
     const cells = splitTableRow(line)
-    if (cells === null) {
+    // Header and separator rows have no `#id` cell. Every per-file table repeats
+    // them, so folding them would strip the header from every table after the first.
+    if (cells === null || !cells[0].startsWith('#')) {
       out.push(line)
       continue
     }

@@ -1,5 +1,5 @@
-import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
+import { createHash, randomBytes } from 'crypto';
+import { existsSync, linkSync, mkdirSync, opendirSync, readdirSync, readFileSync, renameSync, rmSync, unlinkSync } from 'fs';
 import { join } from 'path';
 import { writeJsonFileAtomic } from './atomic-json.js';
 import { resolveDataDir } from './paths.js';
@@ -36,8 +36,8 @@ export interface SpooledObservationPayload {
   contentSessionId: string;
   platformSource: string;
   toolName: string;
-  toolInput: unknown;
-  toolResponse: unknown;
+  toolInput?: unknown;
+  toolResponse?: unknown;
   cwd?: string;
   agentId?: string;
   agentType?: string;
@@ -110,6 +110,18 @@ export interface HookSpoolDrainResult {
   expired: number;
 }
 
+export interface HookSpoolDrainOptions {
+  shouldContinue?: () => boolean;
+  verifyUnchanged?: boolean;
+  maxEntries?: number;
+}
+
+export type HookSpoolAcceptance = boolean | 'rejected' | 'expired';
+
+export function remoteHookSpoolReceivedKey(receipt: string): string {
+  return `received_${receipt}`;
+}
+
 const ENTRY_FILENAME = /^[a-z_]+-[A-Za-z0-9_-]+\.json$/;
 const FILENAME_SAFE_TOOL_USE_ID = /^[A-Za-z0-9_-]{1,128}$/;
 const CORRUPT_DIRNAME = 'corrupt';
@@ -149,6 +161,14 @@ function canonicalJson(value: unknown): string {
   const record = value as Record<string, unknown>;
   const keys = Object.keys(record).filter(key => record[key] !== undefined).sort();
   return `{${keys.map(key => `${JSON.stringify(key)}:${canonicalJson(record[key])}`).join(',')}}`;
+}
+
+export function remoteHookSpoolReceipt(entry: HookSpoolEntry): string {
+  return `remote_${entry.kind}-${createHash('sha256').update(canonicalJson(entry)).digest('hex')}`;
+}
+
+function isRemoteReceipt(entryKey: string): boolean {
+  return /^remote_[a-z_]+-[a-f0-9]{64}$/.test(entryKey);
 }
 
 export function hookSpoolKeyFor<K extends HookSpoolKind>(kind: K, payload: HookSpoolPayloadByKind[K]): string {
@@ -279,6 +299,33 @@ export class HookSpool {
     return this.readEntries().files.map(file => file.entry);
   }
 
+  hasEntries(): boolean {
+    try {
+      const directory = opendirSync(this.directory);
+      try {
+        for (let entry = directory.readSync(); entry; entry = directory.readSync()) {
+          if (entry.isFile() && ENTRY_FILENAME.test(entry.name)) return true;
+        }
+      } finally { directory.closeSync(); }
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+        logger.warn('HOOK', 'Could not inspect pending hook spool files', {},
+          error instanceof Error ? error : new Error(String(error)));
+      }
+    }
+    return false;
+  }
+
+  enqueueRemote(entry: HookSpoolEntry, consumedMarkers: HookSpoolConsumedMarkers): string {
+    const receipt = remoteHookSpoolReceipt(entry);
+    const receivedKey = remoteHookSpoolReceivedKey(receipt);
+    if (!consumedMarkers.isConsumed(receipt) && !consumedMarkers.isConsumed(receivedKey)) {
+      writeJsonFileAtomic(join(this.directory, `${receipt}.json`), entry);
+      consumedMarkers.markConsumed(receivedKey, Date.now());
+    }
+    return receipt;
+  }
+
   /**
    * Hands each entry to `accept` in order; an accepted entry is unlinked.
    *
@@ -299,12 +346,14 @@ export class HookSpool {
    * marker is cleared once the file is gone.
    */
   async drain(
-    accept: (entry: HookSpoolEntry, markHandedOff: () => void) => boolean | 'expired' | Promise<boolean | 'expired'>,
+    accept: (entry: HookSpoolEntry, markHandedOff: () => void) => HookSpoolAcceptance | Promise<HookSpoolAcceptance>,
     consumedMarkers?: HookSpoolConsumedMarkers,
+    options: HookSpoolDrainOptions = {},
   ): Promise<HookSpoolDrainResult> {
-    const { files, quarantined } = this.readEntries();
+    const { files, quarantined: initiallyQuarantined, omitted } = this.readEntries(options.maxEntries);
+    let quarantined = initiallyQuarantined;
     let drained = 0;
-    let retained = 0;
+    let retained = omitted;
     let expired = 0;
 
     // A marker outlives its file only when a crash hit between unlink and clear.
@@ -316,7 +365,11 @@ export class HookSpool {
     // holding them behind a summary kept for an unknown session would keep the
     // session from ever being created.
     const sessionsWithRetainedObservations = new Set<string>();
-    for (const file of files) {
+    for (const [index, file] of files.entries()) {
+      if (options.shouldContinue && !options.shouldContinue()) {
+        retained += files.length - index;
+        break;
+      }
       const entryKey = file.filename.replace(/\.json$/, '');
       if (consumedMarkers?.isConsumed(entryKey)) {
         logger.info('HOOK', 'Hook spool entry was already handed to ingest before a restart; removing it without ingesting again', {
@@ -325,7 +378,7 @@ export class HookSpool {
           file: file.filename,
         });
         if (this.unlinkEntry(file)) {
-          consumedMarkers.clearConsumed(entryKey);
+          if (!isRemoteReceipt(entryKey)) consumedMarkers.clearConsumed(entryKey);
           drained++;
         } else {
           retained++;
@@ -356,7 +409,7 @@ export class HookSpool {
           }, error instanceof Error ? error : new Error(String(error)));
         }
       };
-      let accepted: boolean | 'expired';
+      let accepted: HookSpoolAcceptance;
       try {
         accepted = await accept(file.entry, markHandedOff);
       } catch (error) {
@@ -370,6 +423,12 @@ export class HookSpool {
         accepted = false;
       }
       if (handedOff) accepted = true;
+
+      if (accepted === 'rejected') {
+        if (this.unlinkTransferredEntry(file, 'Remote worker permanently rejected this capture event')) quarantined++;
+        else retained++;
+        continue;
+      }
 
       if (accepted === 'expired') {
         // Ingest's verdict: this entry can never succeed (it was not handed
@@ -394,8 +453,9 @@ export class HookSpool {
         continue;
       }
 
-      if (this.unlinkEntry(file)) {
-        consumedMarkers?.clearConsumed(entryKey);
+      if (this.unlinkEntry(file, options.verifyUnchanged)) {
+        // A remote sender can retry after its acknowledgement was lost.
+        if (!isRemoteReceipt(entryKey)) consumedMarkers?.clearConsumed(entryKey);
         drained++;
       } else {
         // The marker stays: the next drain removes the file without re-ingesting it.
@@ -407,7 +467,8 @@ export class HookSpool {
   }
 
   /** True when the file is gone (removed here, or by a concurrent drain). */
-  private unlinkEntry(file: HookSpoolFile): boolean {
+  private unlinkEntry(file: HookSpoolFile, verifyUnchanged: boolean = false): boolean {
+    if (verifyUnchanged) return this.unlinkTransferredEntry(file);
     try {
       unlinkSync(file.path);
       return true;
@@ -420,6 +481,44 @@ export class HookSpool {
       }, error instanceof Error ? error : new Error(String(error)));
       return false;
     }
+  }
+
+  private unlinkTransferredEntry(file: HookSpoolFile, rejectionReason?: string): boolean {
+    const claimedPath = join(this.directory, `${file.entry.kind}-ack-${randomBytes(16).toString('hex')}.json`);
+    try {
+      // Claim atomically so a concurrent hook's replacement is never unlinked.
+      renameSync(file.path, claimedPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
+      logger.warn('HOOK', 'Could not claim an acknowledged spool file; retaining it', {},
+        error instanceof Error ? error : new Error(String(error)));
+      return false;
+    }
+    try {
+      const current = parseHookSpoolEntry(readFileSync(claimedPath, 'utf8'));
+      if (!('corruptReason' in current) && canonicalJson(current) === canonicalJson(file.entry)) {
+        if (rejectionReason) {
+          mkdirSync(this.corruptDirectory, { recursive: true });
+          renameSync(claimedPath, join(this.corruptDirectory, file.filename));
+          logger.error('HOOK', rejectionReason, { file: file.filename, corruptDirectory: this.corruptDirectory });
+        } else unlinkSync(claimedPath);
+        return true;
+      }
+      try {
+        linkSync(claimedPath, file.path);
+        unlinkSync(claimedPath);
+      } catch (error) {
+        // A newer writer may own the original path; keep this unacknowledged version too.
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') {
+          logger.warn('HOOK', 'Could not restore a replaced spool file; its claimed copy remains queued', {},
+            error instanceof Error ? error : new Error(String(error)));
+        }
+      }
+    } catch (error) {
+      logger.warn('HOOK', 'Could not remove an acknowledged spool file; retaining it for retry', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
+    return false;
   }
 
   /** Moves an entry older than `windowMs` to `expired/`, with an error log. */
@@ -481,8 +580,8 @@ export class HookSpool {
     }
   }
 
-  private readEntries(): { files: HookSpoolFile[]; quarantined: number } {
-    if (!existsSync(this.directory)) return { files: [], quarantined: 0 };
+  private readEntries(maxEntries: number = Number.POSITIVE_INFINITY): { files: HookSpoolFile[]; quarantined: number; omitted: number } {
+    if (!existsSync(this.directory)) return { files: [], quarantined: 0, omitted: 0 };
 
     let filenames: string[];
     try {
@@ -490,11 +589,12 @@ export class HookSpool {
     } catch (error) {
       logger.warn('HOOK', 'Could not list hook spool entries', { directory: this.directory },
         error instanceof Error ? error : new Error(String(error)));
-      return { files: [], quarantined: 0 };
+      return { files: [], quarantined: 0, omitted: 0 };
     }
 
     const files: HookSpoolFile[] = [];
     let quarantined = 0;
+    let omitted = 0;
     for (const filename of filenames) {
       const entryPath = join(this.directory, filename);
       let raw: string;
@@ -515,10 +615,15 @@ export class HookSpool {
         continue;
       }
       files.push({ entry: parsed, path: entryPath, filename });
+      if (files.length > maxEntries) {
+        files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
+        files.pop();
+        omitted++;
+      }
     }
 
     files.sort((a, b) => a.entry.enqueuedAtEpochMs - b.entry.enqueuedAtEpochMs || a.filename.localeCompare(b.filename));
-    return { files, quarantined };
+    return { files, quarantined, omitted };
   }
 }
 
