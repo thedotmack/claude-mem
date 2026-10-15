@@ -40,6 +40,19 @@ describe('prompt card clamp (#4757)', () => {
     expect(html).toContain('Show more');
   });
 
+  it('clamps a prompt over 8 lines even when it is under 600 characters', () => {
+    const manyShortLines = Array.from({ length: 9 }, (_, i) => `line ${i + 1}`).join('\n');
+    expect(manyShortLines.length).toBeLessThan(600);
+    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(manyShortLines) }));
+    expect(html).toContain('card-content-clamped');
+  });
+
+  it('clamps a single-line prompt over 600 characters', () => {
+    const oneLongLine = 'x'.repeat(601);
+    const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(oneLongLine) }));
+    expect(html).toContain('card-content-clamped');
+  });
+
   it('leaves a short prompt unclamped with no disclosure', () => {
     const html = renderToStaticMarkup(React.createElement(PromptCard, { prompt: makePrompt(SHORT_TEXT) }));
     expect(html).not.toContain('card-content-clamped');
