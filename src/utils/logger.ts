@@ -1,5 +1,5 @@
 
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from 'fs';
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, writeSync } from 'fs';
 import { join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
@@ -87,6 +87,7 @@ class Logger {
   private logFilePath: string | null = null;
   private logFileInitialized: boolean = false;
   private logFileDate: string | null = null;
+  private logFd: number | null = null;
 
   constructor() {
     this.useColor = process.stdout.isTTY ?? false;
@@ -102,6 +103,7 @@ class Logger {
     if (this.logFileInitialized && this.logFileDate === date) return;
     // Failed setup must stay retryable, but report initialization failure only once per UTC day.
     const firstAttemptToday = this.logFileDate !== date;
+    this.closeLogFd();
     this.logFileInitialized = false;
     this.logFileDate = date;
 
@@ -119,6 +121,56 @@ class Logger {
         console.error('[LOGGER] Failed to initialize log file:', error instanceof Error ? error.message : String(error));
       }
       this.logFilePath = null;
+    }
+  }
+
+  private closeLogFd(): void {
+    if (this.logFd === null) return;
+    try {
+      closeSync(this.logFd);
+    } catch {
+      // Already closed or invalid: nothing left to release.
+    }
+    this.logFd = null;
+  }
+
+  /**
+   * Appends through one file descriptor kept open for the whole day.
+   * On-access antivirus can scan a file each time it is opened: Microsoft
+   * Defender on macOS runs as an Endpoint Security client, and ES can hold an
+   * open (AUTH_OPEN) but has no auth event for write or stat. Re-opening the
+   * day log per line (appendFileSync) was measured at up to 2 s per open
+   * under load; this runs on the worker's event loop, and in that state
+   * /api/health went silent and the worker was reclaimed as wedged. Opening
+   * once a day avoids the per-line open. The stat of the path detects an
+   * external rename, delete or replace, and the next line re-opens the file.
+   */
+  private appendLine(path: string, text: string): void {
+    if (this.logFd !== null) {
+      let current = false;
+      try {
+        const open = fstatSync(this.logFd);
+        const onDisk = statSync(path);
+        current = open.ino === onDisk.ino && open.dev === onDisk.dev;
+      } catch {
+        // Path gone or descriptor invalid: re-open below.
+      }
+      if (!current) this.closeLogFd();
+    }
+    if (this.logFd === null) {
+      this.logFd = openSync(path, 'a');
+    }
+    try {
+      // writeSync may accept only part of the buffer; appendFileSync looped for us.
+      let bytes = Buffer.from(text, 'utf8');
+      while (bytes.length > 0) {
+        const written = writeSync(this.logFd, bytes);
+        if (written <= 0) throw new Error('log write accepted 0 bytes');
+        bytes = bytes.subarray(written);
+      }
+    } catch (error) {
+      this.closeLogFd();
+      throw error;
     }
   }
 
@@ -349,9 +401,9 @@ class Logger {
 
     if (this.logFilePath) {
       try {
-        appendFileSync(this.logFilePath, logLine + '\n', 'utf8');
+        this.appendLine(this.logFilePath, logLine + '\n');
       } catch (error: unknown) {
-        // [ANTI-PATTERN IGNORED]: this is the logger's own file-write failure path — calling the logger here would recurse into the same failing appendFileSync, so the error is surfaced via emitDiagnostic to real stderr instead.
+        // [ANTI-PATTERN IGNORED]: this is the logger's own file-write failure path — calling the logger here would recurse into the same failing write, so the error is surfaced via emitDiagnostic to real stderr instead.
         // DIAGNOSTIC: route through hook-io so the message bypasses the Phase 2
         // hook stderr buffer (#2292). Outside the hook context emitDiagnostic
         // writes straight to real stderr, so non-hook callers are unaffected.

@@ -1125,6 +1125,32 @@
       color: var(--color-prompt-badge-text);
     }
 
+    /* Long prompts collapse to a line clamp behind a Show more disclosure
+       (#4757) so one captured prompt cannot push the rest of the Timeline
+       off screen. */
+    .prompt-card .card-content-clamped {
+      display: -webkit-box;
+      -webkit-box-orient: vertical;
+      -webkit-line-clamp: 8;
+      overflow: hidden;
+    }
+
+    .prompt-show-more {
+      display: block;
+      margin: 0 0 12px;
+      padding: 0;
+      background: none;
+      border: none;
+      color: var(--color-accent-prompt);
+      font-size: 12px;
+      cursor: pointer;
+      text-align: left;
+    }
+
+    .prompt-show-more:hover {
+      text-decoration: underline;
+    }
+
     /* Welcome modal — first-launch + reusable as help via the ? button.
        Layout strategy: desktop-first, fluid type via clamp(), and squares
        built with the padding-bottom:100% trick (percentage padding resolves

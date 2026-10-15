@@ -37,6 +37,25 @@ describe('Project Filter', () => {
       });
     });
 
+    describe('with a trailing /** (the directory itself)', () => {
+      it('excludes the directory itself as well as everything under it', () => {
+        expect(isProjectExcluded('/Users/test/kunden', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded('/Users/test/kunden/', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded('/Users/test/kunden/client1', '/Users/*/kunden/**')).toBe(true);
+        expect(isProjectExcluded(`${homedir()}/customers`, '~/customers/**')).toBe(true);
+        expect(isProjectExcluded('C:\\Users\\test\\kunden', 'C:\\Users\\test\\kunden\\**')).toBe(true);
+      });
+
+      it('does not exclude siblings that merely share the prefix', () => {
+        expect(isProjectExcluded('/Users/test/kunden-archive', '/Users/*/kunden/**')).toBe(false);
+        expect(isProjectExcluded('/Users/test', '/Users/*/kunden/**')).toBe(false);
+      });
+
+      it('leaves single-star patterns unchanged', () => {
+        expect(isProjectExcluded('/tmp', '/tmp/*')).toBe(false);
+      });
+    });
+
     describe('with ? wildcard (single character)', () => {
       it('matches single character', () => {
         expect(isProjectExcluded('/tmp/a', '/tmp/?')).toBe(true);

@@ -16,6 +16,7 @@ import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { replaceTaggedContent } from '../utils/claude-md-utils.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
 import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
 
@@ -247,7 +248,6 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
 
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     throw new Error(`Folder does not exist: ${folderPath}`);
@@ -260,8 +260,12 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
 
   const finalContent = replaceTaggedContent(existingContent, newContent);
 
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  const tempFile = `${writeTarget}.tmp`;
   writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  renameSync(tempFile, writeTarget);
 }
 
 function regenerateFolder(

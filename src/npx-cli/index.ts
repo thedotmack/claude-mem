@@ -131,7 +131,18 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
+// Commands that change the install or the worker and would otherwise ignore -h/--help
+const HELP_AWARE_COMMANDS = new Set([
+  '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
+]);
+
 async function main(): Promise<void> {
+  // `uninstall --help` must show help, not run the uninstall.
+  if (HELP_AWARE_COMMANDS.has(command) && args.slice(1).some((arg) => arg === '--help' || arg === '-h')) {
+    printHelp();
+    return;
+  }
+
   switch (command) {
     case '':
     case 'install': {
