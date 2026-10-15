@@ -528,6 +528,14 @@ async function buildHooks() {
       target: 'node18',
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
+      // Zod is inlined, and the worker's dynamic imports make esbuild wrap it in
+      // lazy initializers. `zod/v4` (imported by @modelcontextprotocol/sdk) is a
+      // pure `export *` re-export of that wrapped code, and esbuild emits no
+      // initializer call through it, so the SDK's top-level `z.custom()` ran
+      // before Zod's classes existed and the worker crashed on load. One Zod
+      // entry point gets initialized correctly. The self-contained bundle test
+      // (tests/infrastructure/worker-bundle-self-contained.test.ts) guards this.
+      alias: { 'zod/v4': 'zod' },
       minify: true,
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
