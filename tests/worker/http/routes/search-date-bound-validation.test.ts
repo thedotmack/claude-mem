@@ -80,7 +80,7 @@ describe('invalid date bounds on the search routes', () => {
 
   it('also rejects it on the timeline and observations routes', async () => {
     for (const path of ['/api/timeline', '/api/search/observations']) {
-      if (!handlers.has(path)) continue;
+      expect(handlers.has(path)).toBe(true);
       const { status, body } = await request(path, { query: 'zebrafish', dateStart: '2025-13-45' });
       expect(status).toBe(400);
       expect(body.code).toBe('INVALID_DATE');
