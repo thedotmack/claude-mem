@@ -158,6 +158,9 @@ describe('remote upload scheduling', () => {
       const child = Bun.spawn([process.execPath, '-e', source], {
         cwd: root,
         env: { ...process.env, CLAUDE_MEM_DATA_DIR: join(directory, 'client'),
+          // Pin the uploader to this checkout's build; otherwise an installed
+          // marketplace/cache plugin of the same or newer version wins resolution.
+          CLAUDE_MEM_WORKER_SCRIPT_PATH: join(root, 'plugin', 'scripts', 'worker-service.cjs'),
           CLAUDE_PLUGIN_ROOT: join(root, 'plugin'), CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
           CLAUDE_MEM_WORKER_PORT: String(address.port), CLAUDE_MEM_WORKER_AUTOSTART: 'false',
           CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'http', CLAUDE_MEM_WORKER_INGEST_TOKEN: 'test-ingest-token',
