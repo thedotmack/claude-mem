@@ -34,6 +34,11 @@ const DIRNAME_BANNER = [
   'var __CM_DIRNAME__ = typeof __dirname !== "undefined" ? __dirname : require("node:path").dirname(__CM_FILENAME__);',
 ];
 
+// posthog-node >=5.56 lazily import()s the optional OpenTelemetry API for trace ids
+// and swallows the failure when it is absent, so every bundle that includes the
+// telemetry client must leave it unresolved instead of failing the build.
+const POSTHOG_OPTIONAL_IMPORTS = ['@opentelemetry/api'];
+
 // Emit an external source map (names only, no inlined source text) next to each
 // bundle. Bun and Node symbolicate stack traces against the adjacent .map, so a
 // worker crash names the real symbol instead of a two-letter minified id.
@@ -545,6 +550,7 @@ async function buildHooks() {
         'better-auth/node',
         'better-auth/plugins',
         '@better-auth/api-key',
+        ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -795,7 +801,7 @@ async function buildHooks() {
       // plugin/node_modules instead of being inlined (keeps the bundle slim). The
       // worker and MCP server inline zod because a Codex or Claude Desktop copy of
       // the plugin may have no node_modules.
-      external: ['bun:sqlite', 'zod'],
+      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE
