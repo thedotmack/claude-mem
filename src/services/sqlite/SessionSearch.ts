@@ -445,6 +445,9 @@ export class SessionSearch {
   /** Fewest query terms before an AND query with no match is widened to any term (see buildFTSAnyTermQuery). */
   private static readonly MIN_ANY_TERM_TOKENS = 3;
 
+  /** Most tokens the any-term fallback ORs together; bounds it so a long prompt can't score the whole index (#4804). */
+  private static readonly MAX_ANY_TERM_TOKENS = 40;
+
   /**
    * Build an FTS5 query that preserves literal-token safety while allowing multi-word
    * input to behave as an AND of terms instead of an exact phrase.
@@ -471,6 +474,9 @@ export class SessionSearch {
    * rarest, terms first. Queries of one or two terms stay keyword queries, matched with AND as #4130 intends
    * ("authentication bug" must not widen to every row that mentions "bug"); widening starts at three terms, where
    * a query reads as a question. Null when the query is not widened.
+   *
+   * The OR'd set is bounded (deduped case-insensitively, then kept to the MAX_ANY_TERM_TOKENS longest distinct
+   * tokens as a cheap rarity proxy) so the any-term fallback can't score the whole index on a long prompt (#4804).
    */
   private static buildFTSAnyTermQuery(query: string): string | null {
     const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
@@ -478,7 +484,24 @@ export class SessionSearch {
       return null;
     }
 
-    return tokens
+    const seen = new Set<string>();
+    const distinct: string[] = [];
+    for (const token of tokens) {
+      const key = token.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      distinct.push(token);
+    }
+
+    const bounded = distinct
+      .map((token, index) => ({ token, index }))
+      .sort((a, b) => b.token.length - a.token.length || a.index - b.index)
+      .slice(0, SessionSearch.MAX_ANY_TERM_TOKENS)
+      .map(entry => entry.token);
+
+    return bounded
       .map(token => `"${token.replace(/"/g, '""')}"`)
       .join(' OR ');
   }
