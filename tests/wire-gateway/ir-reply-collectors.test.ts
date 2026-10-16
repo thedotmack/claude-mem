@@ -339,7 +339,7 @@ describe('wire IR reply collectors: total byte cap', () => {
 
   it('the relay reply collection reports a reply past the cap, and its tool scan still sees the whole reply', () => {
     const collection = new RelayReplyCollection({ maxReplyBytes: 200 });
-    const exchange = { exchangeId: 'x1', captured: true, protocol: 'anthropic' } as unknown as RelayExchange;
+    const exchange = { exchangeId: 'x1', captured: true, metered: true, protocol: 'anthropic' } as unknown as RelayExchange;
     expect(collection.begin(exchange)).toBe(true);
     collection.responseStarted(exchange, { contentType: SSE } as never);
     collection.chunk(exchange, encoder.encode(start));

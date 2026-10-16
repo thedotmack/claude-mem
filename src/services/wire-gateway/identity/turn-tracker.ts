@@ -18,8 +18,8 @@
 // sessions are also swept on a timer, not only when a request comes.
 
 import { logger } from '../../../utils/logger.js';
-import { RelayReplyCollection } from '../ir/relay-reply-collection.js';
-import type { RelayExchange, RelayExchangeResult, RelayObserver, RelayResponseStart } from '../relay/relay.js';
+import { createReplyCollectingRelayObserver, type CompletedRelayExchange, type RelayReplyConsumer } from '../ir/relay-reply-collection.js';
+import type { RelayExchange, RelayObserver } from '../relay/relay.js';
 import type { WireIdentity } from './resolve-identity.js';
 
 /** After a final reply, how long nothing more of the session may come before its turn is done. */
@@ -172,34 +172,29 @@ export class TurnTracker {
 }
 
 /**
- * Feeds a TurnTracker from the relay: `begin` when a captured turn request
- * starts, the reply's chunks through a reply collector and a tool-call scan,
- * and `end` when it finishes. A reply is final when its status is under 400,
- * it ended whole, the collector saw it end cleanly with no error (an `error`
- * event after HTTP 200 is not a final reply), no tool call was seen, and the
- * capture copy did not overflow (an overflowed scan may have missed a call).
+ * Feeds a TurnTracker from the shared reply collection: `begin` when a
+ * captured turn request starts, `end` when it finishes. A reply is final
+ * when its status is under 400, it ended whole, the collector saw it end
+ * cleanly with no error (an `error` event after HTTP 200 is not a final
+ * reply), no tool call was seen, and the capture copy did not overflow (an
+ * overflowed scan may have missed a call).
  */
-export function createTurnTrackingRelayObserver(turnTracker: TurnTracker): RelayObserver {
-  const replyCollection = new RelayReplyCollection();
+export function createTurnTrackingConsumer(turnTracker: TurnTracker): RelayReplyConsumer {
+  const trackedExchangeIds = new Set<string>();
   return {
     onExchangeStarted(exchange: RelayExchange) {
-      // Reply chunks reach observers only for captured exchanges, so only they can be read.
-      if (exchange.identity.kind !== 'turn' || !replyCollection.begin(exchange)) return;
+      // Only a captured exchange's reply is read for the turn (a native route is never captured).
+      if (exchange.identity.kind !== 'turn' || !exchange.captured || !exchange.protocol) return;
+      trackedExchangeIds.add(exchange.exchangeId);
       turnTracker.begin(exchange.identity);
     },
-    onResponseStarted(exchange: RelayExchange, response: RelayResponseStart) {
-      replyCollection.responseStarted(exchange, response);
-    },
-    onResponseChunk(exchange: RelayExchange, chunk: Uint8Array) {
-      replyCollection.chunk(exchange, chunk);
-    },
-    onExchangeFinished(exchange: RelayExchange, result: RelayExchangeResult) {
-      const collected = replyCollection.finish(exchange);
-      if (!collected) return;
-      const reply = collected.reply;
+    onExchangeCompleted({ exchange, result, collected }: CompletedRelayExchange) {
+      if (!trackedExchangeIds.delete(exchange.exchangeId)) return;
+      const reply = collected?.reply ?? null;
       const finalReply = result.recordedStatus < 400
         && result.outcome === 'complete'
         && !result.captureOverflowed
+        && collected !== null
         && !collected.calledTool
         && reply !== null
         && reply.endedCleanly
@@ -207,4 +202,9 @@ export function createTurnTrackingRelayObserver(turnTracker: TurnTracker): Relay
       turnTracker.end(exchange.identity, finalReply);
     },
   };
+}
+
+/** A relay observer that feeds `turnTracker` alone (collecting replies for it). */
+export function createTurnTrackingRelayObserver(turnTracker: TurnTracker): RelayObserver {
+  return createReplyCollectingRelayObserver([createTurnTrackingConsumer(turnTracker)]);
 }

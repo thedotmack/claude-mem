@@ -15,6 +15,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { rewriteJsonStringsInText } from '../json/string-walker.js';
+import { findSseEventEnd, splitSseEvent } from '../relay/sse-event-framing.js';
 import { isKeptReplyString, valueHoldsJson, type OutboundRedactionPlaceholders } from './outbound-redaction.js';
 
 type RestoringMode = 'undecided' | 'stream' | 'whole' | 'as_is';
@@ -41,56 +42,12 @@ interface HeldEvent {
 const utf8Encoder = new TextEncoder();
 const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
 
-/** Where the first complete event in `bytes` ends, and the length of the blank line that ends it (magpie `eventEnd`). */
-function findEventEnd(bytes: Uint8Array, scanFrom: number): { index: number; separatorLength: number } | null {
-  let lfIndex = -1;
-  let crlfIndex = -1;
-  for (let index = scanFrom; index + 1 < bytes.length; index++) {
-    if (lfIndex < 0 && bytes[index] === 0x0a && bytes[index + 1] === 0x0a) lfIndex = index;
-    if (crlfIndex < 0 && index + 3 < bytes.length && bytes[index] === 0x0d && bytes[index + 1] === 0x0a && bytes[index + 2] === 0x0d && bytes[index + 3] === 0x0a) {
-      crlfIndex = index;
-    }
-    if (lfIndex >= 0 || crlfIndex >= 0) break;
-  }
-  if (lfIndex < 0 && crlfIndex < 0) return null;
-  if (crlfIndex >= 0 && (lfIndex < 0 || crlfIndex < lfIndex)) return { index: crlfIndex, separatorLength: 4 };
-  return { index: lfIndex, separatorLength: 2 };
-}
-
 function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
   if (first.length === 0) return second;
   const joined = new Uint8Array(first.length + second.length);
   joined.set(first, 0);
   joined.set(second, first.length);
   return joined;
-}
-
-/**
- * The one data line of an event that has JSON in it: what comes before the
- * JSON, the JSON, and what comes after it (magpie `splitEvent`). Null for an
- * event with no such line, or with data over more than one line.
- */
-function splitEvent(event: string): { name: string; data: string; before: string; after: string } | null {
-  const lines = event.match(/[^\n]*\n|[^\n]+$/g) ?? [];
-  let name = '';
-  let dataLineIndex = -1;
-  let offset = 0;
-  lines.forEach((line, index) => {
-    const trimmed = line.replace(/[\r\n]+$/, '');
-    if (trimmed.startsWith('event:')) {
-      name = trimmed.slice('event:'.length).trim();
-    } else if (trimmed.startsWith('data:')) {
-      if (dataLineIndex >= 0) dataLineIndex = -2;
-      else if (dataLineIndex === -1) dataLineIndex = index;
-    }
-    if (dataLineIndex === -1) offset += line.length;
-  });
-  if (dataLineIndex < 0) return null;
-  const line = lines[dataLineIndex].replace(/[\r\n]+$/, '');
-  const dataStart = line.length > 5 && line[5] === ' ' ? 6 : 5;
-  const data = line.slice(dataStart);
-  if (data === '' || (data[0] !== '{' && data[0] !== '[')) return null;
-  return { name, data, before: event.slice(0, offset + dataStart), after: event.slice(offset + line.length) };
 }
 
 /** What says which text an event goes on with (magpie `eventCtx`). */
@@ -173,7 +130,7 @@ export class PlaceholderRestoringResponse {
     if (this.mode === 'whole') return [];
     const output: string[] = [];
     for (;;) {
-      const end = findEventEnd(this.buffered, this.searchedUpTo);
+      const end = findSseEventEnd(this.buffered, this.searchedUpTo);
       if (!end) {
         this.searchedUpTo = Math.max(0, this.buffered.length - 3);
         break;
@@ -251,7 +208,7 @@ export class PlaceholderRestoringResponse {
       output.push(new TextDecoder().decode(eventBytes));
       return;
     }
-    const split = splitEvent(event);
+    const split = splitSseEvent(event);
     if (!split) {
       this.releaseHeld(output);
       output.push(this.placeholders.restore(event, false));

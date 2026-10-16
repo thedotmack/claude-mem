@@ -83,6 +83,8 @@ export interface WireGatewayConfig {
   recordingForcedOff: boolean;
   /** Whether a route without its own `features.outboundRedaction` gets it (CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION). */
   outboundRedaction: boolean;
+  /** Every setting (settings.json with env overrides), handed to the rewrite stages as `context.settings`. */
+  rewriteSettings: Readonly<Record<string, string>>;
 }
 
 /**
@@ -107,5 +109,6 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
     retentionDays: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS, 10),
     recordingForcedOff: settings.CLAUDE_MEM_WIRE_GATEWAY_RECORDING === 'false',
     outboundRedaction: settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION === 'true',
+    rewriteSettings: { ...settings },
   };
 }

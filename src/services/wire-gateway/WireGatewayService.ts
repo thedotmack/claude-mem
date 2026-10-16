@@ -64,6 +64,8 @@ import {
   setWireRecordingConsent,
 } from './privacy/recording-consent.js';
 import { OutboundRedactionPlaceholders } from './privacy/outbound-redaction.js';
+import { WireConversationLedger } from './ledger/conversation-ledger.js';
+import { WireRewriteSeam, type WireRewriteStage } from './rewrite/rewrite-stage.js';
 import { captureEvent, shutdownTelemetry } from '../telemetry/telemetry.js';
 import { runWireAgentCli, type WireAgentCliRuntime } from './wiring/wire-agent-cli.js';
 import { requestJsonDirectly } from './direct-http.js';
@@ -92,6 +94,9 @@ const DRAIN_POLL_INTERVAL_MS = 50;
 
 const PROCESS_REGISTRY_ID = 'wire-gateway';
 
+/** Conversation ledgers past their retention are deleted at start and once a day. */
+const CONVERSATION_LEDGER_PRUNE_INTERVAL_MS = 24 * 60 * 60 * 1000;
+
 /** The content-free `wire_gateway_started` event repeats once a day with its counters (like worker_started). */
 const TELEMETRY_HEARTBEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
@@ -115,6 +120,16 @@ export interface WireGatewayServiceOptions {
   outboundRedaction?: boolean;
   /** Test seam: the placeholder table; defaults to one keyed by <DATA_DIR>/wire-gateway/redact.key. */
   outboundRedactionPlaceholders?: OutboundRedactionPlaceholders;
+  /**
+   * The rewrite stages, in request order (plan Phase 10). Phases 11–12
+   * register Endless Mode, memory injection and the hidden tool here;
+   * absent, no stage runs.
+   */
+  rewriteStages?: WireRewriteStage[];
+  /** The settings handed to rewrite stages (loadWireGatewayConfig's `rewriteSettings`). */
+  rewriteSettings?: Readonly<Record<string, string>>;
+  /** Test seam: the conversation ledger; defaults to one in <DATA_DIR>/wire-gateway/ledger. */
+  conversationLedger?: WireConversationLedger;
   /**
    * Test seam: replaces the capture pipeline (recorder, assembler, turn
    * tracker) with this observer; nothing is then captured.
@@ -173,6 +188,11 @@ export class WireGatewayService {
   readonly agentLastSeen: AgentLastSeenTracker;
   /** Reachability answers for GET /wire/status, refreshed in the background. */
   private readonly statusProbeAnswers = new ProbeAnswerCache();
+  /** Every conversation's rewrites, kept across restarts (plan Phase 10 task 5). */
+  readonly conversationLedger: WireConversationLedger;
+  /** The rewrite stages and their health. */
+  readonly rewriteSeam: WireRewriteSeam;
+  private ledgerPruneTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: WireGatewayServiceOptions) {
     this.options = options;
@@ -180,6 +200,8 @@ export class WireGatewayService {
     this.agentLastSeen = new AgentLastSeenTracker({ filePath: options.status?.lastSeenFilePath });
     // The key file is read (or written) on first use only.
     this.outboundRedactionPlaceholders = options.outboundRedactionPlaceholders ?? new OutboundRedactionPlaceholders();
+    this.conversationLedger = options.conversationLedger ?? new WireConversationLedger();
+    this.rewriteSeam = new WireRewriteSeam({ stages: options.rewriteStages ?? [] });
   }
 
   async start(): Promise<void> {
@@ -211,7 +233,13 @@ export class WireGatewayService {
         enabledByDefault: this.options.outboundRedaction ?? false,
       },
       noteRequestFromAgent: agentId => this.agentLastSeen.noteRequestFromAgent(agentId),
+      rewriteSeam: this.rewriteSeam,
+      conversationLedger: this.conversationLedger,
+      rewriteSettings: this.options.rewriteSettings,
     });
+    this.pruneConversationLedgers();
+    this.ledgerPruneTimer = setInterval(() => this.pruneConversationLedgers(), CONVERSATION_LEDGER_PRUNE_INTERVAL_MS);
+    this.ledgerPruneTimer.unref?.();
     const handleRequest = this.options.fetchHandler
       ?? createWireGatewayFetchHandler({
         listenHost: this.options.host,
@@ -363,6 +391,8 @@ export class WireGatewayService {
       // After the drain, so in-flight exchanges were assembled; turn ends still in their quiet are dropped.
       this.capturePipeline?.dispose();
       this.capturePipeline = null;
+      if (this.ledgerPruneTimer) clearInterval(this.ledgerPruneTimer);
+      this.ledgerPruneTimer = null;
       this.agentLastSeen.stopPersisting();
       if (this.persistRuntimeState || this.options.status?.lastSeenFilePath) this.agentLastSeen.flush();
       if (this.persistRuntimeState) {
@@ -376,6 +406,15 @@ export class WireGatewayService {
         await shutdownTelemetry();
       }
       logger.info('WIRE', 'Wire gateway stopped');
+    }
+  }
+
+  private pruneConversationLedgers(): void {
+    try {
+      const deleted = this.conversationLedger.pruneExpired();
+      if (deleted > 0) logger.info('WIRE', 'Pruned expired conversation ledgers', { deleted });
+    } catch (error) {
+      logger.warn('WIRE', 'Could not prune conversation ledgers', { error: error instanceof Error ? error.message : String(error) });
     }
   }
 

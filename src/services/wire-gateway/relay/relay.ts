@@ -29,6 +29,10 @@ import { resolveIdentity, sessionIdToEcho, type WireIdentity } from '../identity
 import { CLAUDE_MEM_SESSION_HEADER } from '../identity/session-id.js';
 import type { OutboundRedactionPlaceholders } from '../privacy/outbound-redaction.js';
 import { PlaceholderRestoringResponse } from '../privacy/placeholder-restoring-response.js';
+import type { WireConversationLedger, WireConversationLedgerView } from '../ledger/conversation-ledger.js';
+import type { WireRewriteRun, WireRewriteSeam } from '../rewrite/rewrite-stage.js';
+import { ResponseStageTransform } from '../rewrite/response-stage-transform.js';
+import { toolPairingProblem } from '../rewrite/tool-pairing.js';
 
 // ---------------------------------------------------------------------------
 // Header policy (magpie `hopHeader` + `copyHeaders`)
@@ -86,6 +90,12 @@ export interface RelayExchange {
   protocol: WireProtocol | null;
   /** True when a later phase may record this exchange (classified captured, a `wire` route, and the body decoded). */
   captured: boolean;
+  /**
+   * A model call of a known protocol on any route: its reply is copied to
+   * observers so its usage is metered (plan Phase 10), and recorded only
+   * when `captured` too.
+   */
+  metered: boolean;
   method: string;
   /** Path after /r/<routeId> (and after a launch segment); the query is never kept (it can hold an API key). */
   suffixPath: string;
@@ -103,6 +113,17 @@ export interface RelayExchange {
   request: WireRequest | null;
   /** Who sent the request and where it belongs (Phase 4). */
   identity: WireIdentity;
+  /** What the rewrite stages did to the request (plan Phase 10). */
+  rewrite: RelayExchangeRewrite;
+}
+
+export interface RelayExchangeRewrite {
+  /** The stages whose bytes went upstream, in order; empty when none did. */
+  appliedStageNames: string[];
+  injectedTokensEst: number;
+  swappedTokensEst: number;
+  /** The forwarded body parsed, when the stages changed it; null when what went is `request`'s body. */
+  forwardedRequest: WireRequest | null;
 }
 
 export type RelayOutcome =
@@ -148,7 +169,8 @@ export const relayCaptureSkipCounts: Record<string, number> = {};
 /**
  * Process-lifetime counters for the gateway's content-free telemetry
  * (plan Phase 6 task 4): how many exchanges were relayed, and how many had
- * their request rewritten (outbound redaction masked something).
+ * their request rewritten (a rewrite stage's bytes went upstream, or
+ * outbound redaction masked something; a request counts once).
  */
 export const relayActivityCounts = { exchangesRelayed: 0, requestsRewritten: 0 };
 
@@ -196,9 +218,37 @@ export interface WireGatewayRelayOptions {
    * anything else is checked (plan Phase 9 task 1, lastSeen). Must not block.
    */
   noteRequestFromAgent?: (agentId: string) => void;
+  /** The rewrite stages (plan Phase 10); absent or empty, every body goes as it came (outbound redaction aside). */
+  rewriteSeam?: WireRewriteSeam;
+  /** Where each conversation's rewrites are kept; without one, stages see no ledger and so rewrite nothing that needs one. */
+  conversationLedger?: WireConversationLedger;
+  /** The gateway's settings, handed to stages as `context.settings`. */
+  rewriteSettings?: Readonly<Record<string, string>>;
 }
 
 const ROUTE_PATH_PATTERN = /^\/r\/([^/]+)(\/.*)?$/;
+
+/**
+ * The conversation's ledger, or null (no ledger kept, a request with no
+ * conversation ledger, or one that could not be opened: rewrites that need
+ * a ledger then do nothing).
+ */
+function openConversationLedger(
+  conversationLedger: WireConversationLedger | undefined,
+  identity: WireIdentity,
+  parsedRequest: WireRequest,
+  routeId: string,
+): WireConversationLedgerView | null {
+  if (!conversationLedger) return null;
+  try {
+    return conversationLedger.open(identity, parsedRequest);
+  } catch (error) {
+    logger.warn('WIRE', 'Could not open a conversation ledger; the request is not rewritten', {
+      routeId, agentId: identity.agentId, error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
 
 const NULL_BODY_STATUSES = new Set([101, 204, 205, 304]);
 
@@ -333,9 +383,87 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         }
       }
     }
+    const identity = resolveIdentity(route, request.headers, parsedRequest, { suffixPath, launch });
     const methodHasBody = request.method !== 'GET' && request.method !== 'HEAD';
     const forwardedHeaders = upstreamRequestHeaders(request.headers);
     let forwardedBody = originalBody;
+    let requestRewritten = false;
+
+    // The rewrite stages (plan Phase 10, D7): they edit the decoded body by
+    // byte splices and FAIL OPEN: on any error, overrun or broken tool pair
+    // the original bytes go upstream.
+    const rewriteOutcome: RelayExchangeRewrite = { appliedStageNames: [], injectedTokensEst: 0, swappedTokensEst: 0, forwardedRequest: null };
+    let rewriteRun: WireRewriteRun | null = null;
+    let stagedBody: Uint8Array | null = null;
+    // With no stage registered nothing is opened or written: a conversation
+    // first seen after stages exist is judged by that request (unknown ≠ empty).
+    if (options.rewriteSeam && options.rewriteSeam.stages.length > 0 && classification.protocol && parsedRequest && methodHasBody && decodedCopy?.kind === 'decoded') {
+      const protocol = classification.protocol;
+      const decodedBody = decodedCopy.bytes;
+      const parsedByBody = new Map<Uint8Array, WireRequest>([[decodedBody, parsedRequest]]);
+      const requestOf = (body: Uint8Array): WireRequest => {
+        let parsed = parsedByBody.get(body);
+        if (!parsed) {
+          parsed = parseWireRequest(protocol, body, { suffixPath });
+          parsedByBody.set(body, parsed);
+        }
+        return parsed;
+      };
+      try {
+        const ledger = openConversationLedger(options.conversationLedger, identity, parsedRequest, routeId);
+        rewriteRun = options.rewriteSeam.begin({
+          routeId, route, identity, ledger, protocol, settings: options.rewriteSettings ?? {}, requestOf,
+        });
+        if (rewriteRun) {
+          const staged = await rewriteRun.runRequestStages(decodedBody);
+          if (staged.rejection) {
+            return protocolErrorResponse(errorFamily, {
+              status: staged.rejection.status,
+              message: staged.rejection.message,
+              openAiCode: 'claude_mem_rewrite_rejected',
+            });
+          }
+          if (staged.body !== decodedBody) {
+            let pairingProblem: string | null;
+            try {
+              pairingProblem = toolPairingProblem(parsedRequest, requestOf(staged.body));
+            } catch (error) {
+              pairingProblem = `the rewritten body does not parse: ${error instanceof Error ? error.message : String(error)}`;
+            }
+            if (pairingProblem) {
+              options.rewriteSeam.health.noteFailure('pairing-check', 'afterRequestStages', new Error(`${pairingProblem}; the original body was sent`));
+              rewriteRun.discardEstimates();
+            } else {
+              stagedBody = staged.body;
+              rewriteOutcome.appliedStageNames = staged.appliedStageNames;
+              rewriteOutcome.forwardedRequest = requestOf(staged.body);
+            }
+          }
+          // The ledger keeps only rewrites whose bytes go (or stage records
+          // that changed nothing): a kept one is re-applied on every later request.
+          if (stagedBody || staged.body === decodedBody) rewriteRun.commitLedgerEntries();
+          else rewriteRun.discardLedgerEntries();
+          rewriteOutcome.injectedTokensEst = rewriteRun.estimates.injectedTokens;
+          rewriteOutcome.swappedTokensEst = rewriteRun.estimates.swappedTokens;
+        }
+      } catch (error) {
+        // A bug in the seam itself: the original bytes go (D7.7).
+        logger.error('WIRE', 'The rewrite seam failed; the request went as it came', { routeId, agentId: route.agentId },
+          error instanceof Error ? error : new Error(String(error)));
+        rewriteRun?.discardLedgerEntries();
+        stagedBody = null;
+        rewriteOutcome.appliedStageNames = [];
+        rewriteOutcome.forwardedRequest = null;
+        rewriteOutcome.injectedTokensEst = 0;
+        rewriteOutcome.swappedTokensEst = 0;
+      }
+      if (stagedBody) {
+        // Forwarded decoded once rewritten (content-encoding dropped; fetch sets the length).
+        forwardedBody = stagedBody;
+        forwardedHeaders.delete('content-encoding');
+        requestRewritten = true;
+      }
+    }
     const outboundRedaction = options.outboundRedaction;
     const outboundRedactionOn = outboundRedaction !== undefined
       && (route.features?.outboundRedaction ?? outboundRedaction.enabledByDefault);
@@ -348,7 +476,9 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       // sent as it came. (D7.7's fail-open covers Endless Mode, injection and
       // the hidden tool, where the original bytes are the safe choice; here
       // they are the leak.)
-      const decodedForMasking = decodedCopy ?? decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
+      const decodedForMasking: DecodedBodyCopy = stagedBody
+        ? { kind: 'decoded', bytes: stagedBody, contentEncoding: 'identity' }
+        : decodedCopy ?? decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
       let refusalReason: string | null = null;
       if (decodedForMasking.kind === 'decoded') {
         try {
@@ -356,7 +486,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           if (masked.changed) {
             forwardedBody = masked.bytes;
             forwardedHeaders.delete('content-encoding');
-            relayActivityCounts.requestsRewritten++;
+            requestRewritten = true;
           }
         } catch (error) {
           logger.error('WIRE', 'Outbound redaction failed; the request was refused, not sent unmasked', { routeId, agentId: route.agentId },
@@ -379,7 +509,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       }
     }
 
-    const identity = resolveIdentity(route, request.headers, parsedRequest, { suffixPath, launch });
+    if (requestRewritten) relayActivityCounts.requestsRewritten++;
 
     const exchange: RelayExchange = {
       exchangeId: randomUUID(),
@@ -387,6 +517,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       agentId: route.agentId,
       protocol: classification.protocol,
       captured: decodedRequestBody !== null,
+      metered: classification.captured && classification.protocol !== null,
       method: request.method,
       suffixPath,
       startedAt: Date.now(),
@@ -394,13 +525,14 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       captureSkippedReason,
       request: parsedRequest,
       identity,
+      rewrite: rewriteOutcome,
     };
     const observer = options.observer;
     if (observer?.onExchangeStarted) notifyObserver(() => observer.onExchangeStarted!(exchange));
 
     const captureQueue = new BoundedCaptureQueue(
       captureSpoolCapBytes,
-      exchange.captured && observer?.onResponseChunk ? chunk => observer.onResponseChunk!(exchange, chunk) : () => undefined,
+      exchange.metered && observer?.onResponseChunk ? chunk => observer.onResponseChunk!(exchange, chunk) : () => undefined,
     );
     let responseBytes = 0;
     let endDetector: StreamEndMarkerDetector | null = null;
@@ -505,7 +637,26 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         routeId, agentId: route.agentId, contentEncoding: upstreamResponse.headers.get('content-encoding'),
       });
     }
+    // The response stages (plan Phase 10) see the reply after its
+    // placeholders are put back and before the client and the tee do.
+    const candidateTransform = rewriteRun && (rewriteRun.hasEventStages || rewriteRun.hasResponseStages)
+      ? new ResponseStageTransform({
+        run: rewriteRun,
+        status: upstreamResponse.status,
+        contentType: upstreamResponse.headers.get('content-type'),
+        contentEncoding: upstreamResponse.headers.get('content-encoding'),
+      })
+      : null;
+    const responseTransform = candidateTransform && !candidateTransform.passesThrough ? candidateTransform : null;
+    const throughResponseStages = async (chunks: Uint8Array[]): Promise<Uint8Array[]> => {
+      if (!responseTransform) return chunks;
+      const transformed: Uint8Array[] = [];
+      for (const chunk of chunks) transformed.push(...await responseTransform.push(chunk));
+      return transformed;
+    };
     const sendToClient = (controller: ReadableStreamDefaultController<Uint8Array>, chunks: Uint8Array[]): void => {
+      // The client may have left while a response stage ran.
+      if (request.signal.aborted) return;
       for (const chunk of chunks) {
         if (chunk.byteLength === 0) continue;
         controller.enqueue(chunk);
@@ -513,9 +664,15 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         captureQueue.offer(chunk);
       }
     };
-    /** What the restorer still holds; written before any end, since those bytes did come from upstream. */
-    const flushRestorer = (controller: ReadableStreamDefaultController<Uint8Array>): void => {
-      if (restorer) sendToClient(controller, restorer.finish());
+    /**
+     * What the restorer and the response stages still hold; written before
+     * any end, since those bytes did come from upstream. `replyComplete` is
+     * false for a cut: a partial whole reply goes out as it came.
+     */
+    const flushResponseRewriters = async (controller: ReadableStreamDefaultController<Uint8Array>, replyComplete: boolean): Promise<void> => {
+      const restored = await throughResponseStages(restorer ? restorer.finish() : []);
+      const held = responseTransform ? await responseTransform.finish(replyComplete) : [];
+      sendToClient(controller, [...restored, ...held]);
     };
 
     const upstreamReader = upstreamResponse.body.getReader();
@@ -543,14 +700,14 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           }
           if (hasReachedEnd(false)) {
             // The reply was whole before the socket went; end it cleanly.
-            flushRestorer(controller);
+            await flushResponseRewriters(controller, true);
             finishExchange('complete', upstreamResponse.status);
             controller.close();
             return;
           }
           // Upstream broke mid-reply: forward nothing more, fabricate no end,
           // and break the client's connection so it reads a cut, not a whole reply.
-          flushRestorer(controller);
+          await flushResponseRewriters(controller, false);
           finishExchange('cut', upstreamResponse.status);
           cutSignalled = true;
           server.timeout(request, CUT_SIGNAL_IDLE_TIMEOUT_SECONDS);
@@ -567,7 +724,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           }
           // Upstream ended the body itself: relay that end as it is. Without
           // its end marker the turn is flagged cut, never "fixed".
-          flushRestorer(controller);
+          await flushResponseRewriters(controller, hasReachedEnd(true));
           finishExchange(hasReachedEnd(true) ? 'complete' : 'cut', upstreamResponse.status);
           controller.close();
           return;
@@ -578,7 +735,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         }
         // To the client first, immediately; observers get a copy after.
         endDetector?.observe(next.value);
-        sendToClient(controller, restorer ? restorer.push(next.value) : [next.value]);
+        sendToClient(controller, await throughResponseStages(restorer ? restorer.push(next.value) : [next.value]));
       },
       cancel() {
         // The client went away, or Bun closed a cut connection.

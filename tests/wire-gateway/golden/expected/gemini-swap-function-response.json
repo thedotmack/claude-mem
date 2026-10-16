@@ -1,0 +1,7 @@
+{"systemInstruction":{"parts":[{"text":"You are Gemini CLI. <b> & é"}]},
+ "contents":[{"role":"user","parts":[{"text":"read go.mod"}]},
+  {"role":"model","parts":[{"functionCall":{"name":"read_file","args":{"path":"go.mod","n":0.70}},"thoughtSignature":"c2ln"}]},
+  {"role":"user","parts":[{"functionResponse":{"name":"read_file","response":{"output":"[claude-mem: replaced]"}}}]},
+  {"role":"user","parts":[{"text":"go on"}]}],
+ "tools":[{"functionDeclarations":[{"name":"read_file","parameters":{"type":"object"}}]}],
+ "generationConfig":{"temperature":0.70,"maxOutputTokens":64}}
