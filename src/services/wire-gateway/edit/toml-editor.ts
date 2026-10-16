@@ -9,14 +9,18 @@
 // edited path is compared (magpie internal/edit/toml.go:646-677 `writeTOML`,
 // MIT, Copyright (c) 2026 yetone).
 //
-// Bun 1.3.9's TOML parser (probed for this phase) refuses a repeated key but
-// accepts a table header written twice, a header that reopens a table made by
-// dotted keys, and a header that extends an inline table. All of those are
-// invalid TOML that agents' own parsers refuse, so they are checked here
-// explicitly. It also refuses valid TOML datetimes and `\u0001`-style escapes
-// of most control characters, swaps the `\t` and `\f` escapes, drops `\u007F`
-// and does not trim the line break that opens a multi-line string, so files
-// holding those cannot be edited (or read) exactly here.
+// Bun's TOML parser differs between versions (probed on 1.3.9 and 1.4.3), so
+// the editor never relies on it to refuse anything. 1.3.9 accepts a table
+// header written twice, a header that reopens a table made by dotted keys and
+// a header that extends an inline table; 1.4.3 refuses them. The editor
+// checks all of those (and a repeated key) itself, before its own refusals
+// fall back to Bun's message. 1.3.9 refuses TOML datetimes and 1.4.3 reads
+// them as plain strings, so the editor refuses any file holding one. 1.3.9
+// refuses `\u0001`-style escapes of most control characters and swaps the
+// `\t` and `\f` escapes, so the editor never writes a control character other
+// than tab, line feed, carriage return, backspace and form feed. 1.3.9 also
+// does not trim the line break that opens a multi-line string, so such a
+// value reads back differently by Bun version (the editor never writes one).
 
 import {
   assertPlainConfigValue,
@@ -56,6 +60,8 @@ interface TomlSection {
 interface ScannedTomlDocument {
   text: string;
   sections: TomlSection[];
+  /** Offset of the first datetime value, or -1. */
+  firstDatetimeOffset: number;
 }
 
 class TomlStructureError extends Error {}
@@ -119,8 +125,23 @@ function endOfAnyString(text: string, start: number): number {
   return text[start] === '"' ? endOfBasicString(text, start) : endOfLiteralString(text, start);
 }
 
+function isAsciiDigit(character: string | undefined): boolean {
+  return character !== undefined && character >= '0' && character <= '9';
+}
+
+/**
+ * True when a bare value starting at `start` is a TOML date, time or datetime
+ * (`1979-05-27`, `07:32:00`, `1979-05-27T07:32:00Z`): four digits and `-`, or
+ * two digits and `:`. No TOML number has a `-` or `:` there. Constant time.
+ */
+function startsTomlDatetime(text: string, start: number): boolean {
+  if (!isAsciiDigit(text[start]) || !isAsciiDigit(text[start + 1])) return false;
+  if (text[start + 2] === ':') return true;
+  return isAsciiDigit(text[start + 2]) && isAsciiDigit(text[start + 3]) && text[start + 4] === '-';
+}
+
 /** Past an array or inline table opening at `start`: strings, comments and nesting are skipped linearly. */
-function endOfBracketedValue(text: string, start: number): number {
+function endOfBracketedValue(text: string, start: number, datetimeSink: { firstDatetimeOffset: number }): number {
   let depth = 0;
   let position = start;
   while (position < text.length) {
@@ -138,17 +159,29 @@ function endOfBracketedValue(text: string, start: number): number {
       depth--;
       if (depth === 0) return position + 1;
     }
+    if (datetimeSink.firstDatetimeOffset === -1 && '[{,='.includes(character)) {
+      let tokenStart = position + 1;
+      while (isTomlInlineSpace(text[tokenStart])) tokenStart++;
+      if (startsTomlDatetime(text, tokenStart)) datetimeSink.firstDatetimeOffset = tokenStart;
+    }
     position++;
   }
   throw new TomlStructureError(`unterminated array or inline table at offset ${start}`);
 }
 
-function endOfTomlValue(text: string, start: number): number {
+function endOfTomlValue(text: string, start: number, datetimeSink: { firstDatetimeOffset: number }): number {
   const character = text[start];
   if (character === '"' || character === "'") return endOfAnyString(text, start);
-  if (character === '[' || character === '{') return endOfBracketedValue(text, start);
+  if (character === '[' || character === '{') return endOfBracketedValue(text, start, datetimeSink);
+  const isDatetime = startsTomlDatetime(text, start);
+  if (isDatetime && datetimeSink.firstDatetimeOffset === -1) datetimeSink.firstDatetimeOffset = start;
   let position = start;
   while (position < text.length && !' \t\r\n#,]}'.includes(text[position])) position++;
+  // A local datetime may put a space between its date and time: `1979-05-27 07:32:00`.
+  if (isDatetime && text[position] === ' ' && isAsciiDigit(text[position + 1])) {
+    position++;
+    while (position < text.length && !' \t\r\n#,]}'.includes(text[position])) position++;
+  }
   if (position === start) throw new TomlStructureError(`missing value at offset ${start}`);
   return position;
 }
@@ -220,10 +253,17 @@ function lineStartOf(text: string, position: number): number {
   return text.lastIndexOf('\n', position - 1) + 1;
 }
 
-/** One linear pass: every table header and key/value statement, by section. */
+/**
+ * One linear pass: every table header and key/value statement, by section.
+ * A header's full keys go through the element of every array table it sits
+ * under: after `[[hooks]]` twice, `[hooks.post]` is `hooks.1.post` and
+ * `[[hooks.steps]]` is `hooks.1.steps.0`, so an element owns its sub-tables.
+ */
 function scanTomlStatements(text: string): ScannedTomlDocument {
   const sections: TomlSection[] = [{ header: null, fullKeys: [], keyValues: [] }];
+  /** Element count of each array table, by its full path (element indices included). */
   const arrayTableCounts = new Map<string, number>();
+  const datetimeSink = { firstDatetimeOffset: -1 };
   let position = 0;
   while (position < text.length) {
     const character = text[position];
@@ -247,13 +287,18 @@ function scanTomlStatements(text: string): ScannedTomlDocument {
         lineStart,
         statementEnd: endOfStatementLine(text, parsed.end + closer.length),
       };
-      let fullKeys = parsed.keys;
-      if (isArrayTable) {
-        const countKey = JSON.stringify(parsed.keys);
-        const elementIndex = arrayTableCounts.get(countKey) ?? 0;
-        arrayTableCounts.set(countKey, elementIndex + 1);
-        fullKeys = [...parsed.keys, String(elementIndex)];
-      }
+      const fullKeys: string[] = [];
+      parsed.keys.forEach((key, keyIndex) => {
+        fullKeys.push(key);
+        const countKey = pathKey(fullKeys);
+        const elementCount = arrayTableCounts.get(countKey);
+        if (isArrayTable && keyIndex === parsed.keys.length - 1) {
+          arrayTableCounts.set(countKey, (elementCount ?? 0) + 1);
+          fullKeys.push(String(elementCount ?? 0));
+        } else if (elementCount !== undefined) {
+          fullKeys.push(String(elementCount - 1));
+        }
+      });
       sections.push({ header, fullKeys, keyValues: [] });
       position = header.statementEnd;
       continue;
@@ -262,12 +307,12 @@ function scanTomlStatements(text: string): ScannedTomlDocument {
     if (text[parsedKeys.end] !== '=') throw new TomlStructureError(`expected = at offset ${parsedKeys.end}`);
     let valueStart = parsedKeys.end + 1;
     while (isTomlInlineSpace(text[valueStart])) valueStart++;
-    const valueEnd = endOfTomlValue(text, valueStart);
+    const valueEnd = endOfTomlValue(text, valueStart, datetimeSink);
     const statementEnd = endOfStatementLine(text, valueEnd);
     sections[sections.length - 1].keyValues.push({ keys: parsedKeys.keys, lineStart, valueStart, valueEnd, statementEnd });
     position = statementEnd;
   }
-  return { text, sections };
+  return { text, sections, firstDatetimeOffset: datetimeSink.firstDatetimeOffset };
 }
 
 function pathKey(keys: readonly string[]): string {
@@ -279,9 +324,11 @@ function startsWithKeys(keys: readonly string[], prefix: readonly string[]): boo
 }
 
 /**
- * Definitions Bun's parser lets through: a table header written twice, and a
- * header for a table already made by a key/value (an inline table, a scalar,
- * or the tables dotted keys make).
+ * Definitions some Bun versions let through, checked here for every version:
+ * a key written twice, a table header written twice, and a header for a
+ * table already made by a key/value (an inline table, a scalar, or the tables
+ * dotted keys make). Paths are full paths, so sub-tables of different array
+ * table elements never clash.
  */
 function assertTomlDefinitionsAreUnique(document: ScannedTomlDocument): void {
   const valuePaths = new Set<string>();
@@ -289,7 +336,9 @@ function assertTomlDefinitionsAreUnique(document: ScannedTomlDocument): void {
   for (const section of document.sections) {
     for (const keyValue of section.keyValues) {
       const fullKeys = [...section.fullKeys, ...keyValue.keys];
-      valuePaths.add(pathKey(fullKeys));
+      const valuePath = pathKey(fullKeys);
+      if (valuePaths.has(valuePath)) throw new Error(`key "${fullKeys.join('.')}" is defined twice`);
+      valuePaths.add(valuePath);
       for (let length = section.fullKeys.length + 1; length < fullKeys.length; length++) {
         dottedKeyTables.add(pathKey(fullKeys.slice(0, length)));
       }
@@ -299,16 +348,16 @@ function assertTomlDefinitionsAreUnique(document: ScannedTomlDocument): void {
   for (const section of document.sections) {
     const header = section.header;
     if (!header) continue;
-    const headerPath = pathKey(header.keys);
+    const headerPath = pathKey(section.fullKeys);
     const label = `[${header.kind === 'arrayTable' ? '[' : ''}${header.keys.join('.')}${header.kind === 'arrayTable' ? ']' : ''}]`;
     if (header.kind === 'table') {
       if (tableHeaders.has(headerPath)) throw new Error(`table ${label} is defined twice`);
       tableHeaders.add(headerPath);
     }
     if (dottedKeyTables.has(headerPath)) throw new Error(`table ${label} was already defined by dotted keys`);
-    for (let length = 1; length <= header.keys.length; length++) {
-      if (valuePaths.has(pathKey(header.keys.slice(0, length)))) {
-        throw new Error(`table ${label} reopens "${header.keys.slice(0, length).join('.')}", which a key/value already defines`);
+    for (let length = 1; length <= section.fullKeys.length; length++) {
+      if (valuePaths.has(pathKey(section.fullKeys.slice(0, length)))) {
+        throw new Error(`table ${label} reopens "${section.fullKeys.slice(0, length).join('.')}", which a key/value already defines`);
       }
     }
   }
@@ -363,20 +412,34 @@ function assertTomlDottedKeysAreShort(text: string): void {
 
 /**
  * Parse with Bun and with the statement scanner; anything either refuses is
- * refused. Bun 1.3.9's parser is quadratic in the number of keys (20,000 keys
- * take about half a second), so a patch parses with it twice only: its input
- * and its exact output.
+ * refused. The editor's own checks decide first, so a refusal reads the same
+ * on every Bun version; Bun's message is used only for text the scanner
+ * cannot read either, or for what only Bun refuses. Bun 1.3.9's parser is
+ * quadratic in the number of keys (20,000 keys take about half a second), so
+ * a patch parses with it twice only: its input and its exact output.
  */
 function parseAndScanToml(text: string): { parsed: unknown; document: ScannedTomlDocument } {
   assertTomlDottedKeysAreShort(text);
   let parsed: unknown;
+  let bunParseError: unknown = null;
   try {
     parsed = Bun.TOML.parse(text);
   } catch (error) {
-    throw new Error(`invalid TOML: ${error instanceof Error ? error.message : String(error)}`);
+    bunParseError = error;
   }
-  const document = scanTomlForEdit(text);
+  const invalidTomlError = () => new Error(`invalid TOML: ${bunParseError instanceof Error ? bunParseError.message : String(bunParseError)}`);
+  let document: ScannedTomlDocument;
+  try {
+    document = scanTomlForEdit(text);
+  } catch (error) {
+    if (bunParseError !== null) throw invalidTomlError();
+    throw error;
+  }
   assertTomlDefinitionsAreUnique(document);
+  if (document.firstDatetimeOffset !== -1) {
+    throw new Error(`a TOML datetime at offset ${document.firstDatetimeOffset} is not supported (Bun versions read it differently); edit the file by hand`);
+  }
+  if (bunParseError !== null) throw invalidTomlError();
   return { parsed, document };
 }
 
@@ -400,7 +463,11 @@ export function renderTomlString(value: string): string {
       case '"': rendered += '\\"'; break;
       case '\\': rendered += '\\\\'; break;
       default:
-        rendered += code < 0x20 || code === 0x7f ? `\\u${code.toString(16).toUpperCase().padStart(4, '0')}` : character;
+        // Bun 1.3.9 refuses `\u0001`-style escapes and drops `\u007F`, so the value could not be read back alike.
+        if (code < 0x20 || code === 0x7f) {
+          throw new Error(`a TOML string holding control character U+${code.toString(16).toUpperCase().padStart(4, '0')} is not supported; edit the file by hand`);
+        }
+        rendered += character;
     }
   }
   return `${rendered}"`;
@@ -459,7 +526,9 @@ function setTomlValue(text: string, keys: string[], value: unknown, keyPath: str
   }
   const remainingKeys = keys.slice(host.fullKeys.length);
   const hostUsesDottedKeysFor = host.keyValues.some((keyValue) => keyValue.keys.length > 1 && keyValue.keys[0] === remainingKeys[0]);
-  if (remainingKeys.length === 1 || hostUsesDottedKeysFor || host.header?.kind === 'arrayTable') {
+  // Inside an array table element (or its sub-tables) a new header cannot name the element, so dotted keys go there.
+  const hostIsInsideArrayTableElement = host.header !== null && host.fullKeys.length !== host.header.keys.length;
+  if (remainingKeys.length === 1 || hostUsesDottedKeysFor || hostIsInsideArrayTableElement) {
     const line = `${renderTomlKeys(remainingKeys)} = ${rendered}`;
     const lastKeyValue = host.keyValues[host.keyValues.length - 1];
     const insertAt = lastKeyValue ? lastKeyValue.statementEnd : host.header ? host.header.statementEnd : 0;
@@ -484,16 +553,14 @@ function sectionEndBefore(text: string, nextHeaderLineStart: number): number {
 
 function deleteTomlValue(text: string, keys: string[]): string {
   const document = scanTomlForEdit(text);
-  const removals: Array<{ start: number; end: number }> = [];
+  const removals: Array<{ start: number; end: number; isTable: boolean }> = [];
   document.sections.forEach((section, sectionIndex) => {
     if (section.header && startsWithKeys(section.fullKeys, keys)) {
       const nextHeader = document.sections.slice(sectionIndex + 1).find((later) => later.header)?.header ?? null;
       const end = nextHeader ? sectionEndBefore(text, nextHeader.lineStart) : text.length;
       // Comment lines right above the header go with it.
-      let start = sectionEndBefore(text, section.header.lineStart);
-      // The last table goes with the blank line that set it apart.
-      if (end === text.length && text.slice(0, start).endsWith('\n\n')) start--;
-      removals.push({ start: Math.min(start, end), end });
+      const start = sectionEndBefore(text, section.header.lineStart);
+      removals.push({ start: Math.min(start, end), end, isTable: true });
       return;
     }
     for (const keyValue of section.keyValues) {
@@ -501,16 +568,23 @@ function deleteTomlValue(text: string, keys: string[]): string {
       let start = keyValue.lineStart;
       // A last line with no line end takes the line end before it instead.
       if (keyValue.statementEnd === text.length && !text.endsWith('\n') && start > 0) start--;
-      removals.push({ start, end: keyValue.statementEnd });
+      removals.push({ start, end: keyValue.statementEnd, isTable: false });
     }
   });
   // Ranges can touch (a blank line or line end taken from a neighbor): merge, then cut.
-  const merged: Array<{ start: number; end: number }> = [];
+  const merged: Array<{ start: number; end: number; isTable: boolean }> = [];
   for (const removal of removals.sort((left, right) => left.start - right.start)) {
     const previous = merged[merged.length - 1];
-    if (previous && removal.start <= previous.end) previous.end = Math.max(previous.end, removal.end);
-    else merged.push({ ...removal });
+    if (previous && removal.start <= previous.end) {
+      previous.end = Math.max(previous.end, removal.end);
+      previous.isTable ||= removal.isTable;
+    } else {
+      merged.push({ ...removal });
+    }
   }
+  // The last tables (an array element with its sub-tables, say) go with the blank line that set them apart.
+  const last = merged[merged.length - 1];
+  if (last?.isTable && last.end === text.length && text.slice(0, last.start).endsWith('\n\n')) last.start--;
   let edited = text;
   for (const removal of merged.reverse()) {
     edited = spliceTomlText(edited, removal.start, removal.end, '');

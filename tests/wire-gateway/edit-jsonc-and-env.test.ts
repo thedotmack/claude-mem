@@ -158,6 +158,23 @@ describe('.env editor', () => {
     expect(() => patchEnv('', { set: [{ key: 'A', value: 'a\nb' }] })).toThrow('line break');
   });
 
+  it('a quoted value spread over lines is one assignment: a set or delete never lands inside it', () => {
+    const original = 'A=1\nNOTE="first\nFAKE=inside\nlast" # c\nQUOTE=\'one\ntwo\'\n';
+    expect(readEnvValue(encoder.encode(original), 'NOTE')).toBe('first\nFAKE=inside\nlast');
+    expect(readEnvValue(encoder.encode(original), 'QUOTE')).toBe('one\ntwo');
+    expect(readEnvValue(encoder.encode(original), 'FAKE')).toBeUndefined();
+    const withKey = patchEnv(original, { set: [{ key: 'OPENAI_BASE_URL', value: 'http://127.0.0.1:37677/r/codex' }] });
+    expect(withKey).toBe(`${original}OPENAI_BASE_URL=http://127.0.0.1:37677/r/codex\n`);
+    expect(patchEnv(withKey, { delete: ['OPENAI_BASE_URL'] })).toBe(original);
+    expect(patchEnv(original, { set: [{ key: 'FAKE', value: 'x' }] })).toBe(`${original}FAKE=x\n`);
+    expect(patchEnv(original, { delete: ['FAKE'] })).toBe(original);
+    expect(patchEnv(original, { set: [{ key: 'NOTE', value: 'one line' }] })).toBe("A=1\nNOTE='one line'\nQUOTE='one\ntwo'\n");
+    expect(patchEnv(original, { delete: ['NOTE'] })).toBe("A=1\nQUOTE='one\ntwo'\n");
+    // An escaped quote does not close a double-quoted value; an unclosed quote is a one-line value (as dotenv reads it).
+    expect(patchEnv('N="a\\"\nB=2"\n', { delete: ['B'] })).toBe('N="a\\"\nB=2"\n');
+    expect(patchEnv('N="open\nB=2\n', { delete: ['B'] })).toBe('N="open\n');
+  });
+
   it('removes the file only when claude-mem created it', () => {
     const dir = join(WIRE_GATEWAY_DIR, 'tmp', `edit-env-${process.pid}`);
     mkdirSync(dir, { recursive: true });
@@ -177,6 +194,8 @@ describe('.env editor', () => {
     expectWithinBudget('spaces inside a value', () => patchEnv(`A=a${' '.repeat(ONE_MEGABYTE / 2)}b${' '.repeat(ONE_MEGABYTE / 2)}c`, { set: [{ key: 'B', value: '1' }] }));
     expectWithinBudget('word then spaces', () => patchEnv(`${'A'.repeat(ONE_MEGABYTE / 2)}${' '.repeat(ONE_MEGABYTE / 2)}x`, { set: [{ key: 'B', value: '1' }] }));
     expectWithinBudget('unterminated quote', () => readEnvValue(encoder.encode(`A="${'x'.repeat(ONE_MEGABYTE)}`), 'A'));
+    expectWithinBudget('many unclosed quotes', () => patchEnv('A="x\n'.repeat(ONE_MEGABYTE / 5), { set: [{ key: 'B', value: '1' }] }));
+    expectWithinBudget('one long multi-line value', () => patchEnv(`A="${'x\n'.repeat(ONE_MEGABYTE / 2)}"\n`, { set: [{ key: 'B', value: '1' }] }));
     expectWithinBudget('many lines', () => patchEnv(Array.from({ length: 100_000 }, (_, index) => `K${index}=v\n`).join(''), { set: [{ key: 'B', value: '1' }], delete: ['K5'] }));
   });
 });

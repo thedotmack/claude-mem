@@ -4,7 +4,9 @@
 // internal/edit/env.go and text.go (MIT, Copyright (c) 2026 yetone): a set
 // rewrites only its own line (the last one for a key set twice, which is the
 // one dotenv readers use) or adds one after the last assignment; a delete
-// drops every line for the key. Every other line is kept byte for byte.
+// drops every line for the key. Every other line is kept byte for byte. A
+// quoted value may run over several lines (dotenv reads `NOTE="a\nb"` as one
+// value); its lines are one assignment, never assignments of their own.
 
 import { applyConfigFileEdit, readConfigFileBytes, removeConfigFile } from './config-file.js';
 import { decodeConfigText, editConfigTextPreservingShape } from './text-shape.js';
@@ -26,6 +28,66 @@ function parseEnvAssignment(line: string): EnvAssignment | null {
   const match = ENV_ASSIGNMENT_PATTERN.exec(line);
   if (!match) return null;
   return { key: match[1], rawValue: line.slice(match[0].length).trim() };
+}
+
+/** One assignment: its key and the lines it spans (several for a quoted value that runs over lines). */
+interface EnvAssignmentSpan {
+  key: string;
+  rawValue: string;
+  firstLineIndex: number;
+  lastLineIndex: number;
+}
+
+const ENV_QUOTES = ['"', "'", '`'];
+
+/** Index past the quote closing a value opened by `quote`, searching `line` from `from`, or -1. Only `"` has escapes. */
+function closingQuoteEnd(line: string, from: number, quote: string): number {
+  for (let index = from; index < line.length; index++) {
+    if (quote === '"' && line[index] === '\\') {
+      index++;
+      continue;
+    }
+    if (line[index] === quote) return index + 1;
+  }
+  return -1;
+}
+
+/**
+ * Every assignment, in order, in one linear pass. A value whose opening
+ * quote is not closed on its line takes the following lines up to the one
+ * that closes it; an unclosed quote is a one-line value (as dotenv reads it).
+ * Once a quote kind finds no closer to the end of the text, later unclosed
+ * values of that kind are one-line values without searching again, so many
+ * unclosed quotes stay linear.
+ */
+function scanEnvAssignments(lines: string[]): EnvAssignmentSpan[] {
+  const assignments: EnvAssignmentSpan[] = [];
+  const quotesWithNoCloserAhead = new Set<string>();
+  for (let index = 0; index < lines.length; index++) {
+    const assignment = parseEnvAssignment(lines[index]);
+    if (!assignment) continue;
+    const span: EnvAssignmentSpan = { key: assignment.key, rawValue: assignment.rawValue, firstLineIndex: index, lastLineIndex: index };
+    const quote = assignment.rawValue[0];
+    if (ENV_QUOTES.includes(quote) && !quotesWithNoCloserAhead.has(quote) && closingQuoteEnd(assignment.rawValue, 1, quote) === -1) {
+      let closingLineIndex = -1;
+      for (let later = index + 1; later < lines.length; later++) {
+        if (closingQuoteEnd(lines[later], 0, quote) !== -1) {
+          closingLineIndex = later;
+          break;
+        }
+      }
+      if (closingLineIndex === -1) {
+        quotesWithNoCloserAhead.add(quote);
+      } else {
+        const valueLines = [assignment.rawValue, ...lines.slice(index + 1, closingLineIndex + 1)];
+        span.rawValue = valueLines.map((line) => (line.endsWith('\r') ? line.slice(0, -1) : line)).join('\n').trim();
+        span.lastLineIndex = closingLineIndex;
+        index = closingLineIndex;
+      }
+    }
+    assignments.push(span);
+  }
+  return assignments;
 }
 
 /** A leading quoted value, unquoted (anything after it, such as a comment, dropped); null when it is not quoted. */
@@ -52,10 +114,10 @@ function unquoteEnvValue(rawValue: string): string | null {
 
 /** The value a dotenv reader sees for `key` (the last assignment wins), or undefined. */
 export function readEnvValue(configBytes: Uint8Array, key: string): string | undefined {
-  const lines = decodeConfigText(configBytes).split('\n');
-  for (let index = lines.length - 1; index >= 0; index--) {
-    const assignment = parseEnvAssignment(lines[index]);
-    if (!assignment || assignment.key !== key) continue;
+  const assignments = scanEnvAssignments(decodeConfigText(configBytes).split('\n'));
+  for (let index = assignments.length - 1; index >= 0; index--) {
+    const assignment = assignments[index];
+    if (assignment.key !== key) continue;
     const unquoted = unquoteEnvValue(assignment.rawValue);
     if (unquoted !== null) return unquoted;
     const commentStart = assignment.rawValue.indexOf('#');
@@ -92,29 +154,24 @@ export function patchEnvDocument(originalBytes: Uint8Array, patch: EnvPatch): Ui
     for (const { key, value } of patch.set ?? []) {
       assertEnvKey(key);
       const newLine = `${key}=${renderEnvValue(key, value)}`;
-      let lastAssignment = -1;
-      let sameKey = -1;
-      lines.forEach((line, index) => {
-        const assignment = parseEnvAssignment(line);
-        if (!assignment) return;
-        lastAssignment = index;
-        if (assignment.key === key) sameKey = index;
-      });
-      if (sameKey !== -1) {
-        lines[sameKey] = newLine;
+      const assignments = scanEnvAssignments(lines);
+      const sameKey = assignments.filter((assignment) => assignment.key === key).pop();
+      if (sameKey) {
+        lines = [...lines.slice(0, sameKey.firstLineIndex), newLine, ...lines.slice(sameKey.lastLineIndex + 1)];
         continue;
       }
-      const insertAt = lastAssignment + 1;
-      if (insertAt === lines.length) {
-        // After a last line with no line break: the new line becomes the last one.
-        lines = [...lines, newLine];
-      } else {
-        lines = [...lines.slice(0, insertAt), newLine, ...lines.slice(insertAt)];
-      }
+      // After a last line with no line break, the new line becomes the last one.
+      const insertAt = assignments.length > 0 ? assignments[assignments.length - 1].lastLineIndex + 1 : 0;
+      lines = [...lines.slice(0, insertAt), newLine, ...lines.slice(insertAt)];
     }
     for (const key of patch.delete ?? []) {
       assertEnvKey(key);
-      lines = lines.filter((line) => parseEnvAssignment(line)?.key !== key);
+      const deletedLineIndexes = new Set<number>();
+      for (const assignment of scanEnvAssignments(lines)) {
+        if (assignment.key !== key) continue;
+        for (let index = assignment.firstLineIndex; index <= assignment.lastLineIndex; index++) deletedLineIndexes.add(index);
+      }
+      lines = lines.filter((_, index) => !deletedLineIndexes.has(index));
     }
     return lines.join('\n');
   });

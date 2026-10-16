@@ -246,7 +246,9 @@ function mappingEntries(lines: YamlLine[], range: YamlMappingRange): YamlEntry[]
     const line = lines[index];
     const current = entries[entries.length - 1];
     if (line.insideBlockScalar) {
-      if (current && line.kind !== 'blank') current.blockEndLineIndex = index + 1;
+      // Blank lines at the end of a block scalar are its own (a `|+` scalar keeps them as line breaks),
+      // so a new entry goes after them, and deleting the entry takes them along.
+      if (current) current.blockEndLineIndex = index + 1;
       continue;
     }
     if (line.kind !== 'content') continue;
@@ -340,9 +342,15 @@ function spliceYamlText(text: string, start: number, end: number, replacement: s
   return text.slice(0, start) + replacement + text.slice(end);
 }
 
-/** The offset where a line-block that ends before `blockEndLineIndex` stops, without its final line end. */
-function endOfBlockText(lines: YamlLine[], blockEndLineIndex: number): number {
-  return lines[blockEndLineIndex - 1].end;
+/**
+ * The offset where an entry's lines stop, without the final line end. Blank
+ * lines that end the entry (those that end a block scalar) are left out: a
+ * value replacing the entry's lines leaves them in place as separators.
+ */
+function endOfBlockText(lines: YamlLine[], entry: YamlEntry): number {
+  let lastLineIndex = entry.blockEndLineIndex - 1;
+  while (lastLineIndex > entry.lineIndex && lines[lastLineIndex].kind === 'blank') lastLineIndex--;
+  return lines[lastLineIndex].end;
 }
 
 interface ScannedYamlDocument {
@@ -351,15 +359,21 @@ interface ScannedYamlDocument {
   indentUnit: number;
 }
 
+/**
+ * The editor's own line checks run before Bun.YAML.parse, so what they refuse
+ * (a tab indent, anchors, several documents…) is refused with the same
+ * message on every Bun version: Bun 1.3.9 reads a tab-indented line, 1.4.3
+ * refuses it with its own message.
+ */
 function scanYamlDocument(text: string): ScannedYamlDocument {
+  const lines = splitYamlLines(text);
+  classifyAndGuardYamlLines(lines);
   let parsed: unknown;
   try {
     parsed = Bun.YAML.parse(text);
   } catch (error) {
     throw new Error(`invalid YAML: ${error instanceof Error ? error.message : String(error)}`);
   }
-  const lines = splitYamlLines(text);
-  classifyAndGuardYamlLines(lines);
   if (parsed !== null && !isPlainObjectValue(parsed)) refuseYaml('the top level is not a mapping');
   const firstContent = firstContentLineIndex(lines, 0, lines.length);
   const rootRange = { fromLineIndex: 0, toLineIndex: lines.length, indent: firstContent === -1 ? 0 : lines[firstContent].indent };
@@ -383,14 +397,14 @@ function replaceYamlEntryValue(text: string, document: ScannedYamlDocument, entr
   const hasChildLines = entry.blockEndLineIndex > entry.lineIndex + 1;
   if (isPlainObjectValue(value) && Object.keys(value).length > 0) {
     const childLines = Object.entries(value).flatMap(([childKey, childValue]) => renderYamlEntryLines(childKey, childValue, entry.indent + indentUnit, indentUnit));
-    return spliceYamlText(text, entry.colonEnd, endOfBlockText(lines, entry.blockEndLineIndex), `\n${childLines.join('\n')}`);
+    return spliceYamlText(text, entry.colonEnd, endOfBlockText(lines, entry), `\n${childLines.join('\n')}`);
   }
   const rendered = renderYamlInlineValue(value);
   if (!hasChildLines && entry.inlineValue !== '') {
     // Only the value text changes; the spacing and a trailing comment stay.
     return spliceYamlText(text, entry.inlineValueStart, entry.inlineValueEnd, rendered);
   }
-  const replaceEnd = hasChildLines ? endOfBlockText(lines, entry.blockEndLineIndex) : entry.inlineValueEnd;
+  const replaceEnd = hasChildLines ? endOfBlockText(lines, entry) : entry.inlineValueEnd;
   return spliceYamlText(text, entry.colonEnd, Math.max(replaceEnd, entry.colonEnd), ` ${rendered}`);
 }
 
@@ -446,7 +460,7 @@ function deleteYamlValue(text: string, keys: string[], keyPath: string): string 
       if (parentEntry && entries.length === 1) {
         // The mapping's last key: it stays a mapping, `{}`, as JSONC and TOML
         // keep theirs (a bare `key:` would read as null).
-        return spliceYamlText(text, parentEntry.colonEnd, endOfBlockText(lines, parentEntry.blockEndLineIndex), ' {}');
+        return spliceYamlText(text, parentEntry.colonEnd, endOfBlockText(lines, parentEntry), ' {}');
       }
       let start = lines[entry.lineIndex].start;
       const end = lines[entry.blockEndLineIndex - 1].next;

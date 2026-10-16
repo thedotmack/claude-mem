@@ -101,17 +101,27 @@ describe('TOML editor: byte-exact set → delete round trips', () => {
     expect(patchToml('[a."b.c"]\nx = 1\n', { set: [{ keyPath: 'a.b\\.c.y', value: 2 }] })).toBe('[a."b.c"]\nx = 1\ny = 2\n');
   });
 
-  it('duplicate keys: Bun.TOML.parse refuses a repeated key but accepts a repeated table, so the editor checks tables itself', () => {
-    expect(() => Bun.TOML.parse('a = 1\na = 2\n')).toThrow();
-    expect(() => Bun.TOML.parse('[x]\na = 1\n[x]\nb = 2\n')).not.toThrow();
-    expect(() => Bun.TOML.parse('a.b = 1\n[a]\nc = 2\n')).not.toThrow();
-    expect(() => Bun.TOML.parse('a = {b = 1}\n[a.c]\nd = 2\n')).not.toThrow();
-    expectRefusedUnchanged(patchTomlDocument, 'a = 1\na = 2\n', { set: [{ keyPath: 'y', value: 1 }] }, 'invalid TOML');
+  it('sub-tables of an array table element belong to that element: deleting the element removes them', () => {
+    const hooks = '[[hooks]]\nevent = "A"\n[hooks.post]\nx = 1\n\n[[hooks]]\nevent = "B"\n[hooks.post]\nx = 2\n';
+    expect(readTomlValueAtKeyPath(encoder.encode(hooks), 'hooks.1.post.x')).toBe(2);
+    expect(patchToml(hooks, { delete: ['hooks.1'] })).toBe('[[hooks]]\nevent = "A"\n[hooks.post]\nx = 1\n');
+    expect(patchToml('[[hooks]]\nevent = "A"\n\n[[hooks]]\nevent = "B"\n[hooks.post]\nx = 2\n', { delete: ['hooks.1'] })).toBe('[[hooks]]\nevent = "A"\n');
+    expect(expectRoundTrip(hooks, 'hooks.1.post.y', 3)).toBe(`${hooks}y = 3\n`);
+    expect(expectRoundTrip(hooks, 'hooks.0.post.y', 3)).toBe(hooks.replace('x = 1\n', 'x = 1\ny = 3\n'));
+    expectRefusedUnchanged(patchTomlDocument, '[[h]]\n[h.p]\n[h.p]\n', { set: [{ keyPath: 'y', value: 1 }] }, 'defined twice');
+  });
+
+  it('duplicate keys and tables are refused by the editor itself, whatever Bun\'s parser lets through', () => {
+    // Bun 1.3.9's TOML parser accepts a repeated table, a header reopening a dotted-key table and a header
+    // extending an inline table; Bun 1.4.3 refuses them. The editor checks all of them, so both refuse alike.
+    expectRefusedUnchanged(patchTomlDocument, 'a = 1\na = 2\n', { set: [{ keyPath: 'y', value: 1 }] }, 'defined twice');
+    expectRefusedUnchanged(patchTomlDocument, '[t]\na = 1\na = 2\n', { set: [{ keyPath: 'y', value: 1 }] }, 'defined twice');
     expectRefusedUnchanged(patchTomlDocument, '[x]\na = 1\n[x]\nb = 2\n', { set: [{ keyPath: 'y', value: 1 }] }, 'defined twice');
     expectRefusedUnchanged(patchTomlDocument, 'a.b = 1\n[a]\nc = 2\n', { set: [{ keyPath: 'y', value: 1 }] }, 'dotted keys');
     expectRefusedUnchanged(patchTomlDocument, 'a = {b = 1}\n[a.c]\nd = 2\n', { delete: ['y'] }, 'already defines');
     // An edit that would itself define a table twice is refused before it is written.
     expectRefusedUnchanged(patchTomlDocument, 'a = {b = 1}\n', { set: [{ keyPath: 'a.c', value: 1 }] }, 'edit the file by hand');
+    expect(() => readTomlValueAtKeyPath(encoder.encode('[x]\na = 1\n[x]\nb = 2\n'), 'x.a')).toThrow('defined twice');
   });
 
   it('refuses invalid input and edits it cannot make, unchanged', () => {
@@ -119,9 +129,14 @@ describe('TOML editor: byte-exact set → delete round trips', () => {
     expectRefusedUnchanged(patchTomlDocument, codexConfig, { set: [{ keyPath: 'tui', value: 1 }] }, 'is a table');
     expectRefusedUnchanged(patchTomlDocument, codexConfig, { set: [{ keyPath: 'nothing', value: null }] }, 'TOML has no null');
     expectRefusedUnchanged(patchTomlDocument, codexConfig, { set: [{ keyPath: 'p.*.x', value: 1 }] }, 'JSON/JSONC only');
-    // Bun 1.3.9 refuses TOML datetimes and \u0001-style escapes, so those files and values are refused.
-    expectRefusedUnchanged(patchTomlDocument, 'd = 1979-05-27T07:32:00Z\n', { set: [{ keyPath: 'y', value: 1 }] }, 'invalid TOML');
-    expectRefusedUnchanged(patchTomlDocument, 'a = 1\n', { set: [{ keyPath: 'b', value: 'x\u0001' }] }, 'edited TOML is invalid');
+    // Bun 1.3.9 refuses TOML datetimes and \u0001-style escapes; Bun 1.4.3 reads datetimes as plain strings.
+    // The editor refuses both itself, so every Bun version gives the same answer.
+    for (const datetimeFile of ['d = 1979-05-27T07:32:00Z\n', 'd = 1979-05-27\n', 'd = 07:32:00\n', 'd = 1979-05-27 07:32:00\n', 'd = [1, 1979-05-27]\n', 'd = { at = 07:32:00 }\n']) {
+      expectRefusedUnchanged(patchTomlDocument, datetimeFile, { set: [{ keyPath: 'y', value: 1 }] }, 'datetime');
+    }
+    expect(patchToml('d = "1979-05-27"\nn = -1_000\nf = 6.02e+23\nh = 0x1F\n', { set: [{ keyPath: 'y', value: 1 }] })).toBe('d = "1979-05-27"\nn = -1_000\nf = 6.02e+23\nh = 0x1F\ny = 1\n');
+    expectRefusedUnchanged(patchTomlDocument, 'a = 1\n', { set: [{ keyPath: 'b', value: 'x\u0001' }] }, 'control character');
+    expectRefusedUnchanged(patchTomlDocument, 'a = 1\n', { set: [{ keyPath: 'b', value: 'x\u007F' }] }, 'control character');
   });
 
   it('stays linear on hostile 1 MB inputs', () => {
@@ -214,6 +229,21 @@ describe('YAML editor: byte-exact set → delete round trips', () => {
     expect(patchYaml(emptied, { set: [{ keyPath: 'extensions.claude-mem.cmd', value: 'x' }] })).toBe('a: 1\nextensions:\n  claude-mem:\n    cmd: x\n');
   });
 
+  it('blank lines at the end of a block scalar belong to it: a new key goes after them', () => {
+    const keep = 'a: |+\n  hello\n\n';
+    const withKey = expectRoundTrip(keep, 'b', 1);
+    expect(withKey).toBe('a: |+\n  hello\n\nb: 1\n');
+    expect(readYamlValueAtKeyPath(encoder.encode(withKey), 'a')).toBe('hello\n\n');
+    const nested = 'x:\n  a: |+\n    hi\n\n\ny: 1\n';
+    const withNestedKey = expectRoundTrip(nested, 'x.b', 1);
+    expect(withNestedKey).toBe('x:\n  a: |+\n    hi\n\n\n  b: 1\ny: 1\n');
+    expect(readYamlValueAtKeyPath(encoder.encode(withNestedKey), 'x.a')).toBe('hi\n\n\n');
+    expect(patchYaml('a: >-\n  folded\n\nb: 1\n', { delete: ['a'] })).toBe('b: 1\n');
+    // A value replacing a block scalar leaves its trailing blank lines in place, as separators.
+    expect(patchYaml('a: |\n  hi\n\nb: 1\n', { set: [{ keyPath: 'a', value: 'x' }] })).toBe('a: x\n\nb: 1\n');
+    expect(patchYaml('p:\n  a: |\n    hi\n\nb: 1\n', { delete: ['p.a'] })).toBe('p: {}\n\nb: 1\n');
+  });
+
   it('refuses anchors, aliases, several documents, flow-mapping parents and other unsafe edits, unchanged', () => {
     expectRefusedUnchanged(patchYamlDocument, 'model:\n  default: &chosen old\nother: *chosen\n', { set: [{ keyPath: 'model.default', value: 'n' }] }, 'anchor');
     expectRefusedUnchanged(patchYamlDocument, 'a: &x 1\nb: *x\n', { delete: ['b'] }, 'anchor');
@@ -227,7 +257,8 @@ describe('YAML editor: byte-exact set → delete round trips', () => {
     expectRefusedUnchanged(patchYamlDocument, 'a: 1\na: 2\n', { set: [{ keyPath: 'b', value: 1 }] }, 'written twice');
     expectRefusedUnchanged(patchYamlDocument, '- a\n- b\n', { set: [{ keyPath: 'b', value: 1 }] }, 'not a mapping');
     expectRefusedUnchanged(patchYamlDocument, 'a: [\n', { set: [{ keyPath: 'b', value: 1 }] }, 'invalid YAML');
-    expectRefusedUnchanged(patchYamlDocument, 'a:\n\tb: 1\n', { set: [{ keyPath: 'b', value: 1 }] }, 'tab');
+    // Bun 1.3.9 reads a tab-indented line; Bun 1.4.3 refuses it. The editor refuses it itself, first.
+    expectRefusedUnchanged(patchYamlDocument, 'a:\n\tb: 1\n', { set: [{ keyPath: 'b', value: 1 }] }, 'a tab indents line 2');
   });
 
   it('stays linear on hostile 1 MB inputs', () => {
