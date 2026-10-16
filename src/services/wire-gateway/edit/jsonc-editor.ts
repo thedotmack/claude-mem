@@ -6,8 +6,8 @@
 // Phase 3 byte-offset scanner finds spans in that copy, and the original bytes
 // are spliced at those offsets. The file is never re-serialized.
 
-import { applyByteSplices } from '../json/byte-splices.js';
-import { JsonScanError, decodeValue, objectMembers, scanDocument, type JsonObjectMember, type JsonSpan } from '../json/scanner.js';
+import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
+import { JsonScanError, arrayElements, decodeValue, objectMembers, scanDocument, type JsonObjectMember, type JsonSpan } from '../json/scanner.js';
 import {
   assertPlainConfigValue,
   decodeConfigText,
@@ -108,9 +108,16 @@ interface ScannedJsoncDocument {
   original: Uint8Array;
   blanked: Uint8Array;
   root: JsonSpan;
+  /** Filled on first use (lineFeedPositions, indentUnitAt). */
+  lineFeeds?: number[];
+  tabIndented?: boolean;
 }
 
-/** Refuses invalid JSON/JSONC and a top level that is not an object. */
+/**
+ * Refuses invalid JSON/JSONC and a top level that is neither an object nor an
+ * array. A top-level array (VS Code's chatLanguageModels.json) is edited only
+ * through key paths that start with an index or `*` (requireAddressableRoot).
+ */
 function scanJsoncDocument(original: Uint8Array): ScannedJsoncDocument {
   let blanked: Uint8Array;
   let root: JsonSpan;
@@ -120,8 +127,47 @@ function scanJsoncDocument(original: Uint8Array): ScannedJsoncDocument {
   } catch (error) {
     throw new Error(`invalid JSON/JSONC: ${error instanceof Error ? error.message : String(error)}`);
   }
-  if (root.type !== 'object') throw new Error('the top level is not a JSON object');
+  if (root.type !== 'object' && root.type !== 'array') throw new Error('the top level is not a JSON object');
   return { original, blanked, root };
+}
+
+const ARRAY_INDEX_PATTERN = /^(?:0|[1-9][0-9]{0,14})$/;
+
+/**
+ * The array index a key-path segment names: canonical decimal only (`0`,
+ * `12`; not `01`, `-1`, `1e2`), so one segment never names two elements.
+ * A segment is an index only where the value it steps into is an array; in
+ * an object the same segment is a key.
+ */
+function arrayIndexOf(key: string): number | null {
+  return ARRAY_INDEX_PATTERN.test(key) ? Number(key) : null;
+}
+
+/** The element at `index`, or null past the end. Walks the array once, up to the index. */
+function elementAt(document: ScannedJsoncDocument, arraySpan: JsonSpan, index: number): JsonSpan | null {
+  let position = 0;
+  for (const element of arrayElements(document.blanked, arraySpan)) {
+    if (position === index) return element;
+    position++;
+  }
+  return null;
+}
+
+/** A top-level array is addressed by index or `*` only; any other key keeps the "not an object" refusal. */
+function requireAddressableRoot(document: ScannedJsoncDocument, segments: ConfigKeyPathSegment[]): void {
+  if (document.root.type === 'object') return;
+  const [first] = segments;
+  if (!first.matchesAnyKey && arrayIndexOf(first.key) === null) throw new Error('the top level is not a JSON object');
+}
+
+/** The value a key steps into from `container` (object member, last duplicate wins; or array element by index), or null. */
+function childSpanForRead(document: ScannedJsoncDocument, container: JsonSpan, key: string): JsonSpan | null {
+  if (container.type === 'object') return lastMemberNamed(document, container, key)?.value ?? null;
+  if (container.type === 'array') {
+    const index = arrayIndexOf(key);
+    return index === null ? null : elementAt(document, container, index);
+  }
+  return null;
 }
 
 /** The member a key names in an object; a duplicated key resolves to its last value, as JSON.parse does. */
@@ -148,7 +194,7 @@ function onlyMemberNamed(document: ScannedJsoncDocument, objectSpan: JsonSpan, k
   return found;
 }
 
-/** A key path match: the literal keys it took and the value span it reached. */
+/** A key path match: the literal keys it took (array indexes as decimal strings) and the value it reached. */
 export interface JsoncKeyPathMatch {
   keys: string[];
   value: unknown;
@@ -159,19 +205,25 @@ interface SpanMatch {
   span: JsonSpan;
 }
 
-function resolveSpans(document: ScannedJsoncDocument, segments: ConfigKeyPathSegment[]): SpanMatch[] {
+/** Every match of `segments`. For an edit (`refuseDuplicateKeys`), a key written twice on the way is refused. */
+function resolveSpans(document: ScannedJsoncDocument, segments: ConfigKeyPathSegment[], options: { refuseDuplicateKeys?: boolean } = {}): SpanMatch[] {
   let frontier: SpanMatch[] = [{ keys: [], span: document.root }];
   for (const segment of segments) {
     const next: SpanMatch[] = [];
     for (const match of frontier) {
-      if (match.span.type !== 'object') continue;
-      if (segment.matchesAnyKey) {
+      if (segment.matchesAnyKey && match.span.type === 'object') {
         const lastByKey = new Map<string, JsonSpan>();
-        for (const member of objectMembers(document.blanked, match.span)) lastByKey.set(member.key, member.value);
+        for (const member of objectMembers(document.blanked, match.span)) {
+          if (options.refuseDuplicateKeys && lastByKey.has(member.key)) throw new Error(`"${member.key}" is written twice in one object; edit the file by hand`);
+          lastByKey.set(member.key, member.value);
+        }
         for (const [key, span] of lastByKey) next.push({ keys: [...match.keys, key], span });
-      } else {
-        const member = lastMemberNamed(document, match.span, segment.key);
-        if (member) next.push({ keys: [...match.keys, segment.key], span: member.value });
+      } else if (segment.matchesAnyKey && match.span.type === 'array') {
+        let index = 0;
+        for (const element of arrayElements(document.blanked, match.span)) next.push({ keys: [...match.keys, String(index++)], span: element });
+      } else if (!segment.matchesAnyKey) {
+        const child = options.refuseDuplicateKeys ? childSpanForEdit(document, match.span, segment.key) : childSpanForRead(document, match.span, segment.key);
+        if (child) next.push({ keys: [...match.keys, segment.key], span: child });
       }
     }
     frontier = next;
@@ -181,64 +233,106 @@ function resolveSpans(document: ScannedJsoncDocument, segments: ConfigKeyPathSeg
 
 /**
  * Every value a key path reaches, in document order. `*` matches each key of
- * an object (used for per-provider blocks such as `provider.*.options.baseURL`).
+ * an object (used for per-provider blocks such as `provider.*.options.baseURL`)
+ * and each element of an array (`customModels.*.baseUrl`); a decimal segment
+ * names one array element (`customModels.0.baseUrl`).
  */
 export function resolveJsoncKeyPath(configBytes: Uint8Array, keyPath: string): JsoncKeyPathMatch[] {
   const text = decodeConfigText(configBytes);
   if (text.trim() === '') return [];
   const document = scanJsoncDocument(utf8Encoder.encode(text));
-  return resolveSpans(document, splitConfigKeyPath(keyPath)).map((match) => ({
+  const segments = splitConfigKeyPath(keyPath);
+  requireAddressableRoot(document, segments);
+  return resolveSpans(document, segments).map((match) => ({
     keys: match.keys,
     value: decodeValue(document.blanked, match.span),
   }));
 }
 
-/** The keys each wildcard expands to: a concrete path per existing match of the wildcard prefix. */
-function expandWildcards(document: ScannedJsoncDocument, segments: ConfigKeyPathSegment[]): string[][] {
+/** Index of the last `*` segment, or -1. */
+function lastWildcardIndex(segments: ConfigKeyPathSegment[]): number {
   let lastWildcard = -1;
   segments.forEach((segment, index) => {
     if (segment.matchesAnyKey) lastWildcard = index;
   });
-  if (lastWildcard === -1) return [segments.map((segment) => segment.key)];
-  const literalTail = segments.slice(lastWildcard + 1).map((segment) => segment.key);
-  const matches = resolveSpans(document, segments.slice(0, lastWildcard + 1));
-  // Each expanded edit re-scans the document; bound the work a hostile file can cause.
+  return lastWildcard;
+}
+
+/**
+ * Where an edit starts: one match per existing key (or array element) of the
+ * wildcard prefix, each with the literal keys still to walk; a path without
+ * `*` starts at the root. Keys written twice on the way are refused, as for
+ * any edit.
+ */
+function editStartingPoints(document: ScannedJsoncDocument, segments: ConfigKeyPathSegment[]): Array<SpanMatch & { tail: string[] }> {
+  requireAddressableRoot(document, segments);
+  const lastWildcard = lastWildcardIndex(segments);
+  if (lastWildcard === -1) return [{ keys: [], span: document.root, tail: segments.map((segment) => segment.key) }];
+  const tail = segments.slice(lastWildcard + 1).map((segment) => segment.key);
+  const matches = resolveSpans(document, segments.slice(0, lastWildcard + 1), { refuseDuplicateKeys: true });
+  // Bound the work (and the edit) a hostile file can cause.
   if (matches.length > MAX_WILDCARD_EXPANSIONS) {
     throw new Error(`a "*" key path matched ${matches.length} keys (more than ${MAX_WILDCARD_EXPANSIONS}); edit the file by hand`);
   }
-  return matches.map((match) => [...match.keys, ...literalTail]);
+  return matches.map((match) => ({ ...match, tail }));
 }
 
-function lineStartBefore(bytes: Uint8Array, position: number): number {
-  let index = position;
-  while (index > 0 && bytes[index - 1] !== LINE_FEED) index--;
-  return index;
+/** The line feeds of a document's original bytes, found once: line lookups stay O(log n) however many edits one patch makes. */
+function lineFeedPositions(document: ScannedJsoncDocument): number[] {
+  if (document.lineFeeds) return document.lineFeeds;
+  const positions: number[] = [];
+  for (let index = document.original.indexOf(LINE_FEED); index !== -1; index = document.original.indexOf(LINE_FEED, index + 1)) positions.push(index);
+  document.lineFeeds = positions;
+  return positions;
 }
 
-function indentOfLineAt(bytes: Uint8Array, position: number): string {
-  const lineStart = lineStartBefore(bytes, position);
+/** The first line feed at or after `position`, else the document length. */
+function lineFeedAtOrAfter(document: ScannedJsoncDocument, position: number): number {
+  const positions = lineFeedPositions(document);
+  let low = 0;
+  let high = positions.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (positions[middle] < position) low = middle + 1;
+    else high = middle;
+  }
+  return low < positions.length ? positions[low] : document.original.length;
+}
+
+function lineStartBefore(document: ScannedJsoncDocument, position: number): number {
+  const positions = lineFeedPositions(document);
+  let low = 0;
+  let high = positions.length;
+  while (low < high) {
+    const middle = (low + high) >>> 1;
+    if (positions[middle] < position) low = middle + 1;
+    else high = middle;
+  }
+  return low === 0 ? 0 : positions[low - 1] + 1;
+}
+
+function indentOfLineAt(document: ScannedJsoncDocument, position: number): string {
+  const bytes = document.original;
+  const lineStart = lineStartBefore(document, position);
   let index = lineStart;
   while (index < bytes.length && (bytes[index] === SPACE || bytes[index] === TAB)) index++;
   return utf8Decoder.decode(bytes.subarray(lineStart, index));
 }
 
 /** The indentation step from the line after `position`, else two spaces (a tab in a tab-indented file). */
-function indentUnitAt(bytes: Uint8Array, position: number, baseIndent: string): string {
-  let lineFeed = position;
-  while (lineFeed < bytes.length && bytes[lineFeed] !== LINE_FEED) lineFeed++;
-  if (lineFeed < bytes.length) {
-    const nextIndent = indentOfLineAt(bytes, lineFeed + 1);
+function indentUnitAt(document: ScannedJsoncDocument, position: number, baseIndent: string): string {
+  const lineFeed = lineFeedAtOrAfter(document, position);
+  if (lineFeed < document.original.length) {
+    const nextIndent = indentOfLineAt(document, lineFeed + 1);
     if (nextIndent.length > baseIndent.length && nextIndent.startsWith(baseIndent)) return nextIndent.slice(baseIndent.length);
   }
   if (baseIndent.includes('\t')) return '\t';
-  for (let index = 0; index + 1 < bytes.length; index++) {
-    if (bytes[index] === LINE_FEED && bytes[index + 1] === TAB) return '\t';
-  }
-  return '  ';
+  document.tabIndented ??= lineFeedPositions(document).some((position) => document.original[position + 1] === TAB);
+  return document.tabIndented ? '\t' : '  ';
 }
 
-function isMultiLine(bytes: Uint8Array): boolean {
-  return bytes.includes(LINE_FEED);
+function isMultiLine(document: ScannedJsoncDocument): boolean {
+  return lineFeedPositions(document).length > 0;
 }
 
 /** JSON text for `value`; on multi-line files indented to sit at `prefix` with `unit` steps (Go's MarshalIndent). */
@@ -253,12 +347,22 @@ function nestUnderKeys(keys: string[], value: unknown): unknown {
   return nested;
 }
 
+function textSplice(start: number, end: number, replacement: string): ByteSplice {
+  return { start, end, replacement: utf8Encoder.encode(replacement) };
+}
+
 function spliceText(bytes: Uint8Array, start: number, end: number, replacement: string): Uint8Array {
-  return applyByteSplices(bytes, [{ start, end, replacement: utf8Encoder.encode(replacement) }]);
+  return applyByteSplices(bytes, [textSplice(start, end, replacement)]);
+}
+
+/** The value at `span` replaced by `value`, indented where it sits. */
+function replaceValueSplice(document: ScannedJsoncDocument, span: JsonSpan, value: unknown): ByteSplice {
+  const baseIndent = indentOfLineAt(document, span.start);
+  return textSplice(span.start, span.end, renderJsonValue(value, isMultiLine(document), baseIndent, indentUnitAt(document, span.start, baseIndent)));
 }
 
 /** Add `key: value` as the first member of the object at `objectSpan`, at the detected indent. */
-function insertMemberFirst(document: ScannedJsoncDocument, objectSpan: JsonSpan, key: string, value: unknown): Uint8Array {
+function insertMemberFirstSplice(document: ScannedJsoncDocument, objectSpan: JsonSpan, key: string, value: unknown): ByteSplice {
   const { original, blanked } = document;
   const openBrace = objectSpan.start;
   const closeBrace = objectSpan.end - 1;
@@ -268,41 +372,51 @@ function insertMemberFirst(document: ScannedJsoncDocument, objectSpan: JsonSpan,
     hasMembers = true;
     break;
   }
-  if (!isMultiLine(original)) {
-    return spliceText(original, openBrace + 1, openBrace + 1, `${encodedKey}:${JSON.stringify(value)}${hasMembers ? ',' : ''}`);
+  if (!isMultiLine(document)) {
+    return textSplice(openBrace + 1, openBrace + 1, `${encodedKey}:${JSON.stringify(value)}${hasMembers ? ',' : ''}`);
   }
-  const baseIndent = indentOfLineAt(original, openBrace);
-  const unit = indentUnitAt(original, openBrace, baseIndent);
+  const baseIndent = indentOfLineAt(document, openBrace);
+  const unit = indentUnitAt(document, openBrace, baseIndent);
   const childIndent = baseIndent + unit;
   const member = `${childIndent}${encodedKey}: ${renderJsonValue(value, true, childIndent, unit)}`;
   const innerIsWhitespaceOnly = original.subarray(openBrace + 1, closeBrace).every(isJsonWhitespace);
   if (innerIsWhitespaceOnly) {
-    return spliceText(original, openBrace, closeBrace + 1, `{\n${member}\n${baseIndent}}`);
+    return textSplice(openBrace, closeBrace + 1, `{\n${member}\n${baseIndent}}`);
   }
-  return spliceText(original, openBrace + 1, openBrace + 1, `\n${member}${hasMembers ? ',' : ''}`);
+  return textSplice(openBrace + 1, openBrace + 1, `\n${member}${hasMembers ? ',' : ''}`);
 }
 
-function setAtKeys(original: Uint8Array, keys: string[], value: unknown): Uint8Array {
-  const document = scanJsoncDocument(original);
-  let current = document.root;
-  for (let index = 0; index < keys.length; index++) {
+/**
+ * The splice that sets `keys` to `value`, walking from `start` (the value at
+ * `keys[0..walkedCount)`). Nothing is re-scanned, so the splices of every
+ * match of one `*` path come from one scan and are applied together.
+ */
+function setSplice(document: ScannedJsoncDocument, start: JsonSpan, keys: string[], walkedCount: number, value: unknown): ByteSplice {
+  let current = start;
+  for (let index = walkedCount; index < keys.length; index++) {
+    if (current.type === 'array') {
+      // An array element is edited in place, never added or made: which slot a
+      // new one takes, and what would shift, is the agent's to decide.
+      const where = keys.slice(0, index).join('.') || 'the top level';
+      const elementIndex = arrayIndexOf(keys[index]);
+      if (elementIndex === null) throw new Error(`${where} is an array, so "${keys[index]}" names nothing there; edit the file by hand`);
+      const element = elementAt(document, current, elementIndex);
+      if (!element) throw new Error(`${where} has no element ${elementIndex}; edit the file by hand`);
+      if (index === keys.length - 1) return replaceValueSplice(document, element, value);
+      current = element;
+      continue;
+    }
     if (current.type !== 'object') {
-      // A scalar or array in the way of a deeper key becomes the nested object we need.
-      const replacement = renderJsonValue(nestUnderKeys(keys.slice(index), value), isMultiLine(original), indentOfLineAt(original, current.start), indentUnitAt(original, current.start, indentOfLineAt(original, current.start)));
-      return spliceText(original, current.start, current.end, replacement);
+      // A scalar in the way of a deeper key becomes the nested object we need.
+      return replaceValueSplice(document, current, nestUnderKeys(keys.slice(index), value));
     }
     const member = onlyMemberNamed(document, current, keys[index]);
-    if (!member) {
-      return insertMemberFirst(document, current, keys[index], nestUnderKeys(keys.slice(index + 1), value));
-    }
-    if (index === keys.length - 1) {
-      const baseIndent = indentOfLineAt(original, member.value.start);
-      const replacement = renderJsonValue(value, isMultiLine(original), baseIndent, indentUnitAt(original, member.value.start, baseIndent));
-      return spliceText(original, member.value.start, member.value.end, replacement);
-    }
+    if (!member) return insertMemberFirstSplice(document, current, keys[index], nestUnderKeys(keys.slice(index + 1), value));
+    if (index === keys.length - 1) return replaceValueSplice(document, member.value, value);
     current = member.value;
   }
-  throw new Error('unreachable: a key path has at least one key');
+  // `*` as the last segment: the matched value itself is replaced.
+  return replaceValueSplice(document, current, value);
 }
 
 /** Past the line end at `position` (LF or CRLF), else `position`. */
@@ -324,7 +438,7 @@ function memberRemovalRange(document: ScannedJsoncDocument, member: JsonObjectMe
   const { original, blanked } = document;
   let start = member.keySpan.start;
   let end = member.value.end;
-  const lineStart = lineStartBefore(original, start);
+  const lineStart = lineStartBefore(document, start);
   const aloneOnLine = onlyWhitespaceBetween(original, lineStart, start);
   let next = end;
   while (next < blanked.length && isJsonWhitespace(blanked[next])) next++;
@@ -353,14 +467,27 @@ function memberRemovalRange(document: ScannedJsoncDocument, member: JsonObjectMe
   return { start, end, precedingCommaPosition };
 }
 
+/** The value a key steps into for an edit: a key written twice in one object is refused. */
+function childSpanForEdit(document: ScannedJsoncDocument, container: JsonSpan, key: string): JsonSpan | null {
+  if (container.type === 'object') return onlyMemberNamed(document, container, key)?.value ?? null;
+  return childSpanForRead(document, container, key);
+}
+
 /** Remove the member at `keys`. Returns null when it is absent. */
 function deleteAtKeys(original: Uint8Array, keys: string[]): Uint8Array | null {
   const document = scanJsoncDocument(original);
   let parent: JsonSpan | null = document.root;
   for (const key of keys.slice(0, -1)) {
-    const member: JsonObjectMember | null = parent.type === 'object' ? onlyMemberNamed(document, parent, key) : null;
-    if (!member) return null;
-    parent = member.value;
+    const child = childSpanForEdit(document, parent, key);
+    if (!child) return null;
+    parent = child;
+  }
+  if (parent.type === 'array') {
+    const elementIndex = arrayIndexOf(keys[keys.length - 1]);
+    if (elementIndex !== null && elementAt(document, parent, elementIndex)) {
+      throw new Error(`removing element ${elementIndex} of ${keys.slice(0, -1).join('.') || 'the top level'} would shift the elements after it; edit the file by hand`);
+    }
+    return null;
   }
   if (parent.type !== 'object') return null;
   const member = onlyMemberNamed(document, parent, keys[keys.length - 1]);
@@ -378,8 +505,7 @@ function collapseEmptiedObject(bytes: Uint8Array, parentKeys: string[]): Uint8Ar
   const document = scanJsoncDocument(bytes);
   let parent: JsonSpan | null = document.root;
   for (const key of parentKeys) {
-    const member: JsonObjectMember | null = parent && parent.type === 'object' ? lastMemberNamed(document, parent, key) : null;
-    parent = member ? member.value : null;
+    parent = parent ? childSpanForRead(document, parent, key) : null;
   }
   if (!parent || parent.type !== 'object') return bytes;
   const inner = bytes.subarray(parent.start + 1, parent.end - 1);
@@ -409,8 +535,12 @@ function sameJsonValue(left: unknown, right: unknown): boolean {
  * missing key as the first member of its object, creating parents; a delete
  * removes the member's line, its comma and its line end, and an emptied
  * object collapses to `{}`. A `*` segment applies the edit to every existing
- * key there. Invalid JSON/JSONC and a non-object top level are refused, and
- * the edited document is re-scanned and checked before it is returned.
+ * key (or array element) there. A decimal segment steps into the array
+ * element at that index: an element is replaced or edited inside, never
+ * added, and removing one (which shifts the rest) is refused. Invalid
+ * JSON/JSONC and a top level that is not an object (or an array addressed by
+ * index) are refused, and the edited document is re-scanned and checked
+ * before it is returned.
  */
 export function patchJsoncDocument(originalBytes: Uint8Array, patch: JsoncPatch): Uint8Array {
   return editConfigTextPreservingShape(originalBytes, (text) => {
@@ -421,29 +551,47 @@ export function patchJsoncDocument(originalBytes: Uint8Array, patch: JsoncPatch)
     }
     let bytes: Uint8Array = utf8Encoder.encode(text);
     scanJsoncDocument(bytes); // Refuse invalid input before anything else.
-    const expectations: Array<{ keys: string[]; present: boolean; value?: unknown }> = [];
+    const expectations: Array<{ keys: string[]; present: boolean; value?: unknown; operation: number }> = [];
+    const operationSegments: ConfigKeyPathSegment[][] = [];
     for (const operation of patch.set ?? []) {
       assertPlainConfigValue(operation.value, operation.keyPath);
-      for (const keys of expandWildcards(scanJsoncDocument(bytes), splitConfigKeyPath(operation.keyPath))) {
-        bytes = setAtKeys(bytes, keys, operation.value);
-        expectations.push({ keys, present: true, value: operation.value });
+      const segments = splitConfigKeyPath(operation.keyPath);
+      operationSegments.push(segments);
+      // Every match of one `*` path is set from one scan: the work stays linear in the file.
+      const document = scanJsoncDocument(bytes);
+      const splices: ByteSplice[] = [];
+      for (const start of editStartingPoints(document, segments)) {
+        const keys = [...start.keys, ...start.tail];
+        splices.push(setSplice(document, start.span, keys, start.keys.length, operation.value));
+        expectations.push({ keys, present: true, value: operation.value, operation: operationSegments.length - 1 });
       }
+      bytes = applyByteSplices(bytes, splices);
     }
     for (const keyPath of patch.delete ?? []) {
-      for (const keys of expandWildcards(scanJsoncDocument(bytes), splitConfigKeyPath(keyPath))) {
+      const segments = splitConfigKeyPath(keyPath);
+      operationSegments.push(segments);
+      for (const start of editStartingPoints(scanJsoncDocument(bytes), segments)) {
+        const keys = [...start.keys, ...start.tail];
         bytes = deleteAtKeys(bytes, keys) ?? bytes;
-        expectations.push({ keys, present: false });
+        expectations.push({ keys, present: false, operation: operationSegments.length - 1 });
       }
     }
     const edited = scanJsoncDocument(bytes);
+    // What each operation's path reaches now, resolved once per operation (not once per match).
+    const reachedByOperation = operationSegments.map((segments) => {
+      const reached = new Map<string, JsonSpan>();
+      for (const match of resolveSpans(edited, segments)) reached.set(JSON.stringify(match.keys), match.span);
+      return reached;
+    });
     expectations.forEach((expectation, index) => {
       // A later edit of the same, an enclosing or an enclosed path decides instead.
-      const overriddenLater = expectations.slice(index + 1).some((later) => keysOverlap(later.keys, expectation.keys));
-      if (overriddenLater) return;
-      const [match] = resolveSpans(edited, expectation.keys.map((key) => ({ key, matchesAnyKey: false })));
+      for (let later = index + 1; later < expectations.length; later++) {
+        if (keysOverlap(expectations[later].keys, expectation.keys)) return;
+      }
+      const span = reachedByOperation[expectation.operation].get(JSON.stringify(expectation.keys));
       const holds = expectation.present
-        ? match !== undefined && sameJsonValue(decodeValue(edited.blanked, match.span), expectation.value)
-        : match === undefined;
+        ? span !== undefined && sameJsonValue(decodeValue(edited.blanked, span), expectation.value)
+        : span === undefined;
       if (!holds) throw new Error(`edited JSON does not hold the edit at ${expectation.keys.join('.')}`);
     });
     return utf8Decoder.decode(bytes);

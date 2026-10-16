@@ -126,6 +126,90 @@ describe('JSONC editor: byte-exact set → delete round trips', () => {
   });
 });
 
+describe('JSONC editor: array elements by index and `*`', () => {
+  const droidSettings = '{\n  // BYOK\n  "customModels": [\n    {\n      "model": "kimi-k2",\n      "baseUrl": "https://api.groq.com/openai/v1",\n      "provider": "generic-chat-completion-api"\n    },\n    { "model": "claude", "provider": "anthropic" } // no baseUrl\n  ],\n  "model": "custom:kimi-k2-0"\n}\n';
+
+  it('reads an element by index and every element with `*`, with index keys', () => {
+    const bytes = encoder.encode(droidSettings);
+    expect(resolveJsoncKeyPath(bytes, 'customModels.0.baseUrl')).toEqual([{ keys: ['customModels', '0', 'baseUrl'], value: 'https://api.groq.com/openai/v1' }]);
+    expect(resolveJsoncKeyPath(bytes, 'customModels.1.model')[0].value).toBe('claude');
+    expect(resolveJsoncKeyPath(bytes, 'customModels.2.model')).toEqual([]);
+    expect(resolveJsoncKeyPath(bytes, 'customModels.*.provider').map((match) => match.keys)).toEqual([
+      ['customModels', '0', 'provider'],
+      ['customModels', '1', 'provider'],
+    ]);
+    // Not an index: no match (a read never throws for it).
+    for (const keyPath of ['customModels.01.model', 'customModels.-1.model', 'customModels.1e0.model', 'customModels.model']) {
+      expect(resolveJsoncKeyPath(bytes, keyPath)).toEqual([]);
+    }
+    // In an object a decimal segment is a key.
+    expect(resolveJsoncKeyPath(encoder.encode('{"a":{"0":"key"}}'), 'a.0')[0].value).toBe('key');
+  });
+
+  it('round-trips byte for byte: a replaced value, a member added inside an element, and every element via `*`', () => {
+    const replaced = patchJsonc(droidSettings, { set: [{ keyPath: 'customModels.0.baseUrl', value: 'http://127.0.0.1:37677/r/droid-kimi-k2/openai/v1' }] });
+    expect(replaced).toBe(droidSettings.replace('https://api.groq.com/openai/v1', 'http://127.0.0.1:37677/r/droid-kimi-k2/openai/v1'));
+    // Setting it back to the old value is the field-by-field restore.
+    expect(patchJsonc(replaced, { set: [{ keyPath: 'customModels.0.baseUrl', value: 'https://api.groq.com/openai/v1' }] })).toBe(droidSettings);
+    const added = expectSetThenDeleteGivesBackOriginal(droidSettings, 'customModels.1.baseUrl', 'https://x.example.com');
+    expect(added).toContain('    {\n      "baseUrl": "https://x.example.com", "model": "claude"');
+    const everyElement = expectSetThenDeleteGivesBackOriginal(droidSettings, 'customModels.*.noImageSupport', true);
+    expect(resolveJsoncKeyPath(encoder.encode(everyElement), 'customModels.*.noImageSupport').map((match) => match.value)).toEqual([true, true]);
+    const crlf = droidSettings.replaceAll('\n', '\r\n');
+    expect(expectSetThenDeleteGivesBackOriginal(crlf, 'customModels.0.extra', 1)).toContain('\r\n      "extra": 1,\r\n');
+    expectSetThenDeleteGivesBackOriginal(`\uFEFF${droidSettings}`, 'customModels.1.baseUrl', 'http://127.0.0.1:1/r/x');
+    // A whole element is replaced in place.
+    expect(patchJsonc('{"a":[1, 2 ,3]}', { set: [{ keyPath: 'a.1', value: { b: true } }] })).toBe('{"a":[1, {"b":true} ,3]}');
+  });
+
+  it('edits a top-level array (VS Code chatLanguageModels.json) through index and `*` paths only', () => {
+    const groups = '[\n  // mine\n  {\n    "vendor": "customendpoint",\n    "name": "work",\n    "models": [\n      { "id": "m1", "url": "https://llm.example.com/v1/chat/completions" },\n      { "id": "m2", "url": "https://llm.example.com/v1/chat/completions" }\n    ]\n  }\n]\n';
+    expect(resolveJsoncKeyPath(encoder.encode(groups), '*.models.*.url').map((match) => match.keys.join('.'))).toEqual(['0.models.0.url', '0.models.1.url']);
+    expectSetThenDeleteGivesBackOriginal(groups, '0.models.1.toolCalling', true);
+    const one = patchJsonc(groups, { set: [{ keyPath: '0.models.1.url', value: 'http://127.0.0.1:37677/r/vscode-chat-work-m2/v1/chat/completions' }] });
+    expect(one).toContain('{ "id": "m2", "url": "http://127.0.0.1:37677/r/vscode-chat-work-m2/v1/chat/completions" }');
+    expect(patchJsonc(one, { set: [{ keyPath: '0.models.1.url', value: 'https://llm.example.com/v1/chat/completions' }] })).toBe(groups);
+    const wired = patchJsonc(groups, { set: [{ keyPath: '*.models.*.url', value: 'http://127.0.0.1:1/r/x' }] });
+    expect(wired.match(/http:\/\/127\.0\.0\.1:1\/r\/x/g)).toHaveLength(2);
+    expect(wired).toContain('// mine');
+    expect(() => resolveJsoncKeyPath(encoder.encode(groups), 'models')).toThrow('the top level is not a JSON object');
+    expect(() => patchJsonc(groups, { set: [{ keyPath: 'models', value: 1 }] })).toThrow('the top level is not a JSON object');
+  });
+
+  it('refuses ambiguous edits unchanged: a missing element, a non-index into an array, removing an element', () => {
+    const refusals: Array<[string, JsoncPatch, RegExp]> = [
+      ['{"a":[{"x":1}]}', { set: [{ keyPath: 'a.1.x', value: 2 }] }, /no element 1/],
+      ['{"a":[{"x":1}]}', { set: [{ keyPath: 'a.01.x', value: 2 }] }, /is an array, so "01" names nothing/],
+      ['{"a":[{"x":1}]}', { set: [{ keyPath: 'a.x', value: 2 }] }, /is an array, so "x" names nothing/],
+      ['{"a":[{"x":1}]}', { delete: ['a.0'] }, /would shift the elements after it/],
+      ['[{"x":1}]', { delete: ['0'] }, /would shift the elements after it/],
+      ['[{"x":1}]', { set: [{ keyPath: '1', value: {} }] }, /no element 1/],
+      ['{"p":{"a":{},"a":{}}}', { set: [{ keyPath: 'p.*.x', value: 1 }] }, /written twice/],
+    ];
+    for (const [input, patch, message] of refusals) {
+      const bytes = encoder.encode(input);
+      expect(() => patchJsoncDocument(bytes, patch)).toThrow(message);
+      expect(decoder.decode(bytes)).toBe(input);
+    }
+    // Deleting under a missing element is a no-op, as for a missing key.
+    expect(patchJsonc('{"a":[{"x":1}]}', { delete: ['a.3.x', 'a.y'] })).toBe('{"a":[{"x":1}]}');
+  });
+
+  it('stays linear on hostile 1 MB arrays', () => {
+    const smallElements = `{"a":[${'{"x":1},'.repeat(ONE_MEGABYTE / 8)}{"x":1}]}`;
+    expectWithinBudget('index near the end of a long array', () => patchJsonc(smallElements, { set: [{ keyPath: `a.${ONE_MEGABYTE / 8}.x`, value: 2 }] }));
+    expectWithinBudget('index past the end of a long array', () => patchJsonc(smallElements, { set: [{ keyPath: 'a.999999999999999.x', value: 2 }] }));
+    expectWithinBudget('read every element', () => resolveJsoncKeyPath(encoder.encode(smallElements), 'a.*.x'));
+    expect(() => patchJsonc(smallElements, { set: [{ keyPath: 'a.*.x', value: 2 }] })).toThrow('edit the file by hand');
+    const elementCount = MAX_WILDCARD_EXPANSIONS;
+    const bigElements = `{"a":[${Array.from({ length: elementCount }, () => `{"pad":"${'p'.repeat(Math.floor(ONE_MEGABYTE / elementCount) - 12)}"}`).join(',')}]}`;
+    expectWithinBudget('`*` set over 1000 elements of 1 KB', () => patchJsonc(bigElements, { set: [{ keyPath: 'a.*.x', value: 1 }] }));
+    const bigMembers = `{"p":{${Array.from({ length: elementCount }, (_, index) => `"k${index}":{"pad":"${'p'.repeat(Math.floor(ONE_MEGABYTE / elementCount) - 20)}"}`).join(',\n')}}}`;
+    expectWithinBudget('`*` set over 1000 object members of 1 KB', () => patchJsonc(bigMembers, { set: [{ keyPath: 'p.*.x', value: 1 }] }));
+    expectWithinBudget('top-level array `*`', () => patchJsonc(`[${'[],'.repeat(ONE_MEGABYTE / 3)}[]]`, { set: [{ keyPath: '*.x', value: 1 }] }));
+  });
+});
+
 describe('.env editor', () => {
   function patchEnv(text: string, patch: Parameters<typeof patchEnvDocument>[1]): string {
     return decoder.decode(patchEnvDocument(encoder.encode(text), patch));

@@ -20,6 +20,10 @@
 //   kimi         [providers.<id>] base_url (magpie kimi.go:209-212)
 //   zed          language_models.openai_compatible.<id>.api_url (magpie zed.go)
 //   hermes       providers.<id>.base_url (magpie hermes.go:267-277)
+//   droid        customModels[<i>].baseUrl in ~/.factory/settings.json (magpie droid.go:3-21,
+//                40-41, 134-143, 236-241)
+//   vscode-chat  [<i>].models[<j>].url of customendpoint/customoai groups in
+//                chatLanguageModels.json (magpie vscode.go:3-29, 57-63, 124-147, 274-277)
 //   aider        openai-api-base (magpie plugin example aider.agent.js)
 //   antigravity-cli, cursor-private-inference: env only, through `wire run`
 //                (magpie agy.go:38-46, cursorlocal.go:214-230)
@@ -31,6 +35,7 @@
 import { join } from 'path';
 import { KIMI_MARKER_BEGIN } from '../../integrations/KimiHooksInstaller.js';
 import { readConfigFileBytes } from '../edit/config-file.js';
+import { resolveJsoncKeyPath } from '../edit/jsonc-editor.js';
 import { isPlainObjectValue } from '../edit/text-shape.js';
 import { joinConfigKeyPath, readConfigValue } from '../wiring/config-document.js';
 import { directoryFromEnv, pathExists, xdgConfigHome, xdgDataHome } from './agent-paths.js';
@@ -555,6 +560,119 @@ const hermes: AgentDescriptor = {
 };
 
 // ---------------------------------------------------------------------------
+// Droid (Factory)
+
+function factoryDirectory(environment: AgentEnvironment): string {
+  // FACTORY_HOME_OVERRIDE replaces the home .factory sits in (magpie droid.go:4, 135-140).
+  return join(directoryFromEnv(environment, 'FACTORY_HOME_OVERRIDE') ?? environment.home, '.factory');
+}
+
+/** A custom model's `provider` → the API droid speaks to its baseUrl (magpie droid.go:5-7, 68-76). */
+const DROID_PROTOCOL_BY_PROVIDER: Record<string, ResolvedBaseUrlTarget['protocol']> = {
+  anthropic: 'anthropic',
+  openai: 'openai-responses',
+  'generic-chat-completion-api': 'openai-chat',
+};
+
+/** Credential prefixes of a subscription sign-in (plan D4): a Claude OAuth token, a ChatGPT JWT. */
+const SUBSCRIPTION_CREDENTIAL_PREFIXES = [SUBSCRIPTION_TOKEN_PREFIX, 'eyJ'];
+
+/**
+ * Droid's own (BYOK) models are the customModels array of settings.json; each
+ * entry with a baseUrl gets a route. Factory-hosted models are not in it and
+ * are never touched. The legacy config.json custom_models is left alone, as
+ * magpie does (droid.go:8-9). An entry is addressed by its index, so an entry
+ * moved before disconnect is reported `replaced` rather than edited.
+ */
+const droid: AgentDescriptor = {
+  id: 'droid',
+  name: 'Droid',
+  aliases: ['factory', 'factory-droid'],
+  userAgentPrefixes: ['factory-cli'],
+  detect: { bins: ['droid'], directories: (environment) => [factoryDirectory(environment)] },
+  files: [{ key: 'settings', format: 'json', candidatePaths: (environment) => [join(factoryDirectory(environment), 'settings.json')] }],
+  targets: [],
+  resolveTargets(context) {
+    const customModels = context.readValue('settings', 'customModels');
+    if (!Array.isArray(customModels)) return [];
+    const targets: ResolvedBaseUrlTarget[] = [];
+    customModels.forEach((entry: unknown, index) => {
+      if (!isPlainObjectValue(entry) || !stringValue(entry.baseUrl)) return;
+      const provider = stringValue(entry.provider);
+      targets.push({
+        file: 'settings',
+        keyPath: joinConfigKeyPath(['customModels', String(index), 'baseUrl']),
+        protocol: (provider && DROID_PROTOCOL_BY_PROVIDER[provider]) || 'per-provider',
+        providerLabel: stringValue(entry.displayName) ?? stringValue(entry.model) ?? String(index),
+      });
+    });
+    return targets;
+  },
+  detectSubscription(context, targets) {
+    for (const target of targets) {
+      const apiKey = context.readValue('settings', target.keyPath.replace(/baseUrl$/, 'apiKey'));
+      if (typeof apiKey === 'string' && SUBSCRIPTION_CREDENTIAL_PREFIXES.some((prefix) => apiKey.startsWith(prefix))) {
+        return `Droid's custom model "${target.providerLabel}" uses a subscription sign-in token as its apiKey`;
+      }
+    }
+    return null;
+  },
+};
+
+// ---------------------------------------------------------------------------
+// VS Code Chat (Copilot Chat's Custom Endpoint / OpenAI Compatible models)
+
+function vscodeUserDirectory(environment: AgentEnvironment): string {
+  // magpie vscode.go:116-138: Application Support on macOS, Roaming AppData on Windows, XDG on Linux.
+  if (environment.platform === 'darwin') return join(environment.home, 'Library', 'Application Support', 'Code', 'User');
+  if (environment.platform === 'win32') {
+    return join(directoryFromEnv(environment, 'APPDATA') ?? join(environment.home, 'AppData', 'Roaming'), 'Code', 'User');
+  }
+  return join(xdgConfigHome(environment), 'Code', 'User');
+}
+
+/** Group vendors whose models carry their own `url` (magpie vscode.go:54-63). */
+const VSCODE_URL_VENDORS = new Set(['customendpoint', 'customoai']);
+
+/**
+ * chatLanguageModels.json is a JSONC array of model groups (magpie
+ * vscode.go:3-9, edit/jsonarray.go:12-16); every model of a Custom Endpoint
+ * or OpenAI Compatible group with a `url` gets a route. Copilot's own models
+ * are not in it and are never touched. Only the default profile's file of VS
+ * Code Stable is wired; other profiles and VS Code Insiders keep their own
+ * files (magpie vscode.go:361-401) and are not routed.
+ */
+const vscodeChat: AgentDescriptor = {
+  id: 'vscode-chat',
+  name: 'VS Code Chat',
+  aliases: ['vscode', 'vs-code', 'copilot-chat'],
+  userAgentPrefixes: ['githubcopilotchat'],
+  detect: { bins: ['code'], directories: (environment) => [vscodeUserDirectory(environment)] },
+  files: [{ key: 'models', format: 'json', candidatePaths: (environment) => [join(vscodeUserDirectory(environment), 'chatLanguageModels.json')] }],
+  targets: [],
+  resolveTargets(context) {
+    const bytes = context.fileBytes('models');
+    if (bytes === null) return [];
+    const targets: ResolvedBaseUrlTarget[] = [];
+    for (const { keys, value: group } of resolveJsoncKeyPath(bytes, '*')) {
+      if (!isPlainObjectValue(group) || typeof group.vendor !== 'string' || !VSCODE_URL_VENDORS.has(group.vendor) || !Array.isArray(group.models)) continue;
+      // magpie writes Custom Endpoint groups with apiType "chat-completions" (vscode.go:447).
+      const protocol: ResolvedBaseUrlTarget['protocol'] = group.apiType === undefined || group.apiType === 'chat-completions' ? 'openai-chat' : 'per-provider';
+      group.models.forEach((model: unknown, modelIndex) => {
+        if (!isPlainObjectValue(model) || !stringValue(model.url)) return;
+        targets.push({
+          file: 'models',
+          keyPath: joinConfigKeyPath([...keys, 'models', String(modelIndex), 'url']),
+          protocol,
+          providerLabel: `${stringValue(group.name) ?? group.vendor}-${stringValue(model.id) ?? String(modelIndex)}`,
+        });
+      });
+    }
+    return targets;
+  },
+};
+
+// ---------------------------------------------------------------------------
 // Aider
 
 const aider: AgentDescriptor = {
@@ -622,6 +740,8 @@ export const BUILT_IN_AGENT_DESCRIPTORS: readonly AgentDescriptor[] = [
   kimi,
   zed,
   hermes,
+  droid,
+  vscodeChat,
   aider,
   antigravityCli,
   cursorPrivateInference,
@@ -637,8 +757,6 @@ export const AGENTS_WITHOUT_DESCRIPTORS: readonly UnroutableAgentNote[] = [
   { id: 'windsurf', reason: 'Windsurf/Devin talk Connect/protobuf to their backend' },
   { id: 'warp', reason: 'Warp has no endpoint setting' },
   { id: 'goose', reason: 'Goose\'s built-in provider host keys are unconfirmed; add a custom provider and route it by hand' },
-  { id: 'droid', reason: 'Droid keeps BYOK endpoints in the customModels array, which the editors do not address by index yet' },
-  { id: 'vscode-chat', reason: 'VS Code keeps custom endpoints in the chatLanguageModels.json array, which the editors do not address by index yet' },
   { id: 'kilo', reason: 'Kilo\'s base-URL key is unconfirmed' },
   { id: 'claude-desktop', reason: 'Claude Desktop\'s third-party gateway config lives in a generated config library entry; set it by hand' },
   { id: 'roo-code', reason: 'not described yet' },

@@ -115,7 +115,7 @@ describe('user agent descriptors', () => {
     const registry = loadAgentRegistry({ userAgentsDirectory: directory });
     expect(requireAgentDescriptor(registry, 'my-agent').userDescriptorPath).toBe(join(directory, 'good.json'));
     expect(requireAgentDescriptor(registry, 'CLAUDE').id).toBe('claude-code');
-    expect(() => requireAgentDescriptor(registry, 'droid')).toThrow(/droid has no wiring descriptor.*wire routes add/s);
+    expect(() => requireAgentDescriptor(registry, 'kilo')).toThrow(/kilo has no wiring descriptor.*wire routes add/s);
     expect(() => requireAgentDescriptor(registry, 'nope')).toThrow(/Unknown agent "nope"/);
   });
 

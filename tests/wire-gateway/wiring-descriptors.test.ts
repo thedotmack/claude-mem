@@ -50,6 +50,15 @@ interface RoundTripCase {
   helpers?: { readAgentVersion: (executable: string) => string | null };
 }
 
+/** Where VS Code Stable keeps its User folder under the sandbox home on this platform (no APPDATA / XDG_CONFIG_HOME set). */
+const VSCODE_USER_DIRECTORY = process.platform === 'darwin'
+  ? 'Library/Application Support/Code/User'
+  : process.platform === 'win32' ? 'AppData/Roaming/Code/User' : '.config/Code/User';
+
+const DROID_SETTINGS = '{\n  // droid settings\n  "sessionDefaultSettings": { "model": "custom:Kimi-K2-[Groq]-0" },\n  "customModels": [\n    {\n      "model": "moonshotai/kimi-k2-instruct",\n      "displayName": "Kimi K2 [Groq]",\n      "baseUrl": "https://api.groq.com/openai/v1",\n      "apiKey": "gsk-test",\n      "provider": "generic-chat-completion-api"\n    },\n    { "model": "claude-sonnet-4-5", "displayName": "Claude via proxy", "baseUrl": "https://proxy.example.com", "apiKey": "sk-ant-api03-x", "provider": "anthropic" },\n    { "model": "no-url", "provider": "openai" } // no baseUrl: not routed\n  ]\n}\n';
+
+const VSCODE_CHAT_LANGUAGE_MODELS = '[\r\n\t// my models\r\n\t{\r\n\t\t"vendor": "ollama",\r\n\t\t"name": "local"\r\n\t},\r\n\t{\r\n\t\t"vendor": "customendpoint",\r\n\t\t"name": "work",\r\n\t\t"apiType": "chat-completions",\r\n\t\t"models": [\r\n\t\t\t{ "id": "m1", "name": "M1", "url": "https://llm.example.com/v1/chat/completions", "toolCalling": true },\r\n\t\t\t{ "id": "m2", "url": "https://other.example.com/openai/v1/chat/completions" },\r\n\t\t]\r\n\t}\r\n]\r\n';
+
 const ROUND_TRIP_CASES: RoundTripCase[] = [
   {
     agentId: 'claude-code',
@@ -165,6 +174,39 @@ const ROUND_TRIP_CASES: RoundTripCase[] = [
     expectRoutes: { 'hermes-local': 'http://localhost:8000' },
   },
   {
+    agentId: 'droid',
+    files: { '.factory/settings.json': DROID_SETTINGS },
+    expectAfterConnect: {
+      '.factory/settings.json': [
+        `"baseUrl": "${TEST_GATEWAY_ORIGIN}/r/droid-kimi-k2-groq/openai/v1"`,
+        `"baseUrl": "${TEST_GATEWAY_ORIGIN}/r/droid-claude-via-proxy"`,
+        '{ "model": "no-url", "provider": "openai" } // no baseUrl: not routed',
+        '// droid settings',
+      ],
+    },
+    expectRoutes: { 'droid-kimi-k2-groq': 'https://api.groq.com', 'droid-claude-via-proxy': 'https://proxy.example.com' },
+  },
+  {
+    agentId: 'droid',
+    // FACTORY_HOME_OVERRIDE moves .factory (magpie droid.go:4).
+    env: { FACTORY_HOME_OVERRIDE: '__HOME__/factory-home' },
+    files: { 'factory-home/.factory/settings.json': '{"customModels":[{"model":"m","baseUrl":"https://api.example.com/v1","provider":"openai"}]}' },
+    expectAfterConnect: { 'factory-home/.factory/settings.json': [`"baseUrl":"${TEST_GATEWAY_ORIGIN}/r/droid-m/v1"`] },
+    expectRoutes: { 'droid-m': 'https://api.example.com' },
+  },
+  {
+    agentId: 'vscode-chat',
+    files: { [`${VSCODE_USER_DIRECTORY}/chatLanguageModels.json`]: VSCODE_CHAT_LANGUAGE_MODELS },
+    expectAfterConnect: {
+      [`${VSCODE_USER_DIRECTORY}/chatLanguageModels.json`]: [
+        `"url": "${TEST_GATEWAY_ORIGIN}/r/vscode-chat-work-m1/v1/chat/completions", "toolCalling": true },\r\n`,
+        `"url": "${TEST_GATEWAY_ORIGIN}/r/vscode-chat-work-m2/openai/v1/chat/completions" },\r\n`,
+        '\t// my models\r\n\t{\r\n\t\t"vendor": "ollama",\r\n\t\t"name": "local"\r\n\t},',
+      ],
+    },
+    expectRoutes: { 'vscode-chat-work-m1': 'https://llm.example.com', 'vscode-chat-work-m2': 'https://other.example.com' },
+  },
+  {
     agentId: 'aider',
     files: { '.aider.conf.yml': '## aider\nmodel: gpt-5\ndark-mode: true\n' },
     expectAfterConnect: { '.aider.conf.yml': [`openai-api-base: ${TEST_GATEWAY_ORIGIN}/r/aider/v1`, '## aider'] },
@@ -176,6 +218,8 @@ describe('wire connect → disconnect round trips (every config descriptor)', ()
   for (const testCase of ROUND_TRIP_CASES) {
     it(`${testCase.agentId}: ${Object.keys(testCase.files).join(', ')} come back byte for byte`, async () => {
       const box = sandbox(testCase.agentId, testCase.env);
+      // `__HOME__` in an env value is the sandbox home (known only once the sandbox exists).
+      for (const [name, value] of Object.entries(box.env)) if (value?.includes('__HOME__')) box.env[name] = value.replace('__HOME__', box.home);
       for (const [path, text] of Object.entries(testCase.files)) box.write(path, text);
       const before = snapshotHome(box.home);
       const sideEffects = recordingSideEffects();
@@ -246,6 +290,21 @@ describe('disconnect after the user edited the file', () => {
     expect(after).not.toContain('CLAUDE_CODE_GATEWAY_HINT_HEADERS');
   });
 
+  it('an array element moved before disconnect is reported replaced, never edited by its old index', async () => {
+    const box = sandbox('droid-reordered');
+    const original = '{"customModels":[{"model":"a","baseUrl":"https://a.example.com/v1","provider":"openai"}]}';
+    box.write('.factory/settings.json', original);
+    await connectAgent(descriptor('droid'), box.options());
+    const connected = box.read('.factory/settings.json')!;
+    // The user puts a new model in front: ours is now element 1.
+    const reordered = connected.replace('"customModels":[', '"customModels":[{"model":"b","baseUrl":"https://b.example.com/v1","provider":"openai"},');
+    box.write('.factory/settings.json', reordered);
+
+    const result = await disconnectAgent('droid', box.options());
+    expect(result.fields).toEqual([{ filePath: box.path('.factory/settings.json'), keyPath: 'customModels.0.baseUrl', outcome: 'replaced', currentValue: 'https://b.example.com/v1' }]);
+    expect(box.read('.factory/settings.json')).toBe(reordered);
+  });
+
   it('restores a TOML key field by field and keeps a note the user added', async () => {
     const box = sandbox('codex-table');
     const original = 'model_provider = "proxy"\n\n[model_providers.proxy]\nname = "Proxy"\nbase_url = "https://proxy.example.com/v1"\n';
@@ -297,6 +356,11 @@ describe('subscription sign-ins are refused and nothing is changed (D4)', () => 
       agentId: 'qwen',
       files: { '.qwen/settings.json': '{"security":{"auth":{"selectedType":"qwen-oauth","baseUrl":"https://x.example.com/v1"}}}' },
       message: /Qwen OAuth/,
+    },
+    {
+      agentId: 'droid',
+      files: { '.factory/settings.json': '{"customModels":[{"model":"claude","displayName":"Mine","baseUrl":"https://api.anthropic.com","apiKey":"sk-ant-oat01-z","provider":"anthropic"}]}' },
+      message: /"Mine" uses a subscription sign-in token/,
     },
   ];
   for (const refusal of refusalCases) {
