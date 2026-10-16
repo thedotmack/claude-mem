@@ -66,6 +66,34 @@ export function parseRawHttpResponse(raw: Buffer): DirectHttpResponse | null {
   return { statusCode: Number(statusMatch[1]), bodyText: decoded.toString('utf-8') };
 }
 
+/**
+ * A fetch response's body as text, or null once it passes `maximumResponseBytes`
+ * (the rest is cancelled, never buffered). A declared Content-Length over the
+ * cap is refused before any byte is read.
+ */
+export async function readResponseTextWithinLimit(response: Response, maximumResponseBytes: number): Promise<string | null> {
+  const declaredLength = Number(response.headers.get('content-length') ?? NaN);
+  if (Number.isFinite(declaredLength) && declaredLength > maximumResponseBytes) {
+    await response.body?.cancel().catch(() => undefined);
+    return null;
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let receivedBytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    receivedBytes += value.byteLength;
+    if (receivedBytes > maximumResponseBytes) {
+      await reader.cancel().catch(() => undefined);
+      return null;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf-8');
+}
+
 async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<DirectHttpResponse | null> {
   try {
     const response = await fetch(url, {
@@ -75,7 +103,8 @@ async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<D
       redirect: 'manual',
       signal: AbortSignal.timeout(request.timeoutMs),
     });
-    return { statusCode: response.status, bodyText: await response.text() };
+    const bodyText = await readResponseTextWithinLimit(response, request.maximumResponseBytes ?? DIRECT_HTTP_DEFAULT_MAXIMUM_RESPONSE_BYTES);
+    return bodyText === null ? null : { statusCode: response.status, bodyText };
   } catch {
     // Unreachable, refused or timed out: no answer.
     return null;
@@ -85,7 +114,7 @@ async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<D
 /**
  * One HTTP/1.1 request, never through a proxy (for http://). Resolves null
  * when nothing answers in time, the answer is not HTTP, or it is larger than
- * the cap — never throws.
+ * the cap (https:// too) — never throws.
  */
 export function requestDirectly(request: DirectHttpRequest): Promise<DirectHttpResponse | null> {
   let url: URL;

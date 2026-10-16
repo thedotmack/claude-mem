@@ -422,6 +422,12 @@ export async function fetchRunningWireGatewayStatus(origin: string): Promise<Wir
   return answer?.statusCode === 200 ? answer.body : null;
 }
 
+/** Where `wire status` asks: the running gateway's own saved address, the configured one only when none runs. */
+export function wireStatusGatewayOrigin(config: Pick<WireGatewayConfig, 'host' | 'port'>, runningState: Pick<WireGatewayRuntimeState, 'host' | 'port'> | null): string {
+  const { host, port } = runningState ?? config;
+  return `http://${formatHostForUrl(host)}:${port}`;
+}
+
 /**
  * `claude-mem wire status`: the same report, with every probe waited for (a
  * CLI is not a request path). lastSeen and capture counters come from the
@@ -430,7 +436,7 @@ export async function fetchRunningWireGatewayStatus(origin: string): Promise<Wir
 async function wireStatusReportForCli(config: WireGatewayConfig): Promise<WireStatusReport> {
   const running = readRunningWireGatewayPid();
   const state = running ? readWireGatewayRuntimeState() : null;
-  const origin = `http://${formatHostForUrl(config.host)}:${config.port}`;
+  const origin = wireStatusGatewayOrigin(config, state);
   const daemonReport = running ? await fetchRunningWireGatewayStatus(origin) : null;
   let lastSeen: LastSeenFileReadResult = readLastSeenFile();
   if (daemonReport) {

@@ -20,6 +20,7 @@
 // 2026 yetone. A file that cannot be read gives `unknown`, never `ok`.
 
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
+import { isSecretFieldName } from '../../../utils/redaction.js';
 import { readConfigFileBytes } from '../edit/config-file.js';
 import { readWireGatewayRoutesFile, type WireGatewayCaptureSource, type WireGatewayRoute } from '../routes.js';
 import type { AgentDescriptor, AgentEnvironment, AgentLastUsedDescriptor } from '../agents/types.js';
@@ -217,6 +218,37 @@ function withoutCredentials(proxyUrl: string): string {
   }
 }
 
+const MASKED_URL_SECRET = '***';
+
+/**
+ * A URL a config holds, safe to print and to serve from GET /wire/status: its
+ * userinfo (`user:password@`) and secret-named query values (`?api_key=`,
+ * `?token=`) become `***`. Anything that is not a URL string is returned as is.
+ */
+export function withUrlSecretsMasked<T>(value: T): T | string {
+  if (typeof value !== 'string' || value === '') return value;
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    // Not a URL: a base-URL key holds nothing else worth masking.
+    return value;
+  }
+  let masked = false;
+  if (url.username || url.password) {
+    url.username = MASKED_URL_SECRET;
+    url.password = '';
+    masked = true;
+  }
+  for (const name of new Set(url.searchParams.keys())) {
+    if (!isSecretFieldName(name)) continue;
+    url.searchParams.set(name, MASKED_URL_SECRET);
+    masked = true;
+  }
+  // Re-serialize only when something was masked, so a clean value reads exactly as written.
+  return masked ? url.href : value;
+}
+
 function describeValue(value: unknown): string {
   return value === undefined ? '(absent)' : JSON.stringify(value);
 }
@@ -327,7 +359,7 @@ async function evaluateConnectedAgent(
         } else if (verdict.state === 'pending') {
           pendingDetail ??= verdict.detail;
         } else {
-          replacedFinding ??= { filePath: file.path, keyPath, now: current, want: written };
+          replacedFinding ??= { filePath: file.path, keyPath, now: withUrlSecretsMasked(current), want: withUrlSecretsMasked(written) };
         }
       }
     }
@@ -347,7 +379,7 @@ async function evaluateConnectedAgent(
     try {
       for (const target of readCurrentBaseUrlTargets(descriptor, inputs.environment)) {
         if (recordedKeys.has(`${target.filePath}\u0000${target.keyPath}`)) continue;
-        const field = { filePath: target.filePath, keyPath: target.keyPath, now: target.value };
+        const field = { filePath: target.filePath, keyPath: target.keyPath, now: withUrlSecretsMasked(target.value) };
         if (typeof target.value === 'string' && target.value !== '') {
           const verdict = await pointsAtGateway(context, target.value, knownRouteIds);
           if (verdict.state === 'reaches') {
@@ -358,11 +390,11 @@ async function evaluateConnectedAgent(
             pendingDetail ??= verdict.detail;
             continue;
           }
-          unwiredFinding = { detail: `${target.filePath}: ${target.keyPath} sends ${name} to ${target.value}, not through the gateway`, field };
+          unwiredFinding = { detail: `${target.filePath}: ${target.keyPath} sends ${name} to ${withUrlSecretsMasked(target.value)}, not through the gateway`, field };
           break;
         }
         if (target.value === undefined && target.defaultUpstream) {
-          unwiredFinding = { detail: `${target.filePath}: ${target.keyPath} is not set, so ${name} uses its built-in endpoint (${target.defaultUpstream}), not the gateway`, field };
+          unwiredFinding = { detail: `${target.filePath}: ${target.keyPath} is not set, so ${name} uses its built-in endpoint (${withUrlSecretsMasked(target.defaultUpstream)}), not the gateway`, field };
           break;
         }
       }

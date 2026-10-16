@@ -14,9 +14,10 @@
 import { spawn } from 'child_process';
 import { isIP } from 'net';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
-import { requestDirectly } from '../direct-http.js';
+import { readResponseTextWithinLimit, requestDirectly } from '../direct-http.js';
 import { WIRE_GATEWAY_IDENTITY_NAME } from '../router.js';
 import { isLoopbackAddress } from '../network-guard.js';
+import { formatHostForUrl } from '../../../shared/worker-url.js';
 
 /** An answer is reused this long; older ones are asked again (magpie reachAge). */
 export const PROBE_ANSWER_MAXIMUM_AGE_MS = 20_000;
@@ -137,14 +138,15 @@ export async function probeIdentityThroughProxy(baseUrl: string, proxyUrl: strin
   } catch {
     return false;
   }
-  if (proxy.protocol.startsWith('socks')) proxy = new URL(`http://${proxy.host}`);
+  if (proxy.protocol.startsWith('socks')) proxy = new URL(`http://${formatHostForUrl(proxy.hostname)}${proxy.port ? `:${proxy.port}` : ''}`);
   try {
     const response = await fetch(`${baseUrl.replace(/\/+$/, '')}/`, {
       proxy: proxy.href,
       redirect: 'manual',
       signal: AbortSignal.timeout(timeoutMs),
     } as RequestInit & { proxy: string });
-    return answersAsThisGateway(response.status, await response.text());
+    const bodyText = await readResponseTextWithinLimit(response, IDENTITY_RESPONSE_MAXIMUM_BYTES);
+    return bodyText !== null && answersAsThisGateway(response.status, bodyText);
   } catch {
     // The proxy refused, timed out, or answered with something that is not us.
     return false;
@@ -270,8 +272,7 @@ export function parseScutilProxyOutput(output: string): SystemProxySettings {
   if (values.get('HTTPEnable') !== '1' || !values.get('HTTPProxy')) return { http: '' };
   const host = values.get('HTTPProxy')!;
   const port = values.get('HTTPPort');
-  const hostForUrl = isIP(host) === 6 ? `[${host}]` : host;
-  return { http: `http://${hostForUrl}${port ? `:${port}` : ''}` };
+  return { http: `http://${formatHostForUrl(host)}${port ? `:${port}` : ''}` };
 }
 
 const SCUTIL_TIMEOUT_MS = 2_000;

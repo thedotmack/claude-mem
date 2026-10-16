@@ -13,6 +13,7 @@ import {
   formatWireStatusReport,
   isBypassed,
   readAgentLastUsed,
+  withUrlSecretsMasked,
   type WireAgentStatus,
   type WireAgentStatusInputs,
 } from '../../src/services/wire-gateway/drift/agent-status.js';
@@ -26,7 +27,8 @@ import {
   probeLookupFor,
   proxyRouteFor,
 } from '../../src/services/wire-gateway/drift/reachability.js';
-import { parseRawHttpResponse } from '../../src/services/wire-gateway/direct-http.js';
+import { parseRawHttpResponse, readResponseTextWithinLimit } from '../../src/services/wire-gateway/direct-http.js';
+import { wireStatusGatewayOrigin } from '../../src/services/wire-gateway/WireGatewayService.js';
 import { startFakeUpstream, type FakeUpstream } from './helpers/fake-upstream.js';
 import { startWireGatewayForTest, type StartedWireGateway } from './helpers/start-wire-gateway.js';
 import { TEST_GATEWAY_ORIGIN, WiringSandbox, recordingSideEffects } from './helpers/wiring-sandbox.js';
@@ -193,6 +195,31 @@ describe('ok, replaced and unwired (ported applied_test.go TestDriftReplaced, Te
     expect(probed).toContain('https://ai.corp.example/claude-mem');
     const silent = await statusOf(box, 'codex', { probeIdentity: async (base) => base === TEST_GATEWAY_ORIGIN });
     expect(silent?.state).toBe('replaced');
+  });
+
+  it('saved provider URLs are shown with their userinfo and secret query values masked', async () => {
+    const box = codexSandbox('masked-urls');
+    await connectInSandbox(box, 'codex');
+    const wired = box.read('.codex/config.toml')!;
+    box.write('.codex/config.toml', `model_provider = "azure"\n${wired}\n[model_providers.azure]\nbase_url = "https://alice:hunter2@example.openai.azure.com/openai?api-key=sekrit-key&api-version=2024-10-01"\n`);
+    const unwired = await statusOf(box, 'codex');
+    expect(unwired?.state).toBe('unwired');
+    expect(unwired?.field?.now).toBe('https://***@example.openai.azure.com/openai?api-key=***&api-version=2024-10-01');
+    expect(unwired?.detail).toContain('https://***@example.openai.azure.com/openai?api-key=***&api-version=2024-10-01');
+
+    box.write('.codex/config.toml', 'model = "gpt-5"\nopenai_base_url = "https://bob:p%40ss@api.example.com/v1?token=abc123"\n');
+    const replaced = await statusOf(box, 'codex');
+    expect(replaced?.state).toBe('replaced');
+    expect(replaced?.field?.now).toBe('https://***@api.example.com/v1?token=***');
+
+    for (const status of [unwired!, replaced!]) {
+      const shown = `${JSON.stringify(status)}\n${formatWireStatusReport({ generatedAt: '', gateway: { origin: TEST_GATEWAY_ORIGIN, running: true }, capture: null, problems: [], agents: [status] }).join('\n')}`;
+      for (const secret of ['alice', 'hunter2', 'sekrit-key', 'bob', 'p%40ss', 'abc123']) expect(shown).not.toContain(secret);
+    }
+    // A clean value is kept exactly as written; a non-URL is left alone.
+    expect(withUrlSecretsMasked('https://api.openai.com/v1')).toBe('https://api.openai.com/v1');
+    expect(withUrlSecretsMasked('not a url')).toBe('not a url');
+    expect(withUrlSecretsMasked(undefined)).toBeUndefined();
   });
 
   it('Gemini CLI carries its trusted-folder note', async () => {
@@ -528,6 +555,53 @@ describe('identity probes against real sockets', () => {
     cleanups.push(() => brokenProxy.stop(true));
     expect(await probeIdentityThroughProxy(gateway.baseUrl, `http://127.0.0.1:${forwardingProxy.port}`)).toBe(true);
     expect(await probeIdentityThroughProxy(gateway.baseUrl, `socks5://127.0.0.1:${brokenProxy.port}`)).toBe(false);
+  });
+});
+
+describe('probe bodies are read within a byte cap', () => {
+  function endlessBody(onCancel: () => void): ReadableStream<Uint8Array> {
+    const chunk = new Uint8Array(64 * 1024).fill(0x61);
+    return new ReadableStream({ pull: (controller) => controller.enqueue(chunk), cancel: onCancel });
+  }
+
+  it('cancels an endless body past the cap, refuses a declared oversize body, and reads a small one', async () => {
+    let cancelled = false;
+    expect(await readResponseTextWithinLimit(new Response(endlessBody(() => { cancelled = true; })), 1024 * 1024)).toBeNull();
+    expect(cancelled).toBe(true);
+    const declaredLarge = new Response('{}', { headers: { 'content-length': String(10 * 1024 * 1024) } });
+    expect(await readResponseTextWithinLimit(declaredLarge, 64 * 1024)).toBeNull();
+    expect(await readResponseTextWithinLimit(new Response('{"name":"x"}'), 64 * 1024)).toBe('{"name":"x"}');
+  });
+
+  it('a proxy that answers with an endless body is not us, and is dropped at the cap, not at the timeout', async () => {
+    // Paced, so the server's own loop does not starve the client in this process.
+    const chunk = new Uint8Array(64 * 1024).fill(0x61);
+    let chunksServed = 0;
+    const endlessProxy = Bun.serve({
+      hostname: '127.0.0.1',
+      port: 0,
+      fetch: () => new Response(new ReadableStream({
+        async pull(controller) {
+          await Bun.sleep(1);
+          chunksServed++;
+          controller.enqueue(chunk);
+        },
+      }), { headers: { 'content-type': 'application/json' } }),
+    });
+    cleanups.push(() => endlessProxy.stop(true));
+    const startedAt = Date.now();
+    expect(await probeIdentityThroughProxy('http://127.0.0.1:9', `http://127.0.0.1:${endlessProxy.port}`, 10_000)).toBe(false);
+    expect(chunksServed).toBeGreaterThan(0);
+    expect(Date.now() - startedAt).toBeLessThan(5_000);
+  });
+});
+
+describe('wire status asks the running gateway where it listens', () => {
+  it('uses the running instance\'s saved host and port, the configured ones only when none runs', () => {
+    const configured = { host: '127.0.0.1', port: 37778 };
+    expect(wireStatusGatewayOrigin(configured, { host: '::1', port: 41000 })).toBe('http://[::1]:41000');
+    expect(wireStatusGatewayOrigin(configured, { host: '127.0.0.1', port: 41001 })).toBe('http://127.0.0.1:41001');
+    expect(wireStatusGatewayOrigin(configured, null)).toBe('http://127.0.0.1:37778');
   });
 });
 
