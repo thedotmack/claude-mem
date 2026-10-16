@@ -33,6 +33,61 @@ import type { ContextInput } from '../../services/context/types.js';
 import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
+import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
+import {
+  fetchTeamBrief,
+  formatTeamBrief,
+  hasShownTeamBrainDiscoveryNotice,
+  markTeamBrainDiscoveryNoticeShown,
+  teamBrainConnection,
+  teamBriefReserveChars,
+  TEAMBRAIN_DISCOVERY_LINE,
+  type TeamBrainBrief,
+  type TeamBrainResult,
+} from '../../shared/teambrain.js';
+
+/**
+ * How long SessionStart waits for the TeamBrain brief. It is asked at the
+ * start, so the wait runs alongside the local context read.
+ */
+export const TEAM_BRIEF_TIMEOUT_MS = 2_000;
+
+/** Below this much room a cut brief says too little to be worth sending. */
+const MIN_CUT_TEAM_BRIEF_CHARS = 300;
+
+/** The brief for this session, or the one line naming why there is none. */
+export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): string {
+  return result.ok
+    ? formatTeamBrief(result.value)
+    : `[claude-mem] TeamBrain brief unavailable: ${result.reason}`;
+}
+
+/**
+ * Keep the whole block inside the host's delivery limit (ContextBudget.ts):
+ * one character over and the host replaces all of it with a stub. The body is
+ * fitted with room left for the brief (teamBriefReserveChars), so this only
+ * cuts when it was not, e.g. a block rendered before the install joined. Then
+ * the brief is cut to the room `otherChars` leaves, or, with too little room
+ * to be useful, replaced by one line saying it was left out. A block with no
+ * room even for that line is logged, since nothing more can be added to it.
+ */
+export function fitTeamBriefSection(section: string, otherChars: number, limit: number = CONTEXT_OUTPUT_LIMIT): string {
+  if (!section) return '';
+  const room = limit - otherChars - 2; // the blank line that joins it to the rest
+  if (section.length <= room) return section;
+  if (room >= MIN_CUT_TEAM_BRIEF_CHARS) {
+    const cut = section.slice(0, room - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd();
+    return `${cut}…`;
+  }
+  const notices = [
+    `[claude-mem] TeamBrain brief left out: this session's context is already at the ${limit.toLocaleString('en-US')}-character limit.`,
+    '[claude-mem] TeamBrain brief left out: context full.',
+  ];
+  const notice = notices.find(candidate => candidate.length <= room);
+  if (notice) return notice;
+  logger.warn('HOOK', 'TeamBrain brief left out: the SessionStart block has no room left even for a notice', { room, limit });
+  return '';
+}
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
 // server, so SessionStart reads from it too, straight from this hook process.
@@ -102,6 +157,13 @@ export const contextHandler: EventHandler = {
     const settings = loadFromFileOnce();
     const memoryInstructions = settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED === 'false' ? '' : MEMORY_PLUGIN_INSTRUCTIONS;
     emptyResult.hookSpecificOutput!.additionalContext = memoryInstructions;
+
+    // TeamBrain brief: a per-session notice, never part of the cacheable
+    // context body. Asked now so its budget overlaps the local context read;
+    // the request never rejects, and it is not asked at all without a team.
+    const teamBrain = teamBrainConnection(settings);
+    const teamBriefRequest = teamBrain ? fetchTeamBrief(teamBrain, context.primary, TEAM_BRIEF_TIMEOUT_MS) : null;
+
     // Codex already receives the timeline through additionalContext. Repeating
     // it as systemMessage can push SessionStart stdout past Codex's hook-output
     // limit, causing Codex to discard the entire payload (including context).
@@ -138,6 +200,7 @@ export const contextHandler: EventHandler = {
             cwd,
             projects: context.allProjects,
             ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
+            reserveChars: teamBriefReserveChars(settings),
           },
           showTerminalOutput && input.platform === 'claude-code',
           settings.CLAUDE_MEM_MODE,
@@ -261,7 +324,13 @@ export const contextHandler: EventHandler = {
     }
 
     const platform = input.platform;
-    additionalContext = [additionalContext, memoryInstructions].filter(Boolean).join('\n\n');
+    const teamSection = teamBriefRequest
+      ? fitTeamBriefSection(
+          teamBriefSection(await teamBriefRequest),
+          [additionalContext, memoryInstructions].filter(Boolean).join('\n\n').length,
+        )
+      : '';
+    additionalContext = [additionalContext, teamSection, memoryInstructions].filter(Boolean).join('\n\n');
 
     // Antigravity CLI (like the former Gemini CLI) is hooks-based, not an
     // MCP-context-fetch platform like Codex — colorApiPath never populates
@@ -282,8 +351,15 @@ export const contextHandler: EventHandler = {
     // In server runtime the viewer is served by the server (#2552), not by a
     // local worker, so the link points there.
     const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
-    const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+    const showsBanner = showTerminalOutput && Boolean(displayContent);
+    // TeamBrain discovery: one line on the banner the user already reads, once
+    // per claude-mem version, and never once this install is in a team.
+    const teamBrainDiscoveryLine = showsBanner && !teamBrain && !hasShownTeamBrainDiscoveryNotice()
+      ? TEAMBRAIN_DISCOVERY_LINE
+      : null;
+    if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
+    const systemMessage = showsBanner
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`
       : undefined;
 
     return {

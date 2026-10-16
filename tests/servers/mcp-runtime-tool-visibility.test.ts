@@ -4,7 +4,9 @@ import { join } from 'node:path';
 import {
   getAdvertisedMcpToolsForRuntime,
   SERVER_BETA_ONLY_TOOL_NAMES,
+  TEAMBRAIN_TOOL_NAMES,
   withoutDisabledWorkStateTools,
+  withoutUnjoinedTeamBrainTools,
   WORK_STATE_TOOL_NAMES,
 } from '../../src/servers/mcp-tool-visibility.js';
 
@@ -23,6 +25,8 @@ const allTools = [
   { name: 'smart_search', description: '', inputSchema: {} },
   { name: 'work_state_write', description: '', inputSchema: {} },
   { name: 'work_state_read', description: '', inputSchema: {} },
+  { name: 'team_brief', description: '', inputSchema: {} },
+  { name: 'team_search', description: '', inputSchema: {} },
 ];
 
 describe('MCP runtime-aware tool visibility', () => {
@@ -78,5 +82,16 @@ describe('MCP runtime-aware tool visibility', () => {
     for (const toolName of WORK_STATE_TOOL_NAMES) {
       expect(names.has(toolName)).toBe(true);
     }
+  });
+
+  it('advertises the team_* tools only once this install has joined a TeamBrain team', () => {
+    const unjoined = new Set(withoutUnjoinedTeamBrainTools(allTools, false).map(tool => tool.name));
+    const joined = new Set(withoutUnjoinedTeamBrainTools(allTools, true).map(tool => tool.name));
+
+    for (const toolName of TEAMBRAIN_TOOL_NAMES) {
+      expect(unjoined.has(toolName)).toBe(false);
+      expect(joined.has(toolName)).toBe(true);
+    }
+    expect(unjoined.has('search')).toBe(true);
   });
 });
