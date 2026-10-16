@@ -68,12 +68,17 @@ function upstreamBehindGatewayUrl(gatewayUrl: string, routes: Record<string, Wir
  * else the base URL saved in its own config (e.g. GOOGLE_GEMINI_BASE_URL in
  * ~/.gemini/.env, read the way `wire status` reads it), else its built-in
  * endpoint. A value that is already one of this gateway's route URLs stands
- * for that route's upstream.
+ * for that route's upstream; an env value does so before the saved config is
+ * read, so `wire run` inside a launched agent keeps the outer launch's
+ * provider even when the saved config names another.
  */
 function currentUpstream(descriptor: AgentDescriptor, dependencies: LaunchDependencies, routes: Record<string, WireGatewayRoute>): string {
   const launch = descriptor.launch!;
   const fromEnvironment = dependencies.environment.env[launch.baseUrlVariable];
-  if (fromEnvironment && !isGatewayRouteUrl(fromEnvironment, dependencies.gatewayOrigin)) return fromEnvironment;
+  if (fromEnvironment) {
+    if (!isGatewayRouteUrl(fromEnvironment, dependencies.gatewayOrigin)) return fromEnvironment;
+    return upstreamBehindGatewayUrl(fromEnvironment, routes, launch.baseUrlVariable);
+  }
   let savedTargets: ReturnType<typeof readCurrentBaseUrlTargets>;
   try {
     savedTargets = readCurrentBaseUrlTargets(descriptor, dependencies.environment);
@@ -85,7 +90,6 @@ function currentUpstream(descriptor: AgentDescriptor, dependencies: LaunchDepend
     if (!isGatewayRouteUrl(target.value, dependencies.gatewayOrigin)) return target.value;
     return upstreamBehindGatewayUrl(target.value, routes, `${target.keyPath} in ${target.filePath}`);
   }
-  if (fromEnvironment) return upstreamBehindGatewayUrl(fromEnvironment, routes, launch.baseUrlVariable);
   if (launch.defaultUpstream) return launch.defaultUpstream;
   throw new Error(`${descriptor.name} has no default endpoint: set ${launch.baseUrlVariable} to your provider's URL, then run this again`);
 }

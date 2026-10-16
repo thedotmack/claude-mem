@@ -117,4 +117,14 @@ describe('wire run: the upstream includes the agent\'s saved config', () => {
     expect(inner.routeId).toBe(outer.routeId);
     expect(inner.launchBaseUrl).toBe(outer.launchBaseUrl);
   });
+
+  it('a nested launch whose env is a gateway launch URL keeps that route\'s upstream, not a different saved provider', async () => {
+    const box = sandbox('launch-nested-saved-differs');
+    const outer = await launch(box, 'gemini-cli', { GOOGLE_GEMINI_BASE_URL: 'https://google.example/v1beta' });
+    box.write('.gemini/.env', 'GOOGLE_GEMINI_BASE_URL=https://other-provider.example/v1beta\n');
+    const inner = await launch(box, 'gemini-cli', { GOOGLE_GEMINI_BASE_URL: outer.launchBaseUrl });
+    expect(readWireGatewayRoutesFile(box.routesFilePath).routes[inner.routeId].upstreamBaseUrl).toBe('https://google.example');
+    expect(inner.routeId).toBe(outer.routeId);
+    expect(inner.launchBaseUrl).toBe(outer.launchBaseUrl);
+  });
 });
