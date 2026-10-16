@@ -27,6 +27,8 @@ import type { WireRequest } from '../ir/types.js';
 import { splitLaunchSegment, type WireLaunch, type WireLaunchRegistry } from '../identity/launch-registry.js';
 import { resolveIdentity, sessionIdToEcho, type WireIdentity } from '../identity/resolve-identity.js';
 import { CLAUDE_MEM_SESSION_HEADER } from '../identity/session-id.js';
+import type { OutboundRedactionPlaceholders } from '../privacy/outbound-redaction.js';
+import { PlaceholderRestoringResponse } from '../privacy/placeholder-restoring-response.js';
 
 // ---------------------------------------------------------------------------
 // Header policy (magpie `hopHeader` + `copyHeaders`)
@@ -143,6 +145,13 @@ export interface RelayObserver {
 /** Bodies relayed untouched whose capture was skipped, by reason (plan Phase 2 task 3, "counted"). */
 export const relayCaptureSkipCounts: Record<string, number> = {};
 
+/**
+ * Process-lifetime counters for the gateway's content-free telemetry
+ * (plan Phase 6 task 4): how many exchanges were relayed, and how many had
+ * their request rewritten (outbound redaction masked something).
+ */
+export const relayActivityCounts = { exchangesRelayed: 0, requestsRewritten: 0 };
+
 function countCaptureSkip(reason: string): void {
   relayCaptureSkipCounts[reason] = (relayCaptureSkipCounts[reason] ?? 0) + 1;
 }
@@ -176,6 +185,12 @@ export interface WireGatewayRelayOptions {
   captureSpoolCapBytes?: number;
   /** Launches made through POST /wire/launch; without one, /l/<launchId> segments are still stripped. */
   launchRegistry?: WireLaunchRegistry;
+  /**
+   * Outbound redaction (plan Phase 6 task 3): the placeholder table, and
+   * whether a route without its own `features.outboundRedaction` gets it
+   * (CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION). Absent: never.
+   */
+  outboundRedaction?: { placeholders: OutboundRedactionPlaceholders; enabledByDefault: boolean };
 }
 
 const ROUTE_PATH_PATTERN = /^\/r\/([^/]+)(\/.*)?$/;
@@ -287,10 +302,12 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     let decodedRequestBody: Uint8Array | null = null;
     let parsedRequest: WireRequest | null = null;
     let captureSkippedReason: RelayExchange['captureSkippedReason'] = null;
+    let decodedCopy: DecodedBodyCopy | null = null;
     if (classification.captured && classification.protocol) {
       // Decoded on every route: a native route is never recorded, but its
       // identity (and Phase 10's rewrites) still read the body.
       const decoded = decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
+      decodedCopy = decoded;
       if (route.captureSource !== 'wire') {
         captureSkippedReason = 'native_capture_source';
       } else if (decoded.kind === 'decoded') {
@@ -310,6 +327,52 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         }
       }
     }
+    const methodHasBody = request.method !== 'GET' && request.method !== 'HEAD';
+    const forwardedHeaders = upstreamRequestHeaders(request.headers);
+    let forwardedBody = originalBody;
+    const outboundRedaction = options.outboundRedaction;
+    const outboundRedactionOn = outboundRedaction !== undefined
+      && (route.features?.outboundRedaction ?? outboundRedaction.enabledByDefault);
+    if (outboundRedaction && outboundRedactionOn && methodHasBody && originalBody.length > 0) {
+      // The one opt-in edit of a forwarded body: secrets become placeholders,
+      // by byte splices of string values. A compressed body is forwarded
+      // decoded once masked (content-encoding dropped; fetch sets the length).
+      // FAIL CLOSED: the user turned this on so secrets never reach the
+      // provider, so a body that cannot be decoded or masked is refused, not
+      // sent as it came. (D7.7's fail-open covers Endless Mode, injection and
+      // the hidden tool, where the original bytes are the safe choice; here
+      // they are the leak.)
+      const decodedForMasking = decodedCopy ?? decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
+      let refusalReason: string | null = null;
+      if (decodedForMasking.kind === 'decoded') {
+        try {
+          const masked = outboundRedaction.placeholders.maskRequestBody(decodedForMasking.bytes);
+          if (masked.changed) {
+            forwardedBody = masked.bytes;
+            forwardedHeaders.delete('content-encoding');
+            relayActivityCounts.requestsRewritten++;
+          }
+        } catch (error) {
+          logger.error('WIRE', 'Outbound redaction failed; the request was refused, not sent unmasked', { routeId, agentId: route.agentId },
+            error instanceof Error ? error : new Error(String(error)));
+          refusalReason = 'masking failed';
+        }
+      } else {
+        logger.error('WIRE', 'Outbound redaction could not decode the request body; the request was refused, not sent unmasked', {
+          routeId, agentId: route.agentId, reason: decodedForMasking.reason, contentEncoding: decodedForMasking.contentEncoding,
+        });
+        refusalReason = `the body could not be decoded (${decodedForMasking.reason}, content-encoding "${decodedForMasking.contentEncoding}")`;
+      }
+      if (refusalReason !== null) {
+        return protocolErrorResponse(errorFamily, {
+          status: 502,
+          message: `claude-mem outbound redaction is on for route "${routeId}" and ${refusalReason}, so the request was not sent to the provider; `
+            + 'send it uncompressed, or turn outbound redaction off for this route',
+          openAiCode: 'claude_mem_outbound_redaction_failed',
+        });
+      }
+    }
+
     const identity = resolveIdentity(route, request.headers, parsedRequest, { suffixPath, launch });
 
     const exchange: RelayExchange = {
@@ -355,14 +418,15 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       }
     };
 
-    const methodHasBody = request.method !== 'GET' && request.method !== 'HEAD';
+    relayActivityCounts.exchangesRelayed++;
     let upstreamResponse: Response;
     try {
       upstreamResponse = await fetch(upstreamUrl, {
         method: request.method,
-        headers: upstreamRequestHeaders(request.headers),
-        // The ORIGINAL bytes, with the original Content-Encoding header.
-        body: methodHasBody ? originalBody : undefined,
+        headers: forwardedHeaders,
+        // The ORIGINAL bytes with the original Content-Encoding header, unless
+        // outbound redaction masked them (then decoded, without that header).
+        body: methodHasBody ? forwardedBody : undefined,
         // A 3xx is relayed as it is (report 08 §Q3).
         redirect: 'manual',
         // Without it the client gets decoded bytes still labelled content-encoding (report 08 §Q2).
@@ -416,6 +480,38 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     // A non-stream reply is whole when its body ends; a stream when its end marker passed.
     const hasReachedEnd = (upstreamBodyDone: boolean) => (endDetector ? endDetector.hasSeenEnd : upstreamBodyDone);
 
+    // Placeholders in the reply become the values again before the agent
+    // sees them (and so before the capture copy). Absent when the route has
+    // no outbound redaction or the reply is compressed.
+    const candidateRestorer = outboundRedaction && outboundRedactionOn
+      ? new PlaceholderRestoringResponse({
+        placeholders: outboundRedaction.placeholders,
+        contentType: upstreamResponse.headers.get('content-type'),
+        contentEncoding: upstreamResponse.headers.get('content-encoding'),
+      })
+      : null;
+    const restorer = candidateRestorer && !candidateRestorer.passesThrough ? candidateRestorer : null;
+    if (candidateRestorer?.passesThrough) {
+      // Safe (the agent sees placeholders, the provider never saw the values)
+      // but not what the user asked for, so it is said: the gateway asks for
+      // no encoding, and a provider that compresses anyway is relayed as is.
+      logger.warn('WIRE', 'Outbound redaction: the reply is compressed, so its placeholders are relayed without their values', {
+        routeId, agentId: route.agentId, contentEncoding: upstreamResponse.headers.get('content-encoding'),
+      });
+    }
+    const sendToClient = (controller: ReadableStreamDefaultController<Uint8Array>, chunks: Uint8Array[]): void => {
+      for (const chunk of chunks) {
+        if (chunk.byteLength === 0) continue;
+        controller.enqueue(chunk);
+        responseBytes += chunk.byteLength;
+        captureQueue.offer(chunk);
+      }
+    };
+    /** What the restorer still holds; written before any end, since those bytes did come from upstream. */
+    const flushRestorer = (controller: ReadableStreamDefaultController<Uint8Array>): void => {
+      if (restorer) sendToClient(controller, restorer.finish());
+    };
+
     const upstreamReader = upstreamResponse.body.getReader();
     let releaseCutHold: () => void = () => undefined;
     const cutHold = new Promise<void>(resolve => {
@@ -441,12 +537,14 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           }
           if (hasReachedEnd(false)) {
             // The reply was whole before the socket went; end it cleanly.
+            flushRestorer(controller);
             finishExchange('complete', upstreamResponse.status);
             controller.close();
             return;
           }
           // Upstream broke mid-reply: forward nothing more, fabricate no end,
           // and break the client's connection so it reads a cut, not a whole reply.
+          flushRestorer(controller);
           finishExchange('cut', upstreamResponse.status);
           cutSignalled = true;
           server.timeout(request, CUT_SIGNAL_IDLE_TIMEOUT_SECONDS);
@@ -463,6 +561,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           }
           // Upstream ended the body itself: relay that end as it is. Without
           // its end marker the turn is flagged cut, never "fixed".
+          flushRestorer(controller);
           finishExchange(hasReachedEnd(true) ? 'complete' : 'cut', upstreamResponse.status);
           controller.close();
           return;
@@ -472,10 +571,8 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           return;
         }
         // To the client first, immediately; observers get a copy after.
-        controller.enqueue(next.value);
-        responseBytes += next.value.byteLength;
         endDetector?.observe(next.value);
-        captureQueue.offer(next.value);
+        sendToClient(controller, restorer ? restorer.push(next.value) : [next.value]);
       },
       cancel() {
         // The client went away, or Bun closed a cut connection.

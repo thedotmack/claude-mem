@@ -40,6 +40,7 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES?: string;
   CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION?: string;
 }): string | null {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -62,6 +63,10 @@ export function validateWireGatewayListenSettings(settings: {
     && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS) < 1)) {
     return 'CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS must be a whole number of days above 0';
   }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== undefined
+    && settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== 'false') {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION must be "true" or "false"';
+  }
   return null;
 }
 
@@ -74,6 +79,10 @@ export interface WireGatewayConfig {
   maxRequestBytes: number;
   /** Days of raw recordings kept (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS). */
   retentionDays: number;
+  /** CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false: raw recording is off whatever consent.json says. Nothing turns it on. */
+  recordingForcedOff: boolean;
+  /** Whether a route without its own `features.outboundRedaction` gets it (CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION). */
+  outboundRedaction: boolean;
 }
 
 /**
@@ -96,5 +105,7 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
     drainTimeoutMs: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS, 10),
     maxRequestBytes: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES, 10),
     retentionDays: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS, 10),
+    recordingForcedOff: settings.CLAUDE_MEM_WIRE_GATEWAY_RECORDING === 'false',
+    outboundRedaction: settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION === 'true',
   };
 }

@@ -7,7 +7,7 @@ const WIRE_ROUTES_ACTIONS = new Set(['add', 'list', 'remove']);
 
 function printWireUsage(): void {
   console.error(`Usage: ${styleText('bold', 'npx claude-mem wire <command>')}`);
-  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove');
+  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear');
 }
 
 // `claude-mem wire …` — the wire gateway daemon (src/services/wire-gateway/).
@@ -41,6 +41,23 @@ export function runWireCommand(argv: string[] = []): void {
     console.error(styleText('red', `Unknown wire routes action: ${action ?? '(none)'}`));
     console.error('Usage: npx claude-mem wire routes add <routeId> --agent <id> --upstream <url> [--capture wire|native] | list | remove <routeId>');
     process.exit(1);
+  }
+
+  if (subCommand === 'consent') {
+    const flags = argv.slice(1);
+    if (flags.every(flag => flag === '--record' || flag === '--off') && flags.length <= 1) {
+      // The gateway script asks for a terminal itself; stdio is inherited all the way down.
+      runWireGatewayCommand(['consent', ...flags]);
+      return;
+    }
+    console.error(styleText('red', `Unknown wire consent option: ${flags.join(' ')}`));
+    console.error('Usage: npx claude-mem wire consent [--record|--off]');
+    process.exit(1);
+  }
+
+  if (subCommand === 'clear') {
+    runWireGatewayCommand(['clear']);
+    return;
   }
 
   console.error(styleText('red', `Unknown wire command: ${subCommand ?? '(none)'}`));

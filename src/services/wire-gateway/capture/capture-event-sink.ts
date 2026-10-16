@@ -4,14 +4,19 @@
 // hook spool, one durable file per event, then a fire-and-forget nudge so a
 // running worker drains now. The gateway never waits on the worker: the
 // worker's own drainer (fs.watch, nudge, safety sweep) calls the same ingest
-// functions as its HTTP routes, exactly once.
+// functions as its HTTP routes, exactly once. Every payload is scrubbed
+// before it is spooled (plan Phase 6 task 2): the spool file is on disk.
 
 import { HookSpool, type HookSpoolKind, type HookSpoolPayloadByKind } from '../../../shared/hook-spool.js';
 import { workerHttpRequest } from '../../../shared/worker-utils.js';
 import { logger } from '../../../utils/logger.js';
+import { scrubWireSpoolPayload } from '../privacy/secret-scrub.js';
 
 /** The nudge is a hint; the spool file is already durable (copied from src/cli/spool-hook-event.ts SPOOL_NUDGE_TIMEOUT_MS). */
 const WORKER_NUDGE_TIMEOUT_MS = 250;
+
+/** How many capture events were spooled since the process started (content-free telemetry, plan Phase 6 task 4). */
+export const wireCaptureEventActivity = { eventsSpooled: 0 };
 
 export interface WireCaptureEventSink {
   /** Never throws and never waits on the worker. */
@@ -56,7 +61,8 @@ export function createHookSpoolCaptureEventSink(options: HookSpoolCaptureEventSi
   return {
     emit(kind, payload) {
       try {
-        const entryPath = spool.enqueue(kind, payload);
+        const entryPath = spool.enqueue(kind, scrubWireSpoolPayload(kind, payload));
+        wireCaptureEventActivity.eventsSpooled++;
         logger.debug('WIRE', 'Wire capture event spooled for the worker', { kind, entryPath });
       } catch (error) {
         logger.error('WIRE', 'Wire capture event could not be spooled; it is lost', {

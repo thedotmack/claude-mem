@@ -95,6 +95,7 @@
           "configuration/custom-anthropic-backends",
           "modes",
           "telemetry",
+          "wire-gateway",
           "development",
           "troubleshooting",
           "platform-integration",

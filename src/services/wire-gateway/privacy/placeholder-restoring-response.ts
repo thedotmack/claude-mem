@@ -1,0 +1,303 @@
+// SPDX-License-Identifier: Apache-2.0
+//
+// Puts the values back in what a vendor answers, on its way to the agent
+// (plan Phase 6 task 3). Ported from magpie's `Writer` (internal/redact/
+// writer.go:1-291, MIT, Copyright (c) 2026 yetone). A stream is put back
+// event by event, as it comes; anything else when it is done.
+//
+// A placeholder a stream splits between two events ({{API_ in one text delta,
+// KEY_k3v9x2mq}} in the next) is put back whole: an event whose text ends in
+// what may be the start of one is held until the next, and if that one goes
+// on with the same text (same event name, `type`, `item_id` and indexes, and
+// the same string) the start moves over to it. Values put back inside a tool
+// call's arguments (`arguments`, `partial_json`, argument deltas) go in
+// JSON-escaped. Nothing is added or dropped: the agent gets the same events.
+
+import { logger } from '../../../utils/logger.js';
+import { rewriteJsonStringsInText } from '../json/string-walker.js';
+import { isKeptReplyString, valueHoldsJson, type OutboundRedactionPlaceholders } from './outbound-redaction.js';
+
+type RestoringMode = 'undecided' | 'stream' | 'whole' | 'as_is';
+
+/**
+ * The most a reply is held to be put back: a whole (non-stream) reply, or a
+ * stream's one unfinished event. Past it, what is held goes out as it came
+ * and the rest of the reply is relayed untouched: the agent then sees
+ * placeholders, never more than the provider saw, and the gateway's memory
+ * stays bounded.
+ */
+export const PLACEHOLDER_RESTORE_MAX_HELD_BYTES = 32 * 1024 * 1024;
+
+/** An event that ended in what may be the start of a placeholder. */
+interface HeldEvent {
+  continuationKey: string;
+  path: string;
+  tail: string;
+  /** The event as it is, and without the tail. */
+  full: string;
+  cut: string;
+}
+
+const utf8Encoder = new TextEncoder();
+const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
+
+/** Where the first complete event in `bytes` ends, and the length of the blank line that ends it (magpie `eventEnd`). */
+function findEventEnd(bytes: Uint8Array, scanFrom: number): { index: number; separatorLength: number } | null {
+  let lfIndex = -1;
+  let crlfIndex = -1;
+  for (let index = scanFrom; index + 1 < bytes.length; index++) {
+    if (lfIndex < 0 && bytes[index] === 0x0a && bytes[index + 1] === 0x0a) lfIndex = index;
+    if (crlfIndex < 0 && index + 3 < bytes.length && bytes[index] === 0x0d && bytes[index + 1] === 0x0a && bytes[index + 2] === 0x0d && bytes[index + 3] === 0x0a) {
+      crlfIndex = index;
+    }
+    if (lfIndex >= 0 || crlfIndex >= 0) break;
+  }
+  if (lfIndex < 0 && crlfIndex < 0) return null;
+  if (crlfIndex >= 0 && (lfIndex < 0 || crlfIndex < lfIndex)) return { index: crlfIndex, separatorLength: 4 };
+  return { index: lfIndex, separatorLength: 2 };
+}
+
+function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
+  if (first.length === 0) return second;
+  const joined = new Uint8Array(first.length + second.length);
+  joined.set(first, 0);
+  joined.set(second, first.length);
+  return joined;
+}
+
+/**
+ * The one data line of an event that has JSON in it: what comes before the
+ * JSON, the JSON, and what comes after it (magpie `splitEvent`). Null for an
+ * event with no such line, or with data over more than one line.
+ */
+function splitEvent(event: string): { name: string; data: string; before: string; after: string } | null {
+  const lines = event.match(/[^\n]*\n|[^\n]+$/g) ?? [];
+  let name = '';
+  let dataLineIndex = -1;
+  let offset = 0;
+  lines.forEach((line, index) => {
+    const trimmed = line.replace(/[\r\n]+$/, '');
+    if (trimmed.startsWith('event:')) {
+      name = trimmed.slice('event:'.length).trim();
+    } else if (trimmed.startsWith('data:')) {
+      if (dataLineIndex >= 0) dataLineIndex = -2;
+      else if (dataLineIndex === -1) dataLineIndex = index;
+    }
+    if (dataLineIndex === -1) offset += line.length;
+  });
+  if (dataLineIndex < 0) return null;
+  const line = lines[dataLineIndex].replace(/[\r\n]+$/, '');
+  const dataStart = line.length > 5 && line[5] === ' ' ? 6 : 5;
+  const data = line.slice(dataStart);
+  if (data === '' || (data[0] !== '{' && data[0] !== '[')) return null;
+  return { name, data, before: event.slice(0, offset + dataStart), after: event.slice(offset + line.length) };
+}
+
+/** What says which text an event goes on with (magpie `eventCtx`). */
+function eventContinuationKey(data: string): string {
+  let key = '';
+  rewriteJsonStringsInText(data, (path, _key, value) => {
+    if (path === 'type' || path === 'item_id') key += `${path}=${value};`;
+    return value;
+  });
+  for (const indexKey of ['"index":', '"output_index":', '"content_index":']) {
+    const at = data.indexOf(indexKey);
+    if (at < 0) continue;
+    let end = at + indexKey.length;
+    while (end < data.length && /[0-9 ]/.test(data[end])) end++;
+    key += `${indexKey}${data.slice(at + indexKey.length, end)};`;
+  }
+  return key;
+}
+
+function hasStringAtPath(data: string, wantedPath: string): boolean {
+  let found = false;
+  rewriteJsonStringsInText(data, (path, _key, value) => {
+    if (path === wantedPath) found = true;
+    return value;
+  });
+  return found;
+}
+
+export interface PlaceholderRestoringResponseOptions {
+  placeholders: OutboundRedactionPlaceholders;
+  contentType: string | null;
+  contentEncoding: string | null;
+  /** Test seam; defaults to PLACEHOLDER_RESTORE_MAX_HELD_BYTES. */
+  maxHeldBytes?: number;
+}
+
+/**
+ * One reply's restorer: feed it the upstream chunks with `push`, then call
+ * `finish`; each returns the bytes to send the agent now.
+ */
+export class PlaceholderRestoringResponse {
+  private readonly placeholders: OutboundRedactionPlaceholders;
+  private readonly contentType: string;
+  private mode: RestoringMode;
+  private buffered: Uint8Array = new Uint8Array(0);
+  /** How far `buffered` was already searched for an event's end, less the separator's own length. */
+  private searchedUpTo = 0;
+  private held: HeldEvent | null = null;
+  private finished = false;
+  private readonly maxHeldBytes: number;
+
+  constructor(options: PlaceholderRestoringResponseOptions) {
+    this.placeholders = options.placeholders;
+    this.maxHeldBytes = options.maxHeldBytes ?? PLACEHOLDER_RESTORE_MAX_HELD_BYTES;
+    this.contentType = (options.contentType ?? '').toLowerCase();
+    const contentEncoding = (options.contentEncoding ?? '').trim().toLowerCase();
+    // A compressed body is left as it is (magpie `decide`).
+    if (contentEncoding !== '' && contentEncoding !== 'identity') this.mode = 'as_is';
+    else if (this.contentType.includes('event-stream')) this.mode = 'stream';
+    else if (this.contentType !== '') this.mode = 'whole';
+    else this.mode = 'undecided';
+  }
+
+  /** True when the reply is relayed untouched (a compressed body). */
+  get passesThrough(): boolean {
+    return this.mode === 'as_is';
+  }
+
+  private decideFromFirstBytes(first: Uint8Array): void {
+    // The ChatGPT backend streams without saying so.
+    const start = new TextDecoder().decode(first.subarray(0, 6));
+    this.mode = start.startsWith('event:') || start.startsWith('data:') || start.startsWith(':') ? 'stream' : 'whole';
+  }
+
+  push(chunk: Uint8Array): Uint8Array[] {
+    if (this.mode === 'undecided') this.decideFromFirstBytes(chunk);
+    if (this.mode === 'as_is') return [chunk];
+    if (this.buffered.length + chunk.length > this.maxHeldBytes) return this.giveUpHolding(chunk);
+    this.buffered = concatBytes(this.buffered, chunk);
+    if (this.mode === 'whole') return [];
+    const output: string[] = [];
+    for (;;) {
+      const end = findEventEnd(this.buffered, this.searchedUpTo);
+      if (!end) {
+        this.searchedUpTo = Math.max(0, this.buffered.length - 3);
+        break;
+      }
+      const eventBytes = this.buffered.subarray(0, end.index + end.separatorLength);
+      this.buffered = this.buffered.slice(end.index + end.separatorLength);
+      this.searchedUpTo = 0;
+      this.handleEvent(eventBytes, output);
+    }
+    return output.map(text => utf8Encoder.encode(text));
+  }
+
+  /** Over the bound: everything held goes out as it came, then the rest of the reply as it comes. */
+  private giveUpHolding(chunk: Uint8Array): Uint8Array[] {
+    logger.warn('WIRE', 'Outbound redaction: a reply is too large to hold; the rest is relayed with its placeholders', {
+      heldBytes: this.buffered.length, maxHeldBytes: this.maxHeldBytes,
+    });
+    const output: Uint8Array[] = [];
+    if (this.held) output.push(utf8Encoder.encode(this.held.full));
+    this.held = null;
+    output.push(this.buffered, chunk);
+    this.buffered = new Uint8Array(0);
+    this.mode = 'as_is';
+    return output;
+  }
+
+  /** What is still held, written out (magpie `Finish`). */
+  finish(): Uint8Array[] {
+    if (this.finished) return [];
+    this.finished = true;
+    if (this.mode === 'whole') {
+      const body = this.buffered;
+      this.buffered = new Uint8Array(0);
+      let text: string;
+      try {
+        text = strictUtf8Decoder.decode(body);
+      } catch {
+        return body.length > 0 ? [body] : [];
+      }
+      const restored = this.placeholders.restoreJsonText(text);
+      return restored === text ? (body.length > 0 ? [body] : []) : [utf8Encoder.encode(restored)];
+    }
+    if (this.mode !== 'stream') return [];
+    const output: Uint8Array[] = [];
+    if (this.held) {
+      output.push(utf8Encoder.encode(this.held.full));
+      this.held = null;
+    }
+    if (this.buffered.length > 0) {
+      const rest = this.buffered;
+      this.buffered = new Uint8Array(0);
+      try {
+        output.push(utf8Encoder.encode(this.placeholders.restore(strictUtf8Decoder.decode(rest), false)));
+      } catch {
+        output.push(rest);
+      }
+    }
+    return output;
+  }
+
+  private releaseHeld(output: string[]): void {
+    if (this.held) {
+      output.push(this.held.full);
+      this.held = null;
+    }
+  }
+
+  /** Put the values back in one event and write it, or hold it (magpie `event`). */
+  private handleEvent(eventBytes: Uint8Array, output: string[]): void {
+    let event: string;
+    try {
+      event = strictUtf8Decoder.decode(eventBytes);
+    } catch {
+      this.releaseHeld(output);
+      output.push(new TextDecoder().decode(eventBytes));
+      return;
+    }
+    const split = splitEvent(event);
+    if (!split) {
+      this.releaseHeld(output);
+      output.push(this.placeholders.restore(event, false));
+      return;
+    }
+    const continuationKey = `${split.name}|${eventContinuationKey(split.data)}`;
+    // The start of a placeholder the last event ended in goes on here.
+    let carry = '';
+    let carryPath: string | null = null;
+    if (this.held) {
+      if (this.held.continuationKey === continuationKey && hasStringAtPath(split.data, this.held.path)) {
+        output.push(this.held.cut);
+        carry = this.held.tail;
+        carryPath = this.held.path;
+      } else {
+        output.push(this.held.full);
+      }
+      this.held = null;
+    }
+
+    let eventType = '';
+    let tailPath = '';
+    let tail = '';
+    let cutValue = '';
+    const restored = rewriteJsonStringsInText(split.data, (path, key, value) => {
+      if (path === 'type') eventType = value;
+      let text = value;
+      if (path === carryPath) text = carry + text;
+      if (isKeptReplyString(key, text)) return text;
+      // The tail is looked for before anything is put back, so a placeholder
+      // whose last brace is still to come is not put back without it.
+      const tailLength = this.placeholders.partialPlaceholderTailLength(text);
+      if (tailLength > 0) {
+        tailPath = path;
+        tail = text.slice(text.length - tailLength);
+        cutValue = this.placeholders.restore(text.slice(0, text.length - tailLength), valueHoldsJson(key, eventType));
+      }
+      return this.placeholders.restore(text, valueHoldsJson(key, eventType));
+    });
+    const restoredData = restored.ok ? restored.text : split.data;
+    const full = split.before + restoredData + split.after;
+    if (tail === '' || !restored.ok) {
+      output.push(full);
+      return;
+    }
+    const cutData = rewriteJsonStringsInText(restoredData, (path, _key, value) => (path === tailPath ? cutValue : value)).text;
+    this.held = { continuationKey, path: tailPath, tail, full, cut: split.before + cutData + split.after };
+  }
+}

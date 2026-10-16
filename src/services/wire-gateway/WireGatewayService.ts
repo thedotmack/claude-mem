@@ -17,6 +17,7 @@ import {
   WIRE_GATEWAY_FILE_MODE,
   ensureWireGatewayDirs,
   paths,
+  wireGatewaySubdirPath,
 } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import {
@@ -50,10 +51,20 @@ import {
   type WireGatewayCaptureSource,
 } from './routes.js';
 import { isLoopbackAddress } from './network-guard.js';
-import { createWireGatewayRelay, type RelayObserver } from './relay/relay.js';
+import { createWireGatewayRelay, relayActivityCounts, type RelayObserver } from './relay/relay.js';
 import { WireLaunchRegistry } from './identity/launch-registry.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
 import { createWireCapturePipeline, type WireCapturePipeline, type WireCapturePipelineOptions } from './capture/capture-pipeline.js';
+import { wireCaptureEventActivity } from './capture/capture-event-sink.js';
+import { RECORDED_STORE_SOFT_CAP_BYTES } from './capture/turn-recorder.js';
+import {
+  FileWireRecordingConsent,
+  clearWireRecordings,
+  readWireRecordingConsentFile,
+  setWireRecordingConsent,
+} from './privacy/recording-consent.js';
+import { OutboundRedactionPlaceholders } from './privacy/outbound-redaction.js';
+import { captureEvent, shutdownTelemetry } from '../telemetry/telemetry.js';
 
 const DEFAULT_RETENTION_DAYS = 7;
 
@@ -66,6 +77,9 @@ const START_READY_TIMEOUT_MS = 10_000;
 const DRAIN_POLL_INTERVAL_MS = 50;
 
 const PROCESS_REGISTRY_ID = 'wire-gateway';
+
+/** The content-free `wire_gateway_started` event repeats once a day with its counters (like worker_started). */
+const TELEMETRY_HEARTBEAT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 export interface WireGatewayServiceOptions {
   host: string;
@@ -81,6 +95,12 @@ export interface WireGatewayServiceOptions {
   routesReloadCheckIntervalMs?: number;
   /** Days of raw recordings kept (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS); defaults to 7. */
   retentionDays?: number;
+  /** CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false: raw recording stays off whatever consent.json says. */
+  recordingForcedOff?: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: routes without their own setting mask secrets outbound. */
+  outboundRedaction?: boolean;
+  /** Test seam: the placeholder table; defaults to one keyed by <DATA_DIR>/wire-gateway/redact.key. */
+  outboundRedactionPlaceholders?: OutboundRedactionPlaceholders;
   /**
    * Test seam: replaces the capture pipeline (recorder, assembler, turn
    * tracker) with this observer; nothing is then captured.
@@ -125,10 +145,15 @@ export class WireGatewayService {
   private capturePipeline: WireCapturePipeline | null = null;
   /** Launcher sessions live as long as the process (Phase 4 task 10). */
   private readonly launchRegistry = new WireLaunchRegistry();
+  /** Placeholders live as long as the process; requests bring their values back after a restart. */
+  private readonly outboundRedactionPlaceholders: OutboundRedactionPlaceholders;
+  private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: WireGatewayServiceOptions) {
     this.options = options;
     this.persistRuntimeState = options.persistRuntimeState ?? true;
+    // The key file is read (or written) on first use only.
+    this.outboundRedactionPlaceholders = options.outboundRedactionPlaceholders ?? new OutboundRedactionPlaceholders();
   }
 
   async start(): Promise<void> {
@@ -141,7 +166,11 @@ export class WireGatewayService {
 
     this.capturePipeline = this.options.relayObserver
       ? null
-      : createWireCapturePipeline({ retentionDays: this.options.retentionDays ?? DEFAULT_RETENTION_DAYS, ...this.options.capture });
+      : createWireCapturePipeline({
+        retentionDays: this.options.retentionDays ?? DEFAULT_RETENTION_DAYS,
+        consent: new FileWireRecordingConsent({ recordingForcedOff: this.options.recordingForcedOff ?? false }),
+        ...this.options.capture,
+      });
     const relay = createWireGatewayRelay({
       routesStore: new WireGatewayRoutesStore({
         routesFilePath: this.options.routesFilePath,
@@ -151,6 +180,10 @@ export class WireGatewayService {
       requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs ?? DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS,
       observer: this.options.relayObserver ?? this.capturePipeline?.relayObserver,
       launchRegistry: this.launchRegistry,
+      outboundRedaction: {
+        placeholders: this.outboundRedactionPlaceholders,
+        enabledByDefault: this.options.outboundRedaction ?? false,
+      },
     });
     const handleRequest = this.options.fetchHandler
       ?? createWireGatewayFetchHandler({ listenHost: this.options.host, relay, launchRegistry: this.launchRegistry });
@@ -186,6 +219,7 @@ export class WireGatewayService {
         startedAt: state.startedAt,
       });
       restrictToOwner(paths.wireGatewayProcessRegistry());
+      this.startTelemetry();
     }
     logger.info('WIRE', 'Wire gateway started', { host: this.options.host, port: this.port, pid: process.pid, version: WIRE_GATEWAY_VERSION });
   }
@@ -201,6 +235,30 @@ export class WireGatewayService {
       });
     }
     return this.stopPromise;
+  }
+
+  /**
+   * Content-free telemetry (plan Phase 6 task 4): counters and flags only,
+   * never bodies, URLs, paths or headers. captureEvent applies the consent
+   * chain and the property whitelist (telemetry/scrub.ts).
+   */
+  private startTelemetry(): void {
+    const routeCount = countWireGatewayRoutes();
+    captureEvent('wire_gateway_started', {
+      trigger: 'start',
+      ...(routeCount !== null ? { wire_routes_count: routeCount } : {}),
+    });
+    this.telemetryHeartbeat = setInterval(() => {
+      const heartbeatRouteCount = countWireGatewayRoutes();
+      captureEvent('wire_gateway_started', {
+        trigger: 'heartbeat',
+        ...(heartbeatRouteCount !== null ? { wire_routes_count: heartbeatRouteCount } : {}),
+        wire_requests_relayed_count: relayActivityCounts.exchangesRelayed,
+        wire_capture_events_count: wireCaptureEventActivity.eventsSpooled,
+        wire_rewrites_applied_count: relayActivityCounts.requestsRewritten,
+      });
+    }, TELEMETRY_HEARTBEAT_INTERVAL_MS);
+    this.telemetryHeartbeat.unref?.();
   }
 
   get port(): number {
@@ -254,6 +312,9 @@ export class WireGatewayService {
         this.processRegistry?.unregister(PROCESS_REGISTRY_ID, process.pid);
         this.processRegistry = null;
         restrictToOwner(paths.wireGatewayProcessRegistry());
+        if (this.telemetryHeartbeat) clearInterval(this.telemetryHeartbeat);
+        this.telemetryHeartbeat = null;
+        await shutdownTelemetry();
       }
       logger.info('WIRE', 'Wire gateway stopped');
     }
@@ -549,6 +610,82 @@ function printWireGatewayUsage(): void {
   writeStderrLine('                     relay http://<host>:<port>/r/<routeId>/… to <url>/…');
   writeStderrLine('  routes list        print every route');
   writeStderrLine('  routes remove <routeId>');
+  writeStderrLine('  consent            print whether raw recording is on');
+  writeStderrLine('  consent --record   turn raw recording on (needs a terminal)');
+  writeStderrLine('  consent --off      turn raw recording off');
+  writeStderrLine('  clear              delete every raw recording');
+}
+
+export interface WireConsentCliOptions {
+  /** Whether a person is at the terminal; enabling needs one. */
+  stdinIsTerminal: boolean;
+  config: Pick<WireGatewayConfig, 'retentionDays' | 'recordingForcedOff'>;
+  /** Test seams. */
+  consentFilePath?: string;
+  recordingsDirectory?: string;
+  writeLine?: (line: string) => void;
+  writeErrorLine?: (line: string) => void;
+}
+
+/**
+ * `claude-mem wire consent [--record|--off]` (plan Phase 6 task 1). Turning
+ * recording on needs a terminal, as `telemetry enable` does
+ * (src/npx-cli/commands/telemetry.ts runTelemetryEnable), and first says what
+ * is kept, where and for how long. Returns the exit code.
+ */
+export function runWireConsentCli(args: string[], options: WireConsentCliOptions): number {
+  const writeLine = options.writeLine ?? writeStdoutLine;
+  const writeErrorLine = options.writeErrorLine ?? writeStderrLine;
+  const recordingsDirectory = options.recordingsDirectory ?? wireGatewaySubdirPath('recordings');
+  const consentFilePath = options.consentFilePath ?? paths.wireGatewayConsent();
+
+  if (args.includes('--record')) {
+    if (!options.stdinIsTerminal) {
+      writeErrorLine('wire consent --record needs an interactive terminal: recording is turned on only by a person who asked for it.');
+      return 1;
+    }
+    writeLine('Raw wire recording keeps, on this computer only:');
+    writeLine('  - the text of each exchange an agent sends through the wire gateway, and the reply');
+    writeLine('    (secrets replaced by [REDACTED:KIND]; request and response headers are never kept)');
+    writeLine(`  - in ${recordingsDirectory}`);
+    writeLine(`  - for ${options.config.retentionDays} days (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS), at most ${Math.round(RECORDED_STORE_SOFT_CAP_BYTES / (1024 * 1024))} MiB in all, oldest removed first`);
+    writeLine('Memory capture into claude-mem works without it. Nothing is uploaded; cloud sync never reads it.');
+    const consent = setWireRecordingConsent(true, consentFilePath);
+    writeLine(`Raw wire recording is ON (generation ${consent.generation}).`);
+    if (options.config.recordingForcedOff) {
+      writeLine('CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false is set, so nothing is recorded until it is removed.');
+    }
+    writeLine('Turn it off: claude-mem wire consent --off   Delete what was kept: claude-mem wire clear');
+    return 0;
+  }
+
+  if (args.includes('--off')) {
+    const consent = setWireRecordingConsent(false, consentFilePath);
+    writeLine(`Raw wire recording is OFF (generation ${consent.generation}). What was already kept stays until it ages out or: claude-mem wire clear`);
+    return 0;
+  }
+
+  if (args.length > 0) {
+    writeErrorLine('Usage: wire consent [--record|--off]');
+    return 1;
+  }
+
+  const consent = readWireRecordingConsentFile(consentFilePath);
+  const on = consent?.recording === true && !options.config.recordingForcedOff;
+  writeLine(`Raw wire recording: ${on ? 'ON' : 'OFF'}`);
+  if (options.config.recordingForcedOff) writeLine('  Forced off by CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false');
+  writeLine(`  Decided: ${consent?.decidedAt || 'never (off until you run: claude-mem wire consent --record)'}`);
+  writeLine(`  Kept in: ${recordingsDirectory}, ${options.config.retentionDays} days`);
+  return 0;
+}
+
+/** `claude-mem wire clear`: delete every raw recording; in-flight saves are refused. */
+export function runWireClearCli(options: { consentFilePath?: string; recordingsDirectory?: string; writeLine?: (line: string) => void } = {}): number {
+  const writeLine = options.writeLine ?? writeStdoutLine;
+  clearWireRecordings({ consentFilePath: options.consentFilePath, recordingsDirectory: options.recordingsDirectory });
+  writeLine('Deleted every raw wire recording. Saves still in flight are refused.');
+  writeLine('Memories that capture already created stay in claude-mem; manage those from the viewer or the memory tools.');
+  return 0;
 }
 
 /** `--name value` pairs after the positional arguments. Throws on a flag with no value. */
@@ -707,6 +844,16 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
 
     case 'routes': {
       runWireGatewayRoutesCli(argv.slice(1), config);
+      return;
+    }
+
+    case 'consent': {
+      process.exitCode = runWireConsentCli(argv.slice(1), { stdinIsTerminal: process.stdin.isTTY === true, config });
+      return;
+    }
+
+    case 'clear': {
+      process.exitCode = runWireClearCli();
       return;
     }
 

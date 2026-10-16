@@ -244,6 +244,30 @@ describe('scrubProperties', () => {
     });
   });
 
+  it('keeps the wire gateway counters and drops anything about its traffic', () => {
+    const result = scrubProperties({
+      trigger: 'heartbeat',
+      wire_routes_count: 2,
+      wire_requests_relayed_count: 140,
+      wire_capture_events_count: 37,
+      wire_rewrites_applied_count: 3,
+      // What a careless call site might add; none of it may leave.
+      upstream_url: 'https://api.anthropic.com/v1/messages',
+      route_id: 'codex',
+      request_body: '{"messages":[]}',
+      authorization: 'Bearer sk-ant-api03-abc',
+      suffix_path: '/v1/responses',
+    });
+
+    expect(result).toEqual({
+      trigger: 'heartbeat',
+      wire_routes_count: 2,
+      wire_requests_relayed_count: 140,
+      wire_capture_events_count: 37,
+      wire_rewrites_applied_count: 3,
+    });
+  });
+
   it('drops unknown keys silently', () => {
     const result = scrubProperties({
       version: '1.0.0',

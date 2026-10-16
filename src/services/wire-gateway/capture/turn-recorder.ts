@@ -10,13 +10,17 @@
 // The line holds magpie's GatewayTurn core fields
 // {agent, session, time, model, status, input, output, cut?} plus
 // claude-mem's own; magpie's reader ignores the extra fields, so one reader
-// serves both formats. Headers are never stored. Scrubbing is Phase 6.
+// serves both formats. Headers are never stored. Every part kept is scrubbed
+// first (plan Phase 6 task 2): secrets reach the file as `[REDACTED:KIND]`.
 //
 // Differences from magpie, on purpose: the consent generation is re-checked
 // in the same synchronous block as the write (JavaScript has no other thread
 // to interleave, so that block is the lock); the store-wide soft cap and
 // retention are applied by an hourly cleanup, as magpie does, while a write
-// past the per-session-day cap is refused at write time.
+// past the per-session-day cap is refused at write time. The consent file is
+// changed by another process (`claude-mem wire clear`), so the generation is
+// looked at once more after the write: a line that landed after a clear began
+// is taken back out.
 
 import { createHash } from 'crypto';
 import {
@@ -41,6 +45,7 @@ import { logger } from '../../../utils/logger.js';
 import type { WireRecorderPart } from '../ir/recorder-parts.js';
 import type { WireUsage } from '../ir/types.js';
 import type { WireRequestKind } from '../identity/request-kind.js';
+import { scrubWireRecorderPart } from '../privacy/secret-scrub.js';
 
 /** Each direction (input, output) of a line keeps at most this many bytes of part text (magpie `bound`). */
 export const RECORDED_DIRECTION_BUDGET_BYTES = 64 * 1024;
@@ -59,8 +64,8 @@ const TURNS_FILE_NAME = 'turns.jsonl';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Whether raw recording is allowed, and its generation. Phase 6 supplies the
- * consent file; until then recording is off. A request takes the generation
+ * Whether raw recording is allowed, and its generation (the consent file,
+ * privacy/recording-consent.ts). A request takes the generation
  * when it starts and is saved only if the generation is unchanged, so turning
  * recording off (or clearing it) cannot be refilled by requests in flight.
  */
@@ -114,9 +119,14 @@ function cutUtf8(text: string, maxBytes: number): { kept: string; charactersLeft
 /**
  * Bound one direction's parts (magpie `bound`): each direction has its own
  * 64 KiB budget, so history cannot crowd out the reply; one part keeps at
- * most 64 KiB. Returns the parts and whether anything was cut.
+ * most 64 KiB. `prepare` (the scrub) runs on each part that is kept, before
+ * it is cut, so a secret is never cut in half and left unrecognised. Returns
+ * the parts and whether anything was cut.
  */
-export function boundRecorderParts(parts: WireRecorderPart[]): { parts: WireRecorderPart[]; cut: boolean } {
+export function boundRecorderParts(
+  parts: WireRecorderPart[],
+  prepare: (part: WireRecorderPart) => WireRecorderPart = part => ({ ...part }),
+): { parts: WireRecorderPart[]; cut: boolean } {
   let budgetLeft = RECORDED_DIRECTION_BUDGET_BYTES;
   let cut = false;
   const bounded: WireRecorderPart[] = [];
@@ -125,7 +135,7 @@ export function boundRecorderParts(parts: WireRecorderPart[]): { parts: WireReco
       cut = true;
       break;
     }
-    const boundedPart: WireRecorderPart = { ...part };
+    const boundedPart: WireRecorderPart = prepare(part);
     const allowedBytes = Math.min(budgetLeft, RECORDED_PART_MAX_BYTES);
     if (utf8ByteLength(boundedPart.text) > allowedBytes) {
       const { kept, charactersLeftOff } = cutUtf8(boundedPart.text, allowedBytes);
@@ -236,8 +246,8 @@ export class WireTurnRecorder {
     }
     if (Date.parse(turn.time) < this.now() - this.retentionDays * DAY_MS) return 'too_old';
 
-    const input = boundRecorderParts(turn.input);
-    const output = boundRecorderParts(turn.output);
+    const input = boundRecorderParts(turn.input, scrubWireRecorderPart);
+    const output = boundRecorderParts(turn.output, scrubWireRecorderPart);
     const boundedTurn: WireGatewayTurn = { ...turn, input: input.parts, output: output.parts };
     if (input.cut || output.cut || turn.cut) boundedTurn.cut = true;
     else delete boundedTurn.cut;
@@ -258,6 +268,7 @@ export class WireTurnRecorder {
     // Not O_APPEND: a cut-off last line is truncated away first, and the
     // line is written where the complete lines end (magpie saveGatewayTurn).
     const fileDescriptor = openSync(turnsPath, fsConstants.O_CREAT | fsConstants.O_RDWR, WIRE_GATEWAY_FILE_MODE);
+    let lineTakenBack = false;
     try {
       if (process.platform !== 'win32') chmodSync(turnsPath, WIRE_GATEWAY_FILE_MODE);
       const size = fstatSync(fileDescriptor).size;
@@ -268,10 +279,23 @@ export class WireTurnRecorder {
       }
       if (end !== size) ftruncateSync(fileDescriptor, end);
       writeSync(fileDescriptor, line, 0, line.length, end);
+      // A clear (another process) may have begun between the check above and
+      // this write: take the line back out, so a clear is never refilled.
+      if (!this.consent.isRecordingOn() || this.consent.recordingGeneration() !== generationAtStart) {
+        ftruncateSync(fileDescriptor, end);
+        lineTakenBack = true;
+      }
     } finally {
       closeSync(fileDescriptor);
     }
-    return 'saved';
+    if (!lineTakenBack) return 'saved';
+    // Removed after the close: Windows cannot unlink a file that is still open.
+    if (statSync(turnsPath, { throwIfNoEntry: false })?.size === 0) {
+      unlinkSync(turnsPath);
+      removeDirectoryIfEmpty(sessionDirectory);
+      removeDirectoryIfEmpty(join(sessionDirectory, '..'));
+    }
+    return 'generation_changed';
   }
 
   /**
