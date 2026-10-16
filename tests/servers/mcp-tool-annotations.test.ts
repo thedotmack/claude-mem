@@ -14,6 +14,7 @@ const MCP_SERVER_PATH = join(import.meta.dir, '..', '..', 'plugin', 'scripts', '
 const READ_ONLY_TOOL_NAMES = [
   'mem_search',
   'important_workflow', 'search', 'timeline', 'get_observations', 'get_tool_uses', 'work_state_read',
+  'team_brief', 'team_search',
   'session_start_context', 'observation_search', 'observation_context', 'observation_generation_status',
   'smart_search', 'smart_unfold', 'smart_outline', 'list_corpora',
 ];

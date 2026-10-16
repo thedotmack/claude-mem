@@ -34,6 +34,32 @@ export function relayedLine(text: string | null | undefined): string {
 }
 
 /**
+ * Several plain lines, for a relayed block such as the TeamBrain brief, which
+ * is written from other people's observations. Line breaks survive (CRLF and
+ * Unicode line separators become `\n`, runs of blank lines collapse to one);
+ * everything else follows relayedLine: control and format characters are
+ * dropped, angle brackets are escaped, and the result is capped at
+ * `maxCodePoints` without splitting one.
+ */
+export function relayedBlock(text: string | null | undefined, maxCodePoints: number): string {
+  const block = (text ?? '')
+    .replace(/\r\n?|[\u2028\u2029]/g, '\n')
+    .split('\n')
+    .map(line => line
+      .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\s+$/u, ''))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const codePoints = Array.from(block);
+  return codePoints.length > maxCodePoints
+    ? `${codePoints.slice(0, Math.max(0, maxCodePoints - 1)).join('').trimEnd()}…`
+    : block;
+}
+
+/**
  * Where a relayed link may point: the cmem.ai site, OpenRouter (whose remedy
  * pages and model list claude-mem links to), and the claude-mem issue tracker
  * (plan 2026-08-16 §1.1).
