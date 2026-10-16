@@ -290,7 +290,7 @@ describe('disconnect after the user edited the file', () => {
     expect(after).not.toContain('CLAUDE_CODE_GATEWAY_HINT_HEADERS');
   });
 
-  it('an array element moved before disconnect is reported replaced, never edited by its old index', async () => {
+  it('an array element moved before disconnect is found by its gateway URL and restored there, never edited by its old index', async () => {
     const box = sandbox('droid-reordered');
     const original = '{"customModels":[{"model":"a","baseUrl":"https://a.example.com/v1","provider":"openai"}]}';
     box.write('.factory/settings.json', original);
@@ -301,8 +301,34 @@ describe('disconnect after the user edited the file', () => {
     box.write('.factory/settings.json', reordered);
 
     const result = await disconnectAgent('droid', box.options());
-    expect(result.fields).toEqual([{ filePath: box.path('.factory/settings.json'), keyPath: 'customModels.0.baseUrl', outcome: 'replaced', currentValue: 'https://b.example.com/v1' }]);
-    expect(box.read('.factory/settings.json')).toBe(reordered);
+    expect(result.fields).toEqual([{ filePath: box.path('.factory/settings.json'), keyPath: 'customModels.1.baseUrl', outcome: 'restored' }]);
+    const after = box.read('.factory/settings.json')!;
+    expect(after).toBe('{"customModels":[{"model":"b","baseUrl":"https://b.example.com/v1","provider":"openai"},{"model":"a","baseUrl":"https://a.example.com/v1","provider":"openai"}]}');
+    expect(after).not.toContain('/r/droid');
+  });
+
+  it('two wired entries that swapped places each get their own provider URL back', async () => {
+    const box = sandbox('droid-swapped');
+    box.write('.factory/settings.json', '{"customModels":[{"model":"a","baseUrl":"https://a.example.com/v1"},{"model":"b","baseUrl":"https://b.example.com/v1"}]}');
+    await connectAgent(descriptor('droid'), box.options());
+    const connected = JSON.parse(box.read('.factory/settings.json')!) as { customModels: unknown[] };
+    box.write('.factory/settings.json', JSON.stringify({ customModels: [connected.customModels[1], connected.customModels[0]] }));
+
+    const result = await disconnectAgent('droid', box.options());
+    expect(result.fields.map((field) => field.outcome)).toEqual(['restored', 'restored']);
+    expect(JSON.parse(box.read('.factory/settings.json')!)).toEqual({ customModels: [{ model: 'b', baseUrl: 'https://b.example.com/v1' }, { model: 'a', baseUrl: 'https://a.example.com/v1' }] });
+  });
+
+  it('a VS Code model group inserted before the wired one does not strand its gateway URL', async () => {
+    const box = sandbox('vscode-reordered');
+    const modelsPath = `${VSCODE_USER_DIRECTORY}/chatLanguageModels.json`;
+    box.write(modelsPath, '[{"vendor":"customendpoint","name":"work","models":[{"id":"m1","url":"https://llm.example.com/v1/chat/completions"}]}]');
+    await connectAgent(descriptor('vscode-chat'), box.options());
+    box.write(modelsPath, box.read(modelsPath)!.replace(/^\[/, '[{"vendor":"ollama","name":"local"},'));
+
+    const result = await disconnectAgent('vscode-chat', box.options());
+    expect(result.fields).toEqual([{ filePath: box.path(modelsPath), keyPath: '1.models.0.url', outcome: 'restored' }]);
+    expect(box.read(modelsPath)).toBe('[{"vendor":"ollama","name":"local"},{"vendor":"customendpoint","name":"work","models":[{"id":"m1","url":"https://llm.example.com/v1/chat/completions"}]}]');
   });
 
   it('restores a TOML key field by field and keeps a note the user added', async () => {

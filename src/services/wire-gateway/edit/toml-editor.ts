@@ -140,9 +140,21 @@ function startsTomlDatetime(text: string, start: number): boolean {
   return isAsciiDigit(text[start + 2]) && isAsciiDigit(text[start + 3]) && text[start + 4] === '-';
 }
 
-/** Past an array or inline table opening at `start`: strings, comments and nesting are skipped linearly. */
+function isTomlWhitespaceOrNewline(character: string | undefined): boolean {
+  return character === ' ' || character === '\t' || character === '\r' || character === '\n';
+}
+
+/**
+ * Past an array or inline table opening at `start`: strings, comments and
+ * nesting are skipped linearly. A stack of open brackets tells a value
+ * position (after `[`, after `=`, after `,` in an array) from a key position
+ * (after `{` or `,` in an inline table), so a date-shaped bare key such as
+ * `{ 2023-04-01 = "x" }` is not mistaken for a datetime value. Bun 1.3.9
+ * silently misreads that key, so it is refused as a key, with its own
+ * message; the quoted key `{ "2023-04-01" = "x" }` reads the same everywhere.
+ */
 function endOfBracketedValue(text: string, start: number, datetimeSink: { firstDatetimeOffset: number }): number {
-  let depth = 0;
+  const openBrackets: string[] = [];
   let position = start;
   while (position < text.length) {
     const character = text[position];
@@ -154,15 +166,22 @@ function endOfBracketedValue(text: string, start: number, datetimeSink: { firstD
       while (position < text.length && text[position] !== '\n') position++;
       continue;
     }
-    if (character === '[' || character === '{') depth++;
+    if (character === '[' || character === '{') openBrackets.push(character);
     if (character === ']' || character === '}') {
-      depth--;
-      if (depth === 0) return position + 1;
+      openBrackets.pop();
+      if (openBrackets.length === 0) return position + 1;
     }
-    if (datetimeSink.firstDatetimeOffset === -1 && '[{,='.includes(character)) {
+    const innermostBracket = openBrackets[openBrackets.length - 1];
+    const opensValuePosition = character === '=' || ((character === '[' || character === ',') && innermostBracket === '[');
+    const opensKeyPosition = innermostBracket === '{' && (character === '{' || character === ',');
+    if (opensValuePosition || opensKeyPosition) {
       let tokenStart = position + 1;
-      while (isTomlInlineSpace(text[tokenStart])) tokenStart++;
-      if (startsTomlDatetime(text, tokenStart)) datetimeSink.firstDatetimeOffset = tokenStart;
+      while (isTomlWhitespaceOrNewline(text[tokenStart])) tokenStart++;
+      if (startsTomlDatetime(text, tokenStart)) {
+        // Bun 1.4.3 reads `{ 2023-04-01 = "x" }` right; Bun 1.3.9 silently reads it as `{ 2023 = 4, 01 = "x" }`.
+        if (opensKeyPosition) throw new TomlStructureError(`the date-shaped bare key at offset ${tokenStart} is read differently by Bun versions; quote it ("${text.slice(tokenStart, tokenStart + 10)}") or edit the file by hand`);
+        if (datetimeSink.firstDatetimeOffset === -1) datetimeSink.firstDatetimeOffset = tokenStart;
+      }
     }
     position++;
   }

@@ -26,13 +26,15 @@ import { isAbsolute, join, relative } from 'path';
 import { writeFileAtomic } from '../../../shared/atomic-json.js';
 import { WIRE_GATEWAY_FILE_MODE } from '../../../shared/paths.js';
 import { atomically, readConfigFileBytes, removeConfigFile } from '../edit/config-file.js';
+import { resolveJsoncKeyPath } from '../edit/jsonc-editor.js';
 import { withExclusiveFileLock } from '../edit/file-lock.js';
 import { isPlainObjectValue, splitConfigKeyPath, trimCharacters } from '../edit/text-shape.js';
 import {
-  addWireGatewayRoute,
+  addWireGatewayRouteWhileRoutesFileIsLocked,
   readWireGatewayRoutesFile,
-  removeWireGatewayRoute,
+  removeWireGatewayRouteWhileRoutesFileIsLocked,
   validateUpstreamBaseUrl,
+  withWireGatewayRoutesFileLock,
   WIRE_GATEWAY_ROUTE_ID_PATTERN,
   type WireGatewayCaptureSource,
 } from '../routes.js';
@@ -48,6 +50,7 @@ import type {
   ResolvedIdentitySwitch,
 } from '../agents/types.js';
 import {
+  escapeConfigKeySegment,
   expandJsonWildcardKeyPath,
   isEmptyConfigDocument,
   joinConfigKeyPath,
@@ -436,11 +439,31 @@ function recordStillHolds(record: AppliedAgentRecord): boolean {
   });
 }
 
+/**
+ * The wiring lock, then routes.json's lock, held across the whole snapshot →
+ * edits → rollback of a connect or disconnect: a `routes add` or `wire run`
+ * from another process waits rather than landing between the snapshot and a
+ * rollback that would erase it. Always in this order (nothing takes the
+ * routes lock first and then the wiring lock), and only the
+ * `…WhileRoutesFileIsLocked` route helpers run inside.
+ */
+function withWiringAndRoutesLocks<T>(options: Pick<WiringOptions, 'wiringDirectory' | 'routesFilePath'>, operation: () => T): T {
+  return withExclusiveFileLock(wiringLockPath(options.wiringDirectory), () => withWireGatewayRoutesFileLock(options.routesFilePath, operation));
+}
+
 /** Write a planned connect: config files, routes, stash, applied record — all or nothing. */
 export function applyConnectionPlan(plan: ConnectionPlan, options: Pick<WiringOptions, 'wiringDirectory' | 'routesFilePath' | 'now' | 'confineAgentFileWritesTo'>): void {
   const agentId = plan.descriptor.id;
   for (const edit of plan.fileEdits) requireConfinedAgentFile(edit.path, options.confineAgentFileWritesTo);
-  withExclusiveFileLock(wiringLockPath(options.wiringDirectory), () => {
+  withWiringAndRoutesLocks(options, () => {
+    // The plan read routes.json without the lock: a route id another agent took since is refused, not overwritten.
+    const routesNow = readWireGatewayRoutesFile(options.routesFilePath).routes;
+    for (const route of plan.routes) {
+      const existing = Object.hasOwn(routesNow, route.routeId) ? routesNow[route.routeId] : undefined;
+      if (existing && existing.agentId !== agentId) {
+        throw new Error(`Route "${route.routeId}" already belongs to agent ${existing.agentId}; remove it (claude-mem wire routes remove ${route.routeId}) or rename it first`);
+      }
+    }
     atomically([...plan.fileEdits.map((edit) => edit.path), ...recordsFileGroup(options)], () => {
       for (const edit of plan.fileEdits) {
         // A file that changed since the plan was read is refused, not overwritten.
@@ -452,7 +475,7 @@ export function applyConnectionPlan(plan: ConnectionPlan, options: Pick<WiringOp
         }
       }
       for (const route of plan.routes) {
-        addWireGatewayRoute({ routeId: route.routeId, agentId, upstreamBaseUrl: route.upstreamBaseUrl, captureSource: plan.captureSource }, options.routesFilePath);
+        addWireGatewayRouteWhileRoutesFileIsLocked({ routeId: route.routeId, agentId, upstreamBaseUrl: route.upstreamBaseUrl, captureSource: plan.captureSource }, options.routesFilePath);
       }
       const stashEntry: StashedAgentEntry = { files: {}, fields: {} };
       const record: AppliedAgentRecord = {
@@ -581,6 +604,30 @@ export interface DisconnectResult {
   messages: string[];
 }
 
+const ARRAY_INDEX_SEGMENT_PATTERN = /^\d+$/;
+
+/**
+ * Where a field addressed by array index (Droid's `customModels.0.baseUrl`,
+ * VS Code's `0.models.1.url`) now holds exactly what connect wrote, after the
+ * user inserted, removed or reordered entries: each index becomes `*` and
+ * the matches still holding the written value (a gateway URL naming this
+ * field's own route) are the moved entry. Disconnect restores them there, so
+ * no entry is left pointing at a route that is about to go. Empty for a path
+ * with no index, or a file that is not JSON.
+ */
+function movedArrayEntryKeyPaths(format: AgentConfigFormat, currentBytes: Uint8Array | null, keyPath: string, written: unknown): string[] {
+  if (format !== 'json' || currentBytes === null) return [];
+  const segments = splitConfigKeyPath(keyPath);
+  if (!segments.some((segment) => ARRAY_INDEX_SEGMENT_PATTERN.test(segment.key))) return [];
+  const indexWildcardKeyPath = segments
+    .map((segment) => (ARRAY_INDEX_SEGMENT_PATTERN.test(segment.key) ? '*' : escapeConfigKeySegment(segment.key)))
+    .join('.');
+  return resolveJsoncKeyPath(currentBytes, indexWildcardKeyPath)
+    .filter((match) => Bun.deepEquals(match.value, written, true))
+    .map((match) => joinConfigKeyPath(match.keys))
+    .filter((movedKeyPath) => movedKeyPath !== keyPath);
+}
+
 /** The bytes a file gets back: exact prior bytes when untouched since connect, else field by field. */
 function disconnectedFileBytes(
   fileKey: string,
@@ -602,17 +649,25 @@ function disconnectedFileBytes(
 
   const set: Array<{ keyPath: string; value: unknown }> = [];
   const remove: string[] = [];
-  for (const [keyPath, written] of Object.entries(fields)) {
-    const currentValue = readConfigValue(file.format, file.path, currentBytes, keyPath);
-    if (!Bun.deepEquals(currentValue, written, true)) {
-      reports.push({ filePath: file.path, keyPath, outcome: 'replaced', currentValue });
-      continue;
-    }
-    const prior = stashedFields[keyPath];
-    if (prior === undefined) throw new Error(`the stash holds no prior value for ${keyPath} in ${file.path}`);
+  const restoreAt = (keyPath: string, stashedKeyPath: string) => {
+    const prior = stashedFields[stashedKeyPath];
+    if (prior === undefined) throw new Error(`the stash holds no prior value for ${stashedKeyPath} in ${file.path}`);
     if (prior === STASHED_ABSENT) remove.push(keyPath);
     else set.push({ keyPath, value: JSON.parse(prior) as unknown });
     reports.push({ filePath: file.path, keyPath, outcome: 'restored' });
+  };
+  for (const [keyPath, written] of Object.entries(fields)) {
+    const currentValue = readConfigValue(file.format, file.path, currentBytes, keyPath);
+    if (Bun.deepEquals(currentValue, written, true)) {
+      restoreAt(keyPath, keyPath);
+      continue;
+    }
+    const movedKeyPaths = movedArrayEntryKeyPaths(file.format, currentBytes, keyPath, written);
+    if (movedKeyPaths.length === 0) {
+      reports.push({ filePath: file.path, keyPath, outcome: 'replaced', currentValue });
+      continue;
+    }
+    for (const movedKeyPath of movedKeyPaths) restoreAt(movedKeyPath, keyPath);
   }
   if (currentBytes === null) return { bytes: null };
   let bytes = set.length + remove.length > 0 ? patchConfigBytes(file.format, file.path, currentBytes, { set, delete: remove }) : currentBytes;
@@ -634,7 +689,7 @@ export async function disconnectAgent(agentId: string, options: WiringOptions): 
   const messages: string[] = [];
   let wasConnected = false;
 
-  withExclusiveFileLock(wiringLockPath(options.wiringDirectory), () => {
+  withWiringAndRoutesLocks(options, () => {
     const records = readAppliedRecords(options.wiringDirectory);
     const record = Object.hasOwn(records, agentId) ? records[agentId] : undefined;
     const agentRouteIds = Object.entries(readWireGatewayRoutesFile(options.routesFilePath).routes)
@@ -643,7 +698,7 @@ export async function disconnectAgent(agentId: string, options: WiringOptions): 
     if (!record) {
       // Routes made by `wire run` or by hand for this agent, with no config edits to undo.
       for (const routeId of agentRouteIds) {
-        if (removeWireGatewayRoute(routeId, options.routesFilePath)) removedRouteIds.push(routeId);
+        if (removeWireGatewayRouteWhileRoutesFileIsLocked(routeId, options.routesFilePath)) removedRouteIds.push(routeId);
       }
       return;
     }
@@ -663,7 +718,7 @@ export async function disconnectAgent(agentId: string, options: WiringOptions): 
         }
       }
       for (const routeId of new Set([...record.routeIds, ...agentRouteIds])) {
-        if (removeWireGatewayRoute(routeId, options.routesFilePath)) removedRouteIds.push(routeId);
+        if (removeWireGatewayRouteWhileRoutesFileIsLocked(routeId, options.routesFilePath)) removedRouteIds.push(routeId);
       }
       updateStash(options.wiringDirectory, (agents) => {
         delete agents[agentId];

@@ -176,6 +176,35 @@ function copyClaudeMemState(options: PreviewOptions, sandbox: PreviewSandbox): v
   writeFileSync(join(sandboxWiringDirectory, 'applied.json'), JSON.stringify({ version: WIRING_RECORDS_VERSION, agents: applied }, null, 2), { mode: WIRE_GATEWAY_FILE_MODE });
 }
 
+/**
+ * The files connect reads but never writes (OpenCode's auth.json), each to
+ * where the sandboxed run will look for it: the same descriptor path worked
+ * out from the sandbox's env, so XDG_DATA_HOME and friends are followed,
+ * also one outside home. Not compared: they are inputs, never shown.
+ */
+function copyReadOnlyInputs(options: PreviewOptions, sandbox: PreviewSandbox, sandboxEnvironment: Record<string, string>): void {
+  const readOnlyInputPaths = options.descriptor.readOnlyInputPaths;
+  if (!readOnlyInputPaths) return;
+  const realPaths = readOnlyInputPaths(options.environment);
+  const sandboxPaths = readOnlyInputPaths({ ...options.environment, home: sandbox.home, env: sandboxEnvironment });
+  realPaths.forEach((realPath, index) => {
+    const sandboxPath = sandboxPaths[index];
+    if (sandboxPath === undefined || !isInside(sandbox.root, sandboxPath)) {
+      throw new Error(`wire preview cannot place ${realPath} in its sandbox; nothing was run`);
+    }
+    let stats: ReturnType<typeof statSync>;
+    try {
+      stats = statSync(realPath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw error;
+    }
+    if (!stats.isFile()) return;
+    if (stats.size > MAX_COPIED_FILE_BYTES) throw new Error(`${realPath} is larger than wire preview copies; nothing was run`);
+    copyRegularFile(realPath, sandboxPath);
+  });
+}
+
 /** Every file a preview compares: the descriptor's candidates and the record's files, plus their folders' config files. */
 function filesToCompare(options: PreviewOptions): string[] {
   const paths = new Set<string>();
@@ -204,6 +233,8 @@ export function runWirePreview(options: PreviewOptions): PreviewResult {
       else sandbox.mirror(path); // refuses a path outside home up front
     }
     copyClaudeMemState(options, sandbox);
+    const sandboxEnvironment = previewEnvironment(options.environment, sandbox, options.descriptor);
+    copyReadOnlyInputs(options, sandbox, sandboxEnvironment);
 
     const commandArguments = [options.scriptPath, options.disconnect ? 'disconnect' : 'connect', options.descriptor.id, PREVIEW_SANDBOX_FLAG];
     if (!options.disconnect && options.captureSource) commandArguments.push('--capture', options.captureSource);
@@ -212,7 +243,7 @@ export function runWirePreview(options: PreviewOptions): PreviewResult {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: PREVIEW_SUBPROCESS_TIMEOUT_MS,
       windowsHide: true,
-      env: previewEnvironment(options.environment, sandbox, options.descriptor),
+      env: sandboxEnvironment,
     });
     const commandOutput = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
     if (result.error) throw new Error(`the preview run could not start: ${result.error.message}`);

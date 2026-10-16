@@ -12,13 +12,20 @@
 // launcher, so they are not persisted.
 
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { constants } from 'os';
 import { relaySignalsToInteractiveChild } from '../../../shared/interactive-child-signals.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
-import { addWireGatewayRoute, readWireGatewayRoutesFile, type WireGatewayCaptureSource } from '../routes.js';
+import {
+  addWireGatewayRouteWhileRoutesFileIsLocked,
+  readWireGatewayRoutesFile,
+  withWireGatewayRoutesFileLock,
+  type WireGatewayCaptureSource,
+  type WireGatewayRoute,
+} from '../routes.js';
 import { isExecutableOnPath } from '../agents/agent-paths.js';
 import type { AgentDescriptor, AgentEnvironment } from '../agents/types.js';
-import { isGatewayRouteUrl, splitUpstreamForRoute } from './wiring-engine.js';
+import { isGatewayRouteUrl, readCurrentBaseUrlTargets, splitUpstreamForRoute } from './wiring-engine.js';
 
 export interface LaunchDependencies {
   environment: AgentEnvironment;
@@ -40,19 +47,93 @@ export interface PreparedLaunch {
   launchBaseUrl: string;
 }
 
-/** The env value the agent already has, unless it is this gateway's own URL. */
-function currentUpstream(descriptor: AgentDescriptor, dependencies: LaunchDependencies): string {
+/**
+ * A gateway route URL (`<origin>/r/<routeId>/<path>`) turned back into the
+ * provider URL it relays to: that route's upstream plus the path.
+ */
+function upstreamBehindGatewayUrl(gatewayUrl: string, routes: Record<string, WireGatewayRoute>, where: string): string {
+  const [, routeId = '', ...pathSegments] = new URL(gatewayUrl).pathname.slice(1).split('/');
+  const route = Object.hasOwn(routes, routeId) ? routes[routeId] : undefined;
+  if (!route) {
+    throw new Error(`${where} points at the wire gateway's route "${routeId}", which does not exist; set it back to your provider's URL (or run claude-mem wire disconnect), then run this again`);
+  }
+  // A launch URL (`/r/<routeId>/l/<launchId>/<path>`, e.g. `wire run` from inside a launched agent) keeps only its path.
+  const providerPathSegments = pathSegments[0] === 'l' ? pathSegments.slice(2) : pathSegments;
+  const path = providerPathSegments.length > 0 ? `/${providerPathSegments.join('/')}` : '';
+  return `${route.upstreamBaseUrl}${path}`;
+}
+
+/**
+ * The provider URL the agent would use without the gateway: its env var,
+ * else the base URL saved in its own config (e.g. GOOGLE_GEMINI_BASE_URL in
+ * ~/.gemini/.env, read the way `wire status` reads it), else its built-in
+ * endpoint. A value that is already one of this gateway's route URLs stands
+ * for that route's upstream.
+ */
+function currentUpstream(descriptor: AgentDescriptor, dependencies: LaunchDependencies, routes: Record<string, WireGatewayRoute>): string {
   const launch = descriptor.launch!;
   const fromEnvironment = dependencies.environment.env[launch.baseUrlVariable];
   if (fromEnvironment && !isGatewayRouteUrl(fromEnvironment, dependencies.gatewayOrigin)) return fromEnvironment;
+  let savedTargets: ReturnType<typeof readCurrentBaseUrlTargets>;
+  try {
+    savedTargets = readCurrentBaseUrlTargets(descriptor, dependencies.environment);
+  } catch (error) {
+    throw new Error(`${descriptor.name}: could not read its saved base URL (${error instanceof Error ? error.message : String(error)}); fix the file or set ${launch.baseUrlVariable}, then run this again`);
+  }
+  for (const target of savedTargets) {
+    if (typeof target.value !== 'string' || target.value === '') continue;
+    if (!isGatewayRouteUrl(target.value, dependencies.gatewayOrigin)) return target.value;
+    return upstreamBehindGatewayUrl(target.value, routes, `${target.keyPath} in ${target.filePath}`);
+  }
+  if (fromEnvironment) return upstreamBehindGatewayUrl(fromEnvironment, routes, launch.baseUrlVariable);
   if (launch.defaultUpstream) return launch.defaultUpstream;
   throw new Error(`${descriptor.name} has no default endpoint: set ${launch.baseUrlVariable} to your provider's URL, then run this again`);
 }
 
+const LAUNCH_ROUTE_UPSTREAM_HASH_LENGTH = 10;
+
+/**
+ * `<agentId>-launch-<hash of the upstream>`: each upstream gets its own
+ * launch route, so a launch to another provider never repoints the route an
+ * earlier, still-running launch relays through.
+ */
+function launchRouteIdFor(agentId: string, upstreamBaseUrl: string): string {
+  const upstreamHash = createHash('sha256').update(upstreamBaseUrl).digest('hex').slice(0, LAUNCH_ROUTE_UPSTREAM_HASH_LENGTH);
+  const suffix = `-launch-${upstreamHash}`;
+  return `${agentId.slice(0, 64 - suffix.length)}${suffix}`;
+}
+
+/**
+ * Under the routes lock: pick the route for this upstream, add it when
+ * missing, and bring a reused route's capture source up to date (native
+ * hooks installed or removed since it was made). A route that relays
+ * elsewhere is never repointed: it may carry a running launch.
+ */
+function claimLaunchRoute(agentId: string, upstreamBaseUrl: string, captureSource: WireGatewayCaptureSource, routesFilePath: string): string {
+  return withWireGatewayRoutesFileLock(routesFilePath, () => {
+    const routes = readWireGatewayRoutesFile(routesFilePath).routes;
+    const ownRoute = Object.hasOwn(routes, agentId) ? routes[agentId] : undefined;
+    const routeId = !ownRoute || (ownRoute.agentId === agentId && ownRoute.upstreamBaseUrl === upstreamBaseUrl)
+      ? agentId
+      : launchRouteIdFor(agentId, upstreamBaseUrl);
+    const existing = Object.hasOwn(routes, routeId) ? routes[routeId] : undefined;
+    if (existing && existing.agentId !== agentId) {
+      throw new Error(`Route "${routeId}" belongs to agent ${existing.agentId}; remove it (claude-mem wire routes remove ${routeId}) first`);
+    }
+    if (existing && existing.upstreamBaseUrl !== upstreamBaseUrl) {
+      throw new Error(`Route "${routeId}" already relays to ${existing.upstreamBaseUrl}, not ${upstreamBaseUrl}; remove it (claude-mem wire routes remove ${routeId}) first`);
+    }
+    if (!existing || existing.captureSource !== captureSource) {
+      addWireGatewayRouteWhileRoutesFileIsLocked({ routeId, agentId, upstreamBaseUrl, captureSource, features: existing?.features }, routesFilePath);
+    }
+    return routeId;
+  });
+}
+
 /**
  * Pick (or add) the route and make the launch. The agent's own route is used
- * when it relays to the same upstream; otherwise a `<agentId>-launch` route
- * carries the launch, so a config-wired route keeps its upstream.
+ * when it relays to the same upstream; otherwise a launch route for that
+ * upstream carries it, so a config-wired route keeps its upstream.
  */
 export async function prepareAgentLaunch(
   descriptor: AgentDescriptor,
@@ -77,20 +158,9 @@ export async function prepareAgentLaunch(
   if (!executablePath) throw new Error(`${command} was not found on PATH`);
 
   await dependencies.ensureGatewayRunning();
-  const routes = readWireGatewayRoutesFile(dependencies.routesFilePath).routes;
-  const upstreamValue = currentUpstream(descriptor, dependencies);
-  const ownRoute = Object.hasOwn(routes, descriptor.id) ? routes[descriptor.id] : undefined;
+  const upstreamValue = currentUpstream(descriptor, dependencies, readWireGatewayRoutesFile(dependencies.routesFilePath).routes);
   const { upstreamBaseUrl } = splitUpstreamForRoute(upstreamValue, dependencies.gatewayOrigin, descriptor.id);
-  const routeId = !ownRoute || (ownRoute.agentId === descriptor.id && ownRoute.upstreamBaseUrl === upstreamBaseUrl)
-    ? descriptor.id
-    : `${descriptor.id}-launch`;
-  const existing = Object.hasOwn(routes, routeId) ? routes[routeId] : undefined;
-  if (existing && existing.agentId !== descriptor.id) {
-    throw new Error(`Route "${routeId}" belongs to agent ${existing.agentId}; remove it (claude-mem wire routes remove ${routeId}) first`);
-  }
-  if (!existing || existing.upstreamBaseUrl !== upstreamBaseUrl) {
-    addWireGatewayRoute({ routeId, agentId: descriptor.id, upstreamBaseUrl, captureSource }, dependencies.routesFilePath);
-  }
+  const routeId = claimLaunchRoute(descriptor.id, upstreamBaseUrl, captureSource, dependencies.routesFilePath);
 
   const launchId = await dependencies.createLaunch(descriptor.id, dependencies.cwd);
   const { agentBaseUrl } = splitUpstreamForRoute(upstreamValue, dependencies.gatewayOrigin, `${routeId}/l/${launchId}`);

@@ -258,6 +258,11 @@ const OPENCODE_PACKAGE_BY_PROVIDER_ID: Record<string, string> = {
   google: '@ai-sdk/google',
 };
 
+/** auth.json lives in OpenCode's data folder, not its config folder (opencode global/index.ts). */
+function openCodeAuthPaths(environment: AgentEnvironment): string[] {
+  return [join(xdgDataHome(environment), 'opencode', 'auth.json')];
+}
+
 const openCode: AgentDescriptor = {
   id: 'opencode',
   name: 'OpenCode',
@@ -293,7 +298,7 @@ const openCode: AgentDescriptor = {
     // auth.json: provider id → {type: "oauth" | "api" | "wellknown"} (opencode auth/index.ts:10-35);
     // OPENCODE_AUTH_CONTENT replaces the file when set (:59-62).
     const authContent = context.environment.env.OPENCODE_AUTH_CONTENT;
-    const authPath = join(xdgDataHome(context.environment), 'opencode', 'auth.json');
+    const [authPath] = openCodeAuthPaths(context.environment);
     const auth = authContent ? readConfigValueAtRoot('OPENCODE_AUTH_CONTENT', new TextEncoder().encode(authContent)) : readJsonFileIfPresent(authPath);
     if (!isPlainObjectValue(auth)) return null;
     for (const target of targets) {
@@ -304,6 +309,7 @@ const openCode: AgentDescriptor = {
     }
     return null;
   },
+  readOnlyInputPaths: openCodeAuthPaths,
   nativeIntegration: {
     isInstalled: (environment) => pathExists(join(openCodeConfigDirectory(environment), 'plugins', 'claude-mem.js')),
     uninstallCommand: UNINSTALL_ALL_INTEGRATIONS,
@@ -604,8 +610,9 @@ const SUBSCRIPTION_CREDENTIAL_PREFIXES = [SUBSCRIPTION_TOKEN_PREFIX, 'eyJ'];
  * Droid's own (BYOK) models are the customModels array of settings.json; each
  * entry with a baseUrl gets a route. Factory-hosted models are not in it and
  * are never touched. The legacy config.json custom_models is left alone, as
- * magpie does (droid.go:8-9). An entry is addressed by its index, so an entry
- * moved before disconnect is reported `replaced` rather than edited.
+ * magpie does (droid.go:8-9). An entry is addressed by its index; one moved
+ * before disconnect is found by the gateway URL connect wrote and restored
+ * where it now is (wiring-engine movedArrayEntryKeyPaths).
  */
 const droid: AgentDescriptor = {
   id: 'droid',

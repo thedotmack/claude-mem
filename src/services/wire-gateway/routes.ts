@@ -109,8 +109,41 @@ export interface AddWireGatewayRouteInput {
   features?: WireGatewayRouteFeatures;
 }
 
-/** Add (or replace) a route. Throws on an invalid id or upstream. */
-export function addWireGatewayRoute(input: AddWireGatewayRouteInput, routesFilePath: string = paths.wireGatewayRoutes()): WireGatewayRoute {
+/** routes.json paths whose lock this process holds now (see withWireGatewayRoutesFileLock). */
+const routesFilePathsLockedByThisProcess = new Set<string>();
+
+/**
+ * Hold routes.json's lock across `readModifyWrite`, so a caller can read
+ * routes, decide and write (or snapshot, edit and roll back) without another
+ * process's `routes add` landing in between and being lost. Inside, use the
+ * `…WhileRoutesFileIsLocked` helpers: the lock is not re-entrant, so the
+ * locking helpers refuse (rather than wait on themselves) while it is held.
+ */
+export function withWireGatewayRoutesFileLock<T>(routesFilePath: string, readModifyWrite: () => T): T {
+  if (routesFilePathsLockedByThisProcess.has(routesFilePath)) {
+    throw new Error(`${routesFilePath} is already locked by this process; use the …WhileRoutesFileIsLocked route helpers inside the lock`);
+  }
+  return withExclusiveFileLock(routesFilePath, () => {
+    routesFilePathsLockedByThisProcess.add(routesFilePath);
+    try {
+      const result = readModifyWrite();
+      if (result instanceof Promise) {
+        throw new Error('withWireGatewayRoutesFileLock() takes a synchronous function; an async one would outlive the lock');
+      }
+      return result;
+    } finally {
+      routesFilePathsLockedByThisProcess.delete(routesFilePath);
+    }
+  });
+}
+
+function requireRoutesFileLockHeld(routesFilePath: string): void {
+  if (!routesFilePathsLockedByThisProcess.has(routesFilePath)) {
+    throw new Error(`${routesFilePath} must be locked (withWireGatewayRoutesFileLock) before it is edited`);
+  }
+}
+
+function buildWireGatewayRoute(input: AddWireGatewayRouteInput): WireGatewayRoute {
   if (!WIRE_GATEWAY_ROUTE_ID_PATTERN.test(input.routeId)) {
     throw new Error(`Route id "${input.routeId}" must match ${WIRE_GATEWAY_ROUTE_ID_PATTERN} (lowercase letters, digits, ".", "_", "-"; at most 64)`);
   }
@@ -121,7 +154,7 @@ export function addWireGatewayRoute(input: AddWireGatewayRouteInput, routesFileP
   if (upstreamError) {
     throw new Error(upstreamError);
   }
-  const route: WireGatewayRoute = {
+  return {
     agentId: input.agentId,
     // The suffix is appended verbatim; a trailing slash here would double it.
     upstreamBaseUrl: input.upstreamBaseUrl.replace(/\/+$/, ''),
@@ -129,26 +162,41 @@ export function addWireGatewayRoute(input: AddWireGatewayRouteInput, routesFileP
     features: input.features ?? {},
     createdAt: new Date().toISOString(),
   };
-  withExclusiveFileLock(routesFilePath, () => {
-    const routesFile = readWireGatewayRoutesFile(routesFilePath);
-    routesFile.routes[input.routeId] = route;
-    writeWireGatewayRoutesFile(routesFile, routesFilePath);
-  });
+}
+
+/** addWireGatewayRoute for a caller already inside withWireGatewayRoutesFileLock. */
+export function addWireGatewayRouteWhileRoutesFileIsLocked(input: AddWireGatewayRouteInput, routesFilePath: string): WireGatewayRoute {
+  requireRoutesFileLockHeld(routesFilePath);
+  const route = buildWireGatewayRoute(input);
+  const routesFile = readWireGatewayRoutesFile(routesFilePath);
+  routesFile.routes[input.routeId] = route;
+  writeWireGatewayRoutesFile(routesFile, routesFilePath);
   return route;
+}
+
+/** removeWireGatewayRoute for a caller already inside withWireGatewayRoutesFileLock. */
+export function removeWireGatewayRouteWhileRoutesFileIsLocked(routeId: string, routesFilePath: string): boolean {
+  requireRoutesFileLockHeld(routesFilePath);
+  const routesFile = readWireGatewayRoutesFile(routesFilePath);
+  // Own properties only: "constructor" is a valid route id and an inherited name.
+  if (!Object.hasOwn(routesFile.routes, routeId)) {
+    return false;
+  }
+  delete routesFile.routes[routeId];
+  writeWireGatewayRoutesFile(routesFile, routesFilePath);
+  return true;
+}
+
+/** Add (or replace) a route. Throws on an invalid id or upstream. */
+export function addWireGatewayRoute(input: AddWireGatewayRouteInput, routesFilePath: string = paths.wireGatewayRoutes()): WireGatewayRoute {
+  // Validate before taking the lock, so a bad id or URL never waits on another process.
+  buildWireGatewayRoute(input);
+  return withWireGatewayRoutesFileLock(routesFilePath, () => addWireGatewayRouteWhileRoutesFileIsLocked(input, routesFilePath));
 }
 
 /** Remove a route. Returns false when there was none by that id. */
 export function removeWireGatewayRoute(routeId: string, routesFilePath: string = paths.wireGatewayRoutes()): boolean {
-  return withExclusiveFileLock(routesFilePath, () => {
-    const routesFile = readWireGatewayRoutesFile(routesFilePath);
-    // Own properties only: "constructor" is a valid route id and an inherited name.
-    if (!Object.hasOwn(routesFile.routes, routeId)) {
-      return false;
-    }
-    delete routesFile.routes[routeId];
-    writeWireGatewayRoutesFile(routesFile, routesFilePath);
-    return true;
-  });
+  return withWireGatewayRoutesFileLock(routesFilePath, () => removeWireGatewayRouteWhileRoutesFileIsLocked(routeId, routesFilePath));
 }
 
 export type WireGatewayRouteLookup =

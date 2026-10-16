@@ -139,6 +139,21 @@ describe('TOML editor: byte-exact set → delete round trips', () => {
     expectRefusedUnchanged(patchTomlDocument, 'a = 1\n', { set: [{ keyPath: 'b', value: 'x\u007F' }] }, 'control character');
   });
 
+  it('reads a date-shaped bare key inside an inline table as a key, not a datetime', () => {
+    // `2023-04-01` is a valid bare key; only a value position holds a datetime. Bun 1.3.9 silently
+    // reads `{ 2023-04-01 = "x" }` as `{ 2023 = 4, 01 = "x" }`, so the bare key is refused as a key
+    // (not as a datetime) on every Bun version, and the quoted key is accepted.
+    for (const dateShapedKeyFile of ['d = { 2023-04-01 = "x" }\n', 'd = { a = 1, 1979-05-27 = "x" }\n']) {
+      expectRefusedUnchanged(patchTomlDocument, dateShapedKeyFile, { set: [{ keyPath: 'y', value: 1 }] }, 'date-shaped bare key');
+    }
+    expect(patchToml('d = { "2023-04-01" = "x" }\n', { set: [{ keyPath: 'y', value: 1 }] })).toBe('d = { "2023-04-01" = "x" }\ny = 1\n');
+    expect(readTomlValueAtKeyPath(encoder.encode('d = { "2023-04-01" = "x", a = [1, 2] }\n'), 'd')).toEqual({ '2023-04-01': 'x', a: [1, 2] });
+    // A datetime value inside an inline table, nested in an array, or on its own line in an array is still refused as a datetime.
+    for (const datetimeFile of ['d = { "2023-04-01" = 1979-05-27 }\n', 'd = [{ k = 1 }, 1979-05-27]\n', 'd = { a = [1979-05-27] }\n', 'd = [\n  1979-05-27,\n]\n']) {
+      expectRefusedUnchanged(patchTomlDocument, datetimeFile, { set: [{ keyPath: 'y', value: 1 }] }, 'datetime at offset');
+    }
+  });
+
   it('stays linear on hostile 1 MB inputs', () => {
     expectWithinBudget('brackets', () => patchToml('['.repeat(ONE_MEGABYTE), { set: [{ keyPath: 'a', value: 1 }] }));
     expectWithinBudget('unterminated multi-line string', () => patchToml(`a = """${'x'.repeat(ONE_MEGABYTE)}`, { set: [{ keyPath: 'a', value: 1 }] }));

@@ -148,6 +148,12 @@ export interface AgentDescriptor {
    * A refusal names the native path the agent stays on.
    */
   detectSubscription?(context: AgentConfigReadContext, targets: ResolvedBaseUrlTarget[]): string | null;
+  /**
+   * Files connect reads but never writes and that are not among `files`
+   * (OpenCode's auth.json, in its data folder): `wire preview` copies them
+   * into its sandbox so its connect decides as the real one would.
+   */
+  readOnlyInputPaths?(environment: AgentEnvironment): string[];
   nativeIntegration?: AgentNativeIntegrationDescriptor;
   lastUsed?: AgentLastUsedDescriptor;
   /**

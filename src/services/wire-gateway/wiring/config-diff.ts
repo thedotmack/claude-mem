@@ -10,7 +10,8 @@
 //   - an added line pairs with a removed line of the same key and indent as
 //     `~ new (was old)`; the rest are `+` and `-`;
 //   - a value whose key names a secret (key, token, secret, password, auth;
-//     not *TOKENS) is shown as ••••.
+//     not *TOKENS) is shown as ••••, also one nested inside the line (a
+//     compact JSON object, a TOML inline table, a YAML flow map).
 
 import { trimCharacters } from '../edit/text-shape.js';
 
@@ -118,15 +119,102 @@ function indentOf(line: string): string {
   return LEADING_WHITESPACE_PATTERN.exec(line)![0];
 }
 
-/** A secret-named key's value as ••••; anything else unchanged. */
-export function maskSecretLine(line: string): string {
+function isSecretKeyName(key: string): boolean {
+  return SECRET_NAME_PATTERN.test(key) && !key.toUpperCase().endsWith('TOKENS');
+}
+
+/** The line's own key's value as •••• (`key = value`, `"key": value`); anything else unchanged. */
+function maskLeadingSecretValue(line: string): string {
   const key = lineKey(line);
-  if (!key || !SECRET_NAME_PATTERN.test(key) || key.toUpperCase().endsWith('TOKENS')) return line;
+  if (!key || !isSecretKeyName(key)) return line;
   const match = LINE_KEY_PATTERN.exec(line);
   if (!match) return line;
   const bareValue = trimCharacters(line.slice(match[0].length).trim(), '"\', ');
   if (bareValue === '' || bareValue.startsWith('{') || bareValue.startsWith('$')) return line;
   return `${line.slice(0, match[0].length)} ••••`;
+}
+
+function isBareKeyCharacter(character: string): boolean {
+  const code = character.charCodeAt(0);
+  return (code >= 0x30 && code <= 0x39) || (code >= 0x41 && code <= 0x5a) || (code >= 0x61 && code <= 0x7a) || character === '_' || character === '-' || character === '.';
+}
+
+/** Past a quoted string opening at `start` (`"` honours backslash escapes); the line's end when unterminated. */
+function endOfQuoted(line: string, start: number): number {
+  const quote = line[start];
+  for (let position = start + 1; position < line.length; position++) {
+    if (quote === '"' && line[position] === '\\') {
+      position++;
+      continue;
+    }
+    if (line[position] === quote) return position + 1;
+  }
+  return line.length;
+}
+
+/**
+ * Every secret-named member inside the line as ••••, wherever it sits: a
+ * compact JSON object (`{"baseUrl":"…","apiKey":"sk-…"}`), a TOML inline
+ * table or a YAML flow map. One left-to-right pass, so linear: each key or
+ * value is read once. An object or array value is walked into, not masked;
+ * a `$REFERENCE` is kept.
+ */
+function maskNestedSecretValues(line: string): string {
+  let masked = '';
+  let copiedUpTo = 0;
+  let position = 0;
+  while (position < line.length) {
+    const character = line[position];
+    let tokenEnd: number;
+    let key: string;
+    if (character === '"' || character === "'") {
+      tokenEnd = endOfQuoted(line, position);
+      key = line.slice(position + 1, tokenEnd - 1);
+    } else if (isBareKeyCharacter(character)) {
+      tokenEnd = position + 1;
+      while (tokenEnd < line.length && isBareKeyCharacter(line[tokenEnd])) tokenEnd++;
+      key = line.slice(position, tokenEnd);
+    } else {
+      position++;
+      continue;
+    }
+    let afterKey = tokenEnd;
+    while (line[afterKey] === ' ' || line[afterKey] === '\t') afterKey++;
+    if ((line[afterKey] !== ':' && line[afterKey] !== '=') || !isSecretKeyName(key)) {
+      position = tokenEnd;
+      continue;
+    }
+    let valueStart = afterKey + 1;
+    while (line[valueStart] === ' ' || line[valueStart] === '\t') valueStart++;
+    const valueFirst = line[valueStart];
+    if (valueFirst === undefined || valueFirst === '{' || valueFirst === '[' || valueFirst === '$') {
+      position = valueStart;
+      continue;
+    }
+    let valueEnd: number;
+    if (valueFirst === '"' || valueFirst === "'") {
+      if (line[valueStart + 1] === '$') {
+        position = endOfQuoted(line, valueStart);
+        continue;
+      }
+      valueEnd = endOfQuoted(line, valueStart);
+    } else {
+      valueEnd = valueStart;
+      while (valueEnd < line.length && line[valueEnd] !== ',' && line[valueEnd] !== '}' && line[valueEnd] !== ']') valueEnd++;
+      while (valueEnd > valueStart && (line[valueEnd - 1] === ' ' || line[valueEnd - 1] === '\t')) valueEnd--;
+    }
+    masked += `${line.slice(copiedUpTo, valueStart)}••••`;
+    copiedUpTo = valueEnd;
+    position = valueEnd;
+  }
+  return copiedUpTo === 0 ? line : masked + line.slice(copiedUpTo);
+}
+
+/** Every secret-named key's value as ••••, the line's own key and any nested in it; anything else unchanged. */
+export function maskSecretLine(line: string): string {
+  const leadingMasked = maskLeadingSecretValue(line);
+  if (leadingMasked !== line) return leadingMasked;
+  return maskNestedSecretValues(line);
 }
 
 function isStructuralOnly(line: string): boolean {
