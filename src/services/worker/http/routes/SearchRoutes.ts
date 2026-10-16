@@ -41,6 +41,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
 import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 
@@ -552,7 +553,13 @@ export class SearchRoutes extends BaseRouteHandler {
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
-      reserveChars: workStateSection ? workStateSection.length + 2 : 0,
+      // Beside the work-state section: room for what the hook appends after
+      // this body once the install is in a team (the TeamBrain brief). Env
+      // first, as the hook reads it.
+      reserveChars: (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
+        CLAUDE_MEM_TEAMBRAIN_URL: process.env.CLAUDE_MEM_TEAMBRAIN_URL ?? settings.CLAUDE_MEM_TEAMBRAIN_URL,
+        CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED ?? settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED,
+      }),
       timePlaceholders: true,
       includePriorMessage: request.includePriorMessage,
     }, forHuman);

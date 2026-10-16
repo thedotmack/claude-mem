@@ -28,6 +28,8 @@ export interface RecordedRequest {
 export interface MockReply {
   status?: number;
   body?: unknown;
+  /** Send this text as the body instead of JSON. */
+  raw?: string;
   /** Hold the answer this long (a server that stalls). */
   delayMs?: number;
 }
@@ -36,6 +38,12 @@ export interface TeamBrainMockState {
   /** The poll's ready body; defaults to a seat holder's (no memory_* fields). */
   readyBody: Record<string, unknown>;
   oauthStart: MockReply | null;
+  /** Replaces the poll's ready answer (e.g. a 410 join_failed). */
+  poll: MockReply | null;
+  /** Replaces the cli/status answer (e.g. a 500). */
+  status: MockReply | null;
+  /** Replaces the worker's /api/health answer. */
+  health: MockReply | null;
   teams: Array<Record<string, unknown>>;
   brief: MockReply;
   search: MockReply;
@@ -44,6 +52,8 @@ export interface TeamBrainMockState {
   projects: string[];
   workerPid: number;
   syncConfigured: boolean;
+  /** What /api/sync/status reports after a restart. */
+  syncConfiguredAfterRestart: boolean;
   /** The bearer and user id TeamBrain calls must carry. */
   expectedToken: string;
   expectedUserId: string;
@@ -76,6 +86,7 @@ function json(body: unknown, status = 200): Response {
 
 async function reply(answer: MockReply, fallback: unknown): Promise<Response> {
   if (answer.delayMs) await new Promise(resolve => setTimeout(resolve, answer.delayMs));
+  if (answer.raw !== undefined) return new Response(answer.raw, { status: answer.status ?? 200 });
   return json(answer.body ?? fallback, answer.status ?? 200);
 }
 
@@ -119,25 +130,29 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
           expires_in: 60,
         });
       }
-      if (route === 'POST /api/pro/trial/poll') return json(state.readyBody);
+      if (route === 'POST /api/pro/trial/poll') return state.poll ? reply(state.poll, {}) : json(state.readyBody);
 
       if (url.pathname.startsWith('/api/teambrain/')) {
         if (recorded.authorization !== `Bearer ${state.expectedToken}` || recorded.userId !== state.expectedUserId) {
           return json({ error: 'unauthorized' }, 401);
         }
-        if (route === 'GET /api/teambrain/cli/status') return json({ teams: state.teams });
+        if (route === 'GET /api/teambrain/cli/status') return state.status ? reply(state.status, {}) : json({ teams: state.teams });
         if (route === 'POST /api/teambrain/cli/membership') return reply(state.membership, { ok: true });
-        if (route === 'POST /api/teambrain/cli/leave') return reply(state.leave, { ok: true });
+        if (route === 'POST /api/teambrain/cli/leave') {
+          const leftTeamId = (body as { team_id?: unknown } | null)?.team_id;
+          if (!state.leave.status) state.teams = state.teams.filter(team => team.id !== leftTeamId);
+          return reply(state.leave, { ok: true });
+        }
         if (route === 'GET /api/teambrain/brief') {
           return reply(state.brief, { team: MOCK_TEAM, text: `Brief for ${url.searchParams.get('project')}` });
         }
         if (route === 'POST /api/teambrain/search') return reply(state.search, { results: [], text: '' });
       }
 
-      if (route === 'GET /api/health') return json({ status: 'ok', pid: state.workerPid });
+      if (route === 'GET /api/health') return state.health ? reply(state.health, {}) : json({ status: 'ok', pid: state.workerPid });
       if (route === 'POST /api/admin/restart') {
         state.workerPid += 1;
-        state.syncConfigured = true;
+        state.syncConfigured = state.syncConfiguredAfterRestart;
         return json({ status: 'restarting' });
       }
       if (route === 'GET /api/sync/status') {
@@ -153,6 +168,9 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
   Object.assign(state, {
     readyBody: seatReadyBody(origin),
     oauthStart: null,
+    poll: null,
+    status: null,
+    health: null,
     teams: [{ ...MOCK_TEAM, role: 'member', broadcasting: false, projects: null, seats_used: 2, seat_limit: 5 }],
     brief: {},
     search: {},
@@ -161,6 +179,7 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
     projects: ['proj-a', 'proj-b'],
     workerPid: 100,
     syncConfigured: false,
+    syncConfiguredAfterRestart: true,
     expectedToken: MOCK_SEAT_SETUP_TOKEN,
     expectedUserId: MOCK_SEAT_USER_ID,
     ...overrides,

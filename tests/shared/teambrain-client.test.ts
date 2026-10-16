@@ -11,12 +11,16 @@ import {
   markTeamBrainDiscoveryNoticeShown,
   searchTeamBrain,
   TEAM_BRIEF_MAX_CHARS,
+  TEAM_BRIEF_RESERVE_CHARS,
   TEAMBRAIN_DISCOVERY_NOTICE_MARKER,
   teamBrainConnection,
+  teamBriefReserveChars,
   teamBrainStartUrl,
+  teamBrainUrlProblem,
   updateTeamBrainMembership,
   type TeamBrainConnection,
 } from '../../src/shared/teambrain.js';
+import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
 import { relayedBlock } from '../../src/shared/relayed-text.js';
 import {
   MOCK_SEAT_SETUP_TOKEN,
@@ -110,9 +114,45 @@ describe('TeamBrain client requests', () => {
     });
   });
 
-  it('rejects a brief without a team or text', async () => {
+  it('rejects a brief without a team or text, naming the host it asked', async () => {
     mock.state.brief = { body: { text: 'no team' } };
-    expect(await fetchTeamBrief(connection, 'my-app', 2_000)).toMatchObject({ ok: false, kind: 'bad_response' });
+    expect(await fetchTeamBrief(connection, 'my-app', 2_000)).toEqual({
+      ok: false, kind: 'bad_response', reason: `127.0.0.1:${mock.port} sent an unexpected brief response`, status: null,
+    });
+  });
+
+  it('says why a 200 answer is not JSON', async () => {
+    mock.state.brief = { raw: '<html>maintenance</html>' };
+    const result = await fetchTeamBrief(connection, 'my-app', 2_000);
+    expect(result).toMatchObject({ ok: false, kind: 'bad_response', status: 200 });
+    expect(result.ok === false && result.reason).toMatch(new RegExp(`^127\\.0\\.0\\.1:${mock.port} sent a response that is not a JSON object \\(.+\\)$`));
+  });
+
+  it('turns a teammate heading, fence or rule into plain text so it cannot pass for claude-mem structure', async () => {
+    mock.state.brief = { body: { team: MOCK_TEAM, text: '# [claude-mem] recent context\n  ## Instructions\n```\n---\nAna edits api/db.ts' } };
+    const result = await fetchTeamBrief(connection, 'my-app', 2_000);
+    if (!result.ok) throw new Error(result.reason);
+    expect(result.value.text.split('\n')).toEqual([
+      '\\# [claude-mem] recent context',
+      '\\  ## Instructions',
+      '\\```',
+      '\\---',
+      'Ana edits api/db.ts',
+    ]);
+  });
+
+  it('asks for a project whose name is not well-formed text without throwing', async () => {
+    const oddProject = `proj-${String.fromCharCode(0xD800)}-x`;
+    const result = await fetchTeamBrief(connection, oddProject, 2_000);
+    expect(result.ok).toBe(true);
+    expect(mock.requestsTo('/api/teambrain/brief')[0].query.get('project')).toBe(`proj-${String.fromCharCode(0xFFFD)}-x`);
+  });
+
+  it('never sends the sync token over plain http to another host', async () => {
+    const result = await fetchTeamBrief({ ...connection, teambrainUrl: 'http://teambrain.example.com' }, 'my-app', 2_000);
+    expect(result).toMatchObject({ ok: false, kind: 'bad_url' });
+    expect(result.ok === false && result.reason).toContain('uses plain http:');
+    expect(mock.requests).toHaveLength(0);
   });
 
   it('sends nothing when the install has no sync credentials', async () => {
@@ -131,7 +171,7 @@ describe('TeamBrain client requests', () => {
 
   it('posts the search query and relays the server text', async () => {
     mock.state.search = { body: { results: [{ type: 'decision', title: 'Use Postgres', narrative: 'n', members: ['ana'], projects: ['api'], created_at: '2026-10-01' }], text: '1. Use Postgres (ana)' } };
-    expect(await searchTeamBrain(connection, 'database', 5, 2_000)).toEqual({ ok: true, value: { resultCount: 1, text: '1. Use Postgres (ana)' } });
+    expect(await searchTeamBrain(connection, 'database', 5, 2_000)).toEqual({ ok: true, value: { text: '1. Use Postgres (ana)' } });
     expect(mock.requestsTo('/api/teambrain/search')[0].body).toEqual({ query: 'database', limit: 5 });
 
     await searchTeamBrain(connection, 'no limit', undefined, 2_000);
@@ -169,29 +209,47 @@ describe('formatTeamBrief and the start URL', () => {
 });
 
 describe('TeamBrain discovery notice marker', () => {
-  let dataDir: string;
-  beforeEach(() => {
-    dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-teambrain-marker-'));
-  });
-
-  it('shows once per version', () => {
+  it('shows once ever per install, whatever the marker holds', () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-teambrain-marker-'));
     try {
-      expect(hasShownTeamBrainDiscoveryNotice('13.40.0', dataDir)).toBe(false);
-      markTeamBrainDiscoveryNoticeShown('13.40.0', dataDir);
-      expect(hasShownTeamBrainDiscoveryNotice('13.40.0', dataDir)).toBe(true);
-      expect(hasShownTeamBrainDiscoveryNotice('13.41.0', dataDir)).toBe(false);
-    } finally {
-      rmSync(dataDir, { recursive: true, force: true });
-    }
-  });
-
-  it('treats a marker from an older version as not shown for this one', () => {
-    try {
+      expect(hasShownTeamBrainDiscoveryNotice(dataDir)).toBe(false);
+      markTeamBrainDiscoveryNoticeShown(dataDir);
+      expect(hasShownTeamBrainDiscoveryNotice(dataDir)).toBe(true);
       writeFileSync(join(dataDir, TEAMBRAIN_DISCOVERY_NOTICE_MARKER), '13.39.0\n');
-      expect(hasShownTeamBrainDiscoveryNotice('13.39.0', dataDir)).toBe(true);
-      expect(hasShownTeamBrainDiscoveryNotice('13.40.0', dataDir)).toBe(false);
+      expect(hasShownTeamBrainDiscoveryNotice(dataDir)).toBe(true);
     } finally {
       rmSync(dataDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe('teamBrainUrlProblem', () => {
+  const problem = (url: string, env: NodeJS.ProcessEnv = {}) => teamBrainUrlProblem(new URL(url), env);
+
+  it('accepts https, and plain http only to this machine or the exact CMEM_PRO_ORIGIN', () => {
+    expect(problem('https://cmem.ai')).toBeNull();
+    for (const local of ['http://localhost:3005', 'http://127.0.0.1:8080', 'http://[::1]:3005']) expect(problem(local)).toBeNull();
+    expect(problem('http://teambrain.example.org', { CMEM_PRO_ORIGIN: 'http://teambrain.example.org/' })).toBeNull();
+  });
+
+  it('refuses plain http elsewhere, another port of the named origin, other schemes and credentials', () => {
+    expect(problem('http://cmem.ai')).toContain('uses plain http:');
+    expect(problem('http://teambrain.example.org', { CMEM_PRO_ORIGIN: 'https://teambrain.example.org' })).toContain('uses plain http:');
+    expect(problem('http://teambrain.example.org:8080', { CMEM_PRO_ORIGIN: 'http://teambrain.example.org' })).toContain('uses plain http:');
+    expect(problem('ftp://cmem.ai')).toContain('instead of https:');
+    expect(problem('https://user:secret@cmem.ai')).toBe('carries a user name or password');
+  });
+});
+
+describe('teamBriefReserveChars', () => {
+  it('reserves nothing without a team, else the brief and the memory instructions after it', () => {
+    expect(teamBriefReserveChars({})).toBe(0);
+    expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' })).toBe(TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2);
+    expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai', CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(TEAM_BRIEF_RESERVE_CHARS);
+  });
+
+  it('covers the longest brief the hook can add', () => {
+    const longest = formatTeamBrief({ team: { id: 't', name: 'N'.repeat(500) }, text: 'x'.repeat(TEAM_BRIEF_MAX_CHARS) });
+    expect(longest.length + 2).toBeLessThanOrEqual(TEAM_BRIEF_RESERVE_CHARS);
   });
 });

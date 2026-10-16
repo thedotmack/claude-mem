@@ -56,6 +56,7 @@ import {
   type DeliveredCmemMemoryCredentials,
 } from '../cmem-memory-credentials.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
+import { relayedLine } from '../../shared/relayed-text.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -1797,8 +1798,25 @@ export type InstallerPollOutcome =
   | { kind: 'authenticated'; userId: string }
   | { kind: 'pending'; stage: InstallerPollStage }
   | ({ kind: 'ready' } & TrialReadyResult)
+  /** The server refused a TeamBrain join (team full, invite no longer valid, ...): final. */
+  | { kind: 'join_failed'; reason: string; message: string | null }
   | { kind: 'gone' }
   | { kind: 'unreachable' };
+
+/** What to say for a refused join when the server sent no words of its own. */
+const JOIN_FAILED_FALLBACKS: Record<string, string> = {
+  team_full: 'the team has no free seat. Ask its owner to add one.',
+  invite_invalid: 'the invite is no longer valid. Ask the team owner for a new invite link.',
+  team_inactive: 'the team is not active.',
+  not_a_member: 'this account is not a member of the team.',
+};
+
+/** One line for a refused join: the server's own words when it sent them, and its reason code. */
+export function joinFailedMessage(outcome: { reason: string; message: string | null }): string {
+  const said = relayedLine(outcome.message) || JOIN_FAILED_FALLBACKS[outcome.reason] || 'cmem.ai refused the join.';
+  const reason = relayedLine(outcome.reason);
+  return `Could not join the team: ${said}${reason && reason !== 'unknown' ? ` (${reason})` : ''}`;
+}
 
 async function pollInstallerPairingOnce(pairing: InstallerOAuthPairing): Promise<InstallerPollOutcome> {
   const controller = new AbortController();
@@ -1810,13 +1828,25 @@ async function pollInstallerPairingOnce(pairing: InstallerOAuthPairing): Promise
       body: JSON.stringify({ pairing_id: pairing.pairingId, secret: pairing.secret }),
       signal: controller.signal,
     });
-    if (response.status === 404 || response.status === 410) return { kind: 'gone' };
 
     const body = await response.json().catch(() => ({})) as {
       status?: unknown;
       stage?: unknown;
       user_id?: unknown;
+      reason?: unknown;
+      error?: unknown;
     };
+    // A refused TeamBrain join also answers 410, so it is told apart from an
+    // expired pairing by its body: at sign-in or at device approval, the
+    // server says why (team_full, invite_invalid, team_inactive, not_a_member).
+    if (body.status === 'join_failed') {
+      return {
+        kind: 'join_failed',
+        reason: nonEmptyTrimmedString(body.reason) ?? 'unknown',
+        message: nonEmptyTrimmedString(body.error),
+      };
+    }
+    if (response.status === 404 || response.status === 410) return { kind: 'gone' };
     if (response.status === 202) {
       const stage: InstallerPollStage =
         body.stage === 'awaiting_checkout' || body.stage === 'awaiting_approval'
@@ -1874,7 +1904,10 @@ export async function waitForInstallerPairing(
       : phase === 'teambrain_join'
         ? 'Waiting for the browser to finish joining the team…'
         : 'Waiting for CMEM Pro setup in the browser…',
-    awaiting_approval: `Enter code ${pairing.userCode} in the browser to approve this device…`,
+    // A join's invite is redeemed at device approval, on a page that names the team.
+    awaiting_approval: phase === 'teambrain_join'
+      ? `Approve this device on the page (code ${pairing.userCode}) to join the team…`
+      : `Enter code ${pairing.userCode} in the browser to approve this device…`,
   };
   let stage: InstallerPollStage = phase === 'enrollment' ? 'awaiting_checkout' : 'awaiting_login';
   log.info(stageMessages[stage]);
@@ -1911,6 +1944,10 @@ export async function waitForInstallerPairing(
 
       if (result.kind === 'authenticated' && phase === 'login') return result;
       if (result.kind === 'ready') return result;
+      if (result.kind === 'join_failed') {
+        log.error(joinFailedMessage(result));
+        return null;
+      }
       if (result.kind === 'gone') {
         log.error(`This browser authorization expired. ${rerun}.`);
         return null;
@@ -2072,11 +2109,14 @@ export async function offerDeferredLogin(options: InstallOptions, version: strin
   log.info('AGENT: show this link to the user so they can finish signing in. Do not open it yourself; the install is already complete.');
 }
 
-export function noteDeviceCode(pairing: InstallerOAuthPairing): void {
+export function noteDeviceCode(
+  pairing: InstallerOAuthPairing,
+  instruction: string = 'Enter this code in the browser to approve this device.',
+): void {
   const message = [
     styleText(['bold', 'cyan'], pairing.userCode),
     '',
-    'Enter this code in the browser to approve this device.',
+    instruction,
   ].join('\n');
   if (isInteractive) p.note(message, 'Your device code');
   else log.info(`Device code: ${pairing.userCode}`);

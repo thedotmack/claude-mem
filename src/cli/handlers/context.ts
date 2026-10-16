@@ -40,6 +40,7 @@ import {
   hasShownTeamBrainDiscoveryNotice,
   markTeamBrainDiscoveryNoticeShown,
   teamBrainConnection,
+  teamBriefReserveChars,
   TEAMBRAIN_DISCOVERY_LINE,
   type TeamBrainBrief,
   type TeamBrainResult,
@@ -63,9 +64,12 @@ export function teamBriefSection(result: TeamBrainResult<TeamBrainBrief>): strin
 
 /**
  * Keep the whole block inside the host's delivery limit (ContextBudget.ts):
- * one character over and the host replaces all of it with a stub. The brief
- * is cut to the room `otherChars` leaves, and replaced by one line saying so
- * when too little room is left to be useful.
+ * one character over and the host replaces all of it with a stub. The body is
+ * fitted with room left for the brief (teamBriefReserveChars), so this only
+ * cuts when it was not, e.g. a block rendered before the install joined. Then
+ * the brief is cut to the room `otherChars` leaves, or, with too little room
+ * to be useful, replaced by one line saying it was left out. A block with no
+ * room even for that line is logged, since nothing more can be added to it.
  */
 export function fitTeamBriefSection(section: string, otherChars: number, limit: number = CONTEXT_OUTPUT_LIMIT): string {
   if (!section) return '';
@@ -75,8 +79,14 @@ export function fitTeamBriefSection(section: string, otherChars: number, limit: 
     const cut = section.slice(0, room - 1).replace(/[\uD800-\uDBFF]$/, '').trimEnd();
     return `${cut}…`;
   }
-  const omitted = `[claude-mem] TeamBrain brief left out: this session's context is already at the ${limit.toLocaleString('en-US')}-character limit.`;
-  return omitted.length <= room ? omitted : '';
+  const notices = [
+    `[claude-mem] TeamBrain brief left out: this session's context is already at the ${limit.toLocaleString('en-US')}-character limit.`,
+    '[claude-mem] TeamBrain brief left out: context full.',
+  ];
+  const notice = notices.find(candidate => candidate.length <= room);
+  if (notice) return notice;
+  logger.warn('HOOK', 'TeamBrain brief left out: the SessionStart block has no room left even for a notice', { room, limit });
+  return '';
 }
 
 // Plan-24 step 4 (#2991): in server runtime every write goes to the shared
@@ -190,6 +200,7 @@ export const contextHandler: EventHandler = {
             cwd,
             projects: context.allProjects,
             ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
+            reserveChars: teamBriefReserveChars(settings),
           },
           showTerminalOutput && input.platform === 'claude-code',
           settings.CLAUDE_MEM_MODE,

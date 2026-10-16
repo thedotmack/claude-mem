@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
-import { rmSync } from 'fs';
+import { rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 
 import * as realHookSettings from '../../../src/shared/hook-settings.js';
@@ -163,6 +163,9 @@ describe('fitTeamBriefSection', () => {
     expect(fitTeamBriefSection(brief, 9_850)).toBe(
       "[claude-mem] TeamBrain brief left out: this session's context is already at the 10,000-character limit.",
     );
+    // Too little room for the full notice: the short one still says it.
+    expect(fitTeamBriefSection(brief, 9_938)).toBe('[claude-mem] TeamBrain brief left out: context full.');
+    // No room for any line at all (logged instead).
     expect(fitTeamBriefSection(brief, 9_990)).toBe('');
     expect(fitTeamBriefSection('', 0)).toBe('');
   });
@@ -171,7 +174,7 @@ describe('fitTeamBriefSection', () => {
 describe('TeamBrain discovery notice', () => {
   const banner = { platform: 'claude-code', sessionSource: 'startup' };
 
-  it('rides the terminal banner once per version, then stays quiet', async () => {
+  it('rides the terminal banner once per install, then stays quiet', async () => {
     settings = { ...NOT_JOINED, CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true' };
     const first = await sessionStart(banner);
     expect(first.systemMessage).toContain(TEAMBRAIN_DISCOVERY_LINE);
@@ -181,6 +184,14 @@ describe('TeamBrain discovery notice', () => {
 
     const second = await sessionStart(banner);
     expect(second.systemMessage).not.toContain(TEAMBRAIN_DISCOVERY_LINE);
+  });
+
+  it('stays quiet for an install that saw it under an earlier version', async () => {
+    writeFileSync(discoveryMarker, '13.39.0');
+    settings = { ...NOT_JOINED, CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: 'true' };
+    const result = await sessionStart(banner);
+    expect(result.systemMessage).toBeDefined();
+    expect(result.systemMessage).not.toContain(TEAMBRAIN_DISCOVERY_LINE);
   });
 
   it('is never shown once this install is in a team', async () => {
