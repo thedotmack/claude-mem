@@ -39,6 +39,7 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_HOST?: string;
   CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS?: string;
 }): string | null {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -57,6 +58,10 @@ export function validateWireGatewayListenSettings(settings: {
     && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES) < 1)) {
     return 'CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES must be a whole number of bytes above 0';
   }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS !== undefined
+    && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS) < 1)) {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS must be a whole number of days above 0';
+  }
   return null;
 }
 
@@ -67,6 +72,8 @@ export interface WireGatewayConfig {
   drainTimeoutMs: number;
   /** Largest request body the relay reads (and decodes for capture); larger ones get a 413. */
   maxRequestBytes: number;
+  /** Days of raw recordings kept (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS). */
+  retentionDays: number;
 }
 
 /**
@@ -88,5 +95,6 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
     autostart: settings.CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART !== 'false',
     drainTimeoutMs: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS, 10),
     maxRequestBytes: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES, 10),
+    retentionDays: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS, 10),
   };
 }

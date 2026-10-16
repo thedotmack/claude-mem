@@ -14,6 +14,7 @@ export interface StartedWireGateway {
  * Starts the wire gateway in this process on an OS-picked port. Data lands in
  * the preload's temp CLAUDE_MEM_DATA_DIR (tests/preload.ts), never ~/.claude-mem.
  * State files are off by default so parallel test files never share a PID file.
+ * Captured events are dropped unless `capture.eventSink` is given.
  */
 export async function startWireGatewayForTest(
   options: Partial<WireGatewayServiceOptions> = {},
@@ -25,6 +26,9 @@ export async function startWireGatewayForTest(
     maxRequestBytes: 64 * 1024 * 1024,
     persistRuntimeState: false,
     ...options,
+    // Captured events go nowhere unless a test asks for them: a default sink
+    // would nudge whatever worker listens on this machine's worker port.
+    capture: { eventSink: { emit: () => undefined }, recordingCleanupIntervalMs: 0, ...options.capture },
   });
   await service.start();
   const port = service.port;

@@ -18,8 +18,8 @@
 // sessions are also swept on a timer, not only when a request comes.
 
 import { logger } from '../../../utils/logger.js';
-import { ToolCallScanner } from '../ir/tool-scan.js';
-import type { RelayExchange, RelayExchangeResult, RelayObserver } from '../relay/relay.js';
+import { RelayReplyCollection } from '../ir/relay-reply-collection.js';
+import type { RelayExchange, RelayExchangeResult, RelayObserver, RelayResponseStart } from '../relay/relay.js';
 import type { WireIdentity } from './resolve-identity.js';
 
 /** After a final reply, how long nothing more of the session may come before its turn is done. */
@@ -172,30 +172,38 @@ export class TurnTracker {
 }
 
 /**
- * Feeds a TurnTracker from the relay: `begin` when a captured turn request starts,
- * the reply's chunks through a tool-call scan, and `end` when it finishes.
- * A reply is final when its status is under 400, it ended whole, no tool
- * call was seen and the capture copy did not overflow (an overflowed scan
- * may have missed a call). Error events after HTTP 200 are not seen here;
- * Phase 5's reply collector knows them.
+ * Feeds a TurnTracker from the relay: `begin` when a captured turn request
+ * starts, the reply's chunks through a reply collector and a tool-call scan,
+ * and `end` when it finishes. A reply is final when its status is under 400,
+ * it ended whole, the collector saw it end cleanly with no error (an `error`
+ * event after HTTP 200 is not a final reply), no tool call was seen, and the
+ * capture copy did not overflow (an overflowed scan may have missed a call).
  */
 export function createTurnTrackingRelayObserver(turnTracker: TurnTracker): RelayObserver {
-  const toolCallScanners = new Map<string, ToolCallScanner>();
+  const replyCollection = new RelayReplyCollection();
   return {
     onExchangeStarted(exchange: RelayExchange) {
-      // Reply chunks reach observers only for captured exchanges, so only they can be scanned.
-      if (!exchange.captured || exchange.identity.kind !== 'turn') return;
-      toolCallScanners.set(exchange.exchangeId, new ToolCallScanner());
+      // Reply chunks reach observers only for captured exchanges, so only they can be read.
+      if (exchange.identity.kind !== 'turn' || !replyCollection.begin(exchange)) return;
       turnTracker.begin(exchange.identity);
     },
+    onResponseStarted(exchange: RelayExchange, response: RelayResponseStart) {
+      replyCollection.responseStarted(exchange, response);
+    },
     onResponseChunk(exchange: RelayExchange, chunk: Uint8Array) {
-      toolCallScanners.get(exchange.exchangeId)?.observe(chunk);
+      replyCollection.chunk(exchange, chunk);
     },
     onExchangeFinished(exchange: RelayExchange, result: RelayExchangeResult) {
-      const scanner = toolCallScanners.get(exchange.exchangeId);
-      if (!scanner) return;
-      toolCallScanners.delete(exchange.exchangeId);
-      const finalReply = result.recordedStatus < 400 && result.outcome === 'complete' && !result.captureOverflowed && !scanner.calledTool;
+      const collected = replyCollection.finish(exchange);
+      if (!collected) return;
+      const reply = collected.reply;
+      const finalReply = result.recordedStatus < 400
+        && result.outcome === 'complete'
+        && !result.captureOverflowed
+        && !collected.calledTool
+        && reply !== null
+        && reply.endedCleanly
+        && reply.error === undefined;
       turnTracker.end(exchange.identity, finalReply);
     },
   };

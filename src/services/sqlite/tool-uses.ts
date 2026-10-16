@@ -296,6 +296,20 @@ export function linkToolUsesToObservation(
   return Number(result.changes ?? 0);
 }
 
+/**
+ * Whether the tool use `(contentSessionId, toolUseId)` already produced an
+ * observation (its `observation_id` is linked). A replay of such a tool use
+ * after a worker restart must not be queued again: the in-memory dedupe in
+ * SessionMessageBuffer lasts one worker lifetime only. A row with no linked
+ * observation yet is not "done": its generation may have been lost.
+ */
+export function isToolUseLinkedToObservation(db: Database, contentSessionId: string, toolUseId: string): boolean {
+  const row = db.prepare(
+    'SELECT 1 AS linked FROM tool_uses WHERE content_session_id = ? AND tool_use_id = ? AND observation_id IS NOT NULL'
+  ).get(contentSessionId, toolUseId) as { linked: number } | null;
+  return row !== null && row !== undefined;
+}
+
 function mapPlatformFilter(platformSource: string | undefined): { clause: string; param: string } | null {
   if (!platformSource) return null;
   return {

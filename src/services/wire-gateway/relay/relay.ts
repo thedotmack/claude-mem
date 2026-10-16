@@ -124,8 +124,16 @@ export interface RelayExchangeResult {
   durationMs: number;
 }
 
+/** What the upstream answered, before its body (the reply collectors need its content type). */
+export interface RelayResponseStart {
+  status: number;
+  contentType: string | null;
+}
+
 export interface RelayObserver {
   onExchangeStarted?(exchange: RelayExchange): void;
+  /** Upstream answered; called before any of its body's chunks. */
+  onResponseStarted?(exchange: RelayExchange, response: RelayResponseStart): void;
   /** A copy of each response chunk of a captured exchange, delivered off the client's path. */
   onResponseChunk?(exchange: RelayExchange, chunk: Uint8Array): void;
   /** Delivered after every chunk of the exchange. */
@@ -143,6 +151,7 @@ function countCaptureSkip(reason: string): void {
 export function composeRelayObservers(...observers: RelayObserver[]): RelayObserver {
   return {
     onExchangeStarted: exchange => observers.forEach(observer => observer.onExchangeStarted && notifyObserver(() => observer.onExchangeStarted!(exchange))),
+    onResponseStarted: (exchange, response) => observers.forEach(observer => observer.onResponseStarted && notifyObserver(() => observer.onResponseStarted!(exchange, response))),
     onResponseChunk: (exchange, chunk) => observers.forEach(observer => observer.onResponseChunk && notifyObserver(() => observer.onResponseChunk!(exchange, chunk))),
     onExchangeFinished: (exchange, result) => observers.forEach(observer => observer.onExchangeFinished && notifyObserver(() => observer.onExchangeFinished!(exchange, result))),
   };
@@ -380,6 +389,11 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         status: 502,
         message: `the claude-mem wire gateway could not reach ${upstreamUrl.host} for route "${routeId}": ${message}`,
       });
+    }
+
+    if (observer?.onResponseStarted) {
+      const responseStart: RelayResponseStart = { status: upstreamResponse.status, contentType: upstreamResponse.headers.get('content-type') };
+      notifyObserver(() => observer.onResponseStarted!(exchange, responseStart));
     }
 
     const responseHeaders = clientResponseHeaders(upstreamResponse.headers);

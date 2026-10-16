@@ -53,6 +53,9 @@ import { isLoopbackAddress } from './network-guard.js';
 import { createWireGatewayRelay, type RelayObserver } from './relay/relay.js';
 import { WireLaunchRegistry } from './identity/launch-registry.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
+import { createWireCapturePipeline, type WireCapturePipeline, type WireCapturePipelineOptions } from './capture/capture-pipeline.js';
+
+const DEFAULT_RETENTION_DAYS = 7;
 
 // Bun.serve's idle timer, in seconds (max 255). It also bounds the wait before
 // response headers; the relay disables it per relayed request with
@@ -76,8 +79,15 @@ export interface WireGatewayServiceOptions {
   routesFilePath?: string;
   /** Test seam: how often routes.json's stamp is looked at; defaults to once a second. */
   routesReloadCheckIntervalMs?: number;
-  /** The capture seam later phases record through. */
+  /** Days of raw recordings kept (CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS); defaults to 7. */
+  retentionDays?: number;
+  /**
+   * Test seam: replaces the capture pipeline (recorder, assembler, turn
+   * tracker) with this observer; nothing is then captured.
+   */
   relayObserver?: RelayObserver;
+  /** Test seams for the capture pipeline (its event sink, recording consent, timers). */
+  capture?: Partial<WireCapturePipelineOptions>;
   /** Test seam: Bun.serve's idle timer in seconds; defaults to 255. */
   idleTimeoutSeconds?: number;
   /** Write PID/port/state files and the process-registry entry. Off for in-process tests. */
@@ -111,6 +121,8 @@ export class WireGatewayService {
   private stopPromise: Promise<void> | null = null;
   private startedAt: string | null = null;
   private draining = false;
+  /** Recorder, assembler and turn tracker; null while stopped or when a test replaced the observer. */
+  private capturePipeline: WireCapturePipeline | null = null;
   /** Launcher sessions live as long as the process (Phase 4 task 10). */
   private readonly launchRegistry = new WireLaunchRegistry();
 
@@ -127,6 +139,9 @@ export class WireGatewayService {
     }
     ensureWireGatewayDirs();
 
+    this.capturePipeline = this.options.relayObserver
+      ? null
+      : createWireCapturePipeline({ retentionDays: this.options.retentionDays ?? DEFAULT_RETENTION_DAYS, ...this.options.capture });
     const relay = createWireGatewayRelay({
       routesStore: new WireGatewayRoutesStore({
         routesFilePath: this.options.routesFilePath,
@@ -134,7 +149,7 @@ export class WireGatewayService {
       }),
       maxRequestBytes: this.options.maxRequestBytes,
       requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs ?? DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS,
-      observer: this.options.relayObserver,
+      observer: this.options.relayObserver ?? this.capturePipeline?.relayObserver,
       launchRegistry: this.launchRegistry,
     });
     const handleRequest = this.options.fetchHandler
@@ -230,6 +245,9 @@ export class WireGatewayService {
       this.server = null;
       this.startedAt = null;
       this.draining = false;
+      // After the drain, so in-flight exchanges were assembled; turn ends still in their quiet are dropped.
+      this.capturePipeline?.dispose();
+      this.capturePipeline = null;
       if (this.persistRuntimeState) {
         removeWireGatewayStateIfOwnedBy(this.writtenPidInfo);
         this.writtenPidInfo = null;
