@@ -51,6 +51,7 @@ import {
 } from './routes.js';
 import { isLoopbackAddress } from './network-guard.js';
 import { createWireGatewayRelay, type RelayObserver } from './relay/relay.js';
+import { WireLaunchRegistry } from './identity/launch-registry.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
 
 // Bun.serve's idle timer, in seconds (max 255). It also bounds the wait before
@@ -110,6 +111,8 @@ export class WireGatewayService {
   private stopPromise: Promise<void> | null = null;
   private startedAt: string | null = null;
   private draining = false;
+  /** Launcher sessions live as long as the process (Phase 4 task 10). */
+  private readonly launchRegistry = new WireLaunchRegistry();
 
   constructor(options: WireGatewayServiceOptions) {
     this.options = options;
@@ -132,8 +135,10 @@ export class WireGatewayService {
       maxRequestBytes: this.options.maxRequestBytes,
       requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs ?? DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS,
       observer: this.options.relayObserver,
+      launchRegistry: this.launchRegistry,
     });
-    const handleRequest = this.options.fetchHandler ?? createWireGatewayFetchHandler({ listenHost: this.options.host, relay });
+    const handleRequest = this.options.fetchHandler
+      ?? createWireGatewayFetchHandler({ listenHost: this.options.host, relay, launchRegistry: this.launchRegistry });
     this.draining = false;
     this.server = Bun.serve({
       hostname: this.options.host,

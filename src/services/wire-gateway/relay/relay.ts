@@ -22,6 +22,11 @@ import {
 } from './protocols.js';
 import { decodeRequestBodyCopy, readBoundedRequestBody, type DecodedBodyCopy } from './request-body.js';
 import { detectSubscriptionSignIn, subscriptionRefusalMessage } from './subscription-guard.js';
+import { parseWireRequest } from '../ir/request-parsers.js';
+import type { WireRequest } from '../ir/types.js';
+import { splitLaunchSegment, type WireLaunch, type WireLaunchRegistry } from '../identity/launch-registry.js';
+import { resolveIdentity, sessionIdToEcho, type WireIdentity } from '../identity/resolve-identity.js';
+import { CLAUDE_MEM_SESSION_HEADER } from '../identity/session-id.js';
 
 // ---------------------------------------------------------------------------
 // Header policy (magpie `hopHeader` + `copyHeaders`)
@@ -80,13 +85,22 @@ export interface RelayExchange {
   /** True when a later phase may record this exchange (classified captured, a `wire` route, and the body decoded). */
   captured: boolean;
   method: string;
-  /** Path after /r/<routeId>; the query is never kept (it can hold an API key). */
+  /** Path after /r/<routeId> (and after a launch segment); the query is never kept (it can hold an API key). */
   suffixPath: string;
   startedAt: number;
   /** The decoded request body for parsing; null when not captured. Never the forwarded bytes. */
   decodedRequestBody: Uint8Array | null;
   /** Why capture was skipped for a captured protocol, when it was. */
   captureSkippedReason: Extract<DecodedBodyCopy, { kind: 'skipped' }>['reason'] | 'native_capture_source' | null;
+  /**
+   * The decoded request body, parsed, for a captured protocol on any route
+   * (a native route's body is parsed for identity and later rewrites, never
+   * recorded). Null when the protocol is relay-only or the body did not
+   * decode or parse.
+   */
+  request: WireRequest | null;
+  /** Who sent the request and where it belongs (Phase 4). */
+  identity: WireIdentity;
 }
 
 export type RelayOutcome =
@@ -125,6 +139,15 @@ function countCaptureSkip(reason: string): void {
   relayCaptureSkipCounts[reason] = (relayCaptureSkipCounts[reason] ?? 0) + 1;
 }
 
+/** One observer that hands every event to each of `observers` in order. */
+export function composeRelayObservers(...observers: RelayObserver[]): RelayObserver {
+  return {
+    onExchangeStarted: exchange => observers.forEach(observer => observer.onExchangeStarted && notifyObserver(() => observer.onExchangeStarted!(exchange))),
+    onResponseChunk: (exchange, chunk) => observers.forEach(observer => observer.onResponseChunk && notifyObserver(() => observer.onResponseChunk!(exchange, chunk))),
+    onExchangeFinished: (exchange, result) => observers.forEach(observer => observer.onExchangeFinished && notifyObserver(() => observer.onExchangeFinished!(exchange, result))),
+  };
+}
+
 function notifyObserver(callback: () => void): void {
   try {
     callback();
@@ -142,6 +165,8 @@ export interface WireGatewayRelayOptions {
   requestBodyIdleTimeoutMs: number;
   observer?: RelayObserver;
   captureSpoolCapBytes?: number;
+  /** Launches made through POST /wire/launch; without one, /l/<launchId> segments are still stripped. */
+  launchRegistry?: WireLaunchRegistry;
 }
 
 const ROUTE_PATH_PATTERN = /^\/r\/([^/]+)(\/.*)?$/;
@@ -165,7 +190,9 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
   return async function relayWireGatewayRequest(request: Request, server: Server<undefined>): Promise<Response> {
     const requestUrl = new URL(request.url);
     const routeMatch = ROUTE_PATH_PATTERN.exec(requestUrl.pathname);
-    const suffixPath = routeMatch?.[2] ?? '';
+    // A launched agent's base URL is /r/<routeId>/l/<launchId>; the launch
+    // segment names its session and never goes upstream.
+    const { launchId, upstreamSuffixPath: suffixPath } = splitLaunchSegment(routeMatch?.[2] ?? '');
     const classification = classifyRelaySuffix(suffixPath);
     const errorFamily = errorEnvelopeFamilyOf(classification.protocol);
 
@@ -190,6 +217,13 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       });
     }
     const route: WireGatewayRoute = lookup.route;
+    let launch: WireLaunch | undefined;
+    if (launchId) {
+      launch = options.launchRegistry?.use(launchId);
+      // An expired or unknown launch still relays: the agent keeps working
+      // and its session falls back to what the request says.
+      if (!launch) logger.warn('WIRE', 'Relaying for an unknown or expired launch', { routeId, agentId: route.agentId });
+    }
     // The suffix and query go upstream verbatim (plan D3). A hand-edited
     // routes.json may keep a trailing slash that `routes add` would have trimmed.
     const upstreamBaseUrl = route.upstreamBaseUrl.replace(/\/+$/, '');
@@ -242,21 +276,32 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     const originalBody = bodyRead.body;
 
     let decodedRequestBody: Uint8Array | null = null;
+    let parsedRequest: WireRequest | null = null;
     let captureSkippedReason: RelayExchange['captureSkippedReason'] = null;
-    if (classification.captured) {
+    if (classification.captured && classification.protocol) {
+      // Decoded on every route: a native route is never recorded, but its
+      // identity (and Phase 10's rewrites) still read the body.
+      const decoded = decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
       if (route.captureSource !== 'wire') {
         captureSkippedReason = 'native_capture_source';
+      } else if (decoded.kind === 'decoded') {
+        decodedRequestBody = decoded.bytes;
       } else {
-        const decoded = decodeRequestBodyCopy(originalBody, request.headers.get('content-encoding'), options.maxRequestBytes);
-        if (decoded.kind === 'decoded') {
-          decodedRequestBody = decoded.bytes;
-        } else {
-          captureSkippedReason = decoded.reason;
-          countCaptureSkip(decoded.reason);
-          logger.debug('WIRE', 'Relaying a body untouched without capture', { routeId, reason: decoded.reason, contentEncoding: decoded.contentEncoding });
+        captureSkippedReason = decoded.reason;
+        countCaptureSkip(decoded.reason);
+        logger.debug('WIRE', 'Relaying a body untouched without capture', { routeId, reason: decoded.reason, contentEncoding: decoded.contentEncoding });
+      }
+      if (decoded.kind === 'decoded') {
+        try {
+          parsedRequest = parseWireRequest(classification.protocol, decoded.bytes, { suffixPath });
+        } catch (error) {
+          logger.debug('WIRE', 'Request body did not parse; identity comes from headers', {
+            routeId, protocol: classification.protocol, error: error instanceof Error ? error.message : String(error),
+          });
         }
       }
     }
+    const identity = resolveIdentity(route, request.headers, parsedRequest, { suffixPath, launch });
 
     const exchange: RelayExchange = {
       exchangeId: randomUUID(),
@@ -269,6 +314,8 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       startedAt: Date.now(),
       decodedRequestBody,
       captureSkippedReason,
+      request: parsedRequest,
+      identity,
     };
     const observer = options.observer;
     if (observer?.onExchangeStarted) notifyObserver(() => observer.onExchangeStarted!(exchange));
@@ -335,10 +382,15 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       });
     }
 
+    const responseHeaders = clientResponseHeaders(upstreamResponse.headers);
+    // Echo the session only when the client named it (sources 1–4); a
+    // fingerprint is the gateway's guess and is never handed out as a name.
+    const echoedSessionId = sessionIdToEcho(identity);
+    if (echoedSessionId) responseHeaders.set(CLAUDE_MEM_SESSION_HEADER, echoedSessionId);
     const responseInit: ResponseInit = {
       status: upstreamResponse.status,
       statusText: upstreamResponse.statusText,
-      headers: clientResponseHeaders(upstreamResponse.headers),
+      headers: responseHeaders,
     };
     if (!upstreamResponse.body || request.method === 'HEAD' || NULL_BODY_STATUSES.has(upstreamResponse.status)) {
       finishExchange('complete', upstreamResponse.status);

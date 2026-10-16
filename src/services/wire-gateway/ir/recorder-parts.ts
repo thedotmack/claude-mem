@@ -9,6 +9,7 @@
 
 import { rawText } from '../json/scanner.js';
 import type { WireMessageRole, WirePart, WireReply, WireRequest } from './types.js';
+import { isAgentContextText } from '../identity/user-words.js';
 
 export type WireRecorderPartRole = WireMessageRole | 'tool';
 
@@ -33,7 +34,10 @@ function recorderPartOf(role: WireMessageRole, part: WirePart): WireRecorderPart
   let recorderPart: WireRecorderPart;
   switch (part.kind) {
     case 'text':
-      recorderPart = { role, kind: 'text', text: part.text ?? '' };
+      // What the agent put in as the user (a <…> reminder, Codex's AGENTS.md)
+      // is context, not words said. magpie applies this only in its session
+      // file readers; the wire recorder applies it on purpose (plan Phase 4 task 6).
+      recorderPart = { role, kind: role !== 'assistant' && isAgentContextText(part.text ?? '') ? 'context' : 'text', text: part.text ?? '' };
       break;
     case 'thinking':
       recorderPart = { role, kind: 'thinking', text: part.text ?? '' };

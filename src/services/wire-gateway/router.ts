@@ -4,6 +4,7 @@ import { randomUUID } from 'crypto';
 import type { Server } from 'bun';
 import { logger } from '../../utils/logger.js';
 import { checkLoopbackRequest } from './network-guard.js';
+import { handleWireLaunchRequest, type WireLaunchRegistry } from './identity/launch-registry.js';
 
 declare const __DEFAULT_PACKAGE_VERSION__: string;
 export const WIRE_GATEWAY_VERSION = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined'
@@ -48,6 +49,8 @@ export function createWireGatewayFetchHandler(options: {
   listenHost: string;
   /** The relay for /r/<routeId>/… (Phase 2); without one, /r/ answers 404. */
   relay?: (request: Request, server: Server<undefined>) => Promise<Response>;
+  /** Launcher sessions for POST /wire/launch (Phase 4); without one, it answers 404. */
+  launchRegistry?: WireLaunchRegistry;
 }) {
   return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response | Promise<Response> {
     const refusal = checkLoopbackRequest(request, {
@@ -63,6 +66,10 @@ export function createWireGatewayFetchHandler(options: {
 
     if (request.method === 'GET' && (pathname === '/' || pathname === '/wire/identity')) {
       return Response.json(wireGatewayIdentity());
+    }
+
+    if (pathname === '/wire/launch' && options.launchRegistry) {
+      return handleWireLaunchRequest(request, server, options.launchRegistry);
     }
 
     if (pathname === '/r' || pathname.startsWith('/r/')) {
