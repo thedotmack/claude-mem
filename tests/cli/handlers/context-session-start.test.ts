@@ -26,6 +26,7 @@ let proFallbackAt = '';
 let openRouterBaseUrl = '';
 let staleReason: string | null = null;
 let memoryInstructions: string | undefined = 'false';
+let proUpsell = 'true';
 const outageNoticeRequests: Array<string | undefined> = [];
 
 mock.module('../../../src/shared/hook-settings.js', () => ({
@@ -37,6 +38,7 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
     CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
     CLAUDE_MEM_OPENROUTER_BASE_URL: openRouterBaseUrl,
     CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: memoryInstructions,
+    CLAUDE_MEM_PRO_UPSELL: proUpsell,
   }),
 }));
 
@@ -78,6 +80,7 @@ beforeEach(() => {
   openRouterBaseUrl = '';
   staleReason = null;
   memoryInstructions = 'false';
+  proUpsell = 'true';
 });
 
 describe('contextHandler SessionStart path', () => {
@@ -150,6 +153,45 @@ describe('contextHandler SessionStart path', () => {
       }
     });
   }
+
+  it('keeps the Pro trial pitch in the SessionStart message by default', async () => {
+    showTerminalOutput = true;
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-upsell-default',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+        sessionSource: 'startup',
+      });
+
+      expect(result.systemMessage).toContain('View Observations Live @');
+      expect(result.systemMessage).toContain('Day Free Trial');
+    } finally {
+      showTerminalOutput = false;
+    }
+  });
+
+  it('drops the Pro trial pitch from the SessionStart message when CLAUDE_MEM_PRO_UPSELL=false, keeping the viewer link', async () => {
+    showTerminalOutput = true;
+    proUpsell = 'false';
+    try {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      const result = await contextHandler.execute({
+        sessionId: 'session-upsell-off',
+        cwd: '/tmp/repo',
+        platform: 'claude-code',
+        sessionSource: 'startup',
+      });
+
+      expect(result.systemMessage).toContain('View Observations Live @');
+      expect(result.systemMessage).not.toContain('Free Trial');
+      expect(result.systemMessage).not.toContain('cmem.ai/pro');
+    } finally {
+      showTerminalOutput = false;
+      proUpsell = 'true';
+    }
+  });
 
   it('keeps context injection for Codex resume', async () => {
     calls.length = 0;
