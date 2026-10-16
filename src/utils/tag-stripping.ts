@@ -129,7 +129,31 @@ function stripBalancedMemoryTags(input: string): {
   return { text: out, counts, total };
 }
 
-export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+const SYSTEM_REMINDER_OPEN = '<system-reminder>';
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>';
+
+/**
+ * Remove <system-reminder>...</system-reminder> blocks the way the shipped
+ * `/<system-reminder>[\s\S]*?<\/system-reminder>/g` replace did: leftmost open
+ * pairs with the first close after it, opens inside that span go with it.
+ * Linear indexOf passes replace a regex whose per-position restart made
+ * unclosed-tag payloads quadratic. A failed close search proves no close
+ * exists for any later open either (the window only shrinks), so the tail,
+ * unclosed open included, is kept verbatim.
+ */
+export function stripSystemReminderBlocks(text: string): string {
+  let out = '';
+  let pos = 0;
+  for (;;) {
+    const open = text.indexOf(SYSTEM_REMINDER_OPEN, pos);
+    if (open === -1) break;
+    const close = text.indexOf(SYSTEM_REMINDER_CLOSE, open + SYSTEM_REMINDER_OPEN.length);
+    if (close === -1) break;
+    out += text.slice(pos, open);
+    pos = close + SYSTEM_REMINDER_CLOSE.length;
+  }
+  return out + text.slice(pos);
+}
 
 const MAX_TAG_COUNT = 100;
 
@@ -156,10 +180,6 @@ export function stripMemoryTags(content: string): string {
   return stripTags(content).stripped;
 }
 
-const CONTAINS_MEMORY_TAG_REGEX = new RegExp(
-  `<(${TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?</\\1>`
-);
-
 /**
  * The value with memory tags (<private> and the rest) removed from every
  * string in it (object values and array items, at any depth); the caller's
@@ -172,7 +192,11 @@ const CONTAINS_MEMORY_TAG_REGEX = new RegExp(
 export function stripMemoryTagsFromJsonStrings<T>(value: T): T {
   const walk = (node: unknown): unknown => {
     if (typeof node === 'string') {
-      return CONTAINS_MEMORY_TAG_REGEX.test(node) ? stripMemoryTags(node) : node;
+      // Gate on the scanner, not on a regex probe: the scanner is linear on
+      // unclosed-tag payloads where the old probe was quadratic, and it
+      // accepts whitespace closes (`</private >`) the old probe missed.
+      const scanned = stripBalancedMemoryTags(node);
+      return scanned.total > 0 ? stripMemoryTags(node) : node;
     }
     if (Array.isArray(node)) return node.map(walk);
     if (node !== null && typeof node === 'object') {
