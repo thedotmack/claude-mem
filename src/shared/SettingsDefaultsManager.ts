@@ -330,6 +330,10 @@ export interface SettingsDefaults {
   CLAUDE_MEM_PRO_FALLBACK_MESSAGE: string;
   CLAUDE_MEM_PRO_FALLBACK_ACTION: string;
   CLAUDE_MEM_PRO_FALLBACK_URL: string;
+  // #4768 — 'false' drops the Pro trial pitch from the SessionStart system
+  // message and the per-message context banner. For self-hosted / off-plan
+  // deployments where the offer cannot be acted on and only spends context.
+  CLAUDE_MEM_PRO_UPSELL: string;
   // One-shot memory credentials delivered by browser pairing. These staging
   // fields keep the key recoverable until the user chooses a provider; when
   // claude-mem is selected the installer atomically moves them into the
@@ -583,6 +587,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_PRO_FALLBACK_MESSAGE: '', // The gateway's message for that rejection ('' = plan-neutral notice copy)
     CLAUDE_MEM_PRO_FALLBACK_ACTION: '',  // The gateway's "what to do" for that rejection
     CLAUDE_MEM_PRO_FALLBACK_URL: '',     // The gateway's link for that rejection ('' = the cmem.ai/pro renewal link)
+    CLAUDE_MEM_PRO_UPSELL: 'true',       // #4768 — 'false' omits the Pro trial pitch line from the SessionStart message and the context banner (self-hosted, off-plan deployments); default preserves current behavior.
     CLAUDE_MEM_PRO_MEMORY_KEY: '',       // One-shot browser-pairing memory key, staged until provider selection (settings.json is chmod 0600 by the installer)
     CLAUDE_MEM_PRO_MEMORY_BASE_URL: '',  // Backend-supplied endpoint paired with CLAUDE_MEM_PRO_MEMORY_KEY
     CLAUDE_MEM_PRO_MEMORY_MODEL: '',     // Backend-supplied model paired with CLAUDE_MEM_PRO_MEMORY_KEY
