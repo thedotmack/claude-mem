@@ -534,8 +534,24 @@ function parseGeminiRequest(root: ScannedObject, suffixPath: string): WireReques
   const bytes = root.bytes;
   const pathMatch = GEMINI_PATH_PATTERN.exec(suffixPath);
   const messages: WireMessage[] = [];
-  // Results name their call by id when the client kept it; older clients by name only (the latest call of that name).
-  const callIdByName = new Map<string, string>();
+  // Results name their call by id when the client kept it; older clients by name only. An id-less result
+  // takes the oldest call of its name not yet answered (Gemini answers calls in order), else the latest call
+  // of that name: so read(a.ts), read(b.ts) then two results pair a.ts with the first and b.ts with the second.
+  const unansweredCallIdsByName = new Map<string, string[]>();
+  const latestCallIdByName = new Map<string, string>();
+  const answeredCallIds = new Set<string>();
+  const callIdForResult = (name: string, explicitId: string | undefined): string | undefined => {
+    if (explicitId !== undefined) {
+      answeredCallIds.add(explicitId);
+      return explicitId;
+    }
+    const unanswered = unansweredCallIdsByName.get(name) ?? [];
+    let callId = unanswered.shift();
+    while (callId !== undefined && answeredCallIds.has(callId)) callId = unanswered.shift();
+    if (callId === undefined) return latestCallIdByName.get(name);
+    answeredCallIds.add(callId);
+    return callId;
+  };
 
   objectElements(bytes, root.spanOf('contents')).forEach((content, contentIndex) => {
     const contentRole: WireMessageRole = content.string('role') === 'model' || content.string('role') === 'assistant' ? 'assistant' : 'user';
@@ -562,7 +578,10 @@ function parseGeminiRequest(root: ScannedObject, suffixPath: string): WireReques
       if (functionCall) {
         const name = functionCall.string('name') ?? '';
         const callId = functionCall.string('id') ?? `gemini:${contentIndex}:${partIndex}`;
-        callIdByName.set(name, callId);
+        latestCallIdByName.set(name, callId);
+        const unanswered = unansweredCallIdsByName.get(name);
+        if (unanswered) unanswered.push(callId);
+        else unansweredCallIdsByName.set(name, [callId]);
         turn(contentRole, span).parts.push({ kind: 'tool_call', callId, name, argsJson: functionCall.raw('args') ?? '{}', sealedBy: signed, span });
       } else if (functionResponse) {
         const name = functionResponse.string('name') ?? '';
@@ -572,7 +591,7 @@ function parseGeminiRequest(root: ScannedObject, suffixPath: string): WireReques
           (inner.object('inlineData', 'inline_data') ?? inner.object('fileData', 'file_data'))?.string('mimeType', 'mime_type')?.startsWith('image/'));
         turn('user', span).parts.push({
           kind: 'tool_result',
-          callId: functionResponse.string('id') ?? callIdByName.get(name),
+          callId: callIdForResult(name, functionResponse.string('id')),
           name,
           text: result.text,
           isError: result.isError || undefined,

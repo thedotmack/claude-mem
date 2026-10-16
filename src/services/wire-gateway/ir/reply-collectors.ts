@@ -22,8 +22,13 @@ import { IncrementalSseReader } from './sse-event-reader.js';
 import { emptyWireUsage, type WireReply, type WireSealedReplyItem, type WireSealOwner, type WireStopReason, type WireUsage } from './types.js';
 import { anthropicUsage, geminiUsage, mergeWireUsage, openAiChatUsage, openAiResponsesUsage } from './usage.js';
 
-/** A whole JSON reply larger than this is not parsed (the capture is marked as not ended cleanly). */
-export const WIRE_REPLY_MAX_JSON_BYTES = 64 * 1024 * 1024;
+/**
+ * The most bytes of one reply a collector takes in, streamed or whole. Past
+ * it, collecting stops: a whole JSON reply is not parsed, a stream keeps what
+ * came before, and either way the reply is marked as not ended cleanly (so it
+ * is never taken as whole). The relay is untouched; only the capture copy is cut.
+ */
+export const WIRE_REPLY_MAX_BYTES = 64 * 1024 * 1024;
 
 type JsonRecord = Record<string, unknown>;
 
@@ -644,6 +649,13 @@ export interface WireReplyCollector {
   push(chunk: Uint8Array): void;
   /** The body ended (or was cut): the reply as far as it went. */
   finish(): WireReply;
+  /** The reply passed the byte cap and collecting stopped. */
+  readonly passedByteCap: boolean;
+}
+
+export interface WireReplyCollectorOptions {
+  /** Test seam; defaults to WIRE_REPLY_MAX_BYTES. */
+  maxReplyBytes?: number;
 }
 
 /** Collects an SSE reply. endedCleanly comes from the Phase 2 end markers, so it agrees with the relay's cut detection. */
@@ -651,21 +663,29 @@ class SseReplyCollector implements WireReplyCollector {
   private readonly accumulator = new WireReplyAccumulator();
   private readonly endDetector: StreamEndMarkerDetector;
   private readonly reader: IncrementalSseReader;
+  private totalBytes = 0;
+  passedByteCap = false;
 
-  constructor(protocol: WireProtocol) {
+  constructor(protocol: WireProtocol, private readonly maxReplyBytes: number) {
     const decoder = decoderFor(protocol);
     this.endDetector = new StreamEndMarkerDetector(protocol);
     this.reader = new IncrementalSseReader(event => decoder.decodeEvent(event.data, this.accumulator));
   }
 
   push(chunk: Uint8Array): void {
+    if (this.passedByteCap) return;
+    if (this.totalBytes + chunk.length > this.maxReplyBytes) {
+      this.passedByteCap = true;
+      return;
+    }
+    this.totalBytes += chunk.length;
     this.endDetector.observe(chunk);
     this.reader.push(chunk);
   }
 
   finish(): WireReply {
     this.reader.finish();
-    return this.accumulator.finish(this.endDetector.hasSeenEnd && this.reader.oversizedEventCount === 0);
+    return this.accumulator.finish(!this.passedByteCap && this.endDetector.hasSeenEnd && this.reader.oversizedEventCount === 0);
   }
 }
 
@@ -673,14 +693,14 @@ class SseReplyCollector implements WireReplyCollector {
 class WholeJsonReplyCollector implements WireReplyCollector {
   private readonly chunks: Uint8Array[] = [];
   private totalBytes = 0;
-  private overflowed = false;
+  passedByteCap = false;
 
-  constructor(private readonly protocol: WireProtocol) {}
+  constructor(private readonly protocol: WireProtocol, private readonly maxReplyBytes: number) {}
 
   push(chunk: Uint8Array): void {
-    if (this.overflowed) return;
-    if (this.totalBytes + chunk.length > WIRE_REPLY_MAX_JSON_BYTES) {
-      this.overflowed = true;
+    if (this.passedByteCap) return;
+    if (this.totalBytes + chunk.length > this.maxReplyBytes) {
+      this.passedByteCap = true;
       this.chunks.length = 0;
       return;
     }
@@ -690,7 +710,7 @@ class WholeJsonReplyCollector implements WireReplyCollector {
 
   finish(): WireReply {
     const accumulator = new WireReplyAccumulator();
-    if (this.overflowed) return accumulator.finish(false);
+    if (this.passedByteCap) return accumulator.finish(false);
     const joined = new Uint8Array(this.totalBytes);
     let offset = 0;
     for (const chunk of this.chunks) {
@@ -718,9 +738,10 @@ class WholeJsonReplyCollector implements WireReplyCollector {
 }
 
 /** A collector for a reply of `contentType` (an SSE stream when it is text/event-stream). */
-export function createWireReplyCollector(protocol: WireProtocol, contentType: string | null): WireReplyCollector {
+export function createWireReplyCollector(protocol: WireProtocol, contentType: string | null, options: WireReplyCollectorOptions = {}): WireReplyCollector {
   const isEventStream = (contentType ?? '').toLowerCase().includes('text/event-stream');
-  return isEventStream ? new SseReplyCollector(protocol) : new WholeJsonReplyCollector(protocol);
+  const maxReplyBytes = options.maxReplyBytes ?? WIRE_REPLY_MAX_BYTES;
+  return isEventStream ? new SseReplyCollector(protocol, maxReplyBytes) : new WholeJsonReplyCollector(protocol, maxReplyBytes);
 }
 
 /** Collect a whole reply at once (tests and replays). */

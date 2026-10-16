@@ -193,6 +193,38 @@ describe('WireCaptureAssembler', () => {
     expect(freshSink.events.filter(event => event.kind === 'observation').map(event => event.payload.toolUseId)).toEqual(observationIds);
   });
 
+  it('Gemini: the same function called twice without ids pairs each result with its own call\'s args', () => {
+    const sink = recordingSink();
+    const assembler = new WireCaptureAssembler({ eventSink: sink });
+    const suffixPath = '/v1beta/models/gemini-3:streamGenerateContent';
+    feed(assembler, 'gemini', { contents: [
+      { role: 'user', parts: [{ text: 'read both files' }] },
+      { role: 'model', parts: [{ functionCall: { name: 'read_file', args: { path: 'a.ts' } } }, { functionCall: { name: 'read_file', args: { path: 'b.ts' } } }] },
+      { role: 'user', parts: [
+        { functionResponse: { name: 'read_file', response: { output: 'contents of a' } } },
+        { functionResponse: { name: 'read_file', response: { output: 'contents of b' } } },
+      ] },
+    ] }, { agentId: 'gemini-cli' }, { text: 'Read.' }, suffixPath);
+    const observations = sink.events.filter(event => event.kind === 'observation').map(event => [event.payload.toolInput, event.payload.toolResponse]);
+    expect(observations).toEqual([
+      [{ path: 'a.ts' }, 'contents of a'],
+      [{ path: 'b.ts' }, 'contents of b'],
+    ]);
+  });
+
+  it('a new agent prompt id is a new turn even when the words and the sent input repeat (Responses previous_response_id)', () => {
+    const sink = recordingSink();
+    const assembler = new WireCaptureAssembler({ eventSink: sink });
+    const input = [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'run the tests' }] }];
+    feed(assembler, 'openai-responses', { model: 'm', input }, { agentId: 'codex', nativePromptId: 'turn-1' }, { text: 'Green.' }, '/v1/responses');
+    // The same turn sent again (a retry) is not a new turn.
+    feed(assembler, 'openai-responses', { model: 'm', input }, { agentId: 'codex', nativePromptId: 'turn-1' }, { text: 'Green.' }, '/v1/responses');
+    // Only the new input goes up, and it is the same prompt as before: a new turn by its id.
+    feed(assembler, 'openai-responses', { model: 'm', previous_response_id: 'resp_1', input }, { agentId: 'codex', nativePromptId: 'turn-2' }, { text: 'Green again.' }, '/v1/responses');
+    const inits = sink.events.filter(event => event.kind === 'session_init').map(event => [event.payload.prompt, event.payload.nativePromptId]);
+    expect(inits).toEqual([['run the tests', 'turn-1'], ['run the tests', 'turn-2']]);
+  });
+
   it('a Responses result whose call is only in the previous reply pairs with that reply\'s call', () => {
     const sink = recordingSink();
     const assembler = new WireCaptureAssembler({ eventSink: sink });

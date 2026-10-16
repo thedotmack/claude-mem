@@ -188,6 +188,21 @@ describe('wire IR request parsers: protocol rules', () => {
     expect(request.messages[3].parts[1].kind).toBe('image');
   });
 
+  it('Gemini: id-less results of the same function pair with its calls in order, not all with the latest', () => {
+    const request = parseText('gemini', JSON.stringify({
+      contents: [
+        { role: 'user', parts: [{ text: 'read both' }] },
+        { role: 'model', parts: [{ functionCall: { name: 'read_file', args: { path: 'a.ts' } } }, { functionCall: { name: 'read_file', args: { path: 'b.ts' } } }] },
+        { role: 'user', parts: [
+          { functionResponse: { name: 'read_file', response: { output: 'A' } } },
+          { functionResponse: { name: 'read_file', response: { output: 'B' } } },
+        ] },
+      ],
+    }), '/v1beta/models/gemini-2.5-pro:generateContent');
+    expect(request.messages[1].parts.map(part => part.callId)).toEqual(['gemini:1:0', 'gemini:1:1']);
+    expect(request.messages[2].parts.map(part => [part.callId, part.text])).toEqual([['gemini:1:0', 'A'], ['gemini:1:1', 'B']]);
+  });
+
   it('Chat: system and developer go to system, tool messages are results, custom tool calls carry {input}', () => {
     const request = parseText('openai-chat', JSON.stringify({
       model: 'm',

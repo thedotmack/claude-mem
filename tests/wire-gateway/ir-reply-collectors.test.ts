@@ -2,6 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { collectWireReply, createWireReplyCollector } from '../../src/services/wire-gateway/ir/reply-collectors.js';
+import { RelayReplyCollection } from '../../src/services/wire-gateway/ir/relay-reply-collection.js';
+import type { RelayExchange } from '../../src/services/wire-gateway/relay/relay.js';
 import { IncrementalSseReader, WIRE_SSE_MAX_EVENT_BYTES, type WireSseEvent } from '../../src/services/wire-gateway/ir/sse-event-reader.js';
 import { ToolCallScanner } from '../../src/services/wire-gateway/ir/tool-scan.js';
 import type { WireReply } from '../../src/services/wire-gateway/ir/types.js';
@@ -308,5 +310,44 @@ describe('wire IR reply edge cases found in review', () => {
     reader.finish();
     expect(events).toEqual([{ event: 'small', data: 'ok' }]);
     expect(reader.oversizedEventCount).toBe(1);
+  });
+});
+
+describe('wire IR reply collectors: total byte cap', () => {
+  const textDelta = (text: string) => `event: content_block_delta\ndata: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"${text}"}}\n\n`;
+  const start = 'event: message_start\ndata: {"type":"message_start","message":{"model":"m","usage":{"input_tokens":1}}}\n\nevent: content_block_start\ndata: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}\n\n';
+  const end = 'event: content_block_stop\ndata: {"type":"content_block_stop","index":0}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+
+  it('a stream past the cap stops collecting and is never taken as ended cleanly', () => {
+    const firstChunk = encoder.encode(start + textDelta('kept'));
+    const collector = createWireReplyCollector('anthropic', SSE, { maxReplyBytes: firstChunk.length + 10 });
+    collector.push(firstChunk);
+    collector.push(encoder.encode(textDelta('dropped')));
+    collector.push(encoder.encode(end));
+    const reply = collector.finish();
+    expect(collector.passedByteCap).toBe(true);
+    expect(reply.text).toBe('kept');
+    expect(reply.endedCleanly).toBe(false);
+  });
+
+  it('a stream under the cap is collected whole', () => {
+    const collector = createWireReplyCollector('anthropic', SSE, { maxReplyBytes: 1024 * 1024 });
+    collector.push(encoder.encode(start + textDelta('all') + end));
+    expect(collector.finish()).toMatchObject({ text: 'all', endedCleanly: true });
+    expect(collector.passedByteCap).toBe(false);
+  });
+
+  it('the relay reply collection reports a reply past the cap, and its tool scan still sees the whole reply', () => {
+    const collection = new RelayReplyCollection({ maxReplyBytes: 200 });
+    const exchange = { exchangeId: 'x1', captured: true, protocol: 'anthropic' } as unknown as RelayExchange;
+    expect(collection.begin(exchange)).toBe(true);
+    collection.responseStarted(exchange, { contentType: SSE } as never);
+    collection.chunk(exchange, encoder.encode(start));
+    collection.chunk(exchange, encoder.encode('event: content_block_start\ndata: {"type":"content_block_start","index":1,"content_block":{"type":"tool_use","id":"t1","name":"Bash","input":{}}}\n\n'));
+    collection.chunk(exchange, encoder.encode(end));
+    const collected = collection.finish(exchange);
+    expect(collected?.passedByteCap).toBe(true);
+    expect(collected?.reply?.endedCleanly).toBe(false);
+    expect(collected?.calledTool).toBe(true);
   });
 });

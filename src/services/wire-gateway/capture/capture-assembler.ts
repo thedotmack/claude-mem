@@ -70,6 +70,8 @@ interface ConversationState {
   /** The user turn the latest session_init was for (or adopted after a compaction). */
   lastInitializedUserTurnOrdinal: number;
   lastInitializedUserWords: string;
+  /** The agent's own id for that turn's prompt, when it sent one. */
+  lastInitializedNativePromptId?: string;
 }
 
 interface SessionWithEvents {
@@ -297,22 +299,28 @@ export class WireCaptureAssembler {
   }
 
   /**
-   * One session_init per user turn with words. With the history matching, a
-   * higher ordinal is a new turn. On first sight or a mismatch (a
-   * compaction rewrites the history and its ordinals), the same words as the
-   * last turn initialized are that turn, not a new one.
+   * One session_init per user turn with words. The agent's own prompt id
+   * (Claude Code's prompt id, Codex's turn id) decides first when this
+   * request and the last initialized turn both have one: a new id is a new
+   * turn even when the words repeat and the history does not (a Responses
+   * `previous_response_id` request sends only its new input). Otherwise, with
+   * the history matching, a higher ordinal is a new turn; on first sight or a
+   * mismatch (a compaction rewrites the history and its ordinals), the same
+   * words as the last turn initialized are that turn, not a new one.
    */
   private maybeEmitSessionInit(identity: WireIdentity, conversation: ConversationState, isFirstSight: boolean, historyMatched: boolean): void {
     if (identity.userWords === '') return;
+    const agentPromptId = identity.nativePromptId && NATIVE_PROMPT_ID_PATTERN.test(identity.nativePromptId) ? identity.nativePromptId : undefined;
     const isNewTurn = isFirstSight
       ? true
-      : historyMatched
-        ? identity.userTurnOrdinal > conversation.lastInitializedUserTurnOrdinal
-        : identity.userWords !== conversation.lastInitializedUserWords;
+      : agentPromptId !== undefined && conversation.lastInitializedNativePromptId !== undefined
+        ? agentPromptId !== conversation.lastInitializedNativePromptId
+        : historyMatched
+          ? identity.userTurnOrdinal > conversation.lastInitializedUserTurnOrdinal
+          : identity.userWords !== conversation.lastInitializedUserWords;
     if (isNewTurn) {
-      const nativePromptId = identity.nativePromptId && NATIVE_PROMPT_ID_PATTERN.test(identity.nativePromptId)
-        ? identity.nativePromptId
-        : `wire:${sha256Hex(identity.sessionId, String(identity.userTurnOrdinal), identity.userWords).slice(0, 32)}`;
+      const nativePromptId = agentPromptId
+        ?? `wire:${sha256Hex(identity.sessionId, String(identity.userTurnOrdinal), identity.userWords).slice(0, 32)}`;
       this.eventSink.emit('session_init', {
         contentSessionId: identity.sessionId,
         platformSource: identity.agentId,
@@ -324,6 +332,7 @@ export class WireCaptureAssembler {
     }
     conversation.lastInitializedUserTurnOrdinal = identity.userTurnOrdinal;
     conversation.lastInitializedUserWords = identity.userWords;
+    conversation.lastInitializedNativePromptId = agentPromptId;
   }
 
   private emitObservationsForNewResults(exchange: WireAssemblerExchange, conversation: ConversationState, items: RequestItem[], firstNewItemIndex: number): void {

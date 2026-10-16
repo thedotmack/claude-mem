@@ -87,7 +87,7 @@ export function createWireCaptureObserver(options: WireCaptureObserverOptions): 
           kind: identity.kind,
           requestId: exchange.exchangeId,
         };
-        if (result.outcome !== 'complete' || result.captureOverflowed) turn.cut = true;
+        if (result.outcome !== 'complete' || result.captureOverflowed || collected.passedByteCap) turn.cut = true;
         if (identity.subagent !== undefined) turn.subagent = identity.subagent;
         if (identity.parentSessionId !== undefined) turn.parentSession = identity.parentSessionId;
         if (identity.workDir !== undefined) turn.workDir = identity.workDir;
