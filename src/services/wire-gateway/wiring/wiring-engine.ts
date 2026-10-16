@@ -93,6 +93,8 @@ export interface WiringOptions {
   now?: () => Date;
   /** `wire preview`'s sandboxed run: every agent file written or removed must be under this folder. */
   confineAgentFileWritesTo?: string;
+  /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: connect a subscription sign-in (with a note) instead of refusing it (D4). */
+  forwardSubscriptionSignIns?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -289,7 +291,7 @@ function firstMissingParent(file: ResolvedConfigFile, keyPath: string): string |
 
 export function planAgentConnection(
   descriptor: AgentDescriptor,
-  options: Pick<WiringOptions, 'environment' | 'gatewayOrigin' | 'routesFilePath' | 'helpers'>,
+  options: Pick<WiringOptions, 'environment' | 'gatewayOrigin' | 'routesFilePath' | 'helpers' | 'forwardSubscriptionSignIns'>,
   request: { captureSource?: WireGatewayCaptureSource } = {},
 ): ConnectionPlan {
   const { environment } = options;
@@ -306,7 +308,9 @@ export function planAgentConnection(
   const notes: string[] = [];
 
   const refusal = descriptor.detectSubscription?.(context, targets) ?? null;
-  if (refusal) {
+  if (refusal && options.forwardSubscriptionSignIns) {
+    notes.push(`${refusal}; connected anyway because CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true`);
+  } else if (refusal) {
     throw new Error(`${refusal}. The wire gateway never forwards subscription sign-ins, so nothing was changed: ${nativePathPhrase(descriptor)}.`);
   }
 

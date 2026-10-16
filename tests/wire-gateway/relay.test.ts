@@ -323,6 +323,18 @@ describe('cut streams are never "fixed"', () => {
   }, 15_000);
 });
 
+describe('WebSocket upgrades', () => {
+  it('are answered 426 without reaching upstream, so Codex falls back to HTTP at once', async () => {
+    const requestsBefore = upstream.requests.length;
+    const response = await fetch(`${gateway.baseUrl}/r/codex/responses`, {
+      headers: { upgrade: 'websocket', connection: 'Upgrade', 'sec-websocket-version': '13', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==' },
+    });
+    expect(response.status).toBe(426);
+    expect((await response.json()).error.message).toContain('HTTP only');
+    expect(upstream.requests.length).toBe(requestsBefore);
+  });
+});
+
 describe('client disconnects cancel the upstream', () => {
   it('an agent that leaves while upstream is silent makes the vendor see an abort (499)', async () => {
     upstream.setReply({ kind: 'hang' });
@@ -348,6 +360,31 @@ describe('client disconnects cancel the upstream', () => {
     await reader.read().catch(() => undefined);
     await waitFor(() => (recorded.aborted ? true : undefined));
     expect((await resultOf(lastExchange())).outcome).toBe('client_aborted');
+  });
+
+  it('a Codex that leaves right after response.completed on a stream with no content-type is a complete exchange', async () => {
+    // ChatGPT's Codex backend streams SSE with no content-type, and codex-cli
+    // hangs up as soon as response.completed arrives (both seen live).
+    const completed = sse('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}');
+    upstream.setReply({ kind: 'sse', omitContentType: true, chunks: [sse('event: response.created\ndata: {"type":"response.created"}'), completed, sse('data: {"padding":1}')], delayMs: 300 });
+    const controller = new AbortController();
+    const response = await fetch(`${gateway.baseUrl}/r/codex/responses`, { method: 'POST', body: '{"stream":true}', signal: controller.signal });
+    expect(response.headers.get('content-type')).toBeNull();
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = '';
+    while (!received.includes('response.completed"')) {
+      const next = await reader.read();
+      if (next.done) break;
+      received += decoder.decode(next.value);
+    }
+    const recorded = upstream.requests.at(-1)!;
+    controller.abort();
+    await reader.read().catch(() => undefined);
+    await waitFor(() => (recorded.aborted ? true : undefined));
+    const result = await resultOf(lastExchange());
+    expect(result.outcome).toBe('complete');
+    expect(result.recordedStatus).toBe(200);
   });
 });
 

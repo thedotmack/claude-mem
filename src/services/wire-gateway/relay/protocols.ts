@@ -144,6 +144,55 @@ const STREAM_END_MARKERS: Record<WireProtocol, string[]> = {
   gemini: ['"finishReason"'],
 };
 
+const SSE_LINE_STARTS = ['event:', 'data:', 'id:', 'retry:', ':'];
+
+/**
+ * Whether a reply with no content-type is an SSE stream, from its first
+ * bytes: an SSE line starts with "event:", "data:", "id:", "retry:" or ":"
+ * (a comment). ChatGPT's Codex backend (chatgpt.com/backend-api/codex)
+ * streams SSE with no content-type at all (seen live, codex-cli 0.162.1).
+ * null: too few bytes to tell yet (`ended` decides on what there is).
+ */
+export function sniffEventStream(head: Uint8Array, ended: boolean): boolean | null {
+  const text = new TextDecoder('latin1').decode(head.subarray(0, 64)).trimStart();
+  if (SSE_LINE_STARTS.some(start => text.startsWith(start))) return true;
+  if (!ended && (text === '' || SSE_LINE_STARTS.some(start => start.startsWith(text)))) return null;
+  return false;
+}
+
+/** Whether a declared content-type is SSE. */
+export function isEventStreamContentType(contentType: string): boolean {
+  return contentType.toLowerCase().includes('text/event-stream');
+}
+
+/**
+ * Holds a reply's first chunks until sniffEventStream can tell (replies with
+ * no content-type only), then hands back every chunk held so far.
+ */
+export class EventStreamSniffer {
+  private held: Uint8Array[] = [];
+  private heldBytes = 0;
+
+  /** The decision and the chunks held up to it, or null while still undecided. */
+  push(chunk: Uint8Array, ended = false): { isEventStream: boolean; heldChunks: Uint8Array[] } | null {
+    if (chunk.byteLength > 0) {
+      this.held.push(chunk);
+      this.heldBytes += chunk.byteLength;
+    }
+    const head = new Uint8Array(this.heldBytes);
+    let offset = 0;
+    for (const heldChunk of this.held) {
+      head.set(heldChunk, offset);
+      offset += heldChunk.byteLength;
+    }
+    const decision = sniffEventStream(head, ended || this.heldBytes >= 64);
+    if (decision === null) return null;
+    const heldChunks = this.held;
+    this.held = [];
+    return { isEventStream: decision, heldChunks };
+  }
+}
+
 /** Bytes kept from the previous chunk so a marker split across chunks is still seen. */
 const END_MARKER_CARRY_BYTES = 32;
 

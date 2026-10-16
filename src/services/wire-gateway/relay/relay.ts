@@ -17,6 +17,8 @@ import {
   StreamEndMarkerDetector,
   classifyRelaySuffix,
   errorEnvelopeFamilyOf,
+  EventStreamSniffer,
+  isEventStreamContentType,
   protocolErrorResponse,
   type WireProtocol,
 } from './protocols.js';
@@ -218,6 +220,8 @@ export interface WireGatewayRelayOptions {
    * anything else is checked (plan Phase 9 task 1, lastSeen). Must not block.
    */
   noteRequestFromAgent?: (agentId: string) => void;
+  /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: forward subscription sign-ins (logged) instead of refusing them (plan D4). */
+  forwardSubscriptionSignIns?: boolean;
   /** The rewrite stages (plan Phase 10); absent or empty, every body goes as it came (outbound redaction aside). */
   rewriteSeam?: WireRewriteSeam;
   /** Where each conversation's rewrites are kept; without one, stages see no ledger and so rewrite nothing that needs one. */
@@ -309,14 +313,30 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     const upstreamBaseUrl = route.upstreamBaseUrl.replace(/\/+$/, '');
     const upstreamUrl = new URL(`${upstreamBaseUrl}${suffixPath}${requestUrl.search}`);
 
-    // Refuse subscription sign-ins before anything is read or forwarded (plan D4).
+    // Refuse subscription sign-ins before anything is read or forwarded (plan D4),
+    // unless the operator lifted D4 on this machine.
     const subscription = detectSubscriptionSignIn(request.headers, upstreamUrl);
-    if (subscription) {
+    if (subscription && options.forwardSubscriptionSignIns) {
+      logger.info('WIRE', 'Forwarding a subscription sign-in (CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true)', { routeId, agentId: route.agentId, marker: subscription.marker });
+    } else if (subscription) {
       logger.warn('WIRE', 'Refused a subscription sign-in', { routeId, agentId: route.agentId, marker: subscription.marker });
       return protocolErrorResponse(classification.protocol ? errorFamily : subscription.vendorFamily, {
         status: 403,
         message: subscriptionRefusalMessage(subscription, route.agentId),
         openAiCode: 'claude_mem_subscription_signin_refused',
+        headers: { connection: 'close' },
+      });
+    }
+
+    // The relay is HTTP only. Codex on a ChatGPT sign-in tries a WebSocket to
+    // /responses first; relayed, the vendor answers 405 and Codex retries for
+    // ~12 s with backoff. 426 Upgrade Required makes it fall back to HTTP
+    // streaming after one try (both seen live, codex-cli 0.162.1).
+    if ((request.headers.get('upgrade') ?? '').toLowerCase().includes('websocket')) {
+      logger.debug('WIRE', 'Refused a WebSocket upgrade; the agent falls back to HTTP', { routeId, agentId: route.agentId, suffixPath });
+      return protocolErrorResponse(errorFamily, {
+        status: 426,
+        message: 'the claude-mem wire gateway relays HTTP only; use HTTP streaming',
         headers: { connection: 'close' },
       });
     }
@@ -613,8 +633,12 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       return new Response(null, responseInit);
     }
 
-    const isEventStream = (upstreamResponse.headers.get('content-type') ?? '').toLowerCase().includes('text/event-stream');
-    endDetector = classification.protocol && isEventStream ? new StreamEndMarkerDetector(classification.protocol) : null;
+    // With no content-type the first bytes decide (EventStreamSniffer), so the detector may arrive with them.
+    const replyContentType = upstreamResponse.headers.get('content-type');
+    const endDetectorFor = (isEventStream: boolean): StreamEndMarkerDetector | null =>
+      classification.protocol && isEventStream ? new StreamEndMarkerDetector(classification.protocol) : null;
+    endDetector = replyContentType ? endDetectorFor(isEventStreamContentType(replyContentType)) : null;
+    let replyKindSniffer = replyContentType ? null : new EventStreamSniffer();
     // A non-stream reply is whole when its body ends; a stream when its end marker passed.
     const hasReachedEnd = (upstreamBodyDone: boolean) => (endDetector ? endDetector.hasSeenEnd : upstreamBodyDone);
 
@@ -734,7 +758,16 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
           return;
         }
         // To the client first, immediately; observers get a copy after.
-        endDetector?.observe(next.value);
+        if (replyKindSniffer) {
+          const sniffed = replyKindSniffer.push(next.value);
+          if (sniffed) {
+            replyKindSniffer = null;
+            endDetector = endDetectorFor(sniffed.isEventStream);
+            for (const heldChunk of sniffed.heldChunks) endDetector?.observe(heldChunk);
+          }
+        } else {
+          endDetector?.observe(next.value);
+        }
         sendToClient(controller, await throughResponseStages(restorer ? restorer.push(next.value) : [next.value]));
       },
       cancel() {

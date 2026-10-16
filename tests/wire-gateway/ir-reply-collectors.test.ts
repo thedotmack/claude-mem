@@ -351,3 +351,28 @@ describe('wire IR reply collectors: total byte cap', () => {
     expect(collected?.calledTool).toBe(true);
   });
 });
+
+describe('a reply with no content-type', () => {
+  it('is collected as SSE when its first bytes are an SSE line (ChatGPT Codex backend, seen live)', () => {
+    // The event sequence codex-cli 0.162.1 got from chatgpt.com/backend-api/codex, trimmed.
+    const bytes = encoder.encode([
+      'event: response.created\ndata: {"type":"response.created","response":{"status":"in_progress"}}\n\n',
+      'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","output_index":0,"content_index":0,"delta":"Fixed"}\n\n',
+      'event: response.completed\ndata: {"type":"response.completed","response":{"model":"gpt-6.1-sol","status":"completed",'
+        + '"output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Fixed"}]}],'
+        + '"usage":{"input_tokens":26447,"input_tokens_details":{"cached_tokens":13184},"output_tokens":165,"output_tokens_details":{"reasoning_tokens":0}}}}\n\n',
+    ].join(''));
+    const asSse = collectWireReply('openai-responses', SSE, [bytes]);
+    expect(asSse.endedCleanly).toBe(true);
+    expect(asSse.text).toBe('Fixed');
+    expect(collectWireReply('openai-responses', null, [bytes])).toEqual(asSse);
+    expect(collectWireReply('openai-responses', null, [bytes.subarray(0, 3), bytes.subarray(3)])).toEqual(asSse);
+    const oneByteChunks = Array.from({ length: bytes.length }, (_, index) => bytes.subarray(index, index + 1));
+    expect(collectWireReply('openai-responses', null, oneByteChunks)).toEqual(asSse);
+  });
+
+  it('is collected as whole JSON when its first bytes are not SSE', () => {
+    const bytes = fixtureBytes('official/openai-responses-function-call.json');
+    expect(collectWireReply('openai-responses', null, [bytes])).toEqual(collectWireReply('openai-responses', JSON_TYPE, [bytes]));
+  });
+});

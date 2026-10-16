@@ -16,8 +16,9 @@
 // re-rendered); a Gemini call written out as text is left as text.
 // Unknown events and fields are ignored, never thrown on.
 
+import { logger } from '../../../utils/logger.js';
 import { getSpan, rawText, scanDocument, type JsonSpan } from '../json/scanner.js';
-import { StreamEndMarkerDetector, type WireProtocol } from '../relay/protocols.js';
+import { EventStreamSniffer, StreamEndMarkerDetector, isEventStreamContentType, type WireProtocol } from '../relay/protocols.js';
 import { IncrementalSseReader } from './sse-event-reader.js';
 import { emptyWireUsage, type WireReply, type WireSealedReplyItem, type WireSealOwner, type WireStopReason, type WireUsage } from './types.js';
 import { anthropicUsage, geminiUsage, mergeWireUsage, openAiChatUsage, openAiResponsesUsage } from './usage.js';
@@ -725,7 +726,12 @@ class WholeJsonReplyCollector implements WireReplyCollector {
     try {
       body = JSON.parse(new TextDecoder('utf-8').decode(bytes));
       rootSpan = scanDocument(bytes);
-    } catch {
+    } catch (error) {
+      logger.warn('WIRE', 'A whole-JSON reply did not parse; its reply is not captured', {
+        protocol: this.protocol,
+        replyBytes: bytes.length,
+        error: error instanceof Error ? error.message : String(error),
+      });
       return accumulator.finish(false);
     }
     const rawAt = (path: ReadonlyArray<string | number>) => {
@@ -737,11 +743,42 @@ class WholeJsonReplyCollector implements WireReplyCollector {
   }
 }
 
-/** A collector for a reply of `contentType` (an SSE stream when it is text/event-stream). */
+/** A reply with no content-type: its first bytes pick the SSE or whole-JSON collector (EventStreamSniffer). */
+class FirstBytesDecidedReplyCollector implements WireReplyCollector {
+  private readonly sniffer = new EventStreamSniffer();
+  private chosen: WireReplyCollector | null = null;
+
+  constructor(private readonly protocol: WireProtocol, private readonly maxReplyBytes: number) {}
+
+  private choose(chunk: Uint8Array, ended: boolean): void {
+    const sniffed = this.sniffer.push(chunk, ended);
+    if (!sniffed) return;
+    this.chosen = sniffed.isEventStream
+      ? new SseReplyCollector(this.protocol, this.maxReplyBytes)
+      : new WholeJsonReplyCollector(this.protocol, this.maxReplyBytes);
+    for (const heldChunk of sniffed.heldChunks) this.chosen.push(heldChunk);
+  }
+
+  push(chunk: Uint8Array): void {
+    if (this.chosen) this.chosen.push(chunk);
+    else this.choose(chunk, false);
+  }
+
+  finish(): WireReply {
+    if (!this.chosen) this.choose(new Uint8Array(0), true);
+    return this.chosen!.finish();
+  }
+
+  get passedByteCap(): boolean {
+    return this.chosen?.passedByteCap ?? false;
+  }
+}
+
+/** A collector for a reply of `contentType` (an SSE stream when it is text/event-stream; decided by the first chunk when absent). */
 export function createWireReplyCollector(protocol: WireProtocol, contentType: string | null, options: WireReplyCollectorOptions = {}): WireReplyCollector {
-  const isEventStream = (contentType ?? '').toLowerCase().includes('text/event-stream');
   const maxReplyBytes = options.maxReplyBytes ?? WIRE_REPLY_MAX_BYTES;
-  return isEventStream ? new SseReplyCollector(protocol, maxReplyBytes) : new WholeJsonReplyCollector(protocol, maxReplyBytes);
+  if (!contentType) return new FirstBytesDecidedReplyCollector(protocol, maxReplyBytes);
+  return isEventStreamContentType(contentType) ? new SseReplyCollector(protocol, maxReplyBytes) : new WholeJsonReplyCollector(protocol, maxReplyBytes);
 }
 
 /** Collect a whole reply at once (tests and replays). */

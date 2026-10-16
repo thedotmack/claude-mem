@@ -100,6 +100,7 @@ function wiringOptions(runtime: WireAgentCliRuntime, inPreviewSandbox: boolean):
     routesFilePath: paths.wireGatewayRoutes(),
     sideEffects: sideEffectsFor(runtime, inPreviewSandbox),
     helpers: { readAgentVersion },
+    forwardSubscriptionSignIns: runtime.config.forwardSubscriptionSignIns,
   };
 }
 

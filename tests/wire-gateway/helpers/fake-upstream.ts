@@ -36,7 +36,8 @@ export type FakeUpstreamReply =
   /** A JSON (or any) body, sent whole. A string body is sent byte-for-byte. */
   | { kind: 'json'; status?: number; body: unknown; headers?: Record<string, string> }
   /** text/event-stream, one chunk per entry, `delayMs` before each chunk after the first. */
-  | { kind: 'sse'; status?: number; chunks: string[]; delayMs?: number; headers?: Record<string, string> }
+  /** omitContentType: no content-type header at all, as ChatGPT's Codex backend streams. */
+  | { kind: 'sse'; status?: number; chunks: string[]; delayMs?: number; headers?: Record<string, string>; omitContentType?: boolean }
   /** The body gzip-encoded, labelled `content-encoding: gzip`. */
   | { kind: 'gzip'; status?: number; body: string; contentType?: string }
   /** SSE chunks, then the connection is torn down with no end of stream. */
@@ -130,7 +131,11 @@ export async function startFakeUpstream(initialScript: FakeUpstreamScript = { ki
         sendWhole(reply.status ?? 200, { 'content-type': reply.contentType ?? 'application/json', 'content-encoding': 'gzip' }, gzipSync(reply.body));
         return 'keep';
       case 'sse':
-        write(headBlock(reply.status ?? 200, { 'content-type': 'text/event-stream', 'transfer-encoding': 'chunked', ...reply.headers }));
+        write(headBlock(reply.status ?? 200, {
+          ...(reply.omitContentType ? {} : { 'content-type': 'text/event-stream' }),
+          'transfer-encoding': 'chunked',
+          ...reply.headers,
+        }));
         await streamChunks(reply.chunks, reply.delayMs ?? 0);
         write('0\r\n\r\n');
         return 'keep';

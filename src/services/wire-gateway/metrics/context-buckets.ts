@@ -168,8 +168,12 @@ function parseInstructionsFromHeading(line: string): string | null {
   return path === '' || isWhitespaceCharacter(path[0]) ? null : path;
 }
 
-/** Codex's "# AGENTS.md instructions for /path" first line, with its line feed (magpie `agentsFor`). */
-function parseAgentsFileHeading(text: string): { fileName: string; directory: string } | null {
+/**
+ * Codex's "# AGENTS.md instructions for /path" first line, with its line feed
+ * (magpie `agentsFor`). codex-cli 0.162.1 sends a bare "# AGENTS.md
+ * instructions" line (seen live): directory is then null.
+ */
+function parseAgentsFileHeading(text: string): { fileName: string; directory: string | null } | null {
   if (!text.startsWith('# ')) return null;
   const lineEnd = text.indexOf('\n');
   if (lineEnd < 0) return null;
@@ -178,6 +182,7 @@ function parseAgentsFileHeading(text: string): { fileName: string; directory: st
   if (fileNameEnd < 0) return null;
   const fileName = line.slice(2, fileNameEnd);
   if (!fileName.endsWith('.md') || fileName.length < 4 || /\s/.test(fileName)) return null;
+  if (line.slice(fileNameEnd) === ' instructions') return { fileName, directory: null };
   const marker = ' instructions for ';
   if (!line.startsWith(marker, fileNameEnd)) return null;
   const directory = line.slice(fileNameEnd + marker.length);
@@ -433,7 +438,8 @@ class ContextBreakdownBuilder {
     }
     const agentsFile = parseAgentsFileHeading(trimmed);
     if (agentsFile) {
-      this.add('memory', `${trimTrailingCharacters(agentsFile.directory, '/')}/${agentsFile.fileName}`, 'project', estimateTextTokens(trimmed));
+      const label = agentsFile.directory === null ? agentsFile.fileName : `${trimTrailingCharacters(agentsFile.directory, '/')}/${agentsFile.fileName}`;
+      this.add('memory', label, 'project', estimateTextTokens(trimmed));
       return;
     }
     if (HARNESS_CONTEXT_PREFIXES.some(prefix => trimmed.startsWith(prefix))) {

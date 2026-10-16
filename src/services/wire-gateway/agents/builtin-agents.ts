@@ -112,7 +112,15 @@ const claudeCode: AgentDescriptor = {
   files: [{ key: 'settings', format: 'json', candidatePaths: (environment) => [join(claudeConfigDirectory(environment), 'settings.json')] }],
   targets: [{ file: 'settings', keyPath: 'env.ANTHROPIC_BASE_URL', protocol: 'anthropic', defaultUpstream: ANTHROPIC_API_BASE_URL }],
   // Claude Code sends x-claude-code-request-class and friends only with this on (report 07 §2.3).
-  identitySwitches: [{ file: 'settings', keyPath: 'env.CLAUDE_CODE_GATEWAY_HINT_HEADERS', value: '1' }],
+  // ENABLE_TOOL_SEARCH: Claude Code turns tool search off for a base URL that
+  // is not Anthropic's and then sends every MCP tool schema inline; seen live
+  // (Claude Code 2.1.301, 815 tools), that was 2.6 MB and ~1.09M tokens, and
+  // every request failed "prompt is too long". The gateway relays to
+  // Anthropic, so tool search works through it.
+  identitySwitches: [
+    { file: 'settings', keyPath: 'env.CLAUDE_CODE_GATEWAY_HINT_HEADERS', value: '1' },
+    { file: 'settings', keyPath: 'env.ENABLE_TOOL_SEARCH', value: 'true' },
+  ],
   detectSubscription(context) {
     // Claude Code is wired only for API-key users (plan D9). Without an API
     // key it uses its claude.ai sign-in, which the gateway never forwards (D4).
@@ -144,7 +152,7 @@ const claudeCode: AgentDescriptor = {
     slashCommandTextField: 'display', // magpie claude.go:1623-1626
   },
   launch: {
-    env: { ANTHROPIC_BASE_URL: '{baseUrl}', CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' },
+    env: { ANTHROPIC_BASE_URL: '{baseUrl}', CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1', ENABLE_TOOL_SEARCH: 'true' },
     baseUrlVariable: 'ANTHROPIC_BASE_URL',
     defaultUpstream: ANTHROPIC_API_BASE_URL,
     protocol: 'anthropic',
@@ -162,6 +170,12 @@ function codexHome(environment: AgentEnvironment): string {
 const CODEX_BUILT_IN_OPENAI_PROVIDER = 'openai';
 const CODEX_PLUGIN_IDS = ['claude-mem@claude-mem-local', 'claude-mem@thedotmack'];
 const CODEX_SUBSCRIPTION_AUTH_MODES = new Set(['chatgpt', 'chatgptAuthTokens']);
+const CODEX_CHATGPT_BACKEND_BASE_URL = 'https://chatgpt.com/backend-api/codex';
+
+function codexHasChatGptSignIn(context: AgentConfigReadContext): boolean {
+  const authMode = context.readValue('auth', 'auth_mode');
+  return (typeof authMode === 'string' && CODEX_SUBSCRIPTION_AUTH_MODES.has(authMode)) || Boolean(stringValue(context.readValue('auth', 'tokens.access_token')));
+}
 
 const codex: AgentDescriptor = {
   id: 'codex',
@@ -177,7 +191,9 @@ const codex: AgentDescriptor = {
   resolveTargets(context) {
     const activeProvider = stringValue(context.readValue('config', 'model_provider')) ?? CODEX_BUILT_IN_OPENAI_PROVIDER;
     if (activeProvider === CODEX_BUILT_IN_OPENAI_PROVIDER) {
-      return [{ file: 'config', keyPath: 'openai_base_url', protocol: 'openai-responses', defaultUpstream: OPENAI_API_BASE_URL }];
+      // A ChatGPT sign-in talks to chatgpt.com's Codex backend, not api.openai.com (seen live, codex-cli 0.162.1).
+      const defaultUpstream = codexHasChatGptSignIn(context) ? CODEX_CHATGPT_BACKEND_BASE_URL : OPENAI_API_BASE_URL;
+      return [{ file: 'config', keyPath: 'openai_base_url', protocol: 'openai-responses', defaultUpstream }];
     }
     const keyPath = joinConfigKeyPath(['model_providers', activeProvider, 'base_url']);
     if (!stringValue(context.readValue('config', keyPath))) {
@@ -189,9 +205,7 @@ const codex: AgentDescriptor = {
   detectSubscription(context, targets) {
     // A ChatGPT sign-in drives only the built-in OpenAI provider.
     if (!targets.some((target) => target.keyPath === 'openai_base_url')) return null;
-    const authMode = context.readValue('auth', 'auth_mode');
-    const accessToken = context.readValue('auth', 'tokens.access_token');
-    if ((typeof authMode === 'string' && CODEX_SUBSCRIPTION_AUTH_MODES.has(authMode)) || stringValue(accessToken)) {
+    if (codexHasChatGptSignIn(context)) {
       return `Codex is signed in with ChatGPT (${context.filePath('auth')} holds ChatGPT tokens)`;
     }
     return null;

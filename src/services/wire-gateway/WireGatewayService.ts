@@ -118,6 +118,8 @@ export interface WireGatewayServiceOptions {
   recordingForcedOff?: boolean;
   /** CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: routes without their own setting mask secrets outbound. */
   outboundRedaction?: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: forward subscription sign-ins instead of refusing them (D4). */
+  forwardSubscriptionSignIns?: boolean;
   /** Test seam: the placeholder table; defaults to one keyed by <DATA_DIR>/wire-gateway/redact.key. */
   outboundRedactionPlaceholders?: OutboundRedactionPlaceholders;
   /**
@@ -233,6 +235,7 @@ export class WireGatewayService {
         enabledByDefault: this.options.outboundRedaction ?? false,
       },
       noteRequestFromAgent: agentId => this.agentLastSeen.noteRequestFromAgent(agentId),
+      forwardSubscriptionSignIns: this.options.forwardSubscriptionSignIns ?? false,
       rewriteSeam: this.rewriteSeam,
       conversationLedger: this.conversationLedger,
       rewriteSettings: this.options.rewriteSettings,

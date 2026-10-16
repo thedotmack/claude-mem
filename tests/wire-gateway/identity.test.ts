@@ -439,6 +439,8 @@ describe('wire identity: the folder and words readers stay linear on hostile tex
     expect(userWordsInText('# AGENTS.md instructions for /Users/me/app  \n\nRun it')).toBe('');
     expect(userWordsInText('# AGENTS.md instructions for /Users/me/app')).toBe('# AGENTS.md instructions for /Users/me/app');
     expect(userWordsInText('# AGENTS.md instructions for /app\r\nRun it')).toBe('# AGENTS.md instructions for /app\r\nRun it');
+    // codex-cli 0.162.1 drops the "for <path>" (seen live).
+    expect(userWordsInText('# AGENTS.md instructions\n\n<INSTRUCTIONS>\nRun the tests.\n</INSTRUCTIONS>')).toBe('');
   });
 });
 

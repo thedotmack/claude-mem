@@ -41,6 +41,7 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES?: string;
   CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS?: string;
 }): string | null {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -67,6 +68,10 @@ export function validateWireGatewayListenSettings(settings: {
     && settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION !== 'false') {
     return 'CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION must be "true" or "false"';
   }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== undefined
+    && settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== 'false') {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS must be "true" or "false"';
+  }
   return null;
 }
 
@@ -83,6 +88,8 @@ export interface WireGatewayConfig {
   recordingForcedOff: boolean;
   /** Whether a route without its own `features.outboundRedaction` gets it (CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION). */
   outboundRedaction: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true: subscription sign-ins are forwarded, not refused (D4 lifted locally). */
+  forwardSubscriptionSignIns: boolean;
   /** Every setting (settings.json with env overrides), handed to the rewrite stages as `context.settings`. */
   rewriteSettings: Readonly<Record<string, string>>;
 }
@@ -109,6 +116,7 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
     retentionDays: parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS, 10),
     recordingForcedOff: settings.CLAUDE_MEM_WIRE_GATEWAY_RECORDING === 'false',
     outboundRedaction: settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION === 'true',
+    forwardSubscriptionSignIns: settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS === 'true',
     rewriteSettings: { ...settings },
   };
 }

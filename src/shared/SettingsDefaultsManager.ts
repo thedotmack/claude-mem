@@ -405,6 +405,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: string;
   CLAUDE_MEM_WIRE_GATEWAY_RECORDING: string;
   CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: string;
+  CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -668,6 +669,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: '7',           // days of raw wire recordings (turns.jsonl) kept, when recording is consented to
     CLAUDE_MEM_WIRE_GATEWAY_RECORDING: '',                 // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
     CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: 'false',   // routes without their own setting swap secrets for placeholders before the provider sees them
+    CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: 'false', // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
   };
 
   static getAllDefaults(): SettingsDefaults {
