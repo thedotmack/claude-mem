@@ -17,6 +17,8 @@ When Codex compacts a thread, the memory timeline drops out of its history. The 
 
 PR: #4733
 
+Fixed: deleting an observation, summary or prompt through the worker API now also removes that row's documents from the Chroma index, instead of leaving them orphaned in `cm__claude-mem` forever (#4805)
+
 ## [13.38.0] - 2026-10-13
 
 No more console window flashing on Windows. Every Claude Code hook now calls claude-mem directly instead of going through bash, and this release also carries 16 community fixes from five contributors.
