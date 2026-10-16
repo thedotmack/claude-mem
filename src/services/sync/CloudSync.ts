@@ -105,7 +105,7 @@ export const POISON_OP_REJECTION_THRESHOLD = 3;
 const MAX_POISON_QUARANTINES_PER_FLUSH = 25;
 /** Failure-streak ledger writes are throttled to one per interval. */
 const HEALTH_WRITE_THROTTLE_MS = 60 * 1_000;
-/** While a hub declines work_state, its status is re-read this often (shouldProbeContentKinds). */
+/** While work_state waits to sync, the hub's content kinds are re-read this often (shouldProbeContentKinds). */
 const CONTENT_KINDS_REPROBE_MS = 60 * 60 * 1_000;
 
 /**
@@ -530,6 +530,8 @@ export interface CloudSyncOptions {
   statusTimeoutMs?: number;
   /** Re-check interval while paused on a 401/403. Default 1h. */
   authRetryMs?: number;
+  /** Re-read interval for the hub's content kinds while work_state waits. Default 1h. */
+  contentKindsReprobeMs?: number;
   /**
    * sync-health ledger path read by the SessionStart banner. null/omitted =
    * no ledger (tests, out-of-band callers); the worker passes the default.
@@ -579,6 +581,7 @@ export class CloudSync {
   private readonly statusTimeoutMs: number;
   private statusProbePromise: Promise<void> | null = null;
   private readonly authRetryMs: number;
+  private readonly contentKindsReprobeMs: number;
   private readonly healthFilePath: string | null;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
@@ -648,6 +651,7 @@ export class CloudSync {
     );
     this.statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
     this.authRetryMs = options.authRetryMs ?? DEFAULT_AUTH_RETRY_MS;
+    this.contentKindsReprobeMs = options.contentKindsReprobeMs ?? CONTENT_KINDS_REPROBE_MS;
     this.healthFilePath = options.healthFilePath ?? null;
     this.nextBackoffMs = this.backoffInitialMs;
 
@@ -730,13 +734,7 @@ export class CloudSync {
         this.flushAgainRequested = true;
         return;
       }
-      if (this.debounceTimer) clearTimeout(this.debounceTimer);
-      const timer = setTimeout(() => {
-        this.debounceTimer = null;
-        void this.flush();
-      }, this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
-      (timer as { unref?: () => void }).unref?.();
-      this.debounceTimer = timer;
+      this.armFlushTimer(this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
     } catch (error) {
       // notify() is called from write paths — swallow everything.
       try {
@@ -775,13 +773,14 @@ export class CloudSync {
       this.dropStaleOriginDeviceIdSnapshots();
       do {
         this.flushAgainRequested = false;
-        await this.drainContentOutbox();
-        await this.drainMutations();
-        if (this.countPending('work_state_entries') > 0 && this.shouldProbeContentKinds()) {
-          // One status GET learns which kinds this hub accepts (hubAcceptsKind).
+        // One status GET learns which kinds this hub accepts (hubAcceptsKind)
+        // before anything work_state is sent, saved snapshots included.
+        if (this.hasPendingWorkState() && this.shouldProbeContentKinds()) {
           await this.probeHubStatus();
           if (this.stopped) return;
         }
+        await this.drainContentOutbox();
+        await this.drainMutations();
         for (const kind of KINDS) {
           if (!this.hubAcceptsKind(kind.kind)) continue;
           await this.drainKind(kind);
@@ -792,6 +791,7 @@ export class CloudSync {
       this.lastError = null;
       this.recordFlushSuccess();
       this.resetBackoff();
+      this.scheduleContentKindsRecheck();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.lastError = friendlySyncError(err.message);
@@ -964,13 +964,44 @@ export class CloudSync {
 
   /**
    * Ask the hub which kinds it accepts before pushing one it may not: when it
-   * has never been asked, and again once an hour while it declines work_state,
-   * so a hub upgrade is learned without waiting for a worker restart.
+   * has never been asked, and again once an hour whichever way it answered,
+   * since a hub can start or stop listing work_state at any time (a hub
+   * upgrade, a per-account server setting). Callers ask only while work_state
+   * is pending (hasPendingWorkState).
    */
   private shouldProbeContentKinds(): boolean {
     if (this.hubStatus.contentKinds === null) return true;
-    if (this.hubAcceptsKind('work_state')) return false;
-    return Date.now() - (this.hubStatus.checkedAt ?? 0) >= CONTENT_KINDS_REPROBE_MS;
+    return Date.now() - (this.hubStatus.checkedAt ?? 0) >= this.contentKindsReprobeMs;
+  }
+
+  /** work_state rows not yet acked, or saved work_state snapshots still in the outbox. */
+  private hasPendingWorkState(): boolean {
+    return this.countPending('work_state_entries') > 0
+      || this.db.prepare("SELECT 1 FROM sync_content_outbox WHERE kind = 'work_state' LIMIT 1").get() !== null;
+  }
+
+  /**
+   * An idle device runs no flush, so work_state waiting on a hub that does not
+   * list the kind would never be re-checked. After a successful flush that
+   * leaves work_state pending, arm the flush timer for the next hourly
+   * re-check; a write's notify() replaces it with its short debounce, and that
+   * flush arms it again.
+   */
+  private scheduleContentKindsRecheck(): void {
+    if (this.stopped || this.debounceTimer || this.retryTimer || !this.hasPendingWorkState()) return;
+    const sinceCheckMs = Date.now() - (this.hubStatus.checkedAt ?? 0);
+    this.armFlushTimer(Math.max(this.contentKindsReprobeMs - sinceCheckMs, 0));
+  }
+
+  /** The one pending-flush timer: notify()'s debounce or the hourly content-kinds re-check. */
+  private armFlushTimer(delayMs: number): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    const timer = setTimeout(() => {
+      this.debounceTimer = null;
+      void this.flush();
+    }, delayMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.debounceTimer = timer;
   }
 
   private probeHubStatus(): Promise<void> {
@@ -1150,14 +1181,20 @@ export class CloudSync {
   // Drain internals
   // -------------------------------------------------------------------------
 
-  /** Drain immutable live/delete/revive snapshots exactly as persisted. */
+  /**
+   * Drain immutable live/delete/revive snapshots exactly as persisted. A saved
+   * work_state snapshot (a push that failed after it was saved) waits like its
+   * row while the hub does not list the kind: sent anyway, a hub that refuses
+   * it by name would dead-letter it, and the append-only row with it.
+   */
   private async drainContentOutbox(): Promise<void> {
     for (;;) {
       if (this.stopped) return;
       const rows = this.db.prepare(`
         SELECT body, operation_sha256 FROM sync_content_outbox
+        WHERE kind != 'work_state' OR ? = 1
         ORDER BY deleted DESC, id LIMIT ?
-      `).all(this.contentBatchSize) as Array<CanonicalWireOp>;
+      `).all(this.hubAcceptsKind('work_state') ? 1 : 0, this.contentBatchSize) as Array<CanonicalWireOp>;
       if (rows.length === 0) return;
       let batch: WireOp[] = [];
       let bytes = 0;

@@ -228,6 +228,8 @@ export class SessionStore {
   private readonly syncOpsEnabled: boolean;
   /** See cachedStatement. Keyed by SQL text; only fixed SQL ever goes in. */
   private readonly statementCache = new Map<string, Statement>();
+  /** This device's sync id; native work-state rows fold as its writes (setLocalSyncDeviceId). */
+  private localSyncDeviceId = '';
 
   constructor(dbPathOrDb: string | Database = DB_PATH, options: SessionStoreOptions = {}) {
     this.syncOpsEnabled = options.syncOpsEnabled ?? true;
@@ -3136,8 +3138,17 @@ export class SessionStore {
     return entryId;
   }
 
+  /**
+   * The id CloudSync syncs this device under, once it is resolved: work-state
+   * reads order native rows as this device's writes, the way other devices
+   * and cmem.ai order them. Empty (the default) when sync has no device id.
+   */
+  setLocalSyncDeviceId(deviceId: string): void {
+    this.localSyncDeviceId = deviceId;
+  }
+
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
-    const entries = getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName);
+    const entries = getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName, this.localSyncDeviceId);
     // Keys explicitly supplied by the checkout describe one list history.
     // Adopted projects discovered by getProjectReadKeys retain their own scope.
     const foldKey = (key: string) => key.replace(/[A-Z]/g, character => character.toLowerCase());

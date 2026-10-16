@@ -1,11 +1,13 @@
 // work_state as a cloud sync content kind: the table's sync columns (v66), the
-// row's canonical op, the push gated on the hub's `content_kinds`, and the
-// apply of a row pulled from another device. Harness style as cloud-sync.test.ts
-// and sync-apply.test.ts: in-memory SessionStore, injected fetch, fast debounce.
-// The upgrade block covers the two schema steps (v66, v67) over databases from
-// before and after v65, the Unicode title-key refresh's run-once gate.
+// row's canonical op, the push gated on the hub's `content_kinds` (saved
+// snapshots included, re-checked hourly), the apply of a row pulled from another
+// device, the replay of ops an older build set aside, and one fold order on
+// every device. Harness style as cloud-sync.test.ts and sync-apply.test.ts:
+// in-memory SessionStore, injected fetch, fast debounce. The upgrade block
+// covers the two schema steps (v66, v67) over databases from before and after
+// v65, the Unicode title-key refresh's run-once gate.
 
-import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, setSystemTime } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
@@ -13,9 +15,15 @@ import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { LATEST_SCHEMA_VERSION, readSchemaWriterStamp } from '../../../src/services/sqlite/connection.js';
 import { computeTitleNormKey } from '../../../src/services/sqlite/dedup-store.js';
-import { CloudSync, type CloudSyncSettingKeys } from '../../../src/services/sync/CloudSync.js';
+import {
+  CloudSync,
+  POISON_OP_REJECTION_THRESHOLD,
+  type CloudSyncOptions,
+  type CloudSyncSettingKeys,
+} from '../../../src/services/sync/CloudSync.js';
 import { SyncApply, type SyncOp } from '../../../src/services/sync/SyncApply.js';
-import { parseCanonicalOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
+import { SyncClient, decodeChanges } from '../../../src/services/sync/SyncClient.js';
+import { buildContentOperation, parseCanonicalOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
 import { renderWorkStateLines } from '../../../src/services/context/sections/WorkStateRenderer.js';
 
 const SELF = 'device-fixture';
@@ -24,6 +32,7 @@ const FIXED_NOW = 1752000000000;
 const REMOTE_EPOCH = FIXED_NOW - 60_000;
 const REMOTE_ISO = new Date(REMOTE_EPOCH).toISOString();
 const EVERY_KIND = ['observation', 'summary', 'prompt', 'work_state'];
+const LAUNCH_KINDS = ['observation', 'summary', 'prompt'];
 
 function settings(): CloudSyncSettingKeys {
   return {
@@ -36,10 +45,16 @@ function settings(): CloudSyncSettingKeys {
 }
 
 /**
- * A hub that acks every op. `contentKinds` is what its status advertises;
- * undefined models a hub that predates the field.
+ * A hub that acks every op. `contentKinds` is what its status advertises
+ * (undefined models a hub that predates the field); setContentKinds changes it
+ * mid-test, the way a per-account server setting does. Every POSTed op is
+ * recorded, raw and parsed, before the hub answers. `failPushes` answers each
+ * POST 503; `rejectWorkState` refuses a work_state op by name, as a hub that
+ * does not know the kind does.
  */
-function makeHub(contentKinds?: string[]) {
+function makeHub(initialContentKinds?: string[], options: { failPushes?: boolean; rejectWorkState?: boolean } = {}) {
+  let contentKinds = initialContentKinds;
+  const rawOps: Array<{ body: string; operation_sha256: string }> = [];
   const pushes: Array<Array<Record<string, unknown>>> = [];
   let statusProbes = 0;
   let seq = 0;
@@ -55,24 +70,43 @@ function makeHub(contentKinds?: string[]) {
       });
     }
     const body = JSON.parse(String(init?.body ?? '{}')) as { ops: Array<{ body: string; operation_sha256: string }> };
-    pushes.push(body.ops.map(op => JSON.parse(op.body) as Record<string, unknown>));
-    const acked = body.ops.map(op => {
-      const envelope = JSON.parse(op.body) as Record<string, unknown>;
-      return {
-        id: envelope.id,
-        kind: envelope.kind,
-        origin_local_id: envelope.origin_local_id,
-        entity_rev: envelope.entity_rev,
-        operation_sha256: op.operation_sha256,
-        seq: String(++seq),
-      };
-    });
+    const envelopes = body.ops.map(op => JSON.parse(op.body) as Record<string, unknown>);
+    rawOps.push(...body.ops);
+    pushes.push(envelopes);
+    if (options.failPushes) return new Response('unavailable', { status: 503 });
+    const refused = envelopes.findIndex(envelope => envelope.kind === 'work_state');
+    if (options.rejectWorkState && refused >= 0) {
+      return Response.json(
+        { error: `invalid_ops: ops[${refused}] kind must be observation, summary, or prompt` },
+        { status: 400 },
+      );
+    }
+    const acked = body.ops.map((op, index) => ({
+      id: envelopes[index].id,
+      kind: envelopes[index].kind,
+      origin_local_id: envelopes[index].origin_local_id,
+      entity_rev: envelopes[index].entity_rev,
+      operation_sha256: op.operation_sha256,
+      seq: String(++seq),
+    }));
     return Response.json({ acked, head_seq: String(seq), projected_seq: String(seq) });
   }) as typeof fetch;
-  return { impl, pushes, probes: () => statusProbes };
+  return {
+    impl,
+    pushes,
+    rawOps,
+    probes: () => statusProbes,
+    pushedKinds: () => pushes.flat().map(envelope => envelope.kind),
+    setContentKinds: (kinds: string[] | undefined) => { contentKinds = kinds; },
+  };
 }
 
-function workStateOp(originId: string, fields: Record<string, unknown>, opts: { device?: string; rev?: number; seq?: number } = {}): SyncOp {
+function workStateOp(
+  originId: string,
+  fields: Record<string, unknown>,
+  opts: { device?: string; rev?: number; seq?: number; listName?: string; createdAtEpoch?: number } = {},
+): SyncOp {
+  const createdAtEpoch = opts.createdAtEpoch ?? REMOTE_EPOCH;
   return {
     seq: String(opts.seq ?? 1),
     kind: 'work_state',
@@ -82,13 +116,22 @@ function workStateOp(originId: string, fields: Record<string, unknown>, opts: { 
     // The pull side hands apply the stored shape: fields as JSON text (SyncClient localPayload).
     body: JSON.stringify({
       project: 'proj-x',
-      list_name: 'release',
+      list_name: opts.listName ?? 'release',
       fields: JSON.stringify(fields),
-      created_at: REMOTE_ISO,
-      created_at_epoch: REMOTE_EPOCH,
+      created_at: new Date(createdAtEpoch).toISOString(),
+      created_at_epoch: createdAtEpoch,
     }),
-    server_ts: REMOTE_EPOCH,
+    server_ts: createdAtEpoch,
   };
+}
+
+/** Polls until `condition` holds, or fails the test after `timeoutMs`. */
+async function waitFor(condition: () => boolean, timeoutMs = 2_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) throw new Error(`condition not met within ${timeoutMs} ms`);
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
 }
 
 describe('work_state cloud sync', () => {
@@ -97,18 +140,27 @@ describe('work_state cloud sync', () => {
   let store: SessionStore;
   let settingsPath: string;
 
-  function makeCloudSync(fetchImpl: typeof fetch): CloudSync {
+  function makeCloudSync(fetchImpl: typeof fetch, overrides: Partial<CloudSyncOptions> = {}): CloudSync {
     return new CloudSync(db, settings(), {
       fetchImpl,
       settingsPath,
       debounceMs: 25,
       backoffInitialMs: 20,
       backoffMaxMs: 200,
+      ...overrides,
     });
   }
 
   function row(id: number): Record<string, unknown> {
     return db.prepare('SELECT * FROM work_state_entries WHERE id = ?').get(id) as Record<string, unknown>;
+  }
+
+  function outboxKinds(): string[] {
+    return (db.query('SELECT kind FROM sync_content_outbox ORDER BY id').all() as Array<{ kind: string }>).map(item => item.kind);
+  }
+
+  function deadLetterCount(): number {
+    return (db.query('SELECT COUNT(*) AS n FROM sync_dead_letter').get() as { n: number }).n;
   }
 
   beforeEach(() => {
@@ -212,25 +264,212 @@ describe('work_state cloud sync', () => {
     expect(db.prepare('SELECT COUNT(*) AS n FROM work_state_entries').get()).toEqual({ n: 1 });
   });
 
-  it('sets aside a pulled row whose fields are not an object', () => {
+  it('sets aside a pulled row whose fields are not an object, or not JSON at all, each under its own reason', () => {
     const apply = new SyncApply(db, { deviceId: SELF, now: () => FIXED_NOW });
-    const op = workStateOp('9', {});
-    const result = apply.applyOps([{ ...op, body: JSON.stringify({ ...JSON.parse(op.body), fields: '[1]' }) }], { epoch: 'epoch-1' });
-    expect(result.quarantined).toBe(1);
+    const withFields = (op: SyncOp, fields: string): SyncOp => ({ ...op, body: JSON.stringify({ ...JSON.parse(op.body), fields }) });
+    const result = apply.applyOps([
+      withFields(workStateOp('9', {}, { seq: 1 }), '[1]'),
+      withFields(workStateOp('10', {}, { seq: 2 }), '{not json'),
+    ], { epoch: 'epoch-1' });
+    expect(result.quarantined).toBe(2);
     expect(db.prepare('SELECT COUNT(*) AS n FROM work_state_entries').get()).toEqual({ n: 0 });
+    const reasons = (db.query('SELECT reason FROM sync_pull_quarantine ORDER BY seq').all() as Array<{ reason: string }>)
+      .map(item => item.reason);
+    expect(reasons[0]).toContain('work_state fields must be a JSON object');
+    expect(reasons[1]).toContain('work_state fields is not parseable JSON');
   });
 
-  it('round-trips the wire op through the canonical parser', () => {
+  it('round-trips the pushed wire op: its exact bytes parse, and another device applies them', async () => {
     const hub = makeHub(EVERY_KIND);
     const sync = makeCloudSync(hub.impl);
-    store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { version: '13.35.0' }, createdAtEpoch: REMOTE_EPOCH });
-    return sync.flush().then(() => {
-      const wire = { body: JSON.stringify(hub.pushes[0][0]), operation_sha256: '' };
-      // parseCanonicalOperation re-hashes the exact bytes; the mock kept the parsed object, so rebuild from the row.
-      expect(hub.pushes[0][0].kind).toBe('work_state');
-      expect(() => parseCanonicalOperation({ ...wire, operation_sha256: 'x'.repeat(43) })).toThrow();
-      sync.stop();
+    store.appendWorkStateEntry({
+      project: 'proj-x', listName: 'release', fields: { version: '13.35.0', attempt: 2, shipped: false }, createdAtEpoch: REMOTE_EPOCH,
     });
+    await sync.flush();
+    sync.stop();
+    expect(hub.rawOps).toHaveLength(1);
+    const [wire] = hub.rawOps;
+    // parseCanonicalOperation re-hashes the bytes the hub received.
+    expect(parseCanonicalOperation(wire).kind).toBe('work_state');
+
+    // Another device pulls the same bytes as a hub change and applies them.
+    const otherDb = new Database(':memory:');
+    try {
+      const otherStore = new SessionStore(otherDb);
+      const result = new SyncApply(otherDb, { deviceId: REMOTE, now: () => FIXED_NOW })
+        .applyOps(decodeChanges([{ seq: '1', ...wire }]), { epoch: 'epoch-1' });
+      expect(result).toMatchObject({ applied: 1, quarantined: 0 });
+      expect(otherStore.getWorkStateEntries(['proj-x'])).toEqual([expect.objectContaining({
+        list_name: 'release',
+        fields: { version: '13.35.0', attempt: 2, shipped: false },
+        created_at_epoch: REMOTE_EPOCH,
+      })]);
+      expect(otherDb.query('SELECT origin_device_id, origin_local_id FROM work_state_entries').get())
+        .toEqual({ origin_device_id: SELF, origin_local_id: '1' });
+    } finally {
+      otherDb.close();
+    }
+  });
+
+  it('holds a saved work_state snapshot until the hub lists the kind, and never dead-letters it', async () => {
+    store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish', status: 'todo' }, createdAtEpoch: REMOTE_EPOCH });
+
+    // The push fails after the snapshot is saved, so the snapshot waits in the outbox.
+    const failing = makeHub(EVERY_KIND, { failPushes: true });
+    const first = makeCloudSync(failing.impl);
+    await first.flush();
+    first.stop();
+    expect(outboxKinds()).toEqual(['work_state']);
+
+    // After a restart the client has not asked yet. A hub that does not list
+    // the kind, and refuses it by name, never sees the snapshot, even past the
+    // poison-op threshold that would dead-letter a refused op.
+    const old = makeHub(undefined, { rejectWorkState: true });
+    const restarted = makeCloudSync(old.impl);
+    for (let attempt = 0; attempt <= POISON_OP_REJECTION_THRESHOLD; attempt++) await restarted.flush();
+    restarted.stop();
+    expect(old.pushedKinds()).toEqual([]);
+    expect(outboxKinds()).toEqual(['work_state']);
+    expect(deadLetterCount()).toBe(0);
+    expect(row(1).synced_at).toBeNull();
+
+    // A hub that lists the kind receives the saved snapshot.
+    const hub = makeHub(EVERY_KIND);
+    const sync = makeCloudSync(hub.impl);
+    await sync.flush();
+    sync.stop();
+    expect(hub.pushedKinds()).toEqual(['work_state']);
+    expect(outboxKinds()).toEqual([]);
+    expect(row(1).synced_at).toBeNumber();
+  });
+
+  it('re-asks a hub that lists the kind once an hour, and holds work_state after the hub stops listing it', async () => {
+    const hub = makeHub(EVERY_KIND);
+    const sync = makeCloudSync(hub.impl);
+    try {
+      store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish' }, createdAtEpoch: REMOTE_EPOCH });
+      await sync.flush();
+      expect(hub.pushedKinds()).toEqual(['work_state']);
+
+      // The account's server setting is turned off, and a new row is written.
+      hub.setContentKinds(LAUNCH_KINDS);
+      store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'review' }, createdAtEpoch: REMOTE_EPOCH + 1 });
+      await sync.flush();
+      expect(hub.probes()).toBe(1); // within the hour the last answer stands
+      expect(hub.pushedKinds()).toEqual(['work_state', 'work_state']);
+
+      store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'tag' }, createdAtEpoch: REMOTE_EPOCH + 2 });
+      setSystemTime(new Date(Date.now() + 61 * 60_000));
+      try {
+        await sync.flush();
+      } finally {
+        setSystemTime();
+      }
+      expect(hub.probes()).toBe(2);
+      expect(hub.pushedKinds()).toEqual(['work_state', 'work_state']);
+      expect(sync.status().hub.contentKinds).toEqual(LAUNCH_KINDS);
+      expect(sync.status().pending.workState).toBe(1);
+      expect(deadLetterCount()).toBe(0);
+    } finally {
+      sync.stop();
+    }
+  });
+
+  it('re-asks on its own while work_state waits, so an idle device needs no new write', async () => {
+    const hub = makeHub(undefined);
+    const sync = makeCloudSync(hub.impl, { contentKindsReprobeMs: 40 });
+    try {
+      store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish' }, createdAtEpoch: REMOTE_EPOCH });
+      await sync.flush();
+      expect(hub.pushedKinds()).toEqual([]);
+
+      // The hub starts listing the kind. Nothing is written, so nothing calls notify().
+      hub.setContentKinds(EVERY_KIND);
+      await waitFor(() => sync.status().pending.workState === 0);
+      expect(hub.pushedKinds()).toEqual(['work_state']);
+      expect(hub.probes()).toBeGreaterThanOrEqual(2);
+    } finally {
+      sync.stop();
+    }
+  });
+
+  it('applies, exactly once after the upgrade, a work_state op an older build set aside as undecodable', () => {
+    // Stored the way 13.29.0 to 13.39.x set it aside: no kind, the raw hub change, never retried.
+    const wire = buildContentOperation({
+      kind: 'work_state',
+      originDeviceId: REMOTE,
+      originLocalId: '7',
+      entityRev: '1',
+      payload: {
+        project: 'proj-x',
+        list_name: 'release',
+        fields: { task: 'publish', status: 'doing' },
+        created_at: REMOTE_ISO,
+        created_at_epoch: String(REMOTE_EPOCH),
+      },
+    });
+    db.prepare(`
+      INSERT INTO sync_pull_quarantine (epoch, seq, reason, raw_body, retryable, created_at_epoch)
+      VALUES ('1', '3', 'kind must be observation, summary, or prompt', ?, 0, ?)
+    `).run(JSON.stringify({ seq: '3', ...wire, server_ts: String(REMOTE_EPOCH) }), FIXED_NOW);
+    const apply = new SyncApply(db, { deviceId: SELF, now: () => FIXED_NOW });
+    const noNetwork = (async () => { throw new Error('no network in this test'); }) as typeof fetch;
+    const boot = () => {
+      const client = new SyncClient(apply, {
+        hubUrl: 'https://hub.test', token: 'test-token-1234', userId: 'user-42', deviceId: SELF, fetchImpl: noNetwork, wsEnabled: false,
+      });
+      client.start();
+      client.stop();
+    };
+
+    boot();
+    boot();
+
+    expect(db.query('SELECT origin_device_id, origin_local_id, fields FROM work_state_entries').all()).toEqual([
+      { origin_device_id: REMOTE, origin_local_id: '7', fields: '{"status":"doing","task":"publish"}' },
+    ]);
+    expect(db.query('SELECT COUNT(*) AS n FROM sync_pull_quarantine').get()).toEqual({ n: 0 });
+    expect(db.query("SELECT COUNT(*) AS n FROM sync_state WHERE k = 'work_state_set_aside_replayed'").get()).toEqual({ n: 1 });
+    expect(renderWorkStateLines(store.getWorkStateEntries(['proj-x']), FIXED_NOW)).toEqual([
+      '- release',
+      '  - [doing] publish, updated 1 minute ago',
+    ]);
+  });
+
+  it('folds same-millisecond writes from two devices the same way on both, as cmem.ai does', () => {
+    // Each device writes a state value and a list of its own at the same
+    // millisecond, then pulls the other's two rows; on each device its own rows
+    // carry the lower rowids. cmem.ai's order: the clock, the device id, its rowid.
+    const devices = [
+      { id: 'device-a', phase: 'alpha', list: 'alpha-list' },
+      { id: 'device-b', phase: 'beta', list: 'beta-list' },
+    ];
+    const databases = devices.map(() => new Database(':memory:'));
+    try {
+      const stores = databases.map(database => new SessionStore(database));
+      devices.forEach((device, index) => {
+        stores[index].setLocalSyncDeviceId(device.id);
+        stores[index].appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { phase: device.phase }, createdAtEpoch: REMOTE_EPOCH });
+        stores[index].appendWorkStateEntry({ project: 'proj-x', listName: device.list, fields: { owner: device.id }, createdAtEpoch: REMOTE_EPOCH });
+      });
+      devices.forEach((device, index) => {
+        const other = devices[1 - index];
+        new SyncApply(databases[index], { deviceId: device.id, now: () => FIXED_NOW }).applyOps([
+          workStateOp('1', { phase: other.phase }, { device: other.id, seq: 1 }),
+          workStateOp('2', { owner: other.id }, { device: other.id, seq: 2, listName: other.list }),
+        ], { epoch: 'epoch-1' });
+      });
+
+      const [onA, onB] = stores.map(each => renderWorkStateLines(each.getWorkStateEntries(['proj-x']), FIXED_NOW));
+      expect(onA).toEqual([
+        '- beta-list: owner=device-b, updated 1 minute ago',
+        '- release: phase=beta, updated 1 minute ago',
+        '- alpha-list: owner=device-a, updated 1 minute ago',
+      ]);
+      expect(onB).toEqual(onA);
+    } finally {
+      for (const database of databases) database.close();
+    }
   });
 });
 

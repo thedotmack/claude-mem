@@ -186,6 +186,9 @@ import {
 } from './CanonicalContent.js';
 import { parseStringListField } from './string-list-field.js';
 
+/** sync_state key: replaySetAsideWorkState has run on this database. */
+const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
+
 /**
  * A hub change this client could not decode. It keeps its seq so the page
  * stays contiguous; applyOps sets it aside (sync_pull_quarantine) instead of
@@ -705,6 +708,53 @@ export class SyncApply {
   }
 
   /**
+   * Builds from before work_state was a content kind could not decode a pulled
+   * work_state op, so they set it aside as undecodable (kind NULL, the raw hub
+   * change kept), and retrySetAside never retries those. Once per database,
+   * decode them again with this build's decoder and apply the work_state ones
+   * the normal way. The sync_state marker commits with them; an op that still
+   * cannot apply stays set aside under its new reason. Returns the ops applied.
+   */
+  replaySetAsideWorkState(decode: (changes: unknown[]) => Array<SyncOp | UndecodableOp>): number {
+    if (this.db.prepare('SELECT 1 FROM sync_state WHERE k = ?').get(WORK_STATE_REPLAY_MARKER) !== null) return 0;
+    const chromaJobs: ChromaJob[] = []; // work_state has no Chroma copy
+    let applied = 0;
+    const tx = this.db.transaction(() => {
+      const rows = this.db.prepare(
+        'SELECT id, raw_body FROM sync_pull_quarantine WHERE kind IS NULL ORDER BY id'
+      ).all() as Array<{ id: number; raw_body: string }>;
+      for (const row of rows) {
+        const [op] = decode([JSON.parse(row.raw_body)]);
+        if ('undecodable' in op || op.kind !== 'work_state') continue;
+        if (op.origin_device !== this.deviceId) {
+          const attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
+          if ('unapplicable' in attempt) {
+            const reason = attempt.unapplicable instanceof Error ? attempt.unapplicable.message : String(attempt.unapplicable);
+            this.db.prepare(`
+              UPDATE sync_pull_quarantine
+              SET kind = ?, entity_id = ?, origin_device_id = ?, origin_local_id = ?,
+                  entity_rev = ?, operation_sha256 = ?, reason = ?
+              WHERE id = ?
+            `).run(op.kind, op.entity_id ?? null, op.origin_device, op.origin_id,
+              op.entity_rev ?? op.rev, op.operation_sha256 ?? null, reason, row.id);
+            continue;
+          }
+          if (attempt.outcome === 'applied') applied++;
+        }
+        this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+      }
+      this.db.prepare('INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING')
+        .run(WORK_STATE_REPLAY_MARKER, String(this.now()));
+    });
+    tx();
+    if (applied > 0) {
+      emitContextInvalidation('all', 'SyncApply.replaySetAsideWorkState', 'additive');
+      logger.info('SYNC_APPLY', 'Applied work_state ops an older build had set aside', { applied });
+    }
+    return applied;
+  }
+
+  /**
    * Record an op that can never apply here, inside the batch transaction so
    * the record commits with the cursor advance past it. Returns the log
    * entry; applyOps logs it after commit.
@@ -856,7 +906,7 @@ export class SyncApply {
     try {
       parsedFields = JSON.parse(fields);
     } catch {
-      parsedFields = undefined;
+      throw invalidOp(op, 'work_state fields is not parseable JSON');
     }
     if (parsedFields === null || typeof parsedFields !== 'object' || Array.isArray(parsedFields)) {
       throw invalidOp(op, 'work_state fields must be a JSON object');

@@ -6,9 +6,9 @@ import { logger } from '../../utils/logger.js';
  * state, written through the `work_state_write` MCP tool and shown at the start
  * of every session until closed.
  *
- * Append-only, one row per write. A list is replayed in id order and the latest
- * value of each key wins (WorkStateRenderer.foldWorkStateList), so a write only
- * names the keys it changes. Rows are keyed by the checkout's project, so lists
+ * Append-only, one row per write. A list is replayed in write order
+ * (getWorkStateEntries) and the latest value of each key wins
+ * (WorkStateRenderer.foldWorkStateList), so a write only names the keys it changes. Rows are keyed by the checkout's project, so lists
  * follow the project across sessions without living in the repo, where two
  * branches appending to the same file conflicted on merge.
  */
@@ -82,10 +82,18 @@ export function appendWorkStateEntry(
 
 /**
  * Every entry stored under these project keys (and one list, when named), in
- * write order: the write clock first, so a row pulled from another device
- * replays where it was written rather than where it landed, then the rowid.
+ * write order, the order cmem.ai folds in: the write clock, then the writing
+ * device, then its rowid there. A row pulled from another device replays where
+ * it was written rather than where it landed. A native row is this device's
+ * (`localDeviceId`), so every device orders the same rows the same way, even
+ * two writes made in the same millisecond.
  */
-export function getWorkStateEntries(db: Database, projects: string[], listName?: string): WorkStateEntry[] {
+export function getWorkStateEntries(
+  db: Database,
+  projects: string[],
+  listName?: string,
+  localDeviceId = '',
+): WorkStateEntry[] {
   if (projects.length === 0) return [];
   const placeholders = projects.map(() => '?').join(', ');
   const listFilter = listName === undefined ? '' : ' AND list_name = ?';
@@ -93,7 +101,7 @@ export function getWorkStateEntries(db: Database, projects: string[], listName?:
     SELECT id, project, list_name, fields, created_at_epoch
     FROM work_state_entries
     WHERE project COLLATE NOCASE IN (${placeholders})${listFilter}
-    ORDER BY created_at_epoch, id
-  `).all(...projects, ...(listName === undefined ? [] : [listName])) as Array<Omit<WorkStateEntry, 'fields'> & { fields: string }>;
+    ORDER BY created_at_epoch, COALESCE(origin_device_id, ?), COALESCE(CAST(origin_local_id AS INTEGER), id)
+  `).all(...projects, ...(listName === undefined ? [] : [listName]), localDeviceId) as Array<Omit<WorkStateEntry, 'fields'> & { fields: string }>;
   return rows.map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
 }
