@@ -20,13 +20,15 @@ export const MAX_WORK_STATE_FIELDS_JSON_CHARS = 2_000;
 
 // z.record intentionally drops __proto__; here every field is a primitive,
 // so validate own entries and copy with spread to keep literal data keys safely.
+// An integer past 2^53 cannot cross cloud sync's canonical JSON
+// (CanonicalContent), so it is refused here instead of quarantined later.
 const workStateFieldsSchema = z.custom<WorkStateFields>(value =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     && Object.entries(value).every(([key, field]) => key.length > 0 && (
       field === null || typeof field === 'string' || typeof field === 'boolean'
-      || (typeof field === 'number' && Number.isFinite(field))
+      || (typeof field === 'number' && Number.isFinite(field) && (!Number.isInteger(field) || Number.isSafeInteger(field)))
     )),
-  'fields must map non-empty keys to strings, finite numbers, booleans or null',
+  'fields must map non-empty keys to strings, safe finite numbers, booleans or null',
 ).transform(fields => ({ ...fields }));
 
 const workStateWriteSchema = z.object({
@@ -72,6 +74,8 @@ export class WorkStateRoutes extends BaseRouteHandler {
     const store = this.dbManager.getSessionStore();
     store.appendWorkStateEntry({ project: checkout.primary, listName: list, fields });
     logger.debug('WORKER', 'Work state entry saved', { project: checkout.primary, list });
+    // The row is a `work_state` sync op: nudge the push drain (null when sync is off).
+    this.dbManager.getCloudSync()?.notify();
     // Only what is still open, cut like the SessionStart section, so a long-kept
     // list does not repeat its closed items on every write.
     const openLines = renderWorkStateLines(store.getWorkStateEntries(checkout.allProjects, list), Date.now());

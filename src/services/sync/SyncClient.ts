@@ -89,14 +89,16 @@ function localPayload(payload: Record<string, unknown> | null): Record<string, u
       result[key] = canonicalDecimalToSafeInteger(value, key);
     } else if (LOCAL_JSON_FIELDS.has(key)) {
       result[key] = canonicalJson(value);
-    } else if (key === 'metadata') {
+    } else if (key === 'metadata' || key === 'fields') {
+      // Stored as JSON text locally: observation metadata, work-state fields.
       result[key] = canonicalJson(value);
     }
   }
   return result;
 }
 
-function decodeChanges(values: unknown[]): Array<SyncOp | UndecodableOp> {
+/** Hub changes as SyncApply takes them; one that cannot be decoded is returned as UndecodableOp. */
+export function decodeChanges(values: unknown[]): Array<SyncOp | UndecodableOp> {
   return values.map((value): SyncOp | UndecodableOp => {
     let decoded: ReturnType<typeof decodeHubChange>;
     try {
@@ -407,6 +409,13 @@ export class SyncClient {
   start(): void {
     if (this.started || this.stopped) return;
     this.started = true;
+    // Once per database: work_state ops an older build could not decode.
+    try {
+      this.apply.replaySetAsideWorkState(decodeChanges);
+    } catch (error) {
+      logger.warn('SYNC_CLIENT', 'Replaying set-aside work_state ops failed; the next start retries', {},
+        error instanceof Error ? error : new Error(String(error)));
+    }
     this.lastActiveAt = this.now(); // boot grace: idle tier, not insta-suspend
     this.schedule(0);
     // Realtime, fully firewalled: a throwing connect path must never
