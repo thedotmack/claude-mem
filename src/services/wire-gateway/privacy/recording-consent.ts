@@ -8,6 +8,11 @@
 // bumps the generation, so a request that started before it is never saved
 // after it (turn-recorder.ts). Cloud sync never reads or writes this file.
 //
+// Every change holds `consent.json.lock` (edit/file-lock.ts) across its read
+// of the generation and its write, so two processes (a `consent --off` and a
+// `clear`) can neither hand out the same generation nor write back a decision
+// the other just replaced.
+//
 // The daemon reads the file on every check rather than caching it: the CLI
 // that changes it is another process, and a clear must take effect for the
 // very next save.
@@ -16,6 +21,7 @@ import { existsSync, readFileSync, rmSync } from 'fs';
 import { writeJsonFileAtomic } from '../../../shared/atomic-json.js';
 import { WIRE_GATEWAY_FILE_MODE, paths, wireGatewaySubdirPath } from '../../../shared/paths.js';
 import { logger } from '../../../utils/logger.js';
+import { withExclusiveFileLock } from '../edit/file-lock.js';
 import type { WireRecordingConsent } from '../capture/turn-recorder.js';
 
 export interface WireRecordingConsentFile {
@@ -57,13 +63,15 @@ function nextGeneration(consentFilePath: string): { previous: WireRecordingConse
 
 /** Record the user's decision. Callers enforce how a "yes" may be given (a terminal, the viewer's own origin). */
 export function setWireRecordingConsent(recording: boolean, consentFilePath: string = paths.wireGatewayConsent()): WireRecordingConsentFile {
-  const consent: WireRecordingConsentFile = {
-    recording,
-    generation: nextGeneration(consentFilePath).generation,
-    decidedAt: new Date().toISOString(),
-  };
-  writeWireRecordingConsentFile(consent, consentFilePath);
-  return consent;
+  return withExclusiveFileLock(consentFilePath, () => {
+    const consent: WireRecordingConsentFile = {
+      recording,
+      generation: nextGeneration(consentFilePath).generation,
+      decidedAt: new Date().toISOString(),
+    };
+    writeWireRecordingConsentFile(consent, consentFilePath);
+    return consent;
+  });
 }
 
 /**
@@ -75,13 +83,16 @@ export function setWireRecordingConsent(recording: boolean, consentFilePath: str
  */
 export function clearWireRecordings(options: { consentFilePath?: string; recordingsDirectory?: string } = {}): WireRecordingConsentFile {
   const consentFilePath = options.consentFilePath ?? paths.wireGatewayConsent();
-  const { previous, generation } = nextGeneration(consentFilePath);
-  const consent: WireRecordingConsentFile = {
-    recording: previous?.recording ?? false,
-    generation,
-    decidedAt: previous?.decidedAt ?? new Date().toISOString(),
-  };
-  writeWireRecordingConsentFile(consent, consentFilePath);
+  const consent = withExclusiveFileLock(consentFilePath, () => {
+    const { previous, generation } = nextGeneration(consentFilePath);
+    const bumped: WireRecordingConsentFile = {
+      recording: previous?.recording ?? false,
+      generation,
+      decidedAt: previous?.decidedAt ?? new Date().toISOString(),
+    };
+    writeWireRecordingConsentFile(bumped, consentFilePath);
+    return bumped;
+  });
   rmSync(options.recordingsDirectory ?? wireGatewaySubdirPath('recordings'), { recursive: true, force: true });
   return consent;
 }

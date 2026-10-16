@@ -25,13 +25,16 @@
 // - a tool call's arguments are never exempt, whatever their keys are called;
 // - in what the agent defines for the vendor (tools, schemas, settings) only
 //   a `description` is masked.
+// Wherever a string is not exempt, a field named for a secret (password,
+// api_key, client_secret: isSecretFieldName, the list the on-disk scrub
+// uses) has its whole value masked, as SECRET, whatever the value looks like.
 // Nothing inside a signature value itself is ever touched.
 
 import { createHmac, randomBytes } from 'crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { dirname } from 'path';
 import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE, paths } from '../../../shared/paths.js';
-import { findSecretSpans, replaceSecretSpans, type SecretSpan } from '../../../utils/redaction.js';
+import { findSecretSpans, isSecretFieldName, replaceSecretSpans, type SecretSpan } from '../../../utils/redaction.js';
 import { logger } from '../../../utils/logger.js';
 import { applyByteSplices, type ByteSplice } from '../json/byte-splices.js';
 import {
@@ -148,9 +151,21 @@ const KEPT_KEYS = new Set([
   'stop_reason', 'finish_reason', 'status', 'object', 'event',
 ]);
 
-/** magpie `keep`: a reply's string left alone when restoring. */
-export function isKeptReplyString(key: string, value: string): boolean {
-  return KEPT_KEYS.has(key) || value.startsWith('data:');
+/**
+ * A reply string's path inside a tool call's arguments: Gemini's
+ * functionCall.args, or the input of Anthropic's streamed tool_use block.
+ * Keys there are the tool's own, never the vendor's.
+ */
+const REPLY_TOOL_ARGUMENTS_PATH = /(?:^|\.)(?:(?:functionCall|function_call)\.args|content_block\.input)\./;
+
+/**
+ * magpie `keep`: a reply's string left alone when restoring. As with masking,
+ * the exemption is by position: a kept key's string is put back when it sits
+ * in a tool call's arguments (a tool's `url`, `name`, `id` or `data`).
+ */
+export function isKeptReplyString(path: string, key: string, value: string): boolean {
+  if (value.startsWith('data:')) return true;
+  return KEPT_KEYS.has(key) && !REPLY_TOOL_ARGUMENTS_PATH.test(path);
 }
 
 /** A key holding an identifier the vendor matches against another (magpie `isID`). */
@@ -434,6 +449,11 @@ export class OutboundRedactionPlaceholders {
         sealedSites.push(site);
         continue;
       }
+      if (site.value !== '' && isSecretFieldName(site.key) && !isWholePlaceholder(site.value)) {
+        maskedCount++;
+        splices.push(stringValueSplice(site.span, remember('SECRET', site.value)));
+        continue;
+      }
       const masked = this.maskWith(site.value, remember);
       maskedCount += masked.maskedCount;
       if (masked.text !== site.value) splices.push(stringValueSplice(site.span, masked.text));
@@ -568,6 +588,11 @@ export class OutboundRedactionPlaceholders {
     }
     return 0;
   }
+}
+
+/** `value` is one placeholder and nothing else, so it is not masked again. */
+function isWholePlaceholder(value: string): boolean {
+  return /^\{\{[A-Z][A-Z0-9_]*_[a-z2-7]{8}\}\}$/.test(value);
 }
 
 /** A function that swaps each value for its placeholder, the longest value first where two start at the same place (magpie `replacerOf`). */

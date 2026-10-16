@@ -280,7 +280,7 @@ export class PlaceholderRestoringResponse {
       if (path === 'type') eventType = value;
       let text = value;
       if (path === carryPath) text = carry + text;
-      if (isKeptReplyString(key, text)) return text;
+      if (isKeptReplyString(path, key, text)) return text;
       // The tail is looked for before anything is put back, so a placeholder
       // whose last brace is still to come is not put back without it.
       const tailLength = this.placeholders.partialPlaceholderTailLength(text);
