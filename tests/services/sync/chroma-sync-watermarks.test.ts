@@ -159,6 +159,35 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([2]);
   });
 
+  it('tracks every unindexed row pending when bootstrap finds an empty collection (#4818)', async () => {
+    // The v12.4.3 cleanup wiped the collection: bootstrap finds nothing indexed.
+    existingObservationIds = new Set<number>();
+    const sync = new ChromaSync(project);
+
+    await sync.bootstrapWatermarksFromChroma(project, makeStore(project, [1, 2, 3]));
+
+    // Pre-fix this was []: the watermark sat at 0 with no pending rows, so a
+    // live bump before this project's backfill turn hid every row forever.
+    expect(ChromaSyncState.get(project).observations).toBe(0);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([1, 2, 3]);
+
+    // Live syncs write new rows while this project waits in the backfill
+    // queue, advancing the watermark past the bootstrap rows.
+    ChromaSyncState.bump(project, 'observations', 10);
+    ChromaSyncState.bump(project, 'observations', 11);
+    expect(ChromaSyncState.get(project).observations).toBe(11);
+
+    // The backfill still visits rows 1-3 through the pending list; the live
+    // bumps only removed the ids they actually wrote.
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 10, 11]));
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(writtenIds).toContain('obs_1_narrative');
+    expect(writtenIds).toContain('obs_2_narrative');
+    expect(writtenIds).toContain('obs_3_narrative');
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
   it('marks a failed live observation write pending so a later write cannot orphan it (#3917)', async () => {
     ChromaSyncState.replace(project, {
       observations: 4,

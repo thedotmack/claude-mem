@@ -649,7 +649,14 @@ export class ChromaSync {
     const watermark = existingIds.size ? Math.max(...existingIds) : 0;
     return {
       watermark,
-      pending: sourceIds.filter(id => id <= watermark && !existingIds.has(id)),
+      // When Chroma holds nothing for this project yet, no watermark bounds
+      // the rows the backfill must visit: bootstrap snapshots every project
+      // up front while each backfill runs much later, so a live bump() in
+      // between would advance the watermark past these rows and hide them
+      // forever (#4818). Track every unindexed row explicitly instead — a
+      // live bump() only removes the id it actually wrote, so the backfill
+      // still processes these whatever the watermark is by then.
+      pending: sourceIds.filter(id => existingIds.size === 0 || (id <= watermark && !existingIds.has(id))),
     };
   }
 
