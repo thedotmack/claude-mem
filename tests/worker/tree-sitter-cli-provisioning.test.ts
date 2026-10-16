@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { createHash } from 'crypto';
-import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { provisionTreeSitterCliForPluginRoot } from '../../src/services/worker/tree-sitter-cli-provisioning.js';
@@ -200,6 +200,24 @@ describe('worker tree-sitter CLI provisioning', () => {
       await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback))
         .rejects.toThrow(/bin\/tree-sitter in .* not the pinned 0{64}; it was not run/);
       expect(readFileSync(binaryPath).equals(refusedForGlibc)).toBe(true);
+    });
+
+    it('keeps the original binary and its error when the verified fallback does not run either', async () => {
+      const cliDir = writeMarketplaceCliPackage("throw new Error('install.js must not run');");
+      const binaryPath = writeRefusedReleaseAsset(cliDir);
+      const brokenBuild = Buffer.from("#!/bin/sh\necho 'tree-sitter: cannot open shared object file' >&2\nexit 127\n");
+      const brokenPackage = fakeCondaPackage(brokenBuild);
+      const { fallback, downloads } = fallbackServing(brokenPackage, {
+        archiveSha256: sha256(brokenPackage),
+        executableSha256: sha256(brokenBuild),
+      });
+
+      await expect(provisionTreeSitterCliForPluginRoot(pluginRoot, () => sha256(refusedForGlibc), fallback))
+        .rejects.toThrow(/GLIBC_2\.39.* could not be installed either: the glibc-compatible tree-sitter build does not run either: tree-sitter: cannot open shared object file/);
+      expect(downloads).toEqual([URL]);
+      // The release asset is untouched and no staging directory is left behind.
+      expect(readFileSync(binaryPath).equals(refusedForGlibc)).toBe(true);
+      expect(readdirSync(cliDir).filter((entry) => entry.startsWith('.provision-'))).toEqual([]);
     });
 
     it('does not download a fallback when the refusal is not about glibc', async () => {
