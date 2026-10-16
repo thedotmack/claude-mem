@@ -6,6 +6,7 @@ import type { ClaudeProvider } from '../ClaudeProvider.js';
 import type { GeminiProvider } from '../GeminiProvider.js';
 import type { OpenRouterProvider } from '../OpenRouterProvider.js';
 import type { OpenAICompatProvider } from '../OpenAICompatProvider.js';
+import type { AimlapiProvider } from '../AimlapiProvider.js';
 import type { CodexProvider } from '../CodexProvider.js';
 import type { SessionCompletionHandler } from './SessionCompletionHandler.js';
 import {
@@ -56,6 +57,7 @@ export interface GeneratorRunnerDependencies {
   codexAgent?: CodexProvider;
   /** Absent only in harnesses that never select openai-compatible. */
   openAICompatAgent?: OpenAICompatProvider;
+  aimlapiAgent?: AimlapiProvider;
   workerService: WorkerService;
   completionHandler: SessionCompletionHandler;
   ensureGeneratorRunning: (sessionDbId: number, source: string) => Promise<void>;
@@ -141,7 +143,7 @@ export async function startGeneratorWithProvider(
   gatewayProbeClaimId: number | null,
   deps: GeneratorRunnerDependencies,
 ): Promise<void> {
-  const { sessionManager, sdkAgent, geminiAgent, openRouterAgent, codexAgent, openAICompatAgent, workerService,
+  const { sessionManager, sdkAgent, geminiAgent, openRouterAgent, codexAgent, openAICompatAgent, aimlapiAgent, workerService,
     completionHandler, ensureGeneratorRunning, maybeSelfHealStaleClaudeSpawn } = deps;
   if (!session) return;
 
@@ -174,7 +176,9 @@ export async function startGeneratorWithProvider(
         ? geminiAgent
         : provider === 'openai-compatible'
           ? openAICompatAgent
-          : sdkAgent;
+          : provider === 'aimlapi'
+            ? aimlapiAgent
+            : sdkAgent;
   const agentName = provider === 'codex'
     ? 'Codex'
     : provider === 'openrouter'
@@ -183,7 +187,9 @@ export async function startGeneratorWithProvider(
         ? 'Gemini'
         : provider === 'openai-compatible'
           ? 'OpenAI-compatible'
-          : 'Claude SDK';
+          : provider === 'aimlapi'
+            ? 'aimlapi.com'
+            : 'Claude SDK';
   if (!agent) throw new Error(`${agentName} provider is not configured`);
 
   const actualQueueDepth = sessionManager.getMessageBuffer().getPendingCount(session.sessionDbId);

@@ -949,7 +949,7 @@ export function mergeSettings(
   return true;
 }
 
-type ProviderId = 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
+type ProviderId = 'aimlapi' | 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
 /**
  * What the installer prompt may offer. `cmem` is a prompt-only sentinel: picking
  * it configures the generic OpenAI-compatible path (base URL + model + key) and
@@ -1309,10 +1309,28 @@ export async function promptProvider(
     throw new Error('The openai-compatible provider is configured in ~/.claude-mem/settings.json, not by the installer.');
   }
 
-  const providerLabel = selectedProvider === 'gemini' ? 'Gemini' : 'OpenRouter';
-  const keyEnvName = selectedProvider === 'gemini'
-    ? 'CLAUDE_MEM_GEMINI_API_KEY'
-    : 'CLAUDE_MEM_OPENROUTER_API_KEY';
+  // Only these three reach here: every other choice returned above. Each one
+  // names its OWN key setting — a shared fallback would write the key the user
+  // just pasted into another vendor's field, where the provider that needs it
+  // never reads it.
+  const keySetup = {
+    aimlapi: {
+      label: 'AI/ML API',
+      keyPrompt: 'Paste your AI/ML API key:',
+      keyEnvName: 'CLAUDE_MEM_AIMLAPI_API_KEY',
+    },
+    gemini: {
+      label: 'Gemini',
+      keyPrompt: 'Paste your Gemini API key:',
+      keyEnvName: 'CLAUDE_MEM_GEMINI_API_KEY',
+    },
+    openrouter: {
+      label: 'OpenRouter',
+      keyPrompt: 'Paste your OpenRouter API key:',
+      keyEnvName: 'CLAUDE_MEM_OPENROUTER_API_KEY',
+    },
+  } as const;
+  const { label: providerLabel, keyPrompt, keyEnvName } = keySetup[selectedProvider];
 
   const existingKey = getSetting(keyEnvName as keyof SettingsDefaults) as string | undefined;
   const existingOpenRouterBaseUrl = selectedProvider === 'openrouter'
@@ -1331,7 +1349,7 @@ export async function promptProvider(
   }
 
   const apiKeyResult = await p.password({
-    message: `Paste your ${providerLabel} API key:`,
+    message: keyPrompt,
     mask: '*',
     validate: (v?: string) => (!v || v.trim().length === 0) ? 'API key required' : undefined,
   });
@@ -2104,7 +2122,7 @@ export interface InstallOptions {
    * `openai-compatible` is never a flag value: it is only ever kept from
    * settings.json by a non-interactive run (`providerSource: 'persisted'`).
    */
-  provider?: 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
+  provider?: 'aimlapi' | 'claude' | 'codex' | 'gemini' | 'openrouter' | 'openai-compatible' | 'host';
   /**
    * How `provider` was decided. `flag` for an explicit `--provider` (and the
    * grok-bot implicit cmem default set in index.ts), `default` when a fresh

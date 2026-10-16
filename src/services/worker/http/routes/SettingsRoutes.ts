@@ -355,18 +355,18 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_PROVIDER) {
-    const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible'];
+    const validProviders = ['claude', 'gemini', 'openrouter', 'codex', 'openai-compatible', 'aimlapi'];
     if (!validProviders.includes(settings.CLAUDE_MEM_PROVIDER)) {
-      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", or "openai-compatible"' };
+      return { valid: false, error: 'CLAUDE_MEM_PROVIDER must be "claude", "gemini", "openrouter", "codex", "openai-compatible", or "aimlapi"' };
       }
     }
 
     // Empty is valid: it means the default, the Anthropic plan. 'off' turns it off.
     if (settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER) {
       // The names provider-dispatch's QUOTA_FALLBACK_PROVIDERS accepts, plus QUOTA_FALLBACK_OFF.
-      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'off'];
+      const validFallbacks = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'aimlapi', 'off'];
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
-        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
+        return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", "aimlapi", or "off"' };
       }
     }
 

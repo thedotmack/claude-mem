@@ -89,6 +89,7 @@ export interface ClaudeMemEnv {
   OPENROUTER_API_KEYS?: string;
   OPENAI_COMPAT_API_KEY?: string;
   OPENAI_COMPAT_API_KEYS?: string;
+  AIMLAPI_API_KEY?: string;
 }
 
 /**
@@ -114,6 +115,7 @@ const CREDENTIAL_KEYS = [
   'OPENROUTER_API_KEYS',
   'OPENAI_COMPAT_API_KEY',
   'OPENAI_COMPAT_API_KEYS',
+  'AIMLAPI_API_KEY',
 ] as const;
 
 // Node's stdlib .env parser (util.parseEnv, Node ≥20.12 / stable in 24):

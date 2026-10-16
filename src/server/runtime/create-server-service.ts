@@ -20,6 +20,7 @@ import { parseOpenRouterExtraBody } from '../../shared/openrouter-extra-body.js'
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-base-url.js';
 import { buildServerGenerationPrompt } from '../generation/providers/shared/prompt-builder.js';
+import { AimlapiObservationProvider } from '../generation/providers/AimlapiObservationProvider.js';
 import type { ServerGenerationProvider } from '../generation/providers/shared/types.js';
 import { ServerService } from './ServerService.js';
 import {
@@ -417,6 +418,24 @@ export async function instantiateServerGenerationProvider(provider: string): Pro
   }
   if (provider === 'custom') {
     return loadCustomServerGenerationProvider();
+  }
+  if (provider === 'aimlapi') {
+    const apiKey = process.env.AIMLAPI_API_KEY ?? process.env.CLAUDE_MEM_AIMLAPI_API_KEY ?? '';
+    if (!apiKey) return null;
+    const opts: { apiKey: string; model?: string; baseUrl?: string; maxOutputTokens?: number } = { apiKey };
+    if (process.env.CLAUDE_MEM_SERVER_MODEL) opts.model = process.env.CLAUDE_MEM_SERVER_MODEL;
+    // Optional override so the same build can target aimlapi.com's staging backend.
+    const baseUrl = process.env.CLAUDE_MEM_AIMLAPI_BASE_URL ?? process.env.AIMLAPI_BASE_URL;
+    if (baseUrl) opts.baseUrl = baseUrl;
+    // CLAUDE_MEM_SERVER_MAX_OUTPUT_TOKENS, exactly as the other built-in
+    // providers read it. Without it the provider's own 4096 default stood and
+    // a configured 8192 or 16384 never reached the wire, so an operator could
+    // not raise the cap to stop replies being cut off inside the XML — which
+    // the response processor rejects and the generation handler marks failed
+    // with no automatic retry.
+    const maxOutputTokens = resolveServerMaxOutputTokens();
+    if (maxOutputTokens !== undefined) opts.maxOutputTokens = maxOutputTokens;
+    return new AimlapiObservationProvider(opts);
   }
   return null;
 }

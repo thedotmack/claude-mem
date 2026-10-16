@@ -6,6 +6,7 @@ import { HOOK_TIMEOUTS, defaultSessionInitRequestTimeoutMs, getTimeout } from '.
 import { parseJsonWithBom, writeJsonFileAtomic } from './atomic-json.js';
 import { isOpenRouterApiUrl } from './openrouter-base-url.js';
 import { settingsTarget, withoutStaleRootCopies } from './settings-document.js';
+import { AIMLAPI_DEFAULT_MODEL } from './aimlapi-base-url.js';
 
 // A fresh settings.json is seeded with EVERY default (see loadFromFile), and
 // persisted values then win over DEFAULTS. So any install created after the
@@ -222,6 +223,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: string;
   CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: string;
   CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: string;
+  CLAUDE_MEM_AIMLAPI_API_KEY: string;
+  CLAUDE_MEM_AIMLAPI_MODEL: string;
+  CLAUDE_MEM_AIMLAPI_BASE_URL: string;
+  CLAUDE_MEM_AIMLAPI_SITE_URL: string;
+  CLAUDE_MEM_AIMLAPI_APP_NAME: string;
   CLAUDE_MEM_DATA_DIR: string;
   CLAUDE_MEM_LOG_LEVEL: string;
   CLAUDE_MEM_PYTHON_VERSION: string;
@@ -476,6 +482,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: '0.93',
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_SONNET: '0.92',
     CLAUDE_MEM_QUOTA_THRESHOLD_OVERAGE: '0.95',
+    CLAUDE_MEM_AIMLAPI_API_KEY: '',  // Empty by default, can be set via UI or env
+    CLAUDE_MEM_AIMLAPI_MODEL: AIMLAPI_DEFAULT_MODEL,  // Default aimlapi.com model
+    CLAUDE_MEM_AIMLAPI_BASE_URL: '',  // Optional override; empty = https://api.aimlapi.com/v1
+    CLAUDE_MEM_AIMLAPI_SITE_URL: '',  // Optional: overrides the HTTP-Referer sent to aimlapi.com
+    CLAUDE_MEM_AIMLAPI_APP_NAME: 'Claude-Mem',  // Display name sent as X-Title
     CLAUDE_MEM_DATA_DIR: join(homedir(), '.claude-mem'),
     CLAUDE_MEM_LOG_LEVEL: 'INFO',
     CLAUDE_MEM_PYTHON_VERSION: '3.13',

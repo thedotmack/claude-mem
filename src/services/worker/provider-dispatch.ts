@@ -33,6 +33,7 @@ import { scrubErrorMessage } from '../../shared/observer-health.js';
 import { isGeminiAvailable, isGeminiSelected } from './GeminiProvider.js';
 import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvider.js';
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
+import { isAimlapiAvailable, isAimlapiSelected } from './AimlapiProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
 import { canClaudeServeAsFallback } from '../../shared/claude-fallback-readiness.js';
@@ -56,7 +57,7 @@ import {
  * src/shared/openai-compat-presets.ts for why it is not folded into
  * openrouter.
  */
-export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible';
+export type SelectableProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'aimlapi';
 
 /** Retry a fallen-back gateway occasionally so a later subscription recovers. */
 export const CMEM_FALLBACK_RETRY_MS = 15 * 60_000;
@@ -101,7 +102,7 @@ export interface ProviderSelection {
 }
 
 /** What CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER may name. */
-export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible'] as const;
+export const QUOTA_FALLBACK_PROVIDERS = ['claude', 'gemini', 'openrouter', 'openai-compatible', 'aimlapi'] as const;
 export type QuotaFallbackProvider = typeof QUOTA_FALLBACK_PROVIDERS[number];
 
 /** The CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER value that turns the fallback off. */
@@ -150,6 +151,10 @@ function isFallbackAvailable(provider: QuotaFallbackProvider): boolean {
     case 'openai-compatible': return isOpenAICompatAvailable();
     case 'claude': return canClaudeServeAsFallback();
     case 'openrouter': return isOpenRouterAvailable() && gatewayFallbackState() !== 'refusing';
+    // aimlapi needs only a key, like the other OpenAI-compatible targets:
+    // it is a paid gateway with no free tier to exhaust and no CLI to fail
+    // to start, so "configured" is the whole availability test.
+    case 'aimlapi': return isAimlapiAvailable();
   }
 }
 
@@ -334,6 +339,7 @@ export function getSelectedProvider(): SelectableProvider {
   }
   if (isGeminiSelected() && isGeminiAvailable()) return applyQuotaFallback('gemini').provider;
   if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return applyQuotaFallback('openai-compatible').provider;
+  if (isAimlapiSelected() && isAimlapiAvailable()) return applyQuotaFallback('aimlapi').provider;
   return applyQuotaFallback('claude').provider;
 }
 
@@ -409,6 +415,12 @@ export function selectProviderForGenerator(): ProviderSelection {
   }
   if (isGeminiSelected() && isGeminiAvailable()) return selectWithQuotaFallback('gemini');
   if (isOpenAICompatSelected() && isOpenAICompatAvailable()) return selectWithQuotaFallback('openai-compatible');
+  // Must mirror getSelectedProvider's branch order exactly. This is the
+  // function that starts generators; without this branch an aimlapi install
+  // read back as 'aimlapi' everywhere it was reported (getAiStatus, the
+  // settings route, the session-start notice) and still ran every observation
+  // on Claude, because the start path fell through to the default below.
+  if (isAimlapiSelected() && isAimlapiAvailable()) return selectWithQuotaFallback('aimlapi');
   return selectWithQuotaFallback('claude');
 }
 
