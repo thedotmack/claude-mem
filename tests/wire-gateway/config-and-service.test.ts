@@ -132,16 +132,84 @@ describe('wire gateway OS service definitions', () => {
     const args = buildSchtasksCreateArguments({ ...command, dataDir: 'C:\\Users\\me\\mem data' });
     expect(args.slice(0, 4)).toEqual(['/Create', '/F', '/SC', 'ONLOGON']);
     expect(args[args.length - 1]).toBe(
-      'cmd.exe /d /s /c "set "CLAUDE_MEM_DATA_DIR=C:\\Users\\me\\mem data"&& /Users/me/.bun/bin/bun "/plugin dir/scripts/wire-gateway-service.cjs" start --foreground"',
+      'cmd.exe /d /v:off /s /c "set CLAUDE_MEM_DATA_DIR=C:\\Users\\me\\mem data&& "/Users/me/.bun/bin/bun" "/plugin dir/scripts/wire-gateway-service.cjs" "start" "--foreground""',
     );
   });
 
   it('schtasks task defaults CLAUDE_MEM_DATA_DIR to the resolved data dir', () => {
     const { dataDir: _omitted, ...withoutDataDir } = command;
     const args = buildSchtasksCreateArguments(withoutDataDir);
-    expect(args[args.length - 1]).toContain(`set "CLAUDE_MEM_DATA_DIR=${DATA_DIR}"&& `);
+    expect(args[args.length - 1]).toContain('set CLAUDE_MEM_DATA_DIR=');
+    expect(parseCmdTaskLine(args[args.length - 1]).dataDir).toBe(DATA_DIR);
+  });
+
+  it('schtasks task line survives cmd metacharacters (& ^ % ( ) ! spaces) in every path', () => {
+    const awkwardDataDir = 'C:\\Users\\AT&T (x86)\\100%USERNAME% ^caret! data';
+    const awkwardCommand = {
+      bunPath: 'C:\\Users\\AT&T\\.bun\\bin\\bun.exe',
+      scriptPath: 'C:\\Users\\AT&T (x86)\\%PATH%\\a^b!c\\wire-gateway-service.cjs',
+      drainTimeoutMs: 600_000,
+      dataDir: awkwardDataDir,
+    };
+    const taskRun = buildSchtasksCreateArguments(awkwardCommand).at(-1)!;
+    expect(parseCmdTaskLine(taskRun)).toEqual({
+      dataDir: awkwardDataDir,
+      argv: [awkwardCommand.bunPath, awkwardCommand.scriptPath, 'start', '--foreground'],
+    });
+  });
+
+  it('schtasks refuses a path with a double quote rather than writing a broken task', () => {
+    expect(() => buildSchtasksCreateArguments({ ...command, dataDir: 'C:\\a"b' })).toThrow('double quote');
   });
 });
+
+/**
+ * A model of how cmd.exe /d /v:off /s /c "<line>" runs the task line
+ * (https://ss64.com/nt/syntax-esc.html): /s strips the outer quotes; pass 1
+ * expands %NAME% for any NAME that could be defined (modelled as: one free of
+ * quotes and carets); pass 2 splits on unescaped `&&` outside quotes and
+ * removes `^` escapes there. The program then splits its own argv
+ * (quotes delimit, are dropped).
+ */
+function parseCmdTaskLine(taskRun: string): { dataDir: string; argv: string[] } {
+  const prefix = 'cmd.exe /d /v:off /s /c "';
+  expect(taskRun.startsWith(prefix) && taskRun.endsWith('"')).toBe(true);
+  const line = taskRun.slice(prefix.length, -1);
+  for (const reference of line.matchAll(/%([^%]*)%/g)) {
+    // A variable reference cmd would expand: its name must contain a caret or quote.
+    expect(/[\^"]/.test(reference[1])).toBe(true);
+  }
+  const commands: string[] = [''];
+  let inQuotes = false;
+  for (let index = 0; index < line.length; index++) {
+    const character = line[index];
+    if (character === '"') inQuotes = !inQuotes;
+    if (!inQuotes && character === '^') {
+      commands[commands.length - 1] += line[++index];
+      continue;
+    }
+    if (!inQuotes && '&|<>()'.includes(character)) {
+      expect(line.slice(index, index + 3)).toBe('&& ');
+      commands.push('');
+      index += 2;
+      continue;
+    }
+    commands[commands.length - 1] += character;
+  }
+  expect(commands).toHaveLength(2);
+  const setPrefix = 'set CLAUDE_MEM_DATA_DIR=';
+  expect(commands[0].startsWith(setPrefix)).toBe(true);
+  const argv: string[] = [];
+  let current: string | null = null;
+  inQuotes = false;
+  for (const character of commands[1]) {
+    if (character === '"') { inQuotes = !inQuotes; current ??= ''; continue; }
+    if (character === ' ' && !inQuotes) { if (current !== null) argv.push(current); current = null; continue; }
+    current = (current ?? '') + character;
+  }
+  if (current !== null) argv.push(current);
+  return { dataDir: commands[0].slice(setPrefix.length), argv };
+}
 
 describe('worker-service `wire <sub>` dispatch', () => {
   it('maps wire subcommands to wire-<sub> and keeps their args', () => {

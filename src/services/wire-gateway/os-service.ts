@@ -127,15 +127,42 @@ WantedBy=default.target
 }
 
 /**
+ * cmd.exe parses the task line in two passes (https://ss64.com/nt/syntax-esc.html):
+ * %VAR% expansion over the whole line, quoted or not, then `& | < > ( ) ^`
+ * as operators outside double quotes, where `^` escapes the next character.
+ * Every literal `%` is written as `^%`, so the text between any two `%` ends
+ * in `^` and never names a variable; the caret is removed in the second pass.
+ * Windows paths cannot contain `"`, so one is refused rather than escaped.
+ */
+function refuseDoubleQuote(value: string): string {
+  if (value.includes('"')) {
+    throw new Error(`Cannot write a Windows logon task for a path containing a double quote: ${value}`);
+  }
+  return value;
+}
+
+/** A quoted cmd argument: inside quotes only `%` is live, so each `%` steps outside as `"^%"`. */
+function quoteCmdArgument(value: string): string {
+  return `"${refuseDoubleQuote(value).replace(/%/g, '"^%"')}"`;
+}
+
+/** An unquoted cmd value: every metacharacter caret-escaped. */
+function escapeCmdUnquoted(value: string): string {
+  return refuseDoubleQuote(value).replace(/[\^&|<>()%!]/g, '^$&');
+}
+
+/**
  * A logon task has no environment of its own, so the task runs cmd.exe to set
  * CLAUDE_MEM_DATA_DIR before it starts Bun. `/s` makes cmd strip only the
- * outer quotes. Windows has no SIGTERM drain to wait for (stop tree-kills).
+ * outer quotes; `/v:off` keeps `!` literal. The data dir uses the unquoted
+ * `set VAR=value` form: the quoted `set "VAR=value"` form cannot carry the
+ * `"^%"` escape. Windows has no SIGTERM drain to wait for (stop tree-kills).
  * https://learn.microsoft.com/windows-server/administration/windows-commands/cmd
  */
 export function buildSchtasksCreateArguments(command: WireGatewayServiceCommand): string[] {
   const dataDir = command.dataDir ?? DATA_DIR;
-  const bunCommand = serviceArguments(command).map(argument => (argument.includes(' ') ? `"${argument}"` : argument)).join(' ');
-  const taskRun = `cmd.exe /d /s /c "set "CLAUDE_MEM_DATA_DIR=${dataDir}"&& ${bunCommand}"`;
+  const bunCommand = serviceArguments(command).map(quoteCmdArgument).join(' ');
+  const taskRun = `cmd.exe /d /v:off /s /c "set CLAUDE_MEM_DATA_DIR=${escapeCmdUnquoted(dataDir)}&& ${bunCommand}"`;
   return ['/Create', '/F', '/SC', 'ONLOGON', '/RL', 'LIMITED', '/TN', WINDOWS_TASK_NAME, '/TR', taskRun];
 }
 

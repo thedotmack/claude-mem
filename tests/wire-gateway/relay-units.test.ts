@@ -1,7 +1,7 @@
-import { afterAll, describe, expect, it } from 'bun:test';
+import { afterAll, describe, expect, it, spyOn } from 'bun:test';
 import { readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { gzipSync } from 'node:zlib';
+import { createZstdCompress, gzipSync } from 'node:zlib';
 import { WIRE_GATEWAY_DIR } from '../../src/shared/paths.js';
 import {
   StreamEndMarkerDetector,
@@ -107,6 +107,33 @@ describe('decodeRequestBodyCopy', () => {
     expect(decodeRequestBodyCopy(bomb, 'gzip', 1_000)).toMatchObject({ kind: 'skipped', reason: 'decoded_too_large' });
     const zstdBomb = Bun.zstdCompressSync(new Uint8Array(10_000));
     expect(decodeRequestBodyCopy(zstdBomb, 'zstd', 1_000)).toMatchObject({ kind: 'skipped', reason: 'decoded_too_large' });
+  });
+
+  it('zstd bomb is refused from its frame headers, before anything is decoded', () => {
+    // ~4 KB on the wire, 128 MiB decoded: the old code allocated all of it before checking.
+    const zstdBomb = Bun.zstdCompressSync(new Uint8Array(128 * 1024 * 1024));
+    expect(zstdBomb.byteLength).toBeLessThan(16 * 1024);
+    const decompressSpy = spyOn(Bun, 'zstdDecompressSync');
+    try {
+      expect(decodeRequestBodyCopy(zstdBomb, 'zstd', 8 * 1024 * 1024)).toMatchObject({ kind: 'skipped', reason: 'decoded_too_large' });
+      expect(decompressSpy).not.toHaveBeenCalled();
+    } finally {
+      decompressSpy.mockRestore();
+    }
+  });
+
+  it('zstd frames with no declared content size (streamed) still decode within the bound', async () => {
+    const streamed = await new Promise<Buffer>((resolve, reject) => {
+      const compressor = createZstdCompress();
+      const chunks: Buffer[] = [];
+      compressor.on('data', (chunk: Buffer) => chunks.push(chunk));
+      compressor.on('end', () => resolve(Buffer.concat(chunks)));
+      compressor.on('error', reject);
+      compressor.end('{"a":1}');
+    });
+    const decoded = decodeRequestBodyCopy(new Uint8Array(streamed), 'zstd', 1024 * 1024);
+    expect(new TextDecoder().decode((decoded as { bytes: Uint8Array }).bytes)).toBe('{"a":1}');
+    expect(decodeRequestBodyCopy(new Uint8Array(streamed).subarray(0, streamed.length - 2), 'zstd', 1024 * 1024)).toMatchObject({ kind: 'skipped', reason: 'decode_failed' });
   });
 });
 
