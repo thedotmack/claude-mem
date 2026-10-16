@@ -42,7 +42,7 @@ export function createWorkStateSchema(db: Database): void {
 }
 
 /**
- * Cloud sync columns (v65), the shape the row tables got in v39/v41: a row
+ * Cloud sync columns (v66), the shape the row tables got in v39/v41: a row
  * syncs as the `work_state` content kind (CloudSync KINDS, SyncApply
  * applyWorkState). `synced_at` stays NULL until the hub acks the row; the
  * origin columns stay NULL on native rows and name the writing device and its

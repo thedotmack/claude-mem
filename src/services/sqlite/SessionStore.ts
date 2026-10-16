@@ -1000,7 +1000,7 @@ export class SessionStore {
   }
 
   /**
-   * v66 — a sync ledger's CHECK on `kind` was written for the three launch
+   * v67 — a sync ledger's CHECK on `kind` was written for the three launch
    * kinds; work_state joined later (work-state.ts). SQLite cannot alter a
    * CHECK, so a table whose stored DDL predates the kind is rebuilt in place
    * from the current DDL, its rows copied by column name. Idempotent: the
@@ -2047,10 +2047,13 @@ export class SessionStore {
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
-    // v65 — cloud sync columns on the same table (work-state.ts ensureWorkStateSyncColumns).
-    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(65, new Date().toISOString());
-    // v66 — the sync ledgers admit the work_state kind (widenSyncKindCheck).
+    // Both work-state sync steps are introspection-guarded, so a database that
+    // already ran v65 still gets them; v65 itself is the run-once gate of
+    // refreshUnicodeTitleNormKeys, which these rows must never claim.
+    // v66 — cloud sync columns on the same table (work-state.ts ensureWorkStateSyncColumns).
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(66, new Date().toISOString());
+    // v67 — the sync ledgers admit the work_state kind (widenSyncKindCheck).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(67, new Date().toISOString());
   }
 
   // v63 — SessionStart reads the newest N rows per project key. Ordered

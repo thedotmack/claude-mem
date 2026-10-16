@@ -1,7 +1,9 @@
-// work_state as a cloud sync content kind: the table's sync columns (v65), the
+// work_state as a cloud sync content kind: the table's sync columns (v66), the
 // row's canonical op, the push gated on the hub's `content_kinds`, and the
 // apply of a row pulled from another device. Harness style as cloud-sync.test.ts
 // and sync-apply.test.ts: in-memory SessionStore, injected fetch, fast debounce.
+// The upgrade block covers the two schema steps (v66, v67) over databases from
+// before and after v65, the Unicode title-key refresh's run-once gate.
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { Database } from 'bun:sqlite';
@@ -9,6 +11,8 @@ import { mkdtempSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { LATEST_SCHEMA_VERSION, readSchemaWriterStamp } from '../../../src/services/sqlite/connection.js';
+import { computeTitleNormKey } from '../../../src/services/sqlite/dedup-store.js';
 import { CloudSync, type CloudSyncSettingKeys } from '../../../src/services/sync/CloudSync.js';
 import { SyncApply, type SyncOp } from '../../../src/services/sync/SyncApply.js';
 import { parseCanonicalOperation, stableDocumentId } from '../../../src/services/sync/CanonicalContent.js';
@@ -119,10 +123,10 @@ describe('work_state cloud sync', () => {
     rmSync(tempDir, { recursive: true, force: true });
   });
 
-  it('gives the table its sync columns (v65) and replays rows by write clock, not rowid', () => {
+  it('gives the table its sync columns (v66) and replays rows by write clock, not rowid', () => {
     const columns = (db.query('PRAGMA table_info(work_state_entries)').all() as Array<{ name: string }>).map(column => column.name);
     expect(columns).toEqual(expect.arrayContaining(['synced_at', 'origin_device_id', 'origin_local_id', 'sync_rev']));
-    expect(db.query('SELECT version FROM schema_versions WHERE version = 65').all()).toHaveLength(1);
+    expect(db.query('SELECT version FROM schema_versions WHERE version = 66').all()).toHaveLength(1);
 
     // A row pulled later from another device carries an earlier write clock.
     store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish', status: 'doing' }, createdAtEpoch: 2_000 });
@@ -227,5 +231,111 @@ describe('work_state cloud sync', () => {
       expect(() => parseCanonicalOperation({ ...wire, operation_sha256: 'x'.repeat(43) })).toThrow();
       sync.stop();
     });
+  });
+});
+
+const SYNC_LEDGERS = ['sync_entity_heads', 'sync_content_outbox', 'sync_launch_exclusions'];
+const WORK_STATE_SYNC_COLUMNS = ['synced_at', 'origin_device_id', 'origin_local_id', 'sync_rev'];
+
+function tableSql(db: Database, table: string): string {
+  return (db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?").get(table) as { sql: string }).sql;
+}
+
+function columnNames(db: Database, table: string): string[] {
+  return (db.query(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(column => column.name);
+}
+
+function appliedVersions(db: Database): number[] {
+  return (db.query('SELECT version FROM schema_versions ORDER BY version').all() as Array<{ version: number }>)
+    .map(row => row.version);
+}
+
+/**
+ * Undo the two work-state sync steps on a database the current chain built:
+ * the ledgers' kind CHECK goes back to the three launch kinds, the table loses
+ * its sync columns, and the v66/v67 rows go. What is left is main's v65 schema.
+ */
+function rollBackWorkStateSyncSteps(db: Database): void {
+  for (const table of SYNC_LEDGERS) {
+    const sql = tableSql(db, table);
+    db.run(`DROP TABLE ${table}`);
+    db.run(sql.replace(", 'work_state'", ''));
+  }
+  db.run('DROP INDEX idx_work_state_entries_unsynced');
+  db.run('DROP INDEX ux_work_state_entries_origin');
+  for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67)');
+}
+
+/** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */
+function countV65Writes(db: Database): () => number {
+  db.run('CREATE TEMP TABLE v65_writes (attempt INTEGER)');
+  db.run(`CREATE TEMP TRIGGER count_v65_writes BEFORE INSERT ON schema_versions
+    WHEN NEW.version = 65 BEGIN INSERT INTO v65_writes VALUES (1); END`);
+  return () => (db.query('SELECT COUNT(*) AS n FROM v65_writes').get() as { n: number }).n;
+}
+
+describe('work_state sync schema upgrade (v66, v67)', () => {
+  let db: Database;
+  let store: SessionStore;
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    store = new SessionStore(db);
+  });
+
+  afterEach(() => {
+    db.close();
+  });
+
+  it('applies both steps to a database that already ran v65, and never writes the v65 row', () => {
+    rollBackWorkStateSyncSteps(db);
+    db.run('PRAGMA user_version = 65'); // the writer stamp main leaves at v65
+    expect(appliedVersions(db).at(-1)).toBe(65);
+    for (const table of SYNC_LEDGERS) expect(tableSql(db, table)).not.toContain("'work_state'");
+    // Rows written on main's schema must survive the upgrade.
+    const entryId = store.appendWorkStateEntry({ project: 'proj-x', listName: 'release', fields: { task: 'publish', status: 'todo' } });
+    db.prepare(`
+      INSERT INTO sync_entity_heads
+        (entity_id, kind, origin_device_id, origin_local_id, entity_rev, operation_sha256, deleted, updated_at_epoch)
+      VALUES ('head-1', 'observation', ?, '1', '1', 'sha', 0, 1)
+    `).run(SELF);
+    const v65Writes = countV65Writes(db);
+
+    new SessionStore(db);
+
+    expect(columnNames(db, 'work_state_entries')).toEqual(expect.arrayContaining(WORK_STATE_SYNC_COLUMNS));
+    // The row written before the upgrade is native and waits for its first push.
+    expect(db.prepare('SELECT synced_at, origin_device_id, sync_rev FROM work_state_entries WHERE id = ?').get(entryId))
+      .toEqual({ synced_at: null, origin_device_id: null, sync_rev: '1' });
+    for (const table of SYNC_LEDGERS) expect(tableSql(db, table)).toContain("'work_state'");
+    expect(db.query('SELECT entity_id, kind FROM sync_entity_heads').all()).toEqual([{ entity_id: 'head-1', kind: 'observation' }]);
+    db.run("INSERT INTO sync_launch_exclusions (kind, origin_local_id, through_rev) VALUES ('work_state', '1', '1')");
+    expect(appliedVersions(db)).toEqual(expect.arrayContaining([65, 66, 67]));
+    expect(readSchemaWriterStamp(db)).toBe(LATEST_SCHEMA_VERSION);
+    expect(v65Writes()).toBe(0);
+  });
+
+  it('still runs the v65 Unicode title-key refresh on a database from before v65', () => {
+    const sessionId = store.createSDKSession('content-1', 'proj-x', 'prompt');
+    store.updateMemorySessionId(sessionId, 'memory-1');
+    const observationId = store.storeObservation('memory-1', 'proj-x', {
+      type: 'discovery', title: 'कि', subtitle: null, narrative: 'कि',
+      facts: [], concepts: [], files_read: [], files_modified: [],
+    }, 1).id;
+    rollBackWorkStateSyncSteps(db);
+    db.run("UPDATE observations SET title_norm_key = 'pre-v65' WHERE id = ?", [observationId]);
+    db.run('DELETE FROM schema_versions WHERE version = 65');
+    db.run('PRAGMA user_version = 0'); // binaries from before the writer stamp never set it
+    const v65Writes = countV65Writes(db);
+
+    new SessionStore(db);
+
+    expect(db.query('SELECT title_norm_key FROM observations WHERE id = ?').get(observationId))
+      .toEqual({ title_norm_key: computeTitleNormKey('proj-x', 'claude', 'कि') });
+    expect(v65Writes()).toBe(1); // the refresh's own row, and no other writer
+    expect(appliedVersions(db)).toEqual(expect.arrayContaining([65, 66, 67]));
+    expect(columnNames(db, 'work_state_entries')).toEqual(expect.arrayContaining(WORK_STATE_SYNC_COLUMNS));
+    for (const table of SYNC_LEDGERS) expect(tableSql(db, table)).toContain("'work_state'");
   });
 });
