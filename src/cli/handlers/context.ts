@@ -282,8 +282,16 @@ export const contextHandler: EventHandler = {
     // In server runtime the viewer is served by the server (#2552), not by a
     // local worker, so the link points there.
     const viewerUrl = serverRuntime ? serverRuntime.serverBaseUrl : getViewerBaseUrl(port);
+    // #4768 — the Pro trial pitch rides on this message by default; a
+    // self-hosted, off-plan deployment can turn it off without losing the
+    // viewer link. The trial countdown (a fact about the user's own trial)
+    // is a separate line and stays.
+    const promoLines = [
+      ...(settings.CLAUDE_MEM_PRO_UPSELL !== 'false' ? [proTrialLine('session-start')] : []),
+      ...(trialDaysLine ? [trialDaysLine] : []),
+    ];
     const systemMessage = showTerminalOutput && displayContent
-      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}`
+      ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}${promoLines.length ? `\n${promoLines.join('\n')}` : ''}`
       : undefined;
 
     return {
