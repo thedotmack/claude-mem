@@ -49,6 +49,20 @@ export interface ChromaDocument {
 }
 
 /**
+ * Chroma doc_type → row-writer kind, mirroring the worker routes'
+ * CHROMA_DOC_TYPES. Row cleanup (`deleteRowDocuments`) receives the doc_type
+ * but must queue on the same `rowWriters` turn live writes and backfill key by
+ * kind, so the two string spaces meet here. Unknown doc types fall back to
+ * their own name: they match no writer key, which only matters if a new doc
+ * type is added without updating this table.
+ */
+const DOC_TYPE_ROW_KIND: Record<string, string> = {
+  observation: 'observations',
+  session_summary: 'summaries',
+  user_prompt: 'prompts',
+};
+
+/**
  * Why a backfill run stopped before attempting every row: the worker began
  * shutting down (local Chroma then refuses every write), Chroma refused
  * writes for MAX_CONSECUTIVE_BATCH_FAILURES rows in a row, or the collection
@@ -911,12 +925,23 @@ export class ChromaSync {
    * Returns the number of fragments removed.
    */
   public async deleteRowDocuments(docType: string, sqliteId: number): Promise<number> {
-    const doomed = await this.lookupRowFragmentIds(docType, sqliteId);
-    const manager = ChromaMcpManager.getInstance();
-    for (let i = 0; i < doomed.length; i += this.BATCH_SIZE) {
-      await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
+    // Queue on the same per-row writer turn live writes and backfill use: a
+    // batch still being written when the delete committed must land before the
+    // lookup below, or it would finish after these deletions and orphan its
+    // fragments again even though every Chroma call here succeeded (Greptile
+    // P1 on PR #4813). Holding the turn through deletion also makes a write
+    // that races the delete wait instead of interleaving with it.
+    const release = await this.acquireRowWriter(DOC_TYPE_ROW_KIND[docType] ?? docType, sqliteId);
+    try {
+      const doomed = await this.lookupRowFragmentIds(docType, sqliteId);
+      const manager = ChromaMcpManager.getInstance();
+      for (let i = 0; i < doomed.length; i += this.BATCH_SIZE) {
+        await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
+      }
+      return doomed.length;
+    } finally {
+      release();
     }
-    return doomed.length;
   }
 
   async syncObservation(
