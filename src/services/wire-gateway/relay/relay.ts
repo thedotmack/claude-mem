@@ -191,6 +191,11 @@ export interface WireGatewayRelayOptions {
    * (CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION). Absent: never.
    */
   outboundRedaction?: { placeholders: OutboundRedactionPlaceholders; enabledByDefault: boolean };
+  /**
+   * Told the agent of every request that names a known route, before
+   * anything else is checked (plan Phase 9 task 1, lastSeen). Must not block.
+   */
+  noteRequestFromAgent?: (agentId: string) => void;
 }
 
 const ROUTE_PATH_PATTERN = /^\/r\/([^/]+)(\/.*)?$/;
@@ -241,6 +246,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       });
     }
     const route: WireGatewayRoute = lookup.route;
+    if (options.noteRequestFromAgent) notifyObserver(() => options.noteRequestFromAgent!(route.agentId));
     let launch: WireLaunch | undefined;
     if (launchId) {
       launch = options.launchRegistry?.use(launchId);

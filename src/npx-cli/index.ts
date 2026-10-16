@@ -52,6 +52,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem worker start|stop|restart|status')}    Worker compatibility aliases
   ${styleText('cyan', 'npx claude-mem wire start|stop|restart|status')}      Run the wire gateway (agent model traffic relay; separate from the worker)
   ${styleText('cyan', 'npx claude-mem wire start --foreground')}              Run the wire gateway in this terminal
+  ${styleText('cyan', 'npx claude-mem wire status [--json]')}                 Show the gateway and each wired agent's state (ok, unwired, replaced, unreachable, proxied, bypassed, unknown)
   ${styleText('cyan', 'npx claude-mem wire service install|uninstall')}       Start the wire gateway at login (launchd, systemd --user, logon task)
   ${styleText('cyan', 'npx claude-mem wire routes add <id> --agent <a> --upstream <url>')}  Relay http://127.0.0.1:<port>/r/<id> to a provider (also: routes list, routes remove <id>)
   ${styleText('cyan', 'npx claude-mem wire consent [--record|--off]')}        Show or change consent to raw wire recording (off until you turn it on)

@@ -30,7 +30,7 @@ describe('wire gateway identity probe', () => {
 });
 
 describe('wire gateway router skeleton', () => {
-  for (const path of ['/r/test/v1/messages', '/v1/traces', '/v1/claude-mem/events', '/mcp', '/wire/status', '/nope']) {
+  for (const path of ['/r/test/v1/messages', '/v1/traces', '/v1/claude-mem/events', '/mcp', '/wire/nope', '/nope']) {
     it(`${path} answers 404 not_found_error until its phase lands`, async () => {
       const response = await fetch(`${gateway.baseUrl}${path}`, { method: 'POST', body: '{}' });
       expect(response.status).toBe(404);

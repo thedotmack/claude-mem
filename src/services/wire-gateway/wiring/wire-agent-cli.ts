@@ -15,7 +15,8 @@ import {
   isWireGatewayOsServiceInstalled,
   uninstallWireGatewayOsService,
 } from '../os-service.js';
-import { WIRE_GATEWAY_IDENTITY_NAME } from '../router.js';
+import { requestJsonDirectly } from '../direct-http.js';
+import { probeIdentityDirectly } from '../drift/reachability.js';
 import type { WireGatewayCaptureSource } from '../routes.js';
 import { currentAgentEnvironment } from '../agents/agent-paths.js';
 import { loadAgentRegistry, requireAgentDescriptor } from '../agents/agent-registry.js';
@@ -48,14 +49,10 @@ export interface WireAgentCliRuntime {
 const ROUTE_PROBE_ATTEMPTS = 20;
 const ROUTE_PROBE_INTERVAL_MS = 150;
 
-async function probeRouteIdentity(url: string): Promise<boolean> {
+/** Never through a proxy: behind one, a fetch would fail and connect would undo itself (direct-http.ts). */
+export async function probeRouteIdentity(url: string): Promise<boolean> {
   for (let attempt = 0; attempt < ROUTE_PROBE_ATTEMPTS; attempt++) {
-    try {
-      const response = await fetch(url, { signal: AbortSignal.timeout(1_000) });
-      if (response.ok && ((await response.json()) as { name?: unknown }).name === WIRE_GATEWAY_IDENTITY_NAME) return true;
-    } catch {
-      // Not answering yet; retry until the attempts run out.
-    }
+    if (await probeIdentityDirectly(url, 1_000)) return true;
     await new Promise((resolve) => setTimeout(resolve, ROUTE_PROBE_INTERVAL_MS));
   }
   return false;
@@ -237,17 +234,18 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
   }
 }
 
-/** `POST /wire/launch` on the running gateway. */
+/** `POST /wire/launch` on the running gateway, never through a proxy (direct-http.ts). */
 export async function createLaunch(origin: string, agentId: string, cwd: string): Promise<string> {
-  const response = await fetch(`${origin}/wire/launch`, {
+  const answer = await requestJsonDirectly<{ launchId?: unknown; error?: { message?: string } }>({
+    url: `${origin}/wire/launch`,
     method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ agentId, cwd }),
-    signal: AbortSignal.timeout(5_000),
+    jsonBody: { agentId, cwd },
+    timeoutMs: 5_000,
   });
-  const body = (await response.json()) as { launchId?: unknown; error?: { message?: string } };
-  if (!response.ok || typeof body.launchId !== 'string') {
-    throw new Error(`the wire gateway refused the launch: ${body.error?.message ?? `HTTP ${response.status}`}`);
+  if (!answer) throw new Error(`the wire gateway did not answer at ${origin}`);
+  const launchId = answer.body?.launchId;
+  if (answer.statusCode !== 200 || typeof launchId !== 'string') {
+    throw new Error(`the wire gateway refused the launch: ${answer.body?.error?.message ?? `HTTP ${answer.statusCode}`}`);
   }
-  return body.launchId;
+  return launchId;
 }

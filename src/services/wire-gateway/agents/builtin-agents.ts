@@ -141,7 +141,7 @@ const claudeCode: AgentDescriptor = {
     kind: 'jsonl',
     field: 'timestamp',
     unit: 'ms',
-    skipSlashCommands: true,
+    slashCommandTextField: 'display', // magpie claude.go:1623-1626
   },
   launch: {
     env: { ANTHROPIC_BASE_URL: '{baseUrl}', CLAUDE_CODE_GATEWAY_HINT_HEADERS: '1' },
@@ -204,7 +204,8 @@ const codex: AgentDescriptor = {
     },
     uninstallCommand: UNINSTALL_ALL_INTEGRATIONS,
   },
-  lastUsed: { path: (environment) => join(codexHome(environment), 'history.jsonl'), kind: 'jsonl', field: 'ts', unit: 's' },
+  // magpie codex.go:1231 reads ts and skips `/` commands in text.
+  lastUsed: { path: (environment) => join(codexHome(environment), 'history.jsonl'), kind: 'jsonl', field: 'ts', unit: 's', slashCommandTextField: 'text' },
 };
 
 // ---------------------------------------------------------------------------
@@ -232,6 +233,9 @@ const geminiCli: AgentDescriptor = {
     }
     return null;
   },
+  statusNotes: () => [
+    'Gemini CLI reads ~/.gemini/.env only in folders it trusts, and only when the project has no .env of its own; elsewhere it uses its built-in endpoint and bypasses the gateway.',
+  ],
   launch: { env: { GOOGLE_GEMINI_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'GOOGLE_GEMINI_BASE_URL', defaultUpstream: GEMINI_API_BASE_URL, protocol: 'gemini' },
 };
 
@@ -303,6 +307,25 @@ const openCode: AgentDescriptor = {
   nativeIntegration: {
     isInstalled: (environment) => pathExists(join(openCodeConfigDirectory(environment), 'plugins', 'claude-mem.js')),
     uninstallCommand: UNINSTALL_ALL_INTEGRATIONS,
+  },
+  statusNotes({ environment, connectedFilePaths }) {
+    // OpenCode merges every one of its config files; connect edits the first that exists.
+    const notes: string[] = [];
+    for (const candidatePath of openCode.files[0].candidatePaths(environment)) {
+      if (candidatePath === connectedFilePaths.config) continue;
+      try {
+        const bytes = readConfigFileBytes(candidatePath);
+        if (bytes === null) continue;
+        const providers = readConfigValue('json', candidatePath, bytes, 'provider');
+        const providerIds = isPlainObjectValue(providers) ? Object.keys(providers) : [];
+        if (providerIds.length > 0) {
+          notes.push(`OpenCode also merges ${candidatePath}; its providers (${providerIds.join(', ')}) were not wired and do not go through the gateway.`);
+        }
+      } catch (error) {
+        notes.push(`OpenCode also merges ${candidatePath}, which cannot be read (${error instanceof Error ? error.message : String(error)}); providers there may not go through the gateway.`);
+      }
+    }
+    return notes;
   },
 };
 
@@ -703,6 +726,9 @@ const antigravityCli: AgentDescriptor = {
   files: [],
   targets: [],
   nativeIntegration: { isInstalled: antigravityHooksInstalled, uninstallCommand: 'npx claude-mem antigravity-cli uninstall' },
+  statusNotes: () => [
+    'Gemini CLI reads ~/.gemini/.env only in folders it trusts, and only when the project has no .env of its own; elsewhere it uses its built-in endpoint and bypasses the gateway.',
+  ],
   launch: { env: { GOOGLE_GEMINI_BASE_URL: '{baseUrl}' }, baseUrlVariable: 'GOOGLE_GEMINI_BASE_URL', defaultUpstream: GEMINI_API_BASE_URL, protocol: 'gemini' },
 };
 

@@ -154,6 +154,38 @@ function resolveTargets(descriptor: AgentDescriptor, context: AgentConfigReadCon
   return targets;
 }
 
+/** A base-URL key as the agent's files say it now (Phase 9 drift). */
+export interface CurrentBaseUrlTarget {
+  fileKey: string;
+  filePath: string;
+  format: AgentConfigFormat;
+  keyPath: string;
+  value: unknown;
+  defaultUpstream?: string;
+}
+
+/**
+ * Every base-URL key the descriptor names, read now, with its value: what
+ * `wire status` compares to what connect wrote. Throws when a file cannot be
+ * read or parsed (the caller reports `unknown`).
+ */
+export function readCurrentBaseUrlTargets(descriptor: AgentDescriptor, environment: AgentEnvironment): CurrentBaseUrlTarget[] {
+  const files = resolveConfigFiles(descriptor, environment);
+  const context = createReadContext(descriptor, environment, files);
+  return resolveTargets(descriptor, context, files).map((target) => {
+    const file = files.get(target.file);
+    if (!file) throw new Error(`${descriptor.name}: no "${target.file}" file for ${target.keyPath}`);
+    return {
+      fileKey: file.key,
+      filePath: file.path,
+      format: file.format,
+      keyPath: target.keyPath,
+      value: readConfigValue(file.format, file.path, file.bytes, target.keyPath),
+      defaultUpstream: target.defaultUpstream,
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // URLs and route ids
 

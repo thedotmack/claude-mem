@@ -53,6 +53,11 @@ export function createWireGatewayFetchHandler(options: {
   relay?: (request: Request, server: Server<undefined>) => Promise<Response>;
   /** Launcher sessions for POST /wire/launch (Phase 4); without one, it answers 404. */
   launchRegistry?: WireLaunchRegistry;
+  /**
+   * GET /wire/status (Phase 9): each agent's drift state. It reads cached
+   * probe answers only, so it never waits on a probe.
+   */
+  statusReport?: () => Promise<unknown>;
 }) {
   return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response | Promise<Response> {
     const refusal = checkLoopbackRequest(request, {
@@ -75,6 +80,11 @@ export function createWireGatewayFetchHandler(options: {
     // this never shadows a relayed request.
     if (request.method === 'GET' && ROUTE_ROOT_PATTERN.test(pathname)) {
       return Response.json(wireGatewayIdentity());
+    }
+
+    if (pathname === '/wire/status' && options.statusReport) {
+      if (request.method !== 'GET') return jsonErrorResponse(405, 'invalid_request_error', 'GET /wire/status only');
+      return options.statusReport().then(report => Response.json(report));
     }
 
     if (pathname === '/wire/launch' && options.launchRegistry) {

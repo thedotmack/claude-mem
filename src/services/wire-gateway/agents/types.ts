@@ -104,8 +104,19 @@ export interface AgentLastUsedDescriptor {
   kind: 'jsonl';
   field: string;
   unit: 's' | 'ms';
-  /** Claude Code's history.jsonl keeps `/` commands, which never reach the model. */
-  skipSlashCommands?: boolean;
+  /**
+   * The field holding the prompt text, when the log also keeps `/` commands
+   * (which never reach the model): a record whose text there starts with `/`
+   * is skipped. Claude Code's history.jsonl: `display`.
+   */
+  slashCommandTextField?: string;
+}
+
+/** What `wire status` reads to word an agent's status notes (Phase 9). */
+export interface AgentStatusNotesContext {
+  environment: AgentEnvironment;
+  /** fileKey → the path `wire connect` edited; empty when the agent was routed without connect. */
+  connectedFilePaths: Record<string, string>;
 }
 
 export interface AgentDescriptor {
@@ -139,6 +150,12 @@ export interface AgentDescriptor {
   detectSubscription?(context: AgentConfigReadContext, targets: ResolvedBaseUrlTarget[]): string | null;
   nativeIntegration?: AgentNativeIntegrationDescriptor;
   lastUsed?: AgentLastUsedDescriptor;
+  /**
+   * Notes `wire status` shows whatever the state: ways the agent's requests
+   * can miss the gateway that its config does not show. Must not throw; a
+   * file it cannot read is a note.
+   */
+  statusNotes?(context: AgentStatusNotesContext): string[];
   launch?: AgentLaunchDescriptor;
   /** Set on descriptors loaded from <DATA_DIR>/wire-gateway/agents/*.json. */
   userDescriptorPath?: string;

@@ -66,6 +66,19 @@ import {
 import { OutboundRedactionPlaceholders } from './privacy/outbound-redaction.js';
 import { captureEvent, shutdownTelemetry } from '../telemetry/telemetry.js';
 import { runWireAgentCli, type WireAgentCliRuntime } from './wiring/wire-agent-cli.js';
+import { requestJsonDirectly } from './direct-http.js';
+import { defaultWiringDirectory } from './wiring/wiring-records.js';
+import { currentAgentEnvironment } from './agents/agent-paths.js';
+import { loadAgentRegistry } from './agents/agent-registry.js';
+import type { AgentEnvironment } from './agents/types.js';
+import { AgentLastSeenTracker, readLastSeenFile, type LastSeenFileReadResult } from './drift/last-seen.js';
+import { ProbeAnswerCache, probeLookupFor, type ProbeLookup } from './drift/reachability.js';
+import {
+  evaluateWireAgentStatuses,
+  formatWireStatusReport,
+  type WireAgentStatusInputs,
+  type WireStatusReport,
+} from './drift/agent-status.js';
 
 const DEFAULT_RETENTION_DAYS = 7;
 
@@ -120,6 +133,13 @@ export interface WireGatewayServiceOptions {
    * drain test can hold a request open before Phase 2's relay exists.
    */
   fetchHandler?: (request: Request, server: Server<undefined>) => Response | Promise<Response>;
+  /** Test seams for GET /wire/status: where the drift checks look. Default to the real data dir and home. */
+  status?: {
+    lastSeenFilePath?: string;
+    wiringDirectory?: string;
+    agentEnvironment?: AgentEnvironment;
+    userAgentsDirectory?: string;
+  } & Pick<WireAgentStatusInputs, 'probeIdentity' | 'probeThroughProxy' | 'readSystemProxy'>;
 }
 
 export interface WireGatewayRuntimeState {
@@ -149,10 +169,15 @@ export class WireGatewayService {
   /** Placeholders live as long as the process; requests bring their values back after a restart. */
   private readonly outboundRedactionPlaceholders: OutboundRedactionPlaceholders;
   private telemetryHeartbeat: ReturnType<typeof setInterval> | null = null;
+  /** When each agent's last request arrived (Phase 9 task 1); persisted while runtime state is. */
+  readonly agentLastSeen: AgentLastSeenTracker;
+  /** Reachability answers for GET /wire/status, refreshed in the background. */
+  private readonly statusProbeAnswers = new ProbeAnswerCache();
 
   constructor(options: WireGatewayServiceOptions) {
     this.options = options;
     this.persistRuntimeState = options.persistRuntimeState ?? true;
+    this.agentLastSeen = new AgentLastSeenTracker({ filePath: options.status?.lastSeenFilePath });
     // The key file is read (or written) on first use only.
     this.outboundRedactionPlaceholders = options.outboundRedactionPlaceholders ?? new OutboundRedactionPlaceholders();
   }
@@ -185,9 +210,15 @@ export class WireGatewayService {
         placeholders: this.outboundRedactionPlaceholders,
         enabledByDefault: this.options.outboundRedaction ?? false,
       },
+      noteRequestFromAgent: agentId => this.agentLastSeen.noteRequestFromAgent(agentId),
     });
     const handleRequest = this.options.fetchHandler
-      ?? createWireGatewayFetchHandler({ listenHost: this.options.host, relay, launchRegistry: this.launchRegistry });
+      ?? createWireGatewayFetchHandler({
+        listenHost: this.options.host,
+        relay,
+        launchRegistry: this.launchRegistry,
+        statusReport: () => this.statusReport(),
+      });
     this.draining = false;
     this.server = Bun.serve({
       hostname: this.options.host,
@@ -209,6 +240,7 @@ export class WireGatewayService {
       },
     });
     this.startedAt = new Date().toISOString();
+    if (this.persistRuntimeState || this.options.status?.lastSeenFilePath) this.agentLastSeen.startPersisting();
 
     if (this.persistRuntimeState) {
       const state = this.runtimeState();
@@ -277,6 +309,30 @@ export class WireGatewayService {
     return this.runtimeState();
   }
 
+  /**
+   * GET /wire/status: every agent's drift state from this process's view —
+   * in-memory lastSeen, cached probe answers (a missing or stale one is
+   * started in the background and reads as `unknown` until it lands).
+   */
+  async statusReport(): Promise<WireStatusReport> {
+    const origin = `http://${formatHostForUrl(this.options.host)}:${this.port}`;
+    const status = this.options.status ?? {};
+    return buildWireStatusReport({
+      gateway: { origin, running: true, version: WIRE_GATEWAY_VERSION, startedAt: this.startedAt ?? undefined },
+      capture: this.capturePipeline ? { unattributedEventCount: this.capturePipeline.assembler.unattributedEventCount } : null,
+      environment: status.agentEnvironment ?? currentAgentEnvironment(),
+      wiringDirectory: status.wiringDirectory ?? defaultWiringDirectory(),
+      routesFilePath: this.options.routesFilePath ?? paths.wireGatewayRoutes(),
+      userAgentsDirectory: status.userAgentsDirectory,
+      lastSeen: { kind: 'read', lastSeenByAgent: this.agentLastSeen.snapshot() },
+      gatewayStartedAt: this.startedAt ? Date.parse(this.startedAt) : null,
+      lookupProbe: probeLookupFor(this.statusProbeAnswers, 'cached-only'),
+      probeIdentity: status.probeIdentity,
+      probeThroughProxy: status.probeThroughProxy,
+      readSystemProxy: status.readSystemProxy,
+    });
+  }
+
   private async drainAndClose(): Promise<void> {
     const server = this.server;
     if (!server) {
@@ -307,6 +363,8 @@ export class WireGatewayService {
       // After the drain, so in-flight exchanges were assembled; turn ends still in their quiet are dropped.
       this.capturePipeline?.dispose();
       this.capturePipeline = null;
+      this.agentLastSeen.stopPersisting();
+      if (this.persistRuntimeState || this.options.status?.lastSeenFilePath) this.agentLastSeen.flush();
       if (this.persistRuntimeState) {
         removeWireGatewayStateIfOwnedBy(this.writtenPidInfo);
         this.writtenPidInfo = null;
@@ -330,6 +388,70 @@ export class WireGatewayService {
       startedAt: this.startedAt ?? new Date().toISOString(),
     };
   }
+}
+
+// ---------------------------------------------------------------------------
+// Status report (plan Phase 9), shared by GET /wire/status and `wire status`
+
+interface WireStatusReportInputs extends Omit<WireAgentStatusInputs, 'descriptors' | 'gatewayOrigin' | 'lookupProbe'> {
+  gateway: WireStatusReport['gateway'];
+  capture: WireStatusReport['capture'];
+  userAgentsDirectory?: string;
+  lookupProbe: ProbeLookup;
+}
+
+export async function buildWireStatusReport(inputs: WireStatusReportInputs): Promise<WireStatusReport> {
+  const registry = loadAgentRegistry({ userAgentsDirectory: inputs.userAgentsDirectory });
+  const { agents, problems } = await evaluateWireAgentStatuses({
+    ...inputs,
+    gatewayOrigin: inputs.gateway.origin,
+    descriptors: registry.descriptors,
+  });
+  return {
+    generatedAt: new Date().toISOString(),
+    gateway: inputs.gateway,
+    capture: inputs.capture,
+    problems: [...registry.refusals.map(refusal => `refused agent descriptor ${refusal}`), ...problems],
+    agents,
+  };
+}
+
+/** The running gateway's own report, for what only it knows (in-memory lastSeen, capture counters); null when it does not answer. */
+export async function fetchRunningWireGatewayStatus(origin: string): Promise<WireStatusReport | null> {
+  const answer = await requestJsonDirectly<WireStatusReport>({ url: `${origin}/wire/status`, timeoutMs: 2_000 });
+  return answer?.statusCode === 200 ? answer.body : null;
+}
+
+/**
+ * `claude-mem wire status`: the same report, with every probe waited for (a
+ * CLI is not a request path). lastSeen and capture counters come from the
+ * running gateway when it answers, else from state/last-seen.json.
+ */
+async function wireStatusReportForCli(config: WireGatewayConfig): Promise<WireStatusReport> {
+  const running = readRunningWireGatewayPid();
+  const state = running ? readWireGatewayRuntimeState() : null;
+  const origin = `http://${formatHostForUrl(config.host)}:${config.port}`;
+  const daemonReport = running ? await fetchRunningWireGatewayStatus(origin) : null;
+  let lastSeen: LastSeenFileReadResult = readLastSeenFile();
+  if (daemonReport) {
+    const fromDaemon: Record<string, number> = lastSeen.kind === 'read' ? { ...lastSeen.lastSeenByAgent } : {};
+    for (const agent of daemonReport.agents) {
+      if (agent.lastSeenAt) fromDaemon[agent.agentId] = Math.max(fromDaemon[agent.agentId] ?? 0, Date.parse(agent.lastSeenAt));
+    }
+    lastSeen = { kind: 'read', lastSeenByAgent: fromDaemon };
+  }
+  return buildWireStatusReport({
+    gateway: running && state
+      ? { origin, running: true, version: state.version, startedAt: state.startedAt }
+      : { origin, running: false },
+    capture: daemonReport?.capture ?? null,
+    environment: currentAgentEnvironment(),
+    wiringDirectory: defaultWiringDirectory(),
+    routesFilePath: paths.wireGatewayRoutes(),
+    lastSeen,
+    gatewayStartedAt: running && state ? Date.parse(state.startedAt) : null,
+    lookupProbe: probeLookupFor(new ProbeAnswerCache(), 'wait'),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -424,16 +546,14 @@ function wireGatewayScriptPath(): string {
   return typeof __filename !== 'undefined' ? __filename : fileURLToPath(import.meta.url);
 }
 
-async function probeWireGatewayIdentity(host: string, port: number): Promise<{ version: string } | null> {
-  try {
-    const response = await fetch(`http://${formatHostForUrl(host)}:${port}/wire/identity`, { signal: AbortSignal.timeout(1_000) });
-    if (!response.ok) return null;
-    const body = await response.json() as { name?: unknown; version?: unknown };
-    return body.name === WIRE_GATEWAY_IDENTITY_NAME && typeof body.version === 'string' ? { version: body.version } : null;
-  } catch {
-    // Not up yet (connection refused) or not ours; the caller polls until its deadline.
-    return null;
-  }
+/** Never through a proxy (direct-http.ts). null: not up yet (connection refused) or not ours; the caller polls until its deadline. */
+export async function probeWireGatewayIdentity(host: string, port: number): Promise<{ version: string } | null> {
+  const answer = await requestJsonDirectly<{ name?: unknown; version?: unknown }>({
+    url: `http://${formatHostForUrl(host)}:${port}/wire/identity`,
+    timeoutMs: 1_000,
+  });
+  const body = answer?.statusCode === 200 ? answer.body : null;
+  return body?.name === WIRE_GATEWAY_IDENTITY_NAME && typeof body.version === 'string' ? { version: body.version } : null;
 }
 
 async function waitForWireGatewayIdentity(host: string, port: number, timeoutMs: number): Promise<boolean> {
@@ -604,7 +724,8 @@ function printWireGatewayUsage(): void {
   writeStderrLine('  start --foreground run it in this process (what the OS service runs)');
   writeStderrLine('  stop               drain in-flight streams, then stop');
   writeStderrLine('  restart            stop, then start in the background');
-  writeStderrLine('  status             print whether it runs, and where');
+  writeStderrLine('  status [--json]    print whether it runs, and each wired agent\'s state (ok, unwired, replaced,');
+  writeStderrLine('                     unreachable, proxied, bypassed, unknown) with a fix');
   writeStderrLine('  service install    start it at login (launchd, systemd --user, or a logon task)');
   writeStderrLine('  service uninstall  remove that login item');
   writeStderrLine('  routes add <routeId> --agent <id> --upstream <url> [--capture wire|native]');
@@ -837,17 +958,16 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
     }
 
     case 'status': {
-      const running = readRunningWireGatewayPid();
-      const state = readWireGatewayRuntimeState();
-      if (running && state) {
-        writeStdoutLine('Wire gateway is running');
-        writeStdoutLine(`  PID: ${state.pid}`);
-        writeStdoutLine(`  Address: http://${formatHostForUrl(state.host)}:${state.port}`);
-        writeStdoutLine(`  Version: ${state.version}`);
-        writeStdoutLine(`  Started: ${state.startedAt}`);
-      } else {
-        writeStdoutLine('Wire gateway is not running');
+      const report = await wireStatusReportForCli(config);
+      if (argv.slice(1).includes('--json')) {
+        writeStdoutLine(JSON.stringify(report, null, 2));
+        return;
       }
+      const [headline, ...rest] = formatWireStatusReport(report);
+      writeStdoutLine(headline);
+      const running = readRunningWireGatewayPid();
+      if (running && report.gateway.running) writeStdoutLine(`  PID: ${running.pid}`);
+      for (const line of rest) writeStdoutLine(line);
       return;
     }
 
