@@ -4,10 +4,10 @@
 // captureSource, features}. An agent's base URL becomes
 // http://127.0.0.1:<port>/r/<routeId>; the route carries the agent's identity.
 
-import { existsSync, mkdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from 'fs';
-import { dirname } from 'path';
+import { existsSync, readFileSync, statSync } from 'fs';
 import { writeJsonFileAtomic } from '../../shared/atomic-json.js';
-import { WIRE_GATEWAY_DIR_MODE, WIRE_GATEWAY_FILE_MODE, ensureWireGatewayDirs, paths } from '../../shared/paths.js';
+import { WIRE_GATEWAY_FILE_MODE, ensureWireGatewayDirs, paths } from '../../shared/paths.js';
+import { withExclusiveFileLock } from './edit/file-lock.js';
 import { logger } from '../../utils/logger.js';
 
 export const WIRE_GATEWAY_ROUTES_VERSION = 1;
@@ -101,64 +101,6 @@ function writeWireGatewayRoutesFile(routesFile: WireGatewayRoutesFile, routesFil
   writeJsonFileAtomic(routesFilePath, routesFile, { mode: WIRE_GATEWAY_FILE_MODE });
 }
 
-/** A holder that has not released within this window is presumed dead. */
-const ROUTES_LOCK_STALE_MS = 10_000;
-const ROUTES_LOCK_MAX_WAIT_MS = 15_000;
-const ROUTES_LOCK_RETRY_MS = 10;
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
-/**
- * Hold `<routes.json>.lock` across a read-modify-write, so two `routes add`
- * or `routes remove` processes cannot each write back a copy missing the
- * other's change. The `wx` (O_CREAT|O_EXCL) lock with mtime staleness is the
- * pattern of observer-health.ts withLedgerLock and worker-spawn-gate.ts, but
- * it fails loud: a route edit that cannot be serialized is refused, never
- * written unlocked.
- */
-function withRoutesFileLock<T>(routesFilePath: string, mutate: () => T): T {
-  const lockPath = `${routesFilePath}.lock`;
-  const deadline = Date.now() + ROUTES_LOCK_MAX_WAIT_MS;
-  for (;;) {
-    try {
-      mkdirSync(dirname(lockPath), { recursive: true, mode: WIRE_GATEWAY_DIR_MODE });
-      writeFileSync(lockPath, String(process.pid), { flag: 'wx', mode: WIRE_GATEWAY_FILE_MODE });
-      break;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-    }
-    let lockMtimeMs: number;
-    try {
-      lockMtimeMs = statSync(lockPath).mtimeMs;
-    } catch {
-      continue; // The holder released between our create and the stat.
-    }
-    if (Date.now() - lockMtimeMs > ROUTES_LOCK_STALE_MS) {
-      try {
-        if (statSync(lockPath).mtimeMs === lockMtimeMs) unlinkSync(lockPath);
-      } catch {
-        // A competing waiter broke it first; the loop re-evaluates.
-      }
-      continue;
-    }
-    if (Date.now() >= deadline) {
-      throw new Error(`routes.json is locked by another claude-mem process (${lockPath}); try again`);
-    }
-    sleepSync(ROUTES_LOCK_RETRY_MS);
-  }
-  try {
-    return mutate();
-  } finally {
-    try {
-      unlinkSync(lockPath);
-    } catch {
-      // Already broken as stale by a waiter: nothing to release.
-    }
-  }
-}
-
 export interface AddWireGatewayRouteInput {
   routeId: string;
   agentId: string;
@@ -187,7 +129,7 @@ export function addWireGatewayRoute(input: AddWireGatewayRouteInput, routesFileP
     features: input.features ?? {},
     createdAt: new Date().toISOString(),
   };
-  withRoutesFileLock(routesFilePath, () => {
+  withExclusiveFileLock(routesFilePath, () => {
     const routesFile = readWireGatewayRoutesFile(routesFilePath);
     routesFile.routes[input.routeId] = route;
     writeWireGatewayRoutesFile(routesFile, routesFilePath);
@@ -197,7 +139,7 @@ export function addWireGatewayRoute(input: AddWireGatewayRouteInput, routesFileP
 
 /** Remove a route. Returns false when there was none by that id. */
 export function removeWireGatewayRoute(routeId: string, routesFilePath: string = paths.wireGatewayRoutes()): boolean {
-  return withRoutesFileLock(routesFilePath, () => {
+  return withExclusiveFileLock(routesFilePath, () => {
     const routesFile = readWireGatewayRoutesFile(routesFilePath);
     // Own properties only: "constructor" is a valid route id and an inherited name.
     if (!Object.hasOwn(routesFile.routes, routeId)) {
