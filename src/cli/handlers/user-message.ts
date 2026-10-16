@@ -9,6 +9,7 @@ import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { getProjectContext } from '../../utils/project-name.js';
 
 export const userMessageHandler: EventHandler = {
@@ -45,13 +46,16 @@ export const userMessageHandler: EventHandler = {
     // the platform adapter routes it (claude-code surfaces it inline, exactly
     // like the old stderr write, but inside the HookResult contract). This
     // handler MUST stay pure — no process.stderr.write / console.* / process.exit.
+    // #4768 — CLAUDE_MEM_PRO_UPSELL=false drops the trial pitch for
+    // self-hosted, off-plan deployments; the rest of the banner stays.
+    const settings = loadFromFileOnce();
     const bannerText =
       "\n\n" + String.fromCodePoint(0x1F4DD) + " Claude-Mem Context Loaded\n\n" +
       output +
       "\n\n" + String.fromCodePoint(0x1F4A1) + " Wrap any message with <private> ... </private> to prevent storing sensitive information.\n" +
       "\n" + String.fromCodePoint(0x1F4AC) + " Community https://discord.gg/J4wttp9vDu" +
       `\n` + String.fromCodePoint(0x1F4FA) + ` Watch live in browser ${getViewerBaseUrl(port)}/\n` +
-      proTrialLine('context-banner') + `\n`;
+      (settings.CLAUDE_MEM_PRO_UPSELL !== 'false' ? proTrialLine('context-banner') + `\n` : '');
 
     return { exitCode: HOOK_EXIT_CODES.SUCCESS, systemMessage: bannerText };
   },

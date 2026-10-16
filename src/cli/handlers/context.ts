@@ -73,8 +73,14 @@ export function sessionStartBannerFooter(
   viewerUrl: string,
   trialDaysLine: string | null,
   teamBrainDiscoveryLine: string | null,
+  includeProUpsell: boolean = true,
 ): string {
-  return `\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
+  // #4768 — the Pro trial pitch rides on this message by default; a
+  // self-hosted, off-plan deployment can turn it off without losing the
+  // viewer link. The trial countdown (a fact about the user's own trial)
+  // is a separate line and stays.
+  const proUpsellLine = includeProUpsell ? proTrialLine('session-start') : '';
+  return `\n\nView Observations Live @ ${viewerUrl}\n${proUpsellLine}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`;
 }
 
 /**
@@ -462,7 +468,15 @@ export const contextHandler: EventHandler = {
     if (teamBrainDiscoveryLine) markTeamBrainDiscoveryNoticeShown();
     const systemMessage = composeSessionStartSystemMessage(
       showsBanner ? displayContent : null,
-      sessionStartBannerFooter(viewerUrl, trialDaysLine, teamBrainDiscoveryLine),
+      // #4768 — the Pro trial pitch rides on this message by default; a
+      // self-hosted, off-plan deployment can turn it off without losing the
+      // viewer link. The trial countdown and TeamBrain discovery stay.
+      sessionStartBannerFooter(
+        viewerUrl,
+        trialDaysLine,
+        teamBrainDiscoveryLine,
+        settings.CLAUDE_MEM_PRO_UPSELL !== 'false',
+      ),
       workerOutageNotice,
     );
 
