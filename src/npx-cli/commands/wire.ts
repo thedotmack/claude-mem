@@ -4,10 +4,12 @@ import { runWireGatewayCommand } from './runtime.js';
 const WIRE_LIFECYCLE_COMMANDS = new Set(['start', 'stop', 'restart', 'status']);
 const WIRE_SERVICE_ACTIONS = new Set(['install', 'uninstall']);
 const WIRE_ROUTES_ACTIONS = new Set(['add', 'list', 'remove']);
+const WIRE_AGENT_COMMANDS = new Set(['connect', 'disconnect', 'preview', 'run']);
 
 function printWireUsage(): void {
   console.error(`Usage: ${styleText('bold', 'npx claude-mem wire <command>')}`);
-  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear');
+  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear,');
+  console.error('          connect <agent> [--capture wire|native], disconnect <agent>, preview <agent> [--disconnect], run <agent> -- <args>');
 }
 
 // `claude-mem wire …` — the wire gateway daemon (src/services/wire-gateway/).
@@ -53,6 +55,26 @@ export function runWireCommand(argv: string[] = []): void {
     console.error(styleText('red', `Unknown wire consent option: ${flags.join(' ')}`));
     console.error('Usage: npx claude-mem wire consent [--record|--off]');
     process.exit(1);
+  }
+
+  if (subCommand && WIRE_AGENT_COMMANDS.has(subCommand)) {
+    if (!argv[1]) {
+      console.error(styleText('red', `wire ${subCommand} needs an agent`));
+      console.error(`Usage: npx claude-mem wire ${subCommand} <agent>${subCommand === 'run' ? ' -- <args>' : ''}`);
+      process.exit(1);
+    }
+    if (subCommand === 'run') {
+      // The plugin runs from its own folder, so the agent's folder (this one) goes along as --cwd.
+      const rest = argv.slice(2);
+      const separatorIndex = rest.indexOf('--');
+      const ownFlags = separatorIndex === -1 ? [] : rest.slice(0, separatorIndex);
+      const agentArguments = separatorIndex === -1 ? rest : rest.slice(separatorIndex + 1);
+      runWireGatewayCommand(['run', argv[1], ...ownFlags, '--cwd', process.cwd(), '--', ...agentArguments], true);
+      return;
+    }
+    // The agent name and flags pass through untouched.
+    runWireGatewayCommand([subCommand, ...argv.slice(1)]);
+    return;
   }
 
   if (subCommand === 'clear') {

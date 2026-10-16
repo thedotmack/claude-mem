@@ -223,6 +223,20 @@ export function installWireGatewayOsService(command: WireGatewayServiceCommand):
   }
 }
 
+/** Whether the per-user service is installed (connect installs it once, plan D14). */
+export function isWireGatewayOsServiceInstalled(): boolean {
+  switch (process.platform) {
+    case 'darwin':
+      return existsSync(launchAgentPlistPath());
+    case 'linux':
+      return existsSync(systemdUnitPath());
+    case 'win32':
+      return spawnSync('schtasks', ['/Query', '/TN', WINDOWS_TASK_NAME], { stdio: 'ignore', windowsHide: true, env: sanitizeEnv(process.env) }).status === 0;
+    default:
+      return false;
+  }
+}
+
 /** Stop and remove the per-user service. Returns a line for the user. */
 export function uninstallWireGatewayOsService(): string {
   switch (process.platform) {

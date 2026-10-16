@@ -23,6 +23,7 @@ import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { relaySignalsToInteractiveChild } from '../shared/interactive-child-signals.js';
 import { setRegistryDegradedReporter } from '../supervisor/process-registry.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
@@ -1280,7 +1281,7 @@ export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
   }
 
   if (rawCommand === 'wire') {
-    const wireCommands = new Set(['start', 'stop', 'restart', 'status', 'service', 'routes', 'consent', 'clear']);
+    const wireCommands = new Set(['start', 'stop', 'restart', 'status', 'service', 'routes', 'consent', 'clear', 'connect', 'disconnect', 'preview', 'run']);
     return {
       command: maybeSubCommand && wireCommands.has(maybeSubCommand) ? `wire-${maybeSubCommand}` : 'wire-help',
       args: rest,
@@ -1349,7 +1350,7 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
 
 function printWireCommandHelp(): never {
   console.error('Usage: worker-service wire <command>');
-  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear');
+  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear, connect|disconnect|preview <agent>, run <agent> -- <args>');
   process.exit(1);
 }
 
@@ -1369,6 +1370,8 @@ function runWireGatewayServiceCli(command: string, extraArgs: string[] = []): vo
     // Same env discipline as runServerServiceCli (#2357 / #2375).
     env: sanitizeEnv(process.env),
   });
+  // `wire run` hosts an interactive agent below: outlive it, keep its exit code.
+  if (command === 'run') relaySignalsToInteractiveChild(child);
   child.on('error', (error) => {
     console.error(`Failed to start wire gateway command: ${error.message}`);
     process.exit(1);
@@ -1764,7 +1767,11 @@ async function main() {
     case 'wire-service':
     case 'wire-routes':
     case 'wire-consent':
-    case 'wire-clear': {
+    case 'wire-clear':
+    case 'wire-connect':
+    case 'wire-disconnect':
+    case 'wire-preview':
+    case 'wire-run': {
       runWireGatewayServiceCli(command.slice('wire-'.length), commandArgs);
       break;
     }

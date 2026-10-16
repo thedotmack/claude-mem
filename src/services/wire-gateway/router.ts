@@ -37,6 +37,8 @@ const RESERVED_PATH_FAMILIES: Array<{ matches: (pathname: string) => boolean; la
   { matches: pathname => pathname.startsWith('/wire/'), label: 'the wire API (/wire/*)' },
 ];
 
+const ROUTE_ROOT_PATTERN = /^\/r\/[^/]+\/?$/;
+
 export function jsonErrorResponse(status: number, type: string, message: string): Response {
   return Response.json({ error: { type, message } }, { status });
 }
@@ -65,6 +67,13 @@ export function createWireGatewayFetchHandler(options: {
     const { pathname } = new URL(request.url);
 
     if (request.method === 'GET' && (pathname === '/' || pathname === '/wire/identity')) {
+      return Response.json(wireGatewayIdentity());
+    }
+
+    // `GET /r/<route>/`: connect's probe through the URL the agent was given
+    // (plan Phase 8 task 2.9). No provider answers a GET on its API root, so
+    // this never shadows a relayed request.
+    if (request.method === 'GET' && ROUTE_ROOT_PATTERN.test(pathname)) {
       return Response.json(wireGatewayIdentity());
     }
 

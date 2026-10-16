@@ -65,6 +65,7 @@ import {
 } from './privacy/recording-consent.js';
 import { OutboundRedactionPlaceholders } from './privacy/outbound-redaction.js';
 import { captureEvent, shutdownTelemetry } from '../telemetry/telemetry.js';
+import { runWireAgentCli, type WireAgentCliRuntime } from './wiring/wire-agent-cli.js';
 
 const DEFAULT_RETENTION_DAYS = 7;
 
@@ -614,6 +615,33 @@ function printWireGatewayUsage(): void {
   writeStderrLine('  consent --record   turn raw recording on (needs a terminal)');
   writeStderrLine('  consent --off      turn raw recording off');
   writeStderrLine('  clear              delete every raw recording');
+  writeStderrLine('  connect <agent> [--capture wire|native]');
+  writeStderrLine('                     point the agent\'s base URLs at the gateway (and start it at login)');
+  writeStderrLine('  disconnect <agent> put back what connect changed');
+  writeStderrLine('  preview <agent> [--disconnect]');
+  writeStderrLine('                     show what connect (or disconnect) would change, changing nothing');
+  writeStderrLine('  run <agent> -- <args>');
+  writeStderrLine('                     start the agent through a launcher session (env-only agents)');
+}
+
+/** The daemon lifecycle the wiring commands need (see wiring/wire-agent-cli.ts). */
+function wireAgentCliRuntime(config: WireGatewayConfig): WireAgentCliRuntime {
+  return {
+    config,
+    bunPath: process.execPath,
+    scriptPath: wireGatewayScriptPath(),
+    startDaemon: async () => {
+      const result = await startWireGatewayDaemon(config);
+      if (result.status !== 'ready') {
+        throw new Error(`the wire gateway did not answer on port ${config.port} within ${START_READY_TIMEOUT_MS / 1000} s`);
+      }
+    },
+    stopDaemon: async () => {
+      await stopRunningWireGateway(config.drainTimeoutMs);
+    },
+    writeLine: writeStdoutLine,
+    writeErrorLine: writeStderrLine,
+  };
 }
 
 export interface WireConsentCliOptions {
@@ -854,6 +882,14 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
 
     case 'clear': {
       process.exitCode = runWireClearCli();
+      return;
+    }
+
+    case 'connect':
+    case 'disconnect':
+    case 'preview':
+    case 'run': {
+      process.exitCode = await runWireAgentCli(command, argv.slice(1), wireAgentCliRuntime(config));
       return;
     }
 

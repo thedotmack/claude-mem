@@ -149,3 +149,16 @@ export function keysOverlap(left: readonly string[], right: readonly string[]): 
   }
   return true;
 }
+
+/**
+ * `text` without leading and trailing characters from `characters`. A loop,
+ * not `/x+$/`: an end-anchored repeat backtracks quadratically on a long run
+ * followed by another character.
+ */
+export function trimCharacters(text: string, characters: string, sides: 'both' | 'end' = 'both'): string {
+  let start = 0;
+  let end = text.length;
+  if (sides === 'both') while (start < end && characters.includes(text[start])) start++;
+  while (end > start && characters.includes(text[end - 1])) end--;
+  return text.slice(start, end);
+}
