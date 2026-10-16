@@ -799,9 +799,13 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(output.additionalContext).toBe('');
     expect((output as any).updatedInput).toBeUndefined();
     const reason = output.permissionDecisionReason!;
-    expect(reason).toContain(`Full-file Read blocked by claude-mem: ${gatedFile} has prior observations (listed below).`);
-    expect(reason).toContain(`smart_outline(file_path="${gatedFile}")`);
-    expect(reason).toContain(`smart_unfold(file_path="${gatedFile}", symbol_name="<name>")`);
+    // The handler escapes backslashes for the quoted tool-call hints
+    // (escapePathForHint in src/cli/handlers/file-context.ts), so a Windows path
+    // reaches the reason with doubled separators.
+    const hintPath = gatedFile.replace(/\\/g, '\\\\');
+    expect(reason).toContain(`Full-file Read blocked by claude-mem: ${hintPath} has prior observations (listed below).`);
+    expect(reason).toContain(`smart_outline(file_path="${hintPath}")`);
+    expect(reason).toContain(`smart_unfold(file_path="${hintPath}", symbol_name="<name>")`);
     expect(reason).toContain(`get_observations(ids=[${GATED_OBSERVATION_ID}])`);
     expect(reason).toContain('history from earlier sessions');
     expect(reason).toMatch(new RegExp(`^${GATED_OBSERVATION_ID} \\S+ \\S+ Rate table refactor$`, 'm'));
