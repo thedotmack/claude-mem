@@ -189,7 +189,11 @@ handoff has `instruction_state=unknown`; later instructions are never applied
 retroactively. Captured prompts and tools without original timestamps are omitted.
 Before a handoff is observed, it is `unknown`. Direct MCP calls,
 server-runtime-only capture, missing hooks, and an unavailable worker can leave
-coverage unknown. Older adapters that already supplied a default host cannot
+coverage unknown. Live Pi, OpenCode, and OMP prompt callbacks carry their original
+timing; Pi uses the persisted user-message timestamp even on replay. Generic DSH
+client calls and OpenClaw synthetic init paths lack verified prompt timing and
+remain outside captured prompt/tool counts. OMP has its own bounded platform label;
+missing stable tool IDs contribute only unidentified-arrival diagnostics. Older adapters that already supplied a default host cannot
 be distinguished from hosts that explicitly reported it. Missing counters or
 events are not evidence of zero usage or
 zero adherence; an ordinary question may correctly require no write. No

@@ -209,6 +209,7 @@ describe('work-state usage telemetry', () => {
     expect(workStatePlatform(undefined)).toBe('unknown');
     expect(workStatePlatform('secret-custom-platform')).toBe('other');
     expect(workStatePlatform('claude-code')).toBe('claude');
+    expect(workStatePlatform('omp')).toBe('omp');
     expect(workStateTool('mcp__mcp_search__work_state_read')).toBe('read');
     expect(workStateTool('functions.update_plan')).toBe('native_todo');
     expect(workStateTool('Write')).toBeNull();
