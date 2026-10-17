@@ -207,15 +207,20 @@ export function queryObservationsNewest(
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');
-  const row = db.db.prepare(`
+  const statement = db.db.prepare(`
     SELECT COUNT(*) as count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
        OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
-  `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
-  return row?.count ?? 0;
+  `);
+  try {
+    const row = statement.get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
+    return row?.count ?? 0;
+  } finally {
+    statement.finalize();
+  }
 }
 
 export function querySummariesMulti(

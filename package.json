@@ -70,7 +70,7 @@
     "sync-marketplace": "node scripts/sync-marketplace.cjs",
     "sync-marketplace:force": "node scripts/sync-marketplace.cjs --force",
     "build:binaries": "node scripts/build-worker-binary.js",
-    "build:cli-binary": "bun build --compile --minify ./src/services/worker-service.ts --outfile plugin/scripts/claude-mem",
+    "build:cli-binary": "bun build --compile --minify --entry-naming \"[name].js\" ./src/services/worker-service.ts ./src/services/context/context-read-worker.ts --outfile plugin/scripts/claude-mem",
     "worker:logs": "node scripts/worker-logs.cjs",
     "worker:tail": "node scripts/worker-logs.cjs --follow",
     "changelog:generate": "node scripts/generate-changelog.js",

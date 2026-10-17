@@ -56,7 +56,7 @@ export async function loadSessionStartContext(
       // XML, so the batch is confirmed and dropped while the banner keeps
       // itself up (#4221).
       includeHealthWarning: false,
-    });
+    }, false, { execution: 'worker' });
     logger.info('SESSION', 'Briefed the observer generation with session-start context', {
       sessionId: session.sessionDbId,
       project: session.project,

@@ -174,6 +174,13 @@ export class ModeManager {
     return mode;
   }
 
+  useModeSnapshot(mode: ModeConfig): void {
+    this.validateMode(mode, ['context reader snapshot']);
+    if (!mode.id) throw new Error('Context mode snapshot requires an id');
+    this.activeMode = mode;
+    this.activeModeId = mode.id;
+  }
+
   getActiveMode(): ModeConfig {
     if (!this.activeMode) {
       throw new Error('No mode loaded. Call loadMode() first.');
