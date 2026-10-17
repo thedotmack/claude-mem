@@ -56,9 +56,14 @@ export function refreshTimeLabels(root, requests, now = Date.now()) {
   });
 }
 
+function normalizeRecordedStatus(value) {
+  const status = String(value || '').trim().toLowerCase().replace(/[_ ]/g, '-');
+  return ['needs-you', 'needs-input', 'waiting-on-user', 'awaiting-approval', 'needs-approval'].includes(status) ? 'needs-you' : status;
+}
+
 export function statusFor(items, now = Date.now()) {
-  const states = items.map(item => String(item.status || '').toLowerCase().replace(/[_ ]/g, '-'));
-  if (states.some(s => ['needs-you', 'needs-input', 'waiting-on-user', 'awaiting-approval', 'needs-approval'].includes(s))) return 'needs-you';
+  const states = items.map(item => normalizeRecordedStatus(item.status));
+  if (states.includes('needs-you')) return 'needs-you';
   if (states.some(s => ['blocked', 'failed'].includes(s))) return 'blocked';
   if (items.length && items.every(item => item.kind === 'work-state' && ['done', 'completed'].includes(item.status))) return 'done';
   if (items.length && items.every(item => item.kind === 'work-state' && item.status === 'dropped')) return 'closed';
@@ -99,7 +104,7 @@ export function buildModel(snapshot, now = Date.now()) {
   const requests = (snapshot?.humanRequests || []).filter(request => request.id && cleanText(request.original?.text)).map(request => {
     const items = [...(request.items || [])].sort((a, b) => b.lastUpdateEpoch - a.lastUpdateEpoch);
     let status = statusFor(items, now);
-    const recordedStatus = request.lifecycle?.explicit ? String(request.lifecycle.status || '').trim().toLowerCase() : null;
+    const recordedStatus = request.lifecycle?.explicit ? normalizeRecordedStatus(request.lifecycle.status) : null;
     const lifecycleStatus = request.lifecycle?.explicit && (request.lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(recordedStatus)) ? 'done' : recordedStatus;
     if (['done', 'closed'].includes(status) && !['done', 'closed'].includes(lifecycleStatus)) status = 'unknown';
     if (lifecycleStatus && STATUS[lifecycleStatus]) status = lifecycleStatus;

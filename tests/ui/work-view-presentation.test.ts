@@ -18,6 +18,24 @@ describe('local My Work presentation', () => {
     const row = presentWork({ humanRequests: [request('one', { items: [{ kind: 'work-state', status: 'done', lastUpdateEpoch: now }] })] }, [], now).rows[0];
     expect(row.status).toBe('unknown');
   });
+  for (const status of ['needs-you', 'needs-input', 'waiting-on-user', 'awaiting-approval', 'needs-approval', 'Needs_Input']) {
+    it(`shows explicit request_status=${status} as Needs you while preserving the original request`, () => {
+      const row = presentWork({ humanRequests: [request('one', {
+        lifecycle: { explicit: true, status },
+        items: [{ kind: 'work-state', status: 'doing', title: 'Choose a launch price', nextStep: { text: 'Choose the price and trial terms.' }, lastUpdateEpoch: now }],
+      })] }, [], now).rows[0];
+      expect(row.status).toBe('needs');
+      expect(row.sourceLabel).toBe('Needs you');
+      expect(statusCategory(row)).toBe('needs');
+      expect(row.title).toBe('Ship a useful local viewer');
+      expect(row.original.text).toBe('Ship a useful local viewer');
+      expect(row.next).toBe('Choose the price and trial terms.');
+    });
+  }
+  it('does not turn an unknown explicit lifecycle label into a human handoff', () => {
+    const row = presentWork({ humanRequests: [request('one', { lifecycle: { explicit: true, status: 'awaiting-something-else' } })] }, [], now).rows[0];
+    expect(row.status).toBe('working');
+  });
   it('separates explicit reported complete from human checked', () => {
     const row = presentWork({ humanRequests: [request('one', { lifecycle: { explicit: true, status: 'done' }, review: { checked: false } })] }, [], now).rows[0];
     expect(effectiveStatus(row)).toBe('ready');

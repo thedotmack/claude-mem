@@ -46,3 +46,5 @@ Independent code review, relevant tests and all CI; immediately open PR after pu
 Verification: clean source/tag/package identity, default and legacy paths, local-only mode, no review mutation of source DB, complete CI/review, clean working tree. Guards: no modified published tags, no unverified shipping claims, no token output.
 
 PR review corrections: SQLite `data_version` observes same-row updates made by other connections; hashes cover full linked source evidence without adding raw text to the live payload; lifecycle selection carries canonical time/device/origin-row order, including IDs above2^53; a newly applied TeamBrain snapshot clears any older pending snapshot. Independent route and DOM regressions plus the combined163-test product suite pass. Synced-at-only changes retain a matching human check.
+
+Final real-data correction: explicit needs-input/waiting-on-user/approval aliases share the existing Needs you mapping used by recorded child statuses. Unknown lifecycle values retain the prior fallback. Original goal and next step stay unchanged. Expanded170-test product suite and a read-only live-data projection check pass.
