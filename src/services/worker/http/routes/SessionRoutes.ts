@@ -413,6 +413,27 @@ export class SessionRoutes extends BaseRouteHandler {
     // keep the gateway re-probe it claimed on the way in.
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
+    // A hand-back the latest selection no longer asks for must not fire later.
+    if (session.primaryReturnPending && selectedProvider !== session.fallbackFrom) {
+      session.primaryReturnPending = false;
+    }
+
+    // A stand-in whose primary is selectable again hands back at the next
+    // reply boundary (#4846): in an active session the generator may never
+    // finish, which kept a two-minute outage on the fallback for hours.
+    if (session.currentProvider && session.currentProvider !== selectedProvider
+        && session.fallbackFrom != null && session.fallbackFrom === selectedProvider) {
+      if (!session.primaryReturnPending) {
+        logger.info('SESSION', 'Primary recovered; switching back after the current reply', {
+          sessionId: sessionDbId,
+          currentProvider: session.currentProvider,
+          primary: selectedProvider,
+        });
+      }
+      session.primaryReturnPending = true;
+      return;
+    }
+
     if (session.currentProvider && session.currentProvider !== selectedProvider) {
       logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
         sessionId: sessionDbId,
@@ -518,6 +539,8 @@ export class SessionRoutes extends BaseRouteHandler {
       }
       this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
       session.fallbackFrom = fallbackFrom;
+      // A hand-back requested of an earlier run never applies to this one.
+      session.primaryReturnPending = false;
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(

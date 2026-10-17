@@ -1821,4 +1821,48 @@ describe('ResponseProcessor', () => {
       expect(buildObservationPrompt(observation)).not.toContain(OBSERVATION_SCHEMA_REMINDER);
     });
   });
+
+  describe('handing back to a recovered primary (#4846)', () => {
+    const CLEAN = '<observation><type>discovery</type><title>Stand-in reply</title><narrative>ok</narrative></observation>';
+    const reply = (session: ActiveSession) =>
+      processAgentResponse(CLEAN, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+    it('ends a one-response stand-in generation after its next stored reply', async () => {
+      const session = createMockSession({ currentProvider: 'gemini', fallbackFrom: 'openrouter', primaryReturnPending: true });
+
+      await reply(session);
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      expect(session.abortReason).toBe('provider_switch:primary_recovered');
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect(session.primaryReturnPending).toBe(false);
+    });
+
+    it('never ends a Claude stand-in mid-turn: its text frames each come through here', async () => {
+      const session = createMockSession({ currentProvider: 'claude', fallbackFrom: 'openrouter', primaryReturnPending: true });
+
+      await reply(session);
+
+      expect(session.abortController.signal.aborted).toBe(false);
+      expect(session.primaryReturnPending).toBe(true);
+    });
+
+    it('leaves the generation alone when no hand-back is pending', async () => {
+      const session = createMockSession({ currentProvider: 'gemini', fallbackFrom: 'openrouter' });
+
+      await reply(session);
+
+      expect(session.abortController.signal.aborted).toBe(false);
+      expect(session.abortReason ?? null).toBeNull();
+    });
+
+    it('never ends a primary run, even with a stale flag', async () => {
+      const session = createMockSession({ currentProvider: 'gemini', fallbackFrom: null, primaryReturnPending: true });
+
+      await reply(session);
+
+      expect(session.abortController.signal.aborted).toBe(false);
+      expect(session.primaryReturnPending).toBe(false);
+    });
+  });
 });

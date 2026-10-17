@@ -391,6 +391,69 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(openRouterAgent.startSession).not.toHaveBeenCalled();
   });
 
+  it('asks a running stand-in to hand back once its primary is selected again (#4846)', async () => {
+    const sessionDbId = 900004;
+    const session = makeFakeSession(sessionDbId);
+
+    // A Claude stand-in for openrouter, mid-session: its generator never ends.
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    session.fallbackFrom = 'openrouter';
+    const originalAbortController = session.abortController;
+
+    providerSelectionBox.current = 'openrouter';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    // Not aborted mid-reply: the hand-back waits for the next stored reply.
+    expect(session.primaryReturnPending).toBe(true);
+    expect(originalAbortController.signal.aborted).toBe(false);
+    expect(session.currentProvider).toBe('claude');
+    expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+  });
+
+  it('drops a pending hand-back when a later dispatch no longer selects the primary', async () => {
+    const sessionDbId = 900006;
+    const session = makeFakeSession(sessionDbId);
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    session.fallbackFrom = 'openrouter';
+
+    providerSelectionBox.current = 'openrouter';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.primaryReturnPending).toBe(true);
+
+    // The primary failed again elsewhere; dispatch now selects the stand-in.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.primaryReturnPending).toBe(false);
+  });
+
+  it('does not ask a primary run to hand back on an ordinary provider change', async () => {
+    const sessionDbId = 900005;
+    const session = makeFakeSession(sessionDbId);
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    const originalAbortController = session.abortController;
+
+    providerSelectionBox.current = 'openrouter';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+
+    expect(session.primaryReturnPending).toBeFalsy();
+    expect(originalAbortController.signal.aborted).toBe(false);
+  });
+
   it('leaves an openrouter session\'s provider-change path unaffected (never parked, by construction)', async () => {
     const sessionDbId = 900003;
     const session = makeFakeSession(sessionDbId);

@@ -498,3 +498,50 @@ describe('ClaudeProvider MEMORY_ID_CAPTURED spawn-health line (#4150)', () => {
     expect(lines[0]).toStartWith(`MEMORY_ID_CAPTURED | sessionDbId=3492 | memorySessionId=${MEMORY_SESSION_ID} |`);
   });
 });
+
+describe('ClaudeProvider hand-back to a recovered primary (#4846)', () => {
+  beforeEach(() => {
+    scriptedMessages = [];
+  });
+
+  function standInSession(): ActiveSession {
+    const session = createSession();
+    session.currentProvider = 'claude';
+    session.fallbackFrom = 'openrouter';
+    session.primaryReturnPending = true;
+    return session;
+  }
+
+  it('stores every text frame of the turn before handing back at the result frame', async () => {
+    const session = standInSession();
+    const harness = createHarness(session);
+    const abortedAtStore: boolean[] = [];
+    harness.storeObservations.mockImplementation(() => {
+      abortedAtStore.push(session.abortController.signal.aborted);
+      return { observationIds: [7], summaryId: null, createdAtEpoch: QUEUED_TIMESTAMP };
+    });
+    scriptedMessages = [
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      assistantFrame([{ type: 'text', text: OBSERVATION_XML }]),
+      resultFrame(),
+    ];
+
+    await harness.provider.startSession(session);
+
+    expect(abortedAtStore).toEqual([false, false]);
+    expect(session.abortReason).toBe('provider_switch:primary_recovered');
+    expect(session.abortController.signal.aborted).toBe(true);
+    expect(session.primaryReturnPending).toBe(false);
+  });
+
+  it('keeps running when no hand-back is pending', async () => {
+    const session = standInSession();
+    session.primaryReturnPending = false;
+    const harness = createHarness(session);
+    scriptedMessages = [assistantFrame([{ type: 'text', text: OBSERVATION_XML }]), resultFrame()];
+
+    await harness.provider.startSession(session);
+
+    expect(session.abortReason).not.toBe('provider_switch:primary_recovered');
+  });
+});
