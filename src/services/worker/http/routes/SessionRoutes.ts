@@ -58,6 +58,7 @@ import {
   SELF_HEAL_MAX_ATTEMPTS,
 } from '../../stale-spawn-recovery.js';
 import type { TelegramWrapupFormatterInput } from '../../../integrations/TelegramWrapupNotifier.js';
+import { runOrphanRecoveryScan } from '../../QuotaOrphanRecovery.js';
 
 const MAX_USER_PROMPT_BYTES = 256 * 1024;
 
@@ -206,6 +207,41 @@ export class SessionRoutes extends BaseRouteHandler {
       });
     }
     return sessionIds.length;
+  }
+
+  /**
+   * Bounded recovery scan for observation work a quota-cooldown restart
+   * orphaned (#4580): sessions whose every `tool_uses` row is still
+   * `observation_id NULL` never got a generator, so the resume sweep — which
+   * walks the in-RAM session map — can never see them again. This re-feeds
+   * their durable rows through the live machinery (one-shot, marked, capped;
+   * see QuotaOrphanRecovery) at the two moments the loss can be undone:
+   * worker startup, and the moment a cooldown stops withholding.
+   *
+   * Paced exactly like resumePendingSessions: nothing is re-fed while a
+   * cooldown actively withholds requests. A re-feed whose generator kick can
+   * only be refused would sit in the RAM buffer again — one restart from the
+   * same loss, with the one-shot marker already written. The window elapsing
+   * (breaker still on the books, probe phase) or the breaker clearing is what
+   * lets a round through, which is the "cooldown ended" trigger alongside the
+   * startup scan. Returns the number of sessions re-fed.
+   */
+  public async scanOrphanedSessions(source: string): Promise<number> {
+    const provider = getSelectedProvider();
+    const cooldown = getQuotaCooldown(provider);
+    if (cooldown && cooldownAppliesToCurrentAccount(cooldown) && isQuotaCooldownActive(provider)) {
+      return 0;
+    }
+    const result = await runOrphanRecoveryScan(
+      {
+        db: this.dbManager.getConnection(),
+        sessionManager: this.sessionManager,
+        ensureGeneratorRunning: (sessionDbId, recoverySource) =>
+          this.ensureGeneratorRunning(sessionDbId, recoverySource),
+      },
+      { source },
+    );
+    return result.scheduled;
   }
 
   public ensureGeneratorRunning(sessionDbId: number, source: string): Promise<void> {
