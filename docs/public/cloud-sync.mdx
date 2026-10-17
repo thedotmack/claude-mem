@@ -29,9 +29,8 @@ Three kinds of rows are replicated between your devices:
 
 **Work-state lists** (the to-do lists your agent saves) sync only when the
 sync hub lists `work_state` in its `content_kinds`. Until then, each list stays
-on the device that wrote it. No list is lost: the rows wait locally and upload
-when the hub supports them. `GET /api/sync/status` shows these rows in
-`waitingForHub.workState`, not in `pending`.
+on the device that wrote it and uploads when the hub supports it (see
+`waitingForHub` in the [status endpoint](#status-endpoint)).
 
 Alongside the rows, three kinds of **mutations** travel through the same log
 so later edits converge everywhere: session **title** changes, **prompt→session
@@ -183,7 +182,7 @@ that an empty queue would otherwise hide.
   near 0 mean the hub's log has everything this device wrote.
 - `waitingForHub` — rows of a kind that the hub does not list in
   `hub.contentKinds`. These rows wait locally and upload when the hub lists the
-  kind. They are not stuck uploads, and they are not in `pending`.
+  kind. They are not stuck uploads.
 - `lastFlushAt` — epoch ms of the last successful flush, `null` before the first.
 - `lastError` — message from the most recent failed flush, `null` when healthy.
   It never contains the token.
