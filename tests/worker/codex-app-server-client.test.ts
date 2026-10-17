@@ -1,6 +1,6 @@
 import { describe, expect, it, spyOn } from 'bun:test';
 import { getSupervisor } from '../../src/supervisor/index.js';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -8,6 +8,7 @@ import {
   buildCodexAppServerEnv,
   buildCodexAppServerThreadConfig,
   CodexAppServerClient,
+  sweepStaleAppServerWorkdirs,
   CODEX_ISOLATION_UNATTESTED_CODE,
   CODEX_NO_AGENT_MESSAGE_CODE,
 } from '../../src/services/worker/CodexAppServerClient.js';
@@ -602,5 +603,38 @@ describe('CodexAppServerClient transport', () => {
       await client.close();
       rmSync(fake.root, { recursive: true, force: true });
     }
+  });
+});
+
+describe('sweepStaleAppServerWorkdirs (#4788)', () => {
+  it('removes app-server workdirs left by a dead worker and keeps fresh, live and unrelated ones', () => {
+    const base = mkdtempSync(join(tmpdir(), 'claude-mem-sweep-'));
+    try {
+      const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+      const make = (name: string, old: boolean) => {
+        const dir = join(base, name);
+        mkdirSync(join(dir, 'codex-home'), { recursive: true });
+        if (old) utimesSync(dir, longAgo, longAgo);
+        return dir;
+      };
+      const stale = make('claude-mem-codex-app-server-stale', true);
+      const live = make('claude-mem-codex-app-server-live', true);
+      const fresh = make('claude-mem-codex-app-server-fresh', false);
+      const other = make('someone-elses-dir', true);
+
+      const removed = sweepStaleAppServerWorkdirs(base, Date.now(), undefined, new Set([live]));
+
+      expect(removed).toEqual([stale]);
+      expect(existsSync(stale)).toBe(false);
+      expect(existsSync(live)).toBe(true);
+      expect(existsSync(fresh)).toBe(true);
+      expect(existsSync(other)).toBe(true);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
+    }
+  });
+
+  it('returns nothing when the temp directory cannot be read', () => {
+    expect(sweepStaleAppServerWorkdirs(join(tmpdir(), 'claude-mem-no-such-dir-4788'))).toEqual([]);
   });
 });
