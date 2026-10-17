@@ -178,8 +178,9 @@ are zero. The probe does not append an operation or advance a pull cursor.
 URL, malformed response, timeout, or network failure
 that an empty queue would otherwise hide.
 
-- `pending` — rows (and queued mutation ops) still waiting to upload. Counts
-  near 0 mean the hub's log has everything this device wrote.
+- `pending` — rows (and queued mutation ops) still waiting to upload. When
+  every `pending` and `waitingForHub` count is 0, the hub's log has everything
+  this device wrote.
 - `waitingForHub` — rows of a kind that the hub does not list in
   `hub.contentKinds`. These rows wait locally and upload when the hub lists the
   kind. They are not stuck uploads.

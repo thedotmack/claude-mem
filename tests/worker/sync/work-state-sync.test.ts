@@ -203,6 +203,9 @@ describe('work_state cloud sync', () => {
     // row waits unsynced instead of being refused and dead-lettered.
     const old = makeHub();
     const oldSync = makeCloudSync(old.impl);
+    // Before the first probe, hub support is unknown: the row counts as pending.
+    expect(oldSync.status().pending.workState).toBe(1);
+    expect(oldSync.status().waitingForHub.workState).toBe(0);
     await oldSync.flush();
     expect(old.probes()).toBe(1);
     expect(old.pushes).toHaveLength(0);
@@ -320,6 +323,9 @@ describe('work_state cloud sync', () => {
     const failing = makeHub(EVERY_KIND, { failPushes: true });
     const first = makeCloudSync(failing.impl);
     await first.flush();
+    // The hub lists the kind, so a failed push leaves the row pending, not waiting.
+    expect(first.status().pending.workState).toBe(1);
+    expect(first.status().waitingForHub.workState).toBe(0);
     first.stop();
     expect(outboxKinds()).toEqual(['work_state']);
 
