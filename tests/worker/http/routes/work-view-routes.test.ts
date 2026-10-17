@@ -8,6 +8,7 @@ import type { Server } from 'node:http';
 import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { contentFingerprint } from '../../../../src/services/work-view/review-store.js';
 import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
+import { HumanCopyWorker } from '../../../../src/services/work-view/human-copy-worker.mjs';
 
 let directory: string;
 let source: Database;
@@ -24,8 +25,8 @@ function append(fields: Record<string, unknown>) {
     .run(nextId++, 'example-project', 'example-work', JSON.stringify(fields), Date.now());
 }
 
-async function start() {
-  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20 });
+async function start(humanCopy: HumanCopyWorker | null = null) {
+  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy });
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
@@ -387,5 +388,24 @@ describe('review content versions', () => {
     const request = { id: 'x', title: 'Request', items: [{ outcome: { text: 'Done' } }] };
     expect(contentFingerprint({ ...request, generatedAt: 1, humanCopy: { summary: 'first' } })).toBe(contentFingerprint({ ...request, generatedAt: 2, humanCopy: { summary: 'second' } }));
     expect(contentFingerprint({ ...request, items: [{ outcome: { text: 'New result' } }] })).not.toBe(contentFingerprint(request));
+  });
+
+  it('attaches readable summaries without changing the reviewed fingerprint', async () => {
+    const before = (await (await fetch(`${origin}/api/work-view`)).json()).humanRequests[0];
+    await stop();
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => ({ output: {
+      title: 'Build a local work viewer', summary: 'The viewer is ready to use.', next: '',
+      workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })),
+    } }) });
+    await start(humanCopy);
+    await fetch(`${origin}/api/work-view`);
+    let request: any;
+    for (let attempt = 0; attempt < 50 && request?.humanCopy?.state !== 'current'; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+      request = (await (await fetch(`${origin}/api/work-view`)).json()).humanRequests[0];
+    }
+    expect(request.humanCopy.state).toBe('current');
+    expect(request.humanCopy.summary).toBe('The viewer is ready to use.');
+    expect(request.contentFingerprint).toBe(before.contentFingerprint);
   });
 });

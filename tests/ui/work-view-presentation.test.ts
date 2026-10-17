@@ -1,3 +1,4 @@
+import { requestCards } from '../../src/ui/work-view/request-views.js';
 import { describe, expect, it } from 'bun:test';
 import { presentWork, effectiveStatus, statusCategory, handoffText, scopeWork } from '../../src/ui/work-view/presentation.js';
 
@@ -57,14 +58,18 @@ describe('local My Work presentation', () => {
     expect(row.status).toBe('quiet');
     expect(row.sourceLabel).toBe('No recent update');
   });
-  it('only uses current cached copy and keeps original evidence', () => {
+  it('keeps the last good summary while newer work is summarized, and keeps original evidence', () => {
     const one = request('one', { humanCopy: { state: 'current', title: 'Readable title', summary: 'Readable summary', next: 'Inspect the result' } });
     const row = presentWork({ humanRequests: [one] }, [], now).rows[0];
     expect(row.activity).toBe('Readable summary');
     expect(row.original.text).toBe('Ship a useful local viewer');
     const stale = presentWork({ humanRequests: [{ ...one, humanCopy: { ...one.humanCopy as object, state: 'outdated' } }] }, [], now).rows[0];
-    expect(stale.activity).toBe('Added readable local work cards.');
-    expect(stale.title).toBe('Ship a useful local viewer');
+    expect(stale.activity).toBe('Readable summary');
+    expect(stale.title).toBe('Readable title');
+    expect(requestCards([stale], { view: 'cards', changed: new Set(), unread: new Set() })).toContain('Summary updating');
+    const pending = presentWork({ humanRequests: [{ ...one, humanCopy: { state: 'pending' } }] }, [], now).rows[0];
+    expect(pending.activity).toBe('Added readable local work cards.');
+    expect(pending.title).toBe('Ship a useful local viewer');
   });
   it('retains stream activity and accepts an unknown contributor platform', () => {
     const one = request('one', { agentIds: ['agent'], workstreams: [{ id: 'stream', items: [], activity: [{ title: 'A stream update', detail: 'Recorded stream evidence.', atEpoch: now + 1 }] }] });
