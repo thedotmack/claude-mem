@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 
-import { probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
+import { hookLauncherCheck, probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
 
 // `npx claude-mem doctor` reads the worker's /api/admin/doctor `health.chroma`
 // block (#3362). These rows are optional: a missing, malformed or unreachable
@@ -153,5 +153,62 @@ describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', 
     const row = await treeSitterCliCheck(root);
     expect(row).toMatchObject({ status: 'warn', required: false });
     expect(row.detail).toContain('npx claude-mem repair');
+  });
+});
+
+// `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, so the first `claude-mem` there is
+// this CLI, not the hook launcher. Hooks run outside npx and find the launcher, so doctor must look past itself.
+describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => {
+  let root: string;
+  let npxBin: string;
+  let runningCli: string;
+  let launcherDir: string;
+
+  function executable(path: string, output: string): void {
+    writeFileSync(path, `#!/bin/sh\necho ${output}\n`);
+    chmodSync(path, 0o755);
+  }
+
+  function host(pathValue: string) {
+    return { homeDirectory: root, platform: process.platform, environmentVariables: { PATH: pathValue } };
+  }
+
+  beforeEach(() => {
+    root = mkdtempSync(join(tmpdir(), 'doctor-launcher-'));
+    const cliDir = join(root, 'npx', 'node_modules', 'claude-mem', 'dist', 'npx-cli');
+    npxBin = join(root, 'npx', 'node_modules', '.bin');
+    launcherDir = join(root, 'local-bin');
+    mkdirSync(cliDir, { recursive: true });
+    mkdirSync(npxBin, { recursive: true });
+    mkdirSync(launcherDir, { recursive: true });
+    runningCli = join(cliDir, 'index.js');
+    executable(runningCli, '13.41.0');
+    symlinkSync('../claude-mem/dist/npx-cli/index.js', join(npxBin, 'claude-mem'));
+    executable(join(launcherDir, 'claude-mem'), '1');
+  });
+
+  afterEach(() => {
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it('checks the launcher behind its own npx bin, not itself', () => {
+    const result = hookLauncherCheck(host(`${npxBin}:${launcherDir}:/usr/bin:/bin`), runningCli);
+    expect(result.status).toBe('ok');
+    expect(result.detail).toContain(join(launcherDir, 'claude-mem'));
+  });
+
+  it('still fails when another claude-mem that is not the launcher comes first', () => {
+    const otherDir = join(root, 'other');
+    mkdirSync(otherDir);
+    executable(join(otherDir, 'claude-mem'), '13.15.0');
+    const result = hookLauncherCheck(host(`${otherDir}:${launcherDir}:/usr/bin:/bin`), runningCli);
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain(join(otherDir, 'claude-mem'));
+  });
+
+  it('reports a missing launcher when the only claude-mem on PATH is itself', () => {
+    const result = hookLauncherCheck(host(`${npxBin}:/usr/bin:/bin`), runningCli);
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain('not on PATH');
   });
 });

@@ -5,8 +5,8 @@
  * friendly.
  */
 
-import { existsSync, readFileSync } from 'fs';
-import { join } from 'path';
+import { existsSync, readFileSync, realpathSync } from 'fs';
+import { delimiter, join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
@@ -261,6 +261,24 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
       };
 }
 
+/** PATH minus the directories whose `claude-mem` resolves to the running CLI itself. */
+function pathWithoutRunningCli(pathValue: string, platform: NodeJS.Platform, runningCliPath: string | undefined): string {
+  const runningCli = runningCliPath ? realPathOrNull(runningCliPath) : null;
+  if (!runningCli || platform === 'win32') return pathValue;
+  return pathValue
+    .split(delimiter)
+    .filter(directory => realPathOrNull(join(directory.trim(), 'claude-mem')) !== runningCli)
+    .join(delimiter);
+}
+
+function realPathOrNull(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+
 /**
  * The "Hook launcher" row: where `claude-mem` resolves on PATH, the protocol it
  * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
@@ -269,11 +287,18 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
  * missing launcher, or a `claude-mem` on PATH that is not the launcher, fails
  * doctor. An older protocol only warns, because the SessionStart self-heal
  * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
+ *
+ * `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, where `claude-mem` is this CLI.
+ * Hooks run outside npx, so PATH directories whose `claude-mem` is this CLI (`runningCliPath`) are skipped.
  */
-export function hookLauncherCheck(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): CheckResult {
+export function hookLauncherCheck(
+  host: LauncherHostEnvironment = currentLauncherHostEnvironment(),
+  runningCliPath: string | undefined = process.argv[1],
+): CheckResult {
   const name = 'Hook launcher';
   const reinstallHint = 'run `npx claude-mem install`';
-  const launcherOnPath = findExecutableOnPath('claude-mem', host.environmentVariables.PATH ?? '', host.platform);
+  const searchPath = pathWithoutRunningCli(host.environmentVariables.PATH ?? '', host.platform, runningCliPath);
+  const launcherOnPath = findExecutableOnPath('claude-mem', searchPath, host.platform);
   if (!launcherOnPath) {
     const placedBinaryPath = resolveLauncherBinaryPath(host);
     return {
