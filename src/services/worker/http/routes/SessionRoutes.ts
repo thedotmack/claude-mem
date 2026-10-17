@@ -384,7 +384,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // provider immediately instead of leaving it stuck. A generator that HAS
     // acquired its slot (mid-response) is not aborted here — it switches at
     // its next message boundary (see below).
-    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+    const switchNeeded = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    if (switchNeeded && isSessionParkedForSlot(sessionDbId)) {
       // Defensive re-guard: `session` is already narrowed non-null by the
       // early return above, but this branch spans a 3-operand `&&` plus a
       // trailing function call before any property access — re-asserting
@@ -413,14 +414,9 @@ export class SessionRoutes extends BaseRouteHandler {
     // keep the gateway re-probe it claimed on the way in.
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
-    // A running generator in an active session never idles out, so waiting
-    // for it to finish kept every later observation on the old provider — a
-    // short primary outage left the session on the fallback until it ended
-    // (#4846). It ends at its next message boundary instead, after the
-    // current request, and the runner resumes on the selected provider. The
-    // buffered queue carries over; the next generator opens a new generation
-    // seeded from this session's memory (#3800, #3479).
-    const switchNeeded = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    // A running generator in an active session never idles out, so it ends at
+    // its next message boundary and the runner resumes on the selected
+    // provider (#4846).
     if (switchNeeded && !session.providerSwitchPending) {
       logger.info('SESSION', 'Provider changed, will switch at the next message boundary', {
         sessionId: sessionDbId,
