@@ -1,23 +1,35 @@
 import { createHash } from 'crypto';
 import type { Database } from 'bun:sqlite';
-import { resolveTelemetryConsent, loadTelemetryConfig } from './consent.js';
+import { hasTelemetryConsent } from './telemetry.js';
 import { telemetryBuffer } from './buffer.js';
 import { isSubagentEvent } from '../../shared/subagent-predicate.js';
 
 import { workStatePlatform, workStateTool, workStateOutcome, type WorkStateAttribution, type InstructionState, type WorkStateOutcome } from '../../shared/work-state-telemetry.js';
 
-const initialized = new WeakSet<Database>();
+const initialized = new WeakMap<Database, number>();
+export const WORK_STATE_REPLAY_WINDOW_MS = 30 * 24 * 60 * 60 * 1000;
 const hash = (...parts: string[]) => createHash('sha256').update(parts.join('\0')).digest('hex');
 
-function prepare(db: Database): boolean {
-  // Do not even create local telemetry state when the owner opts out.
-  if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) return false;
+function ensureStorage(db: Database): void {
   if (!initialized.has(db)) {
     // Local hashed identities only. This table is deliberately not cloud synced.
     // Keeping receipts across restarts prevents transcript replays counting twice.
-    db.run('CREATE TABLE IF NOT EXISTS work_state_telemetry_receipts (key TEXT PRIMARY KEY, state TEXT)');
-    initialized.add(db);
+    db.run('CREATE TABLE IF NOT EXISTS work_state_telemetry_receipts (key TEXT PRIMARY KEY, state TEXT, created_at_epoch INTEGER NOT NULL DEFAULT 0)');
+    const columns = db.query('PRAGMA table_info(work_state_telemetry_receipts)').all() as Array<{ name: string }>;
+    if (!columns.some(column => column.name === 'created_at_epoch')) db.run('ALTER TABLE work_state_telemetry_receipts ADD COLUMN created_at_epoch INTEGER NOT NULL DEFAULT 0');
+    db.run('CREATE INDEX IF NOT EXISTS idx_work_state_telemetry_age ON work_state_telemetry_receipts(created_at_epoch)');
+    initialized.set(db, 0);
   }
+  const now = Date.now();
+  if (now - initialized.get(db)! >= 60 * 60 * 1000) {
+    db.query('DELETE FROM work_state_telemetry_receipts WHERE created_at_epoch < ?').run(now - WORK_STATE_REPLAY_WINDOW_MS);
+    initialized.set(db, now);
+  }
+}
+
+function prepare(db: Database): boolean {
+  if (!hasTelemetryConsent()) return false;
+  ensureStorage(db);
   return true;
 }
 
@@ -49,7 +61,37 @@ function properties(db: Database, a: WorkStateAttribution): Record<string, unkno
 }
 
 function claim(db: Database, key: string): boolean {
-  return db.query('INSERT OR IGNORE INTO work_state_telemetry_receipts (key) VALUES (?)').run(key).changes > 0;
+  return db.query('INSERT OR IGNORE INTO work_state_telemetry_receipts (key, created_at_epoch) VALUES (?, ?)').run(key, Date.now()).changes > 0;
+}
+
+function inReplayWindow(at: number | undefined): boolean {
+  return typeof at === 'number' && Number.isFinite(at) && at >= Date.now() - WORK_STATE_REPLAY_WINDOW_MS;
+}
+
+/** Content-free latest turn boundary; a missing or older boundary is not public evidence. */
+export function recordWorkStatePrivacy(db: Database, a: WorkStateAttribution, isPrivate: boolean): void {
+  safely(() => {
+    // Privacy boundaries remain local even while analytics is opted out, so
+    // opting back in during a private turn cannot revive an old public state.
+    ensureStorage(db);
+    const at = Number.isFinite(a.enqueuedAtEpochMs) ? a.enqueuedAtEpochMs! : Date.now();
+    const row = db.query('SELECT state FROM work_state_telemetry_receipts WHERE key = ?').get(`privacy:${scope(a)}`) as { state: string } | null;
+    if (row?.state) {
+      try { if (JSON.parse(row.state).at > at) return; } catch {}
+    }
+    db.query('INSERT OR REPLACE INTO work_state_telemetry_receipts (key, state, created_at_epoch) VALUES (?, ?, ?)')
+      .run(`privacy:${scope(a)}`, JSON.stringify({ private: isPrivate, at }), Date.now());
+  });
+}
+
+export function isPublicWorkStateTurn(db: Database, a: WorkStateAttribution): boolean {
+  try {
+    if (!prepare(db) || !inReplayWindow(a.enqueuedAtEpochMs)) return false;
+    const row = db.query('SELECT state FROM work_state_telemetry_receipts WHERE key = ?').get(`privacy:${scope(a)}`) as { state: string } | null;
+    if (!row?.state) return false;
+    const boundary = JSON.parse(row.state);
+    return boundary.private === false && Number.isFinite(boundary.at) && boundary.at <= a.enqueuedAtEpochMs!;
+  } catch { return false; }
 }
 
 /** Best effort like the existing telemetry transport; never fail application work. */
@@ -57,11 +99,11 @@ function safely(run: () => void): void { try { run(); } catch {} }
 
 export function recordWorkStateInstruction(db: Database, a: WorkStateAttribution, state: InstructionState, eventId: string): void {
   safely(() => {
-    if (!prepare(db) || !claim(db, `instruction-event:${hash(eventId)}`)) return;
     const at = a.enqueuedAtEpochMs ?? Date.now();
+    if (!prepare(db) || !inReplayWindow(at) || !claim(db, `instruction-event:${hash(eventId)}`)) return;
     const latest = lastInstruction(db, a);
     if (!latest || at >= latest.at) {
-      db.query('INSERT OR REPLACE INTO work_state_telemetry_receipts (key, state) VALUES (?, ?)').run(`instruction:${scope(a)}`, JSON.stringify({ state, at }));
+      db.query('INSERT OR REPLACE INTO work_state_telemetry_receipts (key, state, created_at_epoch) VALUES (?, ?, ?)').run(`instruction:${scope(a)}`, JSON.stringify({ state, at }), Date.now());
     }
     telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), instruction_state: state, [`instruction_${state}_count`]: 1 });
   });
@@ -69,6 +111,7 @@ export function recordWorkStateInstruction(db: Database, a: WorkStateAttribution
 
 export function recordWorkStatePrompt(db: Database, a: WorkStateAttribution, promptId: number): void {
   safely(() => {
+    if (a.enqueuedAtEpochMs !== undefined && !inReplayWindow(a.enqueuedAtEpochMs)) return;
     if (!prepare(db) || !claim(db, `prompt:${hash(a.contentSessionId, String(promptId), workStatePlatform(a.platformSource))}`)) return;
     const first = claim(db, `session:${scope(a)}`);
     telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), captured_prompt_count: 1, captured_session_count: first ? 1 : 0 });
@@ -77,7 +120,7 @@ export function recordWorkStatePrompt(db: Database, a: WorkStateAttribution, pro
 
 export function recordWorkStateTool(db: Database, a: WorkStateAttribution, toolUseId: string | undefined, name: string, response: unknown): void {
   safely(() => {
-    if (!prepare(db)) return;
+    if (!prepare(db) || !inReplayWindow(a.enqueuedAtEpochMs)) return;
     // Unknown identity has its own diagnostic count, never inflates usage.
     if (!toolUseId) {
       telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), unidentified_tool_event_count: 1 });
@@ -96,9 +139,9 @@ export function recordWorkStateTool(db: Database, a: WorkStateAttribution, toolU
 }
 
 /** MCP execution receipts also cover failures before a worker route is reached. */
-export function recordWorkStateMcp(db: Database, tool: 'read' | 'write', outcome: WorkStateOutcome, eventId: string): void {
+export function recordWorkStateMcp(db: Database, tool: 'read' | 'write', outcome: WorkStateOutcome, eventId: string, at: number = Date.now()): void {
   safely(() => {
-    if (!prepare(db) || !claim(db, `mcp:${hash(eventId)}`)) return;
+    if (!prepare(db) || !inReplayWindow(at) || !claim(db, `mcp:${hash(eventId)}`)) return;
     telemetryBuffer.record('work_state_usage', null, {
       platform: 'unknown', agent_role: 'unknown', instruction_state: 'unknown',
       [`mcp_${tool}_count`]: 1, [`mcp_${tool}_${outcome}_count`]: 1,

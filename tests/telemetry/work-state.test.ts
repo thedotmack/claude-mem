@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { postHogCaptureCalls } from '../preload';
 import { __resetTelemetryForTests } from '../../src/services/telemetry/telemetry';
@@ -9,11 +9,14 @@ import { scrubProperties } from '../../src/services/telemetry/scrub';
 import { mkdtempSync, rmSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import * as consent from '../../src/services/telemetry/consent';
+import { WORK_STATE_REPLAY_WINDOW_MS, recordWorkStatePrivacy, isPublicWorkStateTurn } from '../../src/services/telemetry/work-state';
 
 let db: Database;
 let oldConsent: string | undefined;
 let oldDnt: string | undefined;
-const attribution = { contentSessionId: 'private-session', platformSource: 'codex', agentId: 'private-agent', agentType: 'private-type' };
+const epoch = Date.now();
+const attribution = { enqueuedAtEpochMs: epoch, contentSessionId: 'private-session', platformSource: 'codex', agentId: 'private-agent', agentType: 'private-type' };
 const saved = { content: [{ type: 'text', text: 'Saved to "private title" in private/project. Still open in it: private content' }] };
 
 beforeEach(() => {
@@ -43,8 +46,8 @@ function events() {
 describe('work-state usage telemetry', () => {
   it('joins only the exact local agent scope and keeps pre-exposure activity unknown', () => {
     recordWorkStateTool(db, attribution, 'before', 'TodoWrite', {});
-    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: 100 }, 'returned', 'context-1');
-    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: 200 }, 'write-1', 'mcp__claude-mem__work_state_write', saved);
+    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: epoch + 100 }, 'returned', 'context-1');
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: epoch + 200 }, 'write-1', 'mcp__claude-mem__work_state_write', saved);
     recordWorkStateTool(db, { ...attribution, agentId: 'another-agent' }, 'other', 'TodoWrite', {});
     const rows = events();
     const known = rows.find(row => row.instruction_state === 'returned')!;
@@ -78,13 +81,13 @@ describe('work-state usage telemetry', () => {
   });
 
   it('never assigns a later handoff to delayed tools or regresses state on an old context replay', () => {
-    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: 200 }, 'returned', 'later-handoff');
-    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: 100 }, 'older-tool', 'TodoWrite', {});
-    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: 50 }, 'disabled', 'older-handoff');
-    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: 300 }, 'newer-tool', 'TodoWrite', {});
-    recordWorkStateTool(db, attribution, 'untimestamped-tool', 'TodoWrite', {});
+    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: epoch + 200 }, 'returned', 'later-handoff');
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: epoch + 100 }, 'older-tool', 'TodoWrite', {});
+    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: epoch + 50 }, 'disabled', 'older-handoff');
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: epoch + 300 }, 'newer-tool', 'TodoWrite', {});
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: undefined }, 'untimestamped-tool', 'TodoWrite', {});
     const rows = events();
-    expect(rows.find(r => r.instruction_state === 'unknown')?.native_todo_count).toBe(2);
+    expect(rows.find(r => r.instruction_state === 'unknown')?.native_todo_count).toBe(1);
     expect(rows.find(r => r.instruction_state === 'returned')?.native_todo_count).toBe(1);
     expect(rows.find(r => r.instruction_state === 'disabled')?.native_todo_count).toBeUndefined();
   });
@@ -108,6 +111,48 @@ describe('work-state usage telemetry', () => {
     const rows = events();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ platform: 'unknown', captured_write_count: 1 });
+  });
+
+  it('prunes old receipts but never recounts their old transcript events', () => {
+    const base = Date.now();
+    const clock = spyOn(Date, 'now').mockReturnValue(base);
+    try {
+      recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: base }, 'expired', 'work_state_write', saved);
+      events();
+      clock.mockReturnValue(base + WORK_STATE_REPLAY_WINDOW_MS + 1);
+      recordWorkStateMcp(db, 'read', 'ok', 'fresh');
+      expect(db.query("SELECT COUNT(*) AS n FROM work_state_telemetry_receipts WHERE key LIKE 'tool:%'").get()).toEqual({ n: 0 });
+      recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: base }, 'expired', 'work_state_write', saved);
+      const rows = events();
+      expect(rows.reduce((n, r) => n + Number(r.captured_write_count ?? 0), 0)).toBe(1);
+      expect(rows.reduce((n, r) => n + Number(r.mcp_read_count ?? 0), 0)).toBe(1);
+    } finally { clock.mockRestore(); }
+  });
+
+  it('shares the worker consent cache and observes opt-out after its existing TTL', () => {
+    const base = Date.now();
+    const clock = spyOn(Date, 'now').mockReturnValue(base);
+    const config = spyOn(consent, 'loadTelemetryConfig').mockReturnValue({ enabled: true, installId: 'test-install' });
+    try {
+      for (let i = 0; i < 3; i++) recordWorkStateMcp(db, 'read', 'ok', `cached-${i}`);
+      expect(config).toHaveBeenCalledTimes(1);
+      events();
+      process.env.DO_NOT_TRACK = '1';
+      clock.mockReturnValue(base + 30_001);
+      recordWorkStateMcp(db, 'read', 'ok', 'after-opt-out');
+      expect(events().reduce((n, r) => n + Number(r.mcp_read_count ?? 0), 0)).toBe(3);
+    } finally { config.mockRestore(); clock.mockRestore(); }
+  });
+
+  it('retains only a local privacy bit during opt-out so re-enabling cannot revive a public turn', () => {
+    recordWorkStatePrivacy(db, attribution, false);
+    process.env.DO_NOT_TRACK = '1';
+    __resetTelemetryForTests();
+    recordWorkStatePrivacy(db, attribution, true);
+    delete process.env.DO_NOT_TRACK;
+    __resetTelemetryForTests();
+    expect(isPublicWorkStateTurn(db, { ...attribution, enqueuedAtEpochMs: Date.now() })).toBe(false);
+    expect(events()).toHaveLength(0);
   });
 
   it('preserves opt-out before creating local state or emitting events', () => {

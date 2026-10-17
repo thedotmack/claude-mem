@@ -9,6 +9,7 @@ import { getEventHandler } from '../../src/cli/handlers/index';
 import { hookCommand } from '../../src/cli/hook-command';
 import { installFakeStdin, restoreStdin } from '../fake-stdin';
 import { HookStdoutError } from '../../src/shared/hook-io';
+import { sessionInitHandler, setSessionInitDependenciesForTesting } from '../../src/cli/handlers/session-init';
 
 let temporary: ReturnType<typeof useTempHookSpoolDataDir>;
 let oldConsent: string | undefined;
@@ -34,6 +35,26 @@ afterEach(async () => {
 });
 
 describe('work-state hook receipts', () => {
+  it('forwards existing agent metadata with the prompt capture', async () => {
+    let request: any;
+    setSessionInitDependenciesForTesting({
+      shouldTrackProject: () => true,
+      loadFromFileOnce: () => ({ CLAUDE_MEM_SEMANTIC_INJECT: 'false' }),
+      resolveRuntimeContext: () => ({ runtime: 'worker' }),
+      isWorkerFallback: () => false,
+      executeWithWorkerFallback: async (_path: string, _method: string, body: unknown) => {
+        request = body;
+        return { sessionDbId: 1, promptNumber: 1 };
+      },
+    });
+    try {
+      await sessionInitHandler.execute({ ...input, prompt: 'Read recorded progress', agentId: 'agent-1', agentType: 'Explore' });
+      expect(request).toMatchObject({ agentId: 'agent-1', agentType: 'Explore', telemetryPlatformSource: 'codex' });
+      expect(request.telemetryPromptEpochMs).toBeGreaterThan(0);
+      expect(request.telemetryPromptEpochMs).toBeLessThanOrEqual(Date.now());
+    } finally { setSessionInitDependenciesForTesting(); }
+  });
+
   for (const platform of ['claude-code', 'codex', 'cursor']) {
     it(`measures final ${platform} adapter output after stdout flush`, async () => {
       const handler = spyOn(getEventHandler('context'), 'execute').mockResolvedValue({

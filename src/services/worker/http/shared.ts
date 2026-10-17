@@ -16,7 +16,7 @@ import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
 import { workStateTool } from '../../../shared/work-state-telemetry.js';
-import { recordWorkStateTool } from '../../telemetry/work-state.js';
+import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -165,7 +165,9 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   // Native todo tools are normally excluded from memory generation. Count
   // their bounded identity before that filter, but after project, agent and
   // prompt privacy checks. Do not store their contents or buy an observation.
-  if (workStateTool(payload.toolName) && !shouldSkipAgentObservation(payload.agentId, payload.agentType, settings).skip) {
+  const trackedTool = workStateTool(payload.toolName);
+  const telemetryAttribution = { ...payload, platformSource: payload.telemetryPlatformSource ?? payload.platformSource };
+  if (trackedTool && !shouldSkipAgentObservation(payload.agentId, payload.agentType, settings).skip) {
     try {
       const telemetryStore = dbManager.getSessionStore();
       const knownSession = telemetryStore.findSessionDbIdByContentSessionId(payload.contentSessionId, platformSource);
@@ -173,8 +175,8 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
       // Missing prompt capture is not evidence that this turn is public.
       const publicPrompt = knownSession === null ? null
         : telemetryStore.getUserPrompt(payload.contentSessionId, promptNumber, knownSession);
-      if (publicPrompt?.trim()) {
-        recordWorkStateTool(telemetryStore.db, { ...payload, platformSource: payload.telemetryPlatformSource ?? payload.platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
+      if (publicPrompt?.trim() && isPublicWorkStateTurn(telemetryStore.db, telemetryAttribution)) {
+        recordWorkStateTool(telemetryStore.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
       }
     } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
   }
@@ -255,8 +257,8 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     return { ok: true, status: 'skipped', reason: 'private' };
   }
 
-  if (privacy.prompt.trim()) {
-    recordWorkStateTool(store.db, { ...payload, platformSource: payload.telemetryPlatformSource ?? payload.platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
+  if (!trackedTool && privacy.prompt.trim() && isPublicWorkStateTurn(store.db, telemetryAttribution)) {
+    recordWorkStateTool(store.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
   }
 
   const cleanedToolInput = payload.toolInput !== undefined

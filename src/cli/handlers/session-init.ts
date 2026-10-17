@@ -137,6 +137,8 @@ export const isQwenCodeHookEvent = (
 
 const sessionInit = {
   async run(input: NormalizedHookInput, requireRecordedPrompt: boolean): Promise<HookResult> {
+    // The transcript anchor has no original event time. A real hook does.
+    const telemetryPromptEpochMs = requireRecordedPrompt ? undefined : Date.now();
     const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
     const cwd = input.cwd ?? process.cwd();  
 
@@ -278,6 +280,9 @@ const sessionInit = {
         prompt,
         platformSource,
         telemetryPlatformSource: workStatePlatform(input.platform),
+        telemetryPromptEpochMs,
+        agentId: input.agentId,
+        agentType: input.agentType,
         // Where `project` was resolved from and how, so the worker can record
         // the session's checkout even if it never reports an observation.
         cwd,

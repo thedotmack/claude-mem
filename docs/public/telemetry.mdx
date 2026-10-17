@@ -172,8 +172,8 @@ is `main`, `subagent`, or `unknown` (using the same subagent predicate as captur
 |---|---|
 | `instruction_returned_count` | Hooks returning the complete work-state instruction block, including cached blocks. This is a handoff to the host, **not proof the host accepted it or the model followed it**. |
 | `instruction_disabled_count`, `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Known configuration exclusions, successful returns without the block, or a failed/unknown context read. |
-| `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts and their first captured session/agent scope. Sessions count once, in the window of their first prompt. |
-| `captured_tool_count`, `unidentified_tool_event_count` | Distinct captured tool calls with stable IDs; calls without a stable ID count only in the second diagnostic counter. Memory/project/privacy/agent exclusions still apply. |
+| `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts and their first captured session/agent scope within the 30-day replay window. |
+| `captured_tool_count`, `unidentified_tool_event_count` | Distinct captured tool calls with stable IDs; calls without a stable ID count only in the second diagnostic counter. Both require an original event timestamp and a preceding known public-turn boundary. Memory/project/privacy/agent exclusions still apply. |
 | `native_todo_count` | Captured `TodoWrite`, `SetTodoList`, or `update_plan` calls, including those excluded from memory generation. With `instruction_state=returned`, this is a useful competing-todo diagnostic, **not a verdict of noncompliance**. |
 | `captured_read_count`, `captured_write_count` | Distinct work-state tool receipts seen by post-tool capture, attributed to the captured host and agent role. |
 | `mcp_read_count`, `mcp_write_count` | Executions in this plugin's MCP server, including failures before the worker can answer. Agent and host attribution are `unknown`. Receipts remain in the local spool until a worker can collect them. |
@@ -196,9 +196,15 @@ zero adherence; an ordinary question may correctly require no write. No
 compliance percentage or task classification is computed.
 
 Local hashed receipt keys suppress duplicate prompts, tool replay, and repeated
-spool delivery across worker restarts. They are not sent to PostHog. Telemetry
-remains best effort: opt-out disables collection, and a crash before a rollup
-flush can lose counts. This feature does not backfill past releases.
+spool delivery across worker restarts for 30 days. Cleanup on activity, at most
+once an hour, removes older
+receipts; older events are dropped rather than counted again. A local,
+content-free public/private turn bit is maintained even while analytics is off,
+so opting back in during private work cannot reuse a previous public prompt.
+Neither the keys nor this bit are sent to PostHog. The worker uses the existing
+30-second consent cache. Telemetry remains best effort: opt-out disables
+analytics, and a crash before a rollup flush can lose counts. This feature does
+not backfill past releases.
 
 ## Error tracking
 

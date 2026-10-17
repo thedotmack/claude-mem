@@ -21,7 +21,7 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       const { payload } = entry;
       const db = requireIngestContext().dbManager.getSessionStore().db;
       if (payload.kind === 'instruction') recordWorkStateInstruction(db, { ...payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, payload.state!, payload.eventId);
-      else recordWorkStateMcp(db, payload.tool!, payload.outcome!, payload.eventId);
+      else recordWorkStateMcp(db, payload.tool!, payload.outcome!, payload.eventId, entry.enqueuedAtEpochMs);
       markHandedOff();
       return true;
     }
