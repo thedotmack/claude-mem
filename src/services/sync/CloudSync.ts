@@ -543,6 +543,11 @@ export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
   pending: { observations: number; summaries: number; prompts: number; workState: number; mutations: number; tombstones: number };
+  /**
+   * Rows of a kind the hub does not list in `content_kinds` (hubAcceptsKind).
+   * They wait locally and sync once the hub lists the kind, so they are not in `pending`.
+   */
+  waitingForHub: { workState: number };
   quarantine: { count: number; latestReason: string | null };
   /** Pulled hub ops this device set aside because they can never apply here. */
   pullQuarantine: { count: number; latestReason: string | null };
@@ -816,6 +821,8 @@ export class CloudSync {
   }
 
   status(): CloudSyncStatus {
+    const workState = this.countPending('work_state_entries');
+    const workStateWaits = this.hubStatus.contentKinds !== null && !this.hubAcceptsKind('work_state');
     return {
       configured: this.isConfigured(),
       deviceId: this.deviceId,
@@ -823,10 +830,11 @@ export class CloudSync {
         observations: this.countPending('observations'),
         summaries: this.countPending('session_summaries'),
         prompts: this.countPending('user_prompts'),
-        workState: this.countPending('work_state_entries'),
+        workState: workStateWaits ? 0 : workState,
         mutations: this.countPendingMutations(),
         tombstones: this.countPendingTombstones(),
       },
+      waitingForHub: { workState: workStateWaits ? workState : 0 },
       quarantine: this.quarantineStatus(),
       pullQuarantine: this.pullQuarantineStatus(),
       lastFlushAt: this.lastFlushAt,

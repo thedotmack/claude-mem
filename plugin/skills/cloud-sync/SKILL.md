@@ -33,6 +33,9 @@ curl -s "http://127.0.0.1:${PORT}/api/sync/status"
   authenticated `GET /v1/sync/status` against SyncHub. Report `deviceId`,
   pending counts, `lastFlushAt`, `lastError`, and the Hub head/checkpoint;
   stop unless the user asked to replace the connection.
+- A non-zero `waitingForHub.workState` → say that work-state lists stay on
+  this device until the sync hub supports them. Do not report it as stuck
+  sync or as an error.
 - `configured: true` and `hub.reachable: false` → report `hub.error` and say
   the SyncHub connection is not verified. A zero pending count or
   `lastError: null` is not success because an empty queue performs no push.
