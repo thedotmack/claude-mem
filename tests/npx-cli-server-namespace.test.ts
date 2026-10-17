@@ -40,7 +40,7 @@ describe('npx CLI server namespace', () => {
 
 
   it('advertises Codex, grok-bot, and host observer installs in help text', () => {
-    expect(indexSource).toContain('claude|codex|gemini|openrouter|host');
+    expect(indexSource).toContain('claude|codex|gemini|openrouter|aimlapi|host');
     expect(indexSource).toContain('grok-bot');
   });
 

@@ -15,6 +15,7 @@ export interface ProviderLabels {
   cmemHint: string;
   claude: string;
   claudeHint: string;
+  aimlapi: string;
 }
 
 /**
@@ -34,6 +35,7 @@ export function buildProviderLabels(): ProviderLabels {
     cmemHint: '',
     claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
     claudeHint: '',
+    aimlapi: 'aimlapi.com API key (bring your own key, billed by aimlapi.com, no cloud sync)',
   };
 }
 

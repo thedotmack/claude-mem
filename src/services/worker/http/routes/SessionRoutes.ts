@@ -12,6 +12,7 @@ import { ClaudeProvider } from '../../ClaudeProvider.js';
 import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
+import { AimlapiProvider } from '../../AimlapiProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
@@ -89,6 +90,8 @@ export class SessionRoutes extends BaseRouteHandler {
     private codexAgent?: CodexProvider,
     // After codexAgent, so every existing positional caller keeps its argument order.
     private openAICompatAgent?: OpenAICompatProvider,
+    // Last for the same reason.
+    private aimlapiAgent?: AimlapiProvider,
   ) {
     super();
     this.sessionManager.setTelegramWrapupFormatter?.(this.formatTelegramWrapup);
@@ -161,6 +164,9 @@ export class SessionRoutes extends BaseRouteHandler {
         case 'openai-compatible':
           if (!this.openAICompatAgent) throw new Error('OpenAI-compatible provider is not available');
           return await this.openAICompatAgent.formatTelegramWrapup(input, activeModelId);
+        case 'aimlapi':
+          if (!this.aimlapiAgent) throw new Error('aimlapi.com provider is not available');
+          return await this.aimlapiAgent.formatTelegramWrapup(input, activeModelId);
         default:
           return await this.sdkAgent.formatTelegramWrapup(input, activeModelId);
       }
@@ -549,6 +555,7 @@ export class SessionRoutes extends BaseRouteHandler {
       openRouterAgent: this.openRouterAgent,
       codexAgent: this.codexAgent,
       openAICompatAgent: this.openAICompatAgent,
+      aimlapiAgent: this.aimlapiAgent,
       workerService: this.workerService,
       completionHandler: this.completionHandler,
       ensureGeneratorRunning: (id, trigger) => this.ensureGeneratorRunning(id, trigger),

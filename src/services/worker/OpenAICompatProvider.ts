@@ -28,7 +28,7 @@ import { resolveOpenRouterChatCompletionsUrl } from '../../shared/openrouter-bas
 import { keysForEndpoint } from '../../shared/cmem-gateway.js';
 import { describeNetworkFailure, isConnectionRefused, networkFailureSuffix } from '../../shared/network-failure.js';
 import { resolveOpenAICompatPreset, type OpenAICompatPreset } from '../../shared/openai-compat-presets.js';
-import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool } from '../../shared/api-key-pool.js';
+import { buildKeyPool, resolvePoolKeys, retryPolicyForPool, withKeyPool, type KeyPoolId } from '../../shared/api-key-pool.js';
 import { logger } from '../../utils/logger.js';
 import type { ActiveSession, ConversationMessage } from '../worker-types.js';
 import { DatabaseManager } from './DatabaseManager.js';
@@ -95,6 +95,17 @@ export interface OpenAICompatConfig {
   requiresApiKey: boolean;
   /** Set for a Telegram wrap-up request (OpenAICompatibleProvider.formatTelegramWrapup). */
   plainText?: boolean;
+  /**
+   * Headers a dedicated provider built on this one adds to every request
+   * (aimlapi.com's attribution). Never set for the generic provider, whose
+   * requests stay plain.
+   */
+  extraHeaders?: Record<string, string>;
+  /**
+   * Prefix of the settings keys this endpoint is configured by, for the remedy
+   * named in setup and error messages. Defaults to CLAUDE_MEM_OPENAI_COMPAT.
+   */
+  settingsPrefix?: string;
 }
 
 /**
@@ -215,6 +226,8 @@ export function classifyOpenAICompatError(input: {
   endpointLabel?: string;
   /** The URL a request with no response was sent to, named in the network-error message. */
   requestUrl?: string;
+  /** Settings-key prefix named in the remedy (OpenAICompatConfig.settingsPrefix). */
+  settingsPrefix?: string;
 }): ClassifiedProviderError {
   const body = input.bodyText ?? '';
   const lower = body.toLowerCase();
@@ -222,6 +235,7 @@ export function classifyOpenAICompatError(input: {
   const status = effectiveStatus(input.status, envelope);
   const retryAfterMs = input.headers ? parseRetryAfterMs(input.headers.get('retry-after')) : undefined;
   const label = input.endpointLabel ?? 'OpenAI-compatible endpoint';
+  const settingsPrefix = input.settingsPrefix ?? 'CLAUDE_MEM_OPENAI_COMPAT';
   const excerpt = typeof envelope?.message === 'string' && envelope.message
     ? envelope.message.substring(0, 300)
     : body.substring(0, 300);
@@ -237,7 +251,7 @@ export function classifyOpenAICompatError(input: {
     return new ClassifiedProviderError(describe('auth error'), {
       kind: 'auth_invalid',
       cause: input.cause,
-      action: 'Check the API key for this endpoint (CLAUDE_MEM_OPENAI_COMPAT_API_KEY).',
+      action: `Check the API key for this endpoint (${settingsPrefix}_API_KEY).`,
     });
   }
 
@@ -298,7 +312,7 @@ export function classifyOpenAICompatError(input: {
     return new ClassifiedProviderError(describe('not found'), {
       kind: 'unrecoverable',
       cause: input.cause,
-      action: 'Verify CLAUDE_MEM_OPENAI_COMPAT_BASE_URL and _MODEL — a 404 here usually means the base URL is wrong or the endpoint does not serve that model.',
+      action: `Verify ${settingsPrefix}_BASE_URL and _MODEL — a 404 here usually means the base URL is wrong or the endpoint does not serve that model.`,
     });
   }
 
@@ -423,8 +437,8 @@ export function resolveOpenAICompatConfig(
 }
 
 export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatConfig> {
-  protected readonly providerName = 'OpenAI-compatible';
-  protected readonly syntheticIdPrefix = 'openai-compat';
+  protected readonly providerName: string = 'OpenAI-compatible';
+  protected readonly syntheticIdPrefix: string = 'openai-compat';
   // Match OpenRouter: forward the empty batch so the parser/recovery path sees
   // it, rather than dropping it the way Gemini does.
   protected readonly forwardEmptyMessageResponse = true;
@@ -492,10 +506,13 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       throw this.missingApiKeyError();
     }
     return withKeyPool(
-      { poolId: 'openai-compatible', keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
+      { poolId: this.keyPoolId, keys: resolvePoolKeys(config), label: config.preset.label, rateLimitUntilNextKey },
       ({ key, poolSize }) => this.queryChatCompletions(history, key, poolSize, config, signal, perAttemptTimeoutMs, paidSendBudget, label?.sessionId),
     );
   }
+
+  /** Key-pool bucket; a provider built on this one passes its own id. */
+  protected readonly keyPoolId: KeyPoolId = 'openai-compatible';
 
   /**
    * Overrides the streamed request's idle window when set — a test hook, the
@@ -533,6 +550,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
         // Per request, from the observed session: one provider instance serves
         // every session, so this can't be a field on it.
         ...(sessionHeader && sessionId ? { [sessionHeader]: sessionId } : {}),
+        ...config.extraHeaders,
       },
       body: {
         model: config.model,
@@ -544,7 +562,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
       signal: attemptSignal,
       liveness,
       label,
-      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl }),
+      classify: (input) => classifyOpenAICompatError({ ...input, endpointLabel: label, requestUrl: config.apiUrl, settingsPrefix: config.settingsPrefix }),
     });
   }
 
@@ -589,6 +607,7 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
           headers: exchange.headers,
           cause: new Error(`${label} API error: ${responseData.error.code} - ${responseData.error.message}`),
           endpointLabel: label,
+          settingsPrefix: config.settingsPrefix,
         });
       }
 

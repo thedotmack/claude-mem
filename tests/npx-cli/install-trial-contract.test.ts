@@ -293,13 +293,14 @@ describe('installer trial-ready contract', () => {
     expect(parseInstallerOAuthStartBody({ ...valid, user_code: 'INVALID1' })).toBeNull();
   });
 
-  it('uses the exact two-option provider copy', () => {
+  it('uses the exact provider copy', () => {
     expect(buildProviderLabels()).toEqual({
       cmem: 'CMEM Pro (30 Day Free Trial: Tokens for Observations + Real-Time Cloud Sync '
         + 'for Claude.ai, ChatGPT.com, anything that accepts an MCP Connector)',
       cmemHint: '',
       claude: 'Use your Anthropic Max Plan (no cloud sync, uses tokens for observations)',
       claudeHint: '',
+      aimlapi: 'aimlapi.com API key (bring your own key, billed by aimlapi.com, no cloud sync)',
     });
     expect(PROVIDER_PROMPT_MESSAGE).toBe('Select Provider:\n================');
   });
