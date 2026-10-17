@@ -587,6 +587,65 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     expect(row.detail).toContain('is not the claude-mem hook launcher');
   });
 
+  it('skips the running npx CLI and reports the launcher hooks will exec', () => {
+    const scratchHome = makeScratchHome();
+    const cliScript = path.join(scratchHome, 'npx', 'node_modules', 'claude-mem', 'dist', 'npx-cli', 'index.js');
+    const npxBinDirectory = path.join(scratchHome, 'npx', 'node_modules', '.bin');
+    writeFakeLauncher(cliScript, '13.41.0');
+    mkdirSync(npxBinDirectory, { recursive: true });
+    symlinkSync(cliScript, path.join(npxBinDirectory, 'claude-mem'));
+    const launcherDirectory = path.join(scratchHome, '.local', 'bin');
+    writeFakeLauncher(path.join(launcherDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(
+      posixHost(scratchHome, { PATH: `${npxBinDirectory}:${launcherDirectory}` }),
+      cliScript,
+    );
+
+    expect(row).toMatchObject({ status: 'ok', required: true });
+    expect(row.detail).toContain(path.join(launcherDirectory, 'claude-mem'));
+    expect(row.detail).toContain(`protocol ${LAUNCHER_PROTOCOL}`);
+  });
+
+  it('still fails when a different non-launcher is earlier on PATH than the running CLI', () => {
+    const scratchHome = makeScratchHome();
+    const cliScript = path.join(scratchHome, 'npx', 'cli.js');
+    const npxBinDirectory = path.join(scratchHome, 'npx', 'bin');
+    const otherBinDirectory = path.join(scratchHome, 'other', 'bin');
+    writeFakeLauncher(cliScript, '13.41.0');
+    mkdirSync(npxBinDirectory, { recursive: true });
+    symlinkSync(cliScript, path.join(npxBinDirectory, 'claude-mem'));
+    writeFakeLauncher(path.join(otherBinDirectory, 'claude-mem'), '13.28.0');
+    const launcherDirectory = path.join(scratchHome, '.local', 'bin');
+    writeFakeLauncher(path.join(launcherDirectory, 'claude-mem'), String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(
+      posixHost(scratchHome, { PATH: `${otherBinDirectory}:${npxBinDirectory}:${launcherDirectory}` }),
+      cliScript,
+    );
+
+    expect(row).toMatchObject({ status: 'fail', required: true });
+    expect(row.detail).toContain(path.join(otherBinDirectory, 'claude-mem'));
+    expect(row.detail).toContain('is not the claude-mem hook launcher');
+  });
+
+  it('reports the placed launcher as off PATH when the only PATH hit is the running CLI', () => {
+    const scratchHome = makeScratchHome();
+    const cliScript = path.join(scratchHome, 'npx', 'cli.js');
+    const npxBinDirectory = path.join(scratchHome, 'npx', 'bin');
+    writeFakeLauncher(cliScript, '13.41.0');
+    mkdirSync(npxBinDirectory, { recursive: true });
+    symlinkSync(cliScript, path.join(npxBinDirectory, 'claude-mem'));
+    const host = posixHost(scratchHome, { PATH: npxBinDirectory });
+    const placedBinaryPath = resolveLauncherBinaryPath(host);
+    writeFakeLauncher(placedBinaryPath, String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(host, cliScript);
+
+    expect(row).toMatchObject({ status: 'fail', required: true });
+    expect(row.detail).toContain(`installed at ${placedBinaryPath} but its directory is not on PATH`);
+  });
+
   it('finds the first PATH hit without spawning', () => {
     const scratchHome = makeScratchHome();
     const firstDirectory = path.join(scratchHome, 'first');
