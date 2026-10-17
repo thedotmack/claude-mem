@@ -183,8 +183,11 @@ in `_ok_count`, `_error_count`, `_excluded_count`, `_disabled_count`, or
 `_unknown_count`. Only an explicit saved receipt establishes a successful write.
 The two sources can observe **the same call: never add them as distinct usage**.
 
-`instruction_state` describes the last known hook handoff in that exact local
-session/agent scope. Before one is observed, it is `unknown`. Direct MCP calls,
+`instruction_state` describes the last known hook handoff preceding the event
+in that exact local session/agent scope. Delayed activity older than the latest
+handoff, or activity without an original event timestamp, stays `unknown`;
+later instructions are never applied retroactively.
+Before a handoff is observed, it is `unknown`. Direct MCP calls,
 server-runtime-only capture, missing hooks, and an unavailable worker can leave
 coverage unknown. Missing counters or events are not evidence of zero usage or
 zero adherence; an ordinary question may correctly require no write. No

@@ -25,9 +25,22 @@ function scope(a: WorkStateAttribution): string {
   return hash(workStatePlatform(a.platformSource), a.contentSessionId, a.agentId ?? '');
 }
 
-function properties(db: Database, a: WorkStateAttribution): Record<string, unknown> {
+function lastInstruction(db: Database, a: WorkStateAttribution): { state: InstructionState; at: number } | null {
   const row = db.query('SELECT state FROM work_state_telemetry_receipts WHERE key = ?').get(`instruction:${scope(a)}`) as { state: string } | null;
-  const instructionState = row && ['returned', 'disabled', 'excluded', 'missing', 'unknown'].includes(row.state) ? row.state : 'unknown';
+  if (!row?.state) return null;
+  try {
+    const value = JSON.parse(row.state);
+    return value && ['returned', 'disabled', 'excluded', 'missing', 'unknown'].includes(value.state)
+      && Number.isFinite(value.at) ? value : null;
+  } catch { return null; }
+}
+
+function properties(db: Database, a: WorkStateAttribution): Record<string, unknown> {
+  const instruction = lastInstruction(db, a);
+  // A delayed tool event must never inherit an instruction handed off later.
+  // Keep only the latest handoff: older ambiguous activity stays unknown.
+  const instructionState = instruction && Number.isFinite(a.enqueuedAtEpochMs)
+    && instruction.at <= a.enqueuedAtEpochMs! ? instruction.state : 'unknown';
   return {
     platform: workStatePlatform(a.platformSource),
     agent_role: a.agentRole ?? (isSubagentEvent(a.agentId, a.agentType) ? 'subagent' : a.agentId || a.agentType ? 'main' : 'unknown'),
@@ -45,8 +58,12 @@ function safely(run: () => void): void { try { run(); } catch {} }
 export function recordWorkStateInstruction(db: Database, a: WorkStateAttribution, state: InstructionState, eventId: string): void {
   safely(() => {
     if (!prepare(db) || !claim(db, `instruction-event:${hash(eventId)}`)) return;
-    db.query('INSERT OR REPLACE INTO work_state_telemetry_receipts (key, state) VALUES (?, ?)').run(`instruction:${scope(a)}`, state);
-    telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), [`instruction_${state}_count`]: 1 });
+    const at = a.enqueuedAtEpochMs ?? Date.now();
+    const latest = lastInstruction(db, a);
+    if (!latest || at >= latest.at) {
+      db.query('INSERT OR REPLACE INTO work_state_telemetry_receipts (key, state) VALUES (?, ?)').run(`instruction:${scope(a)}`, JSON.stringify({ state, at }));
+    }
+    telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), instruction_state: state, [`instruction_${state}_count`]: 1 });
   });
 }
 

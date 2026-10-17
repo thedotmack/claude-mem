@@ -43,8 +43,8 @@ function events() {
 describe('work-state usage telemetry', () => {
   it('joins only the exact local agent scope and keeps pre-exposure activity unknown', () => {
     recordWorkStateTool(db, attribution, 'before', 'TodoWrite', {});
-    recordWorkStateInstruction(db, attribution, 'returned', 'context-1');
-    recordWorkStateTool(db, attribution, 'write-1', 'mcp__claude-mem__work_state_write', saved);
+    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: 100 }, 'returned', 'context-1');
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: 200 }, 'write-1', 'mcp__claude-mem__work_state_write', saved);
     recordWorkStateTool(db, { ...attribution, agentId: 'another-agent' }, 'other', 'TodoWrite', {});
     const rows = events();
     const known = rows.find(row => row.instruction_state === 'returned')!;
@@ -75,6 +75,18 @@ describe('work-state usage telemetry', () => {
     expect(row.unidentified_tool_event_count).toBe(1);
     expect(row.captured_write_count).toBeUndefined();
     expect(row.captured_tool_count).toBeUndefined();
+  });
+
+  it('never assigns a later handoff to delayed tools or regresses state on an old context replay', () => {
+    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: 200 }, 'returned', 'later-handoff');
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: 100 }, 'older-tool', 'TodoWrite', {});
+    recordWorkStateInstruction(db, { ...attribution, enqueuedAtEpochMs: 50 }, 'disabled', 'older-handoff');
+    recordWorkStateTool(db, { ...attribution, enqueuedAtEpochMs: 300 }, 'newer-tool', 'TodoWrite', {});
+    recordWorkStateTool(db, attribution, 'untimestamped-tool', 'TodoWrite', {});
+    const rows = events();
+    expect(rows.find(r => r.instruction_state === 'unknown')?.native_todo_count).toBe(2);
+    expect(rows.find(r => r.instruction_state === 'returned')?.native_todo_count).toBe(1);
+    expect(rows.find(r => r.instruction_state === 'disabled')?.native_todo_count).toBeUndefined();
   });
 
   it('retains deduplication when the database is reopened after a worker restart', () => {

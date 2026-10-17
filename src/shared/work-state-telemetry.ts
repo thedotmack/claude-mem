@@ -10,6 +10,8 @@ export interface WorkStateAttribution {
   agentId?: string | null;
   agentType?: string | null;
   agentRole?: AgentRole;
+  /** Original hook time when capture was spooled, not its later drain time. */
+  enqueuedAtEpochMs?: number;
 }
 
 const PLATFORMS = new Set(['claude', 'codex', 'cursor', 'kimi', 'antigravity-cli', 'gemini', 'opencode', 'openclaw', 'pi', 'qwen', 'windsurf']);
