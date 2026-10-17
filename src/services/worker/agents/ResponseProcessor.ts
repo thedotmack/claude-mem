@@ -394,6 +394,29 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   session.consecutiveUnattendedGatewayResumes = 0;
 }
 
+/**
+ * End a stand-in generation at a turn boundary once its primary is selectable
+ * again (#4846). The runner resumes the buffered work on the primary at once.
+ * Returns true when it ended the generation.
+ */
+export function handBackToRecoveredPrimary(session: ActiveSession): boolean {
+  if (!session.primaryReturnPending) return false;
+  session.primaryReturnPending = false;
+  if (session.fallbackFrom == null || session.abortController.signal.aborted) return false;
+  logger.info('SESSION', 'Handing the session back to the recovered primary', {
+    sessionId: session.sessionDbId,
+    standIn: session.currentProvider,
+    primary: session.fallbackFrom,
+  });
+  session.abortReason = PRIMARY_RECOVERED_ABORT_REASON;
+  try {
+    session.abortController.abort();
+  } catch {
+    // best-effort; AbortController.abort() should not throw in normal use.
+  }
+  return true;
+}
+
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -746,24 +769,12 @@ export async function processAgentResponse(
     session.consecutiveSchemaDrifts = 0;
   }
 
-  // The batch is stored and confirmed, so this is a clean point for a stand-in
-  // to hand the session back to its recovered primary (#4846). The runner
-  // resumes buffered work on the primary at once.
-  if (session.primaryReturnPending) {
-    session.primaryReturnPending = false;
-    if (session.fallbackFrom != null && !session.abortController.signal.aborted) {
-      logger.info('SESSION', 'Handing the session back to the recovered primary', {
-        sessionId: session.sessionDbId,
-        standIn: session.currentProvider,
-        primary: session.fallbackFrom,
-      });
-      session.abortReason = PRIMARY_RECOVERED_ABORT_REASON;
-      try {
-        session.abortController.abort();
-      } catch {
-        // best-effort; AbortController.abort() should not throw in normal use.
-      }
-    }
+  // The batch is stored and confirmed. For providers that answer a prompt in
+  // one response, that is the end of the turn and a clean point to hand back
+  // to a recovered primary (#4846). Claude answers in several text frames, so
+  // ClaudeProvider hands back at the turn's result frame instead.
+  if (session.currentProvider !== 'claude') {
+    handBackToRecoveredPrimary(session);
   }
 
   // The provider that produced THIS response (the session's), not whichever

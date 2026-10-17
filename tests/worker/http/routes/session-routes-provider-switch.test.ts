@@ -415,6 +415,27 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     expect(openRouterAgent.startSession).not.toHaveBeenCalled();
   });
 
+  it('drops a pending hand-back when a later dispatch no longer selects the primary', async () => {
+    const sessionDbId = 900006;
+    const session = makeFakeSession(sessionDbId);
+    const sdkAgent = { startSession: mock(() => new Promise<void>(() => {})) };
+    const geminiAgent = { startSession: mock(() => Promise.resolve()) };
+    const openRouterAgent = { startSession: mock(() => Promise.resolve()) };
+    const { routes } = makeRoutes(session, { sdkAgent, geminiAgent, openRouterAgent });
+
+    await routes.ensureGeneratorRunning(sessionDbId, 'init');
+    session.fallbackFrom = 'openrouter';
+
+    providerSelectionBox.current = 'openrouter';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.primaryReturnPending).toBe(true);
+
+    // The primary failed again elsewhere; dispatch now selects the stand-in.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.primaryReturnPending).toBe(false);
+  });
+
   it('does not ask a primary run to hand back on an ordinary provider change', async () => {
     const sessionDbId = 900005;
     const session = makeFakeSession(sessionDbId);

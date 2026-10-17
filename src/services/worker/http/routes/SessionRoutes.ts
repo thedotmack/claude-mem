@@ -413,6 +413,11 @@ export class SessionRoutes extends BaseRouteHandler {
     // keep the gateway re-probe it claimed on the way in.
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
+    // A hand-back the latest selection no longer asks for must not fire later.
+    if (session.primaryReturnPending && selectedProvider !== session.fallbackFrom) {
+      session.primaryReturnPending = false;
+    }
+
     // A stand-in whose primary is selectable again hands back at the next
     // reply boundary (#4846): in an active session the generator may never
     // finish, which kept a two-minute outage on the fallback for hours.

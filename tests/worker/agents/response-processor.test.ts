@@ -1827,8 +1827,8 @@ describe('ResponseProcessor', () => {
     const reply = (session: ActiveSession) =>
       processAgentResponse(CLEAN, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
 
-    it('ends the stand-in generation after its next stored reply', async () => {
-      const session = createMockSession({ fallbackFrom: 'openrouter', primaryReturnPending: true });
+    it('ends a one-response stand-in generation after its next stored reply', async () => {
+      const session = createMockSession({ currentProvider: 'gemini', fallbackFrom: 'openrouter', primaryReturnPending: true });
 
       await reply(session);
 
@@ -1838,8 +1838,17 @@ describe('ResponseProcessor', () => {
       expect(session.primaryReturnPending).toBe(false);
     });
 
+    it('never ends a Claude stand-in mid-turn: its text frames each come through here', async () => {
+      const session = createMockSession({ currentProvider: 'claude', fallbackFrom: 'openrouter', primaryReturnPending: true });
+
+      await reply(session);
+
+      expect(session.abortController.signal.aborted).toBe(false);
+      expect(session.primaryReturnPending).toBe(true);
+    });
+
     it('leaves the generation alone when no hand-back is pending', async () => {
-      const session = createMockSession({ fallbackFrom: 'openrouter' });
+      const session = createMockSession({ currentProvider: 'gemini', fallbackFrom: 'openrouter' });
 
       await reply(session);
 
@@ -1848,7 +1857,7 @@ describe('ResponseProcessor', () => {
     });
 
     it('never ends a primary run, even with a stale flag', async () => {
-      const session = createMockSession({ fallbackFrom: null, primaryReturnPending: true });
+      const session = createMockSession({ currentProvider: 'gemini', fallbackFrom: null, primaryReturnPending: true });
 
       await reply(session);
 
