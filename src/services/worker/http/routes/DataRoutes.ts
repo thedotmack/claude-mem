@@ -25,6 +25,14 @@ import { assertCanonicalDecimal, type ContentKind } from '../../../sync/Canonica
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 
+// Chroma doc_type per content kind. Observation and summary id spaces overlap,
+// so the delete-route cleanup must be scoped by doc_type, not sqlite_id alone.
+const CHROMA_DOC_TYPES: Record<ContentKind, string> = {
+  observation: 'observation',
+  summary: 'session_summary',
+  prompt: 'user_prompt',
+};
+
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
@@ -500,6 +508,18 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const entityRev = this.commitRowDelete(cloudSync, store, kind, table, originLocalId);
+
+    // The row is committed gone — drop its fragments from the vector index
+    // too (#4805). Backfill only walks SQLite rows, so nothing else would
+    // reclaim them. Best-effort: a Chroma failure is logged and must not
+    // block or undo the delete.
+    const chromaSync = this.dbManager.getChromaSync();
+    if (chromaSync) {
+      void chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[kind], Number(originLocalId)).catch((error: unknown) => {
+        logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind, sqlite_id: originLocalId, error });
+      });
+    }
+
     emitContextInvalidation('all', `delete-${kind}`, 'removal');
 
     // Only after the delete committed: open viewer tabs drop the row live.

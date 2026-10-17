@@ -377,7 +377,7 @@ describe('SearchRoutes Welcome Hint', () => {
 
       let remove: ((req: Request, res: Response) => void) | undefined;
       const dataRoutes = new DataRoutes({} as any,
-        { getSessionStore: () => store, getCloudSync: () => null } as any,
+        { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
         {} as any, { broadcast: () => {} } as any, {} as any, Date.now());
       dataRoutes.setupRoutes({ get: () => {}, post: () => {}, delete: (path: string, fn: typeof remove) => {
         if (path === '/api/observation/:id') remove = fn;

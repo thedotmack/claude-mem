@@ -273,7 +273,7 @@ describe('ContextCacheService invalidation', () => {
     let deleteHandler: ((req: any, res: any) => void) | undefined;
     const routes = new DataRoutes(
       {} as any,
-      { getSessionStore: () => store, getCloudSync: () => null } as any,
+      { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
       {} as any,
       { broadcast: () => {} } as any,
       {} as any,
@@ -301,7 +301,7 @@ describe('ContextCacheService invalidation', () => {
     let deleteHandler: ((req: any, res: any) => void) | undefined;
     const routes = new DataRoutes(
       {} as any,
-      { getSessionStore: () => store, getCloudSync: () => null } as any,
+      { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
       {} as any,
       { broadcast: () => {} } as any,
       {} as any,
