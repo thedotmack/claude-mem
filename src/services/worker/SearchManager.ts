@@ -23,6 +23,7 @@ import { isCategoryRequested, buildCategoryWhereFilter } from './search/types.js
 import { ResultFormatter } from './search/ResultFormatter.js';
 import { ChromaUnavailableError } from './search/errors.js';
 import { buildProjectWhereFilter, projectReadKeysFor } from './search/project-where-filter.js';
+import { labelOriginDevices, originDevicePrefix } from '../sqlite/sync-devices.js';
 
 /**
  * Telemetry envelope for search_performed (see docs/public/telemetry.mdx).
@@ -189,6 +190,10 @@ export class SearchManager {
     cwd: string
   ): string[] {
     const lines: string[] = [];
+    labelOriginDevices(
+      this.sessionStore.db,
+      filteredItems.flatMap(item => item.type === 'prompt' ? [] : [item.data as ObservationSearchResult | SessionSummarySearchResult]),
+    );
 
     const dayMap = new Map<string, TimelineItem[]>();
     for (const item of filteredItems) {
@@ -228,7 +233,7 @@ export class SearchManager {
           }
 
           const sess = item.data as SessionSummarySearchResult;
-          const title = sess.request || 'Session summary';
+          const title = originDevicePrefix(sess) + (sess.request || 'Session summary');
           const marker = isAnchor ? ' <- **ANCHOR**' : '';
 
           lines.push(`**🎯 #S${sess.id}** ${title} (${formatDateTime(item.epoch)})${marker}`);
@@ -268,7 +273,7 @@ export class SearchManager {
           const icon = ModeManager.getInstance().getTypeIcon(obs.type);
 
           const time = formatTime(item.epoch);
-          const title = obs.title || 'Untitled';
+          const title = originDevicePrefix(obs) + (obs.title || 'Untitled');
           const tokens = estimateTokens(obs.narrative);
 
           const showTime = time !== lastTime;
@@ -709,6 +714,8 @@ export class SearchManager {
       }
     }
 
+    labelOriginDevices(this.sessionStore.db, observations);
+    labelOriginDevices(this.sessionStore.db, sessions);
     const totalResults = observations.length + sessions.length + prompts.length;
 
     // Telemetry envelope (search_performed): derive the strategy from the
@@ -1122,6 +1129,7 @@ export class SearchManager {
     // Relevance-ordered results (FTS/Chroma): only add day headers, never
     // reorder into chronological groups, or the most relevant match could
     // print below a less relevant but more recent one.
+    labelOriginDevices(this.sessionStore.db, results);
     const resultsByDate = groupByDate(results, obs => obs.created_at, { order: 'first-seen' });
 
     const lines: string[] = [];

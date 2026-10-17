@@ -9,6 +9,7 @@ import { getProjectContext } from '../../utils/project-name.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
+import { labelOriginDevices } from '../sqlite/sync-devices.js';
 
 import type { ContextInput, ContextConfig, Observation, SessionSummary } from './types.js';
 import { colors } from './types.js';
@@ -117,9 +118,10 @@ function buildContextOutput(
 
   const economics = calculateTokenEconomics(observations);
 
-  output.push(...renderHeader(project, economics, config, forHuman, headerTime));
-
   const displaySummaries = summaries.slice(0, config.sessionCount);
+  const showsOriginDevice = observations.some(obs => obs.origin_device) || displaySummaries.some(summary => summary.origin_device);
+  output.push(...renderHeader(project, economics, config, forHuman, headerTime, showsOriginDevice));
+
   const summariesForTimeline = prepareSummariesForTimeline(displaySummaries, summaries);
   const timeline = buildTimeline(observations, summariesForTimeline);
   const fullObservationIds = getFullObservationIds(observations, config.fullObservationCount);
@@ -581,8 +583,8 @@ export async function generateContextWithStats(
     // Every key these projects are stored under, including one hop of a merge
     // chain, so a `project merge` brings the merged project's adopted rows along.
     const queryProjects = projectReadKeys(rawDb, scope.projects.length > 1 ? scope.projects : [scope.project]);
-    const observations = queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource);
-    const summaries = querySummariesMulti(db, queryProjects, scope.config, scope.platformSource);
+    const observations = labelOriginDevices(rawDb, queryObservationsMulti(db, queryProjects, scope.config, scope.platformSource));
+    const summaries = labelOriginDevices(rawDb, querySummariesMulti(db, queryProjects, scope.config, scope.platformSource));
     return renderContextFromRows({ observations, summaries }, input, forHuman, scope);
   } finally {
     rawDb.close();

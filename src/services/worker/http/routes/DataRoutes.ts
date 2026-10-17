@@ -24,6 +24,7 @@ import { getUptimeSeconds } from '../../../../shared/uptime.js';
 import { assertCanonicalDecimal, type ContentKind } from '../../../sync/CanonicalContent.js';
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
+import { labelOriginDevices } from '../../../sqlite/sync-devices.js';
 
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
@@ -293,7 +294,7 @@ export class DataRoutes extends BaseRouteHandler {
 
     const store = this.dbManager.getSessionStore();
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
-    const observations = store.getObservationsByIds(ids, { orderBy, limit, project, platformSource });
+    const observations = labelOriginDevices(store.db, store.getObservationsByIds(ids, { orderBy, limit, project, platformSource }));
 
     res.json(observations);
   });

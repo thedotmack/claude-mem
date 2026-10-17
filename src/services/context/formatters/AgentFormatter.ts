@@ -10,6 +10,7 @@ import { ModeManager } from '../../domain/ModeManager.js';
 import { formatObservationTokenDisplay } from '../TokenCalculator.js';
 import { formatHeaderDateTime } from '../../../shared/timeline-formatting.js';
 import { formatContextReferenceId } from './id-display.js';
+import { originDevicePrefix } from '../../sqlite/sync-devices.js';
 
 function formatActiveMode(): string {
   const manager = ModeManager.getInstance();
@@ -25,7 +26,7 @@ export function renderAgentHeader(project: string, headerTime: string = formatHe
   ];
 }
 
-export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] {
+export function renderAgentLegend(fetchByIdSupported: boolean = true, showsOriginDevice: boolean = false): string[] {
   const mode = ModeManager.getInstance().getActiveMode();
   const typeLegendItems = mode.observation_types.map(t => `${t.emoji}${t.id}`).join(' ');
 
@@ -38,6 +39,7 @@ export function renderAgentLegend(fetchByIdSupported: boolean = true): string[] 
   return [
     `Legend: 🎯session ${typeLegendItems}`,
     `Format: ID TIME TYPE TITLE`,
+    ...(showsOriginDevice ? ['Origin: [name] = synced from that device; unmarked = this device'] : []),
     fetchLine,
     ''
   ];
@@ -88,7 +90,7 @@ export function renderAgentTableRow(
   const time = timeDisplay ? compactTime(timeDisplay) : '"';
   const refId = formatContextReferenceId(obs.id, config);
 
-  return `${refId} ${time} ${icon} ${title}`;
+  return `${refId} ${time} ${icon} ${originDevicePrefix(obs)}${title}`;
 }
 
 export function renderAgentFullObservation(
@@ -104,7 +106,7 @@ export function renderAgentFullObservation(
   const { readTokens, discoveryDisplay } = formatObservationTokenDisplay(obs, config);
   const refId = formatContextReferenceId(obs.id, config);
 
-  output.push(`**${refId}** ${time} ${icon} **${title}**`);
+  output.push(`**${refId}** ${time} ${icon} ${originDevicePrefix(obs)}**${title}**`);
   if (detailField) {
     output.push(detailField);
   }
@@ -125,12 +127,12 @@ export function renderAgentFullObservation(
 }
 
 export function renderAgentSummaryItem(
-  summary: { id: number | string; request: string | null },
+  summary: { id: number | string; request: string | null; origin_device?: string },
   formattedTime: string,
   config: Pick<ContextConfig, 'fetchByIdSupported'> = {}
 ): string[] {
   return [
-    `S${formatContextReferenceId(summary.id, config)} ${summary.request || 'Session started'} (${formattedTime})`,
+    `S${formatContextReferenceId(summary.id, config)} ${originDevicePrefix(summary)}${summary.request || 'Session started'} (${formattedTime})`,
   ];
 }
 

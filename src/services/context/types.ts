@@ -88,6 +88,10 @@ export interface Observation {
   project?: string;
   /** Selected only while reinforcement ranking is on. */
   reinforcement_dates?: string | null;
+  /** NULL on native rows; the cloud sync device id on rows pulled from another device. */
+  origin_device_id?: string | null;
+  /** Display label of the origin device (sync-devices.ts labelOriginDevices). */
+  origin_device?: string;
 }
 
 export interface SessionSummary {
@@ -104,6 +108,8 @@ export interface SessionSummary {
   created_at: string;
   created_at_epoch: number;
   project?: string;
+  origin_device_id?: string | null;
+  origin_device?: string;
 }
 
 /** Rows read from the local SQLite database always carry numeric ids. */

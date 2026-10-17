@@ -3,6 +3,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult, UserPromptSea
 import { ModeManager } from '../domain/ModeManager.js';
 import { logger } from '../../utils/logger.js';
 import { formatTime } from '../../shared/timeline-formatting.js';
+import { originDevicePrefix } from '../sqlite/sync-devices.js';
 
 const CHARS_PER_TOKEN_ESTIMATE = 4;
 
@@ -32,7 +33,7 @@ Tips:
     const id = `#${obs.id}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const title = originDevicePrefix(obs) + (obs.title || 'Untitled');
     const readTokens = this.estimateReadTokens(obs);
     const workEmoji = ModeManager.getInstance().getWorkEmoji(obs.type);
     const workTokens = obs.discovery_tokens || 0;
@@ -45,7 +46,7 @@ Tips:
     const id = `#S${session.id}`;
     const time = formatTime(session.created_at_epoch);
     const icon = '🎯';
-    const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+    const title = originDevicePrefix(session) + (session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`);
 
     return `| ${id} | ${time} | ${icon} | ${title} | - | - |`;
   }
@@ -75,7 +76,7 @@ Tips:
     const id = `#${obs.id}`;
     const time = formatTime(obs.created_at_epoch);
     const icon = ModeManager.getInstance().getTypeIcon(obs.type);
-    const title = obs.title || 'Untitled';
+    const title = originDevicePrefix(obs) + (obs.title || 'Untitled');
     const readTokens = this.estimateReadTokens(obs);
 
     const timeDisplay = time === lastTime ? '″' : time;
@@ -90,7 +91,7 @@ Tips:
     const id = `#S${session.id}`;
     const time = formatTime(session.created_at_epoch);
     const icon = '🎯';
-    const title = session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`;
+    const title = originDevicePrefix(session) + (session.request || `Session ${session.memory_session_id?.substring(0, 8) || 'unknown'}`);
 
     const timeDisplay = time === lastTime ? '″' : time;
 

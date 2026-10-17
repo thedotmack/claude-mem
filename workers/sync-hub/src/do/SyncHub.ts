@@ -78,6 +78,8 @@ export interface StatusResult {
 	projected_seq: string;
 	op_count: number;
 	device_count: number;
+	/** Named devices only. A client shows the name on rows synced from that device. */
+	devices: Array<{ device_id: string; name: string }>;
 }
 
 export type StatusOutcome = StatusResult | HubRefusal;
@@ -559,6 +561,9 @@ export class SyncHub extends DurableObject<Env> {
 			// head_seq is the row count; COUNT(*) would scan every op.
 			op_count: Number(this.headSeq()),
 			device_count: sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM devices").one().n,
+			devices: sql.exec<{ device_id: string; name: string }>(
+				`SELECT device_id, name FROM devices WHERE name IS NOT NULL ORDER BY device_id LIMIT ${MAX_DEVICES_PER_USER}`,
+			).toArray(),
 		};
 	}
 

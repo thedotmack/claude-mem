@@ -1171,7 +1171,8 @@ describe("internal payload-free Hub metadata", () => {
 			name: "Desk Mac",
 		});
 
-		await stub.getStatus("dev-a", "Changed hostname");
+		const renamedStatus = await stub.getStatus("dev-a", "Changed hostname");
+		expect(status(renamedStatus).devices).toContainEqual({ device_id: "dev-a", name: "Desk Mac" });
 		const metadata = await SELF.fetch(`${base}/internal/v1/sync/metadata`, {
 			method: "POST",
 			headers: internalHeaders,
