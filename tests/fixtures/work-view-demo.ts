@@ -7,6 +7,8 @@ import { Database } from 'bun:sqlite';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { WorkViewRoutes } from '../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { TeamBrainRoutes } from '../../src/services/worker/http/routes/TeamBrainRoutes.js';
+import { MOCK_SEAT_SETUP_TOKEN, MOCK_SEAT_USER_ID, startTeamBrainMock } from '../helpers/teambrain-mock-server.js';
 import { WorkStateSource } from '../../src/services/work-view/data-source.mjs';
 import { LocalReviewStore, contentFingerprint } from '../../src/services/work-view/review-store.js';
 
@@ -71,6 +73,20 @@ if (updateIndex !== -1) {
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
+  const teamId = '11111111-1111-4111-8111-111111111111';
+  const teamUpstream = process.env.WORK_VIEW_DEMO_TEAM === '1' ? await startTeamBrainMock({
+    teams: [{ id: teamId, name: 'Example product team', role: 'member', broadcasting: false, projects: ['shared-project'], seats_used: 3, seat_limit: 5 }],
+    board: { body: {
+      lists: [
+        { user_id: 'one', display_name: 'Alex', project: 'shared-project', name: 'Make the first run clearer', closed: false, state: [['human_summary', 'Help new teammates find the right place to begin.'], ['next', 'Compare the walkthrough with the setup screen.']], state_updated_at: new Date().toISOString(), last_written_at: new Date().toISOString(), closed_task_count: 2, tasks: [{ name: 'Review the setup walkthrough', status: 'doing', details: [['next', 'Read the shared draft and leave a note in the source.']], updated_at: new Date().toISOString(), latest_feed_id: 1, finding_ids: [1] }] },
+        { user_id: 'two', display_name: 'Sam', project: 'shared-project', name: 'Keep the launch in view', closed: false, state: [['human_summary', 'Track the remaining launch checks together.']], state_updated_at: new Date().toISOString(), last_written_at: new Date().toISOString(), closed_task_count: 1, tasks: [{ name: 'Choose the walkthrough example', status: 'needs-you', details: [['next', 'Agree on one example for the guide.']], updated_at: new Date().toISOString(), latest_feed_id: 2, finding_ids: [] }] },
+      ], findings: [{ id: 1, type: 'collision', title: 'Two changes touch the setup guide', subtitle: null, narrative: 'Compare the two edits before merging so the same steps stay consistent.', member_ids: ['one', 'two'], created_at: new Date().toISOString() }],
+    } },
+  }) : null;
+  new TeamBrainRoutes(() => teamUpstream ? {
+    CLAUDE_MEM_TEAMBRAIN_URL: teamUpstream.origin, CLAUDE_MEM_TEAMBRAIN_TEAM_ID: teamId,
+    CLAUDE_MEM_CLOUD_SYNC_TOKEN: MOCK_SEAT_SETUP_TOKEN, CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
+  } : {}).setupRoutes(app);
   const uiRoot = join(import.meta.dir, '../../plugin/ui');
   app.get('/api/sync/status', (_req, res) => res.json({ configured: false }));
   app.get('/', (_req, res) => res.sendFile(join(uiRoot, 'work-view/index.html')));
@@ -78,5 +94,5 @@ if (updateIndex !== -1) {
   app.use(express.static(uiRoot));
   const port = Number(process.env.WORK_VIEW_DEMO_PORT || 37842);
   const server = app.listen(port, '127.0.0.1', () => console.log(`Sanitized fixture: http://127.0.0.1:${port}\nData: ${root}`));
-  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { routes.close(); server.close(); });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { routes.close(); server.close(); void teamUpstream?.stop(); });
 }

@@ -13,12 +13,13 @@
   <a class="skip" href="#main">Skip to my work</a>
   <header class="app-header">
     <a class="brand" href="#main" aria-label="Claude-Mem My Work"><img src="/work-view/assets/cmem-mark.svg" width="35" height="35" alt=""><span>Claude-Mem</span></a>
-    <nav aria-label="Main"><a href="/" aria-current="page">My Work</a><a href="/viewer">Memory &amp; settings</a></nav>
+    <nav aria-label="Main"><button type="button" class="workspace-link" id="workspace-personal" aria-pressed="true">My Work</button><button type="button" class="workspace-link" id="workspace-team" aria-pressed="false">TeamBrain</button><a href="/viewer">Memory &amp; settings</a></nav>
     <div class="local-state"><span class="local-device" aria-hidden="true"></span><span>On this computer</span><span class="local-state-separator" aria-hidden="true"></span><span class="connection" id="connection" data-state="connecting"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Connecting locally…</span></span></div>
 
   </header>
 
   <main id="main" class="page" tabindex="-1">
+    <div id="personal-workspace">
     <div class="page-heading">
       <div><p class="eyebrow">A little clarity for your day</p><h1>My Work<span class="heading-dot">.</span></h1><p class="subtitle">See what’s moving. Pick up where you’re needed.</p></div>
       <div class="workspace-meta"><span class="workspace-mark" aria-hidden="true">C</span><div><strong id="workspace-name">Local workspace</strong><span id="workspace-detail">Reading local work…</span></div></div>
@@ -59,6 +60,24 @@
     </div>
 
     <footer class="page-footer"><span><span class="local-device" aria-hidden="true"></span>Local first. Yours to connect.</span><span id="received-time">Waiting for the local connection…</span></footer>
+    </div>
+    <section id="team-workspace" hidden aria-labelledby="team-heading">
+      <div class="page-heading"><div><p class="eyebrow team-eyebrow">TeamBrain · optional shared workspace</p><h1 id="team-heading">Work better together<span class="heading-dot">.</span></h1><p class="subtitle">Shared work, handoffs and context. Your personal work stays separate.</p></div></div>
+      <p id="team-health" class="source-note" role="status">TeamBrain is optional. Your personal workspace needs no account.</p>
+      <section id="team-setup" class="team-setup" aria-label="Set up TeamBrain">
+        <span class="team-sticker" aria-hidden="true">Together.</span><h2>One shared view.<br>More room to work together.</h2><p>Bring your team’s shared work and context into this panel. Each person chooses what to broadcast. Joining does not automatically share your local work.</p><a class="team-primary" href="https://cmem.ai/teambrain/start" target="_blank" rel="noopener noreferrer">Set up TeamBrain ↗</a><p class="dialog-note">Already have an invite? Run <code>npx claude-mem teambrain join &lt;invite-link&gt;</code>, then refresh this view.</p><button id="team-refresh" type="button" class="button-secondary">Refresh connection</button>
+      </section>
+      <section id="team-connected" hidden>
+        <div class="team-context">
+          <div class="team-identity"><h2 id="team-name">Shared work</h2><span id="team-seat-count"></span></div>
+          <div class="team-tools"><label class="sr-only" for="team-select">Team</label><select id="team-select"></select><a id="team-manage" class="source-link" href="https://cmem.ai/teambrain/app" target="_blank" rel="noopener noreferrer">Sharing settings ↗</a><button type="button" class="button-secondary" id="team-refresh-connected">Refresh</button></div>
+          <p id="team-sharing"></p>
+        </div>
+        <div class="team-controls"><input id="team-search" type="search" placeholder="Find shared work" aria-label="Search shared work"><select id="team-project" aria-label="Filter shared work by project" hidden></select></div>
+        <div id="team-updates"></div><div class="section-heading"><h2 id="shared-work-heading" tabindex="-1">Open shared work</h2><span id="team-count"></span></div><div id="team-cards" class="work-grid"></div>
+        <p class="reading-note">Your team’s shared work. Private review notes stay on this computer.</p>
+      </section>
+    </section>
   </main>
 
   <dialog id="review-dialog" aria-labelledby="review-title"><div id="review-content"></div></dialog>

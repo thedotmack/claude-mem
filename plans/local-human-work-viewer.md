@@ -24,6 +24,13 @@ Copy the approved visual study shell, removing fictional modes/actions. Adapt re
 
 Verification: installed worker API/UI smoke, responsive browser checks, keyboard dialog/focus and updates/checked/reload/undo flows. Guards: no invented assignment/reply action; no synthetic pulse; no remote fonts or required remote dependencies.
 
+## Phase 2b: Optional TeamBrain shared workspace
+**How this serves the primary goal:** People can move from personal work to a team's real shared work without losing the local free experience or confusing private and shared records.
+
+Read existing `src/shared/teambrain.ts` membership, credential and timeout helpers; cloud `src/lib/teambrain/{api,cli,work-state}.ts` for exact board schema and consent gates. Use the new authenticated read-only `GET /api/teambrain/cli/board?team_id=` behind the existing cloud sync identity, active-team and membership checks. Reuse cloud `teamBoard` rather than copying its query. Local routes expose only sanitized status and board data; credentials stay in the worker. No cookie forwarding and no automatic sharing. The personal tab makes no new team requests. TeamBoard's open lists/tasks stay labeled shared work and are never converted into invented human requests or local Checked state.
+
+Verify disconnected no-network status, actual bearer/user identity forwarding, board payload validation, permission failure clearing, selected-team response races, hidden-tab polling, reading-safe pending snapshots, exact membership/project scope, narrow layouts and a working link to self-serve setup. Release waits for the cloud endpoint, TeamBrain UI and Stripe purchase path to be verified by the coordinating agent.
+
 ## Phase 3: Review and full release
 **How this serves the primary goal:** Users receive the tested local feature through the normal install/update surface.
 

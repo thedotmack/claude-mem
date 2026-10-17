@@ -68,3 +68,34 @@ and current-source-order regressions. The independent presentation run during
 this review also passed all 8 cases then present. Final asset rebuild and
 non-generated whitespace verification run immediately before the candidate
 commit.
+
+## TeamBrain shared workspace verification
+
+Independently verified on October 17, 2026 against the isolated, representative
+TeamBrain fixture at `http://127.0.0.1:37865/`. The fixture uses an authenticated
+local mock of the cloud contract; these checks did not join a real team, change
+sharing, or create a checkout.
+
+- The initial My Work view retains five personal requests, with one request in
+  each of In progress, Needs you, Ready to check, Checked, and Other states.
+- Selecting TeamBrain displays two shared lists and two open tasks, the example
+  team's three-of-five seat count, and the explicit statement that sharing from
+  this computer is off. Returning to My Work preserves its separate five-request
+  data and counts.
+- Expanding a shared task and its nested collision finding reveals the recorded
+  next action and explanation. Shared work does not expose the personal review
+  mutation controls.
+- Loading `/#teambrain` directly selects and loads the shared workspace.
+- At an actual `window.innerWidth` of 320 CSS px, the document scroll width is
+  also 320 px. The brand, workspace navigation, membership controls, cards, and
+  expanded task remain readable without horizontal page overflow. The temporary
+  browser viewport override was reset after verification.
+- Code review identified one sharing-scope presentation issue: an empty project
+  array must mean no projects selected, while only `null` means all projects.
+  That distinction was corrected and covered by a regression before final QA.
+
+An independent run of the shared client, TeamBrain route, and viewer header
+suites passed all 38 tests. The implementation owner additionally reported the
+final build, typecheck, and all 134 targeted tests passing. No remaining blocking
+issue was found in the reviewed contract, privacy separation, request races, or
+browser behavior.

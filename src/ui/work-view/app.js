@@ -1,3 +1,4 @@
+import { setupTeamView } from './team-view.js';
 import { relativeTime } from './view-model.js';
 import { presentWork, effectiveStatus, statusCategory, contentSignature, handoffText, scopeWork } from './presentation.js';
 
@@ -187,3 +188,5 @@ const ageTimer = setInterval(() => {
 fetch('/api/sync/status', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject()).then(sync => { $('sync-state').textContent = sync.configured ? 'Cloud sync configured · local viewing remains independent' : 'Cloud sync not connected · optional'; }).catch(() => { $('sync-state').textContent = 'Cloud sync status unavailable · local viewing remains independent'; });
 window.addEventListener('pagehide', () => { stream.close(); clearInterval(timer); clearInterval(ageTimer); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
+
+setupTeamView();
