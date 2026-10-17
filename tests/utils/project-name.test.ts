@@ -213,7 +213,8 @@ describe('getProjectName', () => {
 
     // os.homedir() is fixed for the life of a Bun process, so the stop
     // directories are exercised in a child with its own HOME / TMPDIR /
-    // CLAUDE_CONFIG_DIR.
+    // CLAUDE_CONFIG_DIR (USERPROFILE and TEMP/TMP on Windows, which is what
+    // os.homedir() and os.tmpdir() read there).
     function resolveInChild(cwd: string, env: Record<string, string>): { name: string; allProjects: string[] } {
       const { join } = require('path') as typeof import('path');
       const modulePath = join(import.meta.dir, '../../src/utils/project-name.ts');
@@ -241,7 +242,7 @@ describe('getProjectName', () => {
       writeFileSync(join(fakeHome, '.claude-mem.json'), '{}\n');
       writeFileSync(join(fakeHome, '.claude-mem-project'), '');
 
-      const resolved = resolveInChild(notes, { HOME: fakeHome, CLAUDE_CONFIG_DIR: join(fakeHome, '.claude') });
+      const resolved = resolveInChild(notes, { HOME: fakeHome, USERPROFILE: fakeHome, CLAUDE_CONFIG_DIR: join(fakeHome, '.claude') });
       expect(resolved).toEqual({ name: 'notes', allProjects: ['notes'] });
     });
 
@@ -258,7 +259,7 @@ describe('getProjectName', () => {
       mkdirSync(join(pluginDir, 'scripts'), { recursive: true });
       writeFileSync(join(pluginDir, '.claude-mem.json'), '{}\n');
 
-      const env = { TMPDIR: fakeTmp, CLAUDE_CONFIG_DIR: fakeConfig };
+      const env = { TMPDIR: fakeTmp, TEMP: fakeTmp, TMP: fakeTmp, CLAUDE_CONFIG_DIR: fakeConfig };
       expect(resolveInChild(scratch, env)).toEqual({ name: 'scratch', allProjects: ['scratch'] });
       expect(resolveInChild(join(pluginDir, 'scripts'), env)).toEqual({ name: 'scripts', allProjects: ['scripts'] });
     });
