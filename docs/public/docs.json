@@ -101,7 +101,8 @@
           "openclaw-integration",
           "kimi-integration",
           "qoder-integration",
-          "screenpipe-integration"
+          "screenpipe-integration",
+          "notion-export"
         ]
       },
       {
