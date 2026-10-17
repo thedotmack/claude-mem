@@ -98,10 +98,6 @@ export interface LauncherVersionProbe {
   failedToStart: boolean;
 }
 
-export function launcherVersionProbeTimeoutMs(platform: NodeJS.Platform): number {
-  return platform === 'win32' ? WINDOWS_LAUNCHER_VERSION_PROBE_TIMEOUT_MS : LAUNCHER_VERSION_PROBE_TIMEOUT_MS;
-}
-
 function lastNonEmptyLine(text: string | null | undefined): string {
   return (text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).pop() ?? '';
 }
@@ -132,7 +128,7 @@ function interpretVersionProbe(versionProbe: SpawnSyncReturns<string>, timeoutMs
 /** Runs `<binaryPath> --version` once and says why no protocol came back, if none did. */
 export function probeLauncherVersion(
   binaryPath: string,
-  timeoutMs: number = launcherVersionProbeTimeoutMs(process.platform),
+  timeoutMs: number = LAUNCHER_VERSION_PROBE_TIMEOUT_MS,
 ): LauncherVersionProbe {
   if (!existsSync(binaryPath)) return { protocol: null, failure: 'file not found', failedToStart: false };
   const versionProbe = spawnSync(binaryPath, ['--version'], {
@@ -142,11 +138,6 @@ export function probeLauncherVersion(
     windowsHide: true,
   });
   return interpretVersionProbe(versionProbe, timeoutMs);
-}
-
-/** The protocol a placed launcher prints for `--version`, or null when it is missing or is not our launcher. */
-export function readLauncherProtocol(binaryPath: string): number | null {
-  return probeLauncherVersion(binaryPath).protocol;
 }
 
 function sleepSync(milliseconds: number): void {
@@ -159,7 +150,7 @@ function sleepSync(milliseconds: number): void {
  * one retry after a pause.
  */
 function probeCompiledLauncher(binaryPath: string, platform: NodeJS.Platform): LauncherVersionProbe {
-  const timeoutMs = launcherVersionProbeTimeoutMs(platform);
+  const timeoutMs = platform === 'win32' ? WINDOWS_LAUNCHER_VERSION_PROBE_TIMEOUT_MS : LAUNCHER_VERSION_PROBE_TIMEOUT_MS;
   const firstProbe = probeLauncherVersion(binaryPath, timeoutMs);
   if (platform !== 'win32' || !firstProbe.failedToStart) return firstProbe;
   sleepSync(WINDOWS_COMPILED_PROBE_RETRY_DELAY_MS);
@@ -718,7 +709,7 @@ export interface LauncherRemovalResult {
 export function removeInstalledLauncher(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): LauncherRemovalResult {
   const binaryPath = resolveLauncherBinaryPath(host);
   let removedBinaryPath: string | null = null;
-  if (readLauncherProtocol(binaryPath) !== null) {
+  if (probeLauncherVersion(binaryPath).protocol !== null) {
     rmSync(binaryPath, { force: true });
     removedBinaryPath = binaryPath;
   }

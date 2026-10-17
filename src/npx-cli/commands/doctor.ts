@@ -25,7 +25,6 @@ import {
 import {
   currentLauncherHostEnvironment,
   findExecutableOnPath,
-  launcherVersionProbeTimeoutMs,
   probeLauncherVersion,
   resolveLauncherBinaryPath,
   type LauncherHostEnvironment,
@@ -287,7 +286,7 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
     };
   }
   const probeStartedAt = performance.now();
-  const { protocol: printedProtocol, failure: probeFailure } = probeLauncherVersion(launcherOnPath, launcherVersionProbeTimeoutMs(host.platform));
+  const { protocol: printedProtocol, failure: probeFailure } = probeLauncherVersion(launcherOnPath);
   const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
   if (printedProtocol === null) {
     return {

@@ -335,7 +335,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
     const binDirectory = path.join(scratchHome, '.local', 'bin');
-    // The compile output prints garbage — what readLauncherProtocol sees when
+    // The compile output prints garbage — what probeLauncherVersion sees when
     // macOS kills the binary — and only the signing step, which must run
     // first, repairs it.
     const compileThenResign: LauncherCompileRunner = (_bunPath, compileArguments) => {

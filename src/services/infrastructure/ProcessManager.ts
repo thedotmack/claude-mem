@@ -619,6 +619,14 @@ export function buildWindowsHiddenDaemonPowerShellArgs(
   return ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand];
 }
 
+// Why the last daemon launch returned undefined, so callers can show the user
+// the cause instead of pointing them at the log. Cleared on every launch.
+let lastWorkerDaemonLaunchError: string | undefined;
+
+export function getLastWorkerDaemonLaunchError(): string | undefined {
+  return lastWorkerDaemonLaunchError;
+}
+
 /**
  * Spawn the worker as a background daemon without a visible console, with its
  * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
@@ -634,14 +642,6 @@ export function buildWindowsHiddenDaemonPowerShellArgs(
  * Returns undefined when the launch itself failed. Used by spawnDaemon
  * (CLI/MCP) and both hook lazy-spawn paths in worker-utils.ts.
  */
-// Why the last daemon launch returned undefined, so callers can show the user
-// the cause instead of pointing them at the log. Cleared on every launch.
-let lastWorkerDaemonLaunchError: string | undefined;
-
-export function getLastWorkerDaemonLaunchError(): string | undefined {
-  return lastWorkerDaemonLaunchError;
-}
-
 export function spawnDetachedWorkerDaemon(
   runtimePath: string,
   scriptPath: string,

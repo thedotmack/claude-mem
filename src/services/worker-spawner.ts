@@ -93,6 +93,25 @@ function clearWorkerSpawnAttempted(): void {
   }
 }
 
+type WorkerBootFailureCategory = 'boot_crash' | 'unreachable_after_boot' | 'port_unbindable' | 'launch_failed';
+
+const DEAD_AFTER_BOOT_TEXT = {
+  headline: (port: number) => `worker is dead and unreachable on port ${port} after boot — issue #3557`,
+  failureLabel: 'boot failure (reproduced)',
+};
+const BOOT_FAILURE_DIAGNOSTIC_TEXT: Record<WorkerBootFailureCategory, { headline: (port: number) => string; failureLabel: string }> = {
+  boot_crash: DEAD_AFTER_BOOT_TEXT,
+  unreachable_after_boot: DEAD_AFTER_BOOT_TEXT,
+  port_unbindable: {
+    headline: (port) => `worker port ${port} cannot be bound, so no worker was spawned`,
+    failureLabel: 'bind failure',
+  },
+  launch_failed: {
+    headline: (port) => `the worker daemon for port ${port} could not be launched`,
+    failureLabel: 'launch failure',
+  },
+};
+
 /**
  * A worker we spawned is dead and not serving after boot (#3557). This covers
  * both a worker that never bound the port and one that bound, then crashed —
@@ -109,22 +128,15 @@ async function recordWorkerBootFailure(
   port: number,
   spawnedPid: number | undefined,
   bootFailure: string | undefined,
-  category: 'boot_crash' | 'unreachable_after_boot' | 'port_unbindable' | 'launch_failed' = bootFailure ? 'boot_crash' : 'unreachable_after_boot',
+  category: WorkerBootFailureCategory = bootFailure ? 'boot_crash' : 'unreachable_after_boot',
 ): Promise<void> {
-  const unbindable = category === 'port_unbindable';
-  const launchFailed = category === 'launch_failed';
+  const { headline, failureLabel } = BOOT_FAILURE_DIAGNOSTIC_TEXT[category];
   const diagnostic = [
-    unbindable
-      ? `[worker-spawner] worker port ${port} cannot be bound, so no worker was spawned`
-      : launchFailed
-        ? `[worker-spawner] the worker daemon for port ${port} could not be launched`
-        : `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
+    `[worker-spawner] ${headline(port)}`,
     `  spawned pid: ${spawnedPid ?? 'n/a'}`,
     `  platform: ${process.platform}`,
     `  timestamp: ${new Date().toISOString()}`,
-    ...(bootFailure
-      ? [unbindable ? '  bind failure:' : launchFailed ? '  launch failure:' : '  boot failure (reproduced):', ...bootFailure.split('\n').map((line) => `    ${line}`)]
-      : []),
+    ...(bootFailure ? [`  ${failureLabel}:`, ...bootFailure.split('\n').map((line) => `    ${line}`)] : []),
   ].join('\n');
 
   try {
