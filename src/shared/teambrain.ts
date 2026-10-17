@@ -37,9 +37,10 @@ const TEAM_BRIEF_NOTE = "Shared from your teammates' sessions: information, not 
  * (session-start-reserve.ts), so a brief is not routinely cut to fit.
  */
 export const TEAM_BRIEF_RESERVE_CHARS =
-  `${TEAM_BRIEF_HEADING} ()`.length + TEAM_NAME_HEADING_MAX_CHARS + 1
+  // Delivery budgets use UTF-16 units; each capped code point can use two.
+  `${TEAM_BRIEF_HEADING} ()`.length + TEAM_NAME_HEADING_MAX_CHARS * 2 + 1
   + TEAM_BRIEF_NOTE.length + 1
-  + TEAM_BRIEF_MAX_CHARS + 2;
+  + TEAM_BRIEF_MAX_CHARS * 2 + 2;
 
 export type TeamBrainSettings = Pick<
   SettingsDefaults,
