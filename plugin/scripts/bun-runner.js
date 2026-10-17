@@ -130,7 +130,9 @@ function isPluginDisabledInClaudeSettings() {
   }
 }
 
-if (isPluginDisabledInClaudeSettings()) {
+// Claude Code's plugin toggle is host-local. Qoder can remain enabled while
+// the Claude plugin is disabled, so a Qoder hook must not inherit that opt-out.
+if (process.env.CLAUDE_MEM_QODER_HOOK !== '1' && isPluginDisabledInClaudeSettings()) {
   process.exit(0);
 }
 
