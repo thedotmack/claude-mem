@@ -472,15 +472,158 @@ export class SessionSearch {
    * ("authentication bug" must not widen to every row that mentions "bug"); widening starts at three terms, where
    * a query reads as a question. Null when the query is not widened.
    */
-  private static buildFTSAnyTermQuery(query: string): string | null {
-    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
-    if (tokens.length < SessionSearch.MIN_ANY_TERM_TOKENS) {
+  /**
+   * #4804: bound the FTS any-term fallback by prompt size. Long prompts
+   * can produce hundreds of OR terms and a multi-minute FTS5 query, so the
+   * fallback is now capped at the prompt-size buckets the issue measures:
+   *
+   *   | prompt chars    | rule                                                    |
+   *   |-----------------|---------------------------------------------------------|
+   *   | < 200           | dedup; drop a token whose rarest word is in >= 30% of |
+   *   |                 | observations; cap at 40 tokens                           |
+   *   | 200..600        | same; cap at 60 tokens                                  |
+   *   | >= 600          | 40 rarest words (>= 3 chars, doc freq < 2%) only         |
+   *
+   * Frequencies come from `fts5vocab(<table>, 'row')`, which the helper
+   * lazily creates on first use so the filter works in tests that bypass
+   * `ensureFTSTables` (the in-memory store's `isFts5Available` probe
+   * can fail on some platforms, leaving the FTS tables uncreated).
+   */
+  private buildFTSAnyTermQuery(
+    query: string,
+    ftsTable: 'observations_fts' | 'session_summaries_fts',
+  ): string | null {
+    const allTokens = (query.match(/\S+/g) ?? []).filter(
+      (token) => /[\p{L}\p{N}]/u.test(token),
+    );
+    if (allTokens.length < SessionSearch.MIN_ANY_TERM_TOKENS) {
       return null;
     }
 
-    return tokens
-      .map(token => `"${token.replace(/"/g, '""')}"`)
+    // Self-contained: create the fts5vocab sidecar on first use so the
+    // document-frequency filter works even when ensureFTSTables did not run.
+    this.db.run(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS fts5vocab_${ftsTable} USING fts5vocab(${ftsTable}, 'row')`,
+    );
+
+    const queryLen = query.length;
+    const cap = queryLen < 200 ? 40 : queryLen < 600 ? 60 : 40;
+    const useDocFreq = queryLen >= 600;
+    const rareDrop = useDocFreq ? null : this.collectRareTokens(ftsTable, 0.30);
+    const freqDrop = useDocFreq ? this.collectTermDocFractions(ftsTable) : null;
+    const commonThreshold = useDocFreq ? this.commonTermThreshold(ftsTable) : 0;
+
+    const seen = new Set<string>();
+    const picked: string[] = [];
+    for (const token of allTokens) {
+      if (picked.length >= cap) break;
+      if (seen.has(token)) continue;
+      if (useDocFreq) {
+        // Bucket 3: drop a term that appears in > `commonThreshold` rows,
+        // so it cannot separate relevant rows from noise.
+        const doc = freqDrop?.get(token);
+        if (doc !== undefined && doc > commonThreshold) continue;
+        // Require the token to be at least 3 chars; short words are not
+        // informative even when rare.
+        if (token.length < 3) continue;
+      } else {
+        // Bucket 1/2: the rarest of the token's words must be in < 30% of
+        // observations. (A token may contain several words; the rarest one
+        // sets the bar.) A word absent from the vocab is in zero rows, which
+        // is below the 30% threshold, so such a word is kept.
+        const rarestFraction = rareDrop ? this.rarestWordFraction(token, rareDrop) : undefined;
+        if (rarestFraction !== undefined && rarestFraction >= 0.30) continue;
+      }
+      seen.add(token);
+      picked.push(token);
+    }
+
+    if (picked.length === 0) {
+      return null;
+    }
+    return picked
+      .map((token) => `"${token.replace(/"/g, '""')}"`)
       .join(' OR ');
+  }
+
+  /**
+   * #4804: term -> absolute document count for an FTS5 table. Lazy-creates
+   * the fts5vocab sidecar if it is missing so the caller does not need to
+   * have called ensureFTSTables first (important for the in-memory test
+   * store whose `isFts5Available` probe can return false on some
+   * platforms).
+   */
+  private collectTermDocFractions(
+    ftsTable: 'observations_fts' | 'session_summaries_fts',
+  ): Map<string, number> {
+    this.db.run(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS fts5vocab_${ftsTable} USING fts5vocab(${ftsTable}, 'row')`,
+    );
+    const result = new Map<string, number>();
+    const total = (this.db
+      .prepare(`SELECT count(*) AS n FROM ${ftsTable}`)
+      .get() as { n: number } | undefined)?.n ?? 0;
+    if (total === 0) return result;
+    const rows = this.db
+      .prepare(
+        `SELECT term, doc FROM fts5vocab_${ftsTable} WHERE doc > 0`,
+      )
+      .all() as { term: string; doc: number }[];
+    for (const r of rows) {
+      result.set(r.term, r.doc / total);
+    }
+    return result;
+  }
+
+  /**
+   * #4804: absolute doc-count threshold above which a term is "too common"
+   * to help bm25 in the any-term fallback.
+   */
+  private commonTermThreshold(ftsTable: 'observations_fts' | 'session_summaries_fts'): number {
+    this.db.run(
+      `CREATE VIRTUAL TABLE IF NOT EXISTS fts5vocab_${ftsTable} USING fts5vocab(${ftsTable}, 'row')`,
+    );
+    const row = this.db
+      .prepare(
+        `SELECT (SELECT count(*) FROM ${ftsTable}) AS total`,
+      )
+      .get() as { total: number } | undefined;
+    const total = row?.total ?? 0;
+    return Math.max(2, Math.floor(total / 50));
+  }
+
+  /**
+   * #4804: word -> fraction of observations containing it, for the
+   * small-prompt bucket (bucket 1/2). Used to drop common words by
+   * the rarest-of-words check.
+   */
+  private collectRareTokens(
+    ftsTable: 'observations_fts' | 'session_summaries_fts',
+    _fraction: number,
+  ): Map<string, number> {
+    return this.collectTermDocFractions(ftsTable);
+  }
+
+  /**
+   * For the small-prompt bucket: given a token, return the *rarest* word's
+   * document fraction. A token like `user-prompt` has two words; the rarest
+   * one sets the bar, so the test catches both `user` (common) and `prompt`
+   * (less common) correctly.
+   */
+  private rarestWordFraction(
+    token: string,
+    wordFraction: Map<string, number>,
+  ): number | undefined {
+    let rarest: number | undefined;
+    for (const match of token.matchAll(/[\p{L}\p{N}]+/gu)) {
+      const word = match[0].toLowerCase();
+      const frac = wordFraction.get(word);
+      if (frac === undefined) continue;
+      if (rarest === undefined || frac < rarest) {
+        rarest = frac;
+      }
+    }
+    return rarest;
   }
 
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
@@ -616,7 +759,7 @@ export class SessionSearch {
         return substringRows;
       }
       // No row holds every term, as a token or as a substring: widen to any term, ranked by bm25.
-      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset) ?? substringRows;
+      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset, 'observations_fts') ?? substringRows;
     }
 
     return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
@@ -694,7 +837,7 @@ export class SessionSearch {
       if (substringRows.length > 0 || (offset > 0 && this.searchSessionsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
         return substringRows;
       }
-      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset) ?? substringRows;
+      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset, 'session_summaries_fts') ?? substringRows;
     }
 
     return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
@@ -705,8 +848,15 @@ export class SessionSearch {
    * argument and the rest are the filter parameters, as built by the callers. Returns null when the query has
    * nothing to widen or the any-term form matches nothing either.
    */
-  private searchFtsAnyTerm<T>(sql: string, query: string, params: any[], limit: number, offset: number): T[] | null {
-    const anyTermQuery = SessionSearch.buildFTSAnyTermQuery(query);
+  private searchFtsAnyTerm<T>(
+    sql: string,
+    query: string,
+    params: unknown[],
+    limit: number,
+    offset: number,
+    ftsTable: 'observations_fts' | 'session_summaries_fts',
+  ): T[] | null {
+    const anyTermQuery = this.buildFTSAnyTermQuery(query, ftsTable);
     if (!anyTermQuery) {
       return null;
     }
