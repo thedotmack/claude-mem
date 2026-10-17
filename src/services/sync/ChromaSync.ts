@@ -262,6 +262,19 @@ function isMetadataScalar(value: unknown): value is string | number | boolean {
   return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
 }
 
+// One `IN (...)` per chunk keeps a large pending list under SQLite's bound
+// parameter limit (#4818).
+const PENDING_ID_QUERY_CHUNK_SIZE = 500;
+
+function selectRowsByIdChunks<T>(ids: number[], select: (placeholders: string, chunk: number[]) => T[]): T[] {
+  const rows: T[] = [];
+  for (let start = 0; start < ids.length; start += PENDING_ID_QUERY_CHUNK_SIZE) {
+    const chunk = ids.slice(start, start + PENDING_ID_QUERY_CHUNK_SIZE);
+    rows.push(...select(chunk.map(() => '?').join(', '), chunk));
+  }
+  return rows;
+}
+
 export class ChromaSync {
   private project: string;
   private collectionName: string;
@@ -1107,14 +1120,12 @@ export class ChromaSync {
     const watermark = existingIds.size ? Math.max(...existingIds) : 0;
     return {
       watermark,
-      // When Chroma holds nothing for this project yet, no watermark bounds
-      // the rows the backfill must visit: bootstrap snapshots every project
-      // up front while each backfill runs much later, so a live bump() in
-      // between would advance the watermark past these rows and hide them
-      // forever (#4818). Track every unindexed row explicitly instead — a
-      // live bump() only removes the id it actually wrote, so the backfill
-      // still processes these whatever the watermark is by then.
-      pending: sourceIds.filter(id => existingIds.size === 0 || (id <= watermark && !existingIds.has(id))),
+      // Every unindexed row is pending, including rows above the watermark:
+      // bootstrap snapshots every project up front while each backfill runs
+      // much later, so a live bump() in between would advance the watermark
+      // past them and hide them from the `id > watermark` scan (#4818). A
+      // live bump() only removes the id it actually wrote from pending.
+      pending: sourceIds.filter(id => !existingIds.has(id)),
     };
   }
 
@@ -1234,6 +1245,22 @@ export class ChromaSync {
     const observationBootstrap = this.summarizeBootstrapPending(observationRows.sourceIds, observationRows.completeIds);
     const summaryBootstrap = this.summarizeBootstrapPending(summaryRows.sourceIds, summaryRows.completeIds);
     const promptBootstrap = this.summarizeBootstrapPending(promptIds.map(row => row.id), existing.prompts);
+
+    const hasSourceRows = observationRows.sourceIds.length > 0
+      || summaryRows.sourceIds.length > 0
+      || promptIds.length > 0;
+    const hasIndexedRows = observationRows.completeIds.size > 0
+      || summaryRows.completeIds.size > 0
+      || existing.prompts.size > 0;
+    if (hasSourceRows && !hasIndexedRows) {
+      // Chroma holds none of this project's rows (a wiped or fresh collection).
+      // Rebuild it from zero at its backfill turn rather than listing every
+      // row pending: resetForRebuild drops whatever watermark live writes
+      // bumped while the project waited in the queue (#4818).
+      ChromaSyncState.replace(project, { observations: 0, summaries: 0, prompts: 0, rebuildPending: true });
+      logger.info('CHROMA_SYNC', 'Bootstrapped watermarks from Chroma: no rows indexed, project will rebuild from SQLite', { project });
+      return;
+    }
 
     ChromaSyncState.replace(project, {
       observations: observationBootstrap.watermark,
@@ -1609,16 +1636,16 @@ export class ChromaSync {
     `).all(backfillProject, watermark) as StoredObservation[];
     let pendingRows: StoredObservation[] = [];
     if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => '?').join(', ');
-      pendingRows = db.db.prepare(`
-        SELECT
-          o.*,
-          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-        FROM observations o
-        LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
-        WHERE o.project = ? AND o.id IN (${placeholders})
-        ORDER BY o.id ASC
-      `).all(backfillProject, ...pendingIds) as StoredObservation[];
+      pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
+        db.db.prepare(`
+          SELECT
+            o.*,
+            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          FROM observations o
+          LEFT JOIN sdk_sessions s ON s.memory_session_id = o.memory_session_id
+          WHERE o.project = ? AND o.id IN (${placeholders})
+          ORDER BY o.id ASC
+        `).all(backfillProject, ...chunk) as StoredObservation[]);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -1674,16 +1701,16 @@ export class ChromaSync {
     `).all(backfillProject, watermark) as StoredSummary[];
     let pendingRows: StoredSummary[] = [];
     if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => '?').join(', ');
-      pendingRows = db.db.prepare(`
-        SELECT
-          ss.*,
-          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-        FROM session_summaries ss
-        LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
-        WHERE ss.project = ? AND ss.id IN (${placeholders})
-        ORDER BY ss.id ASC
-      `).all(backfillProject, ...pendingIds) as StoredSummary[];
+      pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
+        db.db.prepare(`
+          SELECT
+            ss.*,
+            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          FROM session_summaries ss
+          LEFT JOIN sdk_sessions s ON s.memory_session_id = ss.memory_session_id
+          WHERE ss.project = ? AND ss.id IN (${placeholders})
+          ORDER BY ss.id ASC
+        `).all(backfillProject, ...chunk) as StoredSummary[]);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
@@ -1741,18 +1768,18 @@ export class ChromaSync {
     `).all(backfillProject, watermark) as StoredUserPrompt[];
     let pendingRows: StoredUserPrompt[] = [];
     if (pendingIds.length > 0) {
-      const placeholders = pendingIds.map(() => '?').join(', ');
-      pendingRows = db.db.prepare(`
-        SELECT
-          up.*,
-          s.project,
-          s.memory_session_id,
-          COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
-        FROM user_prompts up
-        JOIN sdk_sessions s ON up.session_db_id = s.id
-        WHERE s.project = ? AND up.id IN (${placeholders})
-        ORDER BY up.id ASC
-      `).all(backfillProject, ...pendingIds) as StoredUserPrompt[];
+      pendingRows = selectRowsByIdChunks(pendingIds, (placeholders, chunk) =>
+        db.db.prepare(`
+          SELECT
+            up.*,
+            s.project,
+            s.memory_session_id,
+            COALESCE(NULLIF(s.platform_source, ''), 'claude') as platform_source
+          FROM user_prompts up
+          JOIN sdk_sessions s ON up.session_db_id = s.id
+          WHERE s.project = ? AND up.id IN (${placeholders})
+          ORDER BY up.id ASC
+        `).all(backfillProject, ...chunk) as StoredUserPrompt[]);
       const foundPendingIds = new Set(pendingRows.map(row => row.id));
       const missingPendingIds = pendingIds.filter(id => !foundPendingIds.has(id));
       if (missingPendingIds.length > 0) {
