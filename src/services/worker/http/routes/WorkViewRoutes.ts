@@ -4,6 +4,8 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
 import { DATA_DIR, DB_PATH } from '../../../../shared/paths.js';
+import { logger } from '../../../../utils/logger.js';
+import { formatHostForUrl } from '../../../../shared/worker-url.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
@@ -32,7 +34,9 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
   if (origin) {
     try {
       const from = new URL(origin);
-      const to = new URL(`http://${req.get('host')}`);
+      const authority = /^(\[::1\]|127\.0\.0\.1|localhost)(?::(\d+))?$/i.exec(req.get('host') ?? '');
+      if (!authority) throw new Error('Invalid local authority');
+      const to = new URL(`http://${formatHostForUrl(authority[1])}${authority[2] ? `:${authority[2]}` : ''}`);
       valid = valid && from.protocol === 'http:'
         && ['127.0.0.1', 'localhost', '[::1]'].includes(from.hostname)
         && from.port === to.port;
@@ -114,6 +118,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const complete = lifecycle?.explicit && (lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(String(lifecycle.status).toLowerCase()));
     if (checked && !complete) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
     this.reviews.set(requestId, expectedFingerprint, checked);
+    logger.debug('HTTP', 'Local work review updated', { checked });
     const updated = this.snapshot();
     res.setHeader('Cache-Control', 'no-store');
     res.json(updated);

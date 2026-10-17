@@ -238,6 +238,16 @@ describe('local work view', () => {
     expect((await review(before)).status).toBe(409);
   });
 
+  it('accepts bracketed IPv6 loopback authority only at the viewer port', async () => {
+    const request = (await snapshot()).humanRequests[0];
+    const port = new URL(origin).port;
+    expect((await review(request, false, { Host: `[::1]:${port}`, Origin: `http://[::1]:${port}` })).status).toBe(200);
+    expect((await review(request, false, { Host: `[::1]:${port}`, Origin: 'http://[::1]:1' })).status).toBe(403);
+    for (const host of ['[::1]:bad', '[::1]suffix', '[::1]:70000', 'localhost:bad']) {
+      expect((await review(request, false, { Host: host, Origin: 'http://[::1]' })).status).toBe(403);
+    }
+  });
+
   it('hashes the full prompt beyond the displayed request excerpt', async () => {
     const excerpt = `Build a local work viewer. ${'Keep the work readable. '.repeat(70)}`;
     seedLinkedEvidence(`${excerpt}Original tail.`);
