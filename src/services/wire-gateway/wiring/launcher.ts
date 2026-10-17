@@ -15,7 +15,7 @@ import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { constants } from 'os';
 import { relaySignalsToInteractiveChild } from '../../../shared/interactive-child-signals.js';
-import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
+import { sanitizeEnvForUserAgentLaunch } from '../../../supervisor/env-sanitizer.js';
 import {
   addWireGatewayRouteWhileRoutesFileIsLocked,
   readWireGatewayRoutesFile,
@@ -169,7 +169,7 @@ export async function prepareAgentLaunch(
   const launchId = await dependencies.createLaunch(descriptor.id, dependencies.cwd);
   const { agentBaseUrl } = splitUpstreamForRoute(upstreamValue, dependencies.gatewayOrigin, `${routeId}/l/${launchId}`);
   const env: Record<string, string> = {};
-  for (const [name, value] of Object.entries(sanitizeEnv({ ...dependencies.environment.env }))) {
+  for (const [name, value] of Object.entries(sanitizeEnvForUserAgentLaunch({ ...dependencies.environment.env }))) {
     if (value !== undefined) env[name] = value;
   }
   for (const [name, template] of Object.entries(launch.env)) env[name] = template.replaceAll('{baseUrl}', agentBaseUrl);
@@ -184,7 +184,7 @@ export async function prepareAgentLaunch(
  */
 export function spawnAgentWithInheritedStdio(executablePath: string, args: string[], env: Record<string, string>, cwd: string): Promise<number> {
   return new Promise((resolve, reject) => {
-    // `env` was built from sanitizeEnv in prepareAgentLaunch.
+    // `env` was built from sanitizeEnvForUserAgentLaunch in prepareAgentLaunch.
     const child = spawn(executablePath, args, { stdio: 'inherit', env, cwd });
     const stopRelaying = relaySignalsToInteractiveChild(child);
     child.on('error', (error) => {

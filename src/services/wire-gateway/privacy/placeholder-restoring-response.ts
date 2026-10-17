@@ -15,6 +15,7 @@
 
 import { logger } from '../../../utils/logger.js';
 import { rewriteJsonStringsInText } from '../json/string-walker.js';
+import { EventStreamSniffer } from '../relay/protocols.js';
 import { findSseEventEnd, splitSseEvent } from '../relay/sse-event-framing.js';
 import { isKeptReplyString, valueHoldsJson, type OutboundRedactionPlaceholders } from './outbound-redaction.js';
 
@@ -97,6 +98,7 @@ export class PlaceholderRestoringResponse {
   private searchedUpTo = 0;
   private held: HeldEvent | null = null;
   private finished = false;
+  private readonly firstBytesSniffer = new EventStreamSniffer();
   private readonly maxHeldBytes: number;
 
   constructor(options: PlaceholderRestoringResponseOptions) {
@@ -116,14 +118,16 @@ export class PlaceholderRestoringResponse {
     return this.mode === 'as_is';
   }
 
-  private decideFromFirstBytes(first: Uint8Array): void {
-    // The ChatGPT backend streams without saying so.
-    const start = new TextDecoder().decode(first.subarray(0, 6));
-    this.mode = start.startsWith('event:') || start.startsWith('data:') || start.startsWith(':') ? 'stream' : 'whole';
+  /** Settles an undecided mode from the held first bytes (the ChatGPT backend streams without saying so), then restores them. */
+  private decideThenPush(chunk: Uint8Array, ended: boolean): Uint8Array[] {
+    const decision = this.firstBytesSniffer.push(chunk, ended);
+    if (!decision) return [];
+    this.mode = decision.isEventStream ? 'stream' : 'whole';
+    return decision.heldChunks.flatMap(heldChunk => this.push(heldChunk));
   }
 
   push(chunk: Uint8Array): Uint8Array[] {
-    if (this.mode === 'undecided') this.decideFromFirstBytes(chunk);
+    if (this.mode === 'undecided') return this.decideThenPush(chunk, false);
     if (this.mode === 'as_is') return [chunk];
     if (this.buffered.length + chunk.length > this.maxHeldBytes) return this.giveUpHolding(chunk);
     this.buffered = concatBytes(this.buffered, chunk);
@@ -160,7 +164,12 @@ export class PlaceholderRestoringResponse {
   /** What is still held, written out (magpie `Finish`). */
   finish(): Uint8Array[] {
     if (this.finished) return [];
+    const decidedOutput = this.mode === 'undecided' ? this.decideThenPush(new Uint8Array(0), true) : [];
     this.finished = true;
+    return [...decidedOutput, ...this.finishDecided()];
+  }
+
+  private finishDecided(): Uint8Array[] {
     if (this.mode === 'whole') {
       const body = this.buffered;
       this.buffered = new Uint8Array(0);

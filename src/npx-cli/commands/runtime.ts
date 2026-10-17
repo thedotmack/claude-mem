@@ -1,5 +1,5 @@
 import { spawnHidden } from '../../shared/spawn.js';
-import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { sanitizeEnv, sanitizeEnvForUserAgentLaunch } from '../../supervisor/env-sanitizer.js';
 import { relaySignalsToInteractiveChild } from '../../shared/interactive-child-signals.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
@@ -65,7 +65,8 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
     cwd,
-    env: sanitizeEnv(process.env),
+    // `wire run` hands this env down to the user's own agent, so it keeps the user's settings.
+    env: hostsInteractiveChild ? sanitizeEnvForUserAgentLaunch(process.env) : sanitizeEnv(process.env),
   });
   if (hostsInteractiveChild) relaySignalsToInteractiveChild(child);
 

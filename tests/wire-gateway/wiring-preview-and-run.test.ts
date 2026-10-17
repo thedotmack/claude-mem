@@ -162,7 +162,7 @@ describe('wire preview', () => {
 });
 
 describe('wire run', () => {
-  it('starts a stub agent from PATH with its launch URL, a sanitized env, and no CLAUDE_MEM_INTERNAL', async () => {
+  it('starts a stub agent from PATH with its launch URL, the user\'s settings, no nesting markers, and no CLAUDE_MEM_INTERNAL', async () => {
     if (IS_WINDOWS) return;
     const box = sandbox('run');
     const binDirectory = join(box.root, 'bin');
@@ -174,6 +174,7 @@ describe('wire run', () => {
     box.env.CLAUDE_MEM_INTERNAL = '1';
     box.env.CLAUDE_CODE_ENTRYPOINT = 'cli';
     box.env.KEEP_ME = 'yes';
+    box.env.CLAUDE_CODE_EFFORT_LEVEL = 'high';
 
     const gateway = await startWireGatewayForTest({ routesFilePath: box.routesFilePath, routesReloadCheckIntervalMs: 0 });
     try {
@@ -196,6 +197,8 @@ describe('wire run', () => {
       expect(await child.exited).toBe(0);
       expect(printed).toMatch(new RegExp(`^GOOGLE_GEMINI_BASE_URL=${gateway.baseUrl.replaceAll('.', '\\.')}/r/antigravity-cli/l/[a-z2-7]{26}$`, 'm'));
       expect(printed).toContain('KEEP_ME=yes');
+      // The user's own agent setting is theirs; a normal launch would see it.
+      expect(printed).toContain('CLAUDE_CODE_EFFORT_LEVEL=high');
       expect(printed).not.toContain('CLAUDE_MEM_INTERNAL');
       expect(printed).not.toContain('CLAUDE_CODE_ENTRYPOINT');
       expect(readWireGatewayRoutesFile(box.routesFilePath).routes['antigravity-cli'].upstreamBaseUrl).toBe('https://generativelanguage.googleapis.com');

@@ -22,7 +22,7 @@ import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
-import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { sanitizeEnv, sanitizeEnvForUserAgentLaunch } from '../supervisor/env-sanitizer.js';
 import { relaySignalsToInteractiveChild } from '../shared/interactive-child-signals.js';
 import { setRegistryDegradedReporter } from '../supervisor/process-registry.js';
 
@@ -1373,8 +1373,9 @@ function runWireGatewayServiceCli(command: string, extraArgs: string[] = []): vo
   const child = spawn(process.execPath, [wireScript, command, ...extraArgs], {
     stdio: 'inherit',
     windowsHide: true,
-    // Same env discipline as runServerServiceCli (#2357 / #2375).
-    env: sanitizeEnv(process.env),
+    // Same env discipline as runServerServiceCli (#2357 / #2375), except
+    // `wire run`, whose env reaches the user's own agent with their settings.
+    env: command === 'run' ? sanitizeEnvForUserAgentLaunch(process.env) : sanitizeEnv(process.env),
   });
   // `wire run` hosts an interactive agent below: outlive it, keep its exit code.
   if (command === 'run') relaySignalsToInteractiveChild(child);

@@ -142,6 +142,28 @@ describe('placeholders are put back inside a streamed Gemini functionCall\'s arg
   });
 });
 
+describe('a stream with no content-type keeps streaming when its first chunk is a partial line start', () => {
+  it('decides from the held first bytes, streams event by event, and restores placeholders', () => {
+    const placeholder = placeholders.maskText('DB_PASSWORD=hunter2abc1').text.slice('DB_PASSWORD='.length);
+    const firstEvent = `event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"${placeholder}"}\n\n`;
+    const secondEvent = 'event: response.completed\ndata: {"type":"response.completed"}\n\n';
+    const restorer = new PlaceholderRestoringResponse({ placeholders, contentType: null, contentEncoding: null });
+    const encoder = new TextEncoder();
+    const decode = (chunks: Uint8Array[]) => chunks.map(chunk => new TextDecoder().decode(chunk)).join('');
+    expect(restorer.push(encoder.encode('ev'))).toEqual([]);
+    expect(decode(restorer.push(encoder.encode(firstEvent.slice(2))))).toBe(firstEvent.replace(placeholder, 'hunter2abc1'));
+    expect(decode(restorer.push(encoder.encode(secondEvent)))).toBe(secondEvent);
+    expect(restorer.finish()).toEqual([]);
+  });
+
+  it('a short whole body with no content-type is still put back when the reply ends', () => {
+    const placeholder = placeholders.maskText('DB_PASSWORD=hunter2abc1').text.slice('DB_PASSWORD='.length);
+    const restorer = new PlaceholderRestoringResponse({ placeholders, contentType: null, contentEncoding: null });
+    expect(restorer.push(new TextEncoder().encode(`{"a":"${placeholder}"}`))).toEqual([]);
+    expect(restorer.finish().map(chunk => new TextDecoder().decode(chunk)).join('')).toBe('{"a":"hunter2abc1"}');
+  });
+});
+
 describe('consent writes are serialized across processes (review thread 5)', () => {
   it('waits for a held consent lock instead of writing past it', async () => {
     setWireRecordingConsent(true, consentFilePath);
