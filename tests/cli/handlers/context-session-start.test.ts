@@ -18,6 +18,7 @@ const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const calls: unknown[][] = [];
 let includeAllSources = false;
+let contextProjects = 'current';
 let showTerminalOutput = false;
 let workerUnreachable = false;
 let provider = 'claude';
@@ -32,6 +33,7 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: String(includeAllSources),
+    CLAUDE_MEM_CONTEXT_PROJECTS: contextProjects,
     CLAUDE_MEM_PROVIDER: provider,
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: quotaFallbackProvider,
     CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
@@ -54,6 +56,7 @@ mock.module('../../../src/utils/project-name.js', () => ({
 mock.module('../../../src/shared/worker-utils.js', () => ({
   executeWithWorkerFallback: async (...args: unknown[]) => {
     calls.push(args);
+    if (args[0] === '/api/projects') return { projects: ['other-project', 'repo-project', 'third-project'] };
     return 'context from worker';
   },
   getWorkerPort: () => 37777,
@@ -81,6 +84,23 @@ beforeEach(() => {
 });
 
 describe('contextHandler SessionStart path', () => {
+  it('reads only this checkout by default and every project, this checkout last, when CLAUDE_MEM_CONTEXT_PROJECTS is all', async () => {
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const injectUrl = () => String(calls.filter(call => String(call[0]).startsWith('/api/context/inject')).at(-1)?.[0]);
+    const projectsOf = (url: string) => decodeURIComponent(new URL(url, 'http://x').searchParams.get('projects') ?? '');
+
+    calls.length = 0;
+    await contextHandler.execute({ sessionId: 'projects-current', cwd: '/tmp/repo', platform: 'claude-code' });
+    expect(projectsOf(injectUrl())).toBe('parent-project,repo-project');
+    expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
+
+    contextProjects = 'all';
+    try {
+      calls.length = 0;
+      await contextHandler.execute({ sessionId: 'projects-all', cwd: '/tmp/repo', platform: 'claude-code' });
+      expect(projectsOf(injectUrl())).toBe('other-project,third-project,parent-project,repo-project');
+    } finally { contextProjects = 'current'; }
+  });
   it('steers note-taking to available plugin tools by default and still injects instructions during a worker outage', async () => {
     memoryInstructions = undefined;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');

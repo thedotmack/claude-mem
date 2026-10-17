@@ -174,7 +174,16 @@ export const contextHandler: EventHandler = {
       settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true'
       && input.platform !== 'codex';
 
-    const projectsParam = context.allProjects.join(',');
+    // Opt-in: read every project's memory at startup. This checkout's keys stay
+    // last, because the last key titles the rendered block.
+    let scopeProjects = context.allProjects;
+    if (settings.CLAUDE_MEM_CONTEXT_PROJECTS === 'all') {
+      const catalog = await executeWithWorkerFallback<{ projects?: string[] }>('/api/projects', 'GET');
+      if (!isWorkerFallback(catalog) && Array.isArray(catalog?.projects)) {
+        scopeProjects = [...catalog.projects.filter(p => !context.allProjects.includes(p)), ...context.allProjects];
+      }
+    }
+    const projectsParam = scopeProjects.join(',');
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
       : undefined;
@@ -201,7 +210,7 @@ export const contextHandler: EventHandler = {
           {
             session_id: input.sessionId,
             cwd,
-            projects: context.allProjects,
+            projects: scopeProjects,
             ...(platformSourceParam ? { platformSource: normalizedPlatformSource } : {}),
             reserveChars: teamBriefReserveChars(settings),
           },
@@ -219,7 +228,7 @@ export const contextHandler: EventHandler = {
     const cacheNowEpochMs = Date.now();
     const readCachedRender = (colors: boolean): string | null => {
       if (serverRuntime) return null;
-      const keys = contextCacheKeys(context.allProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
+      const keys = contextCacheKeys(scopeProjects, platformSourceParam ? normalizedPlatformSource : undefined, colors, cwd);
       const cached = readContextCache(keys, cacheNowEpochMs);
       if (!cached) return null;
       logger.debug('HOOK', 'SessionStart context served from the context cache', {
