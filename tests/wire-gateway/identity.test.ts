@@ -417,6 +417,8 @@ describe('wire identity: the folder and words readers stay linear on hostile tex
     timed('unclosed reminders', () => userWordsInText('<system-reminder>'.repeat(HOSTILE_LENGTH / 17)));
     timed('one closed then unclosed reminders', () => userWordsInText(`<system-reminder>x</system-reminder>${'<system-reminder x'.repeat(HOSTILE_LENGTH / 18)}`));
     timed('AGENTS.md heading then spaces', () => userWordsInText(`# a.md instructions for x${spaces}`));
+    timed('AGENTS.md heading, spaces, then a last character', () => userWordsInText(`# a.md instructions for x${spaces}y`));
+    timed('bare AGENTS.md heading, spaces, then a last character', () => userWordsInText(`# a.md instructions${spaces}y`));
   });
 
   it('reads what magpie\'s patterns read', () => {

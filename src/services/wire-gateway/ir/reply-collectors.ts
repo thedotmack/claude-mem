@@ -730,7 +730,8 @@ class WholeJsonReplyCollector implements WireReplyCollector {
       logger.warn('WIRE', 'A whole-JSON reply did not parse; its reply is not captured', {
         protocol: this.protocol,
         replyBytes: bytes.length,
-        error: error instanceof Error ? error.message : String(error),
+        // Only the error's kind: Bun's parse messages quote the reply text, which may hold secrets.
+        errorKind: error instanceof Error ? error.name : typeof error,
       });
       return accumulator.finish(false);
     }

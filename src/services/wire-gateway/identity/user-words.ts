@@ -56,9 +56,11 @@ const CODEX_APP_MY_REQUEST_PATTERN = /^## My request(?: for Codex)?:[ \t]*\n?/gm
  * `agentsFor`, `^# (\S+\.md) instructions for (\S.*?)[ \t]*\n`, without the
  * lazy repeat that backtracks over a long line with no line feed). codex-cli
  * 0.162.1 sends a bare "# AGENTS.md instructions" line, without the path
- * (seen live), so the "for <path>" part is optional.
+ * (seen live), so the "for <path>" part is optional. The two forms are
+ * alternatives so no two repeats can match the same spaces (a long line of
+ * spaces with no line feed would backtrack quadratically).
  */
-const AGENTS_FILE_INSTRUCTIONS_PATTERN = /^# \S+\.md instructions(?: for \S[^\n\r\u2028\u2029]*)?[ \t]*\n/;
+const AGENTS_FILE_INSTRUCTIONS_PATTERN = /^# \S+\.md instructions(?: for \S[^\n\r\u2028\u2029]*|[ \t]*)\n/;
 
 /**
  * How a text the agent put in as the user begins (magpie `injected`, verbatim):
