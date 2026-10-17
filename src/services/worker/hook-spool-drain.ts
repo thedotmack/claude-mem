@@ -3,6 +3,7 @@ import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsu
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
 import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
@@ -16,6 +17,14 @@ const SAFETY_SWEEP_INTERVAL_MS = 30_000;
  */
 async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
   switch (entry.kind) {
+    case 'work_state_telemetry': {
+      const { payload } = entry;
+      const db = requireIngestContext().dbManager.getSessionStore().db;
+      if (payload.kind === 'instruction') recordWorkStateInstruction(db, { ...payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, payload.state!, payload.eventId);
+      else recordWorkStateMcp(db, payload.tool!, payload.outcome!, payload.eventId, entry.enqueuedAtEpochMs);
+      markHandedOff();
+      return true;
+    }
     case 'observation':
     case 'file_edit': {
       // Attribute it to the prompt that was current when the hook saw it, not

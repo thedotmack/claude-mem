@@ -123,6 +123,7 @@ async function renderSessionStartFromServer(
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const emptyResult: HookResult = {
+      workStateTelemetry: 'measure',
       hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: '' },
       exitCode: HOOK_EXIT_CODES.SUCCESS,
     };
@@ -138,6 +139,7 @@ export const contextHandler: EventHandler = {
     // A fresh timeline would change its prompt prefix and invalidate the cache.
     // Also guard direct calls from older hook registrations that include resume.
     if (input.platform === 'claude-code' && input.sessionSource === 'resume') {
+      delete emptyResult.workStateTelemetry;
       return emptyResult;
     }
 
@@ -148,6 +150,7 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
+      emptyResult.workStateTelemetry = 'excluded';
       return emptyResult;
     }
 
@@ -244,6 +247,7 @@ export const contextHandler: EventHandler = {
       }
     }
     if (isWorkerFallback(contextResult)) {
+      emptyResult.workStateTelemetry = 'unknown';
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
       const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
@@ -257,6 +261,7 @@ export const contextHandler: EventHandler = {
       additionalContext = '';
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      emptyResult.workStateTelemetry = 'unknown';
       return emptyResult;
     }
 
@@ -363,6 +368,7 @@ export const contextHandler: EventHandler = {
       : undefined;
 
     return {
+      workStateTelemetry: 'measure',
       hookSpecificOutput: {
         hookEventName: 'SessionStart',
         additionalContext

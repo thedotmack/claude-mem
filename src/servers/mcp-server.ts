@@ -3,6 +3,7 @@ declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 import { logger } from '../utils/logger.js';
+import { spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -1193,10 +1194,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
-    return {
+    const result = {
       content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
       isError: true
     };
+    spoolWorkStateMcpResult(tool.name, result);
+    return result;
   }
 
   if ((TEAMBRAIN_TOOL_NAMES as readonly string[]).includes(tool.name) && !teamBrainJoined()) {
@@ -1210,16 +1213,20 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   try {
-    return await tool.handler(request.params.arguments || {});
+    const result = await tool.handler(request.params.arguments || {});
+    spoolWorkStateMcpResult(tool.name, result);
+    return result;
   } catch (error: unknown) {
     logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
-    return {
+    const result = {
       content: [{
         type: 'text' as const,
         text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
       }],
       isError: true
     };
+    spoolWorkStateMcpResult(tool.name, result);
+    return result;
   }
 });
 

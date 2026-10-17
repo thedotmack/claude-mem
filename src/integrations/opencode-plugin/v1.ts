@@ -83,6 +83,7 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
       await core.captureTool({
         tool: input.tool,
         sessionID: input.sessionID,
+        toolUseId: input.callID,
         args: input.args,
         output: output.output || "",
       });

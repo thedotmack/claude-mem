@@ -150,6 +150,7 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `worker_started` | The background worker starts, plus one heartbeat per 24h of uptime | `trigger` (start / heartbeat), `duration_ms`, `ide`, `provider`, `mode`, `runtime_mode`, process memory (`process_rss_mb`, `heap_used_mb`), the install snapshot: `db_observation_count`, `db_session_count`, `db_summary_count`, `db_project_count`, `db_size_mb`, `install_age_days`, `obs_count_7d`, `obs_count_30d`, `days_since_last_obs`; on a real start also crash detection: `previous_shutdown` (crash / clean / unknown) and, after a clean shutdown, `previous_uptime_seconds` |
 | `observer_turn_rollup` | Emitted **once per session, at session end** — a per-session rollup that aggregates every compression in that session (stored observations, invalid-output drops, failures, aborts) instead of one event per turn | `rollup_reason` (session_end / worker_shutdown / safety_flush), `window_seq`, aggregated `outcomes_*` counts (including `outcomes_aborted_deadline_exceeded`), `total_tokens_input`, `total_tokens_output`, `total_cost_usd`, `avg_duration_ms`, `avg_compression_ms`, `top_model`, `top_abort_reason` (the most common `abort_reason` among the session's aborted turns; present only when one aborted), `observed_model`, `observed_billing`, `observations_created` (sum of observations generated in the session — pairs with `total_cost_usd` to derive cost per observation), summed `obs_type_*` buckets, `window_start_ts`, plus the per-turn fields it summarizes (`provider`, `ide`) |
 | `context_injected_rollup` | A 5-minute time-window rollup of context injections (stored memory injected into new sessions) | aggregated `outcomes_ok` / `outcomes_error` counts, `count`, `total_tokens`, `avg_tokens`, `total_observations_injected` (sum of observations served from cache into prompts), `total_tokens_saved_vs_naive`, `window_start_ts` |
+| `work_state_usage_rollup` | A 5-minute rollup of captured work-state activity and instruction returns; also flushed at worker shutdown | `platform`, `agent_role`, `instruction_state`, the counters described below, `window_start_ts` |
 | `search_performed` | A memory search runs (never the query text) | `endpoint`, `outcome`, `duration_ms`, `result_count`, `search_strategy`, `chroma_available`, `fallback_reason` |
 | `skill_invoked` | A bundled skill is invoked — the host Skill tool loads its instructions, or the user types a first-party `/skill` at session-init. **Not** work completion; no `duration_ms` / outcome. Worker path only. Unknown `/foo` emits nothing. | `skill_id` (closed enum + `other`), `skill_source` (`first_party` / `third_party`), `skill_trigger` (`tool` / `prompt`), `ide` |
 | `worker_stopped` | The background worker shuts down gracefully | `uptime_seconds`, `shutdown_reason` (stop / restart / signal / idle) |
@@ -159,6 +160,57 @@ One value is derived server-side rather than sent by the client: PostHog resolve
 | `hook_failed` | A claude-mem hook fails hard — the worker is unreachable past the fail-loud threshold, or a blocking error occurs | `hook_type`, `error_mode`, `consecutive_failures`, `threshold_tripped` |
 | `error_occurred` | The worker returns an HTTP 5xx | `error_category` |
 | `$exception` | A real error is captured for [error tracking](#error-tracking) — consent-gated and independently kill-switchable | Redacted `error_type` / `error_message` / `error_stack`, `occurrence_count`, plus whitelisted context. See [Error tracking](#error-tracking) for exactly what is kept vs. redacted |
+
+### Work-state usage and diagnostic limits
+
+Work-state rollups contain counts only. They never include task titles, fields,
+prompts, project names, paths, raw session or agent IDs, or inferred models.
+`platform` is a fixed supported-host name, `other`, or `unknown`; `agent_role`
+is `main`, `subagent`, or `unknown` (using the same subagent predicate as capture).
+
+| Counter | What it measures |
+|---|---|
+| `instruction_returned_count` | Hooks returning the complete work-state instruction block, including cached blocks. This is a handoff to the host, **not proof the host accepted it or the model followed it**. |
+| `instruction_disabled_count`, `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Known configuration exclusions, successful returns without the block, or a failed/unknown context read. |
+| `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts with an original hook timestamp within the 30-day replay window, and their first captured session/agent scope. Untimestamped transcript prompts are omitted. |
+| `captured_tool_count`, `unidentified_tool_event_count` | Distinct captured tool calls with stable IDs; calls without a stable ID count only in the second diagnostic counter. Both require an original event timestamp and a preceding known public-turn boundary. Memory/project/privacy/agent exclusions still apply. |
+| `native_todo_count` | Captured `TodoWrite`, `SetTodoList`, or `update_plan` calls, including those excluded from memory generation. With `instruction_state=returned`, this is a useful competing-todo diagnostic, **not a verdict of noncompliance**. |
+| `captured_read_count`, `captured_write_count` | Distinct work-state tool receipts seen by post-tool capture, attributed to the captured host and agent role. |
+| `mcp_read_count`, `mcp_write_count` | Executions in this plugin's MCP server, including failures before the worker can answer. Agent and host attribution are `unknown`. Receipts remain in the local spool until a worker can collect them. |
+
+Both `captured_` and `mcp_` read/write counters also have outcome counters ending
+in `_ok_count`, `_error_count`, `_excluded_count`, `_disabled_count`, or
+`_unknown_count`. Only an explicit saved receipt establishes a successful write.
+The two sources can observe **the same call: never add them as distinct usage**.
+
+`instruction_state` describes the last known hook handoff preceding the event
+in that exact local session/agent scope. Delayed activity older than the latest
+handoff has `instruction_state=unknown`; later instructions are never applied
+retroactively. Captured prompts and tools without original timestamps are omitted.
+Before a handoff is observed, it is `unknown`. Direct MCP calls,
+server-runtime-only capture, missing hooks, and an unavailable worker can leave
+coverage unknown. Live Pi, OpenCode, and OMP prompt callbacks carry their original
+timing; Pi uses the persisted user-message timestamp even on replay. Generic DSH
+client calls and OpenClaw synthetic init paths lack verified prompt timing and
+remain outside captured prompt/tool counts. OMP has its own bounded platform label;
+missing stable tool IDs contribute only unidentified-arrival diagnostics. Older adapters that already supplied a default host cannot
+be distinguished from hosts that explicitly reported it. Missing counters or
+events are not evidence of zero usage or
+zero adherence; an ordinary question may correctly require no write. No
+compliance percentage or task classification is computed.
+
+Local hashed receipt keys suppress duplicate prompts, tool replay, and repeated
+spool delivery across worker restarts for 30 days. Cleanup on activity, at most
+once an hour, removes older
+receipts; older events are dropped rather than counted again. A local,
+content-free public/private turn bit is maintained even while analytics is off,
+so opting back in during private work cannot reuse a previous public prompt.
+Only a strictly newer, timestamped public submission can reopen public coverage,
+including when duplicate text reuses a prompt row; private turns win timestamp ties.
+Neither the keys nor this bit are sent to PostHog. The worker uses the existing
+30-second consent cache. Telemetry remains best effort: opt-out disables
+analytics, and a crash before a rollup flush can lose counts. This feature does
+not backfill past releases.
 
 ## Error tracking
 
