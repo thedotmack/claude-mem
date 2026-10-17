@@ -29,10 +29,7 @@ export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.pla
   let packageLocalBinPath: string | undefined;
   try {
     const pkgPath = _require.resolve("tree-sitter-cli/package.json");
-    const binPath = join(dirname(pkgPath), binName);
-    if (existsSync(binPath)) {
-      packageLocalBinPath = binPath;
-    }
+    packageLocalBinPath = join(dirname(pkgPath), binName);
   } catch {
     // [ANTI-PATTERN IGNORED]: tree-sitter-cli not in node_modules is expected; falls back to PATH
   }
@@ -40,8 +37,21 @@ export function resolveTreeSitterBinPath(platform: NodeJS.Platform = process.pla
   if (packageLocalBinPath === undefined) return binName;
   // Probing only means something for the platform we are running on; the
   // platform parameter exists so tests can check other platforms' names.
-  if (platform !== process.platform) return packageLocalBinPath;
-  return pickTreeSitterBinPath(packageLocalBinPath, binName, process.env.PATH ?? '');
+  if (platform !== process.platform) return existsSync(packageLocalBinPath) ? packageLocalBinPath : binName;
+  return resolveTreeSitterBinPathFor(packageLocalBinPath, process.env.PATH ?? '');
+}
+
+/**
+ * The binary the parser runs, given the path where a tree-sitter-cli package
+ * keeps its executable: the bare name (a PATH lookup) when that file does not
+ * exist, otherwise pickTreeSitterBinPath's choice. resolveTreeSitterBinPath
+ * uses it for this process's own package; `npx claude-mem doctor` uses it for
+ * the plugin root the worker runs from, so its answer matches the runtime.
+ */
+export function resolveTreeSitterBinPathFor(packageLocalBinPath: string, searchPath: string): string {
+  const binName = treeSitterBinaryName();
+  if (!existsSync(packageLocalBinPath)) return binName;
+  return pickTreeSitterBinPath(packageLocalBinPath, binName, searchPath);
 }
 
 /**
@@ -235,4 +245,25 @@ function loadCheckFor(absoluteBinPath: string): TreeSitterCliLoadCheck {
   const check = probeTreeSitterCliLoadable(absoluteBinPath);
   loadCheckCache.set(absoluteBinPath, { mtimeMs: stats.mtimeMs, mode: stats.mode, check });
   return check;
+}
+
+/**
+ * Why the smart tools cannot parse here, or null when the CLI runs. Without
+ * it, smart_outline answers "Could not parse … unsupported language or empty"
+ * and smart_search reports "found 0 symbols", which read like a grammar
+ * problem instead of the missing (#4858) or broken (#4758) CLI they are.
+ *
+ * The parameter exists for tests; callers pass none.
+ */
+export function treeSitterCliUnavailableMessage(
+  check: TreeSitterCliLoadCheck = checkTreeSitterCliLoadable(),
+): string | null {
+  if (check.loadable) return null;
+  if (!check.present) {
+    return "the tree-sitter CLI is not installed (not in the plugin's tree-sitter-cli package and not on PATH)"
+      + ": this is a broken-install/environment issue, not an unsupported language"
+      + "; run `npx claude-mem repair`, or put a tree-sitter 0.26 or newer build that runs on this system on PATH";
+  }
+  return `the installed tree-sitter CLI cannot run on this system${check.reason ? ` (${check.reason})` : ""}`
+    + ": this is a broken-install/environment issue, not an unsupported language";
 }

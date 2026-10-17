@@ -149,9 +149,44 @@ describe.skipIf(process.platform === 'win32')('npx doctor tree-sitter CLI row', 
     expect(await treeSitterCliCheck(root)).toMatchObject({ name: 'tree-sitter CLI', status: 'ok', required: false });
   });
 
+  function writeCli(dir: string, script: string): void {
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'tree-sitter'), `#!/bin/sh\n${script}\n`);
+    chmodSync(join(dir, 'tree-sitter'), 0o755);
+  }
+
   it('warns with the repair hint when the executable is missing', async () => {
-    const row = await treeSitterCliCheck(root);
+    const row = await treeSitterCliCheck(root, join(root, 'empty-path'));
     expect(row).toMatchObject({ status: 'warn', required: false });
+    expect(row.detail).toContain('missing at');
     expect(row.detail).toContain('npx claude-mem repair');
+    expect(row.detail).toContain('on PATH');
+  });
+
+  // #4858: musl has no tree-sitter release build, so the package-local one is
+  // missing, but the parser falls back to a working tree-sitter on PATH.
+  it('is ok when the package-local executable is missing but a working one is on PATH', async () => {
+    const pathDir = join(root, 'path-bin');
+    writeCli(pathDir, 'echo "tree-sitter 0.26.9"');
+
+    const row = await treeSitterCliCheck(root, pathDir);
+    expect(row).toMatchObject({ status: 'ok', detail: 'tree-sitter on PATH' });
+  });
+
+  it('is ok when the package-local executable cannot run but a working one is on PATH', async () => {
+    writeCli(join(root, 'node_modules', 'tree-sitter-cli'), "echo 'Error loading shared library' >&2\nexit 127");
+    const pathDir = join(root, 'path-bin');
+    writeCli(pathDir, 'echo "tree-sitter 0.26.9"');
+
+    const row = await treeSitterCliCheck(root, pathDir);
+    expect(row).toMatchObject({ status: 'ok', detail: join(pathDir, 'tree-sitter') });
+  });
+
+  it('reports why the package-local executable cannot run when nothing on PATH works', async () => {
+    writeCli(join(root, 'node_modules', 'tree-sitter-cli'), "echo 'Error loading shared library' >&2\nexit 127");
+
+    const row = await treeSitterCliCheck(root, join(root, 'empty-path'));
+    expect(row.status).toBe('warn');
+    expect(row.detail).toContain('Error loading shared library');
   });
 });

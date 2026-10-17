@@ -10,7 +10,7 @@ import { IS_WINDOWS } from '../utils/paths.js';
 import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { settingsTarget } from '../../shared/settings-document.js';
 import { getUvxBinDirs } from '../../shared/uvx-bin-dirs.js';
-import { ensureTreeSitterCliBinary } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { ensureTreeSitterCliBinary, TREE_SITTER_CLI_CANNOT_RUN } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
 
 const INSTALL_TIMEOUT_MS = (() => {
   const override = process.env.CLAUDE_MEM_INSTALL_TIMEOUT_MS;
@@ -466,7 +466,7 @@ export async function provisionTreeSitterCli(
         killed: processError.killed,
       }),
       details: describeExecError(err, true).slice(0, 4000),
-      ...(severity === ErrorSeverity.WARN_CONTINUE
+      ...(severity === ErrorSeverity.WARN_CONTINUE && !err.message.includes(TREE_SITTER_CLI_CANNOT_RUN)
         ? { remediation: 'smart_search and smart_outline stay disabled until the tree-sitter CLI is provisioned: run `npx claude-mem repair`.' }
         : {}),
     }, summary);

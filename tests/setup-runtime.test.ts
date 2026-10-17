@@ -345,7 +345,7 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
     const cliDir = writeCliPackage(partialDownloadScript(''));
 
     await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => sha256('half a download')))
-      .rejects.toThrow('without creating a working executable');
+      .rejects.toThrow('matches the pinned SHA-256 but cannot run on this system');
     expectNothingLeftInPlace(cliDir);
   });
 
