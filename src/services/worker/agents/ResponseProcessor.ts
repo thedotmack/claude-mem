@@ -21,6 +21,7 @@ import { getWorkerPort } from '../../../shared/worker-utils.js';
 import { recordObserverFailure, recordObserverSuccess } from '../../../shared/observer-health.js';
 import { clearQuotaCooldown, routeAroundUnservableProviderIfLoaded } from '../../../shared/quota-cooldown.js';
 import { recycleObserverConversation } from '../session/recycle-conversation.js';
+import { PRIMARY_RECOVERED_ABORT_REASON } from '../session/abort-reason.js';
 import { clearRejectedOutput, recordRejectedOutput } from '../session/OutputRecovery.js';
 import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../../shared/paths.js';
@@ -743,6 +744,26 @@ export async function processAgentResponse(
     correctSchemaDrift(session, text, labeledObservations, parsed.schemaDrift, agentName);
   } else {
     session.consecutiveSchemaDrifts = 0;
+  }
+
+  // The batch is stored and confirmed, so this is a clean point for a stand-in
+  // to hand the session back to its recovered primary (#4846). The runner
+  // resumes buffered work on the primary at once.
+  if (session.primaryReturnPending) {
+    session.primaryReturnPending = false;
+    if (session.fallbackFrom != null && !session.abortController.signal.aborted) {
+      logger.info('SESSION', 'Handing the session back to the recovered primary', {
+        sessionId: session.sessionDbId,
+        standIn: session.currentProvider,
+        primary: session.fallbackFrom,
+      });
+      session.abortReason = PRIMARY_RECOVERED_ABORT_REASON;
+      try {
+        session.abortController.abort();
+      } catch {
+        // best-effort; AbortController.abort() should not throw in normal use.
+      }
+    }
   }
 
   // The provider that produced THIS response (the session's), not whichever

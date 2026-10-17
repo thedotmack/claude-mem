@@ -15,7 +15,7 @@ import {
   type SelectableProvider,
 } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
-import { normalizeAbortReason } from './abort-reason.js';
+import { normalizeAbortReason, PRIMARY_RECOVERED_ABORT_REASON } from './abort-reason.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -535,6 +535,9 @@ export async function startGeneratorWithProvider(
       }
       // A generation that kept drifting off the observation schema was ended
       // after its batches were stored; buffered work continues in a fresh one.
+      if (reason === PRIMARY_RECOVERED_ABORT_REASON) {
+        resumeGeneratorLater(session, 0, 'primary-recovered', ensureGeneratorRunning);
+      }
       if (normalizedReason === 'drift') {
         resumeGeneratorLater(session, 0, 'schema-drift', ensureGeneratorRunning);
       }

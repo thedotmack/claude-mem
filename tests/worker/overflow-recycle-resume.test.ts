@@ -123,6 +123,29 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     expect(starts).toBe(2);
   });
 
+  it('resumes buffered work at once after a stand-in hands back to its primary (#4846)', async () => {
+    const session = makeSession();
+    let starts = 0;
+
+    const { routes, stats } = buildRoutes(session, async () => {
+      starts += 1;
+      if (starts === 1) {
+        session.abortReason = 'provider_switch:primary_recovered';
+        return;
+      }
+      await new Promise<void>(() => {});
+    });
+
+    await routes.ensureGeneratorRunning(session.sessionDbId, 'observation');
+    await session.generatorPromise;
+    await nextTick();
+
+    // Kept, not finalized, and restarted without waiting for another tool call.
+    expect(starts).toBe(2);
+    expect(stats().finalizeCalls).toBe(0);
+    expect(stats().removed).toBe(0);
+  });
+
   it('does not resume once the recycle budget is exhausted', async () => {
     const session = makeSession();
     let starts = 0;

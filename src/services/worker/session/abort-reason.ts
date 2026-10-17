@@ -23,6 +23,13 @@ export type NormalizedAbortReason =
   | typeof DEADLINE_EXCEEDED_CODE
   | 'none';
 
+/**
+ * A fallback run that ends after a stored reply because its primary recovered
+ * (#4846). It keeps the session's buffered work like any provider switch, and
+ * the runner resumes it on the primary at once.
+ */
+export const PRIMARY_RECOVERED_ABORT_REASON = 'provider_switch:primary_recovered';
+
 /** The category of a raw abort reason: the text before the first ':'. */
 export function abortCategoryOf(reason: string | null | undefined): string {
   return (reason ?? '').split(':')[0];
