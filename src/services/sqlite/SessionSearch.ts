@@ -18,6 +18,7 @@ import {
   applySqliteConnectionPragmas,
   assertSchemaWriterCompatible,
   checkAndRaiseSchemaWriterStampInTransaction,
+  claimSchemaWriter,
   LATEST_SCHEMA_VERSION,
   SchemaNewerThanBinaryError,
 } from './connection.js';
@@ -112,9 +113,53 @@ export class SessionSearch {
     this._fts5Available = this.isFts5Available();
 
     this.ensureFTSTables();
+    this.ensureAnyTermVocabTables();
   }
 
   private _fts5Available: boolean;
+
+  /**
+   * Per-index document-frequency source for bounding any-term queries (#4804): the vocab table
+   * name when this connection has one, null when it could not be created (a read-only or
+   * query-only open) and the any-term query then runs bounded by token count alone.
+   */
+  private anyTermVocabTables: Map<'observations_fts' | 'session_summaries_fts', string | null> = new Map();
+
+  /**
+   * Best-effort `fts5vocab` mirror of each external-content index, the document frequencies the
+   * any-term bound ranks and prices tokens by (#4804). fts5vocab resolves the FTS table in its own
+   * schema, so the mirror must live in main beside the index; it is a virtual table over the index
+   * and never needs re-syncing. Schema writes happen only in this constructor, guarded by the
+   * same writer claim as {@link ensureFTSTables}; on a connection that may not write (the
+   * read-only search paths, see the query-only fallback) the claim fails, the table is skipped,
+   * and search stays strictly read-only.
+   */
+  private ensureAnyTermVocabTables(): void {
+    if (!this._fts5Available) {
+      return;
+    }
+    for (const ftsTable of ['observations_fts', 'session_summaries_fts'] as const) {
+      const vocabTable = `${ftsTable}_vocab`;
+      try {
+        const known = this.db
+          .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name = ?")
+          .get(vocabTable);
+        if (!known) {
+          claimSchemaWriter(this.db, LATEST_SCHEMA_VERSION);
+          this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS ${vocabTable} USING fts5vocab('${ftsTable}', 'row')`);
+        }
+        this.anyTermVocabTables.set(ftsTable, vocabTable);
+      } catch (error) {
+        this.anyTermVocabTables.set(ftsTable, null);
+        logger.debug(
+          'DB',
+          `No document-frequency table for ${ftsTable} — any-term queries are bounded by the term cap only`,
+          undefined,
+          error instanceof Error ? error : undefined,
+        );
+      }
+    }
+  }
 
   private ensureFTSTables(): void {
     const tables = this.db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE '%_fts'").all() as TableNameRow[];
@@ -445,16 +490,96 @@ export class SessionSearch {
   /** Fewest query terms before an AND query with no match is widened to any term (see buildFTSAnyTermQuery). */
   private static readonly MIN_ANY_TERM_TOKENS = 3;
 
+  /** Fewest query characters whose widened any-term search keeps 40 terms (#4804 measurements). */
+  private static readonly ANY_TERM_SHORT_PROMPT = 200;
+
+  /** Fewest query characters whose widened any-term search drops back to 40 terms. */
+  private static readonly ANY_TERM_LONG_PROMPT = 600;
+
+  /**
+   * The most terms a widened any-term query keeps, by prompt size (#4804). Under 200 characters a
+   * prompt is a typed question — 40 terms cover it; 200-600 characters is a paragraph, where the
+   * extra terms recovered 90% of the current top-5 in the issue's blind relevance scoring; past
+   * that the rarest 40 terms already matched the unbounded query's judged relevance.
+   */
+  static anyTermTokenCap(queryLength: number): number {
+    if (queryLength < SessionSearch.ANY_TERM_SHORT_PROMPT) {
+      return 40;
+    }
+    if (queryLength <= SessionSearch.ANY_TERM_LONG_PROMPT) {
+      return 60;
+    }
+    return 40;
+  }
+
+  /**
+   * The most total postings (term × rows indexed) a widened any-term query may score (#4804). On
+   * the issue's 133k-observation database a single common word is worth tens of thousands of
+   * postings and its row visits dominate the query time, so the budget prices tokens by document
+   * frequency instead of banning particular words — a ubiquitous term is admitted only when
+   * nothing rarer exists, which on a small index (everyday test databases) never binds.
+   */
+  static readonly ANY_TERM_POSTING_BUDGET = 50_000;
+
+  /**
+   * The whitespace tokens of the query that carry a letter or digit — the only tokens unicode61
+   * indexes. Tokens with neither (a lone `-`, `&`, `—`) are dropped everywhere they are used:
+   * unicode61 indexes nothing for them, so each would become an empty phrase that matches no row.
+   */
+  private static queryTokens(query: string): string[] {
+    return (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
+  }
+
+  /**
+   * Pick the tokens a widened any-term query keeps, and in what order (#4804).
+   *
+   * Tokens are deduplicated case-insensitively (a repeated word adds a posting set FTS5 scores
+   * again for nothing; the first spelling is kept), ranked rarest-first by document frequency,
+   * then admitted under the prompt-size cap and the posting budget. Terms absent from the index
+   * (no frequency — a token unicode61 shapes differently, or one that matches nothing) count as
+   * doc 0: they cost nothing to score and are kept first. At least one term is always kept, so a
+   * query whose every word is ubiquitous still widens instead of losing the fallback. With no
+   * frequencies available (a read-only connection, see ensureAnyTermVocabTables) the selection
+   * runs on dedup and the cap alone.
+   */
+  static selectAnyTermTokens(queryLength: number, tokens: string[], docFrequencies: Map<string, number> | null): string[] {
+    const seen = new Set<string>();
+    const unique: { raw: string; index: number; doc: number }[] = [];
+    for (let i = 0; i < tokens.length; i += 1) {
+      const raw = tokens[i];
+      const key = raw.toLowerCase();
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      unique.push({ raw, index: i, doc: docFrequencies?.get(key) ?? 0 });
+    }
+
+    unique.sort((a, b) => a.doc - b.doc || a.index - b.index);
+
+    const kept: string[] = [];
+    let postings = 0;
+    for (const token of unique) {
+      if (kept.length >= SessionSearch.anyTermTokenCap(queryLength)) {
+        break;
+      }
+      // Skip a term that would blow the budget and try the next-rarest; only the first term is
+      // admitted unconditionally, so the fallback keeps an answer on an all-ubiquitous query.
+      if (kept.length > 0 && postings + token.doc > SessionSearch.ANY_TERM_POSTING_BUDGET) {
+        continue;
+      }
+      kept.push(token.raw);
+      postings += token.doc;
+    }
+    return kept;
+  }
+
   /**
    * Build an FTS5 query that preserves literal-token safety while allowing multi-word
    * input to behave as an AND of terms instead of an exact phrase.
-   *
-   * Tokens with no letter or digit (a lone `-`, `&`, `—`) are dropped: unicode61 indexes
-   * nothing for them, so each would become an empty phrase that matches no row and, ANDed
-   * in, would zero out the whole query.
    */
   private static buildFTSMatchQuery(query: string): string {
-    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
+    const tokens = SessionSearch.queryTokens(query);
     if (tokens.length === 0) {
       return `"${query.replace(/"/g, '""')}"`;
     }
@@ -465,22 +590,72 @@ export class SessionSearch {
   }
 
   /**
-   * The same quoted tokens as buildFTSMatchQuery, joined with OR, for a query whose terms never all appear in one
-   * row. A natural-language question ("when did we change the retry limit") almost never has every word in one
-   * observation, so the AND query matches nothing; OR lets FTS5's bm25 rank the rows that share the most, and the
-   * rarest, terms first. Queries of one or two terms stay keyword queries, matched with AND as #4130 intends
-   * ("authentication bug" must not widen to every row that mentions "bug"); widening starts at three terms, where
-   * a query reads as a question. Null when the query is not widened.
+   * The tokens selectAnyTermTokens keeps, quoted and joined with OR, for a query whose terms never
+   * all appear in one row. A natural-language question ("when did we change the retry limit")
+   * almost never has every word in one observation, so the AND query matches nothing; OR lets
+   * FTS5's bm25 rank the rows that share the most, and the rarest, terms first. Queries of one or
+   * two terms stay keyword queries, matched with AND as #4130 intends ("authentication bug" must
+   * not widen to every row that mentions "bug"); widening starts at three terms, where a query
+   * reads as a question. The selection is bounded (#4804): an unbounded OR made a pasted prompt
+   * score the whole index on its common words — 1-7 s per prompt on a 133k-observation database,
+   * minutes for long ones. Null when the query is not widened.
    */
-  private static buildFTSAnyTermQuery(query: string): string | null {
-    const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
+  private buildFTSAnyTermQuery(query: string, ftsTable: 'observations_fts' | 'session_summaries_fts'): string | null {
+    const tokens = SessionSearch.queryTokens(query);
     if (tokens.length < SessionSearch.MIN_ANY_TERM_TOKENS) {
       return null;
     }
 
-    return tokens
+    const selected = SessionSearch.selectAnyTermTokens(
+      query.length,
+      tokens,
+      this.anyTermDocFrequencies(tokens.map(token => token.toLowerCase()), ftsTable),
+    );
+    if (selected.length === 0) {
+      return null;
+    }
+
+    return selected
       .map(token => `"${token.replace(/"/g, '""')}"`)
       .join(' OR ');
+  }
+
+  /**
+   * Document frequencies for the deduplicated query tokens, read from the index's vocab mirror
+   * (#4804). Frequencies are keyed by the folded token the tokenizer indexes; tokens the mirror
+   * does not know are simply absent, which selectAnyTermTokens reads as doc 0. Null when this
+   * connection has no mirror (a read-only open): the caller then bounds the query by dedup and
+   * the term cap only, never worse than the unbounded query it replaces.
+   */
+  private anyTermDocFrequencies(tokens: string[], ftsTable: 'observations_fts' | 'session_summaries_fts'): Map<string, number> | null {
+    const vocabTable = this.anyTermVocabTables.get(ftsTable);
+    if (!vocabTable) {
+      return null;
+    }
+
+    try {
+      const frequencies = new Map<string, number>();
+      const chunkSize = 500;
+      for (let i = 0; i < tokens.length; i += chunkSize) {
+        const chunk = tokens.slice(i, i + chunkSize);
+        const placeholders = chunk.map(() => '?').join(', ');
+        const rows = this.db
+          .prepare(`SELECT term, doc FROM ${vocabTable} WHERE term IN (${placeholders})`)
+          .all(...chunk) as { term: string; doc: number }[];
+        for (const row of rows) {
+          frequencies.set(row.term, row.doc);
+        }
+      }
+      return frequencies;
+    } catch (error) {
+      logger.debug(
+        'DB',
+        `Document-frequency lookup on ${vocabTable} failed — any-term query bounded by the term cap only`,
+        undefined,
+        error instanceof Error ? error : undefined,
+      );
+      return null;
+    }
   }
 
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
@@ -616,7 +791,7 @@ export class SessionSearch {
         return substringRows;
       }
       // No row holds every term, as a token or as a substring: widen to any term, ranked by bm25.
-      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset) ?? substringRows;
+      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset, 'observations_fts') ?? substringRows;
     }
 
     return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
@@ -694,7 +869,7 @@ export class SessionSearch {
       if (substringRows.length > 0 || (offset > 0 && this.searchSessionsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
         return substringRows;
       }
-      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset) ?? substringRows;
+      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset, 'session_summaries_fts') ?? substringRows;
     }
 
     return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
@@ -702,11 +877,12 @@ export class SessionSearch {
 
   /**
    * Re-run an FTS search whose AND form, and the substring fallback, matched nothing with the any-term form. `params[0]` is the MATCH
-   * argument and the rest are the filter parameters, as built by the callers. Returns null when the query has
-   * nothing to widen or the any-term form matches nothing either.
+   * argument and the rest are the filter parameters, as built by the callers. `ftsTable` is the index the widened
+   * query is priced against (#4804). Returns null when the query has nothing to widen or the any-term form matches
+   * nothing either.
    */
-  private searchFtsAnyTerm<T>(sql: string, query: string, params: any[], limit: number, offset: number): T[] | null {
-    const anyTermQuery = SessionSearch.buildFTSAnyTermQuery(query);
+  private searchFtsAnyTerm<T>(sql: string, query: string, params: any[], limit: number, offset: number, ftsTable: 'observations_fts' | 'session_summaries_fts'): T[] | null {
+    const anyTermQuery = this.buildFTSAnyTermQuery(query, ftsTable);
     if (!anyTermQuery) {
       return null;
     }
