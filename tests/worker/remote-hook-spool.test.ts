@@ -7,6 +7,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { HookSpoolRoutes } from '../../src/services/worker/http/routes/HookSpoolRoutes.js';
+import { createMiddleware } from '../../src/services/worker/http/middleware.js';
 import { hookSpoolConsumedMarkers } from '../../src/services/worker/hook-spool-drain.js';
 import { HookSpool, HOOK_SPOOL_RETRY_WINDOW_MS, remoteHookSpoolReceipt, remoteHookSpoolReceivedKey, type HookSpoolEntry } from '../../src/shared/hook-spool.js';
 import { remoteSpoolEnvelopeSchema, usesRemoteHookSpool, remoteHookSpoolToken } from '../../src/shared/hook-spool-remote.js';
@@ -32,7 +33,7 @@ beforeEach(async () => {
   token = 'test-ingest-token';
   drains = 0;
   const app = express();
-  app.use(express.json({ limit: '5mb' }));
+  app.use(...createMiddleware());
   new HookSpoolRoutes(spool, () => hookSpoolConsumedMarkers(store), () => { drains++; }, () => token).setupRoutes(app);
   server = await new Promise<Server>(resolve => {
     const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
