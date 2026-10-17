@@ -100,6 +100,9 @@ export function isTreeSitterCliAvailable(
     .some(directory => directory !== '' && existsSync(join(directory, resolvedBinPath)));
 }
 
+/** The fix when no tree-sitter release build runs here (#4858: musl). */
+export const TREE_SITTER_CLI_PATH_WORKAROUND = "put a tree-sitter 0.26 or newer build that runs on this system on PATH";
+
 const TREE_SITTER_LOAD_PROBE_TIMEOUT_MS = 2_000;
 const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
 
@@ -259,11 +262,9 @@ export function treeSitterCliUnavailableMessage(
   check: TreeSitterCliLoadCheck = checkTreeSitterCliLoadable(),
 ): string | null {
   if (check.loadable) return null;
-  if (!check.present) {
-    return "the tree-sitter CLI is not installed (not in the plugin's tree-sitter-cli package and not on PATH)"
-      + ": this is a broken-install/environment issue, not an unsupported language"
-      + "; run `npx claude-mem repair`, or put a tree-sitter 0.26 or newer build that runs on this system on PATH";
-  }
-  return `the installed tree-sitter CLI cannot run on this system${check.reason ? ` (${check.reason})` : ""}`
-    + ": this is a broken-install/environment issue, not an unsupported language";
+  const problem = check.present
+    ? `the installed tree-sitter CLI cannot run on this system${check.reason ? ` (${check.reason})` : ""}`
+    : "the tree-sitter CLI is not installed (not in the plugin's tree-sitter-cli package and not on PATH)";
+  const fix = check.present ? "" : `; run \`npx claude-mem repair\`, or ${TREE_SITTER_CLI_PATH_WORKAROUND}`;
+  return `${problem}: this is a broken-install/environment issue, not an unsupported language${fix}`;
 }

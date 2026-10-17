@@ -12,7 +12,7 @@ import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/pa
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
 import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
-import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
@@ -258,7 +258,7 @@ export async function treeSitterCliCheck(pluginRoot: string, searchPath: string 
   return {
     name,
     status: 'warn',
-    detail: `${problem} — smart_search/smart_outline disabled; run \`npx claude-mem repair\`, or put a tree-sitter 0.26 or newer build that runs on this system on PATH`,
+    detail: `${problem} — smart_search/smart_outline disabled; run \`npx claude-mem repair\`, or ${TREE_SITTER_CLI_PATH_WORKAROUND}`,
     required: false,
   };
 }

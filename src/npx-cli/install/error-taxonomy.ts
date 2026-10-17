@@ -11,6 +11,7 @@
  */
 
 import { TREE_SITTER_CLI_CANNOT_RUN } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 
 export enum ErrorSeverity {
   /** exit 1, do not continue. */
@@ -118,7 +119,7 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     match: (cause, ctx) =>
       ctx.component === 'tree-sitter-cli-cache' && causeMessage(cause).includes(TREE_SITTER_CLI_CANNOT_RUN),
     remediation: (ctx) =>
-      `The tree-sitter CLI (used by smart_search and smart_outline) downloaded, but its executable cannot run on this system. tree-sitter publishes Linux builds for glibc only, so musl systems such as Alpine cannot run them, and an older glibc can also be the cause. To use the smart tools, put a tree-sitter 0.26 or newer build that runs on this system on PATH, install a C compiler (the CLI compiles the grammars), then run \`npx claude-mem doctor\` to confirm. Details are in ${ctx.dataDir}/last-install-error.json.`,
+      `The tree-sitter CLI (used by smart_search and smart_outline) downloaded, but its executable cannot run on this system. tree-sitter publishes Linux builds for glibc only, so musl systems such as Alpine cannot run them, and an older glibc can also be the cause. To use the smart tools, ${TREE_SITTER_CLI_PATH_WORKAROUND}, install a C compiler (the CLI compiles the grammars), then run \`npx claude-mem doctor\` to confirm. Details are in ${ctx.dataDir}/last-install-error.json.`,
   },
   {
     // Only `repair` reports this as ABORT; `install` downgrades it to a warning
