@@ -27,6 +27,11 @@ Three kinds of rows are replicated between your devices:
 - **Session summaries** — the per-session overview records.
 - **User prompts** — the prompts you typed. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
 
+**Work-state lists** (the to-do lists your agent saves) sync only when the
+sync hub lists `work_state` in its `content_kinds`. Until then, each list stays
+on the device that wrote it and uploads when the hub supports it (see
+`waitingForHub` in the [status endpoint](#status-endpoint)).
+
 Alongside the rows, three kinds of **mutations** travel through the same log
 so later edits converge everywhere: session **title** changes, **prompt→session
 repairs** (a prompt captured before its session registered is re-linked on
@@ -149,7 +154,8 @@ Configured:
 {
   "configured": true,
   "deviceId": "2f6b1c9e-7d41-4c1a-9b0e-3d5f8a2c6e10",
-  "pending": { "observations": 0, "summaries": 0, "prompts": 2, "mutations": 0, "tombstones": 0 },
+  "pending": { "observations": 0, "summaries": 0, "prompts": 2, "workState": 0, "mutations": 0, "tombstones": 0 },
+  "waitingForHub": { "workState": 0 },
   "quarantine": { "count": 0, "latestReason": null },
   "lastFlushAt": 1783981042731,
   "lastError": null,
@@ -159,6 +165,7 @@ Configured:
     "epoch": "1783981042000",
     "headSeq": "42",
     "projectedSeq": "42",
+    "contentKinds": ["observation", "summary", "prompt", "work_state"],
     "error": null
   }
 }
@@ -171,8 +178,12 @@ are zero. The probe does not append an operation or advance a pull cursor.
 URL, malformed response, timeout, or network failure
 that an empty queue would otherwise hide.
 
-- `pending` — rows (and queued mutation ops) still waiting to upload. Counts
-  near 0 mean the hub's log has everything this device wrote.
+- `pending` — rows (and queued mutation ops) still waiting to upload. When
+  every `pending` and `waitingForHub` count is 0, the hub's log has everything
+  this device wrote.
+- `waitingForHub` — rows of a kind that the hub does not list in
+  `hub.contentKinds`. These rows wait locally and upload when the hub lists the
+  kind. They are not stuck uploads.
 - `lastFlushAt` — epoch ms of the last successful flush, `null` before the first.
 - `lastError` — message from the most recent failed flush, `null` when healthy.
   It never contains the token.

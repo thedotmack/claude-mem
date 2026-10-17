@@ -203,11 +203,15 @@ describe('work_state cloud sync', () => {
     // row waits unsynced instead of being refused and dead-lettered.
     const old = makeHub();
     const oldSync = makeCloudSync(old.impl);
+    // Before the first probe, hub support is unknown: the row counts as pending.
+    expect(oldSync.status().pending.workState).toBe(1);
+    expect(oldSync.status().waitingForHub.workState).toBe(0);
     await oldSync.flush();
     expect(old.probes()).toBe(1);
     expect(old.pushes).toHaveLength(0);
     expect(oldSync.status().hub.contentKinds).toEqual([]);
-    expect(oldSync.status().pending.workState).toBe(1);
+    expect(oldSync.status().pending.workState).toBe(0);
+    expect(oldSync.status().waitingForHub.workState).toBe(1);
     await oldSync.flush();
     expect(old.probes()).toBe(1); // a known answer is not re-asked within the hour
     oldSync.stop();
@@ -230,6 +234,7 @@ describe('work_state cloud sync', () => {
     });
     expect(row(1).synced_at).toBeNumber();
     expect(sync.status().pending.workState).toBe(0);
+    expect(sync.status().waitingForHub.workState).toBe(0);
     expect(sync.status().hub.contentKinds).toEqual(EVERY_KIND);
     sync.stop();
   });
@@ -318,6 +323,9 @@ describe('work_state cloud sync', () => {
     const failing = makeHub(EVERY_KIND, { failPushes: true });
     const first = makeCloudSync(failing.impl);
     await first.flush();
+    // The hub lists the kind, so a failed push leaves the row pending, not waiting.
+    expect(first.status().pending.workState).toBe(1);
+    expect(first.status().waitingForHub.workState).toBe(0);
     first.stop();
     expect(outboxKinds()).toEqual(['work_state']);
 
@@ -368,7 +376,8 @@ describe('work_state cloud sync', () => {
       expect(hub.probes()).toBe(2);
       expect(hub.pushedKinds()).toEqual(['work_state', 'work_state']);
       expect(sync.status().hub.contentKinds).toEqual(LAUNCH_KINDS);
-      expect(sync.status().pending.workState).toBe(1);
+      expect(sync.status().pending.workState).toBe(0);
+      expect(sync.status().waitingForHub.workState).toBe(1);
       expect(deadLetterCount()).toBe(0);
     } finally {
       sync.stop();
@@ -385,8 +394,9 @@ describe('work_state cloud sync', () => {
 
       // The hub starts listing the kind. Nothing is written, so nothing calls notify().
       hub.setContentKinds(EVERY_KIND);
-      await waitFor(() => sync.status().pending.workState === 0);
+      await waitFor(() => sync.status().waitingForHub.workState === 0);
       expect(hub.pushedKinds()).toEqual(['work_state']);
+      expect(sync.status().pending.workState).toBe(0);
       expect(hub.probes()).toBeGreaterThanOrEqual(2);
     } finally {
       sync.stop();
