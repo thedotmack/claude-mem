@@ -634,6 +634,19 @@ after`;
       expect(isCodexInternalPrompt('# Overview\r\n\r\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
       expect(isCodexInternalPrompt(' # Overview\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do')).toBe(true);
     });
+
+    it('returns true for the Codex-app next-message suggestion request (#4811)', () => {
+      expect(isCodexInternalPrompt('This is an app-generated request for a suggested next user message. The user did not write this message.\n\nYour suggestion will appear in the user\'s empty message composer')).toBe(true);
+    });
+
+    it('returns true for the Codex memories rollout-summary consolidation prompt (#4811)', () => {
+      expect(isCodexInternalPrompt('Consolidate the supplied rollout summaries into `memory_summary.md` so another\nagent understands the user, finds relevant prior work, and continues correctly.')).toBe(true);
+    });
+
+    it('does not match a person asking about suggestions or rollout summaries', () => {
+      expect(isCodexInternalPrompt('This is an app-generated request? I did not expect that.')).toBe(false);
+      expect(isCodexInternalPrompt('Consolidate the supplied rollout summaries please')).toBe(false);
+    });
   });
 
   describe('stripMemoryTagsFromJsonStrings', () => {

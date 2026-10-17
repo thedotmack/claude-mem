@@ -126,13 +126,13 @@ export class HookStdoutError extends Error {
  * Track the write callback so exitGraceful can wait for piped stdout to flush;
  * console.log followed by process.exit can otherwise truncate the payload.
  */
-export function emitModelContext(adapter: PlatformAdapter, result: HookResult): void {
+export function emitModelContext(adapter: PlatformAdapter, result: HookResult): unknown {
   if (moduleHasEmitted) {
     throw new Error('emitModelContext called twice');
   }
   const output = adapter.formatOutput(result);
   if (output === '') {
-    return;
+    return output;
   }
   moduleHasEmitted = true;
   const line = typeof output === 'string' ? output : JSON.stringify(output);
@@ -158,10 +158,14 @@ export function emitModelContext(adapter: PlatformAdapter, result: HookResult): 
       fail(error);
     }
   });
+  return output;
 }
 
 let moduleHasEmitted = false;
 let pendingModelContext: Promise<void> = Promise.resolve();
+
+/** Wait for the already formatted payload to reach stdout before measuring a handoff. */
+export function waitForModelContext(): Promise<void> { return pendingModelContext; }
 
 export interface ExitOptions {
   skipExit?: boolean;

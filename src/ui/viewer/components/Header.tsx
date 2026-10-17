@@ -3,7 +3,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { ThemePreference } from '../hooks/useTheme';
 import { GitHubStarsButton } from './GitHubStarsButton';
 import { useSpinningFavicon } from '../hooks/useSpinningFavicon';
-import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL } from '../constants/promo';
+import { PRO_TRIAL_PITCH, PRO_TRIAL_SHORT, PRO_TRIAL_URL, TEAMBRAIN_PITCH, TEAMBRAIN_START_URL } from '../constants/promo';
 
 interface HeaderProps {
   projects: string[];
@@ -15,6 +15,8 @@ interface HeaderProps {
   onThemeChange: (theme: ThemePreference) => void;
   onContextPreviewToggle: () => void;
   onShowHelp?: () => void;
+  /** Show the TeamBrain link: settings have loaded and this install is in no team. */
+  showTeamBrainLink?: boolean;
 }
 
 export function Header({
@@ -26,7 +28,8 @@ export function Header({
   themePreference,
   onThemeChange,
   onContextPreviewToggle,
-  onShowHelp
+  onShowHelp,
+  showTeamBrainLink = false
 }: HeaderProps) {
   useSpinningFavicon(isProcessing);
 
@@ -61,6 +64,18 @@ export function Header({
           <span className="pro-trial-cta-full">{PRO_TRIAL_PITCH}</span>
           <span className="pro-trial-cta-short">{PRO_TRIAL_SHORT}</span>
         </a>
+        {showTeamBrainLink && (
+          <a
+            className="teambrain-cta"
+            href={TEAMBRAIN_START_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+            title={TEAMBRAIN_PITCH}
+            aria-label={TEAMBRAIN_PITCH}
+          >
+            TeamBrain
+          </a>
+        )}
       </div>
       <div className="status">
         <a

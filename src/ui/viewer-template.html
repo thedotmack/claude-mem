@@ -492,6 +492,30 @@
       display: none;
     }
 
+    /* TeamBrain discovery link: quieter than the trial CTA beside it, and gone
+       once this install is in a team (Header.tsx). */
+    .teambrain-cta {
+      display: inline-flex;
+      align-items: center;
+      height: 30px;
+      padding: 0 12px;
+      border: 1px solid var(--color-border-primary);
+      border-radius: 999px;
+      color: var(--color-text-secondary);
+      background: var(--color-bg-card);
+      font-size: 12px;
+      font-weight: 500;
+      white-space: nowrap;
+      text-decoration: none;
+      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+    }
+
+    .teambrain-cta:hover {
+      color: var(--color-text-primary);
+      border-color: var(--color-border-focus);
+      background: var(--color-bg-card-hover);
+    }
+
     .icon-link {
       display: flex;
       align-items: center;
@@ -1451,7 +1475,8 @@
       }
 
       /* Hide icon links (docs, github, twitter) on tablet */
-      .icon-link {
+      .icon-link,
+      .teambrain-cta {
         display: none;
       }
 
@@ -1539,7 +1564,8 @@
       }
 
       /* Hide icon links on mobile */
-      .icon-link {
+      .icon-link,
+      .teambrain-cta {
         display: none;
       }
 

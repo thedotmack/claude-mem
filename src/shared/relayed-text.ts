@@ -34,6 +34,42 @@ export function relayedLine(text: string | null | undefined): string {
 }
 
 /**
+ * Markdown that could pass for claude-mem's own structure: a heading like the
+ * `# [project] recent context` one, a code fence, or a rule. A relayed line
+ * that starts with one gets a backslash, which keeps its words and drops its
+ * structure.
+ */
+const STRUCTURAL_MARKDOWN_LINE = /^\s*(#|```|---)/;
+
+/**
+ * Several plain lines, for a relayed block such as the TeamBrain brief, which
+ * is written from other people's observations. Line breaks survive (CRLF and
+ * Unicode line separators become `\n`, runs of blank lines collapse to one);
+ * everything else follows relayedLine: control and format characters are
+ * dropped, angle brackets are escaped, a line that would open a heading,
+ * fence or rule is escaped (STRUCTURAL_MARKDOWN_LINE), and the result is
+ * capped at `maxCodePoints` without splitting one.
+ */
+export function relayedBlock(text: string | null | undefined, maxCodePoints: number): string {
+  const block = (text ?? '')
+    .replace(/\r\n?|[\u2028\u2029]/g, '\n')
+    .split('\n')
+    .map(line => line
+      .replace(/[\p{Cc}\p{Cf}]/gu, ' ')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/\s+$/u, ''))
+    .map(line => (STRUCTURAL_MARKDOWN_LINE.test(line) ? `\\${line}` : line))
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  const codePoints = Array.from(block);
+  return codePoints.length > maxCodePoints
+    ? `${codePoints.slice(0, Math.max(0, maxCodePoints - 1)).join('').trimEnd()}…`
+    : block;
+}
+
+/**
  * Where a relayed link may point: the cmem.ai site, OpenRouter (whose remedy
  * pages and model list claude-mem links to), and the claude-mem issue tracker
  * (plan 2026-08-16 §1.1).
@@ -49,20 +85,18 @@ function isApprovedDestination(url: URL): boolean {
  * a cut link is a broken one.
  */
 export function relayedLink(url: string | null | undefined): string | null {
-  try {
-    const parsed = new URL((url ?? '').trim());
-    if (
-      parsed.protocol === 'https:'
-      && !parsed.port
-      && !parsed.username
-      && !parsed.password
-      && isApprovedDestination(parsed)
-      && parsed.href.length <= RELAYED_TEXT_MAX_CHARS
-    ) {
-      return parsed.href;
-    }
-  } catch {
-    // Not a URL at all.
+  const candidate = (url ?? '').trim();
+  if (!URL.canParse(candidate)) return null;
+  const parsed = new URL(candidate);
+  if (
+    parsed.protocol === 'https:'
+    && !parsed.port
+    && !parsed.username
+    && !parsed.password
+    && isApprovedDestination(parsed)
+    && parsed.href.length <= RELAYED_TEXT_MAX_CHARS
+  ) {
+    return parsed.href;
   }
   return null;
 }
