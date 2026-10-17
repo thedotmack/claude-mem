@@ -99,7 +99,7 @@ export class WireUsageLedger {
   }
 
   /** The record of one completed exchange; null for an exchange that is not a metered model call. */
-  recordOf({ exchange, result, collected, firstResponseChunkAt }: CompletedRelayExchange): WireUsageLedgerRecord | null {
+  recordOf({ exchange, result, collected }: CompletedRelayExchange): WireUsageLedgerRecord | null {
     if (!exchange.metered || !exchange.protocol) return null;
     const reply = collected?.reply ?? null;
     const usage = reply?.usage;
@@ -117,7 +117,7 @@ export class WireUsageLedger {
       cacheWrite1h: usage?.cacheWrite1hTokens ?? 0,
       reasoning: usage?.reasoningTokens ?? 0,
       ms: result.durationMs,
-      ttftMs: firstResponseChunkAt === null ? null : Math.max(0, firstResponseChunkAt - exchange.startedAt),
+      ttftMs: result.firstResponseChunkAt === null ? null : result.firstResponseChunkAt - exchange.startedAt,
       kind: exchange.identity.kind,
       stages: [...exchange.rewrite.appliedStageNames],
       injectedTokensEst: exchange.rewrite.injectedTokensEst,

@@ -74,8 +74,6 @@ export interface CompletedRelayExchange {
   result: RelayExchangeResult;
   /** Null when the reply was not collected (not a metered exchange). */
   collected: CollectedRelayReply | null;
-  /** When the first reply byte reached the observers; null when none did. */
-  firstResponseChunkAt: number | null;
 }
 
 /** Something that reads replies: told when an exchange starts and once it is over. */
@@ -99,10 +97,9 @@ function notifyConsumer(callback: () => void): void {
  */
 export function createReplyCollectingRelayObserver(consumers: RelayReplyConsumer[], collectorOptions: WireReplyCollectorOptions = {}): RelayObserver {
   const replyCollection = new RelayReplyCollection(collectorOptions);
-  const firstResponseChunkAtByExchange = new Map<string, number | null>();
   return {
     onExchangeStarted(exchange: RelayExchange) {
-      if (replyCollection.begin(exchange)) firstResponseChunkAtByExchange.set(exchange.exchangeId, null);
+      replyCollection.begin(exchange);
       for (const consumer of consumers) {
         if (consumer.onExchangeStarted) notifyConsumer(() => consumer.onExchangeStarted!(exchange));
       }
@@ -111,14 +108,11 @@ export function createReplyCollectingRelayObserver(consumers: RelayReplyConsumer
       replyCollection.responseStarted(exchange, response);
     },
     onResponseChunk(exchange: RelayExchange, chunk: Uint8Array) {
-      if (firstResponseChunkAtByExchange.get(exchange.exchangeId) === null) firstResponseChunkAtByExchange.set(exchange.exchangeId, Date.now());
       replyCollection.chunk(exchange, chunk);
     },
     onExchangeFinished(exchange: RelayExchange, result: RelayExchangeResult) {
       const collected = replyCollection.finish(exchange);
-      const firstResponseChunkAt = firstResponseChunkAtByExchange.get(exchange.exchangeId) ?? null;
-      firstResponseChunkAtByExchange.delete(exchange.exchangeId);
-      const completed: CompletedRelayExchange = { exchange, result, collected, firstResponseChunkAt };
+      const completed: CompletedRelayExchange = { exchange, result, collected };
       for (const consumer of consumers) notifyConsumer(() => consumer.onExchangeCompleted(completed));
     },
   };

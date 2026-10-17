@@ -147,6 +147,8 @@ export interface RelayExchangeResult {
   captureOverflowed: boolean;
   responseBytes: number;
   durationMs: number;
+  /** When the first response byte went to the client; null when none did. Stamped here, not in an observer, so it never trails durationMs. */
+  firstResponseChunkAt: number | null;
 }
 
 /** What the upstream answered, before its body (the reply collectors need its content type). */
@@ -555,6 +557,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       exchange.metered && observer?.onResponseChunk ? chunk => observer.onResponseChunk!(exchange, chunk) : () => undefined,
     );
     let responseBytes = 0;
+    let firstResponseChunkAt: number | null = null;
     let endDetector: StreamEndMarkerDetector | null = null;
     let finished = false;
     const finishExchange = (outcome: RelayOutcome, recordedStatus: number): void => {
@@ -567,6 +570,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
         captureOverflowed: captureQueue.hasOverflowed,
         responseBytes,
         durationMs: Date.now() - exchange.startedAt,
+        firstResponseChunkAt,
       };
       logger.debug('WIRE', 'Relay exchange finished', {
         routeId, agentId: route.agentId, protocol: exchange.protocol ?? 'none', suffixPath, outcome, recordedStatus, responseBytes,
@@ -684,6 +688,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       for (const chunk of chunks) {
         if (chunk.byteLength === 0) continue;
         controller.enqueue(chunk);
+        firstResponseChunkAt ??= Date.now();
         responseBytes += chunk.byteLength;
         captureQueue.offer(chunk);
       }
