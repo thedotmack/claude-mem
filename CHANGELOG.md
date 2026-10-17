@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [14.0.1] - 2026-10-17
+
+Cards keep the agent who did the work when new updates arrive, instead of showing Unassigned work.
+
 ## [14.0.0] - 2026-10-17
 
 ## Claude-Mem 14.0.0: My Work and TeamBrain
