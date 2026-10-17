@@ -206,12 +206,29 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !CLOSED.has(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
 
+  function uniqueCall(event) {
+    const matches = (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? [])
+      .filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5000);
+    // Repeated identical writes are deliberately left unlinked when ambiguous.
+    return matches.length === 1 ? matches[0] : null;
+  }
+  const eventsByItem = new Map();
+  for (const event of state.events) {
+    const itemId = event.taskId ?? (event.task === null ? event.listId : null);
+    if (itemId === null) continue;
+    if (!eventsByItem.has(itemId)) eventsByItem.set(itemId, []);
+    eventsByItem.get(itemId).push(event);
+  }
+
   for (const item of candidates) {
     const event = eventsById.get(item.latestEntryId);
-    const candidates = event ? (callsByKey.get(callKey(event.originProject ?? event.project, event.listName, event.fields)) ?? [])
-      .filter((call) => Math.abs(call.created_at_epoch - event.atEpoch) <= 5000) : [];
-    // Repeated identical writes are deliberately left unlinked when ambiguous.
-    const call = candidates.length === 1 ? candidates[0] : null;
+    // An unlinked newest write (no captured call, or an ambiguous repeat) must
+    // not erase who did the work: credit the newest write that does link.
+    let call = null, linkedEvent = null;
+    for (const candidate of eventsByItem.get(item.id) ?? (event ? [event] : [])) {
+      call = uniqueCall(candidate);
+      if (call) { linkedEvent = candidate; break; }
+    }
     const session = call ? sessionsById.get(call.session_db_id) ?? sessionsByMemory.get(call.memory_session_id) : null;
     const owner = compactText(item.fields.owner, 100);
     const group = getGroup({ session, agentId: call?.agent_id ?? null, agentType: call?.agent_type ?? null, owner, project: item.list.project });
@@ -232,7 +249,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
       requestComplete: typeof (item.fields.request_complete ?? item.list.fields.request_complete) === 'boolean' ? (item.fields.request_complete ?? item.list.fields.request_complete) : null,
       ...metadataFor(item),
       lastUpdateAt: stamp(item.updatedAtEpoch), lastUpdateEpoch: item.updatedAtEpoch,
-      attribution: session ? { source: 'captured-work-state-call', toolUseId: call.id, sessionId: session.id, agentId: call.agent_id ?? null, meaning: 'update-author', match: 'unique-project-list-fields-within-5s' } : { source: owner ? 'explicit-owner-field' : 'unavailable', meaning: owner ? 'recorded-assignee' : 'unknown' },
+      attribution: session ? { source: 'captured-work-state-call', toolUseId: call.id, sessionId: session.id, agentId: call.agent_id ?? null, meaning: linkedEvent.id === event?.id ? 'update-author' : 'latest-linked-update-author', linkedEntryId: linkedEvent.id, match: 'unique-project-list-fields-within-5s' } : { source: owner ? 'explicit-owner-field' : 'unavailable', meaning: owner ? 'recorded-assignee' : 'unknown' },
       sourceRefs: [{ kind: 'work-state', id: event?.id ?? item.latestEntryId }, ...(call ? [{ kind: 'tool-use', id: call.id }] : [])],
       url: `/api/work-view/evidence/work-state/${event?.id ?? item.latestEntryId}`,
     };
