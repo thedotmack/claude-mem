@@ -838,6 +838,18 @@ export class SessionManager {
         session.abortController.abort();
       }
     })) {
+      // The previous request is answered, so nothing is in flight: end this
+      // generator before it sends on the old provider. The next generator
+      // releases this claim when it starts.
+      if (session.providerSwitchPending) {
+        logger.info('SESSION', 'Ending generator at a message boundary to switch providers', {
+          sessionDbId,
+          currentProvider: session.currentProvider,
+        });
+        session.abortReason = 'provider_switch';
+        session.abortController.abort();
+        return;
+      }
       session.claimedMessageIds.push(message._persistentId);
       if (session.earliestPendingTimestamp === null) {
         session.earliestPendingTimestamp = message._originalTimestamp;

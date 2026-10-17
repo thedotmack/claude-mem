@@ -383,12 +383,19 @@ describe('SessionRoutes.ensureGeneratorRunning — provider switch (#2756)', () 
     providerSelectionBox.current = 'openrouter';
     await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
 
-    // Nothing aborted, nothing switched — the existing log-only fallback.
+    // Nothing aborted mid-response: the switch waits for the next message
+    // boundary (#4846).
     expect(originalAbortController.signal.aborted).toBe(false);
     expect(session.abortController).toBe(originalAbortController);
     expect(session.generatorPromise).toBe(originalGeneratorPromise);
     expect(session.currentProvider).toBe('claude');
     expect(openRouterAgent.startSession).not.toHaveBeenCalled();
+    expect(session.providerSwitchPending).toBe(true);
+
+    // Selection went back to the running provider before the boundary.
+    providerSelectionBox.current = 'claude';
+    await routes.ensureGeneratorRunning(sessionDbId, 'ingest');
+    expect(session.providerSwitchPending).toBe(false);
   });
 
   it('leaves an openrouter session\'s provider-change path unaffected (never parked, by construction)', async () => {
