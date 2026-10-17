@@ -105,17 +105,20 @@ const DEFAULT_WINDOWS_PATH_EXTENSIONS = '.COM;.EXE;.BAT;.CMD';
  * tried with every PATHEXT extension in order, the way a shell-style lookup
  * resolves a bare command, so an npm `claude-mem.cmd` shim earlier on PATH is
  * reported instead of the launcher `.exe` behind it.
+ * `skipCandidate` drops that PATH directory and keeps searching, so doctor can
+ * ignore the `npx` CLI and report the launcher hooks will exec.
  */
 export function findExecutableOnPath(
   executableName: string,
   pathValue: string,
   platform: NodeJS.Platform,
-  windowsPathExtensions: string = DEFAULT_WINDOWS_PATH_EXTENSIONS,
+  windowsPathExtensions: string | undefined = DEFAULT_WINDOWS_PATH_EXTENSIONS,
+  skipCandidate?: (candidatePath: string) => boolean,
 ): string | null {
   const platformPath = pathModuleFor(platform);
   const pathDelimiter = platform === 'win32' ? ';' : ':';
   const candidateFileNames = platform === 'win32'
-    ? windowsPathExtensions.split(';').map((extension) => extension.trim()).filter(Boolean)
+    ? (windowsPathExtensions ?? DEFAULT_WINDOWS_PATH_EXTENSIONS).split(';').map((extension) => extension.trim()).filter(Boolean)
       .map((extension) => `${executableName}${extension.toLowerCase()}`)
     : [executableName];
   for (const pathEntry of pathValue.split(pathDelimiter)) {
@@ -123,7 +126,11 @@ export function findExecutableOnPath(
     if (!directory) continue;
     for (const candidateFileName of candidateFileNames) {
       const candidatePath = platformPath.join(directory, candidateFileName);
-      if (existsSync(candidatePath)) return candidatePath;
+      if (!existsSync(candidatePath)) continue;
+      // A skipped hit (the running npx CLI) hides the rest of that directory.
+      // The next PATH entry is the command hooks will actually exec.
+      if (skipCandidate?.(candidatePath)) break;
+      return candidatePath;
     }
   }
   return null;

@@ -5,7 +5,7 @@
  * friendly.
  */
 
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
@@ -262,18 +262,48 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
 }
 
 /**
+ * True when `candidatePath` is the process currently running doctor.
+ * `npx claude-mem doctor` puts npx's own `node_modules/.bin` first on PATH, and
+ * that `claude-mem` is this CLI (often via a symlink). realpath makes the
+ * symlink and `process.argv[1]` compare equal. A missing path is not a match.
+ */
+function candidateIsRunningCli(candidatePath: string, runningCliPath: string | undefined): boolean {
+  if (!runningCliPath) return false;
+  try {
+    return realpathSync(candidatePath) === realpathSync(runningCliPath);
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The "Hook launcher" row: where `claude-mem` resolves on PATH, the protocol it
  * prints, and one timed `--version` round trip. Hooks call `claude-mem` in exec
  * form, so a missing launcher surfaces in Claude Code as
  * `Executable not found in $PATH: "claude-mem"` on every hook. Required: a
  * missing launcher, or a `claude-mem` on PATH that is not the launcher, fails
  * doctor. An older protocol only warns, because the SessionStart self-heal
- * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
+ * (ensure-launcher.cjs) replaces it on the next startup.
+ *
+ * The running CLI is skipped (#4833). Under npx its `--version` prints the
+ * package version, not a protocol number, so doctor would fail a healthy
+ * install and then tell the operator to reinstall. Hooks do not run under
+ * npx, so the next PATH hit is the launcher they exec. A different
+ * non-launcher earlier on PATH is still a failure. Exported for tests.
  */
-export function hookLauncherCheck(host: LauncherHostEnvironment = currentLauncherHostEnvironment()): CheckResult {
+export function hookLauncherCheck(
+  host: LauncherHostEnvironment = currentLauncherHostEnvironment(),
+  runningCliPath: string | undefined = process.argv[1],
+): CheckResult {
   const name = 'Hook launcher';
   const reinstallHint = 'run `npx claude-mem install`';
-  const launcherOnPath = findExecutableOnPath('claude-mem', host.environmentVariables.PATH ?? '', host.platform);
+  const launcherOnPath = findExecutableOnPath(
+    'claude-mem',
+    host.environmentVariables.PATH ?? '',
+    host.platform,
+    undefined,
+    (candidatePath) => candidateIsRunningCli(candidatePath, runningCliPath),
+  );
   if (!launcherOnPath) {
     const placedBinaryPath = resolveLauncherBinaryPath(host);
     return {
