@@ -184,6 +184,62 @@ describe('bounded any-term query follows the measured #4804 recipe', () => {
   });
 });
 
+// Each cap, with more qualifying words than it allows. 300 rows: `aNN` (NN 0..69) is in NN + 1 rows, so it is
+// rarer the lower NN is and always under 30% (90 rows); `bNN` (NN 0..49) is in exactly one row, under 2% (6 rows).
+describe('bounded any-term query caps each prompt size (#4804)', () => {
+  let store: SessionStore;
+  let search: SessionSearch;
+
+  const word = (prefix: string, n: number) => `${prefix}${String(n).padStart(2, '0')}`;
+  const range = (count: number) => Array.from({ length: count }, (_, n) => n);
+
+  function build(query: string): string[] {
+    const built = (search as unknown as { buildFTSAnyTermQuery: (q: string, t: string) => string | null })
+      .buildFTSAnyTermQuery.call(search, query, 'observations_fts');
+    return (built ?? '').split(' OR ').filter(Boolean).map(term => term.replace(/^"|"$/g, ''));
+  }
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+    search = new SessionSearch(store.db);
+    for (let row = 0; row < 300; row++) {
+      const aWords = range(70).filter(n => n >= row).map(n => word('a', n));
+      const bWords = row < 50 ? [word('b', row)] : [];
+      const sdkId = store.createSDKSession(`cap-${row}`, 'proj', 'prompt');
+      store.ensureMemorySessionIdRegistered(sdkId, `cap-${row}-mem`);
+      store.storeObservation(`cap-${row}-mem`, 'proj', {
+        type: 'discovery', title: `row ${row}`, subtitle: null, facts: [],
+        narrative: [...aWords, ...bWords].join(' ') || 'filler', concepts: [], files_read: [], files_modified: [],
+      }, 1);
+    }
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('keeps the 40 rarest tokens of a short prompt', () => {
+    const prompt = range(45).map(n => word('a', n)).reverse().join(' ');
+    expect(prompt.length).toBeLessThan(200);
+    expect(build(prompt).sort()).toEqual(range(40).map(n => word('a', n)));
+  });
+
+  it('keeps the 60 rarest tokens of a medium prompt', () => {
+    const prompt = range(70).map(n => word('a', n)).reverse().join(' ');
+    expect(prompt.length).toBeGreaterThanOrEqual(200);
+    expect(prompt.length).toBeLessThan(600);
+    expect(build(prompt).sort()).toEqual(range(60).map(n => word('a', n)));
+  });
+
+  it('keeps the first 40 qualifying words of a long prompt, in prompt order', () => {
+    const rare = range(50).map(n => word('b', n)).reverse();
+    const filler = range(40).map(n => `absentfiller${n}`).join(' ');
+    const prompt = `${rare.join(' ')} ${filler}`;
+    expect(prompt.length).toBeGreaterThanOrEqual(600);
+    expect(build(prompt)).toEqual(rare.slice(0, 40));
+  });
+});
+
 describe('bounded any-term query on a store with a handful of rows (#4804)', () => {
   it('keeps a word that is in one row, however small the store', () => {
     const store = new SessionStore(':memory:');
