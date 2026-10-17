@@ -248,6 +248,17 @@ describe('teamBriefReserveChars', () => {
     expect(teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai', CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: 'false' })).toBe(TEAM_BRIEF_RESERVE_CHARS);
   });
 
+  it('reserves UTF-16 delivery units for supplementary characters in the name and text', () => {
+    const text = relayedBlock('😀'.repeat(TEAM_BRIEF_MAX_CHARS + 1), TEAM_BRIEF_MAX_CHARS);
+    const brief = formatTeamBrief({ team: { id: 't', name: '😀'.repeat(500) }, text });
+    // ContextBudget and the host delivery cap measure String.length, not code points.
+    expect(Array.from(text)).toHaveLength(TEAM_BRIEF_MAX_CHARS);
+    expect(brief.length + 2).toBeLessThanOrEqual(TEAM_BRIEF_RESERVE_CHARS);
+    expect((brief + '\n\n' + MEMORY_PLUGIN_INSTRUCTIONS + '\n\n').length).toBeLessThanOrEqual(
+      teamBriefReserveChars({ CLAUDE_MEM_TEAMBRAIN_URL: 'https://cmem.ai' }),
+    );
+  });
+
   it('covers the longest brief the hook can add', () => {
     const longest = formatTeamBrief({ team: { id: 't', name: 'N'.repeat(500) }, text: 'x'.repeat(TEAM_BRIEF_MAX_CHARS) });
     expect(longest.length + 2).toBeLessThanOrEqual(TEAM_BRIEF_RESERVE_CHARS);
