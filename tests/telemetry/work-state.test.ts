@@ -102,6 +102,14 @@ describe('work-state usage telemetry', () => {
     } finally { rmSync(directory, { recursive: true, force: true }); }
   });
 
+  it('does not recount a tool when a replay supplies different host attribution', () => {
+    recordWorkStateTool(db, { ...attribution, platformSource: undefined }, 'same-call', 'work_state_write', saved);
+    recordWorkStateTool(db, attribution, 'same-call', 'work_state_write', saved);
+    const rows = events();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ platform: 'unknown', captured_write_count: 1 });
+  });
+
   it('preserves opt-out before creating local state or emitting events', () => {
     process.env.DO_NOT_TRACK = '1';
     recordWorkStateInstruction(db, attribution, 'returned', 'context');

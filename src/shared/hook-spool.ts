@@ -36,6 +36,8 @@ export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
 export interface SpooledObservationPayload {
   contentSessionId: string;
   platformSource: string;
+  /** Preserve missing host attribution separately from the legacy DB default. */
+  telemetryPlatformSource?: string;
   toolName: string;
   toolInput?: unknown;
   toolResponse?: unknown;

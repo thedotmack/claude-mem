@@ -685,6 +685,8 @@ export class SessionRoutes extends BaseRouteHandler {
       toolResponse: tool_response,
       cwd,
       platformSource,
+      telemetryPlatformSource: typeof req.body.telemetryPlatformSource === 'string'
+        ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req) ?? 'unknown',
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
@@ -940,7 +942,10 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     recordWorkStatePrompt(store.db, {
-      contentSessionId, platformSource, agentId: req.body.agentId, agentType: req.body.agentType,
+      contentSessionId,
+      platformSource: typeof req.body.telemetryPlatformSource === 'string'
+        ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req),
+      agentId: req.body.agentId, agentType: req.body.agentType,
     }, savedUserPromptId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every

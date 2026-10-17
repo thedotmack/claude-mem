@@ -189,7 +189,9 @@ handoff, or activity without an original event timestamp, stays `unknown`;
 later instructions are never applied retroactively.
 Before a handoff is observed, it is `unknown`. Direct MCP calls,
 server-runtime-only capture, missing hooks, and an unavailable worker can leave
-coverage unknown. Missing counters or events are not evidence of zero usage or
+coverage unknown. Older adapters that already supplied a default host cannot
+be distinguished from hosts that explicitly reported it. Missing counters or
+events are not evidence of zero usage or
 zero adherence; an ordinary question may correctly require no write. No
 compliance percentage or task classification is computed.
 

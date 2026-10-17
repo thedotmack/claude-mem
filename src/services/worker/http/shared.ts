@@ -123,6 +123,7 @@ export interface ObservationPayload {
   toolResponse?: unknown;
   cwd?: string;
   platformSource?: string;
+  telemetryPlatformSource?: string;
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
@@ -173,7 +174,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
       const publicPrompt = knownSession === null ? null
         : telemetryStore.getUserPrompt(payload.contentSessionId, promptNumber, knownSession);
       if (publicPrompt?.trim()) {
-        recordWorkStateTool(telemetryStore.db, { ...payload, platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
+        recordWorkStateTool(telemetryStore.db, { ...payload, platformSource: payload.telemetryPlatformSource ?? payload.platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
       }
     } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
   }
@@ -255,7 +256,7 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   }
 
   if (privacy.prompt.trim()) {
-    recordWorkStateTool(store.db, { ...payload, platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
+    recordWorkStateTool(store.db, { ...payload, platformSource: payload.telemetryPlatformSource ?? payload.platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
   }
 
   const cleanedToolInput = payload.toolInput !== undefined

@@ -4,6 +4,7 @@ import { settleHookSpoolNudges } from '../../src/cli/spool-hook-event';
 import { WORK_STATE_RULE } from '../../src/services/context/sections/WorkStateRenderer';
 import { useTempHookSpoolDataDir, spooledEntries } from '../helpers/temp-hook-spool';
 import { workStateOutcome } from '../../src/shared/work-state-telemetry';
+import { observationHandler } from '../../src/cli/handlers/observation';
 
 let temporary: ReturnType<typeof useTempHookSpoolDataDir>;
 let oldConsent: string | undefined;
@@ -57,6 +58,12 @@ describe('work-state hook receipts', () => {
     spoolWorkStateInstruction(input, WORK_STATE_RULE);
     spoolWorkStateMcpResult('work_state_write', { isError: true });
     expect(spooledEntries()).toHaveLength(0);
+  });
+
+  it('preserves missing host attribution before legacy observation normalization', async () => {
+    await observationHandler.execute({ ...input, platform: undefined, toolName: 'TodoWrite', toolUseId: 'native-id', toolResponse: {} });
+    const [entry] = spooledEntries('observation');
+    expect(entry.payload).toMatchObject({ platformSource: 'claude', telemetryPlatformSource: 'unknown' });
   });
 
   it('understands Claude host strings and error objects without assuming every reply succeeded', () => {

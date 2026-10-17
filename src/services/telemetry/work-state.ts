@@ -83,7 +83,9 @@ export function recordWorkStateTool(db: Database, a: WorkStateAttribution, toolU
       telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), unidentified_tool_event_count: 1 });
       return;
     }
-    if (!claim(db, `tool:${hash(workStatePlatform(a.platformSource), a.contentSessionId, toolUseId)}`)) return;
+    // Match tool_uses identity: a replay may improve host attribution, but it
+    // is still the same call and must not be counted a second time.
+    if (!claim(db, `tool:${hash(a.contentSessionId, toolUseId)}`)) return;
     const tool = workStateTool(name);
     telemetryBuffer.record('work_state_usage', null, {
       ...properties(db, a), captured_tool_count: 1,

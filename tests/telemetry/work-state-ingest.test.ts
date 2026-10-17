@@ -5,6 +5,8 @@ import { ingestObservation, setIngestContext } from '../../src/services/worker/h
 import { telemetryBuffer } from '../../src/services/telemetry/buffer';
 import { __resetTelemetryForTests } from '../../src/services/telemetry/telemetry';
 import { postHogCaptureCalls } from '../preload';
+import { SessionRoutes } from '../../src/services/worker/http/routes/SessionRoutes';
+import express from 'express';
 
 const ENV = ['CLAUDE_MEM_TELEMETRY', 'DO_NOT_TRACK', 'CLAUDE_MEM_SKIP_TOOLS', 'CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS', 'CLAUDE_MEM_EXCLUDED_PROJECTS'];
 let previous: Array<string | undefined>;
@@ -74,6 +76,41 @@ describe('work-state capture boundary', () => {
     await ingestObservation({ ...payload, toolName: 'Read', toolUseId: 'missing-read' });
     expect(queue).toHaveBeenCalledTimes(2); // existing observation behavior survives
     expect(rows()).toHaveLength(0); // telemetry needs affirmative public-prompt evidence
+  });
+
+  it('preserves unknown telemetry host despite the legacy Claude database default', async () => {
+    const id = store.createSDKSession(payload.contentSessionId, 'telemetry-work', '', undefined, 'claude');
+    store.saveUserPrompt(payload.contentSessionId, 1, 'Do the work', id);
+    await ingestObservation({ ...payload, platformSource: undefined });
+    await ingestObservation({ ...payload, toolUseId: 'legacy-normalized', platformSource: 'claude', telemetryPlatformSource: 'unknown' });
+    expect(rows()[0].properties).toMatchObject({ platform: 'unknown', native_todo_count: 2 });
+  });
+
+  it('preserves unknown host through the real session-init HTTP route', async () => {
+    const routes = new SessionRoutes(
+      { getSession: () => undefined, initializeSession: () => ({ project: 'telemetry-work' }) } as any,
+      { getSessionStore: () => store, getCloudSync: () => null, getChromaSync: () => null } as any,
+      {} as any, {} as any, {} as any,
+      { broadcastNewPrompt: () => {}, broadcastSessionStarted: () => {} } as any,
+      {} as any, {} as any,
+    );
+    (routes as any).ensureGeneratorRunning = async () => {};
+    const app = express();
+    app.use(express.json());
+    routes.setupRoutes(app);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    try {
+      const port = (server.address() as { port: number }).port;
+      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contentSessionId: 'raw-http-no-host', project: 'telemetry-work', prompt: 'Read saved work state' }),
+      });
+      expect(await response.json()).toMatchObject({ status: 'initialized' });
+      expect(response.status).toBe(200);
+      expect(rows()[0].properties).toMatchObject({ platform: 'unknown', captured_prompt_count: 1 });
+      expect(store.db.query('SELECT platform_source FROM sdk_sessions WHERE content_session_id = ?').get('raw-http-no-host')).toEqual({ platform_source: 'claude' });
+    } finally { await new Promise<void>(resolve => server.close(() => resolve())); }
   });
 
   it('does not count excluded projects or excluded subagents', async () => {
