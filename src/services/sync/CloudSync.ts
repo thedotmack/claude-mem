@@ -1244,14 +1244,15 @@ export class CloudSync {
         bufBytes = 0;
       };
       for (const row of rows) {
+        let op: WireOp;
+        let isProjectRemap = false;
         try {
-          let op: WireOp;
           if (row.canonical_body !== null || row.operation_sha256 !== null) {
             if (row.canonical_body === null || row.operation_sha256 === null) {
               throw new Error('partial canonical mutation snapshot');
             }
             op = { body: row.canonical_body, operation_sha256: row.operation_sha256 };
-            parseCanonicalOperation(op);
+            isProjectRemap = parseCanonicalOperation(op).mutation?.op === 'remap_project';
           } else {
             let parsed: unknown;
             try {
@@ -1263,6 +1264,7 @@ export class CloudSync {
               throw new Error('mutation body must be an object');
             }
             const body = parsed as OpBody;
+            isProjectRemap = body.op === 'remap_project';
             if (body.op === 'set_prompt_session' && typeof body.target === 'object' && body.target !== null) {
               const target = body.target as Record<string, unknown>;
               if (target.origin_device_id == null) target.origin_device_id = this.deviceId;
@@ -1280,19 +1282,27 @@ export class CloudSync {
               WHERE id = ? AND canonical_body IS NULL AND operation_sha256 IS NULL
             `).run(op.body, op.operation_sha256, row.id);
           }
-          const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
-          if (buf.length > 0 && (
-            pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
-            || buf.length >= MAX_OPS_PER_PUSH
-          )) {
-            await send();
-            if (this.stopped) return;
-          }
-          buf.push(op);
-          bufBytes += size;
         } catch (error) {
           const reason = error instanceof Error ? error.message : String(error);
           this.quarantineMutation(row, reason);
+          continue;
+        }
+        const size = Buffer.byteLength(JSON.stringify(op), 'utf8');
+        // One project remap can rewrite thousands of server rows. Preserve
+        // queue order, but give each remap its own transaction/timeout budget.
+        if (buf.length > 0 && (
+          isProjectRemap
+          || pushRequestBytes(bufBytes + size, buf.length + 1) > MAX_BODY_BYTES
+          || buf.length >= MAX_OPS_PER_PUSH
+        )) {
+          await send();
+          if (this.stopped) return;
+        }
+        buf.push(op);
+        bufBytes += size;
+        if (isProjectRemap) {
+          await send();
+          if (this.stopped) return;
         }
       }
       await send();

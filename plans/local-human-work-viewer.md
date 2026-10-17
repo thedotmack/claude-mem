@@ -31,6 +31,13 @@ Read existing `src/shared/teambrain.ts` membership, credential and timeout helpe
 
 Verify disconnected no-network status, actual bearer/user identity forwarding, board payload validation, permission failure clearing, selected-team response races, hidden-tab polling, reading-safe pending snapshots, exact membership/project scope, narrow layouts and a working link to self-serve setup. Release waits for the cloud endpoint, TeamBrain UI and Stripe purchase path to be verified by the coordinating agent.
 
+## Phase 2c: Bound project-remap sync work
+**How this serves the primary goal:** Existing project remaps must drain reliably before people depend on current shared work.
+
+An independent live sync investigation found several large project remaps being sent in one transaction. Send each `remap_project` in its own ordered push, flushing ordinary mutations before and after it. Keep normal mutation batching and immutable canonical bytes. Transport failures must leave every unacknowledged operation queued; only serialization failures belong in quarantine. The cloud SQL optimization is a separate reviewed change.
+
+Verification:263 worker-sync tests passed, including mixed ordinary/remap order, an already frozen remap, content after mutations, failures before/during a remap, exact-byte retries and ACK-only deletion. Root TypeScript/full build passed; independent review reran80 CloudSync tests with no blocking finding.
+
 ## Phase 3: Review and full release
 **How this serves the primary goal:** Users receive the tested local feature through the normal install/update surface.
 
