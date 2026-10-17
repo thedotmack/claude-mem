@@ -13,7 +13,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
-import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
+import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
@@ -2952,8 +2952,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             return `Worker ready at http://localhost:${port} ${styleText('green', 'OK')}`;
           case 'warming':
             return `Worker starting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`;
-          case 'dead':
-            return `Worker did not start — try \`npx claude-mem start\` manually ${styleText('yellow', '!')}`;
+          case 'dead': {
+            const startFailure = getLastWorkerBootFailure()?.split('\n')[0];
+            return `Worker did not start${startFailure ? ` (${startFailure})` : ''} — try \`npx claude-mem start\` manually ${styleText('yellow', '!')}`;
+          }
         }
       },
     },
