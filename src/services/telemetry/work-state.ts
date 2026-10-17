@@ -71,13 +71,19 @@ function inReplayWindow(at: number | undefined): boolean {
 /** Content-free latest turn boundary; a missing or older boundary is not public evidence. */
 export function recordWorkStatePrivacy(db: Database, a: WorkStateAttribution, isPrivate: boolean): void {
   safely(() => {
+    // Only a recent, timestamped public submission can reopen public coverage.
+    // Untimestamped transcript replay must never clear a private boundary.
+    if (!isPrivate && !inReplayWindow(a.enqueuedAtEpochMs)) return;
     // Privacy boundaries remain local even while analytics is opted out, so
     // opting back in during a private turn cannot revive an old public state.
     ensureStorage(db);
     const at = Number.isFinite(a.enqueuedAtEpochMs) ? a.enqueuedAtEpochMs! : Date.now();
     const row = db.query('SELECT state FROM work_state_telemetry_receipts WHERE key = ?').get(`privacy:${scope(a)}`) as { state: string } | null;
     if (row?.state) {
-      try { if (JSON.parse(row.state).at > at) return; } catch {}
+      try {
+        const previous = JSON.parse(row.state);
+        if (previous.at > at || (!isPrivate && previous.private && previous.at === at)) return;
+      } catch {}
     }
     db.query('INSERT OR REPLACE INTO work_state_telemetry_receipts (key, state, created_at_epoch) VALUES (?, ?, ?)')
       .run(`privacy:${scope(a)}`, JSON.stringify({ private: isPrivate, at }), Date.now());
@@ -111,7 +117,7 @@ export function recordWorkStateInstruction(db: Database, a: WorkStateAttribution
 
 export function recordWorkStatePrompt(db: Database, a: WorkStateAttribution, promptId: number): void {
   safely(() => {
-    if (a.enqueuedAtEpochMs !== undefined && !inReplayWindow(a.enqueuedAtEpochMs)) return;
+    if (!inReplayWindow(a.enqueuedAtEpochMs)) return;
     if (!prepare(db) || !claim(db, `prompt:${hash(a.contentSessionId, String(promptId), workStatePlatform(a.platformSource))}`)) return;
     const first = claim(db, `session:${scope(a)}`);
     telemetryBuffer.record('work_state_usage', null, { ...properties(db, a), captured_prompt_count: 1, captured_session_count: first ? 1 : 0 });

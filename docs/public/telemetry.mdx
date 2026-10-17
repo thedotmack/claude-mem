@@ -172,7 +172,7 @@ is `main`, `subagent`, or `unknown` (using the same subagent predicate as captur
 |---|---|
 | `instruction_returned_count` | Hooks returning the complete work-state instruction block, including cached blocks. This is a handoff to the host, **not proof the host accepted it or the model followed it**. |
 | `instruction_disabled_count`, `instruction_excluded_count`, `instruction_missing_count`, `instruction_unknown_count` | Known configuration exclusions, successful returns without the block, or a failed/unknown context read. |
-| `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts and their first captured session/agent scope within the 30-day replay window. |
+| `captured_prompt_count`, `captured_session_count` | Newly recorded, nonprivate prompts with an original hook timestamp within the 30-day replay window, and their first captured session/agent scope. Untimestamped transcript prompts are omitted. |
 | `captured_tool_count`, `unidentified_tool_event_count` | Distinct captured tool calls with stable IDs; calls without a stable ID count only in the second diagnostic counter. Both require an original event timestamp and a preceding known public-turn boundary. Memory/project/privacy/agent exclusions still apply. |
 | `native_todo_count` | Captured `TodoWrite`, `SetTodoList`, or `update_plan` calls, including those excluded from memory generation. With `instruction_state=returned`, this is a useful competing-todo diagnostic, **not a verdict of noncompliance**. |
 | `captured_read_count`, `captured_write_count` | Distinct work-state tool receipts seen by post-tool capture, attributed to the captured host and agent role. |
@@ -185,8 +185,8 @@ The two sources can observe **the same call: never add them as distinct usage**.
 
 `instruction_state` describes the last known hook handoff preceding the event
 in that exact local session/agent scope. Delayed activity older than the latest
-handoff, or activity without an original event timestamp, stays `unknown`;
-later instructions are never applied retroactively.
+handoff has `instruction_state=unknown`; later instructions are never applied
+retroactively. Captured prompts and tools without original timestamps are omitted.
 Before a handoff is observed, it is `unknown`. Direct MCP calls,
 server-runtime-only capture, missing hooks, and an unavailable worker can leave
 coverage unknown. Older adapters that already supplied a default host cannot
@@ -201,6 +201,8 @@ once an hour, removes older
 receipts; older events are dropped rather than counted again. A local,
 content-free public/private turn bit is maintained even while analytics is off,
 so opting back in during private work cannot reuse a previous public prompt.
+Only a strictly newer, timestamped public submission can reopen public coverage,
+including when duplicate text reuses a prompt row; private turns win timestamp ties.
 Neither the keys nor this bit are sent to PostHog. The worker uses the existing
 30-second consent cache. Telemetry remains best effort: opt-out disables
 analytics, and a crash before a rollup flush can lose counts. This feature does

@@ -129,6 +129,17 @@ describe('work-state usage telemetry', () => {
     } finally { clock.mockRestore(); }
   });
 
+  it('does not count old or untimestamped prompts and cannot reopen public coverage with them', () => {
+    const now = Date.now();
+    recordWorkStatePrivacy(db, { ...attribution, enqueuedAtEpochMs: now }, true);
+    for (const at of [undefined, now - WORK_STATE_REPLAY_WINDOW_MS - 1]) {
+      recordWorkStatePrompt(db, { ...attribution, enqueuedAtEpochMs: at }, 100);
+      recordWorkStatePrivacy(db, { ...attribution, enqueuedAtEpochMs: at }, false);
+    }
+    expect(events()).toHaveLength(0);
+    expect(isPublicWorkStateTurn(db, { ...attribution, enqueuedAtEpochMs: now + 1 })).toBe(false);
+  });
+
   it('shares the worker consent cache and observes opt-out after its existing TTL', () => {
     const base = Date.now();
     const clock = spyOn(Date, 'now').mockReturnValue(base);
@@ -153,6 +164,14 @@ describe('work-state usage telemetry', () => {
     __resetTelemetryForTests();
     expect(isPublicWorkStateTurn(db, { ...attribution, enqueuedAtEpochMs: Date.now() })).toBe(false);
     expect(events()).toHaveLength(0);
+  });
+
+  it('preserves a private boundary on timestamp ties and requires a strictly newer public turn', () => {
+    recordWorkStatePrivacy(db, attribution, true);
+    recordWorkStatePrivacy(db, attribution, false);
+    expect(isPublicWorkStateTurn(db, { ...attribution, enqueuedAtEpochMs: epoch + 1 })).toBe(false);
+    recordWorkStatePrivacy(db, { ...attribution, enqueuedAtEpochMs: epoch + 1 }, false);
+    expect(isPublicWorkStateTurn(db, { ...attribution, enqueuedAtEpochMs: epoch + 2 })).toBe(true);
   });
 
   it('preserves opt-out before creating local state or emitting events', () => {

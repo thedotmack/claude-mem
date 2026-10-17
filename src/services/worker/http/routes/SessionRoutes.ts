@@ -902,6 +902,10 @@ export class SessionRoutes extends BaseRouteHandler {
       ? (nativeAnchor.duplicate ? { id: nativeAnchor.id, prompt_number: nativeAnchor.promptNumber } : undefined)
       : store.findRecentDuplicateUserPrompt(contentSessionId, cleanedPrompt, USER_PROMPT_DEDUPE_WINDOW_MS, sessionDbId);
 
+    // A newer public submission reopens coverage even if its text reuses a row.
+    // The recorder rejects missing/old timestamps and preserves newer boundaries.
+    recordWorkStatePrivacy(store.db, telemetryAttribution, false);
+
     if (duplicatePrompt) {
       const activeSession = this.sessionManager.getSession(sessionDbId);
       // The durable claim can survive an initialization failure. Repair only
@@ -951,7 +955,6 @@ export class SessionRoutes extends BaseRouteHandler {
       savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
     }
 
-    recordWorkStatePrivacy(store.db, telemetryAttribution, false);
     recordWorkStatePrompt(store.db, telemetryAttribution, savedUserPromptId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every

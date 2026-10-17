@@ -53,7 +53,7 @@ afterEach(() => {
 function prompt(text: string) {
   const id = store.createSDKSession(payload.contentSessionId, 'telemetry-work', '', undefined, 'codex');
   store.saveUserPrompt(payload.contentSessionId, 1, text, id);
-  recordWorkStatePrivacy(store.db, payload, !text.trim());
+  recordWorkStatePrivacy(store.db, { ...payload, enqueuedAtEpochMs: Date.now() }, !text.trim());
 }
 
 function rows() {
@@ -151,15 +151,15 @@ describe('work-state capture boundary', () => {
       const tool = async (toolName: string, id: string, at = Date.now()) => post('observations', {
         ...base, tool_name: toolName, tool_response: 'Saved to "list" in project.', tool_use_id: id, enqueuedAtEpochMs: at,
       });
-      await post('init', { ...base, prompt: 'First public request' });
+      await post('init', { ...base, prompt: 'First public request', telemetryPromptEpochMs: Date.now() });
       await tool('TodoWrite', 'public-1');
-      await post('init', { ...base, prompt: '<private>never store this private turn</private>' });
+      await post('init', { ...base, prompt: '<private>never store this private turn</private>', telemetryPromptEpochMs: Date.now() });
       const privateAt = Date.now();
       await tool('TodoWrite', 'private-native');
       await tool('work_state_write', 'private-write');
       await tool('Read', 'private-read');
       await new Promise(resolve => setTimeout(resolve, 2));
-      await post('init', { ...base, prompt: 'Second public request' });
+      await post('init', { ...base, prompt: 'Second public request', telemetryPromptEpochMs: Date.now() });
       await tool('TodoWrite', 'delayed-private', privateAt);
       await tool('TodoWrite', 'public-2');
       const metrics = rows().map(row => row.properties);
@@ -169,6 +169,52 @@ describe('work-state capture boundary', () => {
       expect(metrics.find(r => r.captured_prompt_count)?.agent_role).toBe('main');
       expect(store.db.query('SELECT COUNT(*) AS n FROM user_prompts').get()).toEqual({ n: 2 });
       expect(JSON.stringify(store.db.query('SELECT * FROM work_state_telemetry_receipts').all())).not.toContain('never store');
+    });
+  });
+
+  it('reopens a repeated public turn only when its original timestamp is newer', async () => {
+    await withRoutes(async port => {
+      const base = { contentSessionId: 'repeated-public', platformSource: 'codex', project: 'telemetry-work' };
+      const post = async (path: string, body: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${port}/api/sessions/${path}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...base, ...body }),
+        });
+        expect(response.status).toBe(200);
+        return response.json();
+      };
+      const at = Date.now();
+      const clock = spyOn(Date, 'now').mockReturnValue(at);
+      try {
+        const publicPrompt = { prompt: 'Repeat this public request' };
+        await post('init', { ...publicPrompt, telemetryPromptEpochMs: at });
+        clock.mockReturnValue(at + 10);
+        await post('init', { prompt: '<private>private turn</private>', telemetryPromptEpochMs: at + 10 });
+        clock.mockReturnValue(at + 20);
+        expect(await post('init', { ...publicPrompt, telemetryPromptEpochMs: at + 20 })).toMatchObject({ reason: 'duplicate' });
+        await post('observations', { tool_name: 'TodoWrite', tool_use_id: 'new-public', enqueuedAtEpochMs: at + 30 });
+        clock.mockReturnValue(at + 40);
+        await post('init', { prompt: '<private>newer private turn</private>', telemetryPromptEpochMs: at + 40 });
+        clock.mockReturnValue(at + 50);
+        await post('init', { ...publicPrompt, telemetryPromptEpochMs: at + 20 });
+        await post('observations', { tool_name: 'TodoWrite', tool_use_id: 'old-public-retry', enqueuedAtEpochMs: at + 50 });
+        await post('init', publicPrompt); // no original timestamp cannot reopen coverage either
+        await post('observations', { tool_name: 'TodoWrite', tool_use_id: 'untimed-public-retry', enqueuedAtEpochMs: at + 60 });
+        expect(rows().reduce((n, row) => n + Number(row.properties.native_todo_count ?? 0), 0)).toBe(1);
+        expect(store.db.query('SELECT COUNT(*) AS n FROM user_prompts').get()).toEqual({ n: 1 });
+      } finally { clock.mockRestore(); }
+    });
+  });
+
+  it('leaves untimestamped transcript prompts outside current activity and public coverage', async () => {
+    await withRoutes(async port => {
+      const base = { contentSessionId: 'transcript-unknown-time', platformSource: 'codex', project: 'telemetry-work' };
+      const response = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...base, nativePromptId: 'old-transcript-prompt', prompt: 'Restored transcript request' }),
+      });
+      expect(response.status).toBe(200);
+      await ingestObservation({ ...payload, ...base, enqueuedAtEpochMs: Date.now() });
+      expect(rows()).toHaveLength(0);
     });
   });
 
@@ -182,7 +228,7 @@ describe('work-state capture boundary', () => {
   it('preserves unknown telemetry host despite the legacy Claude database default', async () => {
     const id = store.createSDKSession(payload.contentSessionId, 'telemetry-work', '', undefined, 'claude');
     store.saveUserPrompt(payload.contentSessionId, 1, 'Do the work', id);
-    recordWorkStatePrivacy(store.db, { ...payload, platformSource: undefined }, false);
+    recordWorkStatePrivacy(store.db, { ...payload, platformSource: undefined, enqueuedAtEpochMs: Date.now() }, false);
     await ingestObservation({ ...payload, enqueuedAtEpochMs: Date.now(), platformSource: undefined });
     await ingestObservation({ ...payload, enqueuedAtEpochMs: Date.now(), toolUseId: 'legacy-normalized', platformSource: 'claude', telemetryPlatformSource: 'unknown' });
     expect(rows()[0].properties).toMatchObject({ platform: 'unknown', native_todo_count: 2 });
@@ -192,7 +238,7 @@ describe('work-state capture boundary', () => {
     await withRoutes(async port => {
       const response = await fetch(`http://127.0.0.1:${port}/api/sessions/init`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contentSessionId: 'raw-http-no-host', project: 'telemetry-work', prompt: 'Read saved work state' }),
+        body: JSON.stringify({ contentSessionId: 'raw-http-no-host', project: 'telemetry-work', prompt: 'Read saved work state', telemetryPromptEpochMs: Date.now() }),
       });
       expect(await response.json()).toMatchObject({ status: 'initialized' });
       expect(response.status).toBe(200);
