@@ -69,6 +69,13 @@ describe('work-state capture boundary', () => {
     expect(rows()).toHaveLength(0);
   });
 
+  it('does not count missing-prompt writes or ordinary tools through the normal ingestion path', async () => {
+    await ingestObservation({ ...payload, toolName: 'work_state_write', toolUseId: 'missing-write', toolResponse: 'Saved to "a" in project.' });
+    await ingestObservation({ ...payload, toolName: 'Read', toolUseId: 'missing-read' });
+    expect(queue).toHaveBeenCalledTimes(2); // existing observation behavior survives
+    expect(rows()).toHaveLength(0); // telemetry needs affirmative public-prompt evidence
+  });
+
   it('does not count excluded projects or excluded subagents', async () => {
     prompt('Do the work');
     process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = '/tmp/telemetry-work';

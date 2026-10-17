@@ -51,7 +51,7 @@ export function workStateOutcome(tool: WorkStateTool, response: unknown): WorkSt
 function classifyReceipt(tool: WorkStateTool, text: string, isError: boolean): WorkStateOutcome {
   if (text.includes('CLAUDE_MEM_WORK_STATE_ENABLED=false')) return 'disabled';
   if (text.startsWith('Not saved: this project is excluded')) return 'excluded';
-  if (isError || /^(?:Error:|Tool execution failed:|Error executing tool)/.test(text)) return 'error';
+  if (isError || /^(?:Error:|Tool execution failed:|Error executing tool|(?:Worker|Server) request failed(?: \(HTTP \d+\))?\.)/.test(text)) return 'error';
   if (tool === 'write') return text.startsWith('Saved to "') ? 'ok' : 'unknown';
   if (tool === 'read') return text ? 'ok' : 'unknown';
   return 'unknown';

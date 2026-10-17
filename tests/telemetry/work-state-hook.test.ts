@@ -63,6 +63,7 @@ describe('work-state hook receipts', () => {
     expect(workStateOutcome('write', 'Saved to "title" in project.')).toBe('ok');
     expect(workStateOutcome('write', { error: 'Error executing tool: network', is_interrupt: false })).toBe('error');
     expect(workStateOutcome('read', 'Error: service initializing')).toBe('error');
+    expect(workStateOutcome('read', 'Worker request failed (HTTP 503).\nService initializing')).toBe('error');
     expect(workStateOutcome('write', JSON.stringify({ content: [{ type: 'text', text: 'Saved to "title" in project.' }] }))).toBe('ok');
     expect(workStateOutcome('read', { content: 'malformed' })).toBe('unknown');
   });
