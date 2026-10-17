@@ -9,6 +9,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
 import { SessionSearch } from '../../../src/services/sqlite/SessionSearch.js';
+import { Database } from 'bun:sqlite';
+import { mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 
 describe('FTS any-term fallback is bounded by prompt size (#4804)', () => {
   let store: SessionStore;
@@ -67,10 +71,10 @@ describe('FTS any-term fallback is bounded by prompt size (#4804)', () => {
     const builder = (search as unknown as {
       buildFTSAnyTermQuery: (q: string, t: string) => string | null;
     }).buildFTSAnyTermQuery.bind(search);
+    // No "tokN" is in any row, so none can match: the long-prompt rule keeps only indexed words and the query
+    // is not widened at all. Either way the OR stays within the cap.
     const q = builder(prompt, 'observations_fts');
-    expect(q).not.toBeNull();
-    const orTermCount = q!.split(' OR ').length;
-    expect(orTermCount).toBeLessThanOrEqual(40);
+    expect(q).toBeNull();
 
     // The 1,000-token search must also complete promptly. Without the cap
     // it would scan the whole index, taking minutes on the issue's 2.5 GB
@@ -108,5 +112,126 @@ describe('FTS any-term fallback is bounded by prompt size (#4804)', () => {
     const results = search.searchObservations(prompt, { project: 'proj' });
     expect(results.length).toBeGreaterThan(0);
     expect(results[0].title).toBe('Payment retry limit raised');
+  });
+});
+
+// Review follow-ups on #4824: the measured recipe from #4804, checked rule by rule.
+describe('bounded any-term query follows the measured #4804 recipe', () => {
+  let store: SessionStore;
+  let search: SessionSearch;
+
+  function seed(project: string, title: string, narrative: string, key: string): void {
+    const sdkId = store.createSDKSession(key, project, 'prompt');
+    store.ensureMemorySessionIdRegistered(sdkId, `${key}-mem`);
+    store.storeObservation(`${key}-mem`, project, {
+      type: 'discovery', title, subtitle: null, facts: [], narrative, concepts: [], files_read: [], files_modified: [],
+    }, 1);
+  }
+
+  // 200 rows: "common" is in every row, "frequent" in 50 (25%), "zebrafish" in one.
+  function seedCorpus(): void {
+    for (let i = 0; i < 200; i++) {
+      seed('proj', `common note ${i}`, i % 4 === 0 ? 'frequent words here' : 'plain words here', `row-${i}`);
+    }
+    seed('proj', 'zebrafish fin regeneration', 'common zebrafish experiment', 'rare');
+  }
+
+  function build(query: string): string | null {
+    return (search as unknown as { buildFTSAnyTermQuery: (q: string, t: string) => string | null })
+      .buildFTSAnyTermQuery.call(search, query, 'observations_fts');
+  }
+
+  function terms(query: string | null): string[] {
+    return (query ?? '').split(' OR ').filter(Boolean).map(term => term.replace(/^"|"$/g, '').toLowerCase());
+  }
+
+  beforeEach(() => {
+    store = new SessionStore(':memory:');
+    search = new SessionSearch(store.db);
+    seedCorpus();
+  });
+
+  afterEach(() => {
+    store.close();
+  });
+
+  it('drops words that are in >= 2% of rows from a long prompt', () => {
+    const prompt = `${'common frequent '.repeat(40)}zebrafish`;
+    expect(prompt.length).toBeGreaterThanOrEqual(600);
+    const picked = terms(build(prompt));
+    expect(picked).toContain('zebrafish');
+    expect(picked).not.toContain('common');
+    expect(picked).not.toContain('frequent');
+  });
+
+  it('does not let words missing from the index crowd out a rare word late in a long prompt', () => {
+    const filler = Array.from({ length: 120 }, (_, i) => `absentword${i}`).join(' ');
+    const picked = terms(build(`${filler} zebrafish`));
+    expect(picked).toEqual(['zebrafish']);
+  });
+
+  it('drops words that are in >= 30% of rows from a short prompt', () => {
+    const picked = terms(build('common zebrafish frequent note'));
+    expect(picked).toContain('zebrafish');
+    expect(picked).toContain('frequent');
+    expect(picked).not.toContain('common');
+  });
+
+  it('leaves the database schema untouched', () => {
+    build(`${'common '.repeat(100)}zebrafish`);
+    const created = store.db.prepare("SELECT name FROM sqlite_master WHERE name LIKE '%vocab%'").all();
+    expect(created).toEqual([]);
+  });
+});
+
+describe('bounded any-term query on a store with a handful of rows (#4804)', () => {
+  it('keeps a word that is in one row, however small the store', () => {
+    const store = new SessionStore(':memory:');
+    try {
+      const search = new SessionSearch(store.db);
+      const sdkId = store.createSDKSession('one', 'proj', 'prompt');
+      store.ensureMemorySessionIdRegistered(sdkId, 'one-mem');
+      store.storeObservation('one-mem', 'proj', {
+        type: 'discovery', title: 'zebrafish fin regeneration', subtitle: null, facts: [],
+        narrative: 'notes', concepts: [], files_read: [], files_modified: [],
+      }, 1);
+      expect(search.searchObservations('what did we find about zebrafish', { project: 'proj' }).map(r => r.title))
+        .toEqual(['zebrafish fin regeneration']);
+      const long = `${'please tell me what we learned about '.repeat(20)}zebrafish`;
+      expect(search.searchObservations(long, { project: 'proj' }).map(r => r.title))
+        .toEqual(['zebrafish fin regeneration']);
+    } finally {
+      store.close();
+    }
+  });
+});
+
+describe('bounded any-term query on a read-only connection (#4804)', () => {
+  it('answers a long question without throwing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'any-term-ro-'));
+    const dbPath = join(dir, 'memory.db');
+    try {
+      const writer = new SessionStore(dbPath);
+      new SessionSearch(writer.db);
+      const sdkId = writer.createSDKSession('ro', 'proj', 'prompt');
+      writer.ensureMemorySessionIdRegistered(sdkId, 'ro-mem');
+      writer.storeObservation('ro-mem', 'proj', {
+        type: 'discovery', title: 'zebrafish fin regeneration', subtitle: null, facts: [],
+        narrative: 'notes', concepts: [], files_read: [], files_modified: [],
+      }, 1);
+      writer.close();
+
+      const reader = new Database(dbPath, { readonly: true, create: false });
+      try {
+        const search = new SessionSearch(reader);
+        const question = `${'please tell me what we learned about '.repeat(20)}zebrafish`;
+        const results = search.searchObservations(question, { project: 'proj' });
+        expect(results.map(r => r.title)).toEqual(['zebrafish fin regeneration']);
+      } finally {
+        reader.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
