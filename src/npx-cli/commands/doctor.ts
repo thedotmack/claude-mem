@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from 'fs';
-import { delimiter, join } from 'path';
+import { delimiter, join, sep } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
@@ -261,10 +261,14 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
       };
 }
 
-/** PATH minus the directories whose `claude-mem` resolves to the running CLI itself. */
+/**
+ * PATH minus the directories whose `claude-mem` resolves to the running CLI, when that CLI is npx's temporary copy
+ * (`<cache>/_npx/<hash>/node_modules`). No persistent PATH points into npx's cache, so hooks never reach it. A global
+ * or local install of the CLI stays: hooks do reach it, and it is not the launcher.
+ */
 function pathWithoutRunningCli(pathValue: string, platform: NodeJS.Platform, runningCliPath: string | undefined): string {
   const runningCli = runningCliPath ? realPathOrNull(runningCliPath) : null;
-  if (!runningCli || platform === 'win32') return pathValue;
+  if (!runningCli || platform === 'win32' || !runningCli.includes(`${sep}_npx${sep}`)) return pathValue;
   return pathValue
     .split(delimiter)
     .filter(directory => realPathOrNull(join(directory.trim(), 'claude-mem')) !== runningCli)
@@ -289,7 +293,8 @@ function realPathOrNull(path: string): string | null {
  * (ensure-launcher.cjs) replaces it on the next startup. Exported for tests.
  *
  * `npx claude-mem doctor` runs with npx's own `node_modules/.bin` first on PATH, where `claude-mem` is this CLI.
- * Hooks run outside npx, so PATH directories whose `claude-mem` is this CLI (`runningCliPath`) are skipped.
+ * Hooks run outside npx, so when this CLI (`runningCliPath`) is npx's copy, PATH directories that resolve to it
+ * are skipped.
  */
 export function hookLauncherCheck(
   host: LauncherHostEnvironment = currentLauncherHostEnvironment(),

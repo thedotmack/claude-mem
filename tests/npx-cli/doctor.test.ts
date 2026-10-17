@@ -175,8 +175,9 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
 
   beforeEach(() => {
     root = mkdtempSync(join(tmpdir(), 'doctor-launcher-'));
-    const cliDir = join(root, 'npx', 'node_modules', 'claude-mem', 'dist', 'npx-cli');
-    npxBin = join(root, 'npx', 'node_modules', '.bin');
+    // npx runs packages from npm's cache, `<cache>/_npx/<hash>/node_modules`.
+    const cliDir = join(root, '_npx', 'abc123', 'node_modules', 'claude-mem', 'dist', 'npx-cli');
+    npxBin = join(root, '_npx', 'abc123', 'node_modules', '.bin');
     launcherDir = join(root, 'local-bin');
     mkdirSync(cliDir, { recursive: true });
     mkdirSync(npxBin, { recursive: true });
@@ -204,6 +205,20 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     const result = hookLauncherCheck(host(`${otherDir}:${launcherDir}:/usr/bin:/bin`), runningCli);
     expect(result.status).toBe('fail');
     expect(result.detail).toContain(join(otherDir, 'claude-mem'));
+  });
+
+  it('still fails when a persistent install of this CLI comes before the launcher', () => {
+    // A global `npm i -g claude-mem` is the CLI, not the launcher, and hooks reach it first. Only npx's copy is skipped.
+    const globalRoot = join(root, 'npm-global');
+    const globalCli = join(globalRoot, 'lib', 'node_modules', 'claude-mem', 'dist', 'npx-cli', 'index.js');
+    const globalBin = join(globalRoot, 'bin');
+    mkdirSync(join(globalCli, '..'), { recursive: true });
+    mkdirSync(globalBin, { recursive: true });
+    executable(globalCli, '13.41.0');
+    symlinkSync(globalCli, join(globalBin, 'claude-mem'));
+    const result = hookLauncherCheck(host(`${globalBin}:${launcherDir}:/usr/bin:/bin`), globalCli);
+    expect(result.status).toBe('fail');
+    expect(result.detail).toContain(join(globalBin, 'claude-mem'));
   });
 
   it('reports a missing launcher when the only claude-mem on PATH is itself', () => {
