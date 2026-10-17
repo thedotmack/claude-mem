@@ -503,7 +503,7 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   db.run('DROP INDEX idx_work_state_entries_unsynced');
   db.run('DROP INDEX ux_work_state_entries_origin');
   for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67)');
+  db.run('DELETE FROM schema_versions WHERE version >= 66');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */

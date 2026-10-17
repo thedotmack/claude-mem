@@ -91,6 +91,7 @@ export function queryObservationsMulti(
     projects,
     excludeSubagents: config.mainAgentOnly,
     withReinforcementDates: alpha > 0,
+    withOriginDevice: true,
   });
   return rankByStrength(pool, config.totalObservationCount, alpha);
 }
@@ -119,6 +120,8 @@ export function queryObservationsNewest(
     excludeSubagents?: boolean;
     /** Also select the reinforcement history (only needed while ranking is on). */
     withReinforcementDates?: boolean;
+    /** SessionStart labels rows pulled from another sync device (sync-devices.ts). */
+    withOriginDevice?: boolean;
   }
 ): LocalObservation[] {
   const typeArray = Array.from(config.observationTypes);
@@ -144,7 +147,8 @@ export function queryObservationsNewest(
   // and must stay injected, or `session_start_context` returns nothing for them.
   const agentFilter = options.excludeSubagents ? `AND ${mainAgentRowSql('o')}` : '';
 
-  const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
+  const reinforcementColumn = (options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '')
+    + (options.withOriginDevice ? ',\n      o.origin_device_id' : '');
 
   const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
@@ -258,7 +262,8 @@ export function querySummariesMulti(
       ss.notes,
       ss.created_at,
       ss.created_at_epoch,
-      ss.project
+      ss.project,
+      ss.origin_device_id
     FROM (${winnersSql}) w
     JOIN session_summaries ss ON ss.id = w.id
     LEFT JOIN sdk_sessions s ON ss.memory_session_id = s.memory_session_id

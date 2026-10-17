@@ -59,6 +59,7 @@ import {
   type ContentKind,
 } from './CanonicalContent.js';
 import { PROMPT_TEXT_COLUMNS_SQL, clampPromptTextForSync } from './prompt-text-clamp.js';
+import { saveSyncDeviceNames } from '../sqlite/sync-devices.js';
 import {
   classifySyncAuthFailure,
   friendlySyncError,
@@ -716,6 +717,8 @@ export class CloudSync {
       deviceName: this.deviceName,
       tokenLength: this.token.length, // never the token itself
     });
+    // The status reply carries the device names shown on pulled rows.
+    void this.probeHubStatus();
     // flush() drops reminted-device stale outbox snapshots before drain.
     void this.flush();
   }
@@ -1083,6 +1086,7 @@ export class CloudSync {
         error: null,
       };
       this.exitAuthPause();
+      this.saveHubDeviceNames(record.devices);
     } catch (error) {
       if (error instanceof HubHttpError && error.authFailure) {
         this.enterAuthPause(error.authFailure, error);
@@ -1100,6 +1104,26 @@ export class CloudSync {
         contentKinds: this.hubStatus.contentKinds,
         error: safe,
       };
+    }
+  }
+
+  /**
+   * `devices` in a hub status reply: `[{ device_id, name }]` for the account's
+   * devices. Rows pulled from a device show its name (sync-devices.ts). A hub
+   * that predates the field sends none, and rows show a short device id.
+   */
+  private saveHubDeviceNames(value: unknown): void {
+    if (!Array.isArray(value)) return;
+    const devices = value.flatMap(entry => {
+      const device = entry as { device_id?: unknown; name?: unknown } | null;
+      return typeof device?.device_id === 'string' && typeof device.name === 'string'
+        ? [{ deviceId: device.device_id, name: device.name }]
+        : [];
+    });
+    try {
+      saveSyncDeviceNames(this.db, devices);
+    } catch (error) {
+      logger.warn('CLOUD_SYNC', 'Could not save hub device names', {}, error instanceof Error ? error : new Error(String(error)));
     }
   }
 

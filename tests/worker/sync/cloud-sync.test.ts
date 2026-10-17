@@ -12,6 +12,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { readSyncDeviceNames } from '../../../src/services/sqlite/sync-devices.js';
 import {
   CloudSync,
   HubHttpError,
@@ -683,6 +684,25 @@ describe('CloudSync', () => {
       error: null,
     });
     expect(status.hub.checkedAt).toBeNumber();
+  });
+
+  it('saves the device names a hub status reply lists, and keeps them when a later reply has none', async () => {
+    let devices: unknown = [
+      { device_id: 'dev-laptop', name: 'laptop' },
+      { device_id: 'dev-unnamed', name: null },
+      'not-a-device',
+    ];
+    const impl = (async () => Response.json({
+      protocol_version: 2, epoch: '1', head_seq: '4', projected_seq: '4', devices,
+    })) as typeof fetch;
+    const sync = makeCloudSync(impl);
+
+    await sync.statusWithHubProbe();
+    expect([...readSyncDeviceNames(db)]).toEqual([['dev-laptop', 'laptop']]);
+
+    devices = undefined;
+    await sync.statusWithHubProbe();
+    expect(readSyncDeviceNames(db).get('dev-laptop')).toBe('laptop');
   });
 
   it('shares concurrent status probes and probes again after completion', async () => {

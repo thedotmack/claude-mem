@@ -22,7 +22,9 @@ export function renderHeader(
   config: ContextConfig,
   forHuman: boolean,
   /** The header's date and time; a placeholder when the block is cached (context-cache.ts). */
-  headerTime?: string
+  headerTime?: string,
+  /** True when a rendered row came from another sync device. */
+  showsOriginDevice: boolean = false
 ): string[] {
   const output: string[] = [];
   const fetchByIdSupported = config.fetchByIdSupported !== false;
@@ -37,7 +39,7 @@ export function renderHeader(
   if (forHuman) {
     output.push(...Human.renderHumanLegend());
   } else {
-    output.push(...Agent.renderAgentLegend(fetchByIdSupported));
+    output.push(...Agent.renderAgentLegend(fetchByIdSupported, showsOriginDevice));
   }
 
   // Agent variants render nothing; only the Human column-key / context-index

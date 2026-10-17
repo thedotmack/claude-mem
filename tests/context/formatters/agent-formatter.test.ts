@@ -151,6 +151,11 @@ describe('AgentFormatter', () => {
       expect(renderAgentLegend(true).join('\n')).toContain('get_observations');
     });
 
+    it('should explain the origin device label only when a row has one', () => {
+      expect(renderAgentLegend(true).join('\n')).not.toContain('Origin:');
+      expect(renderAgentLegend(true, true).join('\n')).toContain('Origin: [name] = synced from that device; unmarked = this device');
+    });
+
     it('should switch to display-only refs hint when fetch-by-id is unsupported', () => {
       const joined = renderAgentLegend(false).join('\n');
       expect(joined).toContain('short refs are display-only');
@@ -230,6 +235,15 @@ describe('AgentFormatter', () => {
   });
 
   describe('renderAgentTableRow', () => {
+    it('should put the origin device before the title of a synced row', () => {
+      const config = createTestConfig();
+
+      expect(renderAgentTableRow(createTestObservation({ title: 'Docs added', origin_device: 'vcit01' }), '11:57 PM', config))
+        .toBe('1 11:57p I [vcit01] Docs added');
+      expect(renderAgentTableRow(createTestObservation({ title: 'Docs added' }), '11:57 PM', config))
+        .toBe('1 11:57p I Docs added');
+    });
+
     it('should include observation ID', () => {
       const obs = createTestObservation({ id: 42 });
       const config = createTestConfig();

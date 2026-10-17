@@ -1,3 +1,5 @@
+import type { OriginDeviceFields } from './sync-devices.js';
+
 
 export interface ObservationRow {
   id: number;
@@ -69,12 +71,12 @@ export interface SearchOptions extends SearchFilters {
   isFolder?: boolean;
 }
 
-export interface ObservationSearchResult extends ObservationRow {
+export interface ObservationSearchResult extends ObservationRow, OriginDeviceFields {
   rank?: number; 
   score?: number; 
 }
 
-export interface SessionSummarySearchResult extends SessionSummaryRow {
+export interface SessionSummarySearchResult extends SessionSummaryRow, OriginDeviceFields {
   rank?: number; 
   score?: number; 
 }

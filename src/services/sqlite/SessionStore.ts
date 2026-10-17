@@ -37,6 +37,7 @@ import {
   type WorkStateEntry,
   type WorkStateFields,
 } from './work-state.js';
+import { createSyncDevicesSchema } from './sync-devices.js';
 import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/SettingsDefaultsManager.js';
 import {
   computeTitleNormKey, findTier0Canonical, bumpTokenDf, isFuzzyReady, recordTier1Candidates,
@@ -312,6 +313,7 @@ export class SessionStore {
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
+    this.ensureSyncDevicesTable();
   }
 
   /** Local host retry identity. Runs after every legacy user_prompts rebuild. */
@@ -2079,6 +2081,12 @@ export class SessionStore {
     this.db.run('CREATE INDEX IF NOT EXISTS idx_observations_merged_into_nocase_project ON observations(merged_into_project COLLATE NOCASE, project)');
     this.db.run('CREATE INDEX IF NOT EXISTS idx_summaries_merged_into_nocase_project ON session_summaries(merged_into_project COLLATE NOCASE, project)');
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(64, new Date().toISOString());
+  }
+
+  // v68 — origin device names for replica rows (./sync-devices.ts). Idempotent DDL like v51.
+  private ensureSyncDevicesTable(): void {
+    createSyncDevicesSchema(this.db);
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(68, new Date().toISOString());
   }
 
   // v62 — exactly-once hand-off marker for hook spool entries (HookSpool.drain):

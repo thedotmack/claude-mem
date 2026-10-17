@@ -3,6 +3,7 @@ import { ProgressiveSearch, MemoryProgressiveCursorStore, projectMemoryContent, 
 import type { SearchManager } from './SearchManager.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
+import { labelOriginDevices } from '../sqlite/sync-devices.js';
 
 type StoredRow = {
   id: number; project: string; title?: string | null; request?: string | null;
@@ -10,6 +11,7 @@ type StoredRow = {
   subtitle?: string | null; narrative?: string | null; facts?: string | null; concepts?: string | null;
   files_read?: string | null; files_modified?: string | null; investigated?: string | null; learned?: string | null;
   completed?: string | null; next_steps?: string | null; notes?: string | null;
+  origin_device?: string;
 };
 
 function indexRow(row: StoredRow, kind: MemoryIndexRow['kind']): MemoryIndexRow {
@@ -90,8 +92,8 @@ export class ProgressiveMemorySearch {
   private fetch(refs: MemoryIndexRow[]): MemoryDetail[] {
     const observationIds = refs.filter(row => row.kind === 'observation').map(row => Number(row.id));
     const summaryIds = refs.filter(row => row.kind === 'summary').map(row => Number(row.id.slice(1)));
-    const observations = observationIds.length ? this.store.getObservationsByIds(observationIds, { orderBy: 'relevance', limit: 5 }) : [];
-    const summaries = summaryIds.length ? this.store.getSessionSummariesByIds(summaryIds, { orderBy: 'date_desc', limit: 5 }) : [];
+    const observations = labelOriginDevices(this.store.db, observationIds.length ? this.store.getObservationsByIds(observationIds, { orderBy: 'relevance', limit: 5 }) : []);
+    const summaries = labelOriginDevices(this.store.db, summaryIds.length ? this.store.getSessionSummariesByIds(summaryIds, { orderBy: 'date_desc', limit: 5 }) : []);
     const found = new Map<string, StoredRow>([
       ...observations.map(row => [String(row.id), row] as [string, StoredRow]),
       ...summaries.map(row => [`S${row.id}`, row] as [string, StoredRow]),
@@ -101,7 +103,8 @@ export class ProgressiveMemorySearch {
       // The token authorizes a row, not any future object reusing its ID.
       if (!row || row.project !== ref.project) return [];
       const projected = projectMemoryContent(row);
-      return [{ ...ref, content: projected.text, truncated: projected.truncated }];
+      const origin = row.origin_device ? `origin: ${row.origin_device}\n` : '';
+      return [{ ...ref, content: origin + projected.text, truncated: projected.truncated }];
     });
   }
 }

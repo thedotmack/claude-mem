@@ -45,7 +45,8 @@ function memoryDetails(payload: unknown): string {
     + memories.slice(0, 5).map(value => {
       const row = record(value);
       const projected = projectMemoryContent(row.content ?? row);
-      return `${identity(row)}\n${bounded(projected.text, 6000)}`
+      const origin = row.origin_device ? `\norigin: ${line(row.origin_device, '', 80)}` : '';
+      return `${identity(row)}${origin}\n${bounded(projected.text, 6000)}`
         + (projected.truncated ? '\n[Detail shortened to fit the memory budget.]' : '');
     }).join('\n\n');
 }

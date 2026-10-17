@@ -73,6 +73,7 @@ describe('SessionStart observation selection with ACT-R reinforcement', () => {
       limit: 4,
       projects: [PROJECT],
       excludeSubagents: true,
+      withOriginDevice: true,
     });
     for (const alpha of [undefined, 0]) {
       const selected = queryObservationsMulti(store, [PROJECT], config(alpha));

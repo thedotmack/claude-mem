@@ -23,6 +23,12 @@ describe('purpose-specific model responses', () => {
     expect(JSON.stringify(details)).not.toContain('PRIVATE_');
     expect(JSON.stringify(details)).not.toContain('91234');
   });
+  it('names the origin device of a synced row in selected details', () => {
+    const synced = formatMcpPayload('observations', [{ id: 8, title: 'Restarted the service', project: 'p', narrative: 'N', origin_device: 'vcit01' }]);
+    expect(synced.content[0].text).toContain('#8 — Restarted the service (p)\norigin: vcit01\nN');
+    const native = formatMcpPayload('observations', [{ id: 9, title: 'Local', project: 'p', narrative: 'N' }]);
+    expect(native.content[0].text).not.toContain('origin:');
+  });
   it('supports server content and returns a single context rendering', () => {
     expect(formatMcpPayload('observations', [{ id: 'uuid', projectId: 'p', content: 'A useful server lesson', metadata: { secret: 'PRIVATE_METADATA' } }]).content[0].text).toContain('A useful server lesson');
     const context = formatMcpPayload('context', { context: 'CURATED_CONTEXT', observations: [{ content: 'DUPLICATED_BODY' }] });
