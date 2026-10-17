@@ -265,7 +265,7 @@ describe("OpenCode plugin event contract", () => {
       expect(obsBody.tool_input).toEqual({ path: "/a" });
       expect(obsBody.tool_response).toBe("file contents");
       expect(obsBody.tool_use_id).toBe("c1");
-      expect(obsBody.enqueuedAtEpochMs).toEqual(expect.any(Number));
+      expect(obsBody.telemetryToolEpochMs).toEqual(expect.any(Number));
       expect(obsBody.platformSource).toBe(normalizePlatformSource("opencode"));
     } finally {
       globalThis.fetch = originalFetch;

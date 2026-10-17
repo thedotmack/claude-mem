@@ -96,7 +96,7 @@ describe('native Pi capture', () => {
     expect(calls.filter(call => call.body).map(call => call.route)).toEqual([
       '/api/sessions/init', '/api/sessions/observations', '/api/sessions/summarize',
     ]);
-    expect(calls.find(call => call.route === '/api/sessions/observations')?.body).toMatchObject({ tool_use_id: 'tool-7', tool_response: 'file text', enqueuedAtEpochMs: 1234 });
+    expect(calls.find(call => call.route === '/api/sessions/observations')?.body).toMatchObject({ tool_use_id: 'tool-7', tool_response: 'file text', telemetryToolEpochMs: 1234 });
     expect(calls.at(-1)?.body.last_assistant_message).toBe('The fix works');
   });
 

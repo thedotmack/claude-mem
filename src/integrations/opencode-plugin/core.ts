@@ -326,7 +326,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
 
   return {
     async captureTool({ tool, sessionID, toolUseId, args, output }) {
-      const enqueuedAtEpochMs = Date.now();
+      const telemetryToolEpochMs = Date.now();
       const contentSessionId = resolveContentSessionId(sessionID);
       // apply_patch carries its patch as `patchText`, and the worker's file
       // evidence reads `patch`. Renamed rather than copied, so the observer
@@ -346,7 +346,7 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
         tool_response: truncate(output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
-        enqueuedAtEpochMs,
+        telemetryToolEpochMs,
         ...(toolUseId ? { tool_use_id: toolUseId } : {}),
       });
     },

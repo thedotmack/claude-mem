@@ -394,7 +394,7 @@ describe('OMP Claude Mem hook', () => {
       const inits = requests.filter(request => request.path === '/api/sessions/init');
       expect(inits.map(request => request.body.telemetryPromptEpochMs)).toEqual([at, at + 10]);
       const tool = requests.find(request => request.path === '/api/sessions/observations');
-      expect(tool?.body.enqueuedAtEpochMs).toBe(at + 20);
+      expect(tool?.body.telemetryToolEpochMs).toBe(at + 20);
       expect(tool?.body.tool_use_id).toBeUndefined();
     } finally { clock.mockRestore(); }
   });

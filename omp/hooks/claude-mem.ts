@@ -317,7 +317,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // creates the session row from the observation itself when no prompt came
   // first).
   pi.on("tool_result", async (event, ctx) => {
-    const enqueuedAtEpochMs = Date.now();
+    const telemetryToolEpochMs = Date.now();
     const toolName = String(event?.toolName ?? "");
     if (!toolName || toolName.startsWith("memory_")) return; // avoid claude-mem recursion
 
@@ -332,7 +332,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
       tool_input: event?.input,
       tool_response: response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response,
       platformSource: "omp",
-      enqueuedAtEpochMs,
+      telemetryToolEpochMs,
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
 

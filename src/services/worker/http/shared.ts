@@ -124,6 +124,8 @@ export interface ObservationPayload {
   cwd?: string;
   platformSource?: string;
   telemetryPlatformSource?: string;
+  /** Direct live callbacks retain their original time without changing memory prompt lookup. */
+  telemetryToolEpochMs?: number;
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
@@ -166,7 +168,11 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   // their bounded identity before that filter, but after project, agent and
   // prompt privacy checks. Do not store their contents or buy an observation.
   const trackedTool = workStateTool(payload.toolName);
-  const telemetryAttribution = { ...payload, platformSource: payload.telemetryPlatformSource ?? payload.platformSource };
+  const telemetryAttribution = {
+    ...payload,
+    platformSource: payload.telemetryPlatformSource ?? payload.platformSource,
+    enqueuedAtEpochMs: payload.telemetryToolEpochMs ?? payload.enqueuedAtEpochMs,
+  };
   if (trackedTool && !shouldSkipAgentObservation(payload.agentId, payload.agentType, settings).skip) {
     try {
       const telemetryStore = dbManager.getSessionStore();

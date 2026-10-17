@@ -688,6 +688,7 @@ export class SessionRoutes extends BaseRouteHandler {
       telemetryPlatformSource: typeof req.body.telemetryPlatformSource === 'string'
         ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req) ?? 'unknown',
       enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
+      telemetryToolEpochMs: typeof req.body.telemetryToolEpochMs === 'number' ? req.body.telemetryToolEpochMs : undefined,
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),

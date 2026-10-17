@@ -220,7 +220,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
   });
 
   pi.on('tool_result', (event, ctx) => {
-    const enqueuedAtEpochMs = Date.now();
+    const telemetryToolEpochMs = Date.now();
     const session = current;
     if (!session || !event.toolName || event.toolName.startsWith('mem_')) return;
     const text = extractTextContent(event.content);
@@ -230,7 +230,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
         contentSessionId: session.id, cwd: session.cwd, platformSource: 'pi',
         tool_name: event.toolName, tool_input: event.input,
         tool_response: text.slice(0, 100_000), tool_use_id: event.toolCallId,
-        enqueuedAtEpochMs,
+        telemetryToolEpochMs,
       });
     });
   });

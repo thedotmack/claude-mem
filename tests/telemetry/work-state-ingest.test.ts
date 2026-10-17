@@ -218,6 +218,34 @@ describe('work-state capture boundary', () => {
     });
   });
 
+  it('keeps queued direct-host tool timing separate from the prompt insertion time', async () => {
+    await withRoutes(async port => {
+      const base = { contentSessionId: 'delayed-live-init', platformSource: 'pi', cwd: '/tmp/telemetry-work', project: 'telemetry-work' };
+      const post = async (path: string, body: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${port}/api/sessions/${path}`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...base, ...body }),
+        });
+        expect(response.status).toBe(200);
+        return response.json();
+      };
+      const start = Date.now();
+      const clock = spyOn(Date, 'now').mockReturnValue(start + 100);
+      try {
+        // The tool callback happened after its user prompt, but both queued
+        // requests reached the worker after the tool callback's original time.
+        await post('init', { prompt: 'Read the current file', telemetryPromptEpochMs: start });
+        await post('observations', {
+          tool_name: 'Read', tool_response: 'file contents', tool_use_id: 'queued-direct-tool',
+          telemetryToolEpochMs: start + 10,
+        });
+        expect(queue).toHaveBeenCalledTimes(1);
+        expect(queue.mock.calls[0][1].prompt_number).toBe(1);
+        expect(store.db.query('SELECT prompt_number FROM tool_uses WHERE tool_use_id = ?').get('queued-direct-tool')).toEqual({ prompt_number: 1 });
+        expect(rows().some(row => row.properties.captured_tool_count === 1 && row.properties.platform === 'pi')).toBe(true);
+      } finally { clock.mockRestore(); }
+    });
+  });
+
   it('does not count missing-prompt writes or ordinary tools through the normal ingestion path', async () => {
     await ingestObservation({ ...payload, enqueuedAtEpochMs: Date.now(), toolName: 'work_state_write', toolUseId: 'missing-write', toolResponse: 'Saved to "a" in project.' });
     await ingestObservation({ ...payload, enqueuedAtEpochMs: Date.now(), toolName: 'Read', toolUseId: 'missing-read' });
