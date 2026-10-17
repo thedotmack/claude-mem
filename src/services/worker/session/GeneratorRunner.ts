@@ -540,9 +540,8 @@ export async function startGeneratorWithProvider(
         resumeGeneratorLater(session, 0, 'schema-drift', ensureGeneratorRunning);
       }
       // A generator ended at a message boundary to change providers resumes
-      // on the provider dispatch selects now. A parked switch starts its own
-      // generator at once, and that start cancels this timer.
-      if (normalizedReason === 'provider_switch') {
+      // on the provider dispatch selects now. A parked switch starts its own.
+      if (reason === 'provider_switch:boundary') {
         resumeGeneratorLater(session, 0, 'provider-switch', ensureGeneratorRunning);
       }
 

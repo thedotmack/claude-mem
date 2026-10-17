@@ -846,7 +846,7 @@ export class SessionManager {
           sessionDbId,
           currentProvider: session.currentProvider,
         });
-        session.abortReason = 'provider_switch';
+        session.abortReason = 'provider_switch:boundary';
         session.abortController.abort();
         return;
       }

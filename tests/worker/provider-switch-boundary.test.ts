@@ -68,7 +68,7 @@ describe('provider switch at the next message boundary (#4846)', () => {
     const second = await iterator.next();
 
     expect(second.done).toBe(true);
-    expect(session.abortReason).toBe('provider_switch');
+    expect(session.abortReason).toBe('provider_switch:boundary');
     expect(session.abortController.signal.aborted).toBe(true);
     expect(session.claimedMessageIds).toEqual([]);
     expect(sm.getMessageBuffer().getPendingCount(41)).toBe(1);

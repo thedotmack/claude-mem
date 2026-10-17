@@ -384,8 +384,8 @@ export class SessionRoutes extends BaseRouteHandler {
     // provider immediately instead of leaving it stuck. A generator that HAS
     // acquired its slot (mid-response) is not aborted here — it switches at
     // its next message boundary (see below).
-    const switchNeeded = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
-    if (switchNeeded && isSessionParkedForSlot(sessionDbId)) {
+    const providerChanged = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    if (providerChanged && isSessionParkedForSlot(sessionDbId)) {
       // Defensive re-guard: `session` is already narrowed non-null by the
       // early return above, but this branch spans a 3-operand `&&` plus a
       // trailing function call before any property access — re-asserting
@@ -416,7 +416,10 @@ export class SessionRoutes extends BaseRouteHandler {
 
     // A running generator in an active session never idles out, so it ends at
     // its next message boundary and the runner resumes on the selected
-    // provider (#4846).
+    // provider (#4846). Not when dispatch routes around the provider this
+    // generator runs on: it is that provider's probe, or its own failure moves
+    // the work to the fallback, so a switch would only restart a healthy run.
+    const switchNeeded = providerChanged && (selection.fallbackFrom ?? null) !== session.currentProvider;
     if (switchNeeded && !session.providerSwitchPending) {
       logger.info('SESSION', 'Provider changed, will switch at the next message boundary', {
         sessionId: sessionDbId,
