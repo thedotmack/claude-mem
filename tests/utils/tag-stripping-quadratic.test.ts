@@ -1,54 +1,45 @@
 import { describe, it, expect } from 'bun:test';
-import { stripMemoryTagsFromJsonStrings } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTagsFromJsonStrings, stripSystemReminderBlocks } from '../../src/utils/tag-stripping.js';
 
 describe('stripSystemReminderBlocks', () => {
-  // Imported per test so this file still loads on builds without the export.
-  it('keeps tag-free text byte-identical (small)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('keeps tag-free text byte-identical (small)', () => {
     const text = 'lead </system-reminder> trail';
     expect(stripSystemReminderBlocks(text)).toBe(text);
   });
 
-  it('keeps tag-free text byte-identical (large, lookalike tags included)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('keeps tag-free text byte-identical (large, lookalike tags included)', () => {
     const text = 'a<system-reminderX>b</system-reminderX>c</system-reminder>d' + 'x'.repeat(2000);
     expect(stripSystemReminderBlocks(text)).toBe(text);
   });
 
-  it('cuts well-formed blocks leftmost-first (small)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('cuts well-formed blocks leftmost-first (small)', () => {
     expect(stripSystemReminderBlocks('A<system-reminder>r</system-reminder>B')).toBe('AB');
   });
 
-  it('cuts well-formed blocks leftmost-first (large, stray close preserved)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('cuts well-formed blocks leftmost-first (large, stray close preserved)', () => {
     const text = 'a</system-reminder>b'
       + 'x<system-reminder>r0</system-reminder>y'
       + '<system-reminder>r1</system-reminder>y';
     expect(stripSystemReminderBlocks(text)).toBe('a</system-reminder>bxyy');
   });
 
-  it('pairs the leftmost open with the first close, nested open included (small)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('pairs the leftmost open with the first close, nested open included (small)', () => {
     const text = 'A<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>B';
     expect(stripSystemReminderBlocks(text)).toBe('Ac</system-reminder>B');
   });
 
-  it('pairs the leftmost open with the first close, nested open included (large)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('pairs the leftmost open with the first close, nested open included (large)', () => {
     const text = 'x<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>y'
       + '<system-reminder>d</system-reminder>z';
     expect(stripSystemReminderBlocks(text)).toBe('xc</system-reminder>yz');
   });
 
-  it('keeps the tail verbatim when an open has no close (small)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('keeps the tail verbatim when an open has no close (small)', () => {
     expect(stripSystemReminderBlocks('A<system-reminder>never closed'))
       .toBe('A<system-reminder>never closed');
   });
 
-  it('keeps the tail verbatim when an open has no close (large)', async () => {
-    const { stripSystemReminderBlocks } = await import('../../src/utils/tag-stripping.js');
+  it('keeps the tail verbatim when an open has no close (large)', () => {
     const text = 'A<system-reminder>r</system-reminder>B<system-reminder>x<system-reminder>y';
     expect(stripSystemReminderBlocks(text)).toBe('AB<system-reminder>x<system-reminder>y');
   });
