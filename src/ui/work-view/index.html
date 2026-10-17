@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>My Work · claude-mem</title>
+  <link rel="icon" href="/work-view/assets/cmem-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/work-view/styles.css">
+  <script type="module" src="/work-view/app.js"></script>
+</head>
+<body data-mode="live">
+  <a class="skip" href="#main">Skip to my work</a>
+  <header class="app-header">
+    <a class="brand" href="#main" aria-label="Claude-Mem My Work"><img src="/work-view/assets/cmem-mark.svg" width="35" height="35" alt=""><span>Claude-Mem</span></a>
+    <nav aria-label="Main"><a href="/" aria-current="page">My Work</a><a href="/viewer">Memory &amp; settings</a></nav>
+    <div class="local-state"><span class="local-device" aria-hidden="true"></span><span>On this computer</span><span class="local-state-separator" aria-hidden="true"></span><span class="connection" id="connection" data-state="connecting"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Connecting locally…</span></span></div>
+
+  </header>
+
+  <main id="main" class="page" tabindex="-1">
+    <div class="page-heading">
+      <div><p class="eyebrow">A little clarity for your day</p><h1>My Work<span class="heading-dot">.</span></h1><p class="subtitle">See what’s moving. Pick up where you’re needed.</p></div>
+      <div class="workspace-meta"><span class="workspace-mark" aria-hidden="true">C</span><div><strong id="workspace-name">Local workspace</strong><span id="workspace-detail">Reading local work…</span></div></div>
+    </div>
+
+    <div class="toolbar">
+      <nav class="status-tabs" aria-label="Filter work" id="status-tabs"></nav>
+      <div class="view-options"><select id="project-filter" aria-label="Filter by project" hidden></select><label class="sr-only" for="time-range">Time range</label><select id="time-range"><option value="all">All loaded work</option><option value="day">Past 24 hours</option><option value="week">Past 7 days</option></select><label class="search-field"><img src="/work-view/assets/icons/search.svg" width="18" height="18" alt=""><span class="sr-only">Search work</span><input id="search" type="search" placeholder="Find work" autocomplete="off"></label></div>
+    </div>
+    <div class="source-note"><span id="source-note">Reading saved requests from this computer…</span> <span class="sync-state" id="sync-state">Cloud sync: checking configuration…</span></div>
+    <div id="updates-banner"></div>
+
+    <div class="workspace-layout">
+      <section class="work-section" aria-labelledby="work-heading">
+        <div class="section-heading"><h2 id="work-heading" tabindex="-1">All work</h2><span id="view-count">6 requests</span></div>
+        <div id="work-grid" class="work-grid"></div><details id="unlinked-work" class="unlinked-note" hidden><summary id="unlinked-count"></summary><div id="unlinked-items"></div></details>
+        <p class="reading-note"><span class="reading-glyph" aria-hidden="true"></span><span id="reading-note">Working, ready, and checked are different moments. Your review closes the loop.</span></p>
+      </section>
+
+      <aside class="side-panel" aria-label="Your next actions">
+        <section class="next-panel" aria-labelledby="next-heading">
+          <div class="next-title"><h2 id="next-heading">Your next move</h2><span id="next-count" class="next-count">3</span></div>
+          <p class="panel-description">A hand when it matters.<br>The rest can keep moving.</p>
+          <div id="next-list"></div>
+          <div class="inbox-foot"><span class="small-check" aria-hidden="true">✓</span><span>You decide when something is checked.</span></div>
+        </section>
+
+        <section class="connect-panel" aria-labelledby="connect-heading">
+          <div class="connect-visual" aria-hidden="true"><img src="/work-view/assets/connect.png" width="240" height="120" alt=""></div>
+          <p class="eyebrow">Same memory. More places.</p>
+          <h2 id="connect-heading">Take your context<br>into your next chat.</h2>
+          <p>This view works locally. Connect a chat app through CMEM Cloud when you want your memory available there.</p>
+          <button class="connect-button" type="button" data-connect="Claude.ai"><img src="/work-view/assets/agents/claude.svg" width="19" height="19" alt="">Connect Claude.ai<span aria-hidden="true">↗</span></button>
+          <button class="connect-button" type="button" data-connect="ChatGPT"><img src="/work-view/assets/agents/chatgpt.svg" width="19" height="19" alt="">Connect ChatGPT<span aria-hidden="true">↗</span></button>
+          <span class="connect-caption">Optional cloud sync · opens setup</span>
+        </section>
+      </aside>
+    </div>
+
+    <footer class="page-footer"><span><span class="local-device" aria-hidden="true"></span>Local first. Yours to connect.</span><span id="received-time">Waiting for the local connection…</span></footer>
+  </main>
+
+  <dialog id="review-dialog" aria-labelledby="review-title"><div id="review-content"></div></dialog>
+  <dialog id="question-dialog" aria-labelledby="question-title"><div id="question-content"></div></dialog>
+  <dialog id="detail-dialog" aria-labelledby="detail-title"><div id="detail-content"></div></dialog>
+  <dialog id="connect-dialog" aria-labelledby="connection-title"><div id="connect-content"></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>
