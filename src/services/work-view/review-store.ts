@@ -24,7 +24,7 @@ export function contentFingerprint(request: Record<string, unknown>): string {
   // Omit transport health, clock labels and generated summaries. Only recorded
   // request content invalidates a review. The selected fields include source
   // links and lifecycle evidence as well as the displayed outcome.
-  const fields = ['id', 'original', 'explicitRequestText', 'scopeUpdates', 'title', 'projects', 'agentIds', 'items', 'lifecycle', 'afterShip', 'shipEstimate', 'stageSourceText'];
+  const fields = ['id', 'original', 'explicitRequestText', 'scopeUpdates', 'title', 'projects', 'agentIds', 'items', 'lifecycle', 'afterShip', 'shipEstimate', 'stageSourceText', 'sourceContentHashes'];
   const content = Object.fromEntries(fields.map(key => [key, request[key]]));
   return createHash('sha256').update(JSON.stringify(canonical(content))).digest('hex');
 }

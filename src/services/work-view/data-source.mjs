@@ -3,6 +3,7 @@ import { Database as DatabaseSync } from 'bun:sqlite';
 import { readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
@@ -23,9 +24,13 @@ export function reduceWorkState(entries, { currentProject, currentProjectScope =
   // Match sqlite/work-state.ts:getWorkStateEntries. Imported rows replay at
   // their original write time, not the later local rowid assigned on arrival.
   const device = row => row.origin_device_id ?? localDeviceId;
-  for (const row of [...entries].sort((a, b) => a.created_at_epoch - b.created_at_epoch
-    || (device(a) < device(b) ? -1 : device(a) > device(b) ? 1 : 0)
-    || Number(a.origin_local_id ?? a.id) - Number(b.origin_local_id ?? b.id))) {
+  for (const row of [...entries].sort((a, b) => {
+    const timeAndDevice = a.created_at_epoch - b.created_at_epoch
+      || (device(a) < device(b) ? -1 : device(a) > device(b) ? 1 : 0);
+    if (timeAndDevice) return timeAndDevice;
+    const left = BigInt(a.origin_local_id ?? a.id), right = BigInt(b.origin_local_id ?? b.id);
+    return left < right ? -1 : left > right ? 1 : 0;
+  })) {
     revision = Math.max(revision, row.id);
     const fields = typeof row.fields === 'string' ? JSON.parse(row.fields) : row.fields;
     if (!fields || typeof fields !== 'object' || Array.isArray(fields)) throw new Error('Invalid work-state entry');
@@ -66,6 +71,7 @@ export function reduceWorkState(entries, { currentProject, currentProjectScope =
       type: taskName === null ? 'state' : 'task', fields, changes,
       status: taskName === null ? (target.fields.status == null ? 'open' : String(target.fields.status).toLowerCase()) : effectiveStatus(target.fields.status),
       at: iso(row.created_at_epoch), atEpoch: row.created_at_epoch,
+      sourceOrder: [row.created_at_epoch, device(row), String(row.origin_local_id ?? row.id)],
       inCurrentScope: scope.has(normalizedKey(row.project)),
     });
   }
@@ -206,6 +212,38 @@ export class WorkStateSource {
           }
           this.agentRevision++;
           this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState }), { titleCache: this.titleCache }), revision: this.agentRevision };
+          // Hash full linked evidence without sending its potentially large raw
+          // text in every snapshot. A review covers the source disclosure too.
+          const evidenceHashes = new Map();
+          for (const request of this.agentView.humanRequests) {
+            const refs = new Map();
+            const add = ref => {
+              if (ref && ['work-state', 'observation', 'prompt', 'summary', 'session'].includes(ref.kind)
+                && Number.isSafeInteger(ref.id) && ref.id > 0) refs.set(`${ref.kind}:${ref.id}`, ref);
+            };
+            const addUrl = url => {
+              const match = /^\/api\/work-view\/evidence\/([\w-]+)\/(\d+)$/.exec(url ?? '');
+              if (match) add({ kind: match[1], id: Number(match[2]) });
+            };
+            addUrl(request.original?.url);
+            for (const update of request.scopeUpdates) addUrl(update.url);
+            for (const item of request.items) {
+              addUrl(item.url);
+              addUrl(item.request?.url);
+              addUrl(item.request?.original?.url);
+              for (const field of [item.nextStep, item.outcome]) {
+                if (field?.source === 'session-summary') add({ kind: 'summary', id: field.sourceId });
+              }
+              for (const ref of item.sourceRefs ?? []) add(ref);
+            }
+            for (const activity of [...request.activity, ...request.workstreams.flatMap(stream => stream.activity)]) add(activity.sourceRef);
+            request.sourceContentHashes = [...refs].sort(([a], [b]) => a.localeCompare(b)).map(([key, ref]) => {
+              if (!evidenceHashes.has(key)) {
+                evidenceHashes.set(key, createHash('sha256').update(JSON.stringify(readEvidence(database, ref.kind, ref.id))).digest('hex'));
+              }
+              return { ...ref, hash: evidenceHashes.get(key) };
+            });
+          }
           this.signature = signature;
           this.activitySignature = activity;
           database.exec('COMMIT');

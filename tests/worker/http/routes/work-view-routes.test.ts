@@ -67,6 +67,42 @@ async function review(request: any, checked = true, headers: Record<string, stri
   });
 }
 
+// A real linked conversation, kept deliberately small. Updates below come
+// through this separate writer connection, just as imported corrections do.
+function seedLinkedEvidence(promptText = 'Build a local work viewer') {
+  source.exec(`
+    CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, project TEXT, platform_source TEXT,
+      content_session_id TEXT, memory_session_id TEXT, user_prompt TEXT, custom_title TEXT,
+      status TEXT, started_at_epoch INTEGER, completed_at_epoch INTEGER);
+    CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER,
+      prompt_text TEXT, created_at_epoch INTEGER);
+    CREATE TABLE observations (id INTEGER PRIMARY KEY, project TEXT, memory_session_id TEXT,
+      content_session_id TEXT, agent_id TEXT, agent_type TEXT, prompt_number INTEGER, title TEXT,
+      subtitle TEXT, type TEXT, created_at_epoch INTEGER, narrative TEXT);
+    CREATE TABLE session_summaries (id INTEGER PRIMARY KEY, project TEXT, memory_session_id TEXT,
+      prompt_number INTEGER, request TEXT, completed TEXT, next_steps TEXT, created_at_epoch INTEGER);
+    CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, project TEXT, platform_source TEXT, agent_id TEXT,
+      agent_type TEXT, session_db_id INTEGER, memory_session_id TEXT, content_session_id TEXT,
+      prompt_number INTEGER, tool_input TEXT, created_at_epoch INTEGER, tool_name TEXT);
+  `);
+  const row = source.prepare('SELECT fields, created_at_epoch FROM work_state_entries WHERE id=1').get() as { fields: string; created_at_epoch: number };
+  source.prepare('INSERT INTO sdk_sessions VALUES (1,?,?,?,?,?,?,?,?,?)').run(
+    'example-project', 'codex', 'conversation', 'memory', promptText, null, 'active', row.created_at_epoch, null,
+  );
+  source.prepare('INSERT INTO user_prompts VALUES (1,1,1,?,?)').run(promptText, row.created_at_epoch);
+  source.prepare('INSERT INTO observations VALUES (1,?,?,?,?,?,?,?,?,?,?,?)').run(
+    'example-project', 'memory', 'conversation', 'agent', 'assistant', 1,
+    'Recorded viewer result', 'A readable result', 'feature', row.created_at_epoch, 'Original full narrative.',
+  );
+  source.prepare('INSERT INTO session_summaries VALUES (1,?,?,?,?,?,?,?)').run(
+    'example-project', 'memory', 1, promptText, 'The recorded result is complete.', 'Read the result.', row.created_at_epoch,
+  );
+  source.prepare('INSERT INTO tool_uses VALUES (1,?,?,?,?,?,?,?,?,?,?,?)').run(
+    'example-project', 'codex', 'agent', 'assistant', 1, 'memory', 'conversation', 1,
+    JSON.stringify({ list: 'example-work', fields: JSON.parse(row.fields) }), row.created_at_epoch, 'work_state_write',
+  );
+}
+
 describe('local work view', () => {
   it('projects explicit completion and evidence without inventing presence or altering source', async () => {
     const before = source.prepare('SELECT * FROM work_state_entries').all();
@@ -167,6 +203,119 @@ describe('local work view', () => {
     const changed = (await snapshot()).humanRequests[0];
     expect(changed.contentFingerprint).not.toBe(first.contentFingerprint);
     expect(changed.lifecycle.complete).toBe(false);
+  });
+
+  for (const correction of [
+    { table: 'observations', column: 'title', text: 'Corrected observation result' },
+    { table: 'session_summaries', column: 'completed', text: 'Corrected summary result' },
+    { table: 'user_prompts', column: 'prompt_text', text: 'Build a more accessible local work viewer' },
+  ]) {
+    it(`notices an external in-place ${correction.table} correction without new IDs or rows`, async () => {
+      seedLinkedEvidence();
+      const before = (await snapshot()).humanRequests[0];
+      expect((await review(before)).status).toBe(200);
+      source.prepare(`UPDATE ${correction.table} SET ${correction.column}=? WHERE id=1`).run(correction.text);
+      const updated = (await snapshot()).humanRequests[0];
+      expect(JSON.stringify(updated)).toContain(correction.text);
+      expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+      expect(updated.review.checked).toBe(false);
+      expect((await review(before)).status).toBe(409);
+      expect(source.prepare(`SELECT COUNT(*) AS n,MAX(id) AS id FROM ${correction.table}`).get()).toEqual({ n: 1, id: 1 });
+    });
+  }
+
+  it('invalidates a checked version when only the full linked narrative changes', async () => {
+    seedLinkedEvidence();
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE observations SET narrative=? WHERE id=1').run('Corrected full narrative with a different result.');
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.title).toBe(before.title);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+    expect(JSON.stringify(updated)).not.toContain('Corrected full narrative');
+    expect((await (await fetch(`${origin}/api/work-view/evidence/observation/1`)).json()).narrative).toContain('Corrected full narrative');
+    expect((await review(before)).status).toBe(409);
+  });
+
+  it('hashes the full prompt beyond the displayed request excerpt', async () => {
+    const excerpt = `Build a local work viewer. ${'Keep the work readable. '.repeat(70)}`;
+    seedLinkedEvidence(`${excerpt}Original tail.`);
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE user_prompts SET prompt_text=? WHERE id=1').run(`${excerpt}Corrected tail.`);
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.original.text).toBe(before.original.text);
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+  });
+
+  it('hashes the linked summary beyond its compact result text', async () => {
+    seedLinkedEvidence();
+    const excerpt = 'The viewer works locally. '.repeat(25);
+    source.prepare('UPDATE session_summaries SET completed=? WHERE id=1').run(`${excerpt}Original tail.`);
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE session_summaries SET completed=? WHERE id=1').run(`${excerpt}Corrected tail.`);
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.items.map((item: any) => item.outcome)).toEqual(before.items.map((item: any) => item.outcome));
+    expect(updated.contentFingerprint).not.toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(false);
+  });
+
+  it('preserves a human check when only sync bookkeeping changes', async () => {
+    seedLinkedEvidence();
+    source.exec('ALTER TABLE observations ADD COLUMN synced_at INTEGER');
+    const before = (await snapshot()).humanRequests[0];
+    expect((await review(before)).status).toBe(200);
+    source.prepare('UPDATE observations SET synced_at=? WHERE id=1').run(Date.now());
+    const updated = (await snapshot()).humanRequests[0];
+    expect(updated.contentFingerprint).toBe(before.contentFingerprint);
+    expect(updated.review.checked).toBe(true);
+  });
+
+  it('honors a later request_complete=false at the same timestamp as request_status=done', async () => {
+    const at = Date.now();
+    source.prepare('UPDATE work_state_entries SET fields=?,created_at_epoch=? WHERE id=1').run(JSON.stringify({
+      task: 'Build the local viewer', request_id: 'viewer-request', human_request: 'Build a local work viewer', request_status: 'done',
+    }), at);
+    source.prepare('INSERT INTO work_state_entries VALUES (2,?,?,?,?)').run(
+      'example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false }), at,
+    );
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.complete).toBe(false);
+    expect(request.completedAtEpoch).toBeNull();
+    expect((await review(request)).status).toBe(409);
+  });
+
+  for (const [doneDevice, reopenDevice, complete] of [['a-device', 'z-device', false], ['z-device', 'a-device', true]] as const) {
+    it(`uses canonical device order for equal-time completion from ${doneDevice} and reopening from ${reopenDevice}`, async () => {
+      source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+      source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_local_id TEXT');
+      const at = Date.now();
+      source.prepare('UPDATE work_state_entries SET fields=?,created_at_epoch=?,origin_device_id=?,origin_local_id=\'1\' WHERE id=1').run(JSON.stringify({
+        task: 'Build the local viewer', request_id: 'viewer-request', human_request: 'Build a local work viewer', request_status: 'done',
+      }), at, doneDevice);
+      source.prepare('INSERT INTO work_state_entries VALUES (2,?,?,?,?,?,?)').run(
+        'example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false }), at, reopenDevice, '1',
+      );
+      const request = (await snapshot()).humanRequests[0];
+      expect(request.completedAtEpoch !== null).toBe(complete);
+      expect((await review(request)).status).toBe(complete ? 200 : 409);
+    });
+  }
+
+  it('keeps origin-row ordering exact beyond the JavaScript safe integer range', async () => {
+    source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_device_id TEXT');
+    source.exec('ALTER TABLE work_state_entries ADD COLUMN origin_local_id TEXT');
+    const at = Date.now();
+    source.prepare('UPDATE work_state_entries SET created_at_epoch=?,origin_device_id=\'same-device\',origin_local_id=\'9007199254740993\' WHERE id=1').run(at);
+    source.prepare('INSERT INTO work_state_entries VALUES (2,?,?,?,?,?,?)').run(
+      'example-project', 'example-work', JSON.stringify({ task: 'Build the local viewer', request_complete: false }), at, 'same-device', '9007199254740992',
+    );
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.complete).toBe(true);
+    expect((await review(request)).status).toBe(200);
   });
 
   it('serves a retained snapshot with unavailable-source health and refuses reviews', async () => {

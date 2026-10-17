@@ -102,7 +102,7 @@ export function setupTeamView() {
         state.pending = result;
         $('team-updates').innerHTML = '<div class="updates-banner"><span>New shared updates are ready. Your place is saved.</span><button type="button" id="apply-team-updates">Show updates</button></div>';
         $('apply-team-updates').onclick = () => { state.board = state.pending; state.pending = null; $('team-updates').replaceChildren(); renderBoard(); $('shared-work-heading').focus({ preventScroll: true }); };
-      } else { state.board = result; renderBoard(); }
+      } else { state.board = result; state.pending = null; $('team-updates').replaceChildren(); renderBoard(); }
     } catch (error) { if (state.active && serial === state.serial && selected === state.selected) failure(error); }
     finally { if (serial === state.serial) state.inFlight = false; }
   }

@@ -49,6 +49,14 @@ function conversationKey(session) {
   return JSON.stringify(['conversation', session.platform_source, session.content_session_id]);
 }
 
+function compareSourceOrder(a = null, b = null) {
+  if (!a || !b) return 0;
+  const time = a[0] - b[0];
+  const device = a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0;
+  const left = BigInt(a[2]), right = BigInt(b[2]);
+  return time || device || (left < right ? -1 : left > right ? 1 : 0);
+}
+
 function originalFor(session, prompts) {
   const ordered = prompts.filter((prompt) => prompt.session_db_id === session.id)
     .sort((a, b) => (a.prompt_number ?? Infinity) - (b.prompt_number ?? Infinity) || (a.created_at_epoch ?? 0) - (b.created_at_epoch ?? 0) || a.id - b.id);
@@ -139,9 +147,11 @@ export function buildHumanRequests(view, records = {}, { titleCache = {} } = {})
     request.activity = activityFor(request.items, request.id, 40);
     const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));
     const lifecycleRecords = request.items.flatMap((item) => [
-      ...(typeof item.requestStatus === 'string' && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: 'request_status', sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : []),
-      ...(typeof item.requestComplete === 'boolean' ? [{ status: item.requestComplete ? 'done' : 'open', complete: item.requestComplete, explicit: true, field: 'request_complete', sourceId: item.id, url: item.url, atEpoch: item.requestCompleteSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceRef: item.requestCompleteSource?.sourceRef ?? null }] : []),
-    ]).sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0));
+      ...(typeof item.requestStatus === 'string' && item.requestStatus.trim() ? [{ status: item.requestStatus.trim(), explicit: true, field: 'request_status', sourceId: item.id, url: item.url, atEpoch: item.requestStatusSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestStatusSource?.sourceOrder ?? null, sourceRef: item.requestStatusSource?.sourceRef ?? null }] : []),
+      ...(typeof item.requestComplete === 'boolean' ? [{ status: item.requestComplete ? 'done' : 'open', complete: item.requestComplete, explicit: true, field: 'request_complete', sourceId: item.id, url: item.url, atEpoch: item.requestCompleteSource?.atEpoch ?? item.lastUpdateEpoch ?? null, sourceOrder: item.requestCompleteSource?.sourceOrder ?? null, sourceRef: item.requestCompleteSource?.sourceRef ?? null }] : []),
+    ]).sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0)
+      || compareSourceOrder(b.sourceOrder, a.sourceOrder)
+      || Number(b.field === 'request_complete') - Number(a.field === 'request_complete'));
     request.lifecycle = lifecycleRecords[0] ?? null;
     request.startedAtEpoch = request.original.atEpoch ?? null;
     request.completedAtEpoch = request.lifecycle && (request.lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(request.lifecycle.status.toLowerCase())) ? request.lifecycle.atEpoch : null;

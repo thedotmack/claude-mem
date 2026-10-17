@@ -58,6 +58,10 @@ export function activitySignature(database) {
   const sessions = safeRead(database, `SELECT MAX(id) AS id, COUNT(*) AS count, MAX(completed_at_epoch) AS completed,
     SUM(CASE WHEN status = 'active' THEN 1 ELSE 0 END) AS active FROM sdk_sessions`)[0];
   heads.push(`sessions:${sessions?.id ?? 0}:${sessions?.count ?? 0}:${sessions?.completed ?? 0}:${sessions?.active ?? 0}`);
+  // This reader never writes. SQLite's connection-local data_version changes
+  // when another connection commits, including edits that keep row IDs/counts.
+  const version = safeRead(database, 'PRAGMA data_version')[0]?.data_version ?? 0;
+  heads.push(`data:${version}`);
   return heads.join('|');
 }
 
@@ -104,7 +108,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
       const value = own ? item.fields[field] : item.list.fields[field];
       if (!accept(value)) continue;
       const event = fieldEvents.get(JSON.stringify([own ? item.id : item.list.id, field]));
-      found.push({ value, field, atEpoch: event?.atEpoch ?? item.updatedAtEpoch ?? null, sourceRef: event ? { kind: 'work-state', id: event.id } : null });
+      found.push({ value, field, atEpoch: event?.atEpoch ?? item.updatedAtEpoch ?? null, sourceOrder: event?.sourceOrder ?? null, sourceRef: event ? { kind: 'work-state', id: event.id } : null });
     }
     return found.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0));
   }
