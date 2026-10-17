@@ -186,6 +186,9 @@ import {
 } from './CanonicalContent.js';
 import { parseStringListField } from './string-list-field.js';
 
+/** sync_state key: replaySetAsideWorkState has run on this database. */
+const WORK_STATE_REPLAY_MARKER = 'work_state_set_aside_replayed';
+
 /**
  * A hub change this client could not decode. It keeps its seq so the page
  * stays contiguous; applyOps sets it aside (sync_pull_quarantine) instead of
@@ -202,7 +205,7 @@ export interface UndecodableOp {
 /** One op as returned by the hub's getChanges (SyncHub.ts ChangeOp). */
 export interface SyncOp {
   seq: string;
-  kind: 'observation' | 'summary' | 'prompt' | 'mutation';
+  kind: 'observation' | 'summary' | 'prompt' | 'work_state' | 'mutation';
   origin_device: string;
   origin_id: string;
   rev: string;
@@ -430,6 +433,7 @@ export class SyncApply {
           { table: 'observations', kind: 'observation' },
           { table: 'session_summaries', kind: 'summary' },
           { table: 'user_prompts', kind: 'prompt' },
+          { table: 'work_state_entries', kind: 'work_state' },
         ]) {
           requeued += this.db.prepare(`
             UPDATE ${table} SET synced_at = NULL
@@ -704,6 +708,53 @@ export class SyncApply {
   }
 
   /**
+   * Builds from before work_state was a content kind could not decode a pulled
+   * work_state op, so they set it aside as undecodable (kind NULL, the raw hub
+   * change kept), and retrySetAside never retries those. Once per database,
+   * decode them again with this build's decoder and apply the work_state ones
+   * the normal way. The sync_state marker commits with them; an op that still
+   * cannot apply stays set aside under its new reason. Returns the ops applied.
+   */
+  replaySetAsideWorkState(decode: (changes: unknown[]) => Array<SyncOp | UndecodableOp>): number {
+    if (this.db.prepare('SELECT 1 FROM sync_state WHERE k = ?').get(WORK_STATE_REPLAY_MARKER) !== null) return 0;
+    const chromaJobs: ChromaJob[] = []; // work_state has no Chroma copy
+    let applied = 0;
+    const tx = this.db.transaction(() => {
+      const rows = this.db.prepare(
+        'SELECT id, raw_body FROM sync_pull_quarantine WHERE kind IS NULL ORDER BY id'
+      ).all() as Array<{ id: number; raw_body: string }>;
+      for (const row of rows) {
+        const [op] = decode([JSON.parse(row.raw_body)]);
+        if ('undecodable' in op || op.kind !== 'work_state') continue;
+        if (op.origin_device !== this.deviceId) {
+          const attempt = this.applyInSavepoint(chromaJobs, () => this.applyCanonicalRowOp(op, chromaJobs));
+          if ('unapplicable' in attempt) {
+            const reason = attempt.unapplicable instanceof Error ? attempt.unapplicable.message : String(attempt.unapplicable);
+            this.db.prepare(`
+              UPDATE sync_pull_quarantine
+              SET kind = ?, entity_id = ?, origin_device_id = ?, origin_local_id = ?,
+                  entity_rev = ?, operation_sha256 = ?, reason = ?
+              WHERE id = ?
+            `).run(op.kind, op.entity_id ?? null, op.origin_device, op.origin_id,
+              op.entity_rev ?? op.rev, op.operation_sha256 ?? null, reason, row.id);
+            continue;
+          }
+          if (attempt.outcome === 'applied') applied++;
+        }
+        this.db.prepare('DELETE FROM sync_pull_quarantine WHERE id = ?').run(row.id);
+      }
+      this.db.prepare('INSERT INTO sync_state (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING')
+        .run(WORK_STATE_REPLAY_MARKER, String(this.now()));
+    });
+    tx();
+    if (applied > 0) {
+      emitContextInvalidation('all', 'SyncApply.replaySetAsideWorkState', 'additive');
+      logger.info('SYNC_APPLY', 'Applied work_state ops an older build had set aside', { applied });
+    }
+    return applied;
+  }
+
+  /**
    * Record an op that can never apply here, inside the batch transaction so
    * the record commits with the cursor advance past it. Returns the log
    * entry; applyOps logs it after commit.
@@ -793,7 +844,9 @@ export class SyncApply {
         ? 'observations'
         : op.kind === 'summary'
           ? 'session_summaries'
-          : 'user_prompts';
+          : op.kind === 'work_state'
+            ? 'work_state_entries'
+            : 'user_prompts';
       this.db.prepare(
         `DELETE FROM ${table} WHERE origin_device_id = ? AND origin_local_id = ?`
       ).run(op.origin_device, op.origin_id);
@@ -828,9 +881,57 @@ export class SyncApply {
         return this.applySummary(op, body, chromaJobs);
       case 'prompt':
         return this.applyPrompt(op, body, chromaJobs);
+      case 'work_state':
+        return this.applyWorkState(op, body);
       default:
         throw invalidOp(op, `unknown row kind`);
     }
+  }
+
+  /**
+   * work_state rows (sqlite/work-state.ts) are an append-only log the agent
+   * keeps: a pulled row is inserted once under its origin identity and only a
+   * higher revision rewrites it. The table has no session FK and no Chroma
+   * copy, so nothing else is created for it.
+   */
+  private applyWorkState(op: SyncOp, body: Record<string, unknown>): 'applied' | 'stale' {
+    const project = fieldString(op, body, 'project');
+    const listName = fieldString(op, body, 'list_name');
+    const fields = fieldString(op, body, 'fields');
+    const createdAtEpoch = fieldNumber(op, body, 'created_at_epoch');
+    if (!project || !listName || fields === null || createdAtEpoch === null) {
+      throw invalidOp(op, 'work_state body requires project, list_name, fields, created_at_epoch');
+    }
+    let parsedFields: unknown;
+    try {
+      parsedFields = JSON.parse(fields);
+    } catch {
+      throw invalidOp(op, 'work_state fields is not parseable JSON');
+    }
+    if (parsedFields === null || typeof parsedFields !== 'object' || Array.isArray(parsedFields)) {
+      throw invalidOp(op, 'work_state fields must be a JSON object');
+    }
+    const createdAt = fieldString(op, body, 'created_at') ?? new Date(createdAtEpoch).toISOString();
+
+    const existing = this.findByOrigin('work_state_entries', op.origin_device, op.origin_id);
+    if (existing) {
+      if (compareCanonicalDecimals(op.rev, existing.sync_rev) <= 0) return 'stale';
+      this.db.prepare(`
+        UPDATE work_state_entries SET
+          project = ?, list_name = ?, fields = ?, created_at = ?, created_at_epoch = ?,
+          sync_rev = ?, synced_at = ?
+        WHERE id = ?
+      `).run(project, listName, fields, createdAt, createdAtEpoch, op.rev, this.now(), existing.id);
+      return 'applied';
+    }
+    // synced_at pre-stamped: the push drain's WHERE synced_at IS NULL never selects it.
+    this.db.prepare(`
+      INSERT INTO work_state_entries
+        (project, list_name, fields, created_at, created_at_epoch,
+         synced_at, origin_device_id, origin_local_id, sync_rev)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(project, listName, fields, createdAt, createdAtEpoch, this.now(), op.origin_device, op.origin_id, op.rev);
+    return 'applied';
   }
 
   // ------------------------------------------------------------------------

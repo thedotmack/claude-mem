@@ -101,7 +101,9 @@ export function renderWorkStateList(
 export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkStateClock, includeClosed: boolean = false): string[] {
   const entriesByList = new Map<string, WorkStateEntry[]>();
   const listProjectCounts = new Map<string, number>();
-  for (const entry of entries) {
+  /** Position of each list's latest entry in `entries`, which arrive in write order. */
+  const lastPositionByList = new Map<WorkStateEntry[], number>();
+  entries.forEach((entry, position) => {
     // Checkout aliases share one list; adopted source projects keep separate lists.
     const projectKey = (entry.scope_project ?? entry.project).replace(/[A-Z]/g, character => character.toLowerCase());
     const key = JSON.stringify([projectKey, entry.list_name]);
@@ -112,9 +114,15 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
       listProjectCounts.set(entry.list_name, (listProjectCounts.get(entry.list_name) ?? 0) + 1);
     }
     listEntries.push(entry);
-  }
+    lastPositionByList.set(listEntries, position);
+  });
+  // Most recently written list first, by write clock rather than rowid: a list
+  // pulled from another device sorts by when it was written, not when it landed.
+  // A same-millisecond tie goes by write order, not by this device's rowids,
+  // so every device lists them alike.
   return [...entriesByList.values()]
-    .sort((a, b) => b[b.length - 1].id - a[a.length - 1].id)
+    .sort((a, b) => (b[b.length - 1].created_at_epoch - a[a.length - 1].created_at_epoch)
+      || (lastPositionByList.get(b)! - lastPositionByList.get(a)!))
     .flatMap(listEntries => {
       const first = listEntries[0];
       const label = (listProjectCounts.get(first.list_name) ?? 0) > 1

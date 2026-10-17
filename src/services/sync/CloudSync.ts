@@ -105,6 +105,8 @@ export const POISON_OP_REJECTION_THRESHOLD = 3;
 const MAX_POISON_QUARANTINES_PER_FLUSH = 25;
 /** Failure-streak ledger writes are throttled to one per interval. */
 const HEALTH_WRITE_THROTTLE_MS = 60 * 1_000;
+/** While work_state waits to sync, the hub's content kinds are re-read this often (shouldProbeContentKinds). */
+const CONTENT_KINDS_REPROBE_MS = 60 * 60 * 1_000;
 
 /**
  * Typed hub HTTP failure. Carries Retry-After so scheduleRetry can wait
@@ -286,6 +288,7 @@ const TABLE_BY_KIND: Record<RowKind, string> = {
   observation: 'observations',
   summary: 'session_summaries',
   prompt: 'user_prompts',
+  work_state: 'work_state_entries',
 };
 
 interface KindSpec {
@@ -463,6 +466,32 @@ const KINDS: KindSpec[] = [
       platform_source: r.platform_source ?? null,
     }),
   },
+  {
+    kind: 'work_state',
+    localTable: 'work_state_entries',
+    // The agent's to-do lists and working state (sqlite/work-state.ts): an
+    // append-only log, so a row's first revision is normally its whole life.
+    // `fields` travels as the object it stores, like observation metadata.
+    // Pushed only to a hub whose status lists the kind (hubAcceptsKind).
+    selectSql: `
+      SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
+        project, list_name, fields, created_at, created_at_epoch
+      FROM work_state_entries
+      WHERE synced_at IS NULL AND origin_device_id IS NULL
+      ORDER BY id LIMIT ?`,
+    selectOneSql: `
+      SELECT CAST(id AS TEXT) AS id, CAST(sync_rev AS TEXT) AS sync_rev,
+        project, list_name, fields, created_at, created_at_epoch
+      FROM work_state_entries
+      WHERE id = ? AND origin_device_id IS NULL`,
+    toBody: (r) => ({
+      project: r.project ?? 'unknown',
+      list_name: r.list_name ?? null,
+      fields: jsonPayloadColumn(r.fields, 'fields', 'object'),
+      created_at: r.created_at ?? null,
+      created_at_epoch: decimalPayload(r.created_at_epoch, 'created_at_epoch'),
+    }),
+  },
 ];
 
 export type CloudSyncSettingKeys = Pick<SettingsDefaults,
@@ -501,6 +530,8 @@ export interface CloudSyncOptions {
   statusTimeoutMs?: number;
   /** Re-check interval while paused on a 401/403. Default 1h. */
   authRetryMs?: number;
+  /** Re-read interval for the hub's content kinds while work_state waits. Default 1h. */
+  contentKindsReprobeMs?: number;
   /**
    * sync-health ledger path read by the SessionStart banner. null/omitted =
    * no ledger (tests, out-of-band callers); the worker passes the default.
@@ -511,7 +542,7 @@ export interface CloudSyncOptions {
 export interface CloudSyncStatus {
   configured: boolean;
   deviceId: string;
-  pending: { observations: number; summaries: number; prompts: number; mutations: number; tombstones: number };
+  pending: { observations: number; summaries: number; prompts: number; workState: number; mutations: number; tombstones: number };
   quarantine: { count: number; latestReason: string | null };
   /** Pulled hub ops this device set aside because they can never apply here. */
   pullQuarantine: { count: number; latestReason: string | null };
@@ -527,6 +558,8 @@ export interface CloudSyncStatus {
     epoch: string | null;
     headSeq: string | null;
     projectedSeq: string | null;
+    /** Kinds the hub accepts (`content_kinds`); [] for a hub that predates the field; null until probed. */
+    contentKinds: string[] | null;
     error: string | null;
   };
 }
@@ -548,6 +581,7 @@ export class CloudSync {
   private readonly statusTimeoutMs: number;
   private statusProbePromise: Promise<void> | null = null;
   private readonly authRetryMs: number;
+  private readonly contentKindsReprobeMs: number;
   private readonly healthFilePath: string | null;
 
   /** '' when unconfigured or when device-id resolution failed closed. */
@@ -573,6 +607,7 @@ export class CloudSync {
     epoch: null,
     headSeq: null,
     projectedSeq: null,
+    contentKinds: null,
     error: null,
   };
   /** True while SyncClient's advisory socket is live (setFastDebounce). */
@@ -616,6 +651,7 @@ export class CloudSync {
     );
     this.statusTimeoutMs = options.statusTimeoutMs ?? DEFAULT_STATUS_TIMEOUT_MS;
     this.authRetryMs = options.authRetryMs ?? DEFAULT_AUTH_RETRY_MS;
+    this.contentKindsReprobeMs = options.contentKindsReprobeMs ?? CONTENT_KINDS_REPROBE_MS;
     this.healthFilePath = options.healthFilePath ?? null;
     this.nextBackoffMs = this.backoffInitialMs;
 
@@ -698,13 +734,7 @@ export class CloudSync {
         this.flushAgainRequested = true;
         return;
       }
-      if (this.debounceTimer) clearTimeout(this.debounceTimer);
-      const timer = setTimeout(() => {
-        this.debounceTimer = null;
-        void this.flush();
-      }, this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
-      (timer as { unref?: () => void }).unref?.();
-      this.debounceTimer = timer;
+      this.armFlushTimer(this.fastDebounce ? this.fastDebounceMs : this.debounceMs);
     } catch (error) {
       // notify() is called from write paths — swallow everything.
       try {
@@ -743,9 +773,16 @@ export class CloudSync {
       this.dropStaleOriginDeviceIdSnapshots();
       do {
         this.flushAgainRequested = false;
+        // One status GET learns which kinds this hub accepts (hubAcceptsKind)
+        // before anything work_state is sent, saved snapshots included.
+        if (this.hasPendingWorkState() && this.shouldProbeContentKinds()) {
+          await this.probeHubStatus();
+          if (this.stopped) return;
+        }
         await this.drainContentOutbox();
         await this.drainMutations();
         for (const kind of KINDS) {
+          if (!this.hubAcceptsKind(kind.kind)) continue;
           await this.drainKind(kind);
         }
       } while (this.flushAgainRequested && !this.stopped);
@@ -754,6 +791,7 @@ export class CloudSync {
       this.lastError = null;
       this.recordFlushSuccess();
       this.resetBackoff();
+      this.scheduleContentKindsRecheck();
     } catch (error) {
       const err = error instanceof Error ? error : new Error(String(error));
       this.lastError = friendlySyncError(err.message);
@@ -785,6 +823,7 @@ export class CloudSync {
         observations: this.countPending('observations'),
         summaries: this.countPending('session_summaries'),
         prompts: this.countPending('user_prompts'),
+        workState: this.countPending('work_state_entries'),
         mutations: this.countPendingMutations(),
         tombstones: this.countPendingTombstones(),
       },
@@ -911,6 +950,60 @@ export class CloudSync {
     return this.status();
   }
 
+  /**
+   * Content kinds the hub advertises in GET /v1/sync/status (`content_kinds`).
+   * A kind the hub has not listed is never pushed: its rows wait, unsynced, for
+   * a hub that accepts them. Without this an older hub would refuse the op by
+   * name and the poison-op threshold (#4086) would dead-letter the row for
+   * good. The three launch kinds predate the field and are always accepted.
+   */
+  private hubAcceptsKind(kind: ContentKind): boolean {
+    if (kind !== 'work_state') return true;
+    return this.hubStatus.contentKinds?.includes(kind) ?? false;
+  }
+
+  /**
+   * Ask the hub which kinds it accepts before pushing one it may not: when it
+   * has never been asked, and again once an hour whichever way it answered,
+   * since a hub can start or stop listing work_state at any time (a hub
+   * upgrade, a per-account server setting). Callers ask only while work_state
+   * is pending (hasPendingWorkState).
+   */
+  private shouldProbeContentKinds(): boolean {
+    if (this.hubStatus.contentKinds === null) return true;
+    return Date.now() - (this.hubStatus.checkedAt ?? 0) >= this.contentKindsReprobeMs;
+  }
+
+  /** work_state rows not yet acked, or saved work_state snapshots still in the outbox. */
+  private hasPendingWorkState(): boolean {
+    return this.countPending('work_state_entries') > 0
+      || this.db.prepare("SELECT 1 FROM sync_content_outbox WHERE kind = 'work_state' LIMIT 1").get() !== null;
+  }
+
+  /**
+   * An idle device runs no flush, so work_state waiting on a hub that does not
+   * list the kind would never be re-checked. After a successful flush that
+   * leaves work_state pending, arm the flush timer for the next hourly
+   * re-check; a write's notify() replaces it with its short debounce, and that
+   * flush arms it again.
+   */
+  private scheduleContentKindsRecheck(): void {
+    if (this.stopped || this.debounceTimer || this.retryTimer || !this.hasPendingWorkState()) return;
+    const sinceCheckMs = Date.now() - (this.hubStatus.checkedAt ?? 0);
+    this.armFlushTimer(Math.max(this.contentKindsReprobeMs - sinceCheckMs, 0));
+  }
+
+  /** The one pending-flush timer: notify()'s debounce or the hourly content-kinds re-check. */
+  private armFlushTimer(delayMs: number): void {
+    if (this.debounceTimer) clearTimeout(this.debounceTimer);
+    const timer = setTimeout(() => {
+      this.debounceTimer = null;
+      void this.flush();
+    }, delayMs);
+    (timer as { unref?: () => void }).unref?.();
+    this.debounceTimer = timer;
+  }
+
   private probeHubStatus(): Promise<void> {
     if (!this.statusProbePromise) {
       this.statusProbePromise = this.runHubStatusProbe().finally(() => {
@@ -976,12 +1069,17 @@ export class CloudSync {
       if (compareCanonicalDecimals(projectedSeq, headSeq) > 0) {
         throw new Error('sync hub status: projected_seq exceeds head_seq');
       }
+      // A hub that predates `content_kinds` accepts only the launch kinds.
+      const contentKinds = Array.isArray(record.content_kinds)
+        ? record.content_kinds.filter((kind): kind is string => typeof kind === 'string')
+        : [];
       this.hubStatus = {
         checkedAt,
         reachable: true,
         epoch,
         headSeq,
         projectedSeq,
+        contentKinds,
         error: null,
       };
       this.exitAuthPause();
@@ -998,6 +1096,8 @@ export class CloudSync {
         epoch: null,
         headSeq: null,
         projectedSeq: null,
+        // What the hub accepted last time still holds; an outage changes nothing.
+        contentKinds: this.hubStatus.contentKinds,
         error: safe,
       };
     }
@@ -1081,14 +1181,20 @@ export class CloudSync {
   // Drain internals
   // -------------------------------------------------------------------------
 
-  /** Drain immutable live/delete/revive snapshots exactly as persisted. */
+  /**
+   * Drain immutable live/delete/revive snapshots exactly as persisted. A saved
+   * work_state snapshot (a push that failed after it was saved) waits like its
+   * row while the hub does not list the kind: sent anyway, a hub that refuses
+   * it by name would dead-letter it, and the append-only row with it.
+   */
   private async drainContentOutbox(): Promise<void> {
     for (;;) {
       if (this.stopped) return;
       const rows = this.db.prepare(`
         SELECT body, operation_sha256 FROM sync_content_outbox
+        WHERE kind != 'work_state' OR ? = 1
         ORDER BY deleted DESC, id LIMIT ?
-      `).all(this.contentBatchSize) as Array<CanonicalWireOp>;
+      `).all(this.hubAcceptsKind('work_state') ? 1 : 0, this.contentBatchSize) as Array<CanonicalWireOp>;
       if (rows.length === 0) return;
       let batch: WireOp[] = [];
       let bytes = 0;
