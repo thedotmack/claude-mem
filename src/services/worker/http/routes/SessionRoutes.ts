@@ -382,9 +382,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // because the idle monitor only runs once the generator loop is
     // consuming messages. Abort the parked wait and restart with the new
     // provider immediately instead of leaving it stuck. A generator that HAS
-    // acquired its slot (mid-response) is left alone — falls through to the
-    // log-only "switch after it finishes" path below, unchanged.
-    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+    // acquired its slot (mid-response) is not aborted here — it switches at
+    // its next message boundary (see below).
+    const providerChanged = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    if (providerChanged && isSessionParkedForSlot(sessionDbId)) {
       // Defensive re-guard: `session` is already narrowed non-null by the
       // early return above, but this branch spans a 3-operand `&&` plus a
       // trailing function call before any property access — re-asserting
@@ -413,17 +414,21 @@ export class SessionRoutes extends BaseRouteHandler {
     // keep the gateway re-probe it claimed on the way in.
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
-    if (session.currentProvider && session.currentProvider !== selectedProvider) {
-      logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
+    // A running generator in an active session never idles out, so it ends at
+    // its next message boundary and the runner resumes on the selected
+    // provider (#4846). Not when dispatch routes around the provider this
+    // generator runs on: it is that provider's probe, or its own failure moves
+    // the work to the fallback, so a switch would only restart a healthy run.
+    const switchNeeded = providerChanged && (selection.fallbackFrom ?? null) !== session.currentProvider;
+    if (switchNeeded && !session.providerSwitchPending) {
+      logger.info('SESSION', 'Provider changed, will switch at the next message boundary', {
         sessionId: sessionDbId,
         currentProvider: session.currentProvider,
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider.
-      // The buffered queue carries over; the next generator opens a new
-      // generation seeded from this session's memory (#3800, #3479).
     }
+    session.providerSwitchPending = switchNeeded;
   }
 
   /**
