@@ -34,6 +34,7 @@ import { serverSessionStartBudgetMs } from '../../shared/host-hook-limits.js';
 import { contextCacheKeys, fillContextPlaceholders, readContextCache } from '../../shared/context-cache.js';
 import { clearTimelinePending } from '../../shared/codex-compaction-gate.js';
 import { CONTEXT_OUTPUT_LIMIT } from '../../services/context/ContextBudget.js';
+import { spoolWorkStateInstruction } from '../work-state-telemetry.js';
 import {
   fetchTeamBrief,
   formatTeamBrief,
@@ -148,6 +149,7 @@ export const contextHandler: EventHandler = {
     // SessionStart summary was injected regardless — so an excluded dir (e.g.
     // "~") still got a context dump on every new session. Suppress it here.
     if (!shouldTrackProject(cwd)) {
+      spoolWorkStateInstruction(input, '', 'excluded');
       return emptyResult;
     }
 
@@ -244,6 +246,7 @@ export const contextHandler: EventHandler = {
       }
     }
     if (isWorkerFallback(contextResult)) {
+      spoolWorkStateInstruction(input, '', 'unknown');
       // SessionStart context is synchronous, so a systemMessage here is shown
       // to the user: the once-per-session worker-outage notice, if any.
       const outageNotice = await consumeWorkerOutageNotice(input.sessionId);
@@ -257,6 +260,7 @@ export const contextHandler: EventHandler = {
       additionalContext = '';
     } else {
       logger.warn('HOOK', 'Context response was not a string', { type: typeof contextResult });
+      spoolWorkStateInstruction(input, '', 'unknown');
       return emptyResult;
     }
 
@@ -362,6 +366,9 @@ export const contextHandler: EventHandler = {
       ? `${displayContent}\n\nView Observations Live @ ${viewerUrl}\n${proTrialLine('session-start')}${trialDaysLine ? `\n${trialDaysLine}` : ''}${teamBrainDiscoveryLine ? `\n${teamBrainDiscoveryLine}` : ''}`
       : undefined;
 
+    // Returned to the host, including cache hits. This cannot prove the host
+    // accepted the hook output or that the model subsequently followed it.
+    spoolWorkStateInstruction(input, additionalContext);
     return {
       hookSpecificOutput: {
         hookEventName: 'SessionStart',

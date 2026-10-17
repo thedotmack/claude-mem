@@ -15,6 +15,8 @@ import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
+import { workStateTool } from '../../../shared/work-state-telemetry.js';
+import { recordWorkStateTool } from '../../telemetry/work-state.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -159,6 +161,23 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
   }
 
+  // Native todo tools are normally excluded from memory generation. Count
+  // their bounded identity before that filter, but after project, agent and
+  // prompt privacy checks. Do not store their contents or buy an observation.
+  if (workStateTool(payload.toolName) && !shouldSkipAgentObservation(payload.agentId, payload.agentType, settings).skip) {
+    try {
+      const telemetryStore = dbManager.getSessionStore();
+      const knownSession = telemetryStore.findSessionDbIdByContentSessionId(payload.contentSessionId, platformSource);
+      const promptNumber = telemetryStore.getPromptNumberFromUserPrompts(payload.contentSessionId, knownSession ?? undefined, payload.enqueuedAtEpochMs);
+      // Missing prompt capture is not evidence that this turn is public.
+      const publicPrompt = knownSession === null ? null
+        : telemetryStore.getUserPrompt(payload.contentSessionId, promptNumber, knownSession);
+      if (publicPrompt?.trim()) {
+        recordWorkStateTool(telemetryStore.db, { ...payload, platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
+      }
+    } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
+  }
+
   if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
     if (payload.toolName === 'Skill') {
       const { skill_id, skill_source } = classifySkillId(
@@ -233,6 +252,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   );
   if (!privacy.allow) {
     return { ok: true, status: 'skipped', reason: 'private' };
+  }
+
+  if (privacy.prompt.trim()) {
+    recordWorkStateTool(store.db, { ...payload, platformSource }, payload.toolUseId, payload.toolName, payload.toolResponse);
   }
 
   const cleanedToolInput = payload.toolInput !== undefined

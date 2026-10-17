@@ -25,6 +25,7 @@ import { getProjectContext, isProjectKeySource } from '../../../../utils/project
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
+import { recordWorkStatePrompt } from '../../../telemetry/work-state.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -937,6 +938,10 @@ export class SessionRoutes extends BaseRouteHandler {
       store.reopenCompletedSession(sessionDbId);
       savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
     }
+
+    recordWorkStatePrompt(store.db, {
+      contentSessionId, platformSource, agentId: req.body.agentId, agentType: req.body.agentType,
+    }, savedUserPromptId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
     // saved prompt nudges — including cursor sessions, which skip the
