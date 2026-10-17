@@ -47,6 +47,10 @@ if (args[1] !== 'hook' || args[2] !== 'codex' || args[3] !== expected) {
   process.stderr.write('bad forwarded args: ' + JSON.stringify(args) + '\\n');
   process.exit(42);
 }
+if (process.env.CLAUDE_MEM_QODER_HOOK !== '1') {
+  process.stderr.write('missing Qoder host marker\\n');
+  process.exit(43);
+}
 process.stdout.write(JSON.stringify({ forwardedEvent: args[3] }) + '\\n');
 `,
   );
@@ -106,6 +110,63 @@ describe('Qoder hook launcher execution', () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toContain('dependency setup failed');
     expect(JSON.parse(result.stdout).hookSpecificOutput.hookEventName).toBe('SessionStart');
+  });
+
+  it('runs Qoder hooks when the Claude Code plugin is disabled', () => {
+    const root = fixture();
+    const scripts = path.join(root, 'scripts');
+    const marker = path.join(root, 'worker-started');
+    const claudeConfig = path.join(root, 'claude-config');
+    mkdirSync(claudeConfig);
+    writeFileSync(
+      path.join(claudeConfig, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+    );
+    copyFileSync(
+      path.join(projectRoot, 'plugin/scripts/bun-runner.js'),
+      path.join(scripts, 'bun-runner.js'),
+    );
+    writeFileSync(
+      path.join(scripts, 'worker-service.cjs'),
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, process.env.CLAUDE_MEM_QODER_HOOK || '');\n`,
+    );
+
+    const result = runHook(root, 'session-init', { CLAUDE_CONFIG_DIR: claudeConfig });
+
+    expect(result.status).toBe(0);
+    expect(readFileSync(marker, 'utf-8')).toBe('1');
+  });
+
+  it('keeps the Claude Code disabled-plugin opt-out outside Qoder', () => {
+    const root = fixture();
+    const scripts = path.join(root, 'scripts');
+    const marker = path.join(root, 'worker-started');
+    const claudeConfig = path.join(root, 'claude-config');
+    mkdirSync(claudeConfig);
+    writeFileSync(
+      path.join(claudeConfig, 'settings.json'),
+      JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }),
+    );
+    copyFileSync(
+      path.join(projectRoot, 'plugin/scripts/bun-runner.js'),
+      path.join(scripts, 'bun-runner.js'),
+    );
+    writeFileSync(
+      path.join(scripts, 'worker-service.cjs'),
+      `require('fs').writeFileSync(${JSON.stringify(marker)}, 'started');\n`,
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      [path.join(scripts, 'bun-runner.js'), path.join(scripts, 'worker-service.cjs')],
+      {
+        encoding: 'utf-8',
+        env: { ...process.env, CLAUDE_CONFIG_DIR: claudeConfig },
+      },
+    );
+
+    expect(result.status).toBe(0);
+    expect(existsSync(marker)).toBe(false);
   });
 });
 
