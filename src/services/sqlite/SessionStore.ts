@@ -23,6 +23,7 @@ import {
   createToolUsesSchema,
   upsertToolUse as upsertToolUseRow,
   linkToolUsesToObservation as linkToolUsesToObservationRows,
+  isToolUseLinkedToObservation as isToolUseLinkedToObservationRow,
   getToolUsesByIds as getToolUsesByIdsRows,
   queryToolUses as queryToolUsesRows,
   countToolUses as countToolUsesRows,
@@ -3112,6 +3113,10 @@ export class SessionStore {
     return upsertToolUseRow(this.db, input);
   }
 
+  isToolUseLinkedToObservation(contentSessionId: string, toolUseId: string): boolean {
+    return isToolUseLinkedToObservationRow(this.db, contentSessionId, toolUseId);
+  }
+
   linkToolUsesToObservation(params: {
     contentSessionId: string;
     toolUseIds: string[];
@@ -3653,8 +3658,13 @@ export class SessionStore {
     return mutation;
   }
 
-  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string): number {
-    const now = new Date();
+  /**
+   * `createdAtEpochMs` is for a prompt ingested after it was said (a hook
+   * spool entry): it is dated when the producer saw it, so observations
+   * spooled after it are attributed to it. Omitted, it is now.
+   */
+  saveUserPrompt(contentSessionId: string, promptNumber: number, promptText: string, sessionDbId?: number, nativePromptId?: string, nativePromptHash?: string, createdAtEpochMs?: number): number {
+    const now = new Date(createdAtEpochMs ?? Date.now());
     const nowEpoch = now.getTime();
     const storedPromptText = normalizeStoredPromptText(promptText);
     const resolvedSessionDbId = this.resolvePromptSessionDbId(contentSessionId, sessionDbId);
@@ -3673,7 +3683,7 @@ export class SessionStore {
    * Equal text with a different key is a new real turn. No time window applies.
    * It is scoped by the DB session (platform_source + content_session_id).
    */
-  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText): {
+  saveNativeUserPrompt(contentSessionId: string, sessionDbId: number, nativePromptId: string, promptText: string, identityPromptText = promptText, createdAtEpochMs?: number): {
     id: number; promptNumber: number; duplicate: boolean;
   } {
     if (!nativePromptId || nativePromptId.length > 256 || /[\s\x00-\x1f\x7f]/.test(nativePromptId)) {
@@ -3693,7 +3703,7 @@ export class SessionStore {
       }
       const promptNumber = this.getPromptNumberFromUserPrompts(contentSessionId, sessionDbId) + 1;
       this.reopenCompletedSession(sessionDbId);
-      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash);
+      const id = this.saveUserPrompt(contentSessionId, promptNumber, text, sessionDbId, nativePromptId, promptHash, createdAtEpochMs);
       return { id, promptNumber, duplicate: false };
     }).immediate();
   }

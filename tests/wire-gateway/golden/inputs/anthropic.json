@@ -1,0 +1,7 @@
+{ "max_tokens" : 1024,"model":"claude-x", "metadata":{"user_id":"u_1"},
+ "system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.300; cc_entrypoint=cli; cch=0f3a;"},{"type":"text","text":"You are é \/ \"careful\" <b> & co\n\ttabs","cache_control":{"type":"ephemeral"}}],
+ "tools":[{"name":"Read","description":"Reads a file","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}}],
+ "messages":[{"role":"user","content":"read it"},
+  {"role":"assistant","content":[{"type":"thinking","thinking":"hmm","signature":"c2ln"},{"type":"text","text":"ok 漢字 😀"},{"type":"tool_use","id":"toolu_1","name":"Read","input":{"path":"/a b/c.go","n":1.50e2}}]},
+  {"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":[{"type":"text","text":"line\u0001one\r\nline two"}]},{"type":"text","text":"go on"}]}],
+ "temperature":0.70, "stream":true, "unknown_field":{"kept":[1,2,{"x":null}]}}

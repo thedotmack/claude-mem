@@ -82,6 +82,12 @@ const SERVER_SERVICE = {
   source: 'src/server/runtime/ServerService.ts'
 };
 
+// The wire gateway daemon (plan D2): its own Bun process, never the worker.
+const WIRE_GATEWAY_SERVICE = {
+  name: 'wire-gateway-service',
+  source: 'src/services/wire-gateway/WireGatewayService.ts'
+};
+
 const MCP_SERVER = {
   name: 'mcp-server',
   source: 'src/servers/mcp-server.ts'
@@ -693,6 +699,44 @@ async function buildHooks() {
     fs.chmodSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`, 0o755);
     const serverStats = fs.statSync(`${hooksDir}/${SERVER_SERVICE.name}.cjs`);
     console.log(`✓ server-service built (${(serverStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log(`\n🔧 Building wire gateway service...`);
+    // Copies the worker block: one self-contained CJS bundle run under Bun.
+    await build({
+      entryPoints: [WIRE_GATEWAY_SERVICE.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${WIRE_GATEWAY_SERVICE.name}.cjs`,
+      alias: { 'zod/v4': 'zod' },
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      external: [
+        'bun:sqlite',
+        'bun:ffi',
+        ...POSTHOG_OPTIONAL_IMPORTS,
+      ],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__'
+      },
+      banner: {
+        js: [
+          '#!/usr/bin/env bun',
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+        ].join('\n')
+      }
+    });
+
+    assertBundleIntegrity(`${hooksDir}/${WIRE_GATEWAY_SERVICE.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${WIRE_GATEWAY_SERVICE.name}.cjs`, 0o755);
+    const wireGatewayStats = fs.statSync(`${hooksDir}/${WIRE_GATEWAY_SERVICE.name}.cjs`);
+    console.log(`✓ wire-gateway-service built (${(wireGatewayStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building MCP server...`);
     await build({

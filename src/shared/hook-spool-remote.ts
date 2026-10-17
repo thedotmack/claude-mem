@@ -19,9 +19,18 @@ const observationPayload = commonPayload.extend({
   toolUseId: z.string().max(2048).optional(),
   agentId: z.string().max(128).optional(),
   agentType: z.string().max(128).optional(),
+  project: z.string().max(1024).optional(),
 });
 const timestamp = z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER);
 const entrySchema = z.discriminatedUnion('kind', [
+  // Field limits copied from SessionRoutes sessionInitByClaudeIdSchema.
+  z.object({ kind: z.literal('session_init'), payload: commonPayload.extend({
+    prompt: z.string().optional(),
+    nativePromptId: z.string().min(1).max(256).regex(/^[^\s\x00-\x1f\x7f]+$/).optional(),
+    project: z.string().max(1024).optional(),
+    projectKeySource: z.string().max(128).optional(),
+    customTitle: z.string().max(1024).optional(),
+  }), enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('observation'), payload: observationPayload, enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('file_edit'), payload: observationPayload, enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('summarize'), payload: commonPayload.extend({

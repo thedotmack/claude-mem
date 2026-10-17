@@ -1,5 +1,6 @@
 import { spawnHidden } from '../../shared/spawn.js';
-import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
+import { sanitizeEnv, sanitizeEnvForUserAgentLaunch } from '../../supervisor/env-sanitizer.js';
+import { relaySignalsToInteractiveChild } from '../../shared/interactive-child-signals.js';
 import { existsSync } from 'fs';
 import { join } from 'path';
 import { styleText } from 'node:util';
@@ -60,12 +61,14 @@ function packagePluginScriptPath(scriptName: string): string {
  * host CLI bleed-through and Anthropic credentials before launch; credentials
  * are re-read from ~/.claude-mem/.env at SDK spawn time (#2357 / #2375).
  */
-function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureLabel = 'Bun'): void {
+function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureLabel = 'Bun', hostsInteractiveChild = false): void {
   const child = spawnHidden(bunPath, args, {
     stdio: 'inherit',
     cwd,
-    env: sanitizeEnv(process.env),
+    // `wire run` hands this env down to the user's own agent, so it keeps the user's settings.
+    env: hostsInteractiveChild ? sanitizeEnvForUserAgentLaunch(process.env) : sanitizeEnv(process.env),
   });
+  if (hostsInteractiveChild) relaySignalsToInteractiveChild(child);
 
   child.on('error', (error) => {
     console.error(styleText('red', `Failed to start ${startFailureLabel}: ${error.message}`));
@@ -77,7 +80,7 @@ function spawnPlugin(bunPath: string, args: string[], cwd: string, startFailureL
   });
 }
 
-function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void {
+function spawnBunWorkerCommand(command: string, extraArgs: string[] = [], hostsInteractiveChild = false): void {
   const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
   const workerScript = workerServiceScriptPath(pluginRoot);
@@ -88,7 +91,7 @@ function spawnBunWorkerCommand(command: string, extraArgs: string[] = []): void 
     process.exit(1);
   }
 
-  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], pluginRoot);
+  spawnPlugin(bunPath, [workerScript, command, ...extraArgs], pluginRoot, 'Bun', hostsInteractiveChild);
 }
 
 function spawnBunServerCommand(command: string, extraArgs: string[] = []): void {
@@ -126,6 +129,13 @@ export function runServerStatusCommand(): void {
 // HTTP-only server replicas serve writes/reads.
 export function runServerWorkerStartCommand(): void {
   spawnBunServerCommand('worker', ['start']);
+}
+
+// The wire gateway's lifecycle runs through the worker script, which maps
+// `wire <sub>` to the gateway's own wire-gateway-service.cjs.
+/** `hostsInteractiveChild`: `wire run`, whose agent owns the terminal (see shared/interactive-child-signals.ts). */
+export function runWireGatewayCommand(extraArgs: string[] = [], hostsInteractiveChild = false): void {
+  spawnBunWorkerCommand('wire', extraArgs, hostsInteractiveChild);
 }
 
 export function runStartCommand(): void {

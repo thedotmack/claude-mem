@@ -400,6 +400,17 @@ export interface SettingsDefaults {
   CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: string;     // 0 = keep tool_uses forever; N = at worker start, drop rows older than N days that are linked to an observation
   CLAUDE_MEM_WORKER_AUTOSTART: string;
   CLAUDE_MEM_PROJECT_NAME_SOURCE: string;
+  // Wire gateway (src/services/wire-gateway/): a separate loopback daemon that
+  // relays agent model traffic. Never the worker's port or process.
+  CLAUDE_MEM_WIRE_GATEWAY_PORT: string;
+  CLAUDE_MEM_WIRE_GATEWAY_HOST: string;
+  CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: string;
+  CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: string;
+  CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_RECORDING: string;
+  CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: string;
+  CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: string;
 }
 
 export class SettingsDefaultsManager {
@@ -655,6 +666,17 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_TOOL_USES_RETENTION_DAYS: '0',           // 0 = keep forever (default); N = purge linked tool_uses older than N days at worker start
     CLAUDE_MEM_WORKER_AUTOSTART: 'true',                    // 'false' = the worker is managed externally: hooks, the MCP server and `start` use a running worker but never launch, kill or recycle one.
     CLAUDE_MEM_PROJECT_NAME_SOURCE: 'path',                 // 'path' (default) = folder/git-root basename; 'git-remote' = stable org/repo slug from the git `origin` URL (survives directory renames). Opt-in; default preserves existing behavior.
+    // Mirrors the worker formula above, 100 ports lower: 37600–37699 sits below
+    // the worker (37700–37799) and the server runtime (37877+). 37677 on Windows.
+    CLAUDE_MEM_WIRE_GATEWAY_PORT: String(37600 + ((process.getuid?.() ?? 77) % 100)),
+    CLAUDE_MEM_WIRE_GATEWAY_HOST: '127.0.0.1',
+    CLAUDE_MEM_WIRE_GATEWAY_AUTOSTART: 'true',             // worker starts the wire gateway at boot while routes.json has a route
+    CLAUDE_MEM_WIRE_GATEWAY_DRAIN_TIMEOUT_MS: '600000',    // stop/restart waits this long for in-flight streams before force-closing
+    CLAUDE_MEM_WIRE_GATEWAY_MAX_REQUEST_BYTES: '67108864', // 64 MiB: largest request body the relay reads; larger ones get a protocol-native 413
+    CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS: '7',           // days of raw wire recordings (turns.jsonl) kept, when recording is consented to
+    CLAUDE_MEM_WIRE_GATEWAY_RECORDING: '',                 // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
+    CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: 'false',   // routes without their own setting swap secrets for placeholders before the provider sees them
+    CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: 'false', // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
   };
 
   static getAllDefaults(): SettingsDefaults {

@@ -1,0 +1,118 @@
+---
+title: "Wire Gateway"
+description: "A local relay for agent model traffic: what it sends, what it stores, and how long it keeps it."
+---
+
+The wire gateway is a separate claude-mem daemon on your computer. An agent you
+connect to it sends its model requests to `http://127.0.0.1:<port>/r/<route>`
+instead of straight to its provider; the gateway passes each request on with the
+agent's own credentials and passes the reply back unchanged. On the way it can
+turn what it sees into claude-mem memories.
+
+Nothing is rerouted on its own: a route exists only after you add one
+(`claude-mem wire routes add`). Agents signed in with a subscription are refused
+and stay on their native claude-mem integration.
+
+## Privacy
+
+Everything below happens on this computer. The gateway has no server of its own
+and uploads nothing except the anonymous counters described under
+[Telemetry](#telemetry).
+
+### What each feature sends, stores and keeps
+
+| Feature | Default | Sends | Stores | Keeps |
+|---|---|---|---|---|
+| Relay | on for each route you add | The agent's request, unchanged, to the provider you named for the route | Nothing | Nothing |
+| Memory capture | on for routes with `captureSource: wire` | Nothing beyond the relay | Capture events (your prompt, each tool call and its result, the last reply) in the local hook spool, which the claude-mem worker turns into memories | Spool files until the worker has taken them in; memories as long as you keep them |
+| Raw recording | **off** until you consent | Nothing | Each exchange's text in `<data dir>/wire-gateway/recordings/<date>/…/turns.jsonl` | `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days), at most 256 MiB in all, oldest removed first |
+| Outbound redaction | **off** | The request with secrets swapped for placeholders such as `{{API_KEY_k3v9x2mq}}` | A random 32-byte key in `<data dir>/wire-gateway/redact.key` (owner-only) | The key until you delete it; the values behind placeholders in memory only, until the gateway stops |
+| Telemetry | follows claude-mem's [telemetry](/telemetry) setting | Counters only | Nothing | Nothing |
+
+Request and response **headers are never stored**, so API keys in
+`Authorization` or `x-api-key` never reach a file.
+
+### Secrets are scrubbed before anything reaches disk
+
+What the gateway writes (recordings and spooled capture events) has its secrets
+removed first, always, whether or not `CLAUDE_MEM_REDACT_ENABLED` is on:
+
+- API keys (`sk-…`, `sk-ant-…`, GitHub, GitLab, Google, Slack, Stripe, AWS,
+  Hugging Face, Groq, xAI, npm, PyPI, DigitalOcean, SendGrid, claude-mem's own)
+  become `[REDACTED:API_KEY]`
+- JSON Web Tokens become `[REDACTED:TOKEN]`
+- PEM private keys become `[REDACTED:PRIVATE_KEY]`
+- the password in `scheme://user:password@host` becomes `[REDACTED:PASSWORD]`
+- values assigned to secret-named fields (`DB_PASSWORD=…`, `"apiKey": "…"`)
+  become `[REDACTED:SECRET]`
+- a JSON field named for a secret (`password`, `api_key`, `access_token`,
+  `client_secret`, `authorization`, `cookie`…) is replaced whole by
+  `[REDACTED]`; token *counts* such as `max_tokens` are left alone
+
+A scrubbed secret is gone for good: no placeholder is written to disk and
+nothing is kept that could put it back. Memories made by your native hooks are
+not affected by this; they follow `CLAUDE_MEM_REDACT_ENABLED` as before.
+
+### Raw recording needs your consent
+
+Raw recording is off until you turn it on, and only you can turn it on:
+
+```bash
+claude-mem wire consent --record   # needs an interactive terminal; says what is kept, where, for how long
+claude-mem wire consent            # show the current decision
+claude-mem wire consent --off      # stop recording
+claude-mem wire clear              # delete every recording
+```
+
+- The decision lives in `<data dir>/wire-gateway/consent.json`. Cloud sync never
+  reads or writes it.
+- `CLAUDE_MEM_WIRE_GATEWAY_RECORDING=false` forces recording off. No setting or
+  environment variable can turn it on; only the command above (or, later, the
+  viewer's consent card on the viewer's own page) can.
+- `clear` deletes every recording and refuses saves that were already in flight,
+  so a recording that was being written when you cleared never lands. Memories
+  that capture already created stay in claude-mem.
+- Requests the gateway classifies as helper calls (titles, summaries) are never
+  recorded.
+
+Memory capture does not depend on recording: with recording off, routes with
+`captureSource: wire` still produce memories.
+
+### Outbound redaction
+
+Turn it on for every route with `CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION=true`,
+or per route with `"features": { "outboundRedaction": true }` in
+`<data dir>/wire-gateway/routes.json`.
+
+- The secrets listed above are swapped for placeholders before the provider sees
+  the request. The same value always gets the same placeholder, so a
+  conversation's history reads the same on every turn and the provider's prompt
+  cache stays valid.
+- The reply has the placeholders swapped back before your agent sees it,
+  streams included: a placeholder split across several stream events is put
+  back whole, placeholders a model rewrote (`{{ API_KEY_k3v9x2mq }}`, a dropped
+  brace, another case) are put back too, and no event is added or dropped.
+  Values put back inside tool-call arguments are JSON-escaped.
+- Only string values are edited, in place; every other byte of the request goes
+  as your agent wrote it.
+- What a provider sealed with a signature (Anthropic thinking blocks, Gemini
+  thought signatures, OpenAI encrypted reasoning) is left as the provider wrote
+  it, except that values already masked become their placeholders again.
+  Signatures themselves are never touched.
+- Tool-call arguments are always masked, whatever their keys are called. In tool
+  definitions and schemas only `description` text is masked, since the rest is
+  structure the provider checks.
+- A request the gateway cannot decode or mask is **refused** (HTTP 502 in your
+  provider's error format), never sent unmasked. Send it uncompressed or turn
+  outbound redaction off for that route.
+- A reply the provider compresses anyway, or one larger than 32 MiB, is relayed
+  with its placeholders left in, and that is logged. Your agent sees the
+  placeholder; the provider still never saw the value.
+
+### Telemetry
+
+The gateway sends one content-free event, `wire_gateway_started`, when it starts
+and once a day: the number of routes, exchanges relayed, capture events and
+rewritten requests. No body, URL, path, header, route id or agent name is ever
+sent. It follows the same opt-out as the rest of claude-mem; see
+[Telemetry](/telemetry).

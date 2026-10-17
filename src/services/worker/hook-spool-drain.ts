@@ -2,7 +2,7 @@ import { mkdirSync, watch as fsWatch } from 'fs';
 import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
 import type { SessionStore } from '../sqlite/SessionStore.js';
 import { logger } from '../../utils/logger.js';
-import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSessionInit, ingestSummarize, requireIngestContext } from './http/shared.js';
 
 const SAFETY_SWEEP_INTERVAL_MS = 30_000;
 
@@ -16,6 +16,21 @@ const SAFETY_SWEEP_INTERVAL_MS = 30_000;
  */
 async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
   switch (entry.kind) {
+    case 'session_init': {
+      // Every outcome is final: initialized, a duplicate of a prompt already
+      // saved, or skipped (private, internal, excluded). A conflict (the
+      // native prompt id was used for other text) can never succeed either.
+      // Dated when it was spooled, like the observations after it (see ingestObservation).
+      const outcome = await ingestSessionInit({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff });
+      if (outcome.status === 'conflict') {
+        logger.warn('HOOK', 'Spooled session init conflicts with a saved prompt; dropping it', {
+          contentSessionId: entry.payload.contentSessionId,
+          nativePromptId: entry.payload.nativePromptId,
+          error: outcome.error,
+        });
+      }
+      return true;
+    }
     case 'observation':
     case 'file_edit': {
       // Attribute it to the prompt that was current when the hook saw it, not

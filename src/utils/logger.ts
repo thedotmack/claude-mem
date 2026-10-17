@@ -59,6 +59,7 @@ export type Component =
   | 'TELEGRAM'
   | 'TRANSCRIPT'
   | 'WINDSURF'
+  | 'WIRE'
   | 'WORKER';
 
 interface LogContext {

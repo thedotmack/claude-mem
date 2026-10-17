@@ -19,6 +19,7 @@ import { parseContextCountValue } from '../../../../shared/context-count.js';
 import { OPENROUTER_REASONING_EFFORTS, parseOpenRouterReasoningEffort } from '../../OpenRouterProvider.js';
 import { CODEX_REASONING_EFFORTS, isCodexReasoningEffort } from '../../CodexProvider.js';
 import { emitContextInvalidation, noteUserSettingsSaved } from '../../../../shared/context-invalidation.js';
+import { validateWireGatewayListenSettings } from '../../../wire-gateway/config.js';
 
 const toggleMcpSchema = z.object({
   enabled: z.boolean(),
@@ -431,6 +432,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!validHostPattern.test(host)) {
         return { valid: false, error: 'CLAUDE_MEM_WORKER_HOST must be a loopback address (127.0.0.1, ::1, localhost) or a bind-all address (0.0.0.0, ::) for Observation TV / Docker' };
       }
+    }
+
+    const wireGatewayError = validateWireGatewayListenSettings(settings);
+    if (wireGatewayError) {
+      return { valid: false, error: wireGatewayError };
     }
 
     if (settings.CLAUDE_MEM_LOG_LEVEL) {

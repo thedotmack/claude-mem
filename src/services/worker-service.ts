@@ -22,7 +22,8 @@ import { ChromaMcpManager } from './sync/ChromaMcpManager.js';
 import { ChromaSync } from './sync/ChromaSync.js';
 import { openConfiguredSqliteDatabase } from './sqlite/connection.js';
 import { configureSupervisorSignalHandlers, getSupervisor, startSupervisor } from '../supervisor/index.js';
-import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
+import { sanitizeEnv, sanitizeEnvForUserAgentLaunch } from '../supervisor/env-sanitizer.js';
+import { relaySignalsToInteractiveChild } from '../shared/interactive-child-signals.js';
 import { setRegistryDegradedReporter } from '../supervisor/process-registry.js';
 
 import { ensureWorkerStarted as ensureWorkerStartedShared, getLastWorkerBootFailure, type WorkerStartResult } from './worker-spawner.js';
@@ -131,6 +132,7 @@ import { SessionCompletionHandler } from './worker/session/SessionCompletionHand
 import { setIngestContext, attachIngestGeneratorStarter } from './worker/http/shared.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, scopeNativeHookBackedCodexWatches, loadTranscriptWatchConfig } from './transcripts/config.js';
 import { TranscriptWatcher } from './transcripts/watcher.js';
+import { ensureWireGatewayRunning } from './wire-gateway/WireGatewayService.js';
 import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { ContextCacheService } from './worker/ContextCacheService.js';
@@ -946,6 +948,12 @@ export class WorkerService implements WorkerRef {
       });
 
       await this.startTranscriptWatcher(settings);
+      // Wired agents' model traffic needs the wire gateway, which runs as its
+      // own daemon (plan D2/D14). Fire-and-forget like ensureWorkerStarted's
+      // spawn: a slow or failed gateway start never holds up the worker.
+      ensureWireGatewayRunning(path.join(__dirname, 'wire-gateway-service.cjs')).catch(error => {
+        logger.error('WIRE', 'Wire gateway autostart failed (non-blocking)', {}, error instanceof Error ? error : new Error(String(error)));
+      });
       try {
         const roots = parseMemoryWatchRoots(settings.CLAUDE_MEM_MEMORY_WATCH_ROOTS);
         if (roots.length) {
@@ -1278,6 +1286,14 @@ export function parseWorkerServiceCommand(argv: string[]): ParsedWorkerCommand {
     };
   }
 
+  if (rawCommand === 'wire') {
+    const wireCommands = new Set(['start', 'stop', 'restart', 'status', 'service', 'routes', 'consent', 'clear', 'connect', 'disconnect', 'preview', 'run']);
+    return {
+      command: maybeSubCommand && wireCommands.has(maybeSubCommand) ? `wire-${maybeSubCommand}` : 'wire-help',
+      args: rest,
+    };
+  }
+
   if (rawCommand === 'worker') {
     const workerAliases = new Set(['start', 'stop', 'restart', 'status']);
     return {
@@ -1331,6 +1347,40 @@ function runServerServiceCli(command: string, extraArgs: string[] = []): void {
   });
   child.on('error', (error) => {
     console.error(`Failed to start server command: ${error.message}`);
+    process.exit(1);
+  });
+  child.on('close', (exitCode) => {
+    process.exit(exitCode ?? 0);
+  });
+}
+
+function printWireCommandHelp(): never {
+  console.error('Usage: worker-service wire <command>');
+  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear, connect|disconnect|preview <agent>, run <agent> -- <args>');
+  process.exit(1);
+}
+
+// `wire <sub>` runs the wire gateway's own script (plan D2): the gateway is a
+// separate daemon, never part of this process. Copies runServerServiceCli.
+function runWireGatewayServiceCli(command: string, extraArgs: string[] = []): void {
+  const wireScript = path.join(__dirname, 'wire-gateway-service.cjs');
+  if (!existsSync(wireScript)) {
+    console.error(`Wire gateway script not found at: ${wireScript}`);
+    console.error('Rebuild or reinstall claude-mem so wire-gateway-service.cjs is available.');
+    process.exit(1);
+  }
+
+  const child = spawn(process.execPath, [wireScript, command, ...extraArgs], {
+    stdio: 'inherit',
+    windowsHide: true,
+    // Same env discipline as runServerServiceCli (#2357 / #2375), except
+    // `wire run`, whose env reaches the user's own agent with their settings.
+    env: command === 'run' ? sanitizeEnvForUserAgentLaunch(process.env) : sanitizeEnv(process.env),
+  });
+  // `wire run` hosts an interactive agent below: outlive it, keep its exit code.
+  if (command === 'run') relaySignalsToInteractiveChild(child);
+  child.on('error', (error) => {
+    console.error(`Failed to start wire gateway command: ${error.message}`);
     process.exit(1);
   });
   child.on('close', (exitCode) => {
@@ -1714,6 +1764,27 @@ async function main() {
 
     case 'server-help': {
       printServerCommandHelp();
+      break;
+    }
+
+    case 'wire-start':
+    case 'wire-stop':
+    case 'wire-restart':
+    case 'wire-status':
+    case 'wire-service':
+    case 'wire-routes':
+    case 'wire-consent':
+    case 'wire-clear':
+    case 'wire-connect':
+    case 'wire-disconnect':
+    case 'wire-preview':
+    case 'wire-run': {
+      runWireGatewayServiceCli(command.slice('wire-'.length), commandArgs);
+      break;
+    }
+
+    case 'wire-help': {
+      printWireCommandHelp();
       break;
     }
 
