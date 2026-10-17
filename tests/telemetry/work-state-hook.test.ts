@@ -1,10 +1,14 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { spoolWorkStateInstruction, spoolWorkStateMcpResult } from '../../src/cli/work-state-telemetry';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { spoolWorkStateInstruction, spoolWorkStateMcpResult, workStateModelText } from '../../src/cli/work-state-telemetry';
 import { settleHookSpoolNudges } from '../../src/cli/spool-hook-event';
 import { WORK_STATE_RULE } from '../../src/services/context/sections/WorkStateRenderer';
 import { useTempHookSpoolDataDir, spooledEntries } from '../helpers/temp-hook-spool';
 import { workStateOutcome } from '../../src/shared/work-state-telemetry';
 import { observationHandler } from '../../src/cli/handlers/observation';
+import { getEventHandler } from '../../src/cli/handlers/index';
+import { hookCommand } from '../../src/cli/hook-command';
+import { installFakeStdin, restoreStdin } from '../fake-stdin';
+import { HookStdoutError } from '../../src/shared/hook-io';
 
 let temporary: ReturnType<typeof useTempHookSpoolDataDir>;
 let oldConsent: string | undefined;
@@ -30,6 +34,61 @@ afterEach(async () => {
 });
 
 describe('work-state hook receipts', () => {
+  for (const platform of ['claude-code', 'codex', 'cursor']) {
+    it(`measures final ${platform} adapter output after stdout flush`, async () => {
+      const handler = spyOn(getEventHandler('context'), 'execute').mockResolvedValue({
+        workStateTelemetry: 'measure',
+        hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: WORK_STATE_RULE },
+      });
+      const original = process.stdout.write;
+      const chunks: string[] = [];
+      process.stdout.write = ((chunk: string, done: () => void) => {
+        expect(spooledEntries('work_state_telemetry')).toHaveLength(0);
+        chunks.push(String(chunk));
+        done();
+        return true;
+      }) as typeof process.stdout.write;
+      installFakeStdin(JSON.stringify({ session_id: 'real-hook', conversation_id: 'real-hook', cwd: temporary.dataDir }));
+      try {
+        await hookCommand(platform, 'context', { skipExit: true });
+        expect(chunks.join('')).not.toContain('workStateTelemetry');
+        const [receipt] = spooledEntries('work_state_telemetry');
+        expect(receipt.payload.state).toBe(platform === 'cursor' ? 'missing' : 'returned');
+      } finally {
+        handler.mockRestore();
+        process.stdout.write = original;
+        restoreStdin();
+      }
+    });
+  }
+
+  it('does not record an instruction handoff when stdout fails with EPIPE', async () => {
+    const handler = spyOn(getEventHandler('context'), 'execute').mockResolvedValue({
+      workStateTelemetry: 'measure',
+      hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: WORK_STATE_RULE },
+    });
+    const original = process.stdout.write;
+    process.stdout.write = ((_chunk: string, done: (error?: Error) => void) => {
+      done(Object.assign(new Error('closed pipe'), { code: 'EPIPE' }));
+      return false;
+    }) as typeof process.stdout.write;
+    installFakeStdin(JSON.stringify({ session_id: 'pipe-failed', cwd: temporary.dataDir }));
+    try {
+      await expect(hookCommand('codex', 'context', { skipExit: true })).rejects.toBeInstanceOf(HookStdoutError);
+      expect(spooledEntries('work_state_telemetry')).toHaveLength(0);
+    } finally {
+      handler.mockRestore();
+      process.stdout.write = original;
+      restoreStdin();
+    }
+  });
+
+  it('ignores human hints while recognizing raw and Antigravity model context', () => {
+    expect(workStateModelText({ systemMessage: WORK_STATE_RULE })).toBe('');
+    expect(workStateModelText(WORK_STATE_RULE)).toBe(WORK_STATE_RULE);
+    expect(workStateModelText({ injectSteps: [{ ephemeralMessage: WORK_STATE_RULE }] })).toBe(WORK_STATE_RULE);
+  });
+
   it('counts a complete returned block, including a cache-shaped return, but not a partial rule', () => {
     spoolWorkStateInstruction(input, WORK_STATE_RULE + '\n\nStill open:\nprivate task');
     spoolWorkStateInstruction(input, WORK_STATE_RULE.slice(0, -10));

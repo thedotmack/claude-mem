@@ -10,6 +10,16 @@ import { WORK_STATE_RULE } from '../services/context/sections/WorkStateRenderer.
 
 const mcpProcessId = randomUUID();
 
+/** Model-bound text only; systemMessage is a human hint, not an injection. */
+export function workStateModelText(output: unknown): string {
+  if (typeof output === 'string') return output;
+  if (!output || typeof output !== 'object') return '';
+  const value = output as { hookSpecificOutput?: { additionalContext?: unknown }; injectSteps?: Array<{ ephemeralMessage?: unknown }> };
+  if (typeof value.hookSpecificOutput?.additionalContext === 'string') return value.hookSpecificOutput.additionalContext;
+  if (Array.isArray(value.injectSteps)) return value.injectSteps.map(step => typeof step.ephemeralMessage === 'string' ? step.ephemeralMessage : '').join('\n');
+  return '';
+}
+
 export function spoolWorkStateInstruction(input: NormalizedHookInput, text: string, reason?: 'excluded' | 'unknown'): void {
   try {
     if (!resolveTelemetryConsent(process.env, loadTelemetryConfig())) return;
