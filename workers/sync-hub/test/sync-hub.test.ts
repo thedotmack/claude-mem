@@ -1,4 +1,5 @@
 import {
+	createExecutionContext,
 	env,
 	runDurableObjectAlarm,
 	runInDurableObject,
@@ -32,7 +33,7 @@ import {
 	PROJECTION_PAGE_MAX_BYTES,
 	projectionRequestBytes,
 } from "../src/projection-protocol";
-import { drainProjection, fetchProjectionWithTimeout } from "../src/index";
+import worker, { drainProjection, fetchProjectionWithTimeout } from "../src/index";
 import {
 	contractFixture,
 	fixtureOp,
@@ -852,6 +853,108 @@ describe("large cursor pagination", () => {
 		}
 		expect(count).toBe(10_001);
 	});
+
+	it("orders '9' before '10' and a pull after the cursor returns only new rows", async () => {
+		const stub = hub("seq-length-boundary");
+		const ops = await Promise.all(
+			Array.from({ length: 12 }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", ops));
+
+		const afterNine = changes(await stub.getChanges("dev-reader", "9", 500));
+		expect(afterNine.ops.map((op) => op.seq)).toEqual(["10", "11", "12"]);
+		expect(afterNine.more).toBe(false);
+
+		const firstPage = changes(await stub.getChanges("dev-reader", "0", 9));
+		expect(firstPage.ops.map((op) => op.seq)).toEqual(["1", "2", "3", "4", "5", "6", "7", "8", "9"]);
+		expect(firstPage.more).toBe(true);
+
+		const secondPage = changes(await stub.getChanges("dev-reader", "9", 9));
+		expect(secondPage.ops.map((op) => op.seq)).toEqual(["10", "11", "12"]);
+		expect(secondPage.more).toBe(false);
+		expect(status(await stub.getStatus()).op_count).toBe(12);
+	});
+
+	it("reads O(new rows) after cursor N via rowid, not the whole log", async () => {
+		const stub = hub("seq-rows-read");
+		const logSize = 200;
+		const ops = await Promise.all(
+			Array.from({ length: logSize }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", ops));
+
+		const page = changes(await stub.getChanges("dev-reader", "190", 10));
+		expect(page.ops.map((op) => op.seq)).toEqual(["191", "192", "193", "194", "195", "196", "197", "198", "199", "200"]);
+
+		await runInDurableObject(stub, (_instance: SyncHub, state) => {
+			const ordered = state.storage.sql.exec<{ seq: string; rowid: number }>(
+				"SELECT seq, rowid FROM canonical_ops ORDER BY rowid",
+			).toArray();
+			expect(ordered.map((row) => row.seq)).toEqual(
+				Array.from({ length: logSize }, (_, index) => String(index + 1)),
+			);
+			expect(ordered.every((row, index) => Number(row.rowid) === index + 1)).toBe(true);
+
+			const lookup = state.storage.sql.exec<{ rowid: number }>(
+				"SELECT rowid FROM canonical_ops WHERE seq = ?",
+				"190",
+			);
+			const cursorRow = lookup.one();
+			expect(lookup.rowsRead).toBeLessThan(4);
+
+			const plan = state.storage.sql.exec<{ detail: string }>(
+				`EXPLAIN QUERY PLAN
+				 SELECT seq FROM canonical_ops WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+				cursorRow.rowid,
+				10,
+			).toArray();
+			expect(plan.some((row) => /rowid|INTEGER PRIMARY KEY/i.test(row.detail))).toBe(true);
+
+			const cursor = state.storage.sql.exec<{ seq: string }>(
+				`SELECT seq FROM canonical_ops WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+				cursorRow.rowid,
+				10,
+			);
+			expect(cursor.toArray()).toHaveLength(10);
+			// A LENGTH(seq) scan would read the whole 200-row log. rowid range
+			// + LIMIT should charge about the 10 returned rows.
+			expect(cursor.rowsRead).toBeGreaterThanOrEqual(10);
+			expect(cursor.rowsRead).toBeLessThan(40);
+		});
+	});
+
+	it("DO init does not bulk-update or reindex a pre-populated log", async () => {
+		const stub = hub("seq-init-no-backfill");
+		const seed = await Promise.all(
+			Array.from({ length: 80 }, (_, index) => observationOp(String(index + 1))),
+		);
+		ok(await stub.pushOps("dev-a", seed));
+
+		await runInDurableObject(stub, async (instance: SyncHub, state) => {
+			const statements: string[] = [];
+			let rowsWritten = 0;
+			const sql = state.storage.sql;
+			const originalExec = sql.exec.bind(sql);
+			(sql as { exec: typeof sql.exec }).exec = ((query: string, ...bindings: unknown[]) => {
+				statements.push(query);
+				const cursor = originalExec(query, ...bindings);
+				rowsWritten += cursor.rowsWritten;
+				return cursor;
+			}) as typeof sql.exec;
+
+			await (instance as unknown as { initializePristineState(): Promise<void> }).initializePristineState();
+
+			expect(rowsWritten).toBeLessThan(8);
+			expect(statements.some((sqlText) => /UPDATE\s+canonical_ops/i.test(sqlText))).toBe(false);
+			expect(statements.some((sqlText) => /CREATE\s+INDEX/i.test(sqlText) && /seq_len|seq_order/i.test(sqlText)))
+				.toBe(false);
+		});
+
+		const afterInit = changes(await stub.getChanges("dev-reader", "70", 20));
+		expect(afterInit.ops.map((op) => op.seq)).toEqual(
+			Array.from({ length: 10 }, (_, index) => String(71 + index)),
+		);
+	});
 });
 
 describe("front Worker durability and repair", () => {
@@ -1422,5 +1525,114 @@ describe("per-user device admission bound", () => {
 		expect(state.devices).toHaveLength(MAX_DEVICES_PER_USER);
 		expect(state.devices.find((device) => device.device_id === "device-0")?.name).toBe("Named 0");
 		expect(state.devices.some((device) => device.device_id === "unknown-rename")).toBe(false);
+	});
+});
+
+describe("fail-soft Durable Object errors", () => {
+	const quota = new Error("Exceeded allowed volume of requests in Durable Objects free tier");
+
+	function throwingHub(overrides: Record<string, unknown> = {}) {
+		return {
+			getByName: () => ({
+				fetch: async () => {
+					throw quota;
+				},
+				getProjectionState: async () => {
+					throw quota;
+				},
+				...overrides,
+			}),
+		};
+	}
+
+	it("returns 503 Retry-After when the websocket upgrade stub throws", async () => {
+		await env.AUTH_CACHE.delete(KILL_SWITCH_KEY);
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			new Request("https://sync-hub.test/v1/sync/ws", {
+				headers: {
+					Authorization: "Bearer valid-for:user-ws-failsoft",
+					"X-User-Id": "user-ws-failsoft",
+					"X-Device-Id": "dev-a",
+					Upgrade: "websocket",
+				},
+			}),
+			{ ...env, SYNC_HUB: throwingHub() } as Env,
+			ctx,
+		);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("5");
+		expect(await response.json()).toEqual({ error: "sync_hub_unavailable", retryable: true });
+	});
+
+	it("returns 503 Retry-After when repair getProjectionState throws", async () => {
+		const ctx = createExecutionContext();
+		const response = await worker.fetch(
+			new Request("https://sync-hub.test/internal/v1/projection/drain", {
+				method: "POST",
+				headers: {
+					Authorization: "Bearer test-projector-secret",
+					"Content-Type": "application/json",
+				},
+				body: JSON.stringify({ protocol_version: 1, user_id: "user-repair-failsoft" }),
+			}),
+			{ ...env, SYNC_HUB: throwingHub() } as Env,
+			ctx,
+		);
+		expect(response.status).toBe(503);
+		expect(response.headers.get("Retry-After")).toBe("5");
+		expect(await response.json()).toEqual({ error: "sync_hub_unavailable", retryable: true });
+	});
+
+	it("drainProjection fails soft when the initial or catch-path state read throws", async () => {
+		await expect(drainProjection(
+			{ ...env, SYNC_HUB: throwingHub() } as Env,
+			"user-drain-failsoft",
+			"1",
+		)).resolves.toEqual({
+			ok: false,
+			error: "sync_hub_unavailable",
+			projectedSeq: "0",
+			httpStatus: 503,
+			retryable: true,
+		});
+
+		let stateReads = 0;
+		const midFlight = throwingHub({
+			getProjectionState: async () => {
+				stateReads++;
+				if (stateReads === 1) {
+					return { protocol_version: 1, epoch: "1", head_seq: "1", projected_seq: "0" };
+				}
+				throw quota;
+			},
+			acquireProjectionLease: async () => ({
+				acquired: true,
+				lease_token: "lease",
+				epoch: "1",
+				head_seq: "1",
+				projected_seq: "0",
+				target_seq: "1",
+			}),
+			getProjectionPage: async () => {
+				throw quota;
+			},
+			releaseProjectionLease: async () => {},
+		});
+		await expect(drainProjection(
+			{
+				...env,
+				INTERNAL_PROJECTOR_URL: "https://projector.test/api/internal/sync/project",
+				CMEM_INTERNAL_PROJECTOR_SECRET: "test-projector-secret",
+				SYNC_HUB: midFlight,
+			} as Env,
+			"user-drain-failsoft-mid",
+			"1",
+		)).resolves.toMatchObject({
+			ok: false,
+			httpStatus: 503,
+			retryable: true,
+			projectedSeq: "0",
+		});
 	});
 });

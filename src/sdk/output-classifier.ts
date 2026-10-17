@@ -28,6 +28,92 @@ export function previewOutput(raw: unknown, maxLength: number = PREVIEW_LENGTH):
   return `${collapsed.slice(0, maxLength)}…(+${collapsed.length - maxLength} chars)`;
 }
 
+const KNOWN_BLOCK_KINDS = new Set([
+  'text', 'thinking', 'redacted_thinking', 'tool_use', 'tool_result',
+  'image', 'document', 'server_tool_use', 'web_search_tool_result',
+]);
+
+export type ObserverOutputShape =
+  | 'text'
+  | 'blank-text'
+  | 'non-text-blocks-only'
+  | 'no-content-blocks'
+  | 'unrecognized-content';
+
+export interface ObserverOutputShapeReport {
+  shape: ObserverOutputShape;
+  /** Whitelisted block kinds, deduped and sorted. Never carries block content. */
+  blockKinds: string[];
+}
+
+export function describeObserverOutputShape(content: unknown): ObserverOutputShapeReport {
+  if (content == null) {
+    return { shape: 'no-content-blocks', blockKinds: [] };
+  }
+
+  if (typeof content === 'string') {
+    return {
+      shape: content.trim() !== '' ? 'text' : 'blank-text',
+      blockKinds: [],
+    };
+  }
+
+  if (Array.isArray(content)) {
+    if (content.length === 0) {
+      return { shape: 'no-content-blocks', blockKinds: [] };
+    }
+
+    const kindsSet = new Set<string>();
+    let hasTextBlock = false;
+    let joined = '';
+
+    for (const element of content) {
+      let kind = 'other';
+      try {
+        const t = element != null ? (element as any).type : undefined;
+        if (typeof t === 'string' && KNOWN_BLOCK_KINDS.has(t)) {
+          kind = t;
+        }
+      } catch {
+        kind = 'other';
+      }
+      kindsSet.add(kind);
+      if (kind === 'text') {
+        hasTextBlock = true;
+        try {
+          const txt = (element as any).text;
+          if (typeof txt === 'string') {
+            joined += (joined ? '\n' : '') + txt;
+          }
+        } catch { /* skip elements with throwing text getter */ }
+      }
+    }
+
+    const blockKinds = [...kindsSet].sort();
+
+    if (!hasTextBlock) {
+      return { shape: 'non-text-blocks-only', blockKinds };
+    }
+
+    return {
+      shape: joined.trim() !== '' ? 'text' : 'blank-text',
+      blockKinds,
+    };
+  }
+
+  return { shape: 'unrecognized-content', blockKinds: [] };
+}
+
+export function formatEmptyOutputReason(report: ObserverOutputShapeReport): string | undefined {
+  if (report.shape === 'text') {
+    return undefined;
+  }
+  if (report.shape === 'non-text-blocks-only') {
+    return `non-text-blocks-only(${report.blockKinds.join(',')})`;
+  }
+  return report.shape;
+}
+
 /**
  * Classify an observer/summarizer SDK output.
  *
@@ -72,6 +158,13 @@ export function isQuotaLimitedObserverOutput(raw: unknown): boolean {
     //   "You've reached your Fable 5 limit. Run /usage-credits to continue…"
     //   "You're out of usage credits. Run /usage-credits to keep using…"
     /\byou'?ve (?:hit|reached) your\b.{0,40}\blimit\b/.test(text) ||
+    // The Anthropic API billing notice, returned as the whole assistant
+    // response when an API key's credit balance is exhausted (#4632):
+    //   "Credit balance is too low"
+    //   "Your credit balance is too low to access the Anthropic API. …"
+    // Anchored at the start because the notice IS the response; prose that
+    // merely narrates a low balance mid-sentence stays unmatched.
+    /^(?:your )?credit balance is too low\b/.test(text) ||
     /\bsession limit\b/.test(text) ||
     /\bout of (?:usage )?credits\b/.test(text) ||
     /\/usage-credits\b/.test(text) ||
@@ -122,6 +215,32 @@ export function isContextOverflowObserverOutput(raw: unknown): boolean {
 }
 
 /**
+ * Detect the org-policy refusal Claude Code returns as the whole response when
+ * the account's organization has disabled subscription access (#4677):
+ *   "Your organization has disabled Claude subscription access for Claude
+ *    Code · Use an Anthropic API key instead, or ask your admin to enable
+ *    access"
+ *
+ * Anchored at BOTH ends, like the signed-out wording: the notice alone, or the
+ * notice plus the CLI's own remediation, and nothing else. An observation that
+ * opens with the same words and runs on ("…, so we updated the setup guide")
+ * stays unmatched, because a false match here pauses the generator for an auth
+ * repair nobody needs.
+ *
+ * It is an auth failure (the credential is refused), but /login cannot fix it,
+ * so callers book it with its own remedy.
+ */
+export function isOrgDisabledSubscriptionObserverOutput(raw: unknown): boolean {
+  if (typeof raw !== 'string' || raw.trim() === '') {
+    return false;
+  }
+
+  const text = raw.toLowerCase().replace(/\s+/g, ' ').trim();
+
+  return /^your organization has disabled claude (?:[a-z]+ )?subscription access for claude code\s*(?:[.!]|[·|:\-–—]\s*use an anthropic api key instead,? or ask your admin to enable access\s*[.!]?)?\s*$/.test(text);
+}
+
+/**
  * Detect provider authentication-failure prose so claimed work can be retried
  * after the user restores provider authentication.
  */
@@ -153,6 +272,8 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
     // plus its own /login remediation.
     /^not logged in\b\s*[.!]?\s*$/.test(text) ||
     /^not logged in\b\s*[·|:\-–—]\s*(?:please\s+)?run\s+\/login\b\s*[.!]?\s*$/.test(text) ||
+    // The org-policy refusal (#4677); see isOrgDisabledSubscriptionObserverOutput.
+    isOrgDisabledSubscriptionObserverOutput(raw) ||
     // The remediation half of the same line: "<state> · Please run /login".
     // Required to END the response, so it is the CLI telling the user what to
     // do rather than an observation quoting the instruction — the existing
@@ -191,6 +312,17 @@ export function isAuthFailureObserverOutput(raw: unknown): boolean {
  */
 const NETWORK_CONDITION =
   /\b(?:connect|connection|network|socket|dns|proxy|tls|ssl|certificate|unreachable|econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b|\bfetch failed\b|\bsocket hang up\b/;
+
+/**
+ * A response stream cut off part-way. The CLI reports these behind an
+ * envelope — "API Error: Connection closed mid-response. The response above
+ * may be incomplete.", "API Error: premature close", "Error: stream ended
+ * unexpectedly" — and each phrase names the failure outright. So it counts as
+ * a network condition (the api/http/request and bare-error envelopes need one)
+ * AND as a concrete failure, which keeps the CLI's own "may be incomplete"
+ * clause from getting the whole report rejected as prose (#3460).
+ */
+const STREAM_CUT = /\bclosed mid-response\b|\bpremature close\b|\bended unexpectedly\b/;
 
 /**
  * An `<envelope> error` prefix only counts when the response is *reporting* the
@@ -270,7 +402,7 @@ function envelopeReportsAFailure(
 
   const detail = text.slice(match[0].length).trim();
 
-  if (requireCondition && !NETWORK_CONDITION.test(detail)) {
+  if (requireCondition && !NETWORK_CONDITION.test(detail) && !STREAM_CUT.test(detail)) {
     return false;
   }
 
@@ -278,7 +410,7 @@ function envelopeReportsAFailure(
     return true;
   }
 
-  return CONCRETE_FAILURE.test(detail);
+  return CONCRETE_FAILURE.test(detail) || STREAM_CUT.test(detail);
 }
 
 export function isTransportFailureObserverOutput(raw: unknown): boolean {
@@ -336,6 +468,15 @@ export function isTransportFailureObserverOutput(raw: unknown): boolean {
     // The bare code, or the bare phrase, as the entire message.
     /^(?:econnrefused|econnreset|etimedout|enotfound|enetunreach|ehostunreach|epipe|econnaborted|eai_again|eproto)\b/.test(text) ||
     /^(?:fetch failed|socket hang up|connectionrefused)\b/.test(text) ||
+    // The CLI's stream-cut message as the ENTIRE response, with or without its
+    // "API Error:" envelope (#3460). Anchored at both ends: prose that merely
+    // opens with the phrase ("Connection closed mid-response handling was
+    // reviewed") is a completed observation.
+    /^(?:api error:\s*)?connection closed mid-response\.?(?:\s*the response above may be incomplete\.?)?$/.test(text) ||
+    // A deadline reported as the entire response. Anchored at both ends too:
+    // "timed out" alone is common in prose about retries, and the envelope
+    // check above needs a network condition that this wording never names.
+    /^(?:api|request) error:\s*request timed out\.?$/.test(text) ||
     // A 5xx reported as the response itself.
     /^(?:api|http|request)\s*(?:error\s*)?:?\s*5\d{2}\b/.test(text) ||
     /^request failed with\s+5\d{2}\b/.test(text) ||

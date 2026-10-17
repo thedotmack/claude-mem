@@ -1,8 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { assistantText } from '../../../shared/assistant-text.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../../shared/openrouter-base-url.js';
 import { openRouterAttributionHeaders, OPENROUTER_APP_URL, OPENROUTER_APP_TITLE } from '../../../shared/openrouter-attribution.js';
 import { fetchWithOpenRouterTokenCompatibility } from '../../../shared/openrouter-token-compatibility.js';
+import { withOpenRouterExtraBody } from '../../../shared/openrouter-extra-body.js';
+import { isCmemGatewayUrl } from '../../../shared/cmem-gateway.js';
+import { SettingsDefaultsManager } from '../../../shared/SettingsDefaultsManager.js';
 import { logger } from '../../../utils/logger.js';
 import {
   ServerClassifiedProviderError,
@@ -14,8 +18,7 @@ import type {
   ServerGenerationProvider,
   ServerGenerationResult,
 } from './shared/types.js';
-
-const DEFAULT_MODEL = 'anthropic/claude-3.5-sonnet';
+import { readCappedErrorBody } from '../../../shared/capped-error-body.js';
 
 export interface OpenRouterObservationProviderOptions {
   apiKey: string;
@@ -31,11 +34,17 @@ export interface OpenRouterObservationProviderOptions {
   maxOutputTokens?: number;
   siteUrl?: string;
   appName?: string;
+  /**
+   * CLAUDE_MEM_OPENROUTER_EXTRA_BODY, parsed: provider-specific request fields
+   * merged into every request, under the worker's rules (protected fields
+   * stay, never sent to the cmem gateway).
+   */
+  extraBody?: Record<string, unknown>;
   fetchImpl?: typeof fetch;
 }
 
 interface OpenRouterResponse {
-  choices?: Array<{ message?: { content?: string } }>;
+  choices?: Array<{ message?: { content?: unknown } }>;
   usage?: { total_tokens?: number };
   error?: { code?: string | number; message?: string };
 }
@@ -48,6 +57,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
   private readonly maxOutputTokens: number;
   private readonly siteUrl: string;
   private readonly appName: string;
+  private readonly extraBody: Record<string, unknown> | undefined;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: OpenRouterObservationProviderOptions) {
@@ -59,11 +69,15 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     }
     this.apiKey = options.apiKey;
     // Model is passed verbatim so arbitrary OpenAI-compatible ids work. #2393.
-    this.model = options.model ?? DEFAULT_MODEL;
+    // Without one, use the worker's OpenRouter default: the old hard-coded
+    // 'anthropic/claude-3.5-sonnet' left OpenRouter's catalog, so every
+    // unconfigured server-runtime request was rejected.
+    this.model = options.model ?? SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_OPENROUTER_MODEL;
     this.apiUrl = resolveOpenRouterChatCompletionsUrl(options.baseUrl);
     this.maxOutputTokens = options.maxOutputTokens ?? 4096;
     this.siteUrl = options.siteUrl ?? OPENROUTER_APP_URL;
     this.appName = options.appName ?? OPENROUTER_APP_TITLE;
+    this.extraBody = options.extraBody;
     this.fetchImpl = options.fetchImpl ?? fetch;
   }
 
@@ -71,7 +85,17 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     context: ServerGenerationContext,
     signal?: AbortSignal,
   ): Promise<ServerGenerationResult> {
-    const { prompt, skippedAll } = buildServerGenerationPrompt(context);
+    const { prompt, skippedAll, noEvents } = buildServerGenerationPrompt(context);
+    // Nothing was loaded, so there is nothing to summarise and no question to
+    // ask a model. Answering it anyway bought `<skip_summary />` and recorded
+    // the result as an ordinary completion; the reason below names it instead.
+    if (noEvents) {
+      return {
+        rawText: '<skip_summary reason="no_events_loaded" />',
+        providerLabel: this.providerLabel,
+        modelId: this.model,
+      };
+    }
     if (skippedAll) {
       return {
         rawText: '<skip_summary reason="all_events_private" />',
@@ -123,7 +147,7 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
       });
     }
 
-    const rawText = data.choices?.[0]?.message?.content?.trim() ?? '';
+    const rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
     if (!rawText) {
       logger.warn('SDK', 'OpenRouter returned empty content', {
         provider: 'openrouter',
@@ -150,17 +174,23 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
         'Content-Type': 'application/json',
       },
       signal,
-    }, {
+    }, withOpenRouterExtraBody({
       model: this.model,
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.3,
-    }, this.maxOutputTokens);
+      // Ask for one JSON body, as the worker does (#3668). A gateway that
+      // streams by default answers with text/event-stream, which
+      // response.json() cannot read, and `stream` is protected from the extra
+      // body. The cmem gateway never streams unasked; its requests stay as
+      // they are.
+      ...(isCmemGatewayUrl(this.apiUrl) ? {} : { stream: false }),
+    }, this.extraBody, this.apiUrl), this.maxOutputTokens);
   }
 }
 
 async function safeReadBody(response: Response): Promise<string> {
   try {
-    return await response.text();
+    return await readCappedErrorBody(response);
   } catch (readError) {
     const err = readError instanceof Error ? readError : new Error(String(readError));
     logger.warn('SDK', 'Failed to read OpenRouter error response body', { provider: 'openrouter' }, err);

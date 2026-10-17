@@ -49,7 +49,15 @@ describe('OpenRouterObservationProvider max_tokens', () => {
         status: 'processing', idempotencyKey: 'k', bullmqJobId: null, attempts: 1,
         maxAttempts: 3, nextAttemptAtEpoch: null, lockedAtEpoch: null,
       },
-      events: [],
+      // One real event: an empty input never reaches the provider (it answers
+      // <skip_summary reason="no_events_loaded" /> itself), so no request —
+      // and no max_tokens — would ever be sent.
+      events: [{
+        id: 'e', projectId: 'p', teamId: 't', serverSessionId: null, sourceAdapter: 'api',
+        sourceEventId: null, idempotencyKey: 'ik-e', eventType: 'tool_use', platformSource: 'claude',
+        payload: { tool_name: 'Read' }, metadata: {},
+        occurredAtEpoch: 1_700_000_000_000, receivedAtEpoch: 1_700_000_000_000, createdAtEpoch: 1_700_000_000_000,
+      }],
       project: { projectId: 'p', teamId: 't' },
     } as never);
     return body.max_tokens as number;

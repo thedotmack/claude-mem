@@ -1,6 +1,6 @@
 {
   "name": "claude-mem",
-  "version": "13.25.3",
+  "version": "13.41.0",
   "description": "Memory compression system for Claude Code - persist context across sessions",
   "keywords": [
     "claude",
@@ -35,10 +35,14 @@
   "files": [
     "dist",
     ".agents/plugins/marketplace.json",
+    ".claude-plugin",
     ".codex-plugin",
+    ".qoder-plugin",
     "plugin/.claude-plugin",
     "plugin/.codex-plugin",
+    "plugin/.qoder-plugin",
     "plugin/.mcp.json",
+    "plugin/qoder.mcp.json",
     "plugin/package.json",
     "plugin/bun.lock",
     "plugin/hooks",
@@ -49,7 +53,11 @@
     "plugin/sqlite",
     "plugin/skills",
     "plugin/ui",
-    "openclaw"
+    "openclaw",
+    "omp",
+    "pi",
+    "dsh",
+    "NOTICE"
   ],
   "engines": {
     "node": ">=20.12.0",
@@ -105,6 +113,7 @@
     "test:server": "bun test tests/server/",
     "e2e:server:docker": "bash scripts/e2e-server-docker.sh",
     "e2e:sync-matrix": "bun scripts/sync-matrix-e2e.ts",
+    "eval:read-gate": "bun scripts/eval-read-gate.ts",
     "check:postinstall-allowlist": "node scripts/check-postinstall-allowlist.js",
     "smoke:clean-room": "node scripts/smoke-clean-room.cjs",
     "prepublishOnly": "npm run build && node scripts/check-postinstall-allowlist.js",
@@ -123,7 +132,7 @@
     "@better-auth/api-key": "^1.6.16",
     "better-auth": "^1.6.16"
   },
-  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (or, for zod's plugin runtime copy, resolved from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
+  "//dependencies-note": "Only deps that survive the bundler as a live `import`/`require` in a shipped artifact live here — better-auth (+ api-key) is the server-runtime auth surface, externalized from the worker bundle deliberately (see scripts/build-hooks.js). Everything else (express, bullmq, ioredis, react, react-dom, dompurify, @clack/prompts, ansi-to-html, posthog-node, shell-quote, pg, zod, @modelcontextprotocol/sdk, @anthropic-ai/claude-agent-sdk) is esbuild-inlined into the worker/server/npx bundles (the worker and MCP server inline zod too; the other plugin bundles still resolve zod from plugin/package.json's own dependency), so it is a build-time devDependency and is not downloaded by consumers of the `claude-mem` package.",
   "overrides": {
     "tmp": "^0.2.7"
   },
@@ -181,7 +190,8 @@
     "tsup": "^8.5.1",
     "typescript": "^6.0.3",
     "unified": "^11.0.5",
-    "unist-util-visit": "^5.1.0"
+    "unist-util-visit": "^5.1.0",
+    "typebox": "1.1.24"
   },
   "trustedDependencies": [
     "esbuild",
@@ -195,5 +205,35 @@
     "tree-sitter-ruby",
     "tree-sitter-rust",
     "tree-sitter-typescript"
-  ]
+  ],
+  "allowScripts": {
+    "tree-sitter-cli": true,
+    "tree-sitter": true,
+    "tree-sitter-c": true,
+    "tree-sitter-cpp": true,
+    "tree-sitter-go": true,
+    "tree-sitter-java": true,
+    "tree-sitter-javascript": true,
+    "tree-sitter-python": true,
+    "tree-sitter-ruby": true,
+    "tree-sitter-rust": true,
+    "tree-sitter-typescript": true,
+    "tree-sitter-kotlin": true,
+    "tree-sitter-swift": true,
+    "tree-sitter-php": true,
+    "tree-sitter-scala": true,
+    "tree-sitter-bash": true,
+    "tree-sitter-haskell": true,
+    "tree-sitter-css": true,
+    "tree-sitter-scss": true,
+    "@tree-sitter-grammars/tree-sitter-lua": true,
+    "@tree-sitter-grammars/tree-sitter-zig": true,
+    "@tree-sitter-grammars/tree-sitter-toml": true,
+    "@tree-sitter-grammars/tree-sitter-yaml": true,
+    "@tree-sitter-grammars/tree-sitter-markdown": true,
+    "@derekstride/tree-sitter-sql": true,
+    "esbuild": true,
+    "@biomejs/biome": true,
+    "better-sqlite3": true
+  }
 }

@@ -159,7 +159,25 @@ Antigravity CLI ships a first-class plugin-marketplace subcommand system: `agy p
    ```bash
    cat ~/.gemini/config/hooks.json
    ```
-   You should see entries like `"PreInvocation"`, `"PostToolUse"`, `"Stop"`, etc. with claude-mem commands.
+   Each top-level key is a **hook name**. claude-mem writes a single
+   `"claude-mem"` key wrapping the event keys, with `PreToolUse`/`PostToolUse`
+   using the grouped `{ "matcher", "hooks" }` shape and
+   `PreInvocation`/`PostInvocation`/`Stop` using a flat array of handlers:
+   ```json
+   {
+     "claude-mem": {
+       "PreInvocation": [ { "type": "command", "command": "...", "timeout": 30 } ],
+       "PreToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ],
+       "PostToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ],
+       "PostInvocation": [ { "type": "command", "command": "...", "timeout": 30 } ],
+       "Stop": [ { "type": "command", "command": "...", "timeout": 30 } ]
+     }
+   }
+   ```
+   `timeout` is in **seconds** (agy's default is 30). If you see event names at
+   the top level, handlers tagged with `"name": "claude-mem"`, or
+   `"timeout": 10000`, you are on a pre-fix install — re-run the installer
+   below, which migrates the old layout automatically.
 
 2. Restart Antigravity CLI after installation.
 

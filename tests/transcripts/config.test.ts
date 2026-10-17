@@ -4,11 +4,13 @@ import { join } from 'path';
 import {
   SAMPLE_CONFIG,
   expandHomePath,
-  filterNativeHookBackedCodexWatches,
+  scopeNativeHookBackedCodexWatches,
   isNativeHookBackedCodexWatch,
   shouldSuppressNativeCodexAgentsContext,
+  type CodexWatchSettings,
 } from '../../src/services/transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig } from '../../src/services/transcripts/types.js';
+import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 const CODEX_SAMPLE_SCHEMA: TranscriptSchema = { name: 'codex', events: [] };
 
@@ -99,35 +101,69 @@ describe('transcript watcher config', () => {
     })).toBe(false);
   });
 
-  it('strips legacy Codex watches unless explicitly opted in', () => {
-    const config: TranscriptWatchConfig = {
-      version: 1,
-      schemas: {
-        codex: CODEX_SAMPLE_SCHEMA,
-      },
-      watches: [
-        {
-          name: 'codex',
-          path: '~/.codex/sessions/**/*.jsonl',
-          schema: 'codex',
-          startAtEnd: true,
-        },
-        {
-          name: 'custom',
-          path: '~/custom/**/*.jsonl',
-          schema: 'codex',
-          startAtEnd: true,
-        },
-      ],
-    };
+  const codexWatchConfig = (): TranscriptWatchConfig => ({
+    version: 1,
+    schemas: { codex: CODEX_SAMPLE_SCHEMA },
+    watches: [
+      { name: 'codex', path: '~/.codex/sessions/**/*.jsonl', schema: 'codex', startAtEnd: true },
+      { name: 'custom', path: '~/custom/**/*.jsonl', schema: 'codex', startAtEnd: true },
+    ],
+  });
+  const watchSettings = (overrides: Partial<CodexWatchSettings> = {}): CodexWatchSettings => ({
+    CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'false',
+    CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'false',
+    CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'false',
+    ...overrides,
+  });
 
-    const filtered = filterNativeHookBackedCodexWatches(config, false);
-    expect(filtered.removed).toBe(1);
-    expect(filtered.config.watches.map(watch => watch.name)).toEqual(['custom']);
+  // Wave 3 gate R4-5: capturing Codex subagents from their rollouts is observer
+  // spend that did not exist before #3655 (the native watch was removed
+  // outright), so it is opt-in.
+  it('removes the native Codex watch by default, leaving other watches alone', () => {
+    const result = scopeNativeHookBackedCodexWatches(codexWatchConfig(), watchSettings());
+    expect(result.removed).toBe(1);
+    expect(result.scoped).toBe(0);
+    expect(result.config.watches.map(watch => watch.name)).toEqual(['custom']);
+    expect(result.config.watches[0].subagentOnly).toBeUndefined();
+  });
 
-    const allowed = filterNativeHookBackedCodexWatches(config, true);
-    expect(allowed.removed).toBe(0);
-    expect(allowed.config.watches).toHaveLength(2);
+  it('scopes the native Codex watch to subagent rollouts when opted in', () => {
+    const result = scopeNativeHookBackedCodexWatches(codexWatchConfig(), watchSettings({ CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'true' }));
+    expect(result.scoped).toBe(1);
+    expect(result.removed).toBe(0);
+    expect(result.config.watches.map(watch => watch.name)).toEqual(['codex', 'custom']);
+    const codexWatch = result.config.watches.find(watch => watch.name === 'codex');
+    expect(codexWatch?.subagentOnly).toBe(true);
+    expect(codexWatch?.subagentSource).toEqual({ path: 'payload.source.subagent.thread_spawn' });
+    // A non-native custom watch is left untouched.
+    expect(result.config.watches.find(watch => watch.name === 'custom')?.subagentOnly).toBeUndefined();
+  });
+
+  it('keeps it removed when subagent observations are switched off (#2736), even when opted in', () => {
+    const result = scopeNativeHookBackedCodexWatches(codexWatchConfig(), watchSettings({
+      CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'true',
+      CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true',
+    }));
+    expect(result.removed).toBe(1);
+    expect(result.scoped).toBe(0);
+    expect(result.config.watches.map(watch => watch.name)).toEqual(['custom']);
+  });
+
+  it('leaves every watch untouched under the full-ingestion opt-in', () => {
+    for (const overrides of [{}, { CLAUDE_MEM_SKIP_SUBAGENT_OBSERVATIONS: 'true' }, { CLAUDE_MEM_CODEX_SUBAGENT_INGESTION: 'true' }]) {
+      const result = scopeNativeHookBackedCodexWatches(codexWatchConfig(), watchSettings({
+        CLAUDE_MEM_CODEX_TRANSCRIPT_INGESTION: 'true',
+        ...overrides,
+      }));
+      expect(result.scoped).toBe(0);
+      expect(result.removed).toBe(0);
+      expect(result.config.watches).toHaveLength(2);
+      expect(result.config.watches.every(watch => watch.subagentOnly === undefined)).toBe(true);
+    }
+  });
+
+  it('ships with Codex subagent capture off', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CODEX_SUBAGENT_INGESTION).toBe('false');
   });
 });
 

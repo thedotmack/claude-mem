@@ -3,7 +3,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'fs'
 import { tmpdir } from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { writeTrimmedMarketplacePackageJson } from '../src/npx-cli/commands/install.js';
+import { writeTrimmedMarketplaceManifest, writeTrimmedMarketplacePackageJson } from '../src/npx-cli/commands/install.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '..');
@@ -70,5 +70,59 @@ describe('writeTrimmedMarketplacePackageJson', () => {
 
   it('does nothing when the source package.json is absent', () => {
     expect(() => writeTrimmedMarketplacePackageJson(packageRoot, marketplaceDir)).not.toThrow();
+  });
+});
+
+describe('writeTrimmedMarketplaceManifest', () => {
+  let marketplaceDir: string;
+
+  beforeEach(() => {
+    marketplaceDir = mkdtempSync(path.join(tmpdir(), 'cmem-manifest-trim-'));
+    mkdirSync(path.join(marketplaceDir, '.claude-plugin'), { recursive: true });
+    // The npm package ships plugin/ but not cowork/.
+    mkdirSync(path.join(marketplaceDir, 'plugin'), { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(marketplaceDir, { recursive: true, force: true });
+  });
+
+  function manifestPath(): string {
+    return path.join(marketplaceDir, '.claude-plugin', 'marketplace.json');
+  }
+
+  function pluginNames(): string[] {
+    return JSON.parse(readFileSync(manifestPath(), 'utf-8')).plugins.map((plugin: { name: string }) => plugin.name);
+  }
+
+  it('lists only claude-mem when the real manifest is installed without cowork/', () => {
+    writeFileSync(manifestPath(), readFileSync(path.join(projectRoot, '.claude-plugin', 'marketplace.json'), 'utf-8'));
+
+    writeTrimmedMarketplaceManifest(marketplaceDir);
+
+    expect(pluginNames()).toEqual(['claude-mem']);
+    const manifest = JSON.parse(readFileSync(manifestPath(), 'utf-8'));
+    expect(manifest.name).toBe('thedotmack');
+    expect(manifest.plugins[0].source).toBe('./plugin');
+  });
+
+  it('keeps an entry once its source directory ships, and keeps non-path sources', () => {
+    mkdirSync(path.join(marketplaceDir, 'cowork'), { recursive: true });
+    writeFileSync(manifestPath(), JSON.stringify({
+      name: 'thedotmack',
+      plugins: [
+        { name: 'claude-mem', source: './plugin' },
+        { name: 'claude-mem-cowork', source: './cowork' },
+        { name: 'remote', source: { source: 'github', repo: 'someone/else' } },
+      ],
+    }));
+
+    writeTrimmedMarketplaceManifest(marketplaceDir);
+
+    expect(pluginNames()).toEqual(['claude-mem', 'claude-mem-cowork', 'remote']);
+  });
+
+  it('does nothing when the manifest is absent', () => {
+    expect(() => writeTrimmedMarketplaceManifest(marketplaceDir)).not.toThrow();
   });
 });

@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll, mock } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import type { ActiveSession } from '../../src/services/worker-types.js';
 
 // #4066: the Claude feed claimed and yielded a whole backlog before the model
@@ -147,7 +148,7 @@ mock.module('../../src/services/domain/ModeManager.js', () => ({
     getInstance: () => ({
       getActiveMode: () => ({
         name: 'code',
-        prompts: { init: 'init prompt', observation: 'obs prompt', summary: 'summary prompt' },
+        prompts: codeMode.prompts,
         observation_types: [{ id: 'discovery' }],
         observation_concepts: [],
       }),
@@ -179,7 +180,9 @@ const {
 const { MAX_CONSECUTIVE_RECYCLES } = await import('../../src/services/worker/session/recycle-conversation.js');
 
 const SESSION_ID = 4066;
-const SKIP_REPLY = 'Nothing worth recording in this tool call.';
+// The sanctioned no-op answer: every mode names this sentinel, and prose in
+// reply to queued work is asked for again (#3624).
+const SKIP_REPLY = '<skip_summary reason="noise" />';
 
 function createSession(): ActiveSession {
   return {
@@ -207,11 +210,17 @@ function createSession(): ActiveSession {
 }
 
 function createHarness(backlog: number, payloadChars = 200) {
+  const storedObservations: unknown[][] = [];
   const dbManager = {
     getSessionById: () => ({ project: 'observer-project', memory_session_id: null }),
     getSessionStore: () => ({
       ensureMemorySessionIdRegistered: (_id: number, memoryId: string) => memoryId,
       updateMemorySessionId: () => {},
+      storeObservations: (_memoryId: string, _project: string, observations: unknown[]) => {
+        storedObservations.push(observations);
+        return { observationIds: [storedObservations.length], summaryId: null, createdAtEpoch: Date.now() };
+      },
+      linkToolUsesToObservation: () => 0,
     }),
     getChromaSync: () => null,
     getCloudSync: () => null,
@@ -237,6 +246,7 @@ function createHarness(backlog: number, payloadChars = 200) {
     session,
     sessionManager,
     provider,
+    storedObservations,
     pending: () => buffer.getPendingCount(SESSION_ID),
   };
 }
@@ -269,15 +279,54 @@ function withTimeout<T>(promise: Promise<T>, label: string, ms = 2_000): Promise
 }
 
 let liveSessions: ActiveSession[] = [];
+let previousObserveBarePrompts: string | undefined;
 
 beforeEach(() => {
   currentSdk = null;
   liveSessions = [];
+  // These tests pace the generator's separate init turn; the default, where
+  // the init prompt rides on the first observation, has its own describe below.
+  previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+  process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
 });
 
 afterEach(() => {
   // Release any generator still parked on the pacer so nothing outlives the test.
   for (const session of liveSessions) session.abortController.abort();
+  if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+  else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
+});
+
+describe('Claude observer feed pacing without a separate init turn (the default)', () => {
+  it('sends the init prompt with the first observation and still holds every claim until it is answered', async () => {
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'false';
+    const h = createHarness(200);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'first prompt');
+    await settle();
+    // One prompt out: the user's request and the first observation together.
+    expect(sdk().prompts.length).toBe(1);
+    expect(sdk().prompts[0]).toContain('<user_request>work through the backlog</user_request>');
+    expect(sdk().prompts[0]).toContain('step 0');
+    expect(h.session.claimedMessageIds.length).toBe(1);
+
+    for (let turn = 1; turn <= 3; turn++) {
+      sdk().answer(SKIP_REPLY);
+      await sdk().until(() => sdk().prompts.length >= turn + 1, `prompt ${turn + 1}`);
+      await settle();
+      expect(sdk().prompts.length).toBe(turn + 1);
+      expect(sdk().prompts[turn]).not.toContain('<user_request>');
+      expect(sdk().prompts[turn]).toContain(`step ${turn}`);
+      expect(h.session.claimedMessageIds.length).toBe(1);
+      expect(h.pending()).toBe(200 - turn);
+    }
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
+  });
 });
 
 describe('Claude observer feed pacing (#4066)', () => {
@@ -500,11 +549,13 @@ describe('Claude observer feed pacing (#4066)', () => {
     expect(h.pending()).toBe(5);
   });
 
-  it('only a reply to queued work clears the overflow and stall debts', async () => {
+  it('only a reply to queued work clears the overflow, stall, and rate-limit debts', async () => {
     const h = createHarness(3);
     liveSessions.push(h.session);
     h.session.consecutiveContextOverflows = 1;
     h.session.consecutiveResponseStalls = 2;
+    h.session.consecutiveSdkStreamExits = 2;
+    h.session.consecutiveRateLimitResumes = 3;
 
     const run = h.provider.startSession(h.session);
     await sdkStarted();
@@ -513,11 +564,15 @@ describe('Claude observer feed pacing (#4066)', () => {
     await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
     expect(h.session.consecutiveContextOverflows).toBe(1);
     expect(h.session.consecutiveResponseStalls).toBe(2);
+    expect(h.session.consecutiveSdkStreamExits).toBe(2);
+    expect(h.session.consecutiveRateLimitResumes).toBe(3);
 
     sdk().answer(SKIP_REPLY);
     await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
     expect(h.session.consecutiveContextOverflows).toBe(0);
     expect(h.session.consecutiveResponseStalls).toBe(0);
+    expect(h.session.consecutiveSdkStreamExits).toBe(0);
+    expect(h.session.consecutiveRateLimitResumes).toBe(0);
 
     h.session.abortController.abort();
     await withTimeout(run, 'startSession after abort');
@@ -546,6 +601,46 @@ describe('Claude observer feed pacing (#4066)', () => {
     expect(h.session.claimedMessageIds).toEqual([]);
     expect(h.pending()).toBe(2);
   });
+
+  it('does not requeue a stored batch while claim acknowledgement is in flight', async () => {
+    const h = createHarness(2);
+    liveSessions.push(h.session);
+    (h.provider as any).responseStallMs = () => 40;
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+    h.session.memorySessionId = 'memory-4066';
+
+    const confirm = h.sessionManager.confirmClaimedMessages.bind(h.sessionManager);
+    let releaseAcknowledgement!: () => void;
+    const acknowledgementGate = new Promise<void>(resolve => { releaseAcknowledgement = resolve; });
+    h.sessionManager.confirmClaimedMessages = async sessionDbId => {
+      await acknowledgementGate;
+      return confirm(sessionDbId);
+    };
+
+    sdk().answer(`<observation>
+      <type>discovery</type><title>Stored once</title>
+      <narrative>The claimed batch produced an observation.</narrative>
+    </observation>`);
+    try {
+      await sdk().until(() => h.storedObservations.length === 1, 'durable store');
+      await settle(100); // Cross the 40 ms response-stall window before acknowledgement.
+      expect(h.session.abortReason).not.toBe('transport:response_stall');
+      expect(h.session.claimedMessageIds.length).toBe(1);
+      expect(h.pending()).toBe(2);
+    } finally {
+      releaseAcknowledgement();
+    }
+
+    await sdk().until(() => sdk().prompts.length >= 3, 'next observation');
+    expect(h.storedObservations.length).toBe(1);
+    expect(h.pending()).toBe(1);
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after acknowledgement');
+  });
 });
 
 describe('ObserverResponsePacer', () => {
@@ -559,6 +654,16 @@ describe('ObserverResponsePacer', () => {
   it('reports a stall once the window passes without an answer', async () => {
     const pacer = new ObserverResponsePacer();
     expect(await pacer.waitForAnswer(pacer.mark(), new AbortController().signal, 10)).toBe('stalled');
+  });
+
+  it('restarts the silence window after response processing finishes', async () => {
+    const pacer = new ObserverResponsePacer();
+    const waiting = pacer.waitForAnswer(pacer.mark(), new AbortController().signal, 30);
+    pacer.processingStarted();
+    await settle(60);
+    expect(pacer.hasStalled).toBe(false);
+    pacer.processingFinished();
+    expect(await withTimeout(waiting, 'stall after processing')).toBe('stalled');
   });
 
   it('fences late frames only after a stall', async () => {
@@ -625,5 +730,94 @@ describe('response-stall resume policy', () => {
     }
     expect(decisions.slice(0, MAX_CONSECUTIVE_STALL_RESUMES).every(d => d.resume)).toBe(true);
     expect(decisions[MAX_CONSECUTIVE_STALL_RESUMES]).toEqual({ resume: false, attempts: MAX_CONSECUTIVE_STALL_RESUMES + 1 });
+  });
+});
+
+// #3479: the Claude observer never resumes (a fresh, non-persisting SDK process
+// per start), yet each start used to push its init prompt onto the previous
+// generation's proxy history. A quota, auth or transport retry loop grew that
+// history by one init prompt per restart, without bound. The HTTP providers get
+// the same check in observer-generation-boundary.test.ts.
+describe('every Claude generator start opens a new generation (#3479)', () => {
+  const RESTARTS = 25;
+  const pauses: Array<[string, string]> = [
+    ['quota', "You've hit your session limit · resets 5:50pm (America/Los_Angeles)"],
+    ['auth', 'Not logged in · Please run /login'],
+    ['transport', 'fetch failed'],
+  ];
+
+  for (const [category, refusal] of pauses) {
+    it(`${RESTARTS} restarts after ${category} pauses leave exactly one generation`, async () => {
+      const h = createHarness(1);
+      liveSessions.push(h.session);
+
+      let previous: FakeSdk | null = null;
+      for (let attempt = 1; attempt <= RESTARTS; attempt++) {
+        h.session.abortController = new AbortController();
+        h.session.abortReason = null;
+        const run = h.provider.startSession(h.session);
+        previous = await sdkStarted(previous);
+        await sdk().until(() => sdk().prompts.length >= 1, `init prompt ${attempt}`);
+        sdk().answer(refusal);
+        await withTimeout(run, `attempt ${attempt}`);
+        expect(h.session.abortReason).toBe(`${category}:observer_text`);
+      }
+
+      // The last attempt's init prompt and nothing else: no stacked init
+      // prompts, and no refusal prose.
+      expect(h.session.conversationHistory).toHaveLength(1);
+      expect(h.session.conversationHistory[0].role).toBe('user');
+      expect(h.session.conversationHistory[0].content).toContain('<user_request>');
+      // The paused work is still queued for the next start.
+      expect(h.pending()).toBe(1);
+    }, 30_000);
+  }
+});
+
+// #2957: the SDK's result frame reports the context the model actually read
+// (fresh input + cache writes + cache reads), which the proxy history misses:
+// it never sees the SDK's system prompt or tool schemas. That reading feeds the
+// same generation budget. The HTTP providers get the same checks in
+// observer-measured-context.test.ts.
+describe('the measured Claude context feeds the generation budget (#2957)', () => {
+  // Past half of a 200k window: 150k tokens is 600k chars against a 400k budget.
+  const OVER_BUDGET_USAGE = { usage: { input_tokens: 12, cache_read_input_tokens: 150_000, output_tokens: 2 } };
+
+  it('retires the generation before the next observation once a turn read past the budget', async () => {
+    const h = createHarness(3);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+    sdk().answer(SKIP_REPLY, OVER_BUDGET_USAGE);
+    await withTimeout(run, 'recycled generation');
+
+    // The proxy history is tiny, yet the second observation was never sent.
+    expect(sdk().prompts.length).toBe(2);
+    expect(h.session.abortReason).toBe('overflow:recycle');
+    expect(h.pending()).toBe(2);
+  });
+
+  it("does not keep an init turn's reading", async () => {
+    const h = createHarness(3);
+    liveSessions.push(h.session);
+    const run = h.provider.startSession(h.session);
+    await sdkStarted();
+
+    await sdk().until(() => sdk().prompts.length >= 1, 'init prompt');
+    sdk().answer(SKIP_REPLY, OVER_BUDGET_USAGE);
+    await sdk().until(() => sdk().prompts.length >= 2, 'first observation');
+
+    // The init reading was ignored, so the first observation still went out.
+    expect(h.session.lastContextTokens).toBeUndefined();
+    sdk().answer(SKIP_REPLY); // the fake SDK's default usage: 10 input tokens
+    await sdk().until(() => sdk().prompts.length >= 3, 'second observation');
+    expect(h.session.lastContextTokens).toBe(10);
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
   });
 });

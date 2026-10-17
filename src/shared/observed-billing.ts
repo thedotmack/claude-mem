@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { homedir } from 'os';
 import { logger } from '../utils/logger.js';
+import { parseJsonWithBom } from './atomic-json.js';
 
 /**
  * Billing posture of the OBSERVED Claude Code session (the user's IDE session,
@@ -81,7 +82,7 @@ function readClaudeJsonBillingFields(claudeJsonFile: string): ClaudeJsonBillingF
   // name is recorded.
   let parsed: unknown;
   try {
-    parsed = JSON.parse(readFileSync(claudeJsonFile, 'utf-8'));
+    parsed = parseJsonWithBom(readFileSync(claudeJsonFile, 'utf-8'));
   } catch (error) {
     logger.debug('HOOK', 'observed-billing: could not read or parse .claude.json, treating as no account', {
       errorName: error instanceof Error ? error.name : 'unknown',

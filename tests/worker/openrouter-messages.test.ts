@@ -20,7 +20,7 @@ describe('OpenRouterProvider conversation normalization', () => {
     settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_OPENROUTER_API_KEY: 'test-api-key',
-      CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
     }));
 
     provider = new TestOpenRouterProvider({} as DatabaseManager, {} as SessionManager);
@@ -74,7 +74,7 @@ describe('OpenRouterProvider request guard', () => {
     settingsSpy = spyOn(SettingsDefaultsManager, 'loadFromFile').mockImplementation(() => ({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_OPENROUTER_API_KEY: 'test-api-key',
-      CLAUDE_MEM_OPENROUTER_MODEL: 'xiaomi/mimo-v2-flash:free',
+      CLAUDE_MEM_OPENROUTER_MODEL: 'cohere/north-mini-code:free',
     }));
 
     const provider = new TestOpenRouterProvider({} as DatabaseManager, {} as SessionManager);
@@ -96,7 +96,7 @@ describe('OpenRouterProvider request guard', () => {
     }).queryOpenRouterMultiTurn(
       [{ role: 'user', content: '   ' }],
       'test-api-key',
-      'xiaomi/mimo-v2-flash:free',
+      'cohere/north-mini-code:free',
       'https://openrouter.ai/api/v1/chat/completions',
     );
 

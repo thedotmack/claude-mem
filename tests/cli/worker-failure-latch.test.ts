@@ -67,15 +67,15 @@ afterEach(() => {
 });
 
 describe('worker-unreachable fail-loud latch', () => {
-  it('migrates an already-exceeded counter and blocks only once', () => {
+  it('migrates an already-exceeded counter and escalates only once, without blocking', () => {
     // Old state files do not have thresholdTripped. Simulate lowering the
     // threshold from above 4 to 3 during the same worker outage.
     const dataDir = createStateDir({ consecutiveFailures: 4, lastFailureAt: 1 });
 
     const first = recordFailure(dataDir, 3);
-    expect(first.exitCode).toBe(2);
+    expect(first.exitCode).toBe(0);
     expect(new TextDecoder().decode(first.stderr)).toContain(
-      'claude-mem worker unreachable for 5 consecutive hooks.'
+      'claude-mem worker unreachable for 5 consecutive hooks'
     );
     expect(readState(dataDir)).toMatchObject({
       consecutiveFailures: 5,
@@ -127,8 +127,7 @@ describe('worker-unreachable fail-loud latch', () => {
     const exits = await Promise.all(workers.map(worker => worker.exited));
     const errors = await Promise.all(workers.map(worker => new Response(worker.stderr).text()));
 
-    expect(exits.filter(exit => exit === 2)).toHaveLength(1);
-    expect(exits.filter(exit => exit === 0)).toHaveLength(5);
+    expect(exits.filter(exit => exit === 0)).toHaveLength(6);
     expect(errors.join('').match(/claude-mem worker unreachable/g)?.length).toBe(1);
     const state = readState(dataDir);
     expect(state.thresholdTripped).toBe(true);
@@ -194,9 +193,9 @@ describe('worker-unreachable fail-loud latch', () => {
 
     expect(recordFailure(dataDir, 2).exitCode).toBe(0);
     const thresholdFailure = recordFailure(dataDir, 2);
-    expect(thresholdFailure.exitCode).toBe(2);
+    expect(thresholdFailure.exitCode).toBe(0);
     expect(new TextDecoder().decode(thresholdFailure.stderr)).toContain(
-      'claude-mem worker unreachable for 2 consecutive hooks.'
+      'claude-mem worker unreachable for 2 consecutive hooks'
     );
   });
 });

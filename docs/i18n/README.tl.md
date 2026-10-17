@@ -215,7 +215,6 @@ Hinahawakan ng installer ang mga dependencies, plugin setup, konpigurasyon ng AI
 
 - **[Konpigurasyon](https://docs.claude-mem.ai/configuration)** - Environment variables at settings
 - **[Pagbuo](https://docs.claude-mem.ai/development)** - Pag-build, pag-test, at contribution workflow
-- **[Release Branches](https://docs.claude-mem.ai/branches)** - Daloy ng stable, core-dev, at community-edge branches
 - **[Pag-troubleshoot](https://docs.claude-mem.ai/troubleshooting)** - Karaniwang isyu at solusyon
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 Tingnan ang [Search Tools Guide](https://docs.claude-mem.ai/usage/search-tools) para sa mas detalyadong mga halimbawa.
-
----
-
-## Release Branches
-
-Ang mga stable release ay nagmumula sa `main` at pinapublish sa npm. Ang `core-dev`
-at `community-edge` ay mga source-run branch para sa maagang reliability fixes at
-community integrations. Tingnan ang **[Release Branches](https://docs.claude-mem.ai/branches)**
-para sa daloy ng branch at mga instruksyon sa pagpapatakbo ng non-stable version.
 
 ---
 
@@ -383,11 +373,6 @@ Malugod na tinatanggap ang mga kontribusyon! Pakisunod:
 3. Gawin ang mga pagbabago kasama ang mga test
 4. I-update ang dokumentasyon
 5. Mag-submit ng Pull Request
-
-Nagmumula ang Claude-Mem sa tatlong branch: `main` (stable), `core-dev`, at
-`community-edge`. Tanging ang `main` lamang ang pinapublish sa npm; ang iba ay
-pinapatakbo mula sa source. Tingnan ang [Release Branches](https://docs.claude-mem.ai/branches) para sa
-estratehiya at mga instruksyon sa lokal na pagpapatakbo.
 
 Tingnan ang [Gabay sa Pagbuo](https://docs.claude-mem.ai/development) para sa contribution workflow.
 

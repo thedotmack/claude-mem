@@ -6,10 +6,9 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import {
   buildOpenRouterRequestBody,
-  isOpenRouterApiUrl,
   resolveOpenRouterConfig,
 } from '../../src/services/worker/OpenRouterProvider.js';
-import { DEFAULT_OPENROUTER_API_URL } from '../../src/shared/openrouter-base-url.js';
+import { DEFAULT_OPENROUTER_API_URL, isOpenRouterApiUrl } from '../../src/shared/openrouter-base-url.js';
 import { SettingsDefaultsManager } from '../../src/shared/SettingsDefaultsManager.js';
 
 const ENV_KEYS = [

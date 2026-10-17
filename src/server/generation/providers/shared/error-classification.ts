@@ -5,6 +5,8 @@
 // src/services/worker/*, so we duplicate the small, stable error model here.
 // Worker code keeps src/services/worker/provider-errors.ts unchanged.
 
+import { namesPeriodRateLimit } from '../../../../shared/period-rate-limit.js';
+
 export type ServerProviderErrorClass =
   | 'transient'
   | 'unrecoverable'
@@ -14,10 +16,32 @@ export type ServerProviderErrorClass =
   | 'parse_error'
   | (string & {});
 
+/**
+ * What one paid generate call ended as — the worker's "never pay twice" model
+ * (src/services/worker/provider-errors.ts PaidSendOutcome), duplicated here
+ * because src/server may not import from the worker:
+ *  - `refused_before_work`: a 429; nothing was billed.
+ *  - `ambiguous`: no answer (network error, our own timeout) or a 5xx. The
+ *    work may have run and been billed.
+ *  - `output_failure`: a response arrived and its body could not be used
+ *    (litellm's 200 "Unable to get json response"). Billed; never resent.
+ *  - `rejected`: a definite refusal (auth, quota, bad request).
+ */
+export type ServerPaidSendOutcome = 'refused_before_work' | 'ambiguous' | 'output_failure' | 'rejected';
+
+/**
+ * Paid generate calls one outbox job may make before an ambiguous failure is
+ * no longer retried: the first call plus one resend (the worker's
+ * DEFAULT_MAX_PAID_SENDS_PER_BATCH). A rate limit is not a paid call and keeps
+ * the job's full max_attempts.
+ */
+export const SERVER_MAX_PAID_SENDS_PER_JOB = 2;
+
 export class ServerClassifiedProviderError extends Error {
   readonly kind: ServerProviderErrorClass;
   readonly retryAfterMs?: number;
   readonly cause: unknown;
+  readonly paidSendOutcome?: ServerPaidSendOutcome;
 
   constructor(
     message: string,
@@ -25,6 +49,8 @@ export class ServerClassifiedProviderError extends Error {
       kind: ServerProviderErrorClass;
       cause: unknown;
       retryAfterMs?: number;
+      /** Overrides the outcome derived from `kind` (serverPaidSendOutcomeOf). */
+      paidSendOutcome?: ServerPaidSendOutcome;
     },
   ) {
     super(message);
@@ -34,7 +60,18 @@ export class ServerClassifiedProviderError extends Error {
     if (opts.retryAfterMs !== undefined) {
       this.retryAfterMs = opts.retryAfterMs;
     }
+    if (opts.paidSendOutcome !== undefined) {
+      this.paidSendOutcome = opts.paidSendOutcome;
+    }
   }
+}
+
+/** An explicit outcome wins; else rate_limit was refused before work, transient is ambiguous, the rest rejected. */
+export function serverPaidSendOutcomeOf(error: ServerClassifiedProviderError): ServerPaidSendOutcome {
+  if (error.paidSendOutcome) return error.paidSendOutcome;
+  if (error.kind === 'rate_limit') return 'refused_before_work';
+  if (error.kind === 'transient') return 'ambiguous';
+  return 'rejected';
 }
 
 /**
@@ -45,8 +82,9 @@ export class ServerClassifiedProviderError extends Error {
 export function parseRetryAfterMs(value: string | null): number | undefined {
   if (!value) return undefined;
   const seconds = Number(value);
-  if (!Number.isNaN(seconds) && seconds >= 0) {
-    return Math.floor(seconds * 1000);
+  const milliseconds = seconds * 1000;
+  if (Number.isFinite(milliseconds) && seconds >= 0) {
+    return Math.floor(milliseconds);
   }
   const dateMs = Date.parse(value);
   if (!Number.isNaN(dateMs)) {
@@ -83,11 +121,19 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
     lower.includes('quota exceeded') ||
     lower.includes('insufficient credits') ||
     lower.includes('insufficient_quota') ||
-    lower.includes('resource_exhausted') ||
+    // `RESOURCE_EXHAUSTED` is Gemini's status string for *every* 429, whatever
+    // it is actually refusing, so it cannot decide on the 429 path — the same
+    // reason the generic `limit exceeded` marker below is guarded. A 429 that
+    // really is a spent allowance is decided by the Gemini wrapper, which reads
+    // the window the `QuotaFailure` names, before it reaches here.
+    (lower.includes('resource_exhausted') && status !== 429) ||
     lower.includes('key limit exceeded') ||
     // "Rate limit exceeded" on a 429 is a rate limit, not quota — the generic
     // marker only applies off the 429 path (the key-limit marker always wins).
     (lower.includes('limit exceeded') && status !== 429) ||
+    // A daily cap is a spent allowance, read by the worker's rule: retrying
+    // the job only spends attempts until the period turns over.
+    (status === 429 && namesPeriodRateLimit(lower)) ||
     lower.includes('negative credit') ||
     status === 402
   ) {
@@ -132,6 +178,21 @@ export function classifyHttpProviderError(input: ClassifyHttpInput): ServerClass
       kind: 'transient',
       cause: input.cause,
     });
+  }
+
+  // litellm (behind OpenRouter) can fail to parse the downstream model's
+  // response and surface it as a body-level error inside a 200 envelope, e.g.
+  // `{ error: { code: 200, message: "Unable to get json response - Expecting
+  // value: line 45 column 1" } }`. The model ran and the call was billed; only
+  // its output was lost, so a retry pays for the same work again. An output
+  // failure, never retried ("never pay twice"). Kept marker-scoped so it keeps
+  // its own words: this classifier is shared with Gemini, whose other 200
+  // envelopes (FAILED_PRECONDITION, etc.) fall through to unrecoverable below.
+  if (lower.includes('unable to get json') || lower.includes('expecting value')) {
+    return new ServerClassifiedProviderError(
+      `${providerLabel} upstream output failure (status ${status})`,
+      { kind: 'unrecoverable', paidSendOutcome: 'output_failure', cause },
+    );
   }
 
   return new ServerClassifiedProviderError(

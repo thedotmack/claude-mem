@@ -14,7 +14,11 @@ import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
 import { isDirectChild } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
+import { getProjectContext } from '../utils/project-name.js';
+import { replaceTaggedContent } from '../utils/claude-md-utils.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
+import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
 
 const DB_PATH = paths.database();
 const SETTINGS_PATH = paths.settings();
@@ -64,7 +68,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
 
   let output: string;
   try {
-    output = execSync('git ls-files', {
+    output = execSync('git ls-files -z', {
       cwd: workingDir,
       encoding: 'utf-8',
       maxBuffer: 50 * 1024 * 1024
@@ -76,7 +80,7 @@ function getTrackedFolders(workingDir: string): Set<string> {
     return folders;
   }
 
-  const files = output.trim().split('\n').filter(f => f);
+  const files = output.split('\0').filter(f => f);
 
   for (const file of files) {
     const absPath = path.join(workingDir, file);
@@ -134,22 +138,24 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
 }
 
 function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
-  const queryLimit = limit * 3;
-
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
-    WHERE o.project = ?
+    WHERE o.project COLLATE NOCASE = ?
       AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
-    LIMIT ?
   `;
 
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
-  const likePattern = `%"${normalizedFolderPath}/%`;
-  const allMatches = db.prepare(sql).all(project, likePattern, likePattern, queryLimit) as ObservationRow[];
-
-  return allMatches.filter(obs => hasDirectChildFile(obs, relativeFolderPath)).slice(0, limit);
+  const likePattern = `%"${JSON.stringify(normalizedFolderPath + '/').slice(1, -1)}%`;
+  // Page the folder's direct children themselves, not a guessed window of the
+  // broader candidates that nested files can fill.
+  return pageMatchingRows<ObservationRow>(
+    db.prepare(sql),
+    [project, likePattern, likePattern],
+    obs => hasDirectChildFile(obs, relativeFolderPath),
+    { limit },
+  );
 }
 
 function extractRelevantFile(obs: ObservationRow, relativeFolder: string): string {
@@ -242,7 +248,6 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
   if (resolvedPath.includes('/.git/') || resolvedPath.includes('\\.git\\') || resolvedPath.endsWith('/.git') || resolvedPath.endsWith('\\.git')) return;
 
   const claudeMdPath = path.join(folderPath, 'CLAUDE.md');
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     throw new Error(`Folder does not exist: ${folderPath}`);
@@ -253,27 +258,14 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  const finalContent = replaceTaggedContent(existingContent, newContent);
 
-  let finalContent: string;
-  if (!existingContent) {
-    finalContent = `${startTag}\n${newContent}\n${endTag}`;
-  } else {
-    const startIdx = existingContent.indexOf(startTag);
-    const endIdx = existingContent.indexOf(endTag);
-
-    if (startIdx !== -1 && endIdx !== -1) {
-      finalContent = existingContent.substring(0, startIdx) +
-        `${startTag}\n${newContent}\n${endTag}` +
-        existingContent.substring(endIdx + endTag.length);
-    } else {
-      finalContent = existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
-    }
-  }
-
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  const tempFile = `${writeTarget}.tmp`;
   writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  renameSync(tempFile, writeTarget);
 }
 
 function regenerateFolder(
@@ -383,7 +375,7 @@ export async function generateClaudeMd(dryRun: boolean): Promise<number> {
     observationLimit
   });
 
-  const project = path.basename(workingDir);
+  const project = getProjectContext(workingDir).primary;
   const trackedFolders = getTrackedFolders(workingDir);
 
   if (trackedFolders.size === 0) {

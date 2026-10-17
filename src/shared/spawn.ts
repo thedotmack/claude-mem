@@ -6,6 +6,7 @@ import {
   type ChildProcess,
   type SpawnSyncOptionsWithStringEncoding,
 } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { dirname, extname, join } from 'node:path';
 
 export type SpawnHiddenOptions = SpawnOptions;
@@ -15,7 +16,11 @@ export function spawnHidden(
   args?: readonly string[],
   options?: SpawnOptions
 ): ChildProcess {
-  return spawn(command, args ?? [], { windowsHide: true, ...options });
+  // windowsHide MUST win over caller options. Node's `detached: true` on
+  // Windows still allocates a console for the child (#3521); callers that
+  // need a background daemon on win32 must use Start-Process -WindowStyle
+  // Hidden (see ProcessManager.spawnDetachedWorkerDaemon), not detached.
+  return spawn(command, args ?? [], { ...options, windowsHide: true });
 }
 
 export const WINDOWS_CMD_EXTENSIONS = new Set(['.cmd', '.bat']);
@@ -35,11 +40,26 @@ export function quoteWindowsCmdArgument(value: string): string {
   return `"${value.replace(/"/g, '""')}"`;
 }
 
+/** True when `command` is a natively-spawnable Windows binary (.exe/.com), not a .cmd/.bat shim. */
+export function isWindowsNativeExecutable(command: string): boolean {
+  return WINDOWS_NATIVE_EXTENSIONS.has(extname(command).toLowerCase());
+}
+
+/**
+ * Absolute path of where.exe. Spawning the bare name lets Windows run a
+ * `where.exe` from the current directory (often the user's project, for hooks)
+ * before PATH, which would execute untrusted code.
+ */
+export function windowsWhereExecutablePath(env: NodeJS.ProcessEnv = process.env): string {
+  const systemRoot = env.SystemRoot || env.SYSTEMROOT || env.windir || env.WINDIR || 'C:\\Windows';
+  return join(systemRoot, 'System32', 'where.exe');
+}
+
 /** Every PATH hit for `command`, in `where` order (PATH order). */
 export function lookupWindowsCommandCandidates(command: string): string[] {
   if (process.platform !== 'win32') return [];
   try {
-    const result = spawnSync('where', [command], {
+    const result = spawnSync(windowsWhereExecutablePath(), [command], {
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'ignore'],
       windowsHide: true,
@@ -48,7 +68,13 @@ export function lookupWindowsCommandCandidates(command: string): string[] {
     return result.stdout
       .split(/\r?\n/)
       .map(line => line.trim())
-      .filter(Boolean);
+      .filter(Boolean)
+      // where.exe writes the console's active code page (cp949 on ko-KR) while
+      // the `encoding: 'utf-8'` above decodes the bytes as UTF-8, so a
+      // non-ASCII profile folder name arrives as U+FFFD and the path does not
+      // exist (#4694, #3865). Callers spawn these paths; a nonexistent one can
+      // only fail with ENOENT, so drop it here.
+      .filter(line => existsSync(line));
   } catch {
     // where exits non-zero when absent and can throw if PATH is malformed.
     return [];
@@ -70,15 +96,14 @@ export function selectWindowsCommandCandidate(
   candidates: string[],
   resolveShim?: (shimPath: string) => string | null,
 ): string | null {
-  const native = candidates.find(candidate =>
-    WINDOWS_NATIVE_EXTENSIONS.has(extname(candidate).toLowerCase()));
+  const native = candidates.find(isWindowsNativeExecutable);
   if (native) return native;
 
   const shim = candidates.find(candidate =>
     WINDOWS_CMD_EXTENSIONS.has(extname(candidate).toLowerCase()));
   if (shim && resolveShim) {
     const resolved = resolveShim(shim);
-    if (resolved && WINDOWS_NATIVE_EXTENSIONS.has(extname(resolved).toLowerCase())) {
+    if (resolved && isWindowsNativeExecutable(resolved)) {
       return resolved;
     }
   }
@@ -123,8 +148,9 @@ export function buildSpawnSyncInvocation(
   platform: NodeJS.Platform = process.platform,
 ): SpawnSyncInvocation {
   const invocationOptions: SpawnSyncOptionsWithStringEncoding = {
-    ...(platform === 'win32' ? { windowsHide: true } : {}),
     ...options,
+    // Force hide on Windows last so callers cannot override it off (#3521).
+    ...(platform === 'win32' ? { windowsHide: true } : {}),
   };
 
   if (platform === 'win32' && WINDOWS_CMD_EXTENSIONS.has(extname(command).toLowerCase())) {

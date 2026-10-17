@@ -11,6 +11,7 @@ type Handler = (req: Request, res: Response) => void;
 function captureSessionEndHandler(routes: SessionRoutes): Handler {
   let handler: Handler | undefined;
   const app = {
+    get: () => {},
     post: mock((path: string, ...handlers: Handler[]) => {
       if (path === '/api/sessions/session-end') {
         handler = handlers.at(-1);

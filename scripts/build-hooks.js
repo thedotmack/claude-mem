@@ -4,7 +4,11 @@ import { build } from 'esbuild';
 import fs from 'fs';
 import path from 'path';
 import vm from 'node:vm';
+import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath } from 'url';
+import { allowScriptsMap } from './postinstall-allowlist.js';
+import { OPENCODE_PLUGIN_BUILD_OPTIONS } from './opencode-plugin-build-options.js';
+import { preparePiExtensionBuild, preflightDshAttribution, DSH_PLUGIN_BUILD_OPTIONS } from './harness-plugin-build-options.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -29,6 +33,11 @@ const DIRNAME_BANNER = [
   'var __CM_FILENAME__ = typeof __filename !== "undefined" ? __filename : require("node:path").resolve(process.argv[1] || "");',
   'var __CM_DIRNAME__ = typeof __dirname !== "undefined" ? __dirname : require("node:path").dirname(__CM_FILENAME__);',
 ];
+
+// posthog-node >=5.56 lazily import()s the optional OpenTelemetry API for trace ids
+// and swallows the failure when it is absent, so every bundle that includes the
+// telemetry client must leave it unresolved instead of failing the build.
+const POSTHOG_OPTIONAL_IMPORTS = ['@opentelemetry/api'];
 
 // Emit an external source map (names only, no inlined source text) next to each
 // bundle. Bun and Node symbolicate stack traces against the adjacent .map, so a
@@ -88,30 +97,87 @@ const TRANSCRIPT_WATCHER = {
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
 };
 
+// The on-PATH `claude-mem` hook launcher (plan-17 #3605). The installer compiles
+// this bundle with `bun build --compile`; it must stay version-stable, so it
+// imports nothing from src/services, src/cli/handlers or src/shared/worker-utils.
+const HOOK_LAUNCHER = {
+  name: 'claude-mem-launcher',
+  source: 'src/launcher/claude-mem-launcher.ts'
+};
+
+// SessionStart self-heal that compiles HOOK_LAUNCHER onto PATH when it is
+// missing or stale (plan-17 #3605, Phase 3). Runs under plain `node`, so it
+// must stay free of bun:sqlite and worker imports.
+const ENSURE_LAUNCHER = {
+  name: 'ensure-launcher',
+  source: 'src/launcher/ensure-launcher.ts'
+};
+
 /**
  * Rule A canonical-template manifest: maps each host-managed config file's
- * command string to the buildShellCommand() options that generate it. The
+ * command string to the buildShellCommand() options that generate it, and each
+ * Claude Code runtime hook in plugin/hooks/hooks.json to its full exec-form
+ * entry (buildExecHook; `execEntries`). The
  * build asserts the hand-maintained files still match the generator output so
  * the defensive shell prelude can't drift between the three files (issues
  * #1215, #1533). See src/build/hook-shell-template.ts and CLAUDE.md →
  * "Spawn-Contract Resolution".
  */
-function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
+// Claude Code's UserPromptSubmit timeout (seconds). It must stay above the
+// session-init budget (HOOK_TIMEOUTS.SESSION_INIT_REQUEST, 10 s by default;
+// CLAUDE_MEM_SESSION_INIT_TIMEOUT_MS allows up to 14 s) plus hook startup (#3434).
+const SESSION_INIT_HOOK_TIMEOUT_SECONDS = 15;
+
+// SessionStart self-heal timeout (seconds). The hook is synchronous so its
+// failure systemMessage reaches the user, so this bounds session start in the
+// worst case: the installed launcher's --version probe (10 s), the Bun lookup
+// (`bun --version`, normally well under 1 s), `bun build --compile` (120 s),
+// the compiled launcher's --version probe (10 s) and the Windows PowerShell
+// user-PATH write (30 s) back to back = 170 s plus node startup
+// (src/launcher/install-launcher.ts). When the launcher is current it is one
+// --version spawn and returns in milliseconds.
+const ENSURE_LAUNCHER_HOOK_TIMEOUT_SECONDS = 180;
+
+// The only shell-form entry allowed in plugin/hooks/hooks.json. Setup fires
+// only on `claude --init` / `--maintenance` (SPIKE item 8), never at runtime.
+const SHELL_FORM_HOOK_EVENTS = new Set(['Setup']);
+
+// Claude Code's PreToolUse Read timeout (seconds). The hook is synchronous so
+// the File Read Gate can deny a whole-file Read, which makes every Read wait on
+// it: bounded well under the old 60 s, and above the 3 s worker budget
+// (FILE_CONTEXT_WORKER_BUDGET_MS in src/cli/handlers/file-context.ts) plus hook
+// startup.
+const FILE_CONTEXT_HOOK_TIMEOUT_SECONDS = 15;
+
+// PreToolUse matcher (#4596, #4549): Read for the File Read Gate / file
+// timeline, plus the tools whose calls the memory-search handler inspects.
+const PRE_TOOL_USE_MATCHER = 'Read|^Bash$|^Grep$|^Glob$|^memory_search$|^memory$|^mcp__.+__memory_search$';
+
+export function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook) {
   const ccTrailing = (...tail) => [
     'node', '"$_P/scripts/bun-runner.js"', '"$_P/scripts/worker-service.cjs"', ...tail,
   ];
-  const claudeHook = (tail, extra = {}) => buildShellCommand({
-    host: 'claude-code', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
-    trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found', ...extra,
+  // Claude Code runtime hooks are exec form (plan-17 #3605): the full entry
+  // is canonical, so `--write-shell-templates` can (re)generate it and the
+  // verifier rejects any hand edit, including a re-added `shell` key.
+  const claudeExecHook = (workerServiceArguments, entryOptions, groupMatcher) => ({
+    groupMatcher,
+    entry: { type: 'command', ...buildExecHook(workerServiceArguments), ...entryOptions },
   });
   const codexHook = (tail) => buildShellCommand({
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
     extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+    // Codex's own plugin copy carries the scripts but never `node_modules`
+    // (the CLI rebuilds that folder on every `codex plugin add`), so a hook
+    // resolving to it dies on its first import. Require the host-injected
+    // root to have its dependencies; without them the resolver falls back to
+    // the installer-prepared copies (#4763).
+    requireDependencies: true,
   });
   const codexHookPair = (tail) => ({
     command: codexHook(tail),
-    commandWindows: buildCodexWindowsCommand(tail),
+    commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
   });
 
   return {
@@ -123,19 +189,33 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
           trailingCommand: ['node', '"$_P/scripts/version-check.js"'],
           notFoundMessage: 'claude-mem: version-check.js not found',
         }),
+      },
+      execEntries: {
         // `start` already emits its own single, valid status JSON via
         // buildStatusOutput ({"continue":true,"status":"ready","suppressOutput":true}).
-        // Appending a trailingJson echo would print a SECOND JSON object on
-        // stdout — two concatenated documents are invalid JSON, so Claude Code
-        // fails to parse them, ignores suppressOutput, and dumps the raw text at
-        // the top of every session. Let `start` speak for itself.
-        'SessionStart.0.0': claudeHook(['start']),
-        'SessionStart.0.1': claudeHook(['hook', 'claude-code', 'context']),
-        'UserPromptSubmit.0.0': claudeHook(['hook', 'claude-code', 'session-init']),
-        'PostToolUse.0.0': claudeHook(['hook', 'claude-code', 'observation']),
-        'PreToolUse.0.0': claudeHook(['hook', 'claude-code', 'file-context']),
-        'Stop.0.0': claudeHook(['hook', 'claude-code', 'summarize']),
-        'SessionEnd.0.0': claudeHook(['hook', 'claude-code', 'session-end']),
+        // Never append a second stdout document to it: two concatenated JSON
+        // objects are invalid, so Claude Code would dump the raw text at the top
+        // of every session.
+        'SessionStart.0.0': claudeExecHook(['start'], { timeout: 60, async: true }, 'startup|resume|clear|compact'),
+        // No `resume`: a resumed session already has its timeline (#4423).
+        'SessionStart.1.0': claudeExecHook(['hook', 'claude-code', 'context'], { timeout: 60 }, 'startup|clear|compact'),
+        // Self-heal for marketplace-only installs (SPIKE Decision 1): compile the
+        // launcher onto PATH when it is missing or stale. `startup` only.
+        // Synchronous (no `async`): Claude Code shows a sync hook's
+        // systemMessage to the user, which is how a failed self-heal is reported.
+        'SessionStart.2.0': {
+          groupMatcher: 'startup',
+          entry: { type: 'command', ...buildEnsureLauncherExecHook(), timeout: ENSURE_LAUNCHER_HOOK_TIMEOUT_SECONDS },
+        },
+        'UserPromptSubmit.0.0': claudeExecHook(['hook', 'claude-code', 'session-init'], { timeout: SESSION_INIT_HOOK_TIMEOUT_SECONDS }),
+        'PostToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'observation'], { timeout: 120, async: true }, '*'),
+        // A tool call that fails (e.g. Bash exiting non-zero) is delivered here
+        // instead of PostToolUse, so without it memory never sees a failed attempt.
+        'PostToolUseFailure.0.0': claudeExecHook(['hook', 'claude-code', 'observation'], { timeout: 120, async: true }, '*'),
+        // Synchronous so the File Read Gate can deny a whole-file Read.
+        'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS }, PRE_TOOL_USE_MATCHER),
+        'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
+        'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
       },
     },
     'plugin/hooks/codex-hooks.json': {
@@ -146,12 +226,13 @@ function shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand) {
         'PreToolUse.0.0': codexHookPair(['hook', 'codex', 'file-context']),
         'PostToolUse.0.0': codexHookPair(['hook', 'codex', 'observation']),
         'Stop.0.0': codexHookPair(['hook', 'codex', 'summarize']),
+        'PostCompact.0.0': codexHookPair(['hook', 'codex', 'post-compact']),
       },
     },
     'plugin/.mcp.json': {
       kind: 'mcp',
       command: buildShellCommand({
-        // The mcp Node launcher derives its spawn target from requireFile, so
+        // The mcp Node launcher derives its module target from requireFile, so
         // no trailingCommand is needed (it is ignored for this host).
         host: 'mcp', requireFile: 'mcp-server.cjs',
         notFoundMessage: 'claude-mem: mcp server not found',
@@ -170,6 +251,70 @@ function hookEntryByPath(parsed, dottedPath) {
   return parsed.hooks?.[event]?.[Number(groupIdx)]?.hooks?.[Number(hookIdx)] ?? null;
 }
 
+/**
+ * Compare one exec-form hook entry (and its group matcher) against the
+ * manifest. In write mode a mismatching entry is replaced with the canonical
+ * one; a missing group or entry is never created (add it to hooks.json by
+ * hand, then regenerate). Returns true when the parsed file was modified.
+ */
+function applyCanonicalExecEntry(parsed, dottedPath, expected, filePath, writeMode) {
+  const [event, groupIndexText, hookIndexText] = dottedPath.split('.');
+  const group = parsed.hooks?.[event]?.[Number(groupIndexText)] ?? null;
+  const entry = group?.hooks?.[Number(hookIndexText)] ?? null;
+  const matcherMatches = group !== null && group.matcher === expected.groupMatcher;
+  if (entry !== null && matcherMatches && isDeepStrictEqual(entry, expected.entry)) return false;
+
+  if (!writeMode || entry === null) {
+    throw new Error(
+      `Hand-edited hook entry detected in ${filePath} (${dottedPath}). It no longer matches the exec-form manifest in scripts/build-hooks.js. ` +
+      `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+    );
+  }
+  if (expected.groupMatcher === undefined) delete group.matcher;
+  else group.matcher = expected.groupMatcher;
+  group.hooks[Number(hookIndexText)] = structuredClone(expected.entry);
+  return true;
+}
+
+/**
+ * Rule A for Claude Code runtime hooks (plan-17 #3605): every entry outside
+ * Setup must be shell-free exec form. A `shell` key, a missing `args` array, or
+ * any command other than the on-PATH `claude-mem` launcher (or the single
+ * `node …/ensure-launcher.cjs` self-heal), or a `claude-mem` entry whose args
+ * are not in the manifest, brings back the bash preamble and the
+ * Windows console flash (#3559, #3521, #3396).
+ */
+export function verifyClaudeCodeRuntimeHooksAreExecForm(parsed, execEntries, ensureLauncherExecHook, filePath) {
+  const manifestLauncherArgs = Object.values(execEntries)
+    .map(({ entry }) => entry)
+    .filter((entry) => entry.command === 'claude-mem')
+    .map((entry) => entry.args);
+  for (const [event, groups] of Object.entries(parsed.hooks ?? {})) {
+    if (SHELL_FORM_HOOK_EVENTS.has(event)) continue;
+    groups.forEach((group, groupIndex) => {
+      (group.hooks ?? []).forEach((entry, hookIndex) => {
+        const location = `${event}.${groupIndex}.${hookIndex}`;
+        const hasShell = Object.prototype.hasOwnProperty.call(entry, 'shell');
+        const hasArgs = Array.isArray(entry.args);
+        const isLauncher = entry.command === 'claude-mem';
+        const isManifestLauncher = isLauncher && manifestLauncherArgs
+          .some((launcherArgs) => isDeepStrictEqual(entry.args, launcherArgs));
+        const isEnsureLauncher = entry.command === ensureLauncherExecHook.command
+          && isDeepStrictEqual(entry.args, ensureLauncherExecHook.args);
+        if (hasShell || !hasArgs || !(isManifestLauncher || isEnsureLauncher)) {
+          const offendingDetail = hasShell ? `shell=${JSON.stringify(entry.shell)}`
+            : !hasArgs ? 'no args array'
+              : isLauncher ? `claude-mem args ${JSON.stringify(entry.args)} that are not in the manifest`
+                : `command=${JSON.stringify(entry.command)}`;
+          throw new Error(
+            `Claude Code runtime hook must be exec form (command+args, no shell): ${filePath} (${location}) has ${offendingDetail}.`
+          );
+        }
+      });
+    });
+  }
+}
+
 async function verifyShellTemplateCanonical() {
   console.log('\n📋 Verifying Rule A shell templates match the canonical generator...');
 
@@ -186,9 +331,9 @@ async function verifyShellTemplateCanonical() {
   });
   const moduleSource = bundled.outputFiles[0].text;
   const dataUrl = 'data:text/javascript;base64,' + Buffer.from(moduleSource).toString('base64');
-  const { buildShellCommand, buildCodexWindowsCommand } = await import(dataUrl);
+  const { buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook } = await import(dataUrl);
 
-  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand);
+  const manifest = shellTemplateManifest(buildShellCommand, buildCodexWindowsCommand, buildExecHook, buildEnsureLauncherExecHook);
 
   // The regeneration mode the mismatch errors point at: after an intentional
   // generator change, rewrite the committed launcher strings from the same
@@ -225,7 +370,7 @@ async function verifyShellTemplateCanonical() {
           entry.command = expectedCommand;
           dirty = true;
         }
-        if (typeof expected !== 'string') {
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'commandWindows')) {
           const actualWindows = entry?.commandWindows ?? null;
           if (actualWindows !== expected.commandWindows) {
             if (!writeMode || !entry) {
@@ -238,7 +383,24 @@ async function verifyShellTemplateCanonical() {
             dirty = true;
           }
         }
+        if (typeof expected !== 'string' && Object.prototype.hasOwnProperty.call(expected, 'timeout')
+          && entry?.timeout !== expected.timeout) {
+          if (!writeMode || !entry) {
+            throw new Error(
+              `Hand-edited timeout detected in ${filePath} (${dottedPath}). It no longer matches scripts/build-hooks.js. ` +
+              `Regenerate via \`node scripts/build-hooks.js --write-shell-templates\` after an intentional generator change.`
+            );
+          }
+          entry.timeout = expected.timeout;
+          dirty = true;
+        }
       }
+    }
+    if (spec.execEntries) {
+      for (const [dottedPath, expected] of Object.entries(spec.execEntries)) {
+        if (applyCanonicalExecEntry(parsed, dottedPath, expected, filePath, writeMode)) dirty = true;
+      }
+      verifyClaudeCodeRuntimeHooksAreExecForm(parsed, spec.execEntries, buildEnsureLauncherExecHook(), filePath);
     }
     if (dirty) {
       fs.writeFileSync(filePath, JSON.stringify(parsed, null, 2) + '\n');
@@ -274,6 +436,8 @@ async function buildHooks() {
   console.log('🔨 Building claude-mem hooks and worker service...\n');
 
   try {
+    const piBuild = preparePiExtensionBuild();
+    preflightDshAttribution();
     const packageJson = JSON.parse(fs.readFileSync('package.json', 'utf-8'));
     const version = packageJson.version;
     console.log(`📌 Version: ${version}`);
@@ -299,7 +463,12 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.4.3',
-        'tree-sitter-cli': '^0.26.5',
+        // Exact, not a range: the worker only installs a tree-sitter executable
+        // whose SHA-256 is pinned for this version
+        // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
+        // install that ignores bun.lock (npm) would resolve a range to a newer,
+        // unpinned release and leave smart_outline without an executable.
+        'tree-sitter-cli': '0.26.9',
         'tree-sitter-c': '^0.24.1',
         'tree-sitter-cpp': '^0.23.4',
         'tree-sitter-go': '^0.25.0',
@@ -331,6 +500,11 @@ async function buildHooks() {
       trustedDependencies: [
         'tree-sitter-cli'
       ],
+      // npm 11.16+ runs dependency install scripts only for packages listed in
+      // `allowScripts` — npm's counterpart to bun's `trustedDependencies` above.
+      // Sourced from scripts/postinstall-allowlist.js so it can never drift from
+      // the CI guard.
+      allowScripts: allowScriptsMap(),
       engines: {
         node: '>=20.12.0',
         bun: '>=1.1.31'
@@ -360,12 +534,21 @@ async function buildHooks() {
       target: 'node18',
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
+      // Zod is inlined, and the worker's dynamic imports make esbuild wrap it in
+      // lazy initializers. `zod/v4` (imported by @modelcontextprotocol/sdk) is a
+      // pure `export *` re-export of that wrapped code, and esbuild emits no
+      // initializer call through it, so the SDK's top-level `z.custom()` ran
+      // before Zod's classes existed and the worker crashed on load. One Zod
+      // entry point gets initialized correctly. The self-contained bundle test
+      // (tests/infrastructure/worker-bundle-self-contained.test.ts) guards this.
+      alias: { 'zod/v4': 'zod' },
       minify: true,
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
       external: [
         'bun:sqlite',
-        'zod',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -381,6 +564,7 @@ async function buildHooks() {
         'better-auth/node',
         'better-auth/plugins',
         '@better-auth/api-key',
+        ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -401,6 +585,14 @@ async function buildHooks() {
     });
 
     assertBundleIntegrity(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+
+    const workerZodRequire = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8')
+      .match(/require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/);
+    if (workerZodRequire) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequire[0]}. Codex plugin caches may have no node_modules, so Zod must be bundled into the worker.`
+      );
+    }
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
@@ -480,6 +672,8 @@ async function buildHooks() {
       logLevel: 'error',
       external: [
         'bun:sqlite',
+        // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
+        'bun:ffi',
         'zod',
       ],
       define: {
@@ -616,11 +810,12 @@ async function buildHooks() {
       minify: true,
       ...SOURCEMAP_OPTS,
       logLevel: 'error',
-      // Externalize zod for consistency with worker-service / server-beta-service —
-      // any zod usage in the processor.ts import chain should resolve at runtime
-      // against plugin/node_modules instead of being inlined (avoids duplicate-
-      // instance hazards and keeps the bundle slim).
-      external: ['bun:sqlite', 'zod'],
+      // Externalize zod for consistency with server-service, context-generator and the other plugin bundles —
+      // any zod usage in the processor.ts import chain resolves at runtime against
+      // plugin/node_modules instead of being inlined (keeps the bundle slim). The
+      // worker and MCP server inline zod because a Codex or Claude Desktop copy of
+      // the plugin may have no node_modules.
+      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE
@@ -646,6 +841,50 @@ async function buildHooks() {
         `⚠️  transcript-watcher.cjs is ${(transcriptWatcherStats.size / 1024).toFixed(2)} KB (advisory budget ${(TRANSCRIPT_WATCHER_MAX_BYTES / 1024).toFixed(0)} KB). If this jumped unexpectedly, check src/services/transcripts/processor.ts and watcher.ts for heavy imports.`
       );
     }
+
+    console.log(`\n🔧 Building claude-mem hook launcher...`);
+    await build({
+      entryPoints: [HOOK_LAUNCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${HOOK_LAUNCHER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      banner: {
+        js: '#!/usr/bin/env bun'
+      }
+    });
+
+    assertBundleIntegrity(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`, 0o755);
+    const hookLauncherStats = fs.statSync(`${hooksDir}/${HOOK_LAUNCHER.name}.cjs`);
+    console.log(`✓ claude-mem-launcher built (${(hookLauncherStats.size / 1024).toFixed(2)} KB)`);
+
+    console.log(`\n🔧 Building ensure-launcher self-heal...`);
+    await build({
+      entryPoints: [ENSURE_LAUNCHER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`,
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      banner: {
+        js: '#!/usr/bin/env node'
+      }
+    });
+
+    assertBundleIntegrity(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
+
+    fs.chmodSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`, 0o755);
+    const ensureLauncherStats = fs.statSync(`${hooksDir}/${ENSURE_LAUNCHER.name}.cjs`);
+    console.log(`✓ ensure-launcher built (${(ensureLauncherStats.size / 1024).toFixed(2)} KB)`);
 
     console.log(`\n🔧 Building NPX CLI...`);
     const npxCliOutDir = 'dist/npx-cli';
@@ -735,23 +974,24 @@ async function buildHooks() {
         fs.mkdirSync(opencodeOutDir, { recursive: true });
       }
       await build({
-        entryPoints: ['src/integrations/opencode-plugin/index.ts'],
-        bundle: true,
-        platform: 'node',
-        target: 'node18',
-        format: 'esm',
+        ...OPENCODE_PLUGIN_BUILD_OPTIONS,
         outfile: `${opencodeOutDir}/index.js`,
-        minify: true,
-        logLevel: 'error',
-        external: [
-          'fs', 'fs/promises', 'path', 'os', 'child_process', 'url',
-          'crypto', 'http', 'https', 'net', 'stream', 'util', 'events',
-        ],
       });
 
       const opencodeStats = fs.statSync(`${opencodeOutDir}/index.js`);
       console.log(`✓ opencode plugin built (${(opencodeStats.size / 1024).toFixed(2)} KB)`);
     }
+
+    fs.mkdirSync('dist/pi-extension', { recursive: true });
+    await build({ ...piBuild.options, outfile: 'dist/pi-extension/index.js' });
+    for (const file of piBuild.attributionFiles) fs.writeFileSync(path.join('dist/pi-extension', file.name), file.contents);
+    console.log('✓ Pi memory extension built');
+    fs.mkdirSync('dsh/lib', { recursive: true });
+    const dshManifest = JSON.parse(fs.readFileSync('dsh/package.json', 'utf8'));
+    dshManifest.version = JSON.parse(fs.readFileSync('package.json', 'utf8')).version;
+    fs.writeFileSync('dsh/package.json', JSON.stringify(dshManifest, null, 2) + '\n');
+    await build({ ...DSH_PLUGIN_BUILD_OPTIONS, outfile: 'dsh/lib/index.js' });
+    console.log('✓ DeepSeek Harness memory plugin built');
 
     console.log('\n📋 Copying onboarding explainer to plugin tree...');
     const onboardingExplainerSrc = 'src/services/worker/onboarding-explainer.md';
@@ -771,6 +1011,7 @@ async function buildHooks() {
       'PermissionRequest',
       'PostToolUse',
       'Stop',
+      'PostCompact',
     ]);
     const requiredDistributionFiles = [
       'plugin/skills/mem-search/SKILL.md',
@@ -782,13 +1023,19 @@ async function buildHooks() {
       'plugin/skills/how-it-works/onboarding-explainer.md',
       'plugin/hooks/hooks.json',
       'plugin/hooks/codex-hooks.json',
+      'plugin/hooks/qoder-hooks.json',
+      'plugin/hooks/qoder-repo-hooks.json',
       'plugin/scripts/bun-runner.js',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',
       'plugin/.codex-plugin/plugin.json',
+      'plugin/.qoder-plugin/plugin.json',
+      'plugin/qoder.mcp.json',
+      'plugin/scripts/qoder-hook-launcher.cjs',
       'plugin/.mcp.json',
       '.codex-plugin/plugin.json',
+      '.qoder-plugin/plugin.json',
       '.agents/plugins/marketplace.json',
       'dist/bug-report/index.js',
     ];
@@ -854,4 +1101,7 @@ async function buildHooks() {
   }
 }
 
-buildHooks();
+// Run only as the entrypoint: tests import the Rule A verifier without building.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  buildHooks();
+}

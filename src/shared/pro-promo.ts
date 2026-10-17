@@ -27,21 +27,23 @@ export type ProPromoSource =
   | 'context-banner'
   | 'welcome-hint'
   | 'viewer'
-  /** One-time session-start notice after the free trial ends and memory falls back on-plan. */
+  /** One-time session-start notice after the cmem gateway stops serving the account and memory falls back on-plan. */
   | 'fallback'
   /** Hand-written links in the cursor-hooks setup docs — no TS caller. */
   | 'docs';
 
 /**
- * Trial length advertised by every client-side promo link, in days. The landing
- * page reads `?trial=` to render the offer, so this has to match the copy in
- * PRO_TRIAL_PITCH and the length the server actually grants at checkout.
+ * The standard free trial cmem.ai grants, in days. The server assigns the
+ * duration at claim time; promo links carry only source attribution.
  */
-export const PRO_TRIAL_DAYS = 30;
+export const PRO_TRIAL_MAX_DAYS = 30;
+
+/** Public offer label shared by the installer and promotional surfaces. */
+export const PRO_TRIAL_LABEL = `${PRO_TRIAL_MAX_DAYS} Day Free Trial`;
 
 /** Trial landing URL tagged with the surface the user clicked from. */
 export function proTrialUrl(source: ProPromoSource): string {
-  return `${PRO_TRIAL_URL}?from=${source}&trial=${PRO_TRIAL_DAYS}`;
+  return `${PRO_TRIAL_URL}?from=${source}`;
 }
 
 /**
@@ -51,7 +53,7 @@ export function proTrialUrl(source: ProPromoSource): string {
 export const PLAN_USAGE_GAIN_PERCENT = 100;
 
 /** The offer itself, without a URL — for surfaces that link separately. */
-export const PRO_TRIAL_PITCH = `Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan — memory runs off-plan, free for ${PRO_TRIAL_DAYS} days`;
+export const PRO_TRIAL_PITCH = `${PRO_TRIAL_LABEL} — memory runs off-plan. Get up to ${PLAN_USAGE_GAIN_PERCENT}% more usage from your plan`;
 
 /**
  * One-line pitch + link, for plain-text surfaces (hook banners, welcome hint).

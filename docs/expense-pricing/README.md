@@ -70,7 +70,7 @@ These five were the recoverable platform leaders across the window (Flash 0423 e
 | 2026-09-01 | 0.08092 / 0.16184 `exact_day` | 0.14 / 0.28 `nearest` | 0.132 / 0.528 `nearest` | 0.20 / 1.20 `nearest` | 0.065 / 0.18 `nearest` |
 | 2026-09-08 | 0.08708 / 0.17416 `exact_day` | 0.14 / 0.28 `nearest` | 0.0825 / 0.33 `exact_day` | 0.20 / 1.20 `nearest` | 0.065 / 0.18 `exact_day` |
 
-`xiaomi/mimo-v2-flash:free` (current claude-mem settings default) last appeared 2026-01-26 at `$0 / $0` — every July–September row is `fallback`.
+`xiaomi/mimo-v2-flash:free` (claude-mem's OpenRouter settings default until it was retired; now `cohere/north-mini-code:free`) last appeared 2026-01-26 at `$0 / $0` — every July–September row is `fallback`.
 
 ## Rebuild
 

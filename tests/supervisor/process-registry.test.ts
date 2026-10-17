@@ -13,6 +13,7 @@ import {
   waitForSlot,
   getParkedSlotWaiterCount,
   isSessionParkedForSlot,
+  setRegistryDegradedReporter,
   type SlotReservation,
 } from '../../src/supervisor/process-registry.js';
 import { guardSharedProcessRegistrySingleton } from './process-registry-singleton-guard.js';
@@ -129,6 +130,60 @@ describe('supervisor ProcessRegistry', () => {
       expect(records).toHaveLength(1);
       expect(records[0]?.id).toBe('alive');
       expect(existsSync(registryPath)).toBe(true);
+    });
+
+    it('degrades to in-memory state instead of throwing when the registry cannot be written', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      mkdirSync(tempDir, { recursive: true });
+      // A regular file where the registry's parent directory should be makes
+      // every write fail (ENOTDIR), standing in for an unwritable data dir.
+      const blocker = path.join(tempDir, 'blocker');
+      writeFileSync(blocker, 'not a directory');
+      const registryPath = path.join(blocker, 'supervisor.json');
+
+      const registry = createProcessRegistry(registryPath);
+
+      expect(() => registry.register('worker:1', {
+        pid: process.pid,
+        type: 'worker',
+        startedAt: '2026-03-15T00:00:00.000Z'
+      })).not.toThrow();
+
+      expect(existsSync(registryPath)).toBe(false);
+      const records = registry.getAll();
+      expect(records).toHaveLength(1);
+      expect(records[0]?.id).toBe('worker:1');
+    });
+
+    it('reports a degraded episode once across repeated failed writes', () => {
+      const tempDir = makeTempDir();
+      tempDirs.push(tempDir);
+      mkdirSync(tempDir, { recursive: true });
+      const blocker = path.join(tempDir, 'blocker');
+      writeFileSync(blocker, 'not a directory');
+      const registryPath = path.join(blocker, 'supervisor.json');
+
+      const categories: string[] = [];
+      setRegistryDegradedReporter(({ errorCategory }) => categories.push(errorCategory));
+      try {
+        const registry = createProcessRegistry(registryPath);
+        registry.register('worker:1', {
+          pid: process.pid,
+          type: 'worker',
+          startedAt: '2026-03-15T00:00:00.000Z'
+        });
+        registry.register('worker:2', {
+          pid: process.pid,
+          type: 'worker',
+          startedAt: '2026-03-15T00:00:01.000Z'
+        });
+
+        expect(categories).toHaveLength(1);
+        expect(categories[0]).toBe('ENOTDIR');
+      } finally {
+        setRegistryDegradedReporter(null);
+      }
     });
 
     it('handles corrupted registry file gracefully', () => {
@@ -407,17 +462,26 @@ describe('supervisor ProcessRegistry', () => {
       ]);
     });
 
-    it('strips empty placeholder flags before appending extra args', () => {
+    it('folds an empty SDK value into a single --flag= token instead of dropping the flag', () => {
+      // `tools: []` arrives as `--tools ''`. Dropping the pair would give the
+      // CLI its default tool set; `--tools=` keeps the empty value and survives
+      // cmd.exe, which drops empty arguments.
       expect(normalizeSpawnSdkArgs([
-        '--append-system-prompt',
+        '--tools',
         '',
         '--resume',
         'session-123',
       ], ['--no-session-persistence'])).toEqual([
+        '--tools=',
         '--resume',
         'session-123',
         '--no-session-persistence',
       ]);
+    });
+
+    it('drops an empty positional argument and never re-folds a --flag=value token', () => {
+      expect(normalizeSpawnSdkArgs(['--print', 'json', ''])).toEqual(['--print', 'json']);
+      expect(normalizeSpawnSdkArgs(['--setting-sources=', ''])).toEqual(['--setting-sources=']);
     });
   });
 

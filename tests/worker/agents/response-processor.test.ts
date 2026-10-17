@@ -1,5 +1,11 @@
 import { describe, it, expect, mock, beforeEach, afterEach, afterAll, spyOn } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import { existsSync, readFileSync, mkdtempSync, rmSync } from 'fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { paths } from '../../../src/shared/paths.js';
+import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
+import { recordObserverFailure, readObserverHealth } from '../../../src/shared/observer-health.js';
+import { recordQuotaExhausted, getQuotaCooldown, resetQuotaCooldownsForTesting } from '../../../src/shared/quota-cooldown.js';
 import { logger } from '../../../src/utils/logger.js';
 
 // Capture real exports before mock.module mutates the live namespace, then
@@ -12,15 +18,20 @@ import { logger } from '../../../src/utils/logger.js';
 import * as realWorkerServiceModule from '../../../src/services/worker-service.js';
 import * as realWorkerUtilsModule from '../../../src/shared/worker-utils.js';
 import * as realModeManagerModule from '../../../src/services/domain/ModeManager.js';
+import * as realSettingsDefaultsModule from '../../../src/shared/SettingsDefaultsManager.js';
 
 const realWorkerServiceSnapshot = { ...realWorkerServiceModule };
 const realWorkerUtilsSnapshot = { ...realWorkerUtilsModule };
 const realModeManagerSnapshot = { ...realModeManagerModule };
+// The 4-key SettingsDefaultsManager stub below would otherwise leak into every
+// later file that reads settings (e.g. ingestObservation's SKIP_TOOLS split).
+const realSettingsDefaultsSnapshot = { ...realSettingsDefaultsModule };
 
 afterAll(() => {
   mock.module('../../../src/services/worker-service.js', () => realWorkerServiceSnapshot);
   mock.module('../../../src/shared/worker-utils.js', () => realWorkerUtilsSnapshot);
   mock.module('../../../src/services/domain/ModeManager.js', () => realModeManagerSnapshot);
+  mock.module('../../../src/shared/SettingsDefaultsManager.js', () => realSettingsDefaultsSnapshot);
 });
 
 function mockSettingsDefaults(): Record<string, string> {
@@ -29,6 +40,7 @@ function mockSettingsDefaults(): Record<string, string> {
     CLAUDE_MEM_QUEUE_ENGINE: 'sqlite',
     CLAUDE_MEM_WELCOME_HINT_ENABLED: 'true',
     CLAUDE_MEM_WORKER_PORT: '37777',
+    ...extraMockSettings,
   };
 }
 
@@ -50,7 +62,8 @@ function mockSettingsFromFile(settingsPath?: string, applyEnvOverrides = true): 
   }
   settings.CLAUDE_MEM_FOLDER_CLAUDEMD_ENABLED = mockFolderClaudeMdEnabled;
 
-  return settings;
+  // A test's own settings win over whatever settings.json holds on this machine.
+  return { ...settings, ...extraMockSettings };
 }
 
 mock.module('../../../src/services/worker-service.js', () => ({
@@ -99,8 +112,10 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 import {
   extractObservationFileEvidence,
   processAgentResponse,
+  takeObserverSchemaReminder,
   type ResponseContext,
 } from '../../../src/services/worker/agents/ResponseProcessor.js';
+import { buildObservationPrompt, OBSERVATION_SCHEMA_REMINDER } from '../../../src/sdk/prompts.js';
 import type { WorkerRef, StorageResult } from '../../../src/services/worker/agents/types.js';
 import type { ActiveSession } from '../../../src/services/worker-types.js';
 import type { DatabaseManager } from '../../../src/services/worker/DatabaseManager.js';
@@ -108,6 +123,8 @@ import type { SessionManager } from '../../../src/services/worker/SessionManager
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
 let mockFolderClaudeMdEnabled = false;
+// Per-test settings on top of the stub defaults (reset in beforeEach).
+let extraMockSettings: Record<string, string> = {};
 let mockUpdateFolderClaudeMdFiles: ReturnType<typeof mock>;
 let claimedMessages: Array<{
   type: 'observation' | 'summarize';
@@ -122,11 +139,19 @@ describe('ResponseProcessor', () => {
   let mockChromaSyncSummary: ReturnType<typeof mock>;
   let mockBroadcast: ReturnType<typeof mock>;
   let mockBroadcastProcessingStatus: ReturnType<typeof mock>;
+  let mockRecordAiInteraction: ReturnType<typeof mock>;
   let mockDbManager: DatabaseManager;
   let mockSessionManager: SessionManager;
   let mockWorker: WorkerRef;
 
+  let ownedHealthDirectory: string;
+  let dataDirSpy: { mockRestore(): void };
+
   beforeEach(() => {
+    ownedHealthDirectory = mkdtempSync(join(tmpdir(), 'claude-mem-response-health-'));
+    dataDirSpy = spyOn(paths, 'dataDir').mockReturnValue(ownedHealthDirectory);
+    resetQuotaCooldownsForTesting();
+    expect(readObserverHealth()).toBeNull();
     loggerSpies = [
       spyOn(logger, 'info').mockImplementation(() => {}),
       spyOn(logger, 'debug').mockImplementation(() => {}),
@@ -134,6 +159,7 @@ describe('ResponseProcessor', () => {
       spyOn(logger, 'error').mockImplementation(() => {}),
     ];
     mockFolderClaudeMdEnabled = false;
+    extraMockSettings = {};
     claimedMessages = [];
     mockUpdateFolderClaudeMdFiles = mock(() => Promise.resolve());
     mockGetClaimedMessages = mock(() => claimedMessages);
@@ -177,16 +203,22 @@ describe('ResponseProcessor', () => {
 
     mockBroadcast = mock(() => {});
     mockBroadcastProcessingStatus = mock(() => {});
+    mockRecordAiInteraction = mock(() => {});
 
     mockWorker = {
       sseBroadcaster: {
         broadcast: mockBroadcast,
       },
       broadcastProcessingStatus: mockBroadcastProcessingStatus,
+      recordAiInteraction: mockRecordAiInteraction,
     };
   });
 
   afterEach(() => {
+    // Reset while the resolver still points into this test's owned directory.
+    resetQuotaCooldownsForTesting();
+    dataDirSpy.mockRestore();
+    rmSync(ownedHealthDirectory, { recursive: true, force: true });
     loggerSpies.forEach(spy => spy.mockRestore());
     mock.restore();
   });
@@ -215,6 +247,62 @@ describe('ResponseProcessor', () => {
       ...overrides,
     } as ActiveSession;
   }
+
+  it('does not report a successful observer store when no memory rows were written', async () => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('empty-store-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'empty-store-memory');
+    mockDbManager = {
+      ...mockDbManager,
+      getSessionStore: () => store,
+    } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'empty-store-session', memorySessionId: 'empty-store-memory',
+    });
+    recordObserverFailure('claude', 'provider outage');
+    const cooldown = recordQuotaExhausted('claude', 'spent allowance');
+    const prior = readObserverHealth();
+    try {
+      const result = await processAgentResponse(
+        '<observation><type>discovery</type><title> </title><narrative>No storable title</narrative></observation>',
+        session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result?.observationIds).toEqual([]);
+      expect(result?.summaryId).toBeNull();
+      expect(readObserverHealth()?.consecutiveFailures).toBe(prior?.consecutiveFailures);
+      expect(readObserverHealth()?.lastSuccessAt).toBe(prior?.lastSuccessAt);
+      expect(getQuotaCooldown('claude')).toEqual(cooldown);
+    } finally {
+      store.close();
+    }
+  });
+
+  it.each([
+    '<observation><type>discovery</type><title>Useful result</title><narrative>Real finding</narrative></observation>',
+    '<summary><request>Real session summary</request><investigated>Code</investigated><learned>Finding</learned><completed>Work</completed><next_steps>Review</next_steps></summary>',
+  ])('still clears observer failure evidence after storing real memory: %s', async (text) => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('successful-store-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'successful-store-memory');
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'successful-store-session', memorySessionId: 'successful-store-memory',
+    });
+    recordObserverFailure('claude', 'provider outage');
+    recordQuotaExhausted('claude', 'spent allowance');
+    try {
+      const result = await processAgentResponse(
+        text, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result).not.toBeNull();
+      expect((result?.observationIds.length ?? 0) + (result?.summaryId ? 1 : 0)).toBeGreaterThan(0);
+      expect(readObserverHealth()?.consecutiveFailures).toBe(0);
+      expect(readObserverHealth()?.lastSuccessAt).not.toBeNull();
+      expect(getQuotaCooldown('claude')).toBeNull();
+    } finally {
+      store.close();
+    }
+  });
 
   describe('parsing observations from XML response', () => {
     it('should parse single observation from response', async () => {
@@ -252,6 +340,89 @@ describe('ResponseProcessor', () => {
       expect(observations).toHaveLength(1);
       expect(observations[0].type).toBe('discovery');
       expect(observations[0].title).toBe('Found important pattern');
+    });
+
+    it('skips Chroma sync and the SSE broadcast for a Tier-0 dedup merge (#3038)', async () => {
+      // Item 1 reused an existing row: syncing its new content under id 3 would
+      // overwrite that row's vector and show text the row does not hold.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [7, 3],
+        mergedIntoExisting: [false, true],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Fresh finding</title>
+          <narrative>New row</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <title>Recurring finding</title>
+          <narrative>Merged into an older row</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      expect(mockChromaSyncObservation.mock.calls.map(call => call[0])).toEqual([7]);
+      const broadcastIds = mockBroadcast.mock.calls
+        .map(call => call[0] as { type: string; observation?: { id: number } })
+        .filter(event => event.type === 'new_observation')
+        .map(event => event.observation?.id);
+      expect(broadcastIds).toEqual([7]);
+    });
+
+    it('drops a title-less observation before storing, so Chroma and the brainbeat webhook get the right ids', async () => {
+      // Like the real store: one id per TITLED observation it is handed. Before
+      // the fix the untitled one was handed over too, and every later id shifted
+      // onto the wrong parsed observation.
+      mockStoreObservations.mockImplementation((_memorySessionId: string, _project: string, observations: Array<{ title: string | null }>) => {
+        const titled = observations.filter(observation => observation.title);
+        return {
+          observationIds: titled.map((_observation, index) => 101 + index),
+          mergedIntoExisting: titled.map(() => false),
+          summaryId: null,
+          createdAtEpoch: 1700000000000,
+        } as StorageResult;
+      });
+      extraMockSettings = {
+        CLAUDE_MEM_GROK_BOT_WEBHOOK_URL: 'https://bot.example/hook',
+        CLAUDE_MEM_GROK_BOT_AWARENESS_TRIGGER_TYPES: 'discovery',
+      };
+      const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(null, { status: 202 }));
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>First finding</title>
+          <narrative>A</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <narrative>A narrative with no title</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+        <observation>
+          <type>discovery</type>
+          <title>Third finding</title>
+          <narrative>C</narrative>
+          <facts></facts><concepts></concepts><files_read></files_read><files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, createMockSession(), mockDbManager, mockSessionManager, mockWorker, 100, null, 'TestAgent');
+
+      const stored = mockStoreObservations.mock.calls[0][2] as Array<{ title: string | null }>;
+      expect(stored.map(observation => observation.title)).toEqual(['First finding', 'Third finding']);
+      expect(mockChromaSyncObservation.mock.calls.map(call => [call[0], (call[3] as { title: string }).title]))
+        .toEqual([[101, 'First finding'], [102, 'Third finding']]);
+      const webhookPayloads = fetchSpy.mock.calls.map(call => JSON.parse(String((call[1] as RequestInit).body)));
+      expect(webhookPayloads.map(payload => [payload.observation_id, payload.title]))
+        .toEqual([[101, 'First finding'], [102, 'Third finding']]);
     });
 
     it('should parse multiple observations from response', async () => {
@@ -318,6 +489,22 @@ describe('ResponseProcessor', () => {
       expect(observations).toHaveLength(1);
       expect(observations[0].title).toBe('Refactored transformer_markdown.py helpers and narrowed the shared formatting path.');
       expect(observations[0].narrative).toContain('line-range handling aligned with the new helpers');
+    });
+
+    it('does not store an init reply or acknowledge queued work, even when it parses as an observation', async () => {
+      // Upstream's seam: with the feed paced to one unanswered prompt,
+      // lastGeneratorSource names the prompt this reply answers.
+      const session = createMockSession({ lastGeneratorSource: 'init', claimedMessageIds: [7] });
+      const text = '<observation><type>feature</type><title>Unproven deployment</title><narrative>The user asked to deploy.</narrative></observation>';
+
+      await processAgentResponse(text, session, mockDbManager, mockSessionManager,
+        mockWorker, 100, null, 'SDK');
+
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(mockSessionManager.confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockSessionManager.resetProcessingToPending).not.toHaveBeenCalled();
+      // The turn is kept so role alternation holds; only storage is refused.
+      expect(session.conversationHistory).toEqual([{ role: 'assistant', content: text }]);
     });
 
     it('stores observations against the dispatched prompt context when the live session has already advanced', async () => {
@@ -631,6 +818,37 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
     });
 
+    // #3460: the CLI's own stream-cut message used to be classified prose, so
+    // the batch was confirmed and lost. It must take the preserve path.
+    it('requeues the claimed batch when the CLI reports a connection closed mid-response', async () => {
+      const confirmClaimedMessages = mock(() => Promise.resolve(0));
+      const resetProcessingToPending = mock(() => Promise.resolve(0));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'API Error: Connection closed mid-response. The response above may be incomplete.',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('transport:observer_text');
+    });
+
     it('pauses the generator with a preserving abort reason on transport failure', async () => {
       mockSessionManager = {
         getMessageIterator: async function* () { yield* []; },
@@ -837,6 +1055,72 @@ describe('ResponseProcessor', () => {
       expect(resetProcessingToPending).not.toHaveBeenCalled();
       expect(session.consecutiveContextOverflows).toBe(0);
       expect(session.forceInit).toBeUndefined();
+    });
+  });
+
+  describe('AI interaction health signal', () => {
+    it('records a failed interaction when the observer returns auth-failure prose', async () => {
+      const session = createMockSession();
+      const responseText = 'API Error: 401 Invalid authentication credentials';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(
+        expect.objectContaining({ success: false, error: 'unauthenticated' })
+      );
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+
+    it("labels the interaction with the session's provider, not the current settings", async () => {
+      const session = createMockSession();
+      (session as { currentProvider?: string }).currentProvider = 'gemini';
+
+      await processAgentResponse(
+        'API Error: 401 Invalid authentication credentials', session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'SDK'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith({
+        success: false,
+        error: 'unauthenticated',
+        provider: 'gemini',
+      });
+    });
+
+    it('does NOT record an interaction for ordinary non-auth prose', async () => {
+      const session = createMockSession();
+      const responseText = 'Skipping — repeated log scan with no new findings.';
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).not.toHaveBeenCalled();
+    });
+
+    it('records a successful interaction when observations store', async () => {
+      const session = createMockSession();
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Test</title>
+          <facts></facts>
+          <concepts></concepts>
+          <files_read></files_read>
+          <files_modified></files_modified>
+        </observation>
+      `;
+
+      await processAgentResponse(
+        responseText, session, mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent'
+      );
+
+      expect(mockRecordAiInteraction).toHaveBeenCalledWith(expect.objectContaining({ success: true }));
     });
   });
 
@@ -1059,6 +1343,45 @@ describe('ResponseProcessor', () => {
   });
 
   describe('handling empty / non-XML response', () => {
+    it('confirms an explicit <skip_summary/> to an observation prompt and hands storage no rows', async () => {
+      // The file's default store stub answers with observation ids whatever it
+      // is given; a skip writes nothing, so answer as the real store would.
+      mockStoreObservations.mockImplementation(() => ({
+        observationIds: [],
+        summaryId: null,
+        createdAtEpoch: 1700000000000,
+      } as StorageResult));
+      const confirmClaimedMessages = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages,
+      } as unknown as SessionManager;
+
+      const session = createMockSession({ earliestPendingTimestamp: 1700000000000 });
+
+      await processAgentResponse(
+        '<skip_summary reason="agent bookkeeping"/>',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'Gemini'
+      );
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      // With the memory session id known the skip still passes through the
+      // store, carrying nothing: no observations and a null summary.
+      for (const [, , observations, summary] of mockStoreObservations.mock.calls) {
+        expect(observations).toEqual([]);
+        expect(summary).toBeNull();
+      }
+      expect(session.earliestPendingTimestamp).toBeNull();
+      expect(logger.warn).not.toHaveBeenCalled();
+    });
+
     it('clears pending work and does NOT call storeObservations on empty response', async () => {
       const confirmClaimedMessages = mock(() => Promise.resolve(0));
       mockSessionManager = {
@@ -1099,6 +1422,48 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).not.toHaveBeenCalled();
       expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
       expect(session.earliestPendingTimestamp).toBeNull();
+    });
+
+    // #3454: the idle WARN line names why the turn was empty (block kinds
+    // only), so "the model skipped" is distinguishable from "the turn had
+    // only thinking/tool_use blocks" in the field.
+    it('names the empty-turn shape on the idle WARN line', async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      await processAgentResponse(
+        '', createMockSession(), mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent', undefined, undefined, undefined,
+        'non-text-blocks-only(thinking,tool_use)'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/non-XML idle response/),
+        expect.objectContaining({ outputClass: 'idle', emptyOutputReason: 'non-text-blocks-only(thinking,tool_use)' })
+      );
+    });
+
+    it('does not attach an empty-turn shape to a prose response', async () => {
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        confirmClaimedMessages: mock(() => Promise.resolve(0)),
+      } as unknown as SessionManager;
+
+      await processAgentResponse(
+        'Nothing durable in this batch.', createMockSession(), mockDbManager, mockSessionManager, mockWorker,
+        100, null, 'TestAgent', undefined, undefined, undefined, 'blank-text'
+      );
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        'PARSER',
+        expect.stringMatching(/non-XML prose response/),
+        expect.not.objectContaining({ emptyOutputReason: expect.anything() })
+      );
     });
   });
 
@@ -1287,6 +1652,33 @@ describe('ResponseProcessor', () => {
       expect(confirmClaimedMessages).not.toHaveBeenCalled();
       expect(session.abortReason).toBe('auth:observer_text');
     });
+
+    it('preserves the batch on the org-disabled subscription notice with its own abort reason (#4677)', async () => {
+      const confirmClaimedMessages = mock(async () => 0);
+      const resetProcessingToPending = mock(async () => 1);
+      const mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ markProcessed: mock(() => {}) }),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      const session = createMockSession();
+
+      await processAgentResponse(
+        'Your organization has disabled Claude subscription access for Claude Code · Use an Anthropic API key instead, or ask your admin to enable access',
+        session,
+        mockDbManager,
+        mockSessionManager,
+        mockWorker,
+        100,
+        null,
+        'TestAgent'
+      );
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(session.abortReason).toBe('auth:observer_org_policy');
+    });
   });
   describe('lastSummaryStored tracking (#1633)', () => {
     it('should set lastSummaryStored=true when storage returns a summaryId', async () => {
@@ -1325,6 +1717,108 @@ describe('ResponseProcessor', () => {
       await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
 
       expect(session.lastSummaryStored).toBe(false);
+    });
+  });
+
+  describe('a valid reply that arrives before the memory session id is captured', () => {
+    function sessionManagerWithSpies() {
+      const confirmClaimedMessages = mock(() => Promise.resolve(1));
+      const resetProcessingToPending = mock(() => Promise.resolve(1));
+      mockSessionManager = {
+        getMessageIterator: async function* () { yield* []; },
+        getPendingMessageStore: () => ({ confirmProcessed: mock(() => {}) }),
+        getClaimedMessages: mock(() => []),
+        confirmClaimedMessages,
+        resetProcessingToPending,
+      } as unknown as SessionManager;
+      return { confirmClaimedMessages, resetProcessingToPending };
+    }
+
+    it('confirms a skip at once: it stores nothing, so it needs no memory session id', async () => {
+      const { confirmClaimedMessages, resetProcessingToPending } = sessionManagerWithSpies();
+      const session = createMockSession({ memorySessionId: null });
+
+      await processAgentResponse('<skip_summary reason="noise" />', session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      expect(confirmClaimedMessages).toHaveBeenCalledWith(1);
+      expect(resetProcessingToPending).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+      expect(session.lastSummaryStored).toBe(false);
+      expect(session.earliestPendingTimestamp).toBeNull();
+    });
+
+    it('still defers an observation until the id arrives', async () => {
+      const { confirmClaimedMessages, resetProcessingToPending } = sessionManagerWithSpies();
+      const session = createMockSession({ memorySessionId: null });
+      const responseText = `
+        <observation>
+          <type>discovery</type>
+          <title>Found the retry loop</title>
+          <narrative>The worker re-queued the same batch.</narrative>
+        </observation>
+      `;
+
+      await processAgentResponse(responseText, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+      expect(resetProcessingToPending).toHaveBeenCalledWith(1);
+      expect(confirmClaimedMessages).not.toHaveBeenCalled();
+      expect(mockStoreObservations).not.toHaveBeenCalled();
+    });
+  });
+
+  // #3461: drifted XML (<kind>/<detail> for <type>/<title>) is salvaged into
+  // rows, but the drifted turn stayed in the conversation and the model kept
+  // copying it for the rest of the generation.
+  describe('schema drift (#3461)', () => {
+    const DRIFTED = '<observation><kind>bugfix</kind><detail>Fixed the retry loop</detail></observation>';
+    const CLEAN = '<observation><type>discovery</type><title>Clean reply</title><narrative>ok</narrative></observation>';
+    const reply = (session: ActiveSession, text: string) =>
+      processAgentResponse(text, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+
+    it('stores the salvaged rows, corrects the drifted turn, and reminds the next prompt', async () => {
+      const session = createMockSession();
+
+      await reply(session, DRIFTED);
+
+      expect(mockStoreObservations).toHaveBeenCalledTimes(1);
+      const turn = session.conversationHistory.at(-1)!;
+      expect(turn.role).toBe('assistant');
+      expect(turn.content).toContain('<type>');
+      expect(turn.content).not.toContain('<kind>');
+      expect(turn.content).not.toContain('<detail>');
+      expect(session.observerSchemaReminder).toBe(true);
+      expect(session.consecutiveSchemaDrifts).toBe(1);
+      expect(session.abortController.signal.aborted).toBe(false);
+    });
+
+    it('starts a fresh generation after three drifts in a row; a clean reply resets the count', async () => {
+      const session = createMockSession();
+
+      await reply(session, DRIFTED);
+      await reply(session, DRIFTED);
+      await reply(session, CLEAN);
+      expect(session.consecutiveSchemaDrifts).toBe(0);
+
+      await reply(session, DRIFTED);
+      await reply(session, DRIFTED);
+      expect(session.abortController.signal.aborted).toBe(false);
+      await reply(session, DRIFTED);
+
+      expect(session.abortReason).toBe('drift:observer_schema');
+      expect(session.abortController.signal.aborted).toBe(true);
+      expect(session.consecutiveSchemaDrifts).toBe(0);
+    });
+
+    it('restates the schema once, in the next observation prompt', () => {
+      const session = createMockSession({ observerSchemaReminder: true });
+      expect(takeObserverSchemaReminder(session)).toBe(true);
+      expect(takeObserverSchemaReminder(session)).toBe(false);
+
+      const observation = {
+        id: 0, tool_name: 'Read', tool_input: '{}', tool_output: '"ok"', created_at_epoch: Date.now(), cwd: '/repo',
+      };
+      expect(buildObservationPrompt(observation, undefined, true)).toContain(OBSERVATION_SCHEMA_REMINDER);
+      expect(buildObservationPrompt(observation)).not.toContain(OBSERVATION_SCHEMA_REMINDER);
     });
   });
 });

@@ -79,7 +79,7 @@ describe('handleGeneratorExit reason branching (#2756)', () => {
     expect(sessionManager.removeSessionImmediate).not.toHaveBeenCalled();
   });
 
-  it('provider_switch: behaves exactly like quota — skips finalize/removeSessionImmediate (#2756 requirement: preserve queue/conversationHistory across a switch)', async () => {
+  it('provider_switch: behaves exactly like quota — skips finalize/removeSessionImmediate (#2756 requirement: preserve the queue across a switch)', async () => {
     const session = makeSession(910002);
     const { sessionManager, completionHandler } = makeDeps();
 

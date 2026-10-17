@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[設定](https://docs.claude-mem.ai/configuration)** - 環境變數與設定
 - **[開發](https://docs.claude-mem.ai/development)** - 建置、測試、貢獻
-- **[發布分支](https://docs.claude-mem.ai/branches)** - Stable、core-dev 與 community-edge 分支流程
 - **[疑難排解](https://docs.claude-mem.ai/troubleshooting)** - 常見問題與解決方案
 
 ---
@@ -271,14 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 詳細範例請參閱[搜尋工具指南](https://docs.claude-mem.ai/usage/search-tools)。
-
----
-
-## 發布分支
-
-穩定版發布來自 `main` 分支並發布至 npm。`core-dev` 與
-`community-edge` 是用於早期可靠性修復與社群整合的原始碼執行分支。分支流程與非穩定版執行說明請參閱
-**[發布分支](https://docs.claude-mem.ai/branches)**。
 
 ---
 
@@ -382,10 +373,6 @@ npm run bug-report
 3. 加入測試並進行變更
 4. 更新文件
 5. 提交 Pull Request
-
-Claude-Mem 從三個分支發布：`main`（穩定版）、`core-dev` 與
-`community-edge`。僅 `main` 會發布至 npm；其他分支則從原始碼執行。策略與本機執行說明請參閱
-[發布分支](https://docs.claude-mem.ai/branches)。
 
 貢獻工作流程請參閱[開發指南](https://docs.claude-mem.ai/development)。
 

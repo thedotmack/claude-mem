@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'fs';
 import { homedir } from 'os';
 import path from 'path';
+import { readJsonFileWithBom } from '../../shared/atomic-json.js';
 import { DEFAULT_CONFIG_PATH, DEFAULT_STATE_PATH, expandHomePath, SAMPLE_CONFIG } from '../transcripts/config.js';
 import type { TranscriptSchema, TranscriptWatchConfig, WatchTarget } from '../transcripts/types.js';
 
@@ -207,32 +208,27 @@ function listGrokBotAgents(agentDataRoot: string): GrokBotAgent[] {
   return agents;
 }
 
-/** Fallback catch-all watch used when no agent profiles are present. */
-export function buildGrokBotWatch(workspaceRoot = process.cwd()): WatchTarget {
-  const agentDataRoot = resolveGrokBotAgentDataRoot(workspaceRoot);
+function buildGrokBotCatchAllWatch(agentDataRoot: string, ensureWorkspace = false): WatchTarget {
   const project = resolveGrokBotProject('');
-  return buildGrokBotAgentWatch(
-    agentDataRoot,
-    '*',
-    project,
-    grokBotProjectWorkspace(agentDataRoot, project),
-  );
+  const workspace = ensureWorkspace
+    ? ensureGrokBotProjectWorkspace(agentDataRoot, project)
+    : grokBotProjectWorkspace(agentDataRoot, project);
+  return buildGrokBotAgentWatch(agentDataRoot, '*', project, workspace);
+}
+
+/** Catch-all watch covering every agent-transcripts jsonl file, including agents created after install. */
+export function buildGrokBotWatch(workspaceRoot = process.cwd()): WatchTarget {
+  return buildGrokBotCatchAllWatch(resolveGrokBotAgentDataRoot(workspaceRoot));
 }
 
 function buildGrokBotWatches(workspaceRoot: string): WatchTarget[] {
   const agentDataRoot = resolveGrokBotAgentDataRoot(workspaceRoot);
-  const agents = listGrokBotAgents(agentDataRoot);
-  if (agents.length === 0) {
-    const project = resolveGrokBotProject('');
-    const workspace = ensureGrokBotProjectWorkspace(agentDataRoot, project);
-    return [buildGrokBotAgentWatch(agentDataRoot, '*', project, workspace)];
-  }
-
-  return agents.map((agent) => {
+  const perAgent = listGrokBotAgents(agentDataRoot).map((agent) => {
     const project = resolveGrokBotProject(agent.name);
     const workspace = ensureGrokBotProjectWorkspace(agentDataRoot, project);
     return buildGrokBotAgentWatch(agentDataRoot, agent.id, project, workspace);
   });
+  return [...perAgent, buildGrokBotCatchAllWatch(agentDataRoot, true)];
 }
 
 function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
@@ -246,7 +242,7 @@ function loadOrCreateConfig(configPath: string): TranscriptWatchConfig {
     };
   }
 
-  const parsed = JSON.parse(readFileSync(resolvedPath, 'utf-8')) as TranscriptWatchConfig;
+  const parsed = readJsonFileWithBom<TranscriptWatchConfig>(resolvedPath);
   return {
     version: 1,
     schemas: { ...(parsed.schemas ?? {}) },

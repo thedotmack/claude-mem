@@ -1,0 +1,168 @@
+import { mkdirSync, watch as fsWatch } from 'fs';
+import { HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS, HookSpool, type HookSpoolConsumedMarkers, type HookSpoolDrainResult, type HookSpoolEntry } from '../../shared/hook-spool.js';
+import type { SessionStore } from '../sqlite/SessionStore.js';
+import { logger } from '../../utils/logger.js';
+import { ingestAdvisorCalls, ingestObservation, ingestSessionEnd, ingestSummarize, requireIngestContext } from './http/shared.js';
+import { recordWorkStateInstruction, recordWorkStateMcp } from '../telemetry/work-state.js';
+
+const SAFETY_SWEEP_INTERVAL_MS = 30_000;
+
+/**
+ * Hand one spool entry to the SAME ingest function its HTTP route uses.
+ * true = done (accepted or deliberately skipped) → unlink; false = keep;
+ * 'expired' = can never succeed → the drain moves it to expired/ (see
+ * HookSpool.drain).
+ * `markHandedOff` goes to ingest, which calls it synchronously at the exact
+ * point the entry is irrevocably accepted (see HookSpool.drain).
+ */
+async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => void): Promise<boolean | 'expired'> {
+  switch (entry.kind) {
+    case 'work_state_telemetry': {
+      const { payload } = entry;
+      const db = requireIngestContext().dbManager.getSessionStore().db;
+      if (payload.kind === 'instruction') recordWorkStateInstruction(db, { ...payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, payload.state!, payload.eventId);
+      else recordWorkStateMcp(db, payload.tool!, payload.outcome!, payload.eventId, entry.enqueuedAtEpochMs);
+      markHandedOff();
+      return true;
+    }
+    case 'observation':
+    case 'file_edit': {
+      // Attribute it to the prompt that was current when the hook saw it, not
+      // the one current now (the drain may run prompts later).
+      const result = await ingestObservation({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, { markHandedOff });
+      if (!result.ok) {
+        logger.warn('HOOK', 'Spooled observation was not ingested; keeping it for the next drain', {
+          kind: entry.kind,
+          contentSessionId: entry.payload.contentSessionId,
+          toolName: entry.payload.toolName,
+          reason: result.reason,
+        });
+        return false;
+      }
+      return true;
+    }
+    case 'summarize':
+      // unknown_session: init may not have landed yet (it raced the same
+      // outage) — keep the entry, exactly like the old SessionEnd replay.
+      return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status !== 'unknown_session';
+    case 'session_end': {
+      // unknown_session here means the worker is up and its DB has no such
+      // session: a session registers within moments of starting or never, so
+      // past the grace window the end can never succeed and the entry only
+      // clogs the spool until the retry window expires it (issue #4629). The
+      // window itself just covers the init race. A DB outage throws instead
+      // of returning unknown_session, so this cannot retire an entry that an
+      // outage made undeliverable.
+      const outcome = (await ingestSessionEnd(entry.payload, undefined, { markHandedOff })).status;
+      if (outcome !== 'unknown_session') return true;
+      return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
+    }
+    case 'advisor_calls':
+      ingestAdvisorCalls(entry.payload, undefined, { markHandedOff });
+      return true;
+  }
+}
+
+/** The worker DB's hook_spool_consumed table: makes the hand-off exactly-once across restarts. */
+export function hookSpoolConsumedMarkers(store: SessionStore): HookSpoolConsumedMarkers {
+  return {
+    isConsumed: entryKey => store.isHookSpoolEntryConsumed(entryKey),
+    markConsumed: (entryKey, consumedAtEpochMs) => store.markHookSpoolEntryConsumed(entryKey, consumedAtEpochMs),
+    clearConsumed: entryKey => store.clearHookSpoolEntryConsumed(entryKey),
+    pruneConsumedBefore: epochMs => store.pruneHookSpoolConsumedMarkersBefore(epochMs),
+  };
+}
+
+export async function drainHookSpool(spool: HookSpool = new HookSpool()): Promise<HookSpoolDrainResult> {
+  const result = await spool.drain(ingestHookSpoolEntry, hookSpoolConsumedMarkers(requireIngestContext().dbManager.getSessionStore()));
+  if (result.drained > 0 || result.quarantined > 0 || result.expired > 0) {
+    logger.info('HOOK', 'Drained hook spool', { ...result });
+  }
+  return result;
+}
+
+/**
+ * Drives drainHookSpool: single-flight (a request during a drain schedules
+ * exactly one more pass, never a concurrent one — FileTailer's requestRead
+ * pattern), triggered by an fs.watch of the spool directory, the hook's nudge
+ * route, and a slow safety sweep for anything a watch event missed.
+ */
+export class HookSpoolDrainer {
+  private drainTask: Promise<void> | null = null;
+  private drainPending = false;
+  private watcher: ReturnType<typeof fsWatch> | null = null;
+  private sweepTimer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(
+    private readonly spool: HookSpool = new HookSpool(),
+    private readonly drain: (spool: HookSpool) => Promise<unknown> = drainHookSpool,
+  ) {}
+
+  /** Resolves when the drain that covers this request has finished. */
+  requestDrain(): Promise<void> {
+    if (this.drainTask) {
+      this.drainPending = true;
+      return this.drainTask;
+    }
+
+    this.drainTask = this.drainUntilSettled().finally(() => {
+      this.drainTask = null;
+      // A request that landed after the loop's last check but before this
+      // callback ran would otherwise wait for the next trigger.
+      if (this.drainPending) void this.requestDrain();
+    });
+    return this.drainTask;
+  }
+
+  start(): void {
+    this.requestDrain();
+
+    if (!this.watcher) {
+      try {
+        mkdirSync(this.spool.directory, { recursive: true });
+        this.watcher = fsWatch(this.spool.directory, { persistent: false }, () => {
+          this.requestDrain();
+        });
+        this.watcher.on('error', (error: Error) => {
+          logger.warn('HOOK', 'Hook spool watch failed; relying on nudges and the safety sweep', {
+            directory: this.spool.directory,
+          }, error);
+          this.watcher?.close();
+          this.watcher = null;
+        });
+      } catch (error: unknown) {
+        logger.warn('HOOK', 'Could not watch the hook spool; relying on nudges and the safety sweep', {
+          directory: this.spool.directory,
+        }, error instanceof Error ? error : new Error(String(error)));
+        this.watcher = null;
+      }
+    }
+
+    if (!this.sweepTimer) {
+      this.sweepTimer = setInterval(() => this.requestDrain(), SAFETY_SWEEP_INTERVAL_MS);
+      this.sweepTimer.unref?.();
+    }
+  }
+
+  stop(): void {
+    this.watcher?.close();
+    this.watcher = null;
+    if (this.sweepTimer) {
+      clearInterval(this.sweepTimer);
+      this.sweepTimer = null;
+    }
+  }
+
+  private async drainUntilSettled(): Promise<void> {
+    do {
+      this.drainPending = false;
+      try {
+        await this.drain(this.spool);
+      } catch (error: unknown) {
+        logger.warn('HOOK', 'Hook spool drain pass failed; the next trigger retries', {
+          directory: this.spool.directory,
+        }, error instanceof Error ? error : new Error(String(error)));
+      }
+    } while (this.drainPending);
+  }
+}

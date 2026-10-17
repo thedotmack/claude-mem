@@ -3,6 +3,7 @@
 // Runtime types generated with workerd@1.20260714.1 2026-07-14 
 interface __BaseEnv_Env {
 	AUTH_CACHE: KVNamespace;
+	FORWARD_ORIGIN: string;
 	TOKEN_VERIFY_URL: string;
 	AUTH_CACHE_TTL_SECONDS: string;
 	INTERNAL_PROJECTOR_URL: string;

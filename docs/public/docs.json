@@ -35,14 +35,20 @@
         "pages": [
           "introduction",
           "installation",
+          "t3code-integration",
           "usage/getting-started",
           "usage/openrouter-provider",
           "usage/gemini-provider",
+          "usage/openai-compatible-provider",
+          "usage/multi-key-rotation",
+          "usage/quota-fallback",
           "usage/search-tools",
           "usage/knowledge-agents",
           "usage/claude-desktop",
           "usage/private-tags",
+          "usage/auto-redaction",
           "usage/export-import",
+          "usage/memory-ingest",
           "usage/manual-recovery",
           "usage/folder-context"
         ]
@@ -90,10 +96,12 @@
           "modes",
           "telemetry",
           "development",
-          "branches",
           "troubleshooting",
           "platform-integration",
-          "openclaw-integration"
+          "openclaw-integration",
+          "kimi-integration",
+          "qoder-integration",
+          "screenpipe-integration"
         ]
       },
       {
@@ -171,5 +179,11 @@
     "telemetry": {
       "enabled": false
     }
-  }
+  },
+  "redirects": [
+    {
+      "source": "/branches",
+      "destination": "/development"
+    }
+  ]
 }

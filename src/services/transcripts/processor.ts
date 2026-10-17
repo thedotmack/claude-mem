@@ -1,15 +1,16 @@
 import path from 'path';
-import { sessionInitHandler } from '../../cli/handlers/session-init.js';
+import { recordSessionPrompt } from '../../cli/handlers/session-init.js';
 import { fileEditHandler } from '../../cli/handlers/file-edit.js';
 import { ensureWorkerRunning, workerHttpRequest } from '../../shared/worker-utils.js';
 import { DATA_DIR } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
 import { getProjectContext } from '../../utils/project-name.js';
 import { writeAgentsMd } from '../../utils/agents-md-utils.js';
-import { resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
+import { getValueByPath, resolveFieldSpec, resolveFields, matchesRule } from './field-utils.js';
 import { expandHomePath, shouldSuppressNativeCodexAgentsContext } from './config.js';
 import type { TranscriptSchema, WatchTarget, SchemaEvent } from './types.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { spoolHookEvent } from '../../cli/spool-hook-event.js';
 import { ingestObservation } from '../worker/http/shared.js';
 
 const AGENT_ID_IN_PATH =
@@ -23,6 +24,55 @@ export function resolveWatchAgentId(watch: WatchTarget): string | undefined {
   return match?.[1];
 }
 
+/**
+ * The worker did not record a transcript turn's user prompt. The watcher
+ * checkpoints at the start of that turn's line (or zstd frame) and retries it
+ * from there, so the turn is replayed rather than its observations being filed
+ * under no prompt, and nothing before it is sent twice.
+ */
+export class TranscriptAnchorError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`session init failed for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptAnchorError';
+    this.cause = cause;
+  }
+}
+
+/** An observation declined before the worker accepted it must retain its line. */
+export class TranscriptObservationError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`observation not accepted for transcript session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptObservationError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * An event could not be written to the durable hook spool the worker drains:
+ * an observation or summary of the standalone watcher, or any watcher's file
+ * edit. The line is retried from its own position, like a turn whose prompt
+ * was not recorded.
+ */
+export class TranscriptSpoolError extends Error {
+  constructor(sessionId: string, cause: unknown) {
+    super(`transcript event not persisted for session ${sessionId}: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.name = 'TranscriptSpoolError';
+    this.cause = cause;
+  }
+}
+
+/**
+ * How observations and summaries reach the worker. The worker's own watcher
+ * ingests in-process; the standalone `transcript watch` command has no ingest
+ * context, so it writes them to the hook spool the worker drains.
+ */
+export type TranscriptObservationTransport = 'in-process' | 'spool';
+
+interface PendingTool {
+  toolName: string;
+  toolInput?: unknown;
+}
+
 interface SessionState {
   sessionId: string;
   platformSource: string;
@@ -30,21 +80,95 @@ interface SessionState {
   project?: string;
   lastUserMessage?: string;
   lastAssistantMessage?: string;
-  pendingTools?: Map<string, { toolName: string; toolInput: unknown }>;
+  pendingTools?: Map<string, PendingTool>;
+  isSubagent?: boolean;
 }
 
+/**
+ * What the watcher keeps per transcript file across restarts: the working
+ * directory its session last reported, and the tool calls still waiting for
+ * their results. Some hosts write the directory once, on the session's first
+ * line (DeepSeek Harness), so a watcher that resumes mid-file would otherwise
+ * never learn it; and a result retried after a restart still needs its tool's
+ * name and input. The processor reads both as a fallback and updates them.
+ * The real host session identity is re-read from the header on resume.
+ */
+export interface TranscriptFileContext {
+  /** False once the path holds another file than the one this context was saved from. */
+  isCurrent?: () => boolean;
+  cwd?: string;
+  /** Outstanding tool calls by session key, then tool id: the file's newest MAX_PENDING_TOOLS_PER_FILE. */
+  pendingTools?: Record<string, Record<string, { toolName: string; toolInput?: unknown }>>;
+  /** Real host identity from the header, including non-UUID session IDs. */
+  sessionId?: string;
+}
+
+/** How many subagent rollouts the processor remembers past their last turn. */
+const MAX_REMEMBERED_SUBAGENT_SESSIONS = 4096;
+
+/**
+ * Outstanding tool calls a file keeps, the newest: calls whose result never
+ * comes (an interrupted turn, a schema with no matching result event) would
+ * otherwise pile up in the watch state, inputs and all.
+ */
+const MAX_PENDING_TOOLS_PER_FILE = 64;
+
 export class TranscriptEventProcessor {
+  constructor(private observationTransport: TranscriptObservationTransport = 'in-process') {}
+
   private sessions = new Map<string, SessionState>();
+  /** Ownership is in-memory only; durable snapshots below contain each file's tools. */
+  private fileContexts = new Set<TranscriptFileContext>();
+  private fileSessionKeys = new WeakMap<TranscriptFileContext, Set<string>>();
+  registerFileContext(file: TranscriptFileContext): void { this.fileContexts.add(file); }
+
+  private pendingToolOwners = new WeakMap<PendingTool, TranscriptFileContext>();
+  /**
+   * Session keys of confirmed subagent rollouts. Codex ends a session per
+   * turn but marks the rollout only on its first line, so the marker has to
+   * outlive the turn state session_end drops. Oldest forgotten first.
+   */
+  private subagentSessionKeys = new Set<string>();
+
+  /** A replaced transcript lends neither its outstanding tools nor its directory to the new file. */
+  resetFileContext(file: TranscriptFileContext): void {
+    for (const key of this.sessionKeysOf(file)) {
+      const session = this.sessions.get(key);
+      if (session && session.cwd === file.cwd) session.cwd = undefined;
+    }
+    this.retireFileContext(file);
+    file.cwd = undefined;
+    file.sessionId = undefined;
+  }
+
+  /** A transcript that is gone: its outstanding tool calls are dropped, and it lends none to other files. */
+  retireFileContext(file: TranscriptFileContext): void {
+    for (const key of this.sessionKeysOf(file)) {
+      const tools = this.sessions.get(key)?.pendingTools;
+      for (const [id, tool] of tools ?? []) {
+        if (this.pendingToolOwners.get(tool) === file) tools!.delete(id);
+      }
+    }
+    this.fileContexts.delete(file);
+    this.fileSessionKeys.delete(file);
+    file.pendingTools = {};
+  }
+
+  private sessionKeysOf(file: TranscriptFileContext): Set<string> {
+    return new Set([...Object.keys(file.pendingTools ?? {}), ...(this.fileSessionKeys.get(file) ?? [])]);
+  }
 
   async processEntry(
     entry: unknown,
     watch: WatchTarget,
     schema: TranscriptSchema,
-    sessionIdOverride?: string | null
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
   ): Promise<void> {
+    if (file) this.registerFileContext(file);
     for (const event of schema.events) {
       if (!matchesRule(entry, event.match, schema)) continue;
-      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined);
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
     }
   }
 
@@ -59,10 +183,39 @@ export class TranscriptEventProcessor {
       session = {
         sessionId,
         platformSource: normalizePlatformSource(watch.name),
+        ...(this.subagentSessionKeys.has(key) ? { isSubagent: true } : {}),
       };
       this.sessions.set(key, session);
     }
     return session;
+  }
+
+  private rememberSubagentSession(key: string): void {
+    this.subagentSessionKeys.delete(key);
+    this.subagentSessionKeys.add(key);
+    if (this.subagentSessionKeys.size > MAX_REMEMBERED_SUBAGENT_SESSIONS) {
+      const oldest = this.subagentSessionKeys.values().next().value;
+      if (oldest !== undefined) this.subagentSessionKeys.delete(oldest);
+    }
+  }
+
+  /**
+   * Learn a rollout's session context (cwd, subagent marker) from its first
+   * line without ingesting anything. A tail that resumes past that line (a
+   * worker restart, or startAtEnd on a rollout already running) never reads
+   * it otherwise, and a subagent-only watch would drop the whole rollout.
+   */
+  async primeSessionContext(
+    entry: unknown,
+    watch: WatchTarget,
+    schema: TranscriptSchema,
+    sessionIdOverride?: string | null,
+    file?: TranscriptFileContext
+  ): Promise<void> {
+    for (const event of schema.events) {
+      if (event.action !== 'session_context' || !matchesRule(entry, event.match, schema)) continue;
+      await this.handleEvent(entry, watch, schema, event, sessionIdOverride ?? undefined, file);
+    }
   }
 
   private resolveSessionId(
@@ -117,56 +270,135 @@ export class TranscriptEventProcessor {
     watch: WatchTarget,
     schema: TranscriptSchema,
     event: SchemaEvent,
-    sessionIdOverride?: string
+    sessionIdOverride?: string,
+    file?: TranscriptFileContext
   ): Promise<void> {
-    const sessionId = this.resolveSessionId(entry, watch, schema, event, sessionIdOverride);
+    const sessionId = this.resolveSessionId(entry, watch, schema, event, file?.sessionId ?? sessionIdOverride);
     if (!sessionId) {
       logger.debug('TRANSCRIPT', 'Skipping event without sessionId', { event: event.name, watch: watch.name });
       return;
     }
+    if (file) file.sessionId = sessionId;
 
     const session = this.getOrCreateSession(watch, sessionId);
+    const sessionKey = this.getSessionKey(watch, sessionId);
+    if (file) {
+      const keys = this.fileSessionKeys.get(file) ?? new Set<string>();
+      keys.add(sessionKey);
+      this.fileSessionKeys.set(file, keys);
+    }
+    if (file?.pendingTools?.[sessionKey]) {
+      session.pendingTools ??= new Map();
+      for (const [id, tool] of Object.entries(file.pendingTools[sessionKey])) {
+        this.pendingToolOwners.set(tool, file);
+        if (!session.pendingTools.has(id)) session.pendingTools.set(id, tool);
+      }
+    }
+    // After a restart the watcher resumes mid-file, past the line that carried
+    // the session's working directory: start from the one saved for the file.
+    if (!session.cwd && file?.cwd) session.cwd = file.cwd;
     const cwd = this.resolveCwd(entry, watch, schema, event, session);
     if (cwd) session.cwd = cwd;
     const project = this.resolveProject(entry, watch, schema, event, session);
     if (project) session.project = project;
 
+    // Codex writes the subagent marker on the first (session_meta) line, as an
+    // object; learn it from whichever line carries it so later ingest events
+    // can be gated. Its presence is the test, not its contents.
+    if (watch.subagentSource && !session.isSubagent) {
+      const marker = getValueByPath(entry, watch.subagentSource.path);
+      if (marker !== undefined && marker !== null) {
+        session.isSubagent = true;
+        this.rememberSubagentSession(this.getSessionKey(watch, sessionId));
+      }
+    }
+
+    // When native hooks own top-level sessions, ingest only confirmed subagent
+    // rollouts. session_context still runs so a later marker line can flip the
+    // session on; session_end still runs so the suppressed session is dropped
+    // from the map instead of lingering.
+    if (
+      watch.subagentOnly &&
+      !session.isSubagent &&
+      event.action !== 'session_context' &&
+      event.action !== 'session_end'
+    ) {
+      return;
+    }
+
     const fields = resolveFields(event.fields, entry, { watch, schema, session: session as unknown as Record<string, unknown> });
 
-    switch (event.action) {
-      case 'session_context':
-        this.applySessionContext(session, fields);
-        break;
-      case 'session_init':
-        await this.handleSessionInit(session, fields);
-        if (watch.context?.updateOn?.includes('session_start')) {
-          await this.updateContext(session, watch);
+    if (event.action === 'session_context') this.applySessionContext(session, fields);
+    // Whatever directory the session now has is the file's, for the next restart.
+    if (file && session.cwd) file.cwd = session.cwd;
+
+    try {
+      switch (event.action) {
+        case 'session_context':
+          break;
+        case 'session_init':
+          await this.handleSessionInit(session, fields);
+          if (watch.context?.updateOn?.includes('session_start')) {
+            await this.updateContext(session, watch);
+          }
+          break;
+        case 'user_message': {
+          // A user turn is anchored like a hook-captured prompt. Kept only in
+          // memory, it left the session at prompt 0, so the observer got a
+          // continuation with no user request and the batch was dropped (#3653).
+          const prompt = this.resolveMessageText(fields.message) ?? this.resolveMessageText(fields.prompt);
+          if (prompt) await this.anchorUserPrompt(session, prompt);
+          break;
         }
-        break;
-      case 'user_message':
-        if (typeof fields.message === 'string') session.lastUserMessage = fields.message;
-        if (typeof fields.prompt === 'string') session.lastUserMessage = fields.prompt;
-        break;
-      case 'assistant_message':
-        if (typeof fields.message === 'string') session.lastAssistantMessage = fields.message;
-        break;
-      case 'tool_use':
-        await this.handleToolUse(session, watch, fields);
-        break;
-      case 'tool_result':
-        await this.handleToolResult(session, watch, fields);
-        break;
-      case 'observation':
-        await this.sendObservation(session, watch, fields);
-        break;
-      case 'file_edit':
-        await this.sendFileEdit(session, fields);
-        break;
-      case 'session_end':
-        await this.handleSessionEnd(session, watch);
-        break;
-      default:
-        break;
+        case 'assistant_message':
+          session.lastAssistantMessage = this.resolveMessageText(fields.message) ?? session.lastAssistantMessage;
+          break;
+        case 'tool_use':
+          await this.handleToolUse(session, watch, fields, file);
+          break;
+        case 'tool_result':
+          await this.handleToolResult(session, watch, fields, file);
+          break;
+        case 'observation':
+          await this.sendObservation(session, watch, fields);
+          break;
+        case 'file_edit':
+          await this.sendFileEdit(session, fields);
+          break;
+        case 'session_end':
+          await this.handleSessionEnd(session, watch);
+          break;
+        default:
+          break;
+      }
+    } finally {
+      if (file) this.snapshotPendingTools(file, session, sessionKey, event.action === 'session_end');
+    }
+  }
+
+  /**
+   * Records the session's outstanding tool calls that this file made in the
+   * file's durable snapshot (saved with the watch state), and keeps only the
+   * file's newest MAX_PENDING_TOOLS_PER_FILE: older ones are forgotten here
+   * and in the session.
+   */
+  private snapshotPendingTools(file: TranscriptFileContext, session: SessionState, sessionKey: string, sessionEnded: boolean): void {
+    const pending: Record<string, PendingTool> = sessionEnded ? {} : { ...file.pendingTools?.[sessionKey] };
+    for (const [id, tool] of session.pendingTools ?? []) {
+      if (this.pendingToolOwners.get(tool) === file) pending[id] = tool;
+    }
+    file.pendingTools = { ...file.pendingTools, [sessionKey]: pending };
+    if (Object.keys(pending).length === 0) delete file.pendingTools[sessionKey];
+
+    // Oldest first: a snapshot keeps its keys in insertion order.
+    const held = Object.entries(file.pendingTools).flatMap(([key, tools]) => Object.keys(tools).map(id => [key, id] as const));
+    for (const [key, id] of held.slice(0, Math.max(0, held.length - MAX_PENDING_TOOLS_PER_FILE))) {
+      const tools = file.pendingTools[key];
+      const forgotten = tools[id];
+      delete tools[id];
+      if (Object.keys(tools).length === 0) delete file.pendingTools[key];
+      const sessionTools = this.sessions.get(key)?.pendingTools;
+      if (sessionTools?.get(id) === forgotten) sessionTools.delete(id);
     }
   }
 
@@ -177,22 +409,71 @@ export class TranscriptEventProcessor {
     if (project) session.project = project;
   }
 
+  /**
+   * Normalize a message field to text. Transcripts that store messages as
+   * content-block arrays (e.g. DeepSeek Harness assistant messages with
+   * reasoning/text blocks) are joined by newline; strings pass through.
+   */
+  private resolveMessageText(value: unknown): string | undefined {
+    if (typeof value === 'string') return value;
+    if (!Array.isArray(value)) return undefined;
+    const parts: string[] = [];
+    for (const block of value) {
+      if (block && typeof block === 'object' && typeof (block as { text?: unknown }).text === 'string') {
+        parts.push((block as { text: string }).text);
+      }
+    }
+    return parts.length > 0 ? parts.join('\n') : undefined;
+  }
+
   private async handleSessionInit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const prompt = typeof fields.prompt === 'string' ? fields.prompt : '';
-    const cwd = session.cwd ?? process.cwd();
+    await this.anchorUserPrompt(session, prompt);
+  }
+
+  /**
+   * Record the turn's user prompt through the init path the hooks use, so the
+   * worker has a user_prompts row for it. A prompt the worker did not record
+   * (unreachable, a 429/5xx reply, no budget) throws TranscriptAnchorError:
+   * the watcher then checkpoints at this turn's line and retries it, instead
+   * of its observations being filed under no prompt.
+   */
+  private async anchorUserPrompt(session: SessionState, prompt: string): Promise<void> {
     if (prompt) {
       session.lastUserMessage = prompt;
     }
+    const cwd = session.cwd;
+    if (!cwd) {
+      this.skipWithoutCwd(session, 'user prompt');
+      return;
+    }
 
-    await sessionInitHandler.execute({
+    try {
+      await recordSessionPrompt({
+        sessionId: session.sessionId,
+        cwd,
+        prompt,
+        platform: session.platformSource
+      });
+    } catch (error: unknown) {
+      throw new TranscriptAnchorError(session.sessionId, error);
+    }
+  }
+
+  /**
+   * A turn of a session whose working directory is not known yet is skipped.
+   * The worker's own directory is not a stand-in: it would key the prompt or
+   * observation to the worker's own data dir (`.claude-mem`) and check project
+   * exclusions against it. Once the session or its file reports a directory,
+   * its turns go through.
+   */
+  private skipWithoutCwd(session: SessionState, what: string): void {
+    logger.debug('TRANSCRIPT', `Skipping a ${what}: the session has no known working directory yet`, {
       sessionId: session.sessionId,
-      cwd,
-      prompt,
-      platform: session.platformSource
     });
   }
 
-  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolUse(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, file?: TranscriptFileContext): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolInput = this.maybeParseJson(fields.toolInput);
@@ -217,23 +498,41 @@ export class TranscriptEventProcessor {
       });
     } else if (toolName && toolId) {
       if (!session.pendingTools) session.pendingTools = new Map();
-      session.pendingTools.set(toolId, { toolName, toolInput });
+      const tool: PendingTool = { toolName, toolInput };
+      if (file) this.pendingToolOwners.set(tool, file);
+      session.pendingTools.set(toolId, tool);
     }
   }
 
-  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
+  private async handleToolResult(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>, file?: TranscriptFileContext): Promise<void> {
     const toolId = typeof fields.toolId === 'string' ? fields.toolId : undefined;
     let toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     const toolResponse = this.maybeParseJson(fields.toolResponse);
     let toolInput = this.maybeParseJson(fields.toolInput);
 
-    if (toolId && session.pendingTools) {
-      const pending = session.pendingTools.get(toolId);
-      if (pending) {
-        if (!toolName) toolName = pending.toolName;
-        if (toolInput === undefined) toolInput = pending.toolInput;
-        session.pendingTools.delete(toolId);
+    const fileTools = file?.pendingTools?.[this.getSessionKey(watch, session.sessionId)];
+    const cached = toolId ? session.pendingTools?.get(toolId) : undefined;
+    let owner = file;
+    let pending = file
+      ? (toolId ? fileTools?.[toolId] : undefined) ?? (cached && this.pendingToolOwners.get(cached) === file ? cached : undefined)
+      : cached;
+    if (!pending && file && toolId) {
+      // A result can land in another file of the same session. Its tool call is
+      // borrowed only from a single holder that still is the file it was saved
+      // from: two holders of one id are not guessed between. The id is checked
+      // first, since isCurrent() stats the file.
+      const candidates = Array.from(this.fileContexts).flatMap(context => {
+        const tool = context.pendingTools?.[this.getSessionKey(watch, session.sessionId)]?.[toolId];
+        return tool && context.isCurrent?.() !== false ? [{ context, tool }] : [];
+      });
+      if (candidates.length === 1) {
+        owner = candidates[0].context;
+        pending = candidates[0].tool;
       }
+    }
+    if (pending) {
+      if (!toolName) toolName = pending.toolName;
+      if (toolInput === undefined) toolInput = pending.toolInput;
     }
 
     if (toolName) {
@@ -243,6 +542,11 @@ export class TranscriptEventProcessor {
         toolResponse,
         toolUseId: toolId,
       });
+      if (toolId) {
+        if (session.pendingTools && session.pendingTools.get(toolId) === pending) session.pendingTools.delete(toolId);
+        const ownerTools = owner?.pendingTools?.[this.getSessionKey(watch, session.sessionId)];
+        if (ownerTools) delete ownerTools[toolId];
+      }
     } else {
       logger.debug('TRANSCRIPT', 'Dropping tool_result with no resolvable toolName', {
         sessionId: session.sessionId,
@@ -254,34 +558,68 @@ export class TranscriptEventProcessor {
   private async sendObservation(session: SessionState, watch: WatchTarget, fields: Record<string, unknown>): Promise<void> {
     const toolName = typeof fields.toolName === 'string' ? fields.toolName : undefined;
     if (!toolName) return;
+    if (!session.cwd) {
+      this.skipWithoutCwd(session, 'observation');
+      return;
+    }
 
-    const result = await ingestObservation({
+    const payload = {
       contentSessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
+      cwd: session.cwd,
       toolName,
       toolInput: this.maybeParseJson(fields.toolInput),
       toolResponse: this.maybeParseJson(fields.toolResponse),
       platformSource: session.platformSource,
       toolUseId: typeof fields.toolUseId === 'string' ? fields.toolUseId : undefined,
       agentId: resolveWatchAgentId(watch),
-    });
+    };
+    if (this.observationTransport === 'spool') {
+      try {
+        spoolHookEvent('observation', payload);
+      } catch (error) {
+        throw new TranscriptSpoolError(session.sessionId, error);
+      }
+      return;
+    }
 
-    if (!result.ok) {
-      throw new Error(`ingestObservation failed: ${result.reason}`);
+    let accepted = false;
+    try {
+      const result = await ingestObservation(payload, { markHandedOff: () => { accepted = true; } });
+      if (!result.ok) throw new Error(result.reason);
+    } catch (error) {
+      // A generator kick can fail after queueObservation accepted the event.
+      // That event is already owned by the worker and must not be replayed.
+      if (accepted) {
+        logger.warn('TRANSCRIPT', 'Observation accepted before generator kick failed', {
+          sessionId: session.sessionId,
+        }, error instanceof Error ? error : undefined);
+        return;
+      }
+      throw new TranscriptObservationError(session.sessionId, error);
     }
   }
 
   private async sendFileEdit(session: SessionState, fields: Record<string, unknown>): Promise<void> {
     const filePath = typeof fields.filePath === 'string' ? fields.filePath : undefined;
     if (!filePath) return;
+    if (!session.cwd) {
+      this.skipWithoutCwd(session, 'file edit');
+      return;
+    }
 
-    await fileEditHandler.execute({
-      sessionId: session.sessionId,
-      cwd: session.cwd ?? process.cwd(),
-      filePath,
-      edits: Array.isArray(fields.edits) ? fields.edits : undefined,
-      platform: session.platformSource
-    });
+    try {
+      await fileEditHandler.execute({
+        sessionId: session.sessionId,
+        cwd: session.cwd,
+        filePath,
+        edits: Array.isArray(fields.edits) ? fields.edits : undefined,
+        platform: session.platformSource
+      });
+    } catch (error) {
+      // The inputs are checked above, so what throws is the spool write: the
+      // line is retried rather than its edit lost.
+      throw new TranscriptSpoolError(session.sessionId, error);
+    }
   }
 
   private maybeParseJson(value: unknown): unknown {
@@ -321,14 +659,32 @@ export class TranscriptEventProcessor {
   }
 
   private async handleSessionEnd(session: SessionState, watch: WatchTarget): Promise<void> {
-    await this.queueSummary(session);
-    await this.updateContext(session, watch);
+    // A suppressed top-level session reaches here only to be cleaned up; its
+    // summary and context belong to the native hooks, not the transcript watch.
+    if (!watch.subagentOnly || session.isSubagent) {
+      await this.queueSummary(session);
+      await this.updateContext(session, watch);
+    }
     session.pendingTools?.clear();
     const key = this.getSessionKey(watch, session.sessionId);
     this.sessions.delete(key);
   }
 
   private async queueSummary(session: SessionState): Promise<void> {
+    if (this.observationTransport === 'spool') {
+      // Spooled after the session's observations, which the drain hands over first.
+      try {
+        spoolHookEvent('summarize', {
+          contentSessionId: session.sessionId,
+          platformSource: session.platformSource,
+          lastAssistantMessage: session.lastAssistantMessage ?? '',
+          ...(session.cwd ? { cwd: session.cwd } : {}),
+        });
+      } catch (error) {
+        throw new TranscriptSpoolError(session.sessionId, error);
+      }
+      return;
+    }
     const workerReady = await ensureWorkerRunning();
     if (!workerReady) return;
 
@@ -336,7 +692,9 @@ export class TranscriptEventProcessor {
     const requestBody = JSON.stringify({
       contentSessionId: session.sessionId,
       last_assistant_message: lastAssistantMessage,
-      platformSource: session.platformSource
+      platformSource: session.platformSource,
+      // Lets the worker skip a session in an excluded project; sent only when known.
+      ...(session.cwd ? { cwd: session.cwd } : {}),
     });
 
     try {

@@ -215,7 +215,6 @@ curl -fsSL https://install.cmem.ai/openclaw.sh | bash
 
 - **[การกำหนดค่า](https://docs.claude-mem.ai/configuration)** - ตัวแปรสภาพแวดล้อมและการตั้งค่า
 - **[การพัฒนา](https://docs.claude-mem.ai/development)** - การสร้าง การทดสอบ การมีส่วนร่วม
-- **[Release Branches](https://docs.claude-mem.ai/branches)** - ลำดับการไหลของ branch แบบ stable, core-dev และ community-edge
 - **[การแก้ไขปัญหา](https://docs.claude-mem.ai/troubleshooting)** - ปัญหาและการแก้ไขทั่วไป
 
 ---
@@ -271,15 +270,6 @@ get_observations(ids=[123, 456])
 ```
 
 ดู [คู่มือเครื่องมือค้นหา](https://docs.claude-mem.ai/usage/search-tools) สำหรับตัวอย่างโดยละเอียด
-
----
-
-## Release Branches
-
-รุ่นเสถียร (Stable) จะถูกปล่อยจาก `main` และเผยแพร่ไปยัง npm ส่วน `core-dev` และ
-`community-edge` เป็น branch ที่รันจาก source สำหรับการแก้ไขความน่าเชื่อถือในช่วงแรกและ
-การผสานรวมของชุมชน ดู **[Release Branches](https://docs.claude-mem.ai/branches)**
-สำหรับลำดับการไหลของ branch และคำแนะนำการรันเวอร์ชันที่ไม่เสถียร
 
 ---
 
@@ -383,11 +373,6 @@ npm run bug-report
 3. ทำการเปลี่ยนแปลงพร้อมการทดสอบ
 4. อัปเดตเอกสาร
 5. ส่ง Pull Request
-
-Claude-Mem เผยแพร่จากสาม branch: `main` (stable), `core-dev`, และ
-`community-edge` มีเพียง `main` เท่านั้นที่เผยแพร่ไปยัง npm ส่วนที่เหลือรันจาก
-source ดู [Release Branches](https://docs.claude-mem.ai/branches) สำหรับ
-กลยุทธ์และคำแนะนำการรันในเครื่อง
 
 ดู [คู่มือการพัฒนา](https://docs.claude-mem.ai/development) สำหรับขั้นตอนการมีส่วนร่วม
 

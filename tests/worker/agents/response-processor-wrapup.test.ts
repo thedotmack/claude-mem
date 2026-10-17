@@ -243,7 +243,7 @@ describe('ResponseProcessor Telegram wrap-up delivery', () => {
       100,
       null,
       'TestAgent',
-    )).resolves.toBeUndefined();
+    )).resolves.toMatchObject({ summaryId: 99 });
     await flushBackgroundWork();
 
     expect(warnSpy).toHaveBeenCalledWith(

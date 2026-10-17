@@ -38,6 +38,63 @@ export function ensureDirectoryExists(directoryPath: string): void {
 }
 
 /**
+ * The realpath of `filePath`, or, when it doesn't exist yet, the realpath of
+ * its deepest existing ancestor with the missing tail appended. Relative link
+ * targets must resolve against this physical location, not the logical path
+ * the link was reached through.
+ */
+function physicalPathOf(filePath: string): string {
+  try {
+    return realpathSync(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+    const parent = dirname(filePath);
+    if (parent === filePath) return filePath;
+    return join(physicalPathOf(parent), basename(filePath));
+  }
+}
+
+/**
+ * Where an atomic write to `filePath` must land so a symlink at that path
+ * stays a symlink: the final target of the link chain, also when that target
+ * doesn't exist yet. Renaming a temp file over the link itself would replace
+ * it with a regular file and orphan the file it pointed to.
+ *
+ * A loop throws ELOOP, and any resolution failure other than a missing target
+ * is thrown: those must never turn a link into a regular file.
+ */
+export function resolveSymlinkWriteTarget(filePath: string): string {
+  let resolved = filePath;
+  const followed = new Set<string>();
+  try {
+    while (lstatSync(resolved).isSymbolicLink()) {
+      const absolute = resolve(resolved);
+      if (followed.has(absolute)) {
+        throw Object.assign(new Error(`Symlink loop at ${resolved}`), { code: 'ELOOP' });
+      }
+      followed.add(absolute);
+      try {
+        return realpathSync(resolved);
+      } catch (realpathErr) {
+        // A missing final target can be created. Loops, permission errors and
+        // other resolution failures must never turn a link into a regular file.
+        if ((realpathErr as NodeJS.ErrnoException).code !== 'ENOENT') throw realpathErr;
+        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
+        emitDiagnostic(`claude-mem: realpathSync failed for ${resolved}, resolving symlink manually: ${realpathError.message}\n`);
+        const linkTarget = readlinkSync(resolved);
+        resolved = resolve(physicalPathOf(dirname(resolve(resolved))), linkTarget);
+      }
+    }
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'ENOENT') {
+      throw err;
+    }
+  }
+  return resolved;
+}
+
+/**
  * Write JSON to disk with crash-safe atomic-rename semantics.
  *
  * Sequence: resolve symlinks at the destination, write payload to a uniquely
@@ -47,25 +104,17 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * crash mid-write leaves either the old contents or the new contents, never a
  * truncated file.
  */
-export function writeJsonFileAtomic(filepath: string, data: any): void {
-  let resolved = filepath;
-  try {
-    if (lstatSync(filepath).isSymbolicLink()) {
-      try {
-        resolved = realpathSync(filepath);
-      } catch (realpathErr) {
-        const realpathError = realpathErr instanceof Error ? realpathErr : new Error(String(realpathErr));
-        emitDiagnostic(`claude-mem: realpathSync failed for ${filepath}, resolving symlink manually: ${realpathError.message}\n`);
-        const linkTarget = readlinkSync(filepath);
-        resolved = resolve(dirname(filepath), linkTarget);
-      }
-    }
-  } catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') {
-      throw err;
-    }
-  }
+export interface AtomicJsonWriteOptions {
+  /** Force the destination mode from the first byte written (for secrets). */
+  mode?: number;
+}
+
+export function writeJsonFileAtomic(
+  filepath: string,
+  data: any,
+  options: AtomicJsonWriteOptions = {}
+): void {
+  const resolved = resolveSymlinkWriteTarget(filepath);
 
   ensureDirectoryExists(dirname(resolved));
 
@@ -74,11 +123,13 @@ export function writeJsonFileAtomic(filepath: string, data: any): void {
   const tmpPath = join(dir, `.${base}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`);
   const payload = Buffer.from(JSON.stringify(data, null, 2) + '\n', 'utf-8');
 
-  let mode: number | undefined;
-  try {
-    mode = statSync(resolved).mode & 0o777;
-  } catch {
-    // File does not exist yet; let openSync apply the process umask.
+  let mode = options.mode;
+  if (mode === undefined) {
+    try {
+      mode = statSync(resolved).mode & 0o777;
+    } catch {
+      // File does not exist yet; let openSync apply the process umask.
+    }
   }
 
   let fd: number | undefined;

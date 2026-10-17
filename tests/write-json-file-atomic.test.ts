@@ -6,6 +6,7 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   rmSync,
   statSync,
@@ -72,6 +73,18 @@ describe('writeJsonFileAtomic', () => {
 
     const mode = statSync(target).mode & 0o777;
     expect(mode).toBe(0o600);
+  });
+
+  it('can tighten an existing destination mode before writing secrets', () => {
+    if (IS_WINDOWS) return;
+    const target = join(tempDir, 'previously-public.json');
+    writeFileSync(target, '{}', { mode: 0o644 });
+    chmodSync(target, 0o644);
+
+    writeJsonFileAtomic(target, { secret: true }, { mode: 0o600 });
+
+    expect(statSync(target).mode & 0o777).toBe(0o600);
+    expect(JSON.parse(readFileSync(target, 'utf-8'))).toEqual({ secret: true });
   });
 
   it('writes the temp file in the same directory as the destination', () => {
@@ -180,5 +193,57 @@ describe('writeJsonFileAtomic', () => {
     expect(leftovers).toEqual([]);
     // The pre-existing directory should still be there — we didn't clobber it.
     expect(statSync(target).isDirectory()).toBe(true);
+  });
+
+  it('preserves every link in a dangling symlink chain', () => {
+    if (IS_WINDOWS) return;
+    const first = join(tempDir, 'settings.json');
+    const second = join(tempDir, 'alias.json');
+    const target = join(tempDir, 'dotfiles', 'settings.json');
+    symlinkSync('alias.json', first);
+    symlinkSync('dotfiles/settings.json', second);
+
+    writeJsonFileAtomic(first, { owned: true });
+
+    expect(lstatSync(first).isSymbolicLink()).toBe(true);
+    expect(lstatSync(second).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(first)).toBe('alias.json');
+    expect(readlinkSync(second)).toBe('dotfiles/settings.json');
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ owned: true });
+    expect(realpathSync(first)).toBe(realpathSync(target));
+    expect(readdirSync(join(tempDir, 'dotfiles'))).toEqual(['settings.json']);
+  });
+
+  it('resolves a dangling relative link against the physical parent of a symlinked directory', () => {
+    if (IS_WINDOWS) return;
+    // project/config -> dotfiles/config, and dotfiles/config/settings.json -> ../shared.json
+    // (dangling). The link lives in dotfiles/config, so ../shared.json means
+    // dotfiles/shared.json, never project/shared.json.
+    mkdirSync(join(tempDir, 'dotfiles', 'config'), { recursive: true });
+    mkdirSync(join(tempDir, 'project'), { recursive: true });
+    symlinkSync(join(tempDir, 'dotfiles', 'config'), join(tempDir, 'project', 'config'));
+    symlinkSync('../shared.json', join(tempDir, 'dotfiles', 'config', 'settings.json'));
+
+    writeJsonFileAtomic(join(tempDir, 'project', 'config', 'settings.json'), { owned: true });
+
+    expect(JSON.parse(readFileSync(join(tempDir, 'dotfiles', 'shared.json'), 'utf8'))).toEqual({ owned: true });
+    expect(readdirSync(join(tempDir, 'project'))).toEqual(['config']);
+    expect(lstatSync(join(tempDir, 'dotfiles', 'config', 'settings.json')).isSymbolicLink()).toBe(true);
+  });
+
+  it('rejects a symlink loop without replacing either link', () => {
+    if (IS_WINDOWS) return;
+    const first = join(tempDir, 'first');
+    const second = join(tempDir, 'second');
+    symlinkSync('second', first);
+    symlinkSync('first', second);
+
+    expect(() => writeJsonFileAtomic(first, { owned: true })).toThrow();
+
+    expect(lstatSync(first).isSymbolicLink()).toBe(true);
+    expect(lstatSync(second).isSymbolicLink()).toBe(true);
+    expect(readlinkSync(first)).toBe('second');
+    expect(readlinkSync(second)).toBe('first');
+    expect(readdirSync(tempDir).sort()).toEqual(['first', 'second']);
   });
 });

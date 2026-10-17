@@ -5,7 +5,7 @@ import { capSummaryInput } from '../../../src/server/generation/ProviderObservat
 import { eventBlockBytes } from '../../../src/server/generation/providers/shared/prompt-builder.js';
 import type { PostgresAgentEvent } from '../../../src/storage/postgres/agent-events.js';
 
-// listUnprocessedEvents caps the event COUNT, not the payload volume. Sessions
+// listSessionEvents caps the event COUNT, not the payload volume. Sessions
 // whose events are large still overflow the provider window, which surfaces as
 // an `unrecoverable` job and no summary at all. capSummaryInput bounds the
 // input by size, keeping the head (goal) and the tail (outcome).

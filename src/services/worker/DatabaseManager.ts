@@ -2,12 +2,15 @@
 import { Database } from 'bun:sqlite';
 import { SessionStore } from '../sqlite/SessionStore.js';
 import { SessionSearch } from '../sqlite/SessionSearch.js';
-import { openConfiguredSqliteDatabase } from '../sqlite/connection.js';
+import { openGuardedSqliteDatabase } from '../sqlite/connection.js';
 import { ChromaSync } from '../sync/ChromaSync.js';
 import { CloudSync } from '../sync/CloudSync.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH, DB_PATH } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
+import { clearSyncHealth, defaultSyncHealthFilePath } from '../../shared/sync-health.js';
+import { purgeUndrainableSyncOutbox } from '../sync/outbox-purge.js';
+import { purgeLinkedToolUses, resolveToolUsesRetentionDays } from '../sqlite/tool-uses.js';
 import type { DBSession } from '../worker-types.js';
 
 export class DatabaseManager {
@@ -18,7 +21,10 @@ export class DatabaseManager {
   private cloudSync: CloudSync | null = null;
 
   async initialize(): Promise<void> {
-    this.db = openConfiguredSqliteDatabase(DB_PATH);
+    // Guard before pragmas: journal_mode = WAL persistently rewrites the file,
+    // so a database whose schema is newer than this binary's chain must be
+    // refused before the shared open touches it (#3609 step 2).
+    this.db = openGuardedSqliteDatabase(DB_PATH);
 
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
@@ -48,8 +54,18 @@ export class DatabaseManager {
     // Inactive installs get null so the write-site `getCloudSync()?.notify()`
     // nudges are free no-ops.
     if (cloudSyncConfigured) {
-      this.cloudSync = new CloudSync(this.db, settings);
+      this.cloudSync = new CloudSync(this.db, settings, { healthFilePath: defaultSyncHealthFilePath() });
+    } else {
+      // Sync is off: no banner for a feature not in use, and no queue that
+      // nothing will ever drain (#4228).
+      clearSyncHealth();
+      purgeUndrainableSyncOutbox(this.db);
     }
+    // Work-state reads fold native rows as this device's writes (the order
+    // other devices and cmem.ai use), under the id CloudSync resolved.
+    this.sessionStore.setLocalSyncDeviceId(this.cloudSync?.status().deviceId ?? settings.CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID);
+
+    purgeLinkedToolUses(this.db, resolveToolUsesRetentionDays(settings.CLAUDE_MEM_TOOL_USES_RETENTION_DAYS));
 
     logger.info('DB', 'Database initialized (shared connection)');
   }

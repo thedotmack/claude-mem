@@ -1,20 +1,17 @@
 // IO discipline (see src/shared/hook-io.ts): this handler is PURE. It returns a
 // HookResult and MUST NOT call process.stderr.write / process.stdout.write /
 // console.* / process.exit. logger.* calls are DIAGNOSTIC; thrown errors are
-// caught by hookCommand and routed through emitBlockingError.
+// caught by hookCommand, logged, and answered with a no-op (never exit 2).
 import type { EventHandler, NormalizedHookInput, HookResult } from '../types.js';
-import { executeWithWorkerFallback, isWorkerFallback } from '../../shared/worker-utils.js';
+import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
-import { enqueueDeferredSessionEnd } from '../../shared/deferred-session-end.js';
 
-// Claude Code gives plugin SessionEnd hooks a 1.5-second budget. Leave most
-// of it for the direct POST, then persist one idempotent replay entry instead
-// of waiting for a cold worker to finish starting.
-const SESSION_END_WORKER_STARTUP_TIMEOUT_MS = 150;
-const SESSION_END_REQUEST_TIMEOUT_MS = 750;
+// Claude Code gives plugin SessionEnd hooks a 1.5-second budget, so this hook
+// only spools the request and pokes the worker; it never waits on the worker.
 
 export const sessionEndHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
@@ -22,6 +19,12 @@ export const sessionEndHandler: EventHandler = {
 
     if (!sessionId) {
       logger.warn('HOOK', 'session-end: No sessionId provided, skipping');
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Session-init never registers an untracked session (observer, plugin cache,
+    // excluded project), so its SessionEnd would sit in the spool until it expired.
+    if (!shouldTrackProject(input.cwd ?? '')) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
@@ -34,37 +37,11 @@ export const sessionEndHandler: EventHandler = {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 
-    const result = await executeWithWorkerFallback<{ status?: string }>(
-      '/api/sessions/session-end',
-      'POST',
-      {
-        contentSessionId: sessionId,
-        platformSource,
-        reason: input.reason,
-        cwd: input.cwd,
-      },
-      {
-        workerStartupTimeoutMs: SESSION_END_WORKER_STARTUP_TIMEOUT_MS,
-        timeoutMs: SESSION_END_REQUEST_TIMEOUT_MS,
-      },
-    );
-    if (isWorkerFallback(result)) {
-      try {
-        enqueueDeferredSessionEnd({ contentSessionId: sessionId, platformSource });
-        logger.debug('HOOK', 'Session-end request persisted for worker recovery', {
-          sessionId,
-          platformSource,
-        });
-      } catch (error) {
-        logger.warn('HOOK', 'Could not persist SessionEnd request for worker recovery', {
-          sessionId,
-          platformSource,
-        }, error instanceof Error ? error : new Error(String(error)));
-      }
-      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
-    }
+    // Keyed on (session, platform) only — the worker uses nothing else — so a
+    // SessionEnd re-delivered with another reason still overwrites one entry.
+    spoolHookEvent('session_end', { contentSessionId: sessionId, platformSource });
 
-    logger.debug('HOOK', 'Session-end request queued, exiting hook');
+    logger.debug('HOOK', 'Session-end request spooled, exiting hook');
     return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
   },
 };

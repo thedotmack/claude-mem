@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from 'child_process';
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { existsSync, readFileSync, realpathSync, writeFileSync } from 'fs';
 import { createRequire } from 'module';
 import { homedir } from 'os';
 import { join, dirname, relative, isAbsolute } from 'path';
@@ -198,8 +198,11 @@ function formatMissing(missing) {
 // has a 300s timeout (vs 60s for SessionStart), runs once per Claude
 // Code launch, and is the only standalone hook script — the natural
 // place to materialise plugin runtime state.
+//
+// Returns the declared dependencies still missing after the attempt; an empty
+// list means the closure is complete (#3092 keys the install marker on it).
 function ensurePluginDependencies(pluginRoot) {
-  if (!existsSync(join(pluginRoot, 'package.json'))) return;
+  if (!existsSync(join(pluginRoot, 'package.json'))) return [];
 
   // Guard on COMPLETENESS of the declared dependency closure, not on the mere
   // existence of node_modules. A tree that is simply present - because an
@@ -212,12 +215,12 @@ function ensurePluginDependencies(pluginRoot) {
   // (gh #3755). Deriving the expected set from package.json `dependencies`
   // keeps the check correct if dependencies are later renamed.
   const missingBefore = findMissingDependencies(pluginRoot);
-  if (missingBefore.length === 0) return;
+  if (missingBefore.length === 0) return [];
 
   const bunPath = findBun();
   if (!bunPath) {
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun not found on PATH; cannot auto-install plugin dependencies`);
-    return;
+    return missingBefore;
   }
 
   // Progress diagnostic so users understand the Setup hang - and, critically,
@@ -237,7 +240,7 @@ function ensurePluginDependencies(pluginRoot) {
   } catch (err) {
     const reason = err && err.message ? err.message : String(err);
     console.error(`${VERSION_CHECK_LOG_PREFIX} bun install threw (${reason}); worker may crash with missing module errors`);
-    return;
+    return missingBefore;
   }
 
   // spawnSync does NOT throw on a failed child. Three distinct failure
@@ -265,6 +268,7 @@ function ensurePluginDependencies(pluginRoot) {
     // still work. A half-installed tree still powers memory search (mcp-server.cjs
     // bundles zod, zero external requires), so nuking it turns a degraded
     // install into a dead one (gh #3755).
+    return findMissingDependencies(pluginRoot);
   } else {
     // A zero exit is NOT proof of a complete tree: `bun install` can exit 0
     // while its integrity check silently failed, leaving the closure short
@@ -286,7 +290,37 @@ function ensurePluginDependencies(pluginRoot) {
     } else {
       console.error(`${VERSION_CHECK_LOG_PREFIX} bun install exited 0 but dependencies are still missing: ${formatMissing(missingAfter)}; worker may crash with missing module errors`);
     }
+    return missingAfter;
   }
+}
+
+function readBunVersion(bunPath) {
+  try {
+    const result = spawnSync(bunPath, ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['pipe', 'pipe', 'pipe'],
+      timeout: 10_000,
+      windowsHide: true,
+    });
+    const version = result.status === 0 ? String(result.stdout || '').trim() : '';
+    return version || null;
+  } catch {
+    return null;
+  }
+}
+
+// Only the npx installer used to write .install-version, so a marketplace-only
+// install printed "runtime not yet set up" on every launch even with a complete
+// dependency tree (#3092). Setup now records the marker itself once the closure
+// check passes, in the shape isInstallCurrent() in
+// src/npx-cli/install/setup-runtime.ts reads: it treats a marker without `bun`
+// as stale whenever bun is present.
+function writeInstallMarker(markerPath, version) {
+  const marker = { version, installedAt: new Date().toISOString() };
+  const bunPath = findBun();
+  const bun = bunPath ? readBunVersion(bunPath) : null;
+  if (bun) marker.bun = bun;
+  writeFileSync(markerPath, JSON.stringify(marker));
 }
 
 function resolveRoot() {
@@ -305,7 +339,7 @@ function resolveRoot() {
 const ROOT = resolveRoot();
 if (!ROOT) process.exit(0);
 
-ensurePluginDependencies(ROOT);
+const missingDependencies = ensurePluginDependencies(ROOT);
 
 function emitUpgradeHint(message) {
   if (process.env.CLAUDE_MEM_CODEX_HOOK === '1') {
@@ -341,15 +375,22 @@ function readInstallMarkerVersion(markerPath) {
 try {
   const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'));
   const markerPath = join(ROOT, '.install-version');
-  if (!existsSync(markerPath)) {
-    emitUpgradeHint('claude-mem: runtime not yet set up - run: npx claude-mem@latest install');
-    process.exit(0);
-  }
-  const markerVersion = readInstallMarkerVersion(markerPath);
-  if (!markerVersion) {
-    emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');
-  } else if (markerVersion !== pkg.version) {
-    emitUpgradeHint(`claude-mem: upgraded to v${pkg.version} - run: npx claude-mem@latest install`);
+  if (missingDependencies.length > 0) {
+    // The only state worth a hint: modules are still missing after the install
+    // attempt, so the worker would crash. Name them (#3092).
+    emitUpgradeHint(`claude-mem: plugin dependencies missing (${formatMissing(missingDependencies)}) - run: npx claude-mem@latest install`);
+  } else if (
+    typeof pkg.version === 'string'
+    && (!existsSync(markerPath) || readInstallMarkerVersion(markerPath) !== pkg.version)
+  ) {
+    // A complete closure with a missing, unreadable or older marker: record it
+    // instead of sending a working install to the npx installer (#3092).
+    try {
+      writeInstallMarker(markerPath, pkg.version);
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      console.error(`${VERSION_CHECK_LOG_PREFIX} could not write the install marker (${reason})`);
+    }
   }
 } catch {
   emitUpgradeHint('claude-mem: install marker unreadable - run: npx claude-mem@latest install');

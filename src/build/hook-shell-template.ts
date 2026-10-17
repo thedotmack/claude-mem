@@ -10,6 +10,10 @@
  * Some host versions / cache rotations do NOT inject `CLAUDE_PLUGIN_ROOT`, so
  * the fallback chain is load-bearing (issues #1215, #1533).
  *
+ * Claude Code runtime hooks in `plugin/hooks/hooks.json` no longer use this
+ * prelude: they are exec form (`buildExecHook`, no shell). Only the Setup
+ * entry there still uses `buildShellCommand`.
+ *
  * This module emits those command strings from ONE place so the shape can't
  * drift between the three files. `tests/infrastructure/plugin-distribution.test.ts`
  * asserts the hand-maintained files match the generator output byte-for-byte.
@@ -21,7 +25,7 @@
  *   4. $_C/plugins/marketplaces/thedotmack/plugin (marketplace install)
  */
 
-export type ShellTemplateHost = 'claude-code' | 'claude-code-setup' | 'codex-cli' | 'mcp';
+export type ShellTemplateHost = 'claude-code-setup' | 'codex-cli' | 'mcp';
 
 export interface ShellTemplateOptions {
   /** Host whose spawn contract / PATH prelude applies. */
@@ -30,6 +34,14 @@ export interface ShellTemplateOptions {
   requireFile: string;
   /** Optional second required script (hooks needing bun-runner.js AND worker-service.cjs). */
   requireFileSecondary?: string;
+  /**
+   * Also require `<root>/node_modules` for a root to count. Codex's own plugin
+   * copy carries the scripts but never its dependencies (the CLI rebuilds that
+   * folder on every `codex plugin add`), so a hook resolving to it crashes with
+   * `Cannot find module` — accepting the host root only when the dependencies
+   * are present lets the resolver fall back to a prepared copy (#4763).
+   */
+  requireDependencies?: boolean;
   /**
    * Trailing command tokens run after `_P` resolves. Tokens are emitted
    * verbatim (callers pass already-quoted `"$_P/scripts/X"` forms), matching
@@ -71,7 +83,6 @@ const CODEX_CLI_PATH_PRELUDE =
 
 function pathPrelude(host: ShellTemplateHost): string {
   switch (host) {
-    case 'claude-code':
     case 'claude-code-setup':
       return CLAUDE_CODE_HOOK_PATH_PRELUDE;
     case 'codex-cli':
@@ -83,12 +94,18 @@ function pathPrelude(host: ShellTemplateHost): string {
   }
 }
 
-function fileExistsClause(options: ShellTemplateOptions): string {
+function fileExistsClause(options: ShellTemplateOptions, includeDependencies = false): string {
   const primary = `[ -f "$_Q/scripts/${options.requireFile}" ]`;
-  if (options.requireFileSecondary) {
-    return `${primary} && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`;
-  }
-  return primary;
+  const secondary = options.requireFileSecondary
+    ? ` && [ -f "$_Q/scripts/${options.requireFileSecondary}" ]`
+    : '';
+  // A host-injected root without its dependencies (Codex's rebuilt plugin copy
+  // carries the scripts but no node_modules) resolves to a hook that dies on
+  // its first import, so it must not count as a candidate — the fallback chain
+  // then reaches a copy the installer prepared (#4763). Only the host root is
+  // checked: the fallback directories are already installer-prepared.
+  const dependencies = includeDependencies && options.requireDependencies ? ' && [ -d "$_Q/node_modules" ]' : '';
+  return `${primary}${secondary}${dependencies}`;
 }
 
 /**
@@ -110,7 +127,11 @@ function fileExistsClause(options: ShellTemplateOptions): string {
 function candidateBlock(options: ShellTemplateOptions): string {
   const isMcp = options.host === 'mcp';
 
-  const lines: string[] = [`[ -n "$_E" ] && printf '%s\\n' "$_E";`];
+  const lines: string[] = [];
+
+  if (isMcp) {
+    lines.push(`[ -n "$_E" ] && printf '%s\\n' "$_E";`);
+  }
 
   if (isMcp && options.mcpExtraCandidates && options.mcpExtraCandidates.length > 0) {
     const quoted = options.mcpExtraCandidates.map((candidate) => `"${candidate}"`).join(' ');
@@ -148,15 +169,34 @@ function candidateBlock(options: ShellTemplateOptions): string {
   const trimAssignment = isMcp ? '' : ' _R="${_R%/}";';
   const fileClause = fileExistsClause(options);
 
-  return (
+  const fallbackBlock = (
     `_F=; _P=$({ ${lines.join(' ')} } | while IFS= read -r _R; do` +
     `${trimAssignment} [ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
     `${fileClause} && [ -z "$_F" ] && { _F=1; printf '%s\\n' "$_Q"; }; done);`
+  );
+
+  if (isMcp) {
+    return fallbackBlock;
+  }
+
+  // The host-injected root is overwhelmingly the common path. Resolve it
+  // directly so every hook does not enumerate and sort versioned caches even
+  // when the host already supplied a usable installation root. A host root
+  // missing its dependencies is rejected here — see fileExistsClause — so the
+  // hook falls through to the installer-prepared fallbacks (#4763).
+  const hostFileClause = fileExistsClause(options, true);
+  return (
+    `_P=; if [ -n "$_E" ]; then _R="\${_E%/}"; ` +
+    `[ -d "$_R/plugin/scripts" ] && _Q="$_R/plugin" || _Q="$_R"; ` +
+    `${hostFileClause} && _P="$_Q"; fi; ` +
+    `if [ -z "$_P" ]; then ${fallbackBlock} fi;`
   );
 }
 
 const CYGPATH_CLAUSE =
   `command -v cygpath >/dev/null 2>&1 && { _W=$(cygpath -w "$_P" 2>/dev/null); [ -n "$_W" ] && _P="$_W"; };`;
+/** Shell hosts that cannot resolve a root surface the failure to the host. */
+const NOT_FOUND_EXIT_CODE = '1';
 
 /**
  * Translate a shell-token candidate (`$PWD`, `$PWD/x`, `$HOME/x`, `$_C/x`) into
@@ -185,14 +225,14 @@ function shTokenToNode(token: string): string {
  * Windows when Git's `usr/bin` is not on PATH, so the search tools never
  * registered. This emits the `node -e` payload (`.mcp.json` args[1]) that does
  * the same plugin-root discovery in pure Node — no shell dependency — then
- * spawns the resolved server and forwards signals. The candidate order mirrors
+ * loads the resolved server in-process. The candidate order mirrors
  * the POSIX prelude's: $CLAUDE_PLUGIN_ROOT/$PLUGIN_ROOT, mcpExtraCandidates,
  * version-sorted cache roots (never mtime; orphan-stamped dirs skipped), then
  * the marketplace install dir.
  *
  * Only `requireFile`, `notFoundMessage`, and the mcp* candidate fields are
  * consumed. `trailingCommand`, `extraEnv`, `trailingJson`, and the cygpath
- * clause are intentionally ignored for this host — the spawn target is derived
+ * clause are intentionally ignored for this host — the module target is derived
  * solely from `requireFile`, and the Node launcher needs no shell scaffolding.
  */
 function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
@@ -213,7 +253,7 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
   ].join(',');
 
   return (
-    `const f=require('fs'),p=require('path'),o=require('os'),c=require('child_process');` +
+    `const f=require('fs'),p=require('path'),o=require('os');` +
     `const h=o.homedir();` +
     `const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');` +
     `const E=process.env.CLAUDE_PLUGIN_ROOT||process.env.PLUGIN_ROOT||'';` +
@@ -229,9 +269,11 @@ function buildMcpNodeLauncher(options: ShellTemplateOptions): string {
     `let R=null;` +
     `for(const k of K){const r=f.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(f.existsSync(p.join(r,'scripts',${require}))){R=r;break}}` +
     `if(!R){process.stderr.write(${notFound});process.exit(1)}` +
-    `const ch=c.spawn(process.execPath,[p.join(R,'scripts',${require})],{stdio:'inherit',windowsHide:true});` +
-    `for(const s of ['SIGTERM','SIGINT','SIGHUP'])process.on(s,()=>{try{ch.kill(s)}catch{}});` +
-    `ch.on('exit',(code,sig)=>{if(sig){process.removeAllListeners(sig);try{process.kill(process.pid,sig)}catch{process.exit(1)}}else process.exit(code==null?0:code)})`
+    // p.resolve, not p.join: R is relative when CLAUDE_PLUGIN_ROOT or
+    // CLAUDE_CONFIG_DIR is, and require() reads a relative path such as
+    // plugin/scripts/mcp-server.cjs as a package name. Resolving against cwd
+    // matches the existsSync check above, as the old child-process spawn did.
+    `require(p.resolve(R,'scripts',${require}))`
   );
 }
 
@@ -243,6 +285,15 @@ function jsArray(values: string[]): string {
   return `[${values.map(jsSingleQuoted).join(',')}]`;
 }
 
+/** Match only runtime tool-hook commands, preserving all other lifecycle hooks. */
+function toolHookOptOutVariable(args: string[] | undefined): string | undefined {
+  if (!args || args.at(-3) !== 'hook') return undefined;
+  const event = args.at(-1);
+  return event === 'observation' ? 'CLAUDE_MEM_DISABLE_OBSERVATION'
+    : event === 'file-context' ? 'CLAUDE_MEM_DISABLE_FILE_CONTEXT' : undefined;
+}
+
+
 /**
  * Codex hook contract supports `commandWindows` as the Windows-only command
  * override. Keep this Node-based so Codex App on Windows can execute hooks from
@@ -250,13 +301,27 @@ function jsArray(values: string[]): string {
  */
 export function buildCodexWindowsCommand(
   workerArgs: string[],
+  options: { requireDependencies?: boolean } = {},
 ): string {
+  const optOutVariable = toolHookOptOutVariable(workerArgs);
+  // A host-injected root without its dependencies (Codex's rebuilt plugin copy
+  // carries the scripts but no node_modules) resolves to a hook that dies on
+  // its first import, so it must not count as a candidate — the fallback chain
+  // then reaches a copy the installer prepared (#4763). Only the host roots
+  // (pushed before `hn` is taken) are checked; the fallback directories are
+  // already installer-prepared.
+  const hostRootCount = options.requireDependencies ? ["const hn=roots.length;"] : [];
+  const rootLoop = options.requireDependencies
+    ? "for(let i=0;i<roots.length;i++){const k=roots[i];const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))&&(i>=hn||fs.existsSync(p.join(r,'node_modules')))){R=r;break}}"
+    : "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}";
   const parts = [
+    ...(optOutVariable ? [`if(process.env.CLAUDE_MEM_DISABLE_TOOL_HOOKS==='1'||process.env.${optOutVariable}==='1')process.exit(0);`] : []),
     "const fs=require('fs'),p=require('path'),o=require('os'),c=require('child_process');",
     "const h=o.homedir();",
     "const C=process.env.CLAUDE_CONFIG_DIR||p.join(h,'.claude');",
     "const roots=[];",
     "for(const v of [process.env.CLAUDE_PLUGIN_ROOT,process.env.PLUGIN_ROOT])if(v)roots.push(v);",
+    ...hostRootCount,
     "const cache=p.join(C,'plugins','cache','thedotmack','claude-mem');",
     // S/W mirror compareVersionsDescending in src/shared/worker-utils.ts and
     // the filter skips .orphaned_at-stamped cache dirs, same as
@@ -267,7 +332,7 @@ export function buildCodexWindowsCommand(
     "try{roots.push(...fs.readdirSync(cache).filter(n=>{const ch=n.charAt(0);return ch>='0'&&ch<='9'}).map(n=>p.join(cache,n)).filter(r=>{try{return fs.statSync(r).isDirectory()&&!fs.existsSync(p.join(r,'.orphaned_at'))}catch{return false}}).sort((a,b)=>W(p.basename(a),p.basename(b))))}catch{}",
     "roots.push(p.join(C,'plugins','marketplaces','thedotmack','plugin'));",
     "let R=null;",
-    "for(const k of roots){const r=fs.existsSync(p.join(k,'plugin','scripts'))?p.join(k,'plugin'):k;if(fs.existsSync(p.join(r,'scripts','bun-runner.js'))&&fs.existsSync(p.join(r,'scripts','worker-service.cjs'))){R=r;break}}",
+    rootLoop,
     "if(!R){process.stderr.write('claude-mem: plugin scripts not found\\n');process.exit(1)}",
     "const env={...process.env,CLAUDE_MEM_CODEX_HOOK:'1'};",
   ];
@@ -296,6 +361,10 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
 
   const parts: string[] = [];
+  const optOutVariable = toolHookOptOutVariable(options.trailingCommand);
+  if (optOutVariable) {
+    parts.push(`if [ "\${CLAUDE_MEM_DISABLE_TOOL_HOOKS:-}" = 1 ] || [ "\${${optOutVariable}:-}" = 1 ]; then exit 0; fi;`);
+  }
 
   // The PATH prelude is pushed verbatim (including any trailing space). `parts`
   // are later joined with a single space, so claude-code preludes (no trailing
@@ -307,9 +376,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push('_C="${CLAUDE_CONFIG_DIR:-$HOME/.claude}";');
   parts.push('_E="${CLAUDE_PLUGIN_ROOT:-${PLUGIN_ROOT:-}}";');
   parts.push(candidateBlock(options));
-  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit 1; };`);
+  parts.push(`[ -n "$_P" ] || { echo "${options.notFoundMessage}" >&2; exit ${NOT_FOUND_EXIT_CODE}; };`);
 
-  // cygpath conversion: claude-code + codex-cli. MCP returned early above (it
+  // cygpath conversion: claude-code-setup + codex-cli. MCP returned early above (it
   // uses the Node launcher), so every host reaching here needs the clause.
   parts.push(CYGPATH_CLAUSE);
 
@@ -331,4 +400,34 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   parts.push(command);
 
   return parts.join(' ');
+}
+
+/**
+ * Shell-free Claude Code hook entry (plan-17 #3605). With `args` present,
+ * Claude Code resolves `command` on PATH and spawns it directly, so there is
+ * no bash, no PATH prelude and no console window on Windows
+ * (https://code.claude.com/docs/en/hooks#core-fields). The on-PATH
+ * `claude-mem` launcher (src/launcher/claude-mem-launcher.ts) resolves the
+ * plugin root itself and passes `args` through to `worker-service.cjs`.
+ */
+export interface ExecHookCommand {
+  command: string;
+  args: string[];
+}
+
+export const CLAUDE_MEM_LAUNCHER_COMMAND = 'claude-mem';
+
+/** `claude-mem <workerServiceArguments…>` → `worker-service.cjs <workerServiceArguments…>`. */
+export function buildExecHook(workerServiceArguments: string[]): ExecHookCommand {
+  return { command: CLAUDE_MEM_LAUNCHER_COMMAND, args: [...workerServiceArguments] };
+}
+
+/**
+ * The single non-`claude-mem` runtime entry: the SessionStart self-heal that
+ * compiles the launcher onto PATH when it is missing or stale (SPIKE
+ * Decision 1). `node` is spawned directly; `${CLAUDE_PLUGIN_ROOT}` is
+ * substituted by Claude Code in `args`.
+ */
+export function buildEnsureLauncherExecHook(): ExecHookCommand {
+  return { command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/ensure-launcher.cjs'] };
 }

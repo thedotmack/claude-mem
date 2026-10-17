@@ -11,6 +11,10 @@ const installSourcePath = join(
   'install.ts',
 );
 const installSource = readFileSync(installSourcePath, 'utf-8');
+const claudeCodeVersionSource = readFileSync(
+  join(__dirname, '..', 'src', 'npx-cli', 'install', 'claude-code-version.ts'),
+  'utf-8',
+);
 const codexInstallerSourcePath = join(
   __dirname,
   '..',
@@ -94,12 +98,31 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain("selectedIDEs = ['claude-code']");
     });
 
-    it('fails before installation when a non-interactive run omits its provider', () => {
+    it('resolves a missing provider before the OAuth gate instead of aborting', () => {
       const validationIndex = installSource.indexOf('validateNonInteractiveProvider(options, summary)');
       const oauthIndex = installSource.indexOf('await requireInstallerOAuthLogin(version)');
       expect(validationIndex).toBeGreaterThan(-1);
       expect(validationIndex).toBeLessThan(oauthIndex);
-      expect(installSource).toContain('A provider must be explicit when stdin is not interactive.');
+      expect(installSource).not.toContain('A provider must be explicit when stdin is not interactive.');
+      expect(installSource).toContain("providerSource = 'default'");
+      expect(installSource).toContain("providerSource = 'persisted'");
+    });
+
+    it('offers a deferred login-only sign-in link at the end of a non-interactive install', () => {
+      expect(installSource).toContain("'npx-installer-deferred'");
+      expect(installSource).toContain('AGENT: show this link to the user so they can finish signing in.');
+      const helperStart = installSource.indexOf('export async function offerDeferredLogin(');
+      const helperEnd = installSource.indexOf('\n}\n', helperStart);
+      const helper = installSource.slice(helperStart, helperEnd);
+      expect(helper).not.toContain('checkoutUrl');
+      expect(helper).not.toContain('userCode');
+      expect(helper).not.toContain('process.exit');
+      expect(helper).not.toContain('DO_NOT_TRACK');
+      expect(helper).not.toContain('await requireInstallerOAuthLogin(version)');
+      // The offer runs after the success line and before install_completed.
+      const callIndex = installSource.indexOf('await offerDeferredLogin(options, version)');
+      expect(callIndex).toBeGreaterThan(installSource.indexOf("'\\nclaude-mem installed successfully!'"));
+      expect(callIndex).toBeLessThan(installSource.indexOf("captureCliEvent('install_completed'"));
     });
 
     it('never opens an API-key prompt on non-interactive stdin', () => {
@@ -135,10 +158,31 @@ describe('Install Non-TTY Support', () => {
       );
       expect(copyRegion).toContain("'.agents'");
       expect(copyRegion).toContain("'.codex-plugin'");
+      expect(copyRegion).toContain("'.claude-plugin'");
+      // The shipped manifest also lists cowork/, which npm does not ship.
+      expect(copyRegion).toContain('writeTrimmedMarketplaceManifest(marketplaceDir);');
       // Root .mcp.json was dropped in #2411; the MCP manifest now ships
       // exclusively as plugin/.mcp.json (bundled inside the 'plugin' entry).
       expect(copyRegion).toContain("'plugin'");
       expect(copyRegion).not.toContain("'.mcp.json'");
+    });
+
+    it('copies the OMP hook to the marketplace directory the OMP installer reads (#3556)', () => {
+      const copyRegion = installSource.slice(
+        installSource.indexOf('const allowedTopLevelEntries = ['),
+        installSource.indexOf('function copyPluginToCache'),
+      );
+      // OmpHooksInstaller resolves <marketplace>/omp/hooks/claude-mem.ts; shipping
+      // omp/ in the npm package alone never puts it there.
+      expect(copyRegion).toContain("'omp'");
+      const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+      expect(packageJson.files).toContain('omp');
+    });
+
+    it('publishes the Claude marketplace root manifest in the npm package (#3424)', () => {
+      const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+      expect(packageJson.files).toContain('.claude-plugin');
+      expect(packageJson.files).toContain('plugin/.claude-plugin');
     });
 
     it('validates the bundled plugin as the Codex marketplace source', () => {
@@ -182,6 +226,28 @@ describe('Install Non-TTY Support', () => {
       expect(runtimeSetupRegion).toContain("writeInstallMarker(join(marketplaceDirectory(), 'plugin'), version, bunVersion, uvVersion)");
     });
 
+    it('awaits cache dependencies before writing the initial install marker', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      const installCall = runtimeSetupRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)');
+      const markerWrite = runtimeSetupRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(installCall).toBeGreaterThanOrEqual(0);
+      expect(markerWrite).toBeGreaterThan(installCall);
+    });
+
+    it('provisions the tree-sitter CLI on install as a warning, never an abort before sign-in (#2910)', () => {
+      const runtimeSetupRegion = installSource.slice(
+        installSource.indexOf("title: 'Setting up runtime"),
+        installSource.indexOf("return `Runtime ready"),
+      );
+      expect(runtimeSetupRegion).toContain(
+        'await provisionTreeSitterCli(cacheDir, ErrorSeverity.WARN_CONTINUE, summary, TREE_SITTER_INSTALL_BUDGET_MS)',
+      );
+      expect(runtimeSetupRegion).not.toContain('ErrorSeverity.ABORT');
+    });
+
     it('replaces stale Codex marketplace registrations from a different source', () => {
       const registerRegion = codexInstallerSource.slice(
         codexInstallerSource.indexOf('function registerCodexMarketplace'),
@@ -204,7 +270,7 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('tells Codex users to trust the native hooks before restarting sessions', () => {
-      expect(codexInstallerSource).toContain('Review and trust the five claude-mem hooks when Codex prompts you');
+      expect(codexInstallerSource).toContain('Review and trust the six claude-mem hooks when Codex prompts you');
       expect(codexInstallerSource).toContain('Restart sessions opened before trusting the hooks');
     });
 
@@ -227,7 +293,7 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
       expect(codexInstallerSource).toContain("const MIN_CODEX_MARKETPLACE_VERSION = '0.128.0'");
-      expect(codexInstallerSource).toContain("codexSpawn(['--version'])");
+      expect(codexInstallerSource).toContain("spawn(['--version'])");
       expect(installRegion.indexOf('assertCodexMarketplaceSupported()'))
         .toBeLessThan(installRegion.indexOf('registerCodexMarketplace(marketplaceRoot)'));
     });
@@ -247,9 +313,9 @@ describe('Install Non-TTY Support', () => {
     });
 
     it('probes Claude Code version through the shared no-shell Windows invocation', () => {
-      const versionProbeRegion = installSource.slice(
-        installSource.indexOf('function readClaudeCodeVersionOutput'),
-        installSource.indexOf('function detectClaudeCodeVersion'),
+      const versionProbeRegion = claudeCodeVersionSource.slice(
+        claudeCodeVersionSource.indexOf('function readClaudeCodeVersionOutput'),
+        claudeCodeVersionSource.indexOf('function detectClaudeCodeVersion'),
       );
       expect(versionProbeRegion).toContain("lookupWindowsCommand('claude') ?? 'claude.cmd'");
       expect(versionProbeRegion).toContain('buildSpawnSyncInvocation(command, [');
@@ -282,6 +348,13 @@ describe('Install Non-TTY Support', () => {
       expect(repairRegion).toContain("title: 'Repairing marketplace runtime'");
       expect(repairRegion).toContain('copyPluginToCache(version)');
       expect(repairRegion).toContain('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      const installCall = repairRegion.indexOf('await installPluginDependencies(cacheDir, bunPath)');
+      // `repair` exists to fix the runtime, so a failed tree-sitter download aborts it.
+      const provisionCall = repairRegion.indexOf('await provisionTreeSitterCli(cacheDir, ErrorSeverity.ABORT, summary)');
+      const markerWrite = repairRegion.indexOf('writeInstallMarker(cacheDir, version, bunVersion, uvVersion)');
+      expect(installCall).toBeGreaterThanOrEqual(0);
+      expect(provisionCall).toBeGreaterThan(installCall);
+      expect(markerWrite).toBeGreaterThan(provisionCall);
       expect(repairRegion).toContain('Repopulating marketplace root from npm package');
       expect(repairRegion).toContain('copyPluginToMarketplace()');
       expect(repairRegion).toContain('await runNpmInstallInMarketplace(summary)');
@@ -309,9 +382,12 @@ describe('Install Non-TTY Support', () => {
         codexInstallerSource.indexOf('export async function installCodexCli'),
         codexInstallerSource.indexOf('export function uninstallCodexCli'),
       );
+      // Bounded by the plugin-list verification rather than the success banner:
+      // that verification legitimately returns 1, and this assertion is only
+      // about the two legacy-cleanup branches staying warn-only.
       const cleanupFailureRegion = installRegion.slice(
         installRegion.indexOf('if (!cleanupLegacyCodexAgentsMdContext())'),
-        installRegion.indexOf('Installation complete!'),
+        installRegion.indexOf('if (!verifyCodexPluginLoaded())'),
       );
       expect(cleanupFailureRegion).toContain('console.warn');
       expect(cleanupFailureRegion).not.toContain('return 1');
@@ -353,6 +429,17 @@ describe('Install Non-TTY Support', () => {
       expect(installSource).toContain('Server (beta)');
       expect(installSource).toContain("initialValue: 'worker'");
       expect(installSource).toContain('CLAUDE_MEM_RUNTIME');
+    });
+
+    it('never aborts setup over an unreadable settings.json: the installer writer quarantines it', () => {
+      // Nothing may stop the installer before the sign-in/trial step; a corrupt
+      // file is moved aside and a fresh one written (#3080), never reset to {}.
+      const mergeRegion = installSource.slice(
+        installSource.indexOf('export function mergeSettings'),
+        installSource.indexOf('type ProviderId'),
+      );
+      expect(mergeRegion).toContain('quarantineCorrupt: true');
+      expect(mergeRegion).not.toContain('ErrorSeverity.ABORT');
     });
   });
 

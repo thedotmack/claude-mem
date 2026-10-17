@@ -2,12 +2,14 @@
 import { existsSync, readFileSync, writeFileSync, renameSync } from 'fs';
 import path from 'path';
 import { logger } from './logger.js';
+import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { formatDate, groupByDate } from '../shared/timeline-formatting.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { workerHttpRequest } from '../shared/worker-utils.js';
 import { paths } from '../shared/paths.js';
 import { matchesAnyGlob } from './project-filter.js';
 import { toBmpSafe } from './bmp-safe.js';
+import { CONTEXT_TAG_CLOSE, CONTEXT_TAG_OPEN, findContextBlockRange } from './context-injection.js';
 
 const SETTINGS_PATH = paths.settings();
 
@@ -55,23 +57,21 @@ function isValidPathForClaudeMd(filePath: string, projectRoot?: string): boolean
 }
 
 export function replaceTaggedContent(existingContent: string, newContent: string): string {
-  const startTag = '<claude-mem-context>';
-  const endTag = '</claude-mem-context>';
+  const wrappedContent = `${CONTEXT_TAG_OPEN}\n${newContent}\n${CONTEXT_TAG_CLOSE}`;
 
   if (!existingContent) {
-    return `${startTag}\n${newContent}\n${endTag}`;
+    return wrappedContent;
   }
 
-  const startIdx = existingContent.indexOf(startTag);
-  const endIdx = existingContent.indexOf(endTag);
+  const block = findContextBlockRange(existingContent);
 
-  if (startIdx !== -1 && endIdx !== -1) {
-    return existingContent.substring(0, startIdx) +
-      `${startTag}\n${newContent}\n${endTag}` +
-      existingContent.substring(endIdx + endTag.length);
+  if (block) {
+    return existingContent.substring(0, block.start) +
+      wrappedContent +
+      existingContent.substring(block.end);
   }
 
-  return existingContent + `\n\n${startTag}\n${newContent}\n${endTag}`;
+  return existingContent + `\n\n${wrappedContent}`;
 }
 
 export function writeClaudeMdToFolder(folderPath: string, newContent: string, targetFilename?: string): void {
@@ -81,7 +81,6 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
 
   const filename = targetFilename ?? getTargetFilename();
   const claudeMdPath = path.join(folderPath, filename);
-  const tempFile = `${claudeMdPath}.tmp`;
 
   if (!existsSync(folderPath)) {
     logger.debug('FOLDER_INDEX', 'Skipping non-existent folder', { folderPath });
@@ -97,8 +96,13 @@ export function writeClaudeMdToFolder(folderPath: string, newContent: string, ta
   // context — a Claude Code truncation can split a pair and brick the session.
   const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
+  // A symlinked CLAUDE.md stays a symlink: write onto its final target. A
+  // symlink loop or an unwritable target throws, as any write failure does.
+  const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);
+  ensureDirectoryExists(path.dirname(writeTarget));
+  const tempFile = `${writeTarget}.tmp`;
   writeFileSync(tempFile, finalContent);
-  renameSync(tempFile, claudeMdPath);
+  renameSync(tempFile, writeTarget);
 }
 
 interface ParsedObservation {

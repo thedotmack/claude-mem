@@ -87,6 +87,29 @@ describe('context output budget (#3802)', () => {
     expect(result.observationCount).toBe(40);
   });
 
+  it('gives up the prior reply after the last summary, before sessions or observations', () => {
+    // "Include last message" prints the prior session's whole final reply.
+    // Kept to the end, a 12,000-character reply leaves the block over the
+    // limit after every other reduction, and the hook delivers the stub.
+    const withReply = (replyLength: number) => (items: number[], config: ContextConfig) =>
+      render(items, config) + (config.showLastMessage ? 'R'.repeat(replyLength) : '');
+    const config = makeConfig({ fullObservationCount: 0, sessionCount: 2, showLastMessage: true });
+
+    const long = fitContextToBudget(items(20), config, withReply(12_000));
+    expect(long.overBudget).toBe(false);
+    expect(long.text.length).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
+    expect(long.config.showLastSummary).toBe(false);
+    expect(long.config.showLastMessage).toBe(false);
+    expect(long.config.sessionCount).toBe(2);
+    expect(long.observationCount).toBe(20);
+
+    // The summary goes first: dropping it alone makes room for a short reply.
+    const short = fitContextToBudget(items(20), config, withReply(3_000));
+    expect(short.config.showLastSummary).toBe(false);
+    expect(short.config.showLastMessage).toBe(true);
+    expect(short.observationCount).toBe(20);
+  });
+
   it('keeps at least one observation and says so when nothing more can go', () => {
     const huge = (items: number[]) => 'x'.repeat(20_000 + items.length);
     const result = fitContextToBudget(items(10), makeConfig(), huge);
@@ -253,5 +276,30 @@ describe('what the fitted block delivers (#3811 review)', () => {
 
     expect(delivered.stats.observation_count).toBe(3);
     expect(delivered.stats.has_session_summary).toBe(true);
+  });
+
+  it('renders the terminal once from the model-fitted items and config, retaining health warnings', () => {
+    const queried = Array.from({ length: 50 }, (_, i) => obs(i));
+    const config = makeConfig();
+    const model = fitContextForDelivery(
+      queried, [], config, WARNING, renderBlock, CONTEXT_OUTPUT_LIMIT, false,
+    );
+    let previewCalls = 0;
+    const preview = fitContextForDelivery(
+      queried, [], config, WARNING, renderBlock, CONTEXT_OUTPUT_LIMIT, false,
+      (selected, fittedConfig) => {
+        previewCalls++;
+        expect(selected).toEqual(queried.slice(0, model.stats.observation_count));
+        expect(fittedConfig.fullObservationCount).toBe(0);
+        expect(fittedConfig.sessionCount).toBe(0);
+        expect(fittedConfig.showLastSummary).toBe(false);
+        return selected.map(item => `#${item.id} ${'verbose '.repeat(100)}`).join('\n');
+      },
+    );
+    expect(previewCalls).toBe(1);
+    expect(preview.stats).toEqual(model.stats);
+    expect(preview.text.length).toBeLessThanOrEqual(CONTEXT_OUTPUT_LIMIT);
+    expect(preview.text).toContain('Terminal preview truncated');
+    expect(preview.text.endsWith(`\x1b[31m${WARNING}\x1b[0m`)).toBe(true);
   });
 });

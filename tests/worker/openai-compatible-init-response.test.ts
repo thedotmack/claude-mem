@@ -1,17 +1,15 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from 'bun:test';
+import codeMode from '../../plugin/modes/code.json';
 import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from '../../src/services/worker/OpenAICompatibleProvider.js';
+import { CodexProvider } from '../../src/services/worker/CodexProvider.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import type { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { ActiveSession, ConversationMessage } from '../../src/services/worker-types.js';
 
 const mockMode = {
   name: 'code',
-  prompts: {
-    init: 'init prompt',
-    observation: 'obs prompt',
-    summary: 'summary prompt',
-  },
+  prompts: codeMode.prompts,
   observation_types: [{ id: 'discovery' }],
   observation_concepts: [],
 };
@@ -82,13 +80,17 @@ class TestProvider extends OpenAICompatibleProvider<{ apiKey: string; model: str
   }
 }
 
+// The init prompt is a request of its own only with CLAUDE_MEM_OBSERVE_BARE_PROMPTS=true.
 describe('OpenAICompatibleProvider init response', () => {
   let modeManagerSpy: ReturnType<typeof spyOn>;
   let storeObservations: ReturnType<typeof mock>;
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
+  let previousObserveBarePrompts: string | undefined;
 
   beforeEach(() => {
+    previousObserveBarePrompts = process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = 'true';
     modeManagerSpy = spyOn(ModeManager, 'getInstance').mockImplementation(() => ({
       getActiveMode: () => mockMode,
       loadMode: () => {},
@@ -113,6 +115,7 @@ describe('OpenAICompatibleProvider init response', () => {
       getMessageIterator: async function* () {
         yield { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/main.ts' }, tool_response: 'file contents', prompt_number: 1 };
       },
+      claimNextObservation: mock(() => null),
       getClaimedMessages: mock(() => []),
       confirmClaimedMessages: mock(() => Promise.resolve(0)),
       resetProcessingToPending: mock(() => Promise.resolve(0)),
@@ -120,6 +123,8 @@ describe('OpenAICompatibleProvider init response', () => {
   });
 
   afterEach(() => {
+    if (previousObserveBarePrompts === undefined) delete process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS;
+    else process.env.CLAUDE_MEM_OBSERVE_BARE_PROMPTS = previousObserveBarePrompts;
     modeManagerSpy.mockRestore();
     mock.restore();
   });
@@ -136,5 +141,48 @@ describe('OpenAICompatibleProvider init response', () => {
     expect(storeObservations).toHaveBeenCalledTimes(1);
     // The init reply still occupies its assistant turn, so roles alternate.
     expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+  });
+
+  it('continues a Codex session after an empty initialization reply', async () => {
+    const provider = new CodexProvider(dbManager, sessionManager) as any;
+    provider.getConfig = () => ({ apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' });
+    let call = 0;
+    const turns = mock(async () => ({ content: call++ === 0 ? '' : observationXml }));
+    for (const client of provider.appServer.clients) client.runTurn = turns;
+    const session = makeSession({ currentProvider: 'codex' });
+
+    await provider.startSession(session);
+
+    expect(turns).toHaveBeenCalledTimes(2);
+    expect(storeObservations).toHaveBeenCalledTimes(1);
+    expect(session.conversationHistory.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant']);
+    expect(session.conversationHistory[1].content).toBe('');
+  });
+
+  it('hands a blank Codex observation reply to the skip contract instead of pausing it as a fault', async () => {
+    const session = makeSession({ currentProvider: 'codex' });
+    const resetProcessingToPending = mock(() => Promise.resolve(1));
+    const manager = {
+      ...sessionManager,
+      resetProcessingToPending,
+      getMessageIterator: async function* () {
+        session.claimedMessageIds.push(7);
+        yield { type: 'observation', tool_name: 'Read', tool_input: { file_path: 'src/main.ts' }, tool_response: 'file contents', prompt_number: 1 };
+      },
+    } as unknown as SessionManager;
+    const provider = new CodexProvider(dbManager, manager) as any;
+    provider.getConfig = () => ({ apiKey: 'native', model: '', reasoningEffort: null, codexPath: 'codex' });
+    let call = 0;
+    const turns = mock(async () => ({ content: call++ === 0 ? 'ready' : '' }));
+    for (const client of provider.appServer.clients) client.runTurn = turns;
+
+    await provider.startSession(session);
+
+    // One reply per request: no in-provider retry and no transport pause. The
+    // queued batch goes back to pending for one more try in a fresh generation.
+    expect(turns).toHaveBeenCalledTimes(2);
+    expect(session.abortReason).toBe('output_retry:idle');
+    expect(resetProcessingToPending).toHaveBeenCalled();
+    expect(storeObservations).not.toHaveBeenCalled();
   });
 });

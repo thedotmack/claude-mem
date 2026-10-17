@@ -63,6 +63,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
     );
@@ -102,6 +103,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getObservationsByIds: mock(() => []),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
     );
@@ -138,6 +140,7 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
         getObservationsByIds: mock(() => [observation]),
         getSessionSummariesByIds: mock(() => []),
         getUserPromptsByIds: mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
       } as any,
       { queryChroma } as any,
     );
@@ -153,5 +156,274 @@ describe('SearchOrchestrator Chroma zero fallback', () => {
     expect(result.usedChroma).toBe(true);
     expect(result.strategy).toBe('chroma');
     expect(result.results.observations).toEqual([observation]);
+  });
+});
+
+/**
+ * Regression coverage for #4284: chromaSync is null when Chroma is turned off
+ * (CLAUDE_MEM_CHROMA_ENABLED=false). `executeWithFallback` must then run the
+ * SQLite/FTS5 strategy for queries instead of returning an empty result that
+ * reads as "no matches". Before the fix this branch returned
+ * `{observations:[], sessions:[], prompts:[]}` for every query, so a
+ * query-filtered knowledge corpus was built empty.
+ */
+describe('SearchOrchestrator chromaSync=null fallback (#4284)', () => {
+  it('runs SQLite strategy for a query when chromaSync is null and SQLite returns matches', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('cursor sqlite fallback', expect.objectContaining({
+      project: 'orchestrator-project',
+      limit: 5,
+    }));
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+    expect(result.results.sessions).toEqual([]);
+    expect(result.results.prompts).toEqual([]);
+  });
+
+  it('returns strategy=sqlite empty result (not the confident-empty bug) when SQLite has no matches', async () => {
+    const searchObservations = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions: mock(() => []),
+        searchUserPrompts: mock(() => []),
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'anything-not-in-the-database',
+      searchType: 'observations',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledTimes(1);
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([]);
+    expect(result.results.sessions).toEqual([]);
+    expect(result.results.prompts).toEqual([]);
+  });
+
+  it('forwards query text to SQLite when chromaSync is null and searchType=all', async () => {
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const searchUserPrompts = mock(() => []);
+    const orchestrator = new SearchOrchestrator(
+      {
+        searchObservations,
+        searchSessions,
+        searchUserPrompts,
+      } as any,
+      {} as any,
+      null,
+    );
+
+    const result = await orchestrator.search({
+      query: 'cursor sqlite fallback',
+      searchType: 'all',
+      project: 'orchestrator-project',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('cursor sqlite fallback', expect.objectContaining({
+      project: 'orchestrator-project',
+    }));
+    expect(searchSessions).toHaveBeenCalledWith('cursor sqlite fallback', expect.anything());
+    expect(searchUserPrompts).toHaveBeenCalledWith('cursor sqlite fallback', expect.anything());
+    expect(result.usedChroma).toBe(false);
+    expect(result.strategy).toBe('sqlite');
+    expect(result.results.observations).toEqual([observation]);
+  });
+});
+
+describe('SearchOrchestrator per-category SQLite supplement', () => {
+  const userPrompt = {
+    id: 7,
+    content_session_id: 'session-7',
+    prompt_number: 1,
+    prompt_text: 'テストを実行して',
+    created_at: '2025-01-01T00:00:00.000Z',
+    created_at_epoch: Date.now(),
+  };
+
+  function buildOrchestrator(mocks: {
+    searchObservations?: ReturnType<typeof mock>;
+    searchSessions?: ReturnType<typeof mock>;
+    searchUserPrompts?: ReturnType<typeof mock>;
+    queryChroma: ReturnType<typeof mock>;
+    getUserPromptsByIds?: ReturnType<typeof mock>;
+    getObservationsByIds?: ReturnType<typeof mock>;
+  }) {
+    return new SearchOrchestrator(
+      {
+        searchObservations: mocks.searchObservations ?? mock(() => []),
+        searchSessions: mocks.searchSessions ?? mock(() => []),
+        searchUserPrompts: mocks.searchUserPrompts ?? mock(() => []),
+      } as any,
+      {
+        getObservationsByIds: mocks.getObservationsByIds ?? mock(() => []),
+        getSessionSummariesByIds: mock(() => []),
+        getUserPromptsByIds: mocks.getUserPromptsByIds ?? mock(() => []),
+        getProjectReadKeys: (projects: string[]) => projects,
+      } as any,
+      { queryChroma: mocks.queryChroma } as any,
+    );
+  }
+
+  it('supplements empty observations from SQLite FTS when Chroma only returns prompts (CJK query)', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => [observation]);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({ limit: 5 }));
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('hybrid');
+    expect(result.results.observations).toEqual([observation]);
+    expect(result.results.prompts).toEqual([userPrompt]);
+  });
+
+  it('keeps pure Chroma result untouched when every requested category has matches', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchUserPrompts = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchUserPrompts, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'prompts',
+      limit: 5,
+    });
+
+    expect(searchUserPrompts).not.toHaveBeenCalled();
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('chroma');
+    expect(result.results.prompts).toEqual([userPrompt]);
+  });
+
+  it('does not supplement categories that were not requested', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => [observation]);
+    const searchSessions = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, searchSessions, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'prompts',
+      limit: 5,
+    });
+
+    expect(searchObservations).not.toHaveBeenCalled();
+    expect(searchSessions).not.toHaveBeenCalled();
+    expect(result.results.observations).toHaveLength(0);
+  });
+
+  it('keeps chroma strategy when supplement also finds nothing', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const result = await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+    });
+
+    expect(searchObservations).toHaveBeenCalled();
+    expect(result.usedChroma).toBe(true);
+    expect(result.strategy).toBe('chroma');
+    expect(result.results.prompts).toEqual([userPrompt]);
+    expect(result.results.observations).toHaveLength(0);
+  });
+
+
+  it('does not narrow the SQLite supplement to a recency window when no dateRange is given', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+    });
+
+    const supplementOptions = (searchObservations.mock.calls[0] as any[])[1];
+    expect(supplementOptions.dateRange).toBeUndefined();
+  });
+
+  it('preserves an explicit dateRange in supplement queries', async () => {
+    const queryChroma = mock(() => Promise.resolve({
+      ids: [7],
+      distances: [0.1],
+      metadatas: [{ sqlite_id: 7, doc_type: 'user_prompt', created_at_epoch: Date.now() }],
+    }));
+    const searchObservations = mock(() => []);
+    const getUserPromptsByIds = mock(() => [userPrompt]);
+    const orchestrator = buildOrchestrator({ queryChroma, searchObservations, getUserPromptsByIds });
+
+    const dateRange = { start: 123, end: 456 };
+    await orchestrator.search({
+      query: 'テスト',
+      searchType: 'all',
+      limit: 5,
+      dateRange,
+    });
+
+    expect(searchObservations).toHaveBeenCalledWith('テスト', expect.objectContaining({
+      dateRange,
+    }));
   });
 });

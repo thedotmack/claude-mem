@@ -2,6 +2,7 @@
 
 import { SettingsDefaultsManager } from '../src/shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../src/shared/paths.js';
+import { formatHostForUrl } from '../src/shared/worker-url.js';
 
 const workerSettings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 const DEFAULT_WORKER_HOST = workerSettings.CLAUDE_MEM_WORKER_HOST;
@@ -29,7 +30,7 @@ function resolveWorkerPort(): string {
 
 const WORKER_HOST = resolveWorkerHost();
 const WORKER_PORT = resolveWorkerPort();
-const WORKER_URL = `http://${WORKER_HOST}:${WORKER_PORT}`;
+const WORKER_URL = `http://${formatHostForUrl(WORKER_HOST)}:${WORKER_PORT}`;
 const WORKER_FETCH_TIMEOUT_MS = 10_000;
 
 interface ProcessingStatusResponse {
@@ -42,6 +43,7 @@ interface SetProcessingResponse {
   isProcessing: boolean;
   queueDepth: number;
   activeSessions: number;
+  scheduledSessions: number;
 }
 
 async function fetchWithTimeout(
@@ -95,7 +97,7 @@ async function triggerProcessing(): Promise<SetProcessingResponse> {
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({})
+      body: JSON.stringify({ isProcessing: false })
     },
     'Failed to trigger processing',
   );
@@ -199,6 +201,7 @@ What is this for?
   console.log(`  Is processing:    ${result.isProcessing ? 'yes' : 'no'}`);
   console.log(`  Queue depth:      ${result.queueDepth}`);
   console.log(`  Active sessions:  ${result.activeSessions}`);
+  console.log(`  Resume attempts:  ${result.scheduledSessions}`);
 
   console.log('\nProcessing handled by worker. Check status again in a few minutes.\n');
 }

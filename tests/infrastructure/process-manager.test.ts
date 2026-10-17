@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
+import { spawn } from 'child_process';
 import { existsSync, readFileSync, mkdirSync, mkdtempSync, writeFileSync, rmSync, statSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import path from 'path';
@@ -30,6 +31,7 @@ const {
   shouldRetryWorkerBootProbe,
   buildWindowsDaemonStartCommand,
   daemonWorkingDirectory,
+  pinDaemonWorkingDirectory,
   resolveWorkerRuntimePath,
   captureProcessStartToken,
   verifyPidFileOwnership,
@@ -315,16 +317,19 @@ describe('ProcessManager', () => {
     });
 
     it('should look up Bun on non-Windows when caller is Node (e.g. MCP server)', () => {
+      // path.join follows the host OS separator even when platform:'linux' is
+      // injected, so expect the host-joined form (Windows CI runs this too).
+      const expected = path.join('/home/alice', '.bun', 'bin', 'bun');
       const resolved = resolveWorkerRuntimePath({
         platform: 'linux',
         execPath: '/usr/bin/node',
         env: {} as NodeJS.ProcessEnv,
         homeDirectory: '/home/alice',
-        pathExists: candidatePath => candidatePath === '/home/alice/.bun/bin/bun',
+        pathExists: candidatePath => candidatePath === expected,
         lookupInPath: () => null
       });
 
-      expect(resolved).toBe('/home/alice/.bun/bin/bun');
+      expect(resolved).toBe(expected);
     });
 
     it('should preserve bare BUN env command on non-Windows so spawn resolves it via PATH', () => {
@@ -443,6 +448,38 @@ describe('ProcessManager', () => {
       });
 
       expect(resolved).toBe('C:\\tools\\bun.exe');
+    });
+
+    it('should resolve Bun from BUN_INSTALL on Windows when PATH is empty (#3224)', () => {
+      // path.join follows the host OS separator even when platform:'win32' is
+      // injected, so expect the host-joined form (Linux CI / T-Rex runs this too).
+      const expected = path.join('D:\\custom\\bun-root', 'bin', 'bun.exe');
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'win32',
+        execPath: 'C:\\Program Files\\nodejs\\node.exe',
+        env: { BUN_INSTALL: 'D:\\custom\\bun-root' } as NodeJS.ProcessEnv,
+        homeDirectory: 'C:\\Users\\alice',
+        pathExists: candidatePath => candidatePath === expected,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe(expected);
+    });
+
+    it('should resolve Bun from BUN_INSTALL on Linux when PATH is empty (#3224)', () => {
+      // path.join follows the host OS separator even when platform:'linux' is
+      // injected, so expect the host-joined form (Windows CI runs this too).
+      const expected = path.join('/opt/bun', 'bin', 'bun');
+      const resolved = resolveWorkerRuntimePath({
+        platform: 'linux',
+        execPath: '/usr/bin/node',
+        env: { BUN_INSTALL: '/opt/bun' } as NodeJS.ProcessEnv,
+        homeDirectory: '/home/alice',
+        pathExists: candidatePath => candidatePath === expected,
+        lookupInPath: () => null
+      });
+
+      expect(resolved).toBe(expected);
     });
 
     it('should fall back to PATH lookup when no Bun candidate exists', () => {
@@ -611,6 +648,52 @@ describe('ProcessManager', () => {
   });
 
   describe('cleanStalePidFile', () => {
+    it.if(process.platform === 'linux')('treats a tokenless PID reused by an unrelated process as stale', () => {
+      const commandLine = readFileSync(`/proc/${process.pid}/cmdline`, 'utf-8');
+      expect(commandLine).not.toContain('worker-service.cjs');
+      writeFileSync(PID_FILE, JSON.stringify({
+        pid: process.pid,
+        port: 37777,
+        startedAt: new Date().toISOString()
+      }));
+
+      expect(cleanStalePidFile({ removeStale: false })).toBe('stale');
+      expect(existsSync(PID_FILE)).toBe(true);
+    });
+
+    it.if(process.platform === 'linux')('accepts a tokenless worker identified by its command line', async () => {
+      const workerDir = mkdtempSync(path.join(tmpdir(), 'claude-mem-legacy-worker-'));
+      const workerScript = path.join(workerDir, 'worker-service.cjs');
+      writeFileSync(workerScript, 'setInterval(() => {}, 1000);\n');
+      const worker = spawn(process.execPath, [workerScript], { stdio: 'ignore' });
+
+      try {
+        await new Promise<void>((resolve, reject) => {
+          worker.once('spawn', resolve);
+          worker.once('error', reject);
+        });
+        if (!worker.pid) throw new Error('Worker test process did not receive a PID');
+        writeFileSync(PID_FILE, JSON.stringify({
+          pid: worker.pid,
+          port: 37777,
+          startedAt: new Date().toISOString()
+        }));
+
+        expect(cleanStalePidFile({ removeStale: false })).toBe('alive');
+      } finally {
+        // An exit that already happened never fires 'exit' again, so only wait
+        // for a child still running, and never longer than five seconds.
+        if (worker.exitCode === null && worker.signalCode === null) {
+          const exited = new Promise<void>(resolve => worker.once('exit', () => resolve()));
+          worker.kill('SIGTERM');
+          let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+          await Promise.race([exited, new Promise<void>(resolve => { cleanupTimer = setTimeout(resolve, 5_000); })]);
+          clearTimeout(cleanupTimer);
+        }
+        rmSync(workerDir, { recursive: true, force: true });
+      }
+    });
+
     it('should remove PID file when process is dead', () => {
       const staleInfo: PidInfo = {
         pid: 2147483647,
@@ -905,6 +988,30 @@ describe('ProcessManager', () => {
 
       expect(existsSync(dir)).toBe(true);
       expect(statSync(dir).isDirectory()).toBe(true);
+    });
+
+    // A daemon launched by hand (or by an older launcher) can inherit the
+    // user's project, a deleted directory, or an ACL-locked Store-app path;
+    // the daemon boot moves it into the data dir regardless of how it started.
+    it('pins a running daemon into the data directory by default', () => {
+      const moves: string[] = [];
+      expect(pinDaemonWorkingDirectory(undefined, (dir) => { moves.push(dir); })).toBe(DATA_DIR);
+      expect(moves).toEqual([DATA_DIR]);
+    });
+
+    it('falls back to the next candidate when a chdir is refused', () => {
+      const moves: string[] = [];
+      const chdir = (dir: string) => {
+        if (dir === '/locked') throw Object.assign(new Error('EPERM: operation not permitted, chdir'), { code: 'EPERM' });
+        moves.push(dir);
+      };
+      expect(pinDaemonWorkingDirectory([() => '/locked', () => '/home/me', () => '/tmp'], chdir)).toBe('/home/me');
+      expect(moves).toEqual(['/home/me']);
+    });
+
+    it('never throws when every candidate fails', () => {
+      const refuse = () => { throw new Error('EACCES'); };
+      expect(pinDaemonWorkingDirectory([() => '/a', () => { throw new Error('no home'); }], refuse)).toBeNull();
     });
   });
 

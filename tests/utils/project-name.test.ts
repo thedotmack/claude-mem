@@ -1,7 +1,8 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
+import { basename } from 'path';
 import { homedir } from 'os';
-import { getProjectName, getProjectContext, resolveHookProjectPath } from '../../src/utils/project-name.js';
+import { getProjectName, getProjectContext, getPathModeProjectContext, resolveHookProjectPath, buildWorktreeProjectKey, parseOriginUrlToSlug } from '../../src/utils/project-name.js';
 
 const CLAUDE_PROJECT_DIR_ENV = 'CLAUDE_PROJECT_DIR';
 const ANCHORED_PROJECT_DIR_NAME = 'anchored-project';
@@ -27,19 +28,17 @@ afterAll(() => {
 describe('getProjectName', () => {
   describe('tilde expansion', () => {
     it('resolves bare ~ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~')).toBe(expected);
+      expect(getProjectName('~')).toBe(basename(homedir()));
     });
 
     it('resolves ~/subpath to subpath', () => {
-      expect(getProjectName('~/projects/my-app')).toBe('my-app');
+      // Do not use ~/projects/... : on Windows that case-folds onto a real
+      // Projects directory and the #3194 marker walk will pick it up.
+      expect(getProjectName('~/cm-3194-nosuch/my-app')).toBe('my-app');
     });
 
     it('resolves ~/ to home directory basename', () => {
-      const home = homedir();
-      const expected = home.split('/').pop() || home.split('\\').pop() || '';
-      expect(getProjectName('~/')).toBe(expected);
+      expect(getProjectName('~/')).toBe(basename(homedir()));
     });
 
     it('resolves a leading ~\\ on Windows', () => {
@@ -128,6 +127,140 @@ describe('getProjectName', () => {
       // A path that does not exist (and therefore cannot be in a repo) must
       // fall back to basename(cwd) rather than throwing or returning a root.
       expect(getProjectName('/no/such/dir/standalone-folder')).toBe('standalone-folder');
+    });
+  });
+
+  describe('#3194 — an explicit claude-mem marker names a non-git project', () => {
+    let tmp: string;
+    let markedParent: string;
+    let markedSub: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      // Isolate under a unique temp root so upward marker walks stay inside it.
+      tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-3194-')));
+      markedParent = join(tmp, 'home-project');
+      markedSub = join(markedParent, 'automation');
+      mkdirSync(markedSub, { recursive: true });
+      writeFileSync(join(markedParent, '.claude-mem-project'), '');
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('a subdir under a .claude-mem-project root resolves to the root basename', () => {
+      expect(getProjectName(markedSub)).toBe('home-project');
+      expect(getProjectName(markedParent)).toBe('home-project');
+    });
+
+    it('writes use the marker key; the pre-marker key stays readable as an alias', () => {
+      const sub = getProjectContext(markedSub);
+      expect(sub.primary).toBe('home-project');
+      // Sessions launched from `automation` before the marker existed were
+      // stored under `automation`; adding a marker must not hide them.
+      expect(sub.allProjects).toEqual(['automation', 'home-project']);
+      expect(sub.parent).toBeNull();
+
+      expect(getProjectContext(markedParent).allProjects).toEqual(['home-project']);
+    });
+
+    it('accepts the existing .claude-mem.json project file as a marker', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const app = join(tmp, 'projects', 'json-app');
+      const nested = join(app, 'src');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(app, '.claude-mem.json'), '{}\n');
+      expect(getProjectName(nested)).toBe('json-app');
+    });
+
+    it('ignores generic manifests, so existing keys do not move', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const app = join(tmp, 'projects', 'my-app');
+      const nested = join(app, 'src');
+      mkdirSync(nested, { recursive: true });
+      writeFileSync(join(app, 'package.json'), '{"name":"my-app"}\n');
+      writeFileSync(join(app, 'CLAUDE.md'), '# my app\n');
+      expect(getProjectName(nested)).toBe('src');
+      expect(getProjectContext(nested).allProjects).toEqual(['src']);
+    });
+
+    it('a marker-less non-git dir keeps basename(cwd) and never widens to its parent', () => {
+      expect(getProjectName('/no/such/lc/bin')).toBe('bin');
+      const ctx = getProjectContext('/no/such/lc/bin');
+      expect(ctx.primary).toBe('bin');
+      expect(ctx.allProjects).toEqual(['bin']);
+      expect(ctx.parent).toBeNull();
+    });
+
+    it('uses resolveHookProjectPath then marker walk for a non-git CLAUDE_PROJECT_DIR', () => {
+      process.env[CLAUDE_PROJECT_DIR_ENV] = markedParent;
+      try {
+        const hookPath = resolveHookProjectPath(SDK_TEMP_DIR_NAME);
+        expect(hookPath).toBe(markedParent);
+        expect(getProjectName(hookPath)).toBe('home-project');
+        expect(getProjectContext(hookPath).primary).toBe('home-project');
+      } finally {
+        delete process.env[CLAUDE_PROJECT_DIR_ENV];
+      }
+    });
+
+    // os.homedir() is fixed for the life of a Bun process, so the stop
+    // directories are exercised in a child with its own HOME / TMPDIR /
+    // CLAUDE_CONFIG_DIR.
+    function resolveInChild(cwd: string, env: Record<string, string>): { name: string; allProjects: string[] } {
+      const { join } = require('path') as typeof import('path');
+      const modulePath = join(import.meta.dir, '../../src/utils/project-name.ts');
+      const script = `
+        const { getProjectName, getProjectContext } = await import(${JSON.stringify(modulePath)});
+        const cwd = ${JSON.stringify(cwd)};
+        console.log(JSON.stringify({ name: getProjectName(cwd), allProjects: getProjectContext(cwd).allProjects }));
+      `;
+      const result = Bun.spawnSync(['bun', '-e', script], { env: { ...process.env, ...env } });
+      if (result.exitCode !== 0) {
+        throw new Error(new TextDecoder().decode(result.stderr));
+      }
+      const lines = new TextDecoder().decode(result.stdout).trim().split('\n');
+      return JSON.parse(lines[lines.length - 1]);
+    }
+
+    it('never treats the home directory as a marker root', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeHome = join(tmp, 'fake-home');
+      const notes = join(fakeHome, 'notes');
+      mkdirSync(notes, { recursive: true });
+      // A ~/.claude-mem.json would otherwise fold every non-git directory under
+      // $HOME into one bucket named after the user.
+      writeFileSync(join(fakeHome, '.claude-mem.json'), '{}\n');
+      writeFileSync(join(fakeHome, '.claude-mem-project'), '');
+
+      const resolved = resolveInChild(notes, { HOME: fakeHome, CLAUDE_CONFIG_DIR: join(fakeHome, '.claude') });
+      expect(resolved).toEqual({ name: 'notes', allProjects: ['notes'] });
+    });
+
+    it('never treats TMPDIR or Claude\'s config dir as marker roots', async () => {
+      const { mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const fakeTmp = join(tmp, 'fake-tmp');
+      const scratch = join(fakeTmp, 'scratch');
+      mkdirSync(scratch, { recursive: true });
+      writeFileSync(join(fakeTmp, '.claude-mem-project'), '');
+
+      const fakeConfig = join(tmp, 'fake-config');
+      const pluginDir = join(fakeConfig, 'plugins', 'cache', 'thedotmack', 'claude-mem', '13.0.0');
+      mkdirSync(join(pluginDir, 'scripts'), { recursive: true });
+      writeFileSync(join(pluginDir, '.claude-mem.json'), '{}\n');
+
+      const env = { TMPDIR: fakeTmp, CLAUDE_CONFIG_DIR: fakeConfig };
+      expect(resolveInChild(scratch, env)).toEqual({ name: 'scratch', allProjects: ['scratch'] });
+      expect(resolveInChild(join(pluginDir, 'scripts'), env)).toEqual({ name: 'scripts', allProjects: ['scripts'] });
     });
   });
 
@@ -272,6 +405,54 @@ describe('getProjectContext', () => {
     });
   });
 
+  // #3641 — Codex CLI puts worktrees at ~/.codex/worktrees/<id>/<repo>, so the
+  // worktree basename equals the repo name and the naive compound key doubles
+  // to <repo>/<repo>. That doubled key matches neither injection nor search.
+  describe('#3641 — doubled worktree key collapses to the repo name', () => {
+    let tmp: string;
+    let doubledCheckout: string;
+
+    beforeAll(async () => {
+      const { mkdtempSync, mkdirSync, writeFileSync } = await import('fs');
+      const { join } = await import('path');
+      const { tmpdir } = await import('os');
+
+      tmp = mkdtempSync(join(tmpdir(), 'cm-wt-doubled-'));
+      // Mirror the Codex layout: the worktree checkout basename equals the
+      // parent repo basename (both 'q-companies-master').
+      const mainRepo = join(tmp, 'q-companies-master');
+      const worktreeGitDir = join(mainRepo, '.git', 'worktrees', 'q-companies-master');
+      doubledCheckout = join(tmp, 'codex-6389', 'q-companies-master');
+
+      mkdirSync(worktreeGitDir, { recursive: true });
+      mkdirSync(doubledCheckout, { recursive: true });
+      writeFileSync(join(doubledCheckout, '.git'), `gitdir: ${worktreeGitDir}\n`);
+    });
+
+    afterAll(async () => {
+      const { rmSync } = await import('fs');
+      rmSync(tmp, { recursive: true, force: true });
+    });
+
+    it('buildWorktreeProjectKey collapses when worktree name equals parent', () => {
+      expect(buildWorktreeProjectKey('q-companies-master', 'q-companies-master')).toBe('q-companies-master');
+    });
+
+    it('buildWorktreeProjectKey keeps the compound key when names differ', () => {
+      expect(buildWorktreeProjectKey('main-repo', 'feature-x')).toBe('main-repo/feature-x');
+    });
+
+    it('getProjectContext collapses the doubled key to the parent name', () => {
+      const ctx = getProjectContext(doubledCheckout);
+      expect(ctx.isWorktree).toBe(true);
+      expect(ctx.primary).toBe('q-companies-master');
+      expect(ctx.parent).toBe('q-companies-master');
+      // Rows written before the collapse are stored under the doubled key; it
+      // stays readable until the adoption sweep folds them into the repo.
+      expect(ctx.allProjects).toEqual(['q-companies-master/q-companies-master', 'q-companies-master']);
+    });
+  });
+
   // #3262 — detectWorktree must run at the git worktree root, not raw cwd.
   // A session started in a subdirectory of a worktree must keep the same
   // parent/worktree compound key as a session at the worktree root.
@@ -341,5 +522,177 @@ describe('getProjectContext', () => {
       expect(inSubdir).not.toBe('feature-x');
       expect(inSubdir).not.toBe('nested');
     });
+  });
+});
+
+describe('parseOriginUrlToSlug — CLAUDE_MEM_PROJECT_NAME_SOURCE=git-remote', () => {
+  it('parses scp-style ssh URLs', () => {
+    expect(parseOriginUrlToSlug('git@github.com:thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('parses https URLs', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('parses ssh:// URLs', () => {
+    expect(parseOriginUrlToSlug('ssh://git@github.com/thedotmack/claude-mem.git')).toBe('thedotmack/claude-mem');
+  });
+
+  it('tolerates a missing .git suffix', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem')).toBe('thedotmack/claude-mem');
+  });
+
+  it('tolerates a trailing slash', () => {
+    expect(parseOriginUrlToSlug('https://github.com/thedotmack/claude-mem/')).toBe('thedotmack/claude-mem');
+  });
+
+  it('strips the trailing slash before .git, so repo.git/ loses both', () => {
+    expect(parseOriginUrlToSlug('https://github.com/acme/widgets.git/')).toBe('acme/widgets');
+  });
+
+  it('takes the last two segments for nested groups (e.g. GitLab subgroups)', () => {
+    expect(parseOriginUrlToSlug('https://gitlab.com/group/subgroup/repo.git')).toBe('subgroup/repo');
+  });
+
+  it('handles self-hosted hosts, ports and the user-less scp form', () => {
+    expect(parseOriginUrlToSlug('git@frango:money-marathon/prolific.git')).toBe('money-marathon/prolific');
+    expect(parseOriginUrlToSlug('https://code.example.com:8443/acme/widgets.git')).toBe('acme/widgets');
+    expect(parseOriginUrlToSlug('code.example.com:acme/widgets')).toBe('acme/widgets');
+  });
+
+  // Gate P2-16: Azure DevOps puts `_git` between the project and the
+  // repository; it names the URL scheme, not the repository.
+  it('skips the _git segment of Azure DevOps URLs', () => {
+    expect(parseOriginUrlToSlug('https://dev.azure.com/contoso/payments/_git/api')).toBe('payments/api');
+    expect(parseOriginUrlToSlug('https://contoso@dev.azure.com/contoso/payments/_git/api')).toBe('payments/api');
+    expect(parseOriginUrlToSlug('https://contoso.visualstudio.com/DefaultCollection/payments/_git/api')).toBe('payments/api');
+    expect(parseOriginUrlToSlug('git@ssh.dev.azure.com:v3/contoso/payments/api')).toBe('payments/api');
+  });
+
+  it('returns a single segment when that is all there is', () => {
+    expect(parseOriginUrlToSlug('git@github.com:solorepo.git')).toBe('solorepo');
+  });
+
+  it('rejects local remotes, which name a directory on this machine', () => {
+    expect(parseOriginUrlToSlug('file:///srv/repos/widgets.git')).toBeNull();
+    expect(parseOriginUrlToSlug('/srv/repos/widgets.git')).toBeNull();
+    expect(parseOriginUrlToSlug('../widgets')).toBeNull();
+    expect(parseOriginUrlToSlug('C:\\repos\\widgets')).toBeNull();
+  });
+
+  it('rejects bare hosts and empty input', () => {
+    expect(parseOriginUrlToSlug('https://github.com')).toBeNull();
+    expect(parseOriginUrlToSlug('https://github.com/')).toBeNull();
+    expect(parseOriginUrlToSlug('git@github.com:')).toBeNull();
+    expect(parseOriginUrlToSlug('')).toBeNull();
+    expect(parseOriginUrlToSlug('   ')).toBeNull();
+  });
+});
+
+describe('#2827 — git-remote project names', () => {
+  const SOURCE_ENV = 'CLAUDE_MEM_PROJECT_NAME_SOURCE';
+  const savedSource = process.env[SOURCE_ENV];
+  let tmp: string;
+  let repo: string;
+  let worktree: string;
+  let noRemoteRepo: string;
+  let noRemoteWorktree: string;
+  let sameNameRepo: string;
+  let sameNameCodexWorktree: string;
+
+  beforeAll(async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, realpathSync } = await import('fs');
+    const { execFileSync } = await import('child_process');
+    const { join } = await import('path');
+    const { tmpdir } = await import('os');
+    const run = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { stdio: 'ignore' });
+    const initRepo = (dir: string) => {
+      mkdirSync(dir, { recursive: true });
+      run(dir, 'init', '-q', '-b', 'main');
+      run(dir, 'config', 'user.email', 'test@example.com');
+      run(dir, 'config', 'user.name', 'Test');
+      writeFileSync(join(dir, 'README.md'), 'base\n');
+      run(dir, 'add', 'README.md');
+      run(dir, 'commit', '-q', '-m', 'base');
+    };
+
+    tmp = realpathSync(mkdtempSync(join(tmpdir(), 'cm-2827-')));
+    repo = join(tmp, 'widgets-checkout');
+    worktree = join(tmp, 'widgets-feature');
+    noRemoteRepo = join(tmp, 'scratchpad');
+    noRemoteWorktree = join(tmp, 'scratchpad-wt');
+
+    initRepo(repo);
+    run(repo, 'remote', 'add', 'origin', 'git@github.com:acme/widgets.git');
+    run(repo, 'worktree', 'add', '-q', '-b', 'feature', worktree);
+
+    initRepo(noRemoteRepo);
+    run(noRemoteRepo, 'worktree', 'add', '-q', '-b', 'wt', noRemoteWorktree);
+
+    // org == repo (prettier/prettier), plus a Codex-style worktree named after it.
+    sameNameRepo = join(tmp, 'prettier');
+    sameNameCodexWorktree = join(tmp, 'codex', 'c1', 'prettier');
+    initRepo(sameNameRepo);
+    run(sameNameRepo, 'remote', 'add', 'origin', 'https://github.com/prettier/prettier.git');
+    mkdirSync(join(tmp, 'codex', 'c1'), { recursive: true });
+    run(sameNameRepo, 'worktree', 'add', '-q', '-b', 'codex-task', sameNameCodexWorktree);
+
+    process.env[SOURCE_ENV] = 'git-remote';
+  }, 30_000);
+
+  afterAll(async () => {
+    const { rmSync } = await import('fs');
+    if (savedSource === undefined) delete process.env[SOURCE_ENV];
+    else process.env[SOURCE_ENV] = savedSource;
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('names the repository by its origin slug and keeps the folder key readable', () => {
+    expect(getProjectName(repo)).toBe('acme/widgets');
+    const ctx = getProjectContext(repo);
+    expect(ctx.primary).toBe('acme/widgets');
+    // Memory stored under the folder name before the switch stays reachable.
+    expect(ctx.allProjects).toEqual(['widgets-checkout', 'acme/widgets']);
+  });
+
+  it('folds a worktree into the repository slug, keeping its old composite keys readable', () => {
+    const ctx = getProjectContext(worktree);
+    expect(ctx.primary).toBe('acme/widgets');
+    expect(ctx.parent).toBeNull();
+    expect(ctx.isWorktree).toBe(true);
+    expect(ctx.allProjects).toEqual(['widgets-checkout', 'widgets-checkout/widgets-feature', 'acme/widgets']);
+  });
+
+  // Gate P1-2: worktree adoption only trusts a deleted checkout for a
+  // folder-derived key, so every context says how its key was derived.
+  it('reports how each key was derived', () => {
+    expect(getProjectContext(repo).keySource).toBe('git-remote');
+    expect(getProjectContext(worktree).keySource).toBe('git-remote');
+    expect(getProjectContext(noRemoteWorktree).keySource).toBe('path');
+    expect(getPathModeProjectContext(repo).keySource).toBe('path');
+  });
+
+  it('still exposes the folder-based identity that worktree adoption works on', () => {
+    expect(getPathModeProjectContext(repo).primary).toBe('widgets-checkout');
+    const ctx = getPathModeProjectContext(worktree);
+    expect(ctx.primary).toBe('widgets-checkout/widgets-feature');
+    expect(ctx.parent).toBe('widgets-checkout');
+  });
+
+  it('falls back to path mode, worktree compositing included, when no slug can be derived', () => {
+    expect(getProjectName(noRemoteRepo)).toBe('scratchpad');
+    const ctx = getProjectContext(noRemoteWorktree);
+    expect(ctx.primary).toBe('scratchpad/scratchpad-wt');
+    expect(ctx.allProjects).toEqual(['scratchpad', 'scratchpad/scratchpad-wt']);
+  });
+
+  // #3641's collapse (`<repo>/<repo>` → `<repo>`) is a path-mode rule: a slug
+  // whose org and repository share a name is a real identity and stays whole.
+  it('never collapses a slug whose org and repository share a name', () => {
+    expect(getProjectName(sameNameRepo)).toBe('prettier/prettier');
+    expect(getProjectContext(sameNameRepo).primary).toBe('prettier/prettier');
+    const ctx = getProjectContext(sameNameCodexWorktree);
+    expect(ctx.primary).toBe('prettier/prettier');
+    expect(ctx.allProjects).toEqual(['prettier', 'prettier/prettier']);
   });
 });
