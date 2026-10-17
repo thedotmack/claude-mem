@@ -1,0 +1,91 @@
+---
+title: "My Work: the local live viewer"
+description: "Follow recorded work, review completed results, and pick up the next human handoff on your own computer."
+---
+
+Open the worker URL printed by claude-mem, usually `http://localhost:37777`.
+**My Work** is the default local viewer. It brings recorded human requests,
+progress, next steps, and finished results into one readable place.
+
+The panel runs locally and reads your saved memory database. It does not require
+a cloud account, a new model call, or an internet connection to show your work.
+The original memory timeline, sessions, settings and console remain under
+**Memory & settings**, at `/viewer` on the same worker.
+
+## Working, ready and checked
+
+- **In progress** means the latest saved work state says work is underway. It is
+  not a live-presence signal or a promise that an agent is currently running.
+- **Needs you** appears when recorded work explicitly asks for human input.
+  Open the handoff, inspect the original request and evidence, then continue in
+  the agent conversation where the work is happening.
+- **Ready to check** means the parent request was explicitly reported complete.
+  A finished subtask or a closed agent session does not finish its parent.
+- **Checked** means you pressed **Mark checked** for that version of the result.
+  It records your review locally; it does not certify correctness or change the
+  agent's source status. **Undo** is available on a checked card.
+- **No recent update** means no newer activity has been recorded for six hours.
+
+A new substantive source update invalidates an older check. If the request is
+still reported complete, it returns to **Ready to check**. If it has reopened,
+the recorded work status is shown instead. Review notes live in the private
+`work-view-reviews.db` sidecar in the claude-mem data directory and are not
+uploaded by cloud sync.
+
+## Live updates without losing your place
+
+The panel receives new local data automatically. While you are reading an open
+request, using a control, or scrolled down, incoming changes wait behind
+**Show updates**. Applied cards preserve their existing order. Timestamps refresh
+without rebuilding the card you are reading.
+
+**Local updates connected** describes the local data connection, separately from
+cloud sync. If the connection or source fails, the panel keeps its last received
+work visible and shows the interruption. It never animates a saved work status
+as proof of agent activity.
+
+## Requests and source evidence
+
+Open a request to see its original human ask, recorded follow-ups, result and
+source records. **Copy handoff** copies the goal, recorded state, next step and
+recent updates so you can continue in the agent you choose. It never sends or
+assigns work; if clipboard access is unavailable, select the displayed text.
+A captured conversation normally forms one request; explicit
+`request_id` fields can distinguish independent goals. The panel does not guess
+that two unrelated conversations describe the same request.
+
+Records without a proven human request remain under **work records need a linked
+human request**. The live view loads a bounded recent slice; use **Memory &
+settings** for the full saved history. Search and the time filter scope the cards,
+state counts and **Your next move** together. When several projects are loaded, use the project selector to narrow that same view. **Other states** includes blocked, queued, quiet and unknown work; each card retains its recorded state label.
+
+## Optional Claude.ai and ChatGPT connections
+
+The **Connect Claude.ai** and **Connect ChatGPT** actions open the existing CMEM
+Cloud setup. Clicking does not connect an account or upload memory. Sign in and
+review the setup and sharing scope before enabling anything.
+
+[Cloud sync](/cloud-sync) can upload saved prompt text and observation narratives.
+Your local viewer continues to work without it.
+
+## Work with your team
+
+Switch from **My Work** to **TeamBrain** to view shared work. Personal requests
+and local review notes remain in My Work. TeamBrain reads the shared board for
+your selected team using your existing sync connection.
+
+If this install has not joined a team, choose **Set up TeamBrain** to open the
+team setup and plan page. To join with an invitation, run
+`npx claude-mem teambrain join <invite-link>`, approve the device, and choose
+which projects to share. Opening the TeamBrain tab does not enable sharing.
+
+The connected panel shows your actual membership, whether you are broadcasting,
+the shared project's open lists and tasks, and linked collision or delegation
+findings. These are **shared work lists**, not inferred human requests. Local
+Checked notes do not appear on them.
+
+Shared updates wait while you read, and the panel refreshes only while its tab
+is open and visible. If access is revoked or a team stops, the shared board is
+cleared. A temporary connection failure keeps the last received board with a
+visible error. **Team workspace & sharing settings** opens the full cloud page
+for membership, invitations, billing and explicit sharing changes.

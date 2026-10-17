@@ -44,6 +44,13 @@ export function createMiddleware(): RequestHandler[] {
 
   const packageRoot = getPackageRoot();
   const uiDir = path.join(packageRoot, 'plugin', 'ui');
+  middlewares.push((req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith('/work-view/')) {
+      res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+      res.setHeader('X-Frame-Options', 'DENY');
+    }
+    next();
+  });
   middlewares.push(express.static(uiDir));
 
   return middlewares;

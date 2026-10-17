@@ -39,6 +39,7 @@ function lazyUiHtml(fileName: string): () => Buffer | null {
 }
 
 const getViewerHtmlBytes = lazyUiHtml('viewer.html');
+const getWorkViewHtmlBytes = lazyUiHtml('work-view/index.html');
 const getTvHtmlBytes = lazyUiHtml('tv.html');
 
 /**
@@ -163,10 +164,17 @@ export class ViewerRoutes extends BaseRouteHandler {
 
   setupRoutes(app: express.Application): void {
     const packageRoot = getPackageRoot();
+    app.use('/work-view', (_req, res, next) => {
+      // The static entry point needs the same clickjacking protection as /.
+      res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+      res.setHeader('X-Frame-Options', 'DENY');
+      next();
+    });
     app.use(express.static(path.join(packageRoot, 'ui')));
 
     app.get('/health', this.handleHealth.bind(this));
-    app.get('/', this.handleViewerUI.bind(this));
+    app.get('/', this.handleWorkViewUI.bind(this));
+    app.get('/viewer', this.handleViewerUI.bind(this));
     app.get('/tv', this.handleTvUI.bind(this));
     app.get('/restart', this.handleRestartPage.bind(this));
     app.get('/stream', this.handleSSEStream.bind(this));
@@ -193,6 +201,16 @@ export class ViewerRoutes extends BaseRouteHandler {
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(viewerHtmlBytes);
+  });
+
+  private handleWorkViewUI = this.wrapHandler((req: Request, res: Response): void => {
+    const html = getWorkViewHtmlBytes();
+    if (!html) throw new Error('My Work UI not found at any expected location');
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store');
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
+    res.send(html);
   });
 
   /**
