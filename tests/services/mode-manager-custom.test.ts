@@ -83,7 +83,7 @@ function runModeProbe(dataDir: string, modeId: string, options: {
       console.log(JSON.stringify({ error: error.message, errors }));
     }
   `;
-  const result = spawnSync('bun', ['-e', probe], {
+  const result = spawnSync(process.execPath, ['-e', probe], {
     cwd: projectRoot,
     env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_MODES_DIR: options.modesDir ?? '' },
     encoding: 'utf8',
