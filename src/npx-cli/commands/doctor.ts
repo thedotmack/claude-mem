@@ -25,7 +25,8 @@ import {
 import {
   currentLauncherHostEnvironment,
   findExecutableOnPath,
-  readLauncherProtocol,
+  launcherVersionProbeTimeoutMs,
+  probeLauncherVersion,
   resolveLauncherBinaryPath,
   type LauncherHostEnvironment,
 } from '../../launcher/install-launcher.js';
@@ -286,13 +287,13 @@ export function hookLauncherCheck(host: LauncherHostEnvironment = currentLaunche
     };
   }
   const probeStartedAt = performance.now();
-  const printedProtocol = readLauncherProtocol(launcherOnPath);
+  const { protocol: printedProtocol, failure: probeFailure } = probeLauncherVersion(launcherOnPath, launcherVersionProbeTimeoutMs(host.platform));
   const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
   if (printedProtocol === null) {
     return {
       name,
       status: 'fail',
-      detail: `${launcherOnPath} is not the claude-mem hook launcher (--version printed no protocol number); ${reinstallHint}`,
+      detail: `${launcherOnPath} did not report a launcher protocol (--version ${probeFailure}); ${reinstallHint}`,
       required: true,
     };
   }

@@ -26,7 +26,8 @@ const realPortReclaimSnapshot = { ...realPortReclaim };
 const processManager = {
   cleanStalePidFile: mock(() => 'dead' as 'alive' | 'dead'),
   getPlatformTimeout: mock((timeout: number) => timeout),
-  spawnDaemon: mock(() => 2147483647),
+  spawnDaemon: mock((): number | undefined => 2147483647),
+  getLastWorkerDaemonLaunchError: mock((): string | undefined => undefined),
   touchPidFile: mock(() => {}),
   readPidFile: mock((): { pid: number; port: number; startedAt: string } | null => null),
   removePidFileIfOwner: mock((_expectedOwnerPid: number | null) => {}),
@@ -116,6 +117,8 @@ function resetMocks(): void {
   processManager.getPlatformTimeout.mockClear();
   processManager.spawnDaemon.mockReset();
   processManager.spawnDaemon.mockReturnValue(2147483647);
+  processManager.getLastWorkerDaemonLaunchError.mockReset();
+  processManager.getLastWorkerDaemonLaunchError.mockReturnValue(undefined);
   processManager.touchPidFile.mockClear();
   processManager.readPidFile.mockReset();
   processManager.readPidFile.mockReturnValue(null);
@@ -396,6 +399,22 @@ describe('ensureWorkerStarted startup readiness', () => {
     expect(result).toBe('dead');
     expect(healthMonitor.waitForReadiness).not.toHaveBeenCalled();
     expect(processManager.touchPidFile).not.toHaveBeenCalled();
+  });
+
+  it('reports why the daemon launch failed and sends it as launch_failed', async () => {
+    resetMocks();
+    processManager.spawnDaemon.mockReturnValue(undefined);
+    processManager.getLastWorkerDaemonLaunchError.mockReturnValue('powershell.exe could not launch the worker: powershell Start-Process exited 1');
+
+    expect(await ensureWorkerStarted(39008, import.meta.filename)).toBe('dead');
+    expect(getLastWorkerBootFailure()).toBe('powershell.exe could not launch the worker: powershell Start-Process exited 1');
+    const marker = readFileSync(join(TEST_DATA_DIR, 'CAPTURE_BROKEN'), 'utf-8');
+    expect(marker).toContain('could not be launched');
+    expect(marker).toContain('Start-Process exited 1');
+    expect(cliTelemetry.captureCliEvent).toHaveBeenCalledWith(
+      'worker_start_failed',
+      expect.objectContaining({ outcome: 'dead', error_category: 'launch_failed' }),
+    );
   });
 });
 

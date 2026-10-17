@@ -7,6 +7,7 @@ import { captureCliEvent } from './telemetry/cli-telemetry.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import {
   cleanStalePidFile,
+  getLastWorkerDaemonLaunchError,
   getPlatformTimeout,
   probeWorkerBootFailure,
   readPidFile,
@@ -108,18 +109,21 @@ async function recordWorkerBootFailure(
   port: number,
   spawnedPid: number | undefined,
   bootFailure: string | undefined,
-  category: 'boot_crash' | 'unreachable_after_boot' | 'port_unbindable' = bootFailure ? 'boot_crash' : 'unreachable_after_boot',
+  category: 'boot_crash' | 'unreachable_after_boot' | 'port_unbindable' | 'launch_failed' = bootFailure ? 'boot_crash' : 'unreachable_after_boot',
 ): Promise<void> {
   const unbindable = category === 'port_unbindable';
+  const launchFailed = category === 'launch_failed';
   const diagnostic = [
     unbindable
       ? `[worker-spawner] worker port ${port} cannot be bound, so no worker was spawned`
-      : `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
+      : launchFailed
+        ? `[worker-spawner] the worker daemon for port ${port} could not be launched`
+        : `[worker-spawner] worker is dead and unreachable on port ${port} after boot — issue #3557`,
     `  spawned pid: ${spawnedPid ?? 'n/a'}`,
     `  platform: ${process.platform}`,
     `  timestamp: ${new Date().toISOString()}`,
     ...(bootFailure
-      ? [unbindable ? '  bind failure:' : '  boot failure (reproduced):', ...bootFailure.split('\n').map((line) => `    ${line}`)]
+      ? [unbindable ? '  bind failure:' : launchFailed ? '  launch failure:' : '  boot failure (reproduced):', ...bootFailure.split('\n').map((line) => `    ${line}`)]
       : []),
   ].join('\n');
 
@@ -345,7 +349,9 @@ export async function ensureWorkerStarted(
         logger.error('SYSTEM', 'Failed to spawn worker daemon');
         // The launch itself failed (no Bun runtime, Start-Process refused):
         // as deterministic as a boot crash, so it also starts the cooldown.
-        markWorkerBootCrashed('The worker daemon could not be launched (see the claude-mem log for the spawn error).');
+        lastWorkerBootFailure = getLastWorkerDaemonLaunchError();
+        markWorkerBootCrashed(lastWorkerBootFailure ?? 'The worker daemon could not be launched (see the claude-mem log for the spawn error).');
+        await recordWorkerBootFailure(port, undefined, lastWorkerBootFailure, 'launch_failed');
         return 'dead';
       }
     } else {
