@@ -137,23 +137,44 @@ function realComparablePath(p: string): string | null {
   }
 }
 
+/** realpath of the deepest existing ancestor, with the missing tail re-appended. */
+function realComparablePathOfAncestor(p: string): string | null {
+  const normalized = normalizePath(p);
+  const missing: string[] = [];
+  let current = normalized;
+  while (current && current !== path.posix.dirname(current)) {
+    const real = realComparablePath(current);
+    if (real !== null) return [real, ...missing.reverse()].join('/');
+    missing.push(path.posix.basename(current));
+    current = path.posix.dirname(current);
+  }
+  return null;
+}
+
 /**
  * Tool evidence is usually absolute (Read/Edit/Write inputs). An absolute file
- * belongs to the folder only when it sits directly in this checkout's folder,
- * not in any folder whose path merely ends the same way
- * (/repo/packages/widget/src/x.ts is not a child of /repo/src). Relative
- * evidence keeps the project-relative check.
+ * is a child of the folder when it sits in `<root>/<relativeFolder>` for some
+ * checkout root: this one, or another checkout that shares the project key
+ * (a moved clone, a git-remote project name). It is not a child when that
+ * root lies inside this checkout: /repo/packages/widget/src/x.ts belongs to
+ * packages/widget/src, not to /repo/src. Relative evidence keeps the
+ * project-relative check.
  */
-function makeFolderChildMatcher(relativeFolder: string, absoluteFolder: string): (file: string) => boolean {
-  const folderForms = new Set([comparablePath(absoluteFolder)]);
-  const realFolder = realComparablePath(absoluteFolder);
-  if (realFolder) folderForms.add(realFolder);
+function makeFolderChildMatcher(relativeFolder: string, workingDir: string): (file: string) => boolean {
+  const relativeForm = comparablePath(relativeFolder);
+  const rootForms = new Set([comparablePath(workingDir)]);
+  const realRoot = realComparablePath(workingDir);
+  if (realRoot) rootForms.add(realRoot);
+  const insideThisCheckout = (dir: string) => [...rootForms].some(root => dir.startsWith(root + '/'));
   return (file: string) => {
     if (!ABSOLUTE_PATH.test(file)) return isDirectChild(file, relativeFolder);
-    const fileDir = path.posix.dirname(normalizePath(file));
-    if (folderForms.has(comparablePath(fileDir))) return true;
-    const realFileDir = realComparablePath(fileDir);
-    return realFileDir !== null && folderForms.has(realFileDir);
+    const fileDir = comparablePath(path.posix.dirname(normalizePath(file)));
+    if (!fileDir.endsWith('/' + relativeForm)) return false;
+    const root = fileDir.slice(0, -(relativeForm.length + 1));
+    if (rootForms.has(root)) return true;
+    const realFileRoot = realComparablePathOfAncestor(root);
+    if (realFileRoot !== null && rootForms.has(realFileRoot)) return true;
+    return !insideThisCheckout(root) && !(realFileRoot !== null && insideThisCheckout(realFileRoot));
   };
 }
 
@@ -177,7 +198,7 @@ function hasDirectChildFile(obs: ObservationRow, isFolderChild: (file: string) =
 function findObservationsByFolder(
   db: Database,
   relativeFolderPath: string,
-  absoluteFolderPath: string,
+  workingDir: string,
   project: string,
   limit: number,
 ): ObservationRow[] {
@@ -196,7 +217,7 @@ function findObservationsByFolder(
   const likeFor = (separator: string) => `%${JSON.stringify(segments.join(separator) + separator).slice(1, -1)}%`;
   const slashPattern = likeFor('/');
   const backslashPattern = likeFor('\\');
-  const isFolderChild = makeFolderChildMatcher(relativeFolderPath, absoluteFolderPath);
+  const isFolderChild = makeFolderChildMatcher(relativeFolderPath, workingDir);
   // Page the folder's direct children themselves, not a guessed window of the
   // broader candidates that nested files can fill.
   return pageMatchingRows<ObservationRow>(
@@ -336,7 +357,7 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Path escapes project root' };
   }
 
-  const observations = findObservationsByFolder(db, relativeFolder, resolvedFolder, project, observationLimit);
+  const observations = findObservationsByFolder(db, relativeFolder, resolvedWorkingDir, project, observationLimit);
 
   if (observations.length === 0) {
     return { success: false, observationCount: 0, error: 'No observations for folder' };

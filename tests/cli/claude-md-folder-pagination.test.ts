@@ -67,6 +67,7 @@ describe('CLAUDE.md direct-child pagination', () => {
         ['Relative-path edit', 'src/auth/login.ts'],
         ['Backslash-path edit', 'src\\\\auth\\\\login.ts'],
         ['Other package with the same folder name', ${JSON.stringify(join(project, 'packages', 'widget', 'src', 'auth', 'button.ts'))}],
+        ['Edit from another checkout of the project', ${JSON.stringify(join(root, 'old-clone', 'src', 'auth', 'login.ts'))}],
       ];
       files.forEach(([title, file], i) => {
         const memory = 'memory-' + i;
@@ -87,5 +88,7 @@ describe('CLAUDE.md direct-child pagination', () => {
     expect(context).toContain('Backslash-path edit');
     // An absolute path elsewhere in the checkout that merely ends in src/auth is not a child.
     expect(context).not.toContain('Other package with the same folder name');
+    // A checkout elsewhere that shares the project key keeps its history.
+    expect(context).toContain('Edit from another checkout of the project');
   }, 30_000);
 });
