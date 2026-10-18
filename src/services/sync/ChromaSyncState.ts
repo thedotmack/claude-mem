@@ -37,6 +37,13 @@ function statePath(): string {
 
 let cache: Record<string, ProjectWatermarks> | null = null;
 
+/**
+ * After a failed write, skip writes for this long. The backfill writes once or
+ * twice per row, and each failed write can block for the full rename retry.
+ */
+const PERSIST_FAILURE_BACKOFF_MS = 5_000;
+let persistBlockedUntil = 0;
+
 function normalizePendingIds(ids: unknown): number[] {
   if (!Array.isArray(ids)) {
     return [];
@@ -124,9 +131,11 @@ function persistOrThrow(): void {
  * change, the next persist writes it, and SQLite stays the source of truth.
  */
 function persist(): void {
+  if (Date.now() < persistBlockedUntil) return;
   try {
     persistOrThrow();
   } catch (error) {
+    persistBlockedUntil = Date.now() + PERSIST_FAILURE_BACKOFF_MS;
     logger.warn('CHROMA_SYNC', 'Could not write chroma-sync-state.json, will retry on the next change', {
       path: statePath()
     }, error instanceof Error ? error : new Error(String(error)));
@@ -137,6 +146,7 @@ export const ChromaSyncState = {
   /** Test hook: drop the in-memory watermark cache so the next read hits disk. */
   resetCacheForTests(): void {
     cache = null;
+    persistBlockedUntil = 0;
   },
 
   exists(): boolean {

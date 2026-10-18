@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, setSystemTime } from 'bun:test';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
@@ -55,7 +55,7 @@ describe('ChromaSyncState atomic persistence', () => {
     expect(written[project].observations).toBe(3);
   });
 
-  it('keeps a watermark change in memory when the write fails, and writes it on the next change', () => {
+  it('keeps a watermark change in memory when the write fails, and writes it after the backoff', () => {
     // A directory at the state path makes the rename fail on every platform.
     mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
 
@@ -64,7 +64,15 @@ describe('ChromaSyncState atomic persistence', () => {
     expect(readdirSync(dataDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
 
     rmSync(statePath(dataDir), { recursive: true });
-    ChromaSyncState.bump(project, 'summaries', 2);
+    ChromaSyncState.bump(project, 'summaries', 1);
+    expect(existsSync(statePath(dataDir))).toBe(false);
+
+    setSystemTime(new Date(Date.now() + 10_000));
+    try {
+      ChromaSyncState.bump(project, 'summaries', 2);
+    } finally {
+      setSystemTime();
+    }
 
     const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
     expect(written[project].observations).toBe(5);

@@ -98,7 +98,7 @@ const WINDOWS_RENAME_RETRY_CODES = new Set(['EPERM', 'EBUSY', 'EACCES']);
 /** About 0.6 s in total, the same order as graceful-fs's Windows rename retry. */
 const WINDOWS_RENAME_RETRY_DELAYS_MS = [10, 20, 40, 80, 160, 320];
 
-function sleepSync(ms: number): void {
+export function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
@@ -113,18 +113,14 @@ export function renameWithWindowsRetry(
   rename: (from: string, to: string) => void = renameSync,
   onWindows: boolean = IS_WINDOWS_PLATFORM
 ): void {
+  if (!onWindows) return rename(from, to);
   for (let attempt = 0; ; attempt++) {
     try {
       rename(from, to);
       return;
     } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (
-        !onWindows
-        || attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length
-        || code === undefined
-        || !WINDOWS_RENAME_RETRY_CODES.has(code)
-      ) {
+      const code = (err as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= WINDOWS_RENAME_RETRY_DELAYS_MS.length || !WINDOWS_RENAME_RETRY_CODES.has(code)) {
         throw err;
       }
       sleepSync(WINDOWS_RENAME_RETRY_DELAYS_MS[attempt]);
