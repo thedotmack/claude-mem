@@ -468,6 +468,18 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.4.3',
+        // The embedded vector index. LocalEmbedder reaches these through a
+        // request-time `await import('@huggingface/transformers')`, and they are
+        // kept EXTERNAL from the bundles below — so they must be present in
+        // the plugin's own runtime closure or the lazy path dies on a real
+        // install with "Cannot find module 'onnxruntime-node'".
+        // sharp is deliberately NOT declared here: it is a hard dependency of
+        // @huggingface/transformers, so it installs and hoists into
+        // plugin/node_modules regardless — and declaring it directly would trip
+        // scripts/check-postinstall-allowlist.js (sharp carries an `install`
+        // script), which prepublishOnly enforces. It is still marked external in
+        // the bundles below so the trio resolves at runtime, never at build time.
+        '@huggingface/transformers': '^4.2.0',
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
         // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
@@ -500,7 +512,17 @@ async function buildHooks() {
         'shell-quote': '1.9.0',
       },
       overrides: {
-        'tree-sitter': '^0.25.0'
+        'tree-sitter': '^0.25.0',
+        // MUST live here, not only in the root package.json. npm/bun apply
+        // `overrides` ONLY in the project being installed, so the root override is
+        // invisible to users; plugin/ is its own install root (own package.json +
+        // own bun.lock, installed by setup-runtime.ts), so this one DOES apply.
+        // Without it, @huggingface/transformers' EXACT transitive pin
+        // "onnxruntime-node": "1.24.3" wins — and 1.24.x ships
+        // bin/napi-v6/{linux/x64,linux/arm64,darwin/arm64,win32/x64,win32/arm64}
+        // with NO darwin/x64, stranding every Intel Mac (the exact cohort the
+        // vector index exists to help). 1.21.0 ships all six targets.
+        'onnxruntime-node': '1.21.0'
       },
       trustedDependencies: [
         'tree-sitter-cli'
@@ -710,6 +732,17 @@ async function buildHooks() {
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
         'zod',
+        // @huggingface/transformers is reached ONLY through LocalEmbedder's
+        // request-time `await import('@huggingface/transformers')`. Bundling it
+        // inlines the ONNX runtime glue while onnxruntime-node / sharp stay
+        // external, so the lazy path dies on a real install with
+        // "Cannot find module 'onnxruntime-node'". Keeping the whole trio external
+        // makes the dynamic import resolve against plugin/node_modules, where
+        // plugin/package.json ships them (and pins onnxruntime-node to 1.21.0 —
+        // 1.24.x dropped the darwin/x64 prebuilt, stranding Intel Macs).
+        'onnxruntime-node',
+        '@huggingface/transformers',
+        'sharp',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
