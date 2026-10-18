@@ -160,7 +160,7 @@ function realComparablePathOfAncestor(p: string): string | null {
  * packages/widget/src, not to /repo/src. Relative evidence keeps the
  * project-relative check.
  */
-function makeFolderChildMatcher(relativeFolder: string, workingDir: string): (file: string) => boolean {
+export function makeFolderChildMatcher(relativeFolder: string, workingDir: string): (file: string) => boolean {
   const relativeForm = comparablePath(relativeFolder);
   const rootForms = new Set([comparablePath(workingDir)]);
   const realRoot = realComparablePath(workingDir);
@@ -169,8 +169,10 @@ function makeFolderChildMatcher(relativeFolder: string, workingDir: string): (fi
   return (file: string) => {
     if (!ABSOLUTE_PATH.test(file)) return isDirectChild(file, relativeFolder);
     const fileDir = comparablePath(path.posix.dirname(normalizePath(file)));
-    if (!fileDir.endsWith('/' + relativeForm)) return false;
-    const root = fileDir.slice(0, -(relativeForm.length + 1));
+    // comparablePath lowercases drive-qualified (Windows) paths; fold the folder the same way.
+    const folderForm = /^[a-z]:/.test(fileDir) ? relativeForm.toLowerCase() : relativeForm;
+    if (!fileDir.endsWith('/' + folderForm)) return false;
+    const root = fileDir.slice(0, -(folderForm.length + 1));
     if (rootForms.has(root)) return true;
     const realFileRoot = realComparablePathOfAncestor(root);
     if (realFileRoot !== null && rootForms.has(realFileRoot)) return true;
