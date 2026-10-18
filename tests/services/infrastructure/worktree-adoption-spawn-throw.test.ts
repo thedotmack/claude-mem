@@ -1,8 +1,5 @@
-// Bun can throw from child_process.spawn() itself, while it sets up stdio
-// ("undefined is not an object (evaluating 'NativeWritable')"). spawnGit
-// called spawn() inside a Promise executor with no guard, so the throw
-// rejected the promise and stopped the adoption sweep for that repo.
-// A synchronous spawn throw must now come back as a git failure.
+// Bun can throw synchronously from child_process.spawn(). The adoption sweep
+// must treat that as a failed git call and keep going, not reject.
 import { describe, it, expect, afterAll, mock } from 'bun:test';
 import * as realChildProcess from 'child_process';
 

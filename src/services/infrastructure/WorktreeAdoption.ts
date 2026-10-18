@@ -79,17 +79,8 @@ function gitTimeoutError(): Error {
  * classification and windowsHide semantics of the spawnSync it replaces.
  */
 function spawnGit(cwd: string, args: string[]): Promise<GitCommandResult> {
-  return new Promise(resolve => {
-    let child: ReturnType<typeof spawn>;
-    try {
-      child = spawn('git', ['-C', cwd, ...args], { windowsHide: true });
-    } catch (err) {
-      // Bun can throw from spawn() itself while it sets up stdio ("undefined
-      // is not an object (evaluating 'NativeWritable')"). Report it as a git
-      // failure so the sweep goes on to the next call.
-      resolve({ status: null, stdout: '', stderr: '', error: err instanceof Error ? err : new Error(String(err)) });
-      return;
-    }
+  return new Promise<GitCommandResult>(resolve => {
+    const child = spawn('git', ['-C', cwd, ...args], { windowsHide: true });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     let stdout = '';
@@ -138,7 +129,14 @@ function spawnGit(cwd: string, args: string[]): Promise<GitCommandResult> {
       }
       settle({ status: code, stdout, stderr, error: undefined });
     });
-  });
+    // Bun can throw from spawn() itself while it sets up stdio; report that
+    // as a failed git call instead of a rejection that stops the sweep.
+  }).catch((err: unknown) => ({
+    status: null,
+    stdout: '',
+    stderr: '',
+    error: err instanceof Error ? err : new Error(String(err))
+  }));
 }
 
 async function gitRun(cwd: string, args: string[]): Promise<GitCommandResult> {
