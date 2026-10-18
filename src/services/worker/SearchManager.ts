@@ -478,7 +478,7 @@ export class SearchManager {
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-          orderBy: requestedDateOrder ?? 'date_desc',
+          orderBy: requestedDateOrder ?? 'relevance',
           limit: options.limit,
           project: options.project,
           projects: options.projects,
@@ -487,7 +487,7 @@ export class SearchManager {
       }
       if (promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-          orderBy: requestedDateOrder ?? 'date_desc',
+          orderBy: requestedDateOrder ?? 'relevance',
           limit: options.limit,
           project: options.project,
           projects: options.projects,
