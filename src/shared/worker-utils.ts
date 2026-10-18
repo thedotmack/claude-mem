@@ -1407,7 +1407,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       // A stale worker we just killed already proved its port closed
       // (waitForWorkerPortReleased); every other spawn must first prove the port
       // free (#3171).
-      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt))) return false;
+      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt, scriptPath))) return false;
       const runtimePath = resolveWorkerRuntimePath();
       if (!runtimePath) {
         logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found (PATH, BUN / BUN_PATH / BUN_INSTALL, or ~/.bun/bin)');
@@ -1546,7 +1546,11 @@ let unbindablePortDiagnosis: number | null = null;
  * - indeterminate (the bind neither succeeded nor hit EADDRINUSE in time) →
  *   no spawn: never start another worker onto a port in an unknown state.
  */
-async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | null): Promise<boolean> {
+async function preSpawnPortIsFree(
+  deadline: number,
+  hookDeadlineAt: number | null,
+  scriptPath: string | null,
+): Promise<boolean> {
   const port = getWorkerPort();
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return false;
@@ -1577,6 +1581,9 @@ async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | nul
     logger.info('SYSTEM', 'Reclaimed the worker port before lazy-spawn', { port, killedPids: reclaim.killedPids });
     return true;
   }
+  if (reclaim.reason === 'out-of-budget' && hookDeadlineAt !== null) {
+    handOffReclaimToDaemon(port, scriptPath, hookDeadlineAt);
+  }
   if (readOwnedWorkerPidInfo() === null) {
     orphanedPortDiagnosis = port;
   }
@@ -1586,6 +1593,78 @@ async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | nul
     ...(orphanedPortDiagnosis === port ? { fix: ORPHANED_PORT_REMEDIATION } : {}),
   });
   return false;
+}
+
+/**
+ * How long one reclaim handoff counts as in flight. The daemon it launches
+ * spends one health wait plus at most one reclaim (RECLAIM_MIN_BUDGET_MS,
+ * 9.5 s) before it either binds the port or exits, so hook events inside this
+ * window wait for it instead of launching another.
+ */
+const RECLAIM_HANDOFF_IN_FLIGHT_MS = 30_000;
+
+function reclaimHandoffMarkerPath(): string {
+  return path.join(resolveDataDir(), 'reclaim-handoff.json');
+}
+
+function reclaimHandoffInFlight(): boolean {
+  try {
+    return Date.now() - statSync(reclaimHandoffMarkerPath()).mtimeMs < RECLAIM_HANDOFF_IN_FLIGHT_MS;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * #4809: a hook reaches the reclaim with about 7 s of its budget left, and the
+ * reclaim needs 9.5 s, so it declines with 'out-of-budget' on every hook
+ * event and a wedged worker stays down until some launcher without a deadline
+ * comes along (16 minutes in the report). Instead, launch a detached worker
+ * daemon and return: the daemon's duplicate gate (worker-service.ts, the
+ * `--daemon` branch) runs the same reclaim with no deadline, under the same
+ * evidence rules, then binds the port or exits 0. The caller holds the spawn
+ * lock, so at most one hook launches it, and the in-flight marker keeps the
+ * next hook events from launching another while it runs.
+ */
+function handOffReclaimToDaemon(port: number, scriptPath: string | null, hookDeadlineAt: number): void {
+  if (reclaimHandoffInFlight()) {
+    logger.debug('SYSTEM', 'A detached reclaim is already in flight; not launching another', { port });
+    return;
+  }
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath || !scriptPath) {
+    logger.warn('SYSTEM', 'Cannot hand the port reclaim to a detached daemon: Bun runtime or worker script not found', {
+      port,
+      hasRuntime: Boolean(runtimePath),
+      hasScript: Boolean(scriptPath),
+    });
+    return;
+  }
+  try {
+    writeFileSync(reclaimHandoffMarkerPath(), JSON.stringify({ pid: process.pid, port, at: new Date().toISOString() }));
+  } catch (error: unknown) {
+    // Without the marker every hook event could launch a daemon; skip rather
+    // than risk a pile-up, and leave the reclaim to an unbudgeted launcher.
+    logger.warn('SYSTEM', 'Could not record the reclaim handoff; not launching it', {
+      port,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  try {
+    const spawned = spawnDetachedWorkerDaemon(
+      runtimePath,
+      scriptPath,
+      sanitizeEnv({ ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }),
+      process.platform,
+      remainingBudgetMs(hookDeadlineAt) ?? undefined,
+    );
+    if (spawned === undefined) return;
+    logger.info('SYSTEM', 'Handed the port reclaim to a detached worker daemon; this hook event returns its fallback', { port });
+  } catch (error: unknown) {
+    logger.error('SYSTEM', 'Could not launch the detached reclaim daemon', { port, runtimePath, scriptPath },
+      error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 let aliveCache: boolean | null = null;

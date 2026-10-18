@@ -329,6 +329,43 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     expect(reclaimDeadlines[1]).toBeNull();
   });
 
+  // #4809 / plan-15 matrix: a wedged worker + a hook budget below
+  // RECLAIM_MIN_BUDGET_MS is reclaimed within one hook event. The hook hands
+  // the reclaim to a detached daemon launch (whose duplicate gate reclaims
+  // with no deadline) and returns its fallback without waiting.
+  it('out-of-budget reclaim: hands the reclaim to one detached daemon launch and returns the fallback', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(reclaimCalls).toHaveLength(1);
+    expect(spawnCalls).toHaveLength(1);
+    expect(spawnLaunchCaps[0]).toBeGreaterThan(0);
+    expect(spawnLaunchCaps[0]).toBeLessThanOrEqual(7000);
+  });
+
+  it('out-of-budget reclaim: a handoff still in flight is not launched again by the next hook event', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const first = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: first.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await first.ensureWorkerRunning(7000)).toBe(false);
+    const second = await importWorkerUtilsFresh();
+    expect(await second.ensureWorkerRunning(7000)).toBe(false);
+    expect(reclaimCalls).toHaveLength(2);
+    expect(spawnCalls).toHaveLength(1);
+  });
+
+  it('a reclaim that declines for any other reason starts no handoff', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'owner-responding', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
   it('caps the lazy-spawn launch at what is left of the hook budget', async () => {
     occupancy = 'free';
     let healthCalls = 0;
