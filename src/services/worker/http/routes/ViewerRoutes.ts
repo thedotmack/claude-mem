@@ -12,35 +12,77 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 // Read on first request, not at import. Hook processes share this module but
 // never serve the viewer or Observation TV, so reading at import made every
 // hook spawn read both HTML files and log a boot line for nothing (#3665).
-function lazyUiHtml(fileName: string): () => Buffer | null {
-  let cache: { bytes: Buffer | null } | undefined;
+//
+// Only a successful read is cached. A miss checks the disk again on the next
+// request, so a worker that outlives its plugin folder (an update that swaps
+// the cache directory) recovers once the file is back, instead of failing
+// every page load until a restart.
+export function lazyUiHtml(
+  fileName: string,
+  resolvePackageRoot: () => string = getPackageRoot,
+): () => Buffer | null {
+  let cached: Buffer | undefined;
   return () => {
-    if (cache) {
-      return cache.bytes;
+    if (cached) {
+      return cached;
     }
-    const packageRoot = getPackageRoot();
+    const packageRoot = resolvePackageRoot();
     const candidates = [
       path.join(packageRoot, 'ui', fileName),
       path.join(packageRoot, 'plugin', 'ui', fileName),
     ];
-    const resolvedPath = candidates.find((candidate) => existsSync(candidate)) ?? null;
-    const bytes = resolvedPath ? readFileSync(resolvedPath) : null;
-    if (bytes) {
-      logger.debug('SYSTEM', `Cached ${fileName} on first request`, {
-        path: resolvedPath,
-        bytes: bytes.byteLength,
-      });
-    } else {
+    const resolvedPath = candidates.find((candidate) => existsSync(candidate));
+    if (!resolvedPath) {
       logger.warn('SYSTEM', `${fileName} not found at any expected location`, { candidates });
+      return null;
     }
-    cache = { bytes };
-    return bytes;
+    cached = readFileSync(resolvedPath);
+    logger.debug('SYSTEM', `Cached ${fileName} on first request`, {
+      path: resolvedPath,
+      bytes: cached.byteLength,
+    });
+    return cached;
   };
 }
 
 const getViewerHtmlBytes = lazyUiHtml('viewer.html');
 const getWorkViewHtmlBytes = lazyUiHtml('work-view/index.html');
 const getTvHtmlBytes = lazyUiHtml('tv.html');
+
+/**
+ * Served with a 503 when a UI file is missing from the install. This is an
+ * install state, not a worker fault, so it does not go to error tracking. The
+ * usual cause is a worker that kept running while an update replaced its
+ * plugin folder; a restart loads the new install.
+ */
+export function sendUiMissingPage(res: Response, uiName: string): void {
+  res.status(503);
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(`<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${uiName} unavailable</title>
+<style>
+  :root { color-scheme: light dark; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+         font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, sans-serif; }
+  main { width: min(30rem, 90vw); text-align: center; }
+  h1 { font-size: 1.25rem; margin: 0 0 .5rem; }
+  p { margin: 0 0 1rem; opacity: .75; }
+</style>
+</head>
+<body>
+<main>
+  <h1>${uiName} files are missing</h1>
+  <p>The claude-mem worker cannot find its UI files. This usually happens when claude-mem updates while the worker keeps running.</p>
+  <p><a href="/restart">Restart the worker</a> to load the current install. If the page stays missing, run <code>npx claude-mem doctor</code>.</p>
+</main>
+</body>
+</html>`);
+}
 
 /**
  * Self-contained (no external resources — the worker serves this on localhost
@@ -197,7 +239,8 @@ export class ViewerRoutes extends BaseRouteHandler {
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
     const viewerHtmlBytes = getViewerHtmlBytes();
     if (!viewerHtmlBytes) {
-      throw new Error('Viewer UI not found at any expected location');
+      sendUiMissingPage(res, 'Viewer');
+      return;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(viewerHtmlBytes);
@@ -205,7 +248,10 @@ export class ViewerRoutes extends BaseRouteHandler {
 
   private handleWorkViewUI = this.wrapHandler((req: Request, res: Response): void => {
     const html = getWorkViewHtmlBytes();
-    if (!html) throw new Error('My Work UI not found at any expected location');
+    if (!html) {
+      sendUiMissingPage(res, 'My Work');
+      return;
+    }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
@@ -221,7 +267,8 @@ export class ViewerRoutes extends BaseRouteHandler {
   private handleTvUI = this.wrapHandler((req: Request, res: Response): void => {
     const tvHtmlBytes = getTvHtmlBytes();
     if (!tvHtmlBytes) {
-      throw new Error('Observation TV UI not found at any expected location');
+      sendUiMissingPage(res, 'Observation TV');
+      return;
     }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.send(tvHtmlBytes);
