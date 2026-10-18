@@ -369,7 +369,7 @@ export class SearchManager {
    * observations — the only category obs_type applies to.
    */
   private resolveTypeFilters(type: any, obs_type: any): { category: any; effectiveObsType: any } {
-    const CATEGORY_TYPES = ['observations', 'sessions', 'prompts'];
+    const CATEGORY_TYPES = ['all', 'observations', 'sessions', 'prompts'];
 
     if (type == null) {
       return { category: type, effectiveObsType: obs_type };
