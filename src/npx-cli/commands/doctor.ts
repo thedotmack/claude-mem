@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from 'fs';
-import { join } from 'path';
+import { dirname, join, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
@@ -262,18 +262,86 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
 }
 
 /**
- * True when `candidatePath` is the process currently running doctor.
- * `npx claude-mem doctor` puts npx's own `node_modules/.bin` first on PATH, and
- * that `claude-mem` is this CLI (often via a symlink). realpath makes the
- * symlink and `process.argv[1]` compare equal. A missing path is not a match.
+ * Script paths a Windows npm cmd-shim (`.cmd` / `.ps1`) launches, resolved
+ * against the shim's directory. npm's wrapper and `process.argv[1]` are
+ * different files: the wrapper is `claude-mem.cmd`, and argv is
+ * `dist/npx-cli/index.js`. Exported for tests.
  */
-function candidateIsRunningCli(candidatePath: string, runningCliPath: string | undefined): boolean {
-  if (!runningCliPath) return false;
+export function windowsShimScriptPaths(shimPath: string, shimText: string): string[] {
+  const shimDirectory = windowsPath.dirname(shimPath);
+  const targets: string[] = [];
+  const seen = new Set<string>();
+  const add = (scriptPath: string) => {
+    const trimmed = scriptPath.trim().replace(/^["']|["']$/g, '');
+    if (!trimmed || !/\.js$/i.test(trimmed)) return;
+    const resolved = windowsPath.isAbsolute(trimmed)
+      ? windowsPath.normalize(trimmed)
+      : windowsPath.normalize(windowsPath.join(shimDirectory, trimmed));
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(resolved);
+  };
+
+  // cmd-shim: `"%_prog%"  "%dp0%\..\claude-mem\dist\npx-cli\index.js" %*`
+  for (const match of shimText.matchAll(/%dp0%\\+([^"%\r\n]+)/gi)) add(match[1]);
+  // cmd-shim .ps1: `& "node$exe" "$basedir/../claude-mem/dist/npx-cli/index.js" $args`
+  for (const match of shimText.matchAll(/\$basedir[\\/]+([^"'\s]+)/gi)) add(match[1]);
+  return targets;
+}
+
+function sameFile(leftPath: string, rightPath: string): boolean {
   try {
-    return realpathSync(candidatePath) === realpathSync(runningCliPath);
+    return realpathSync(leftPath) === realpathSync(rightPath);
   } catch {
     return false;
   }
+}
+
+/**
+ * True when `candidatePath` is the process currently running doctor.
+ * On POSIX, npx's `node_modules/.bin/claude-mem` is a symlink to the CLI, so
+ * realpath matches `process.argv[1]`. On Windows, npm writes a `claude-mem.cmd`
+ * wrapper whose script path points at that same file. A missing path is not a match.
+ */
+function candidateIsRunningCli(
+  candidatePath: string,
+  runningCliPath: string | undefined,
+  platform: NodeJS.Platform,
+): boolean {
+  if (!runningCliPath) return false;
+  if (sameFile(candidatePath, runningCliPath)) return true;
+  if (platform !== 'win32') return false;
+  let shimText: string;
+  try {
+    shimText = readFileSync(candidatePath, 'utf-8');
+  } catch {
+    return false;
+  }
+  return windowsShimScriptPaths(candidatePath, shimText).some((scriptPath) => sameFile(scriptPath, runningCliPath));
+}
+
+/**
+ * npx (and `npm exec`, which sets the same lifecycle) prepends the package's
+ * `node_modules/.bin` to PATH. That entry is this process, not the hook
+ * launcher, and hooks do not inherit it. A permanently installed `claude-mem`
+ * is a different directory and stays on PATH for hooks, so it must not be skipped
+ * even when it is the process currently running doctor.
+ */
+function candidateWasAddedByCurrentNpxInvocation(
+  candidatePath: string,
+  host: LauncherHostEnvironment,
+): boolean {
+  const startedByNpx = host.environmentVariables.npm_lifecycle_event === 'npx'
+    || host.environmentVariables.npm_command === 'exec';
+  if (!startedByNpx) return false;
+  const directory = host.platform === 'win32'
+    ? windowsPath.normalize(windowsPath.dirname(candidatePath))
+    : dirname(candidatePath);
+  const packageBinSuffix = host.platform === 'win32'
+    ? windowsPath.join('node_modules', '.bin')
+    : join('node_modules', '.bin');
+  return directory.endsWith(packageBinSuffix);
 }
 
 /**
@@ -285,11 +353,14 @@ function candidateIsRunningCli(candidatePath: string, runningCliPath: string | u
  * doctor. An older protocol only warns, because the SessionStart self-heal
  * (ensure-launcher.cjs) replaces it on the next startup.
  *
- * The running CLI is skipped (#4833). Under npx its `--version` prints the
- * package version, not a protocol number, so doctor would fail a healthy
- * install and then tell the operator to reinstall. Hooks do not run under
- * npx, so the next PATH hit is the launcher they exec. A different
- * non-launcher earlier on PATH is still a failure. Exported for tests.
+ * The running CLI is skipped only when this process is npx and the PATH hit is
+ * npx's own `node_modules/.bin` entry (#4833). Under npx its `--version` prints
+ * the package version, not a protocol number, so doctor would fail a healthy
+ * install and then tell the operator to reinstall. Hooks do not inherit that
+ * entry, so the next PATH hit is the launcher they exec. A permanently
+ * installed `claude-mem` is not skipped, even when it is this process: hooks
+ * still resolve it first. A different non-launcher earlier on PATH is still a
+ * failure. Exported for tests.
  */
 export function hookLauncherCheck(
   host: LauncherHostEnvironment = currentLauncherHostEnvironment(),
@@ -302,7 +373,8 @@ export function hookLauncherCheck(
     host.environmentVariables.PATH ?? '',
     host.platform,
     undefined,
-    (candidatePath) => candidateIsRunningCli(candidatePath, runningCliPath),
+    (candidatePath) => candidateWasAddedByCurrentNpxInvocation(candidatePath, host)
+      && candidateIsRunningCli(candidatePath, runningCliPath, host.platform),
   );
   if (!launcherOnPath) {
     const placedBinaryPath = resolveLauncherBinaryPath(host);
