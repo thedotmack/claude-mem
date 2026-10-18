@@ -113,12 +113,12 @@ afterAll(() => {
 });
 
 describe('sessionInitHandler server semantic injection', () => {
-  it('starts the server session and skips worker semantic injection in server mode', async () => {
+  it('starts the server session and injects the server\'s semantic context, never the worker\'s', async () => {
     const env = { ...process.env };
     delete env.CLAUDE_MEM_INTERNAL;
     const prompt = 'Please restore platform-aware context for this Cursor session.';
     const script = `
-      const serverCalls = { startSession: [], contextObservations: [] };
+      const serverCalls = { startSession: [], contextObservations: [], semanticContext: [] };
       let workerFallbackCalled = false;
       const { sessionInitHandler, setSessionInitDependenciesForTesting } = await import('./src/cli/handlers/session-init.ts');
       setSessionInitDependenciesForTesting({
@@ -140,6 +140,10 @@ describe('sessionInitHandler server semantic injection', () => {
             contextObservations: async (input) => {
               serverCalls.contextObservations.push(input);
               return { observations: [], context: 'server semantic context' };
+            },
+            semanticContext: async (input, options) => {
+              serverCalls.semanticContext.push({ input, options });
+              return { context: 'server semantic context', count: 1 };
             },
           },
         }),
@@ -167,7 +171,15 @@ describe('sessionInitHandler server semantic injection', () => {
         throw new Error('startSession body mismatch: ' + JSON.stringify(start));
       }
       if (serverCalls.contextObservations.length !== 0) throw new Error('contextObservations should not be called');
+      if (serverCalls.semanticContext.length !== 1) throw new Error('semanticContext count mismatch: ' + serverCalls.semanticContext.length);
+      const semantic = serverCalls.semanticContext[0];
+      if (semantic.input.projectId !== 'server-project-1' || semantic.input.query !== ${JSON.stringify(prompt)} || semantic.input.limit !== 7 || semantic.input.platformSource !== 'cursor' || !(semantic.options.timeoutMs > 0)) {
+        throw new Error('semanticContext body mismatch: ' + JSON.stringify(semantic));
+      }
       if (!result.continue || !result.suppressOutput) throw new Error('unexpected result ' + JSON.stringify(result));
+      if (result.hookSpecificOutput?.hookEventName !== 'UserPromptSubmit' || result.hookSpecificOutput?.additionalContext !== 'server semantic context') {
+        throw new Error('semantic context not injected: ' + JSON.stringify(result));
+      }
     `;
 
     const result = Bun.spawnSync({

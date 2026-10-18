@@ -246,9 +246,23 @@ const sessionInit = {
             Math.floor(sessionInitTimeoutMs / SESSION_INIT_SERVER_TIMEOUT_DIVISOR),
           ),
         );
-        // Server does not currently support the same context-injection
-        // protocol as the worker. Skip semantic injection in server mode
-        // until the server context endpoint exists.
+        if (semanticInject && prompt.length >= 20 && prompt !== '[media prompt]') {
+          const additionalContext = await fetchServerSemanticContext(
+            runtime,
+            prompt,
+            settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT,
+            platformSource,
+            projectContext.allProjects,
+            remainingSessionInitTimeoutMs(sessionInitStartedAt, sessionInitTimeoutMs),
+          );
+          if (additionalContext) {
+            return {
+              continue: true,
+              suppressOutput: true,
+              hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext },
+            };
+          }
+        }
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
         if (isServerClientError(error) && error.isFallbackEligible()) {
@@ -405,6 +419,42 @@ async function startServerSession(
     contentSessionId: sessionId,
     project,
   });
+}
+
+/**
+ * The server's /v1/context/semantic answer for a prompt, or '' when it has
+ * none, the budget is spent, or the call fails: injection never holds up or
+ * fails the prompt.
+ */
+async function fetchServerSemanticContext(
+  runtime: ServerRuntimeContext,
+  prompt: string,
+  limit: string | number,
+  platformSource: string,
+  folderProjects: string[],
+  timeoutMs: number,
+): Promise<string> {
+  if (timeoutMs < SESSION_INIT_MIN_REMAINING_TIMEOUT_MS) {
+    logger.warn('HOOK', 'session-init: skipping semantic injection because the prompt budget is spent', {
+      remainingMs: timeoutMs,
+    });
+    return '';
+  }
+  try {
+    const result = await runtime.client.semanticContext({
+      projectId: runtime.projectId,
+      query: prompt,
+      limit: Math.min(parseSemanticInjectLimit(limit), 20),
+      platformSource,
+      folderProjects,
+    }, { timeoutMs });
+    return result.context ?? '';
+  } catch (error: unknown) {
+    logger.warn('HOOK', 'session-init: server semantic injection failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return '';
+  }
 }
 
 function parseSemanticInjectLimit(value: string | number): number {

@@ -1148,6 +1148,77 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
+    // Per-prompt injection: observations near a user prompt in meaning,
+    // rendered as the worker's /api/context/semantic renders them, so the
+    // session-init hook can treat either runtime's answer alike. Prompts under
+    // 20 characters, and databases without vectors, get an empty answer: a
+    // keyword match on a whole prompt is not what this injection is for.
+    app.post('/v1/context/semantic', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().min(1),
+        query: z.string(),
+        limit: z.number().int().positive().max(20).optional(),
+        platformSource: z.string().min(1).nullable().optional(),
+        folderProjects: z.array(z.string().min(1)).min(1).max(20).optional(),
+      }),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId) return;
+        if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const platformSource = normalizePlatformSourceOrNull(body.platformSource);
+        const limit = body.limit ?? 5;
+        const queryEmbedding = body.query.length >= 20
+          ? await embedSearchQuery(this.options.pool, body.query)
+          : null;
+        if (!queryEmbedding) {
+          res.status(200).json({ observations: [], context: '', count: 0 });
+          return;
+        }
+        let results;
+        try {
+          const repo = new PostgresObservationRepository(this.options.pool);
+          results = await repo.search({
+            projectId: body.projectId,
+            teamId,
+            query: body.query,
+            limit,
+            platformSource,
+            folderProjects: body.folderProjects ?? null,
+            queryEmbedding,
+          });
+        } catch (error) {
+          const err = error instanceof Error ? error : new Error(String(error));
+          logger.warn('SYSTEM', 'observation.semantic_context failed', { requestId: req.requestId ?? null }, err);
+          this.handleDbError(err, res, 'observation.semantic_context');
+          return;
+        }
+        // Always the worker's 'narrative' format. Its 'index' format lists ids
+        // for get_observations to expand, and that tool reads the worker by
+        // numeric id; a server id is a UUID nothing here can expand.
+        const lines: string[] = results.length > 0 ? ['## Relevant Past Work (semantic match)\n'] : [];
+        for (const observation of results) {
+          const title = typeof observation.metadata.title === 'string' ? observation.metadata.title : 'Observation';
+          const narrative = typeof observation.metadata.narrative === 'string' ? observation.metadata.narrative : '';
+          lines.push(`### ${title} (${new Date(observation.createdAtEpoch).toISOString().slice(0, 10)})`);
+          if (narrative) lines.push(narrative);
+          lines.push('');
+        }
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'semantic_context',
+          limit,
+          platformSource,
+          folderProjects: body.folderProjects ?? null,
+          resultCount: results.length,
+          observationIds: results.map(o => o.id),
+        });
+        res.status(200).json({
+          observations: results.map(serializeObservation),
+          context: lines.join('\n'),
+          count: results.length,
+        });
+      },
+    ));
+
     // Remote authenticated MCP endpoint. The "secure MCP link" a user pastes
     // into Claude Code (or any MCP client) to recall their cloud memory:
     //   claude mcp add --transport http claude-mem <base>/v1/mcp \
