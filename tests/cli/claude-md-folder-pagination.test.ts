@@ -45,4 +45,39 @@ describe('CLAUDE.md direct-child pagination', () => {
     // Spawns Bun and runs every migration on a fresh database: well past the
     // 5s default on a slow runner.
   }, 30_000);
+  it('includes direct children recorded as absolute tool paths', () => {
+    // Read/Edit/Write tool inputs store absolute file paths, while generate
+    // looks folders up by their project-relative path.
+    const root = mkdtempSync(join(tmpdir(), 'claude-md-abs-')); sandboxes.push(root);
+    const project = join(root, 'project'); const data = join(root, 'data');
+    mkdirSync(join(project, 'src', 'auth'), { recursive: true }); mkdirSync(data);
+    writeFileSync(join(project, 'src', 'auth', 'login.ts'), 'export {};');
+    for (const args of [['init', '-q'], ['add', 'src/auth/login.ts']]) {
+      const git = Bun.spawnSync(['git', ...args], { cwd: project }); expect(git.exitCode).toBe(0);
+    }
+    const child = Bun.spawnSync([process.execPath, '-e', `
+      const { SessionStore } = await import(${JSON.stringify(source('services/sqlite/SessionStore.ts'))});
+      const { paths } = await import(${JSON.stringify(source('shared/paths.ts'))});
+      const { getProjectContext } = await import(${JSON.stringify(source('utils/project-name.ts'))});
+      const { generateClaudeMd } = await import(${JSON.stringify(source('cli/claude-md-commands.ts'))});
+      const store = new SessionStore(paths.database());
+      const project = getProjectContext(process.cwd()).primary;
+      const files = [${JSON.stringify(join(project, 'src', 'auth', 'login.ts'))}, 'src/auth/login.ts'];
+      files.forEach((file, i) => {
+        const memory = 'memory-' + i;
+        const id = store.createSDKSession('content-' + i, project, 'prompt');
+        store.ensureMemorySessionIdRegistered(id, memory);
+        store.storeObservation(memory, project, {
+          type: 'discovery', title: i === 0 ? 'Absolute-path edit' : 'Relative-path edit',
+          subtitle: null, narrative: 'native fixture', facts: [], concepts: [],
+          files_read: [], files_modified: [file]
+        }, 1, 0, 100 + i);
+      });
+      store.close(); process.exitCode = await generateClaudeMd(false);
+    `], { cwd: project, env: { ...process.env, CLAUDE_MEM_DATA_DIR: data, CLAUDE_CONFIG_DIR: data, CLAUDE_MEM_TELEMETRY: '0' } });
+    expect(child.exitCode).toBe(0);
+    const context = readFileSync(join(project, 'src', 'auth', 'CLAUDE.md'), 'utf8');
+    expect(context).toContain('Absolute-path edit');
+    expect(context).toContain('Relative-path edit');
+  }, 30_000);
 });

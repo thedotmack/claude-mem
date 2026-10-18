@@ -147,7 +147,10 @@ function findObservationsByFolder(db: Database, relativeFolderPath: string, proj
   `;
 
   const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
-  const likePattern = `%"${JSON.stringify(normalizedFolderPath + '/').slice(1, -1)}%`;
+  // Unanchored: tool evidence stores absolute paths (".../repo/src/auth/x.ts"),
+  // so the folder need not follow the JSON quote. hasDirectChildFile does the
+  // exact match.
+  const likePattern = `%${JSON.stringify(normalizedFolderPath + '/').slice(1, -1)}%`;
   // Page the folder's direct children themselves, not a guessed window of the
   // broader candidates that nested files can fill.
   return pageMatchingRows<ObservationRow>(
