@@ -120,6 +120,7 @@ describe('error taxonomy', () => {
     expect(remediation).toContain('PATH');
     expect(remediation).toContain('npx claude-mem doctor');
     expect(remediation).not.toContain('network');
+    expect(remediation).not.toContain('last-install-error.json');
   });
 
   it('defaults unknown errors to ABORT (fail-loud)', () => {
