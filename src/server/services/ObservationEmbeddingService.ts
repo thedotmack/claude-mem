@@ -132,18 +132,18 @@ export async function getVectorSearchStatus(
   };
 }
 
-/** The query's vector, or null when search should stay keyword-only. */
+/** The query's vector and its model, or null when search should stay keyword-only. */
 export async function embedSearchQuery(
   client: PostgresQueryable,
   query: string | null | undefined,
   embedder: Embedder = getSharedEmbedder(),
-): Promise<Float32Array | null> {
+): Promise<{ vector: Float32Array; model: string } | null> {
   if (!query || query.trim().length === 0) return null;
   try {
     if (!(await vectorSearchOn(client))) return null;
     const [vector] = await embedder.embed([query]);
     lastEmbedError = null;
-    return vector ?? null;
+    return vector ? { vector, model: embedder.modelId } : null;
   } catch (error) {
     logger.warn('SYSTEM', 'query embedding failed; searching by keyword only', {
       error: recordEmbedError(error),
