@@ -25,7 +25,7 @@ describe('observationEmbeddingParts', () => {
       { part: 'narrative', text: 'the narrative' },
       { part: 'text', text: 'legacy text' },
       { part: 'fact_0', text: 'fact a' },
-      { part: 'fact_2', text: 'fact c' },
+      { part: 'fact_1', text: 'fact c' },
     ]);
   });
 

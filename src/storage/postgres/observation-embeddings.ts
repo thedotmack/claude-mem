@@ -34,7 +34,10 @@ export function observationEmbeddingParts(
   } else {
     add('narrative', metadata.narrative);
     add('text', toJsonObject(metadata.legacy).text);
-    const facts = Array.isArray(metadata.facts) ? metadata.facts : [];
+    // Blank facts are dropped before numbering, as ChromaSync numbers its
+    // fact documents, so part names match the Chroma ids.
+    const facts = (Array.isArray(metadata.facts) ? metadata.facts : [])
+      .filter((fact): fact is string => typeof fact === 'string' && fact.trim().length > 0);
     facts.forEach((fact, index) => add(`fact_${index}`, fact));
     if (parts.length === 0) {
       const title = typeof metadata.title === 'string' && metadata.title.trim() !== 'Untitled'
