@@ -7,7 +7,12 @@ import { join } from 'node:path';
 // in ~/.claude-mem/settings.json. GET /api/logs (the viewer's Console) must
 // read the same file. Runs in a subprocess so HOME and the import-time data
 // dir resolution are isolated from this test process.
+const FIXED_NOW = Date.parse('2026-03-14T12:00:00.000Z');
 const fixture = String.raw`
+  // Pin the clock so the route's "today" matches the fixture's file name.
+  Date.now = () => ${FIXED_NOW};
+  const RealDate = Date;
+  globalThis.Date = class extends RealDate { constructor(...args) { super(...(args.length ? args : [${FIXED_NOW}])); } };
   import { LogsRoutes } from './src/services/worker/http/routes/LogsRoutes.ts';
   const handlers = {};
   new LogsRoutes().setupRoutes({ get: (p, h) => { handlers[p] = h; }, post: (p, h) => { handlers[p] = h; } });
@@ -27,7 +32,7 @@ describe('GET /api/logs data directory', () => {
       mkdirSync(join(home, '.claude-mem'), { recursive: true });
       writeFileSync(join(home, '.claude-mem', 'settings.json'), JSON.stringify({ CLAUDE_MEM_DATA_DIR: dataDir }));
       mkdirSync(join(dataDir, 'logs'), { recursive: true });
-      const day = new Date().toISOString().split('T')[0];
+      const day = new Date(FIXED_NOW).toISOString().split('T')[0];
       const logFile = join(dataDir, 'logs', `claude-mem-${day}.log`);
       writeFileSync(logFile, '[INFO ] [SYSTEM] worker line\n');
 
