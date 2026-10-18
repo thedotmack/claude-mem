@@ -391,6 +391,17 @@ describe('ensureWorkerRunning — unhealthy port guard', () => {
     expect(spawnCalls).toHaveLength(2);
   });
 
+  it('out-of-budget reclaim: a fresh marker whose contents cannot be read still counts as in flight', async () => {
+    occupancy = 'occupied';
+    reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };
+    const workerUtils = await importWorkerUtilsFresh();
+    ownedPidInfo = { pid: 5151, port: workerUtils.getWorkerPort(), startedAt: new Date(Date.now() - 3_600_000).toISOString() };
+    writeFileSync(join(dataDir, 'reclaim-handoff.json'), ''); // e.g. truncated by a failed write
+    ageHandoffMarker(60_000);
+    expect(await workerUtils.ensureWorkerRunning(7000)).toBe(false);
+    expect(spawnCalls).toHaveLength(0);
+  });
+
   it('out-of-budget reclaim: a launch that failed does not block the next hook from retrying', async () => {
     occupancy = 'occupied';
     reclaimResult = { reclaimed: false, reason: 'out-of-budget', killedPids: [] };

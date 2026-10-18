@@ -1624,10 +1624,9 @@ function reclaimHandoffMarkerPath(): string {
 }
 
 function writeReclaimHandoffMarker(port: number, daemonPid: number | null): void {
-  writeFileSync(
-    reclaimHandoffMarkerPath(),
-    JSON.stringify({ hookPid: process.pid, daemonPid, port, at: new Date().toISOString() }),
-  );
+  // Atomic: a write that fails partway (a full disk) must never leave a
+  // truncated marker in place of a good one.
+  writeJsonFileAtomic(reclaimHandoffMarkerPath(), { hookPid: process.pid, daemonPid, port, at: new Date().toISOString() });
 }
 
 function clearReclaimHandoffMarker(): void {
@@ -1655,14 +1654,20 @@ function isProcessAlive(pid: number): boolean {
 function reclaimHandoffInFlight(): boolean {
   const markerPath = reclaimHandoffMarkerPath();
   let ageMs: number;
-  let marker: ReclaimHandoffMarker;
   try {
     ageMs = Date.now() - statSync(markerPath).mtimeMs;
-    const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as { daemonPid?: unknown };
-    const pid = parsed.daemonPid;
-    marker = { daemonPid: typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : null };
   } catch {
     return false;
+  }
+  // Contents that cannot be read (however that happened) are judged by age
+  // alone, like a marker with no pid.
+  let marker: ReclaimHandoffMarker = { daemonPid: null };
+  try {
+    const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as { daemonPid?: unknown };
+    const pid = parsed?.daemonPid;
+    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) marker = { daemonPid: pid };
+  } catch {
+    // Keep daemonPid null.
   }
   if (ageMs < RECLAIM_HANDOFF_MIN_SPACING_MS) return true;
   if (ageMs >= RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS) return false;
