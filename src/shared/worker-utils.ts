@@ -1596,23 +1596,77 @@ async function preSpawnPortIsFree(
 }
 
 /**
- * How long one reclaim handoff counts as in flight. The daemon it launches
- * spends one health wait plus at most one reclaim (RECLAIM_MIN_BUDGET_MS,
- * 9.5 s) before it either binds the port or exits, so hook events inside this
- * window wait for it instead of launching another.
+ * Minimum spacing between two reclaim handoffs. A daemon that declines (the
+ * worker answered, or is still booting) exits fast, and without this every
+ * hook event of a long silence would launch another one.
  */
-const RECLAIM_HANDOFF_IN_FLIGHT_MS = 30_000;
+const RECLAIM_HANDOFF_MIN_SPACING_MS = 30_000;
+
+/**
+ * Upper bound on one handoff while its daemon is alive (or its pid is unknown:
+ * the Windows launch goes through Start-Process and returns none). The
+ * unbudgeted reclaim's slowest path is Windows: a health wait, two health
+ * probes (4 s), the listener read (up to 15 s), the process-table read for the
+ * identity check (up to 30 s), the tree-kill (5.5 s) and a second listener
+ * read (15 s), about 75 s. A daemon that wins the port becomes the worker and
+ * stays alive, so the bound also keeps a later wedge of that worker from being
+ * blocked forever by its own handoff.
+ */
+const RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS = 120_000;
+
+interface ReclaimHandoffMarker {
+  /** The detached daemon's pid, or null before the launch returns or when the launch gives none. */
+  daemonPid: number | null;
+}
 
 function reclaimHandoffMarkerPath(): string {
   return path.join(resolveDataDir(), 'reclaim-handoff.json');
 }
 
-function reclaimHandoffInFlight(): boolean {
+function writeReclaimHandoffMarker(port: number, daemonPid: number | null): void {
+  writeFileSync(
+    reclaimHandoffMarkerPath(),
+    JSON.stringify({ hookPid: process.pid, daemonPid, port, at: new Date().toISOString() }),
+  );
+}
+
+function clearReclaimHandoffMarker(): void {
   try {
-    return Date.now() - statSync(reclaimHandoffMarkerPath()).mtimeMs < RECLAIM_HANDOFF_IN_FLIGHT_MS;
+    unlinkSync(reclaimHandoffMarkerPath());
+  } catch {
+    // Already gone.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * A handoff is in flight inside the minimum spacing, and after it, up to the
+ * upper bound, while its daemon is alive or its pid is unknown. Age comes from
+ * the marker's mtime, never from a clock value in its content.
+ */
+function reclaimHandoffInFlight(): boolean {
+  const markerPath = reclaimHandoffMarkerPath();
+  let ageMs: number;
+  let marker: ReclaimHandoffMarker;
+  try {
+    ageMs = Date.now() - statSync(markerPath).mtimeMs;
+    const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as { daemonPid?: unknown };
+    const pid = parsed.daemonPid;
+    marker = { daemonPid: typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : null };
   } catch {
     return false;
   }
+  if (ageMs < RECLAIM_HANDOFF_MIN_SPACING_MS) return true;
+  if (ageMs >= RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS) return false;
+  return marker.daemonPid === null || isProcessAlive(marker.daemonPid);
 }
 
 /**
@@ -1641,7 +1695,7 @@ function handOffReclaimToDaemon(port: number, scriptPath: string | null, hookDea
     return;
   }
   try {
-    writeFileSync(reclaimHandoffMarkerPath(), JSON.stringify({ pid: process.pid, port, at: new Date().toISOString() }));
+    writeReclaimHandoffMarker(port, null);
   } catch (error: unknown) {
     // Without the marker every hook event could launch a daemon; skip rather
     // than risk a pile-up, and leave the reclaim to an unbudgeted launcher.
@@ -1659,9 +1713,24 @@ function handOffReclaimToDaemon(port: number, scriptPath: string | null, hookDea
       process.platform,
       remainingBudgetMs(hookDeadlineAt) ?? undefined,
     );
-    if (spawned === undefined) return;
-    logger.info('SYSTEM', 'Handed the port reclaim to a detached worker daemon; this hook event returns its fallback', { port });
+    if (spawned === undefined) {
+      // No daemon started: let the next hook event try again.
+      clearReclaimHandoffMarker();
+      return;
+    }
+    if (spawned > 0) {
+      try {
+        writeReclaimHandoffMarker(port, spawned);
+      } catch {
+        // The pid-less marker stays, and counts as in flight up to the bound.
+      }
+    }
+    logger.info('SYSTEM', 'Handed the port reclaim to a detached worker daemon; this hook event returns its fallback', {
+      port,
+      daemonPid: spawned > 0 ? spawned : null,
+    });
   } catch (error: unknown) {
+    clearReclaimHandoffMarker();
     logger.error('SYSTEM', 'Could not launch the detached reclaim daemon', { port, runtimePath, scriptPath },
       error instanceof Error ? error : new Error(String(error)));
   }
