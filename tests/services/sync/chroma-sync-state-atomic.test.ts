@@ -86,4 +86,10 @@ describe('ChromaSyncState atomic persistence', () => {
 
     expect(() => ChromaSyncState.markAllForRebuild()).toThrow();
   });
+
+  it('throws when a revised row\'s repair state cannot be written', () => {
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.markFragmentReconciliation(project, 'observations', 4)).toThrow();
+  });
 });

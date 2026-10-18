@@ -267,6 +267,11 @@ export const ChromaSyncState = {
     persist();
   },
 
+  /**
+   * Throws when the write fails: the caller changes a row's existing documents
+   * only after its pending entry and repair flag are on disk, so a restart
+   * mid-repair retries the row even below the watermark.
+   */
   markFragmentReconciliation(project: string, kind: DocKind, id: number): void {
     const all = load();
     const current = normalizeProjectWatermarks(all[project] ?? ZERO);
@@ -275,7 +280,7 @@ export const ChromaSyncState = {
     current.fragmentReconciliation = current.fragmentReconciliation ?? {};
     current.fragmentReconciliation[kind] = normalizePendingIds([...(current.fragmentReconciliation[kind] ?? []), id]);
     all[project] = current;
-    persist();
+    persistOrThrow();
   },
 
   needsFragmentReconciliation(project: string, kind: DocKind, id: number): boolean {
