@@ -62,13 +62,18 @@ describe('CLAUDE.md direct-child pagination', () => {
       const { generateClaudeMd } = await import(${JSON.stringify(source('cli/claude-md-commands.ts'))});
       const store = new SessionStore(paths.database());
       const project = getProjectContext(process.cwd()).primary;
-      const files = [${JSON.stringify(join(project, 'src', 'auth', 'login.ts'))}, 'src/auth/login.ts'];
-      files.forEach((file, i) => {
+      const files = [
+        ['Absolute-path edit', ${JSON.stringify(join(project, 'src', 'auth', 'login.ts'))}],
+        ['Relative-path edit', 'src/auth/login.ts'],
+        ['Backslash-path edit', 'src\\\\auth\\\\login.ts'],
+        ['Other package with the same folder name', ${JSON.stringify(join(project, 'packages', 'widget', 'src', 'auth', 'button.ts'))}],
+      ];
+      files.forEach(([title, file], i) => {
         const memory = 'memory-' + i;
         const id = store.createSDKSession('content-' + i, project, 'prompt');
         store.ensureMemorySessionIdRegistered(id, memory);
         store.storeObservation(memory, project, {
-          type: 'discovery', title: i === 0 ? 'Absolute-path edit' : 'Relative-path edit',
+          type: 'discovery', title,
           subtitle: null, narrative: 'native fixture', facts: [], concepts: [],
           files_read: [], files_modified: [file]
         }, 1, 0, 100 + i);
@@ -79,5 +84,8 @@ describe('CLAUDE.md direct-child pagination', () => {
     const context = readFileSync(join(project, 'src', 'auth', 'CLAUDE.md'), 'utf8');
     expect(context).toContain('Absolute-path edit');
     expect(context).toContain('Relative-path edit');
+    expect(context).toContain('Backslash-path edit');
+    // An absolute path elsewhere in the checkout that merely ends in src/auth is not a child.
+    expect(context).not.toContain('Other package with the same folder name');
   }, 30_000);
 });

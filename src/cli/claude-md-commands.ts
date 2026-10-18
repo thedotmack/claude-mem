@@ -7,12 +7,13 @@ import {
   readFileSync,
   renameSync,
   unlinkSync,
-  readdirSync
+  readdirSync,
+  realpathSync
 } from 'fs';
 import { execSync } from 'child_process';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
 import { formatTime, groupByDate } from '../shared/timeline-formatting.js';
-import { isDirectChild } from '../shared/path-utils.js';
+import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { replaceTaggedContent } from '../utils/claude-md-utils.js';
@@ -120,13 +121,49 @@ function walkDirectoriesWithIgnore(dir: string, folders: Set<string>, depth: num
   }
 }
 
-function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
+const ABSOLUTE_PATH = /^([A-Za-z]:)?[\\/]/;
+
+function comparablePath(p: string): string {
+  const normalized = normalizePath(p);
+  // Windows drive letters and paths are case-insensitive.
+  return /^[A-Za-z]:/.test(normalized) ? normalized.toLowerCase() : normalized;
+}
+
+function realComparablePath(p: string): string | null {
+  try {
+    return comparablePath(realpathSync(p));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Tool evidence is usually absolute (Read/Edit/Write inputs). An absolute file
+ * belongs to the folder only when it sits directly in this checkout's folder,
+ * not in any folder whose path merely ends the same way
+ * (/repo/packages/widget/src/x.ts is not a child of /repo/src). Relative
+ * evidence keeps the project-relative check.
+ */
+function makeFolderChildMatcher(relativeFolder: string, absoluteFolder: string): (file: string) => boolean {
+  const folderForms = new Set([comparablePath(absoluteFolder)]);
+  const realFolder = realComparablePath(absoluteFolder);
+  if (realFolder) folderForms.add(realFolder);
+  return (file: string) => {
+    if (!ABSOLUTE_PATH.test(file)) return isDirectChild(file, relativeFolder);
+    const fileDir = path.posix.dirname(normalizePath(file));
+    if (folderForms.has(comparablePath(fileDir))) return true;
+    const realFileDir = realComparablePath(fileDir);
+    return realFileDir !== null && folderForms.has(realFileDir);
+  };
+}
+
+function hasDirectChildFile(obs: ObservationRow, isFolderChild: (file: string) => boolean): boolean {
   const checkFiles = (filesJson: string | null): boolean => {
     if (!filesJson) return false;
     try {
       const files = JSON.parse(filesJson);
       if (Array.isArray(files)) {
-        return files.some(f => isDirectChild(f, folderPath));
+        return files.some(f => typeof f === 'string' && isFolderChild(f));
       }
     } catch (error) {
       logger.warn('CLAUDE_MD', 'Failed to parse files JSON in hasDirectChildFile', { error: error instanceof Error ? error.message : String(error) });
@@ -137,26 +174,35 @@ function hasDirectChildFile(obs: ObservationRow, folderPath: string): boolean {
   return checkFiles(obs.files_modified) || checkFiles(obs.files_read);
 }
 
-function findObservationsByFolder(db: Database, relativeFolderPath: string, project: string, limit: number): ObservationRow[] {
+function findObservationsByFolder(
+  db: Database,
+  relativeFolderPath: string,
+  absoluteFolderPath: string,
+  project: string,
+  limit: number,
+): ObservationRow[] {
   const sql = `
     SELECT o.*, o.discovery_tokens
     FROM observations o
     WHERE o.project COLLATE NOCASE = ?
-      AND (o.files_modified LIKE ? OR o.files_read LIKE ?)
+      AND (o.files_modified LIKE ? OR o.files_read LIKE ? OR o.files_modified LIKE ? OR o.files_read LIKE ?)
     ORDER BY o.created_at_epoch DESC
   `;
 
-  const normalizedFolderPath = relativeFolderPath.split(path.sep).join('/');
-  // Unanchored: tool evidence stores absolute paths (".../repo/src/auth/x.ts"),
-  // so the folder need not follow the JSON quote. hasDirectChildFile does the
-  // exact match.
-  const likePattern = `%${JSON.stringify(normalizedFolderPath + '/').slice(1, -1)}%`;
+  // Unanchored prefilters: tool evidence stores absolute paths
+  // (".../repo/src/auth/x.ts", or "C:\\repo\\src\\auth\\x.ts" on Windows), so
+  // the folder need not follow the JSON quote. The matcher does the exact check.
+  const segments = relativeFolderPath.split(/[\\/]+/).filter(Boolean);
+  const likeFor = (separator: string) => `%${JSON.stringify(segments.join(separator) + separator).slice(1, -1)}%`;
+  const slashPattern = likeFor('/');
+  const backslashPattern = likeFor('\\');
+  const isFolderChild = makeFolderChildMatcher(relativeFolderPath, absoluteFolderPath);
   // Page the folder's direct children themselves, not a guessed window of the
   // broader candidates that nested files can fill.
   return pageMatchingRows<ObservationRow>(
     db.prepare(sql),
-    [project, likePattern, likePattern],
-    obs => hasDirectChildFile(obs, relativeFolderPath),
+    [project, slashPattern, slashPattern, backslashPattern, backslashPattern],
+    obs => hasDirectChildFile(obs, isFolderChild),
     { limit },
   );
 }
@@ -290,7 +336,7 @@ function regenerateFolder(
     return { success: false, observationCount: 0, error: 'Path escapes project root' };
   }
 
-  const observations = findObservationsByFolder(db, relativeFolder, project, observationLimit);
+  const observations = findObservationsByFolder(db, relativeFolder, resolvedFolder, project, observationLimit);
 
   if (observations.length === 0) {
     return { success: false, observationCount: 0, error: 'No observations for folder' };
