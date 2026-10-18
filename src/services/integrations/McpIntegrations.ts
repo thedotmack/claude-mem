@@ -5,6 +5,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { logger } from '../../utils/logger.js';
 import { getMcpServerAbsolutePath, getNodeAbsolutePath } from './install-paths.js';
 import { readJsonSafe } from '../../utils/json-utils.js';
+import { stripUtf8Bom } from '../../shared/atomic-json.js';
 import { injectContextIntoMarkdownFile } from '../../utils/context-injection.js';
 
 export const PLACEHOLDER_CONTEXT = `# claude-mem: Cross-Session Memory
@@ -141,19 +142,60 @@ function getGooseConfigPath(): string {
   return path.join(homedir(), '.config', 'goose', 'config.yaml');
 }
 
-function gooseConfigHasClaudeMemEntry(yamlContent: string): boolean {
-  return yamlContent.includes('claude-mem:') &&
-    yamlContent.includes('mcpServers:');
+function buildGooseClaudeMemExtensionLines(mcpServerPath: string, indent: string): string[] {
+  return [
+    `${indent}claude-mem:`,
+    `${indent}  enabled: true`,
+    `${indent}  type: stdio`,
+    `${indent}  name: claude-mem`,
+    `${indent}  cmd: ${getNodeAbsolutePath()}`,
+    `${indent}  args:`,
+    `${indent}    - ${mcpServerPath}`,
+    `${indent}  timeout: 300`,
+  ];
 }
 
-function buildGooseClaudeMemEntryYaml(mcpServerPath: string, withHeader = false): string {
-  return [
-    ...(withHeader ? ['mcpServers:'] : []),
-    '  claude-mem:',
-    `    command: ${getNodeAbsolutePath()}`,
-    '    args:',
-    `      - ${mcpServerPath}`,
-  ].join('\n');
+function leadingSpaceCount(line: string): number {
+  return line.length - line.trimStart().length;
+}
+
+function isYamlContentLine(line: string): boolean {
+  return line.trim() !== '' && !line.trimStart().startsWith('#');
+}
+
+/**
+ * `content` with claude-mem set in the top-level `extensions` mapping, the
+ * only place Goose starts MCP servers from: it never reads a `mcpServers` key
+ * in config.yaml. Every other line stays as written, including the
+ * `mcpServers` block that earlier installs left behind.
+ */
+function upsertGooseExtension(content: string, mcpServerPath: string): string {
+  const lines = content.split('\n');
+  const header = lines.findIndex(line => line.startsWith('extensions:'));
+  if (header === -1) {
+    const existingLines = content.trimEnd() ? [content.trimEnd()] : [];
+    return [...existingLines, 'extensions:', ...buildGooseClaudeMemExtensionLines(mcpServerPath, '  ')].join('\n') + '\n';
+  }
+  if (isYamlContentLine(lines[header].slice('extensions:'.length))) {
+    throw new Error('Goose config.yaml sets extensions inline; write it as a block mapping and install again');
+  }
+
+  // The mapping runs to the next top-level key; entries keep the indent of those already there.
+  let end = header + 1;
+  while (end < lines.length && !(isYamlContentLine(lines[end]) && leadingSpaceCount(lines[end]) === 0)) end++;
+  const firstEntry = lines.slice(header + 1, end).find(isYamlContentLine);
+  const indent = ' '.repeat(firstEntry ? leadingSpaceCount(firstEntry) : 2);
+  const extension = buildGooseClaudeMemExtensionLines(mcpServerPath, indent);
+
+  const existing = lines.findIndex((line, index) => index > header && index < end && line.trimEnd() === `${indent}claude-mem:`);
+  if (existing === -1) {
+    return [...lines.slice(0, header + 1), ...extension, ...lines.slice(header + 1)].join('\n');
+  }
+  let existingEnd = existing + 1;
+  while (existingEnd < end && isYamlContentLine(lines[existingEnd]) && leadingSpaceCount(lines[existingEnd]) > indent.length) {
+    existingEnd++;
+  }
+  return [...lines.slice(0, existing), ...extension, ...lines.slice(existingEnd)].join('\n');
 }
 
 export async function installGooseMcpIntegration(): Promise<number> {
@@ -180,43 +222,10 @@ export async function installGooseMcpIntegration(): Promise<number> {
   }
 }
 
-function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
-  if (existsSync(configPath)) {
-    let yamlContent = readFileSync(configPath, 'utf-8');
-
-    if (gooseConfigHasClaudeMemEntry(yamlContent)) {
-      const claudeMemPattern = /( {2}claude-mem:\n(?:.*\n)*?(?= {2}\S|\n\n|^\S|$))/m;
-      const newEntry = buildGooseClaudeMemEntryYaml(mcpServerPath) + '\n';
-
-      if (!claudeMemPattern.test(yamlContent)) {
-        throw new Error('Found mcpServers/claude-mem markers but could not locate a replaceable claude-mem block');
-      }
-      yamlContent = yamlContent.replace(claudeMemPattern, newEntry);
-      writeFileSync(configPath, yamlContent);
-      console.log(`  Updated existing claude-mem entry in: ${configPath}`);
-    } else if (yamlContent.includes('mcpServers:')) {
-      const mcpServersIndex = yamlContent.indexOf('mcpServers:');
-      const insertionPoint = mcpServersIndex + 'mcpServers:'.length;
-      const newEntry = '\n' + buildGooseClaudeMemEntryYaml(mcpServerPath);
-
-      yamlContent =
-        yamlContent.slice(0, insertionPoint) +
-        newEntry +
-        yamlContent.slice(insertionPoint);
-
-      writeFileSync(configPath, yamlContent);
-      console.log(`  Added claude-mem to existing mcpServers in: ${configPath}`);
-    } else {
-      const mcpBlock = '\n' + buildGooseClaudeMemEntryYaml(mcpServerPath, true) + '\n';
-      yamlContent = yamlContent.trimEnd() + '\n' + mcpBlock;
-      writeFileSync(configPath, yamlContent);
-      console.log(`  Appended mcpServers section to: ${configPath}`);
-    }
-  } else {
-    const templateContent = buildGooseClaudeMemEntryYaml(mcpServerPath, true) + '\n';
-    writeFileSync(configPath, templateContent);
-    console.log(`  Created config with MCP server: ${configPath}`);
-  }
+export function mergeGooseYamlConfig(configPath: string, mcpServerPath: string): void {
+  const yamlContent = existsSync(configPath) ? stripUtf8Bom(readFileSync(configPath, 'utf-8')) : '';
+  writeFileSync(configPath, upsertGooseExtension(yamlContent, mcpServerPath));
+  console.log(`  Registered claude-mem in the Goose extensions of: ${configPath}`);
 
   console.log(`
 Installation complete!
