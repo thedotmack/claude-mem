@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { ChromaSyncState } from '../../../src/services/sync/ChromaSyncState.js';
@@ -53,5 +53,29 @@ describe('ChromaSyncState atomic persistence', () => {
 
     const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
     expect(written[project].observations).toBe(3);
+  });
+
+  it('keeps a watermark change in memory when the write fails, and writes it on the next change', () => {
+    // A directory at the state path makes the rename fail on every platform.
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.bump(project, 'observations', 5)).not.toThrow();
+    expect(ChromaSyncState.get(project).observations).toBe(5);
+    expect(readdirSync(dataDir).filter(name => name.endsWith('.tmp'))).toEqual([]);
+
+    rmSync(statePath(dataDir), { recursive: true });
+    ChromaSyncState.bump(project, 'summaries', 2);
+
+    const written = JSON.parse(readFileSync(statePath(dataDir), 'utf8'));
+    expect(written[project].observations).toBe(5);
+    expect(written[project].summaries).toBe(2);
+  });
+
+  it('throws when the rebuild flags cannot be written', () => {
+    ChromaSyncState.replace(project, { observations: 3, summaries: 0, prompts: 0 });
+    rmSync(statePath(dataDir));
+    mkdirSync(join(statePath(dataDir), 'blocker'), { recursive: true });
+
+    expect(() => ChromaSyncState.markAllForRebuild()).toThrow();
   });
 });

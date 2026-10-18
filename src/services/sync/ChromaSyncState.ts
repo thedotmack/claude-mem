@@ -114,9 +114,23 @@ function load(): Record<string, ProjectWatermarks> {
   return cache;
 }
 
-function persist(): void {
+function persistOrThrow(): void {
   if (!cache) return;
   writeJsonFileAtomic(statePath(), cache);
+}
+
+/**
+ * A failed write must not abort the sync pipeline. The cache keeps the
+ * change, the next persist writes it, and SQLite stays the source of truth.
+ */
+function persist(): void {
+  try {
+    persistOrThrow();
+  } catch (error) {
+    logger.warn('CHROMA_SYNC', 'Could not write chroma-sync-state.json, will retry on the next change', {
+      path: statePath()
+    }, error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 export const ChromaSyncState = {
@@ -151,13 +165,17 @@ export const ChromaSyncState = {
     persist();
   },
 
-  /** Flag every project with recorded progress for a rebuild from zero (#3202). */
+  /**
+   * Flag every project with recorded progress for a rebuild from zero (#3202).
+   * Throws when the write fails: the collection is dropped only after the
+   * flags are on disk.
+   */
   markAllForRebuild(): void {
     const all = load();
     for (const project of Object.keys(all)) {
       all[project] = { ...normalizeProjectWatermarks(all[project]), rebuildPending: true };
     }
-    persist();
+    persistOrThrow();
   },
 
   isRebuildPending(project: string): boolean {

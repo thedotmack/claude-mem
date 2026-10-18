@@ -16,6 +16,7 @@ import {
 import { tmpdir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS, writeJsonFileAtomic } from '../src/npx-cli/utils/paths.js';
+import { renameWithWindowsRetry } from '../src/shared/atomic-json.js';
 
 /**
  * Tests for writeJsonFileAtomic's crash-safe semantics.
@@ -245,5 +246,47 @@ describe('writeJsonFileAtomic', () => {
     expect(readlinkSync(first)).toBe('second');
     expect(readlinkSync(second)).toBe('first');
     expect(readdirSync(tempDir).sort()).toEqual(['first', 'second']);
+  });
+});
+
+describe('renameWithWindowsRetry', () => {
+  function lockError(code: string): NodeJS.ErrnoException {
+    return Object.assign(new Error(`${code}: operation not permitted, rename`), { code });
+  }
+
+  it('retries a transient Windows lock until the rename succeeds', () => {
+    for (const code of ['EPERM', 'EBUSY', 'EACCES']) {
+      let calls = 0;
+      renameWithWindowsRetry('a.tmp', 'a.json', () => {
+        calls++;
+        if (calls < 3) throw lockError(code);
+      }, true);
+      expect(calls).toBe(3);
+    }
+  });
+
+  it('throws the lock error when it outlasts the retry budget', () => {
+    let calls = 0;
+    expect(() => renameWithWindowsRetry('a.tmp', 'a.json', () => {
+      calls++;
+      throw lockError('EPERM');
+    }, true)).toThrow('EPERM');
+    expect(calls).toBe(7);
+  });
+
+  it('does not retry other errors or other platforms', () => {
+    let calls = 0;
+    expect(() => renameWithWindowsRetry('a.tmp', 'a.json', () => {
+      calls++;
+      throw lockError('ENOENT');
+    }, true)).toThrow('ENOENT');
+    expect(calls).toBe(1);
+
+    calls = 0;
+    expect(() => renameWithWindowsRetry('a.tmp', 'a.json', () => {
+      calls++;
+      throw lockError('EPERM');
+    }, false)).toThrow('EPERM');
+    expect(calls).toBe(1);
   });
 });
