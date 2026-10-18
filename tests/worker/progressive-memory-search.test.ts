@@ -110,14 +110,15 @@ describe('progressive worker search with real SQLite fixtures', () => {
   it('reranks semantic candidates beyond the requested limit before cutting the index (#4865)', async () => {
     const target = 'candidate-limit-fixture';
     const query = 'Authentication token expiry correction';
+    const recent = Date.now() - 60_000;
     const ids = [...Array.from({ length: 5 }, (_, i) => `Authentication notes ${i}`), query]
-      .map((title, i) => seed(target, title, `CANDIDATE_BODY_${i}`, epoch + i));
+      .map((title, i) => seed(target, title, `CANDIDATE_BODY_${i}`, recent + i));
     const exactId = ids[5];
     const chroma = {
       queryChroma: async () => ({
         ids: ids.map(Number),
         distances: ids.map((_, i) => 0.1 + i * 0.01),
-        metadatas: ids.map((id, i) => ({ sqlite_id: Number(id), doc_type: 'observation', project: target, created_at_epoch: epoch + i })),
+        metadatas: ids.map((id, i) => ({ sqlite_id: Number(id), doc_type: 'observation', project: target, created_at_epoch: recent + i })),
       }),
     };
     const semantic = new ProgressiveMemorySearch(
