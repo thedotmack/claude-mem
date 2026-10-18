@@ -995,15 +995,18 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
         json: () => Promise.resolve(apiResponse)
       } as Response));
       global.fetch = fetchMock;
+      const projectRoot = join(tempDir, parent, 'myapp');
+      mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
 
       await updateFolderClaudeMdFiles(
         ['src/utils/file.ts'],
         'test-project',
         37777,
-        join(tempDir, parent, 'myapp')
+        projectRoot
       );
 
       expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
     }
   });
 
