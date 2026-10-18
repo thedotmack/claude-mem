@@ -39,7 +39,7 @@ describe("SearchManager type='all'", () => {
     const manager = setup();
     const omitted = await manager.search({ project: 'p', format: 'json' });
     const all = await manager.search({ project: 'p', type: 'all', format: 'json' });
+    expect(counts(omitted)).toEqual([1, 1, 1]);
     expect(counts(all)).toEqual(counts(omitted));
-    expect(counts(all)[0]).toBe(1);
   });
 });
