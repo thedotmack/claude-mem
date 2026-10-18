@@ -480,6 +480,23 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     // DROP DATABASE forces a checkpoint, which takes seconds after a busy run.
   }, 30_000);
 
+  it('keeps the vectors when the model\'s width is unchanged, and starts over when it changes', async () => {
+    if (!vectorAvailable) return;
+    const stored = async () => {
+      const result = await pool.query(
+        `SELECT (SELECT atttypmod FROM pg_attribute
+                 WHERE attrelid = 'observation_embeddings'::regclass AND attname = 'embedding') AS dims,
+                (SELECT count(*)::int FROM observation_embeddings) AS rows`
+      );
+      return result.rows[0];
+    };
+    await bootstrapServerPostgresSchema(pool, 'on', 384);
+    expect(await stored()).toEqual({ dims: 384, rows: 3 });
+
+    await bootstrapServerPostgresSchema(pool, 'on', 768);
+    expect(await stored()).toEqual({ dims: 768, rows: 0 });
+  });
+
   it('deletes an observation\'s vectors with it', async () => {
     await pool.query('DELETE FROM observations WHERE id = $1', [ids.indexer]);
     const remaining = await pool.query('SELECT count(*)::int AS n FROM observation_embeddings WHERE observation_id = $1', [ids.indexer]);

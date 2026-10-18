@@ -17,6 +17,7 @@ import {
   type ObservationEmbeddingPart,
 } from '../../storage/postgres/observation-embeddings.js';
 import { LocalEmbedder } from '../../services/vector/LocalEmbedder.js';
+import { DEFAULT_EMBEDDING_MODEL } from '../../services/vector/models.js';
 import type { Embedder } from '../../services/vector/types.js';
 import { logger } from '../../utils/logger.js';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -27,7 +28,7 @@ let sharedEmbedder: Embedder | null = null;
 let lastEmbedError: { message: string; at: string } | null = null;
 
 function newSharedEmbedder(threads?: number): LocalEmbedder {
-  return new LocalEmbedder(threads);
+  return new LocalEmbedder(DEFAULT_EMBEDDING_MODEL, threads);
 }
 
 export function getSharedEmbedder(): Embedder {
