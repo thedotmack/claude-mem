@@ -1,185 +1,134 @@
 ---
 name: design-is
-description: Audit a design against Dieter Rams' ten "Good design is..." principles, then hand off a /make-plan prompt for one of three outcomes — new design, refine design, or redesign. Use when the user says "audit this design", "design review", "check this UI against Rams", "is this UI good", "critique this design", "design audit", or asks for a critique that should lead to a plan.
+description: Audit a UI or product design against Dieter Rams' 10 principles, score each principle 0–3 with source evidence, determine an outcome verdict (NEW DESIGN, REFINE, or REDESIGN), and generate a self-contained /make-plan handoff prompt when triggered by "audit this design", "design review", "check this UI against Rams", "is this UI good", "critique this design", "design audit", or design critique requests leading to an execution plan, excluding routine UI code reviews (/review), isolated copy edits, and pre-design ideation lacking an existing artifact (/make-plan).
 ---
 
 # Design Is
 
-## Do not use for
+## Operational Scope & Task Routing
 
-- Routine UI code reviews → use `/review`
-- Pure copy edits → use a separate copy pass
-- Pre-design ideation with no artifact yet → start with `/make-plan` directly
+- Route incoming requests to the target execution workflow based on task classification:
+  + Design audit and planning handoff (`"audit this design"`, `"design review"`, `"check this UI against Rams"`, `"is this UI good"`, `"critique this design"`, `"design audit"`, or design critiques requiring an execution plan) ➔ Execute the `design-is` orchestration pipeline.
+  + Routine UI code review ➔ Route to `/review`.
+  + Isolated copy editing ➔ Route to a dedicated copy pass.
+  + Pre-design ideation lacking an existing artifact ➔ Route directly to `/make-plan`, or bypass `Evidence Gathering` and `Quantitative Scoring` to emit a `NEW DESIGN` handoff prompt.
+- Resolve entity alias references directly to the canonical evaluation framework, excluding inline user correction:
+  + `"Dieter Braun"` ➔ Dieter Rams' 10 principles.
+- Restrict deliverable generation to diagnostic evidence, quantitative scorecards, outcome verdicts, and `/make-plan` handoff prompts stored inside `DESIGN-IS-<YYYY-MM-DD>/` at the repository root or user-specified project path, excluding implementation source code generation:
+  + `00-scope.md` ➔ Audited surface paths, URLs, screens, primary user, primary task, constraints, and reference materials.
+  + `01-evidence.md` ➔ Consolidated per-principle empirical findings collected by subagents.
+  + `02-scorecard.md` ➔ Per-principle `0–3` integer scores, single-line justifications, and total score out of `30`.
+  + `03-verdict.md` ➔ Deterministic outcome verdict (`NEW DESIGN`, `REFINE`, or `REDESIGN`) with 3–5 prioritized moves.
+  + `04-handoff-prompt.md` ➔ Self-contained, copy-pasteable `/make-plan` prompt matching the selected verdict.
 
-You are an ORCHESTRATOR. Audit a design against Dieter Rams' ten principles, score each principle with evidence, decide the outcome verdict (NEW / REFINE / REDESIGN), and hand off to `/make-plan` with a ready-to-run prompt.
+## Orchestration & Subagent Delegation Contract
 
-You do not write implementation code. You produce: evidence-cited scores, a verdict, and a `/make-plan` handoff prompt.
+- Partition execution responsibilities between the orchestrator and parallel evidence-gathering subagents:
+  + Subagent authority: Execute component reading, contrast measurement, element counting, token inspection, and live screenshot/style capture via `agent-browser`, returning structured factual measurements and source citations, excluding narrative prose paragraphs, subjective opinions, and principle scores.
+  + Orchestrator authority: Execute scope locking, subagent report validation, evidence synthesis, `0–3` principle scoring, verdict selection, and `/make-plan` prompt assembly.
+- Enforce the 4-field reporting schema across each subagent response:
+  1. `Sources consulted`: Exact file paths and line ranges (`file:line`) or screenshot regions.
+  2. `Concrete findings`: Verified present and missing interface elements accompanied by verbatim quotes or measured values.
+  3. `Per-principle facts`: Objective empirical observations mapped to target principles, excluding score assignments.
+  4. `Known gaps`: Uninspected surfaces or properties accompanied by the technical cause preventing inspection.
+- Validate each subagent report upon receipt: reject and redeploy any subagent report that omits source citations (`file:line`, screenshot region, copy excerpt, or measured value), evaluates screenshots in isolation when source code is accessible, or assigns principle scores.
 
-## The Ten Principles (Dieter Rams)
+## Execution Workflow
 
-Audit each principle in this exact order. Each gets a score 0–3 and ≥1 piece of evidence (`file:line`, screenshot region, copy excerpt, or measured value).
+Execute the audit pipeline across 5 sequential stages: `Scope Lock (00-scope.md) ➔ Evidence Gathering (01-evidence.md) ➔ Quantitative Scoring (02-scorecard.md) ➔ Verdict Determination (03-verdict.md) ➔ Plan Handoff Generation (04-handoff-prompt.md)`.
 
-1. **Good design is innovative** — Does it advance the form, or imitate? Innovation rides on technology; never an end in itself.
-2. **Good design makes a product useful** — Does it serve the primary task? Emphasizes usefulness; disregards anything that detracts.
-3. **Good design is aesthetic** — Is it beautiful? Only well-executed objects can be beautiful; aesthetic quality affects well-being.
-4. **Good design makes a product understandable** — Does the structure clarify function? Or is it self-explanatory at best?
-5. **Good design is unobtrusive** — Does it stay out of the way? Neither decorative objects nor works of art — leave room for self-expression.
-6. **Good design is honest** — Does it claim only what it is? No false promises, no manipulation, no inflated value.
-7. **Good design is long-lasting** — Will it age well? Avoids being fashionable; never appears antiquated.
-8. **Good design is thorough down to the last detail** — Are edges, empty states, errors, focus rings, motion curves all considered? Care and accuracy express respect for the user.
-9. **Good design is environmentally friendly** — Does it conserve resources? Minimizes pollution — in software: bundle weight, energy, attention, cognitive load.
-10. **Good design is as little design as possible** — Less, but better. Concentrates on essentials; back to purity, back to simplicity.
+### Scope Lock
 
-> The user wrote "Dieter Braun" — they mean Dieter Rams. Don't correct them inline; just use the right principles.
+- Extract from the input context or query the user to record 4 scope parameters in `DESIGN-IS-<YYYY-MM-DD>/00-scope.md` prior to evidence collection:
+  + Audited surface: Live URL, repository path, Figma frame, or component identifier.
+  + Target user and task: Primary user persona and primary task flow.
+  + Operational constraints: Brand guidelines, technology stack, delivery deadline, and accessibility floor.
+  + Comparative baseline: Reference designs or competitor products.
+- Evaluate artifact maturity: bypass `Evidence Gathering` and `Quantitative Scoring` and transition directly to `Verdict Determination` with verdict = `NEW DESIGN` when the target design is uncreated or consists of a stub/wireframe lacking preservable design decisions.
 
-## Delegation Model
+### Evidence Gathering
 
-Use subagents for *evidence gathering* (reading components, measuring contrast, counting elements, inspecting tokens, screenshotting via agent-browser). Keep *scoring and verdict synthesis* with the orchestrator. Reject subagent reports that score without citing evidence and redeploy.
+- Deploy 4 core subagents in parallel and 1 conditional subagent to return only the required structured fields:
+  + `Structural Evidence` (deploy unconditionally):
+    - Total interactive-element count on the audited surface.
+    - Maximum nesting depth of the primary component tree.
+    - Repeated-pattern count (identical affordance appearing in `> 1` location serving the same purpose).
+    - Dead-prop and unused-import count.
+    - Exact `file:line` citations for each reported count.
+  + `Visual Evidence` (deploy unconditionally):
+    - Inspection mode selection:
+      + Reachable URL or running development server ➔ Execute the `agent-browser` skill for screenshot capture and computed-style inspection.
+      + Static repository lacking a running instance ➔ Inspect source CSS, design tokens, and component files to extract derived facts tagged `"INFERRED"`.
+    - Spacing scale observed (`px` array).
+    - Type scale observed (`px` array).
+    - Distinct color count (unique hex/oklch tokens rendered or referenced).
+    - Lowest contrast ratio observed across primary text.
+    - UI state coverage checklist across 6 states (`empty`, `loading`, `error`, `success`, `focus`, `disabled`), recording `present` or `missing` per state.
+  + `Copy & Honesty` (deploy unconditionally):
+    - Complete list of user-facing strings with `file:line` citations.
+    - Flagged value inflations (unsubstantiated marketing superlatives).
+    - Flagged dark patterns (forced continuity, hidden cost, fake scarcity, confirmshaming).
+    - Flagged domain jargon or ambiguous labels paired with plain-language replacements.
+    - Label-to-behavior mismatches citing `file:line` for both the label declaration and the execution logic.
+  + `Weight & Friction` (deploy unconditionally):
+    - Initial JavaScript payload size in bytes (numeric value).
+    - Network request count for the primary view (numeric value).
+    - Time-to-interactive in milliseconds (measured or estimated numeric value accompanied by calculation method).
+    - Animation count on the idle screen (numeric value).
+    - Notification, badge, and modal count on initial load (numeric value).
+  + `Accessibility Evidence` (deploy conditionally when the target contains an interactive UI surface, excluding static landing pages limited to non-interactive content):
+    - WCAG contrast pass/fail status per text token.
+    - Focus order sequence across primary controls.
+    - Keyboard reachability status (`yes` / `no`) for each primary action.
+    - ARIA landmark count.
+    - Skip-link presence status (`yes` / `no`).
+- Consolidate validated subagent findings into `DESIGN-IS-<YYYY-MM-DD>/01-evidence.md`, anchoring every entry to user-facing behavior and verified source citations (`file:line`, screenshot region, copy excerpt, or measured value).
 
-### Subagent Reporting Contract (MANDATORY)
+### Quantitative Scoring
 
-Each evidence subagent response must include:
-1. Sources consulted — exact file paths and line ranges, or screenshot regions
-2. Concrete findings — what is present, what is missing, with quotes/values
-3. Per-principle facts (not opinions) — leave scoring to the orchestrator
-4. Known gaps — what could not be inspected and why
+- Score each of the 10 principles sequentially inside the orchestrator on an integer scale of `0–3` with equal weight, citing `>= 1` piece of evidence from `01-evidence.md` per principle:
 
-## Output Artifacts
+| Principle | Operational Criterion | Evidence Source | Score 3 | Score 2 | Score 1 | Score 0 |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **1. Good design is innovative** | Advances functional form through technology as an enabler rather than an end in itself, distinct from imitation. | Orchestrator synthesis across all evidence | Introduces a pattern absent from 5+ peer products and ships it with restraint. | Refreshes an existing pattern with a clear functional improvement. | Imitates competitors with minor variation. | Copies a competitor's flow wholesale. |
+| **2. Good design makes a product useful** | Serves the primary task directly, emphasizing utility and excluding detracting elements. | `Structural`, `Accessibility` | Completes the primary task in the fewest possible steps, excluding decoy actions. | Completes the primary task while adjacent surfaces add steps. | Requires unnecessary detours to complete the primary task. | Omits direct support for the primary task on the audited screen. |
+| **3. Good design is aesthetic** | Achieves visual execution quality through systemic order that supports user well-being. | `Visual` | Aligns spacing, type, and color to a single visible system, excluding orphan styles. | Contains `<= 2` minor inconsistencies across the audited surface. | Contains `3–5` inconsistencies OR `1` jarring violation. | Lacks a visible system OR exhibits active visual noise. |
+| **4. Good design makes a product understandable** | Clarifies function through structure so the interface operates as self-explanatory. | `Structural`, `Copy & Honesty`, `Accessibility` | Enables a first-time user to name every primary control accurately. | Requires a tooltip on `1` control. | Contains `2–3` unclear controls; domain jargon present. | Obscures the primary action in the absence of external help. |
+| **5. Good design is unobtrusive** | Recedes as neutral background infrastructure, leaving room for user content and self-expression. | `Structural`, `Visual` | Subordinates chrome so content forms the figure and UI forms the ground. | Renders visible chrome with quiet visual weight. | Introduces decoration that competes with content. | Dominates content with UI chrome. |
+| **6. Good design is honest** | States only actual product capabilities, excluding false promises, manipulation, and inflated value. | `Copy & Honesty` | Maps every claim, badge, and label 1:1 to actual runtime behavior. | Contains `<= 1` minor inflation (e.g., `"powerful"` once). | Contains `>= 2` inflations OR `1` dark pattern. | Implements any deceptive flow (forced continuity, hidden cost, fake scarcity). |
+| **7. Good design is long-lasting** | Maintains visual durability over time, excluding transient fashion that renders the interface antiquated. | Orchestrator synthesis across all evidence | Exhibits zero dated trend markers; reads as current 3 years from audit date. | Contains `1` dated trend marker. | Contains `2–3` dated markers (skeuomorph residue, fad gradients, trend typography). | Reads as a specific single year's trend. |
+| **8. Good design is thorough down to the last detail** | Addresses edges, empty states, errors, focus rings, and motion curves with precision. | `Visual` | Implements and refines all 6 states (`empty`, `loading`, `error`, `success`, `focus`, `disabled`). | Omits or leaves rough `1` state. | Omits `2–3` states. | Omits `>= 4` states or relies on unstyled browser defaults. |
+| **9. Good design is environmentally friendly** | Conserves computational and human resources across bundle weight, energy, attention, and cognitive load. | `Weight & Friction` | Maintains initial JS `< 100KB`, zero idle animation, honored dark mode, and respected `prefers-reduced-motion`. | Maintains initial JS `< 500KB` with gated motion. | Produces initial JS `500KB–2MB` with continuous motion. | Exceeds `2MB` initial JS OR runs autoplay video OR ignores dark mode. |
+| **10. Good design is as little design as possible** | Concentrates on essential elements ("Less, but better"), returning to structural purity and simplicity. | `Structural` | Binds every element to task execution such that removing any single element breaks the task. | Contains `<= 2` removable elements. | Contains `3–5` removable elements. | Populates the page with decoration or duplicated affordances. |
 
-All artifacts go in `DESIGN-IS-<YYYY-MM-DD>/` at repo root (or the project the user points at):
+- Apply 4 calibration constraints when computing scores:
+  + Shipped-surface grounding: Evaluate actual rendered user-facing behavior rather than unshipped design intent or internal codebase architecture.
+  + Lower-bound tie-breaker: Select the lower integer score whenever evidence falls between two adjacent rubric levels, prioritizing calibration convergence over score generosity.
+  + Worst-instance floor: Score the lowest-performing instance whenever a principle manifests across multiple instances on the audited surface, excluding mean averaging.
+  + Unweighted integer sum: Keep each principle score as an integer in `[0, 3]` and sum all 10 scores to produce a maximum total of `30`, excluding bonus points or differential weights.
+- Write `DESIGN-IS-<YYYY-MM-DD>/02-scorecard.md` using the fixed entry schema for each principle followed by the total sum:
 
-- `00-scope.md` — what was audited (URL, component paths, screens), input materials
-- `01-evidence.md` — per-principle evidence collected by subagents
-- `02-scorecard.md` — per-principle 0–3 score with one-line justification + total
-- `03-verdict.md` — NEW / REFINE / REDESIGN with reasoning
-- `04-handoff-prompt.md` — copy-pasteable `/make-plan` prompt for the chosen outcome
-
-## Phases
-
-### Phase 0: Scope Lock (ALWAYS FIRST)
-
-Ask the user (or infer from the request) and write `00-scope.md`:
-- What is being audited? (live URL, repo path, Figma frame, component name)
-- Who is the primary user, and what is the primary task?
-- Constraints (brand, stack, deadline)
-- Reference designs or competitors, if any
-
-If the user is asking about a design that doesn't exist yet, skip Phases 1–2 and go straight to Phase 3 with verdict = **NEW**.
-
-### Phase 1: Evidence Gathering (FAN OUT)
-
-Deploy subagents in parallel. Each must return ONLY the required fields below — no prose paragraphs, no scoring.
-
-**1. Structural Evidence** subagent (always deploy)
-Required fields returned:
-- Total interactive-element count on audited surface
-- Max nesting depth of the primary component tree
-- Repeated-pattern count (same affordance appearing >1 place with the same purpose)
-- Dead-prop / unused-import count
-- File:line citations for every count
-
-**2. Visual Evidence** subagent (always deploy)
-Mode: if target is a reachable URL or running dev server → use the `agent-browser` skill for screenshots and computed-style inspection. If target is a static repo with no running instance → read source CSS / tokens / component files and report inferred facts only (mark these "INFERRED").
-Required fields returned:
-- Spacing scale observed (px array)
-- Type scale observed (px array)
-- Distinct color count (count of unique hex/oklch tokens actually rendered or referenced)
-- Lowest contrast ratio observed across primary text
-- States present checklist: empty / loading / error / success / focus / disabled — present or missing for each
-
-**3. Copy & Honesty** subagent (always deploy)
-Required fields returned:
-- List of every user-facing string with file:line
-- Flagged inflations (marketing superlatives without backing)
-- Flagged dark patterns (forced continuity, hidden cost, fake scarcity, confirmshaming)
-- Flagged jargon / unclear labels with proposed plain replacement
-- Label→behavior mismatches with file:line of both
-
-**4. Weight & Friction** subagent (always deploy)
-Required fields returned:
-- Initial JS bytes (number)
-- Network request count for primary view (number)
-- Time-to-interactive ms (number, measured or estimated with method noted)
-- Animation count on idle screen (number)
-- Notification / badge / modal count on initial load (number)
-
-**5. Accessibility Evidence** subagent (OPTIONAL — deploy only if target has a meaningful interactive UI surface; skip for static landing pages without interaction)
-Required fields returned:
-- WCAG contrast pass/fail per text token
-- Focus order list across primary controls
-- Keyboard reachability of every primary action (yes/no per action)
-- ARIA landmark count
-- Skip-link present (yes/no)
-
-**Principle → subagent mapping** (orchestrator uses this when scoring):
-
-| Principle | Fed by |
-|-----------|--------|
-| #1 innovative | orchestrator-only (judgment using all evidence) |
-| #2 useful | Structural, Accessibility |
-| #3 aesthetic | Visual |
-| #4 understandable | Structural, Copy & Honesty, Accessibility |
-| #5 unobtrusive | Structural, Visual |
-| #6 honest | Copy & Honesty |
-| #7 long-lasting | orchestrator-only (judgment using all evidence) |
-| #8 thorough | Visual |
-| #9 environmentally friendly | Weight & Friction |
-| #10 as little design as possible | Structural |
-
-The orchestrator writes `01-evidence.md` consolidating all subagent reports. Reject any finding without a source citation. Subagents are explicitly forbidden from scoring — only the orchestrator scores, using the rubric in Phase 2.
-
-### Phase 2: Scorecard (ORCHESTRATOR)
-
-The orchestrator scores each of the ten principles itself — do NOT delegate scoring.
-
-For each principle, write to `02-scorecard.md`:
-
-```
+```text
 N. Good design is <principle> — Score: X/3
    Evidence: <one-line summary citing 01-evidence.md anchors>
    Justification: <one sentence on why this score, not the one above or below>
 ```
 
-Per-principle scoring anchors (apply verbatim — pick the level whose signal best matches the audited surface):
+### Verdict Determination
 
-#1 innovative — 3: introduces a pattern not seen in 5+ peer products and ships it with restraint. 2: refreshes an existing pattern with a clear improvement. 1: imitates competitors with minor variation. 0: copies a competitor's flow wholesale.
-#2 useful — 3: primary task completes in fewest possible steps; no decoy actions. 2: primary task completes but adjacent surface adds steps. 1: primary task requires unnecessary detours. 0: primary task is not directly supported on the screen audited.
-#3 aesthetic — 3: spacing/type/color obey a single visible system; no orphan styles. 2: ≤2 minor inconsistencies across audited surface. 1: 3–5 inconsistencies OR one jarring violation. 0: no visible system OR active visual noise.
-#4 understandable — 3: a first-time user names every primary control correctly. 2: 1 control needs a tooltip. 1: 2–3 controls unclear; jargon present. 0: primary action is not identifiable without help.
-#5 unobtrusive — 3: chrome recedes; content is the figure, UI the ground. 2: chrome visible but quiet. 1: decoration competes with content. 0: chrome dominates content.
-#6 honest — 3: every claim, badge, and label maps 1:1 to actual behavior. 2: ≤1 minor inflation (e.g. "powerful" once). 1: 2+ inflations OR one dark pattern. 0: any deceptive flow (forced continuity, hidden cost, fake scarcity).
-#7 long-lasting — 3: visual language has no dated trend markers; would read as current 3 years from now. 2: 1 dated marker. 1: 2–3 dated markers (skeuomorph residue, fad gradients, trend typography). 0: design reads as a specific year's trend.
-#8 thorough — 3: empty / loading / error / success / focus / disabled all present and considered. 2: 1 state missing or rough. 1: 2–3 states missing. 0: 4+ states missing or default-browser.
-#9 environmentally friendly — 3: initial JS <100KB, no idle animation, dark mode honored, prefers-reduced-motion respected. 2: <500KB, motion gated. 1: 500KB–2MB, motion always on. 0: >2MB OR autoplay video OR dark mode ignored.
-#10 as little design as possible — 3: every element earns its place; removing any one breaks the task. 2: ≤2 removable elements. 1: 3–5 removable elements. 0: page is dominated by decoration or duplicated affordances.
+- Select exactly 1 outcome verdict for `DESIGN-IS-<YYYY-MM-DD>/03-verdict.md` by applying the decision rules mechanically to `02-scorecard.md`:
+  + `NEW DESIGN`: Target design is uncreated, OR the existing artifact is a stub/wireframe lacking preservable design decisions.
+  + `REFINE`: Total score `>= 20` AND every individual principle scores `>= 1` (zero principles scored `0`).
+  + `REDESIGN`: Total score `< 20`, OR any principle scores `0` on a load-bearing dimension (specifically `#2 useful`, `#4 understandable`, or `#6 honest`, or any individual `0`-scored principle).
+- Resolve conflict hierarchy during verdict selection in descending priority order: `Scorecard Mathematical Rule > Verified User-Facing Evidence > Scope Containment > User Initial Preference`, excluding multi-verdict hedging, retroactive score adjustments, sunk-cost preservation of large codebases, or full-system redesigns triggered by an isolated single-screen defect.
+- Format `03-verdict.md` with two sequential elements:
+  1. A single-sentence verdict declaration stating the chosen outcome (`NEW DESIGN`, `REFINE`, or `REDESIGN`) and its decisive score/principle basis.
+  2. A prioritized list of the 3–5 highest-leverage corrective moves, binding each move to its principle number and verified evidence anchor (`file:line` or `01-evidence.md` citation).
 
-Scoring rules:
-- **Tie-breaker rule**: When uncertain between two scores, pick the lower one. Convergence > generosity.
-- **Score worst, not mean**: When a principle has multiple representative instances on the audited surface, score the worst instance — not the average.
-- **No bonuses, no weights**: Scores stay 0–3 integer. Principles are equally weighted. Total is sum of ten scores, max 30.
+### Plan Handoff Generation
 
-### Phase 3: Verdict (ORCHESTRATOR)
-
-Write `03-verdict.md` with one of three verdicts, chosen by these rules:
-
-- **NEW DESIGN** — No design exists yet, OR the existing artifact is a stub/wireframe with no real decisions to preserve.
-- **REFINE** — Total score ≥ 20 AND no individual principle scored 0. The bones are good; iterate.
-- **REDESIGN** — Total score < 20, OR any principle scored 0 on a load-bearing dimension (typically #2 useful, #4 understandable, or #6 honest). Start over from purpose.
-
-State the verdict in one sentence. Then list the 3–5 highest-leverage moves — each tied to a specific principle and evidence anchor. These become the spine of the next phase's plan.
-
-**Anti-patterns to reject in your own verdict:**
-- Recommending REFINE because the codebase is large (sunk cost is not a design principle)
-- Recommending REDESIGN because a single screen is ugly (scope it)
-- Recommending NEW when an honest REDESIGN is warranted (don't dodge the critique)
-
-### Phase 4: /make-plan Handoff
-
-Write `04-handoff-prompt.md` containing exactly ONE fenced `/make-plan` prompt matching the verdict. The prompt must be self-contained — the next session won't see this audit unless it's quoted in.
-
-Use the matching template below. Fill every `<bracket>`. Include the top 3–5 moves from Phase 3 verbatim, each with its evidence anchor.
-
-**Quote-in step (mandatory, applies to all three templates below):** Before emitting the handoff, replace EVERY `<bracket>` placeholder with concrete content from the audit. Inline the verdict paragraph from `03-verdict.md` and the top 3–5 moves verbatim into the template. Do NOT leave bare references like "see DESIGN-IS-.../03-verdict.md" — the next session won't have file access to the audit. The emitted handoff must be readable and actionable with zero external lookups.
+- Generate `DESIGN-IS-<YYYY-MM-DD>/04-handoff-prompt.md` containing 1 fenced `/make-plan` prompt matching the verdict from `03-verdict.md`.
+- Populate every `<bracket>` parameter with concrete content from the audit, inline the verbatim single-sentence verdict paragraph from `03-verdict.md`, and embed the 3–5 prioritized moves verbatim with their `file:line` or evidence anchors so the handoff prompt operates as a self-contained specification, excluding external references to `DESIGN-IS-<YYYY-MM-DD>/` files.
 
 #### Template: NEW DESIGN
 
@@ -289,24 +238,3 @@ Anti-patterns to guard against (specific to REDESIGN):
 - Redesigning to follow a trend rather than the principles above
 - Treating the Preserve list as optional — it must be filled before this handoff is valid
 ````
-
-## Key Principles (for the auditor)
-
-- **Evidence over taste** — every score cites a source; "feels wrong" is not a finding
-- **Score what is, not what was intended** — design is what ships, not what was drawn
-- **Honesty applies to the audit too** — if total is 28/30, say REFINE even if the user wanted a redesign; if it's 12/30, say REDESIGN even if the user wanted a refine
-- **One verdict, not three** — pick NEW or REFINE or REDESIGN; do not hedge
-- **Handoff, don't implement** — `design-is` ends at the `/make-plan` prompt; `/make-plan` and `/do` take it from there
-- **Verdict commitment** — Once `02-scorecard.md` is written, the verdict follows the Phase 3 rule mechanically. Never re-score to back into a preferred verdict; if the scorecard says REDESIGN, the handoff is REDESIGN.
-
-## Failure Modes to Prevent
-
-- Scoring from screenshots alone without reading the code — redeploy with structural subagent
-- Scoring the codebase instead of the design — re-anchor on user-facing evidence
-- Awarding 3s generously to soften the verdict — recalibrate against the per-principle anchors in Phase 2
-- Producing a handoff prompt that doesn't quote the verdict and top moves — the next session is blind without them
-- Skipping Phase 0 scope lock — auditing the wrong surface wastes Phase 1
-- **Sunk-cost reasoning** — recommending REFINE because the codebase is large; sunk cost is not a design principle
-- **Hedging across verdicts** — "could be REFINE or REDESIGN depending on..." — pick one
-- **Score inflation to match a desired verdict** — score the evidence, then read the verdict off the rule
-- **Letting Phase 0 user preference override Phase 3 evidence** — the user can disagree with the verdict, but the audit reports what the evidence says
