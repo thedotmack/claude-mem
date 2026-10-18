@@ -9,6 +9,8 @@ import {
   observationEmbeddingParts,
   PostgresObservationEmbeddingsRepository,
 } from '../../../src/storage/postgres/observation-embeddings.js';
+import { embedSearchQuery, getVectorSearchStatus } from '../../../src/server/services/ObservationEmbeddingService.js';
+import type { Embedder } from '../../../src/services/vector/types.js';
 import { createIsolatedSchema, dropSchema } from '../../sdk/pg-isolation.js';
 
 describe('observationEmbeddingParts', () => {
@@ -185,6 +187,30 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     } finally {
       await hnswOnly.end();
     }
+  });
+
+  it('counts rows without vectors from the current model as missing', async () => {
+    if (!vectorAvailable) return;
+    const embedder = (modelId: string): Embedder => ({ modelId, dims: 384, embed: async texts => texts.map(() => axis(1)) });
+    const current = await getVectorSearchStatus(pool, embedder('test'));
+    expect(current).toMatchObject({ available: true, model: 'test', observationsWithoutVectors: 0 });
+
+    // A model change leaves every row's vectors in the old model's space.
+    expect((await getVectorSearchStatus(pool, embedder('next'))).observationsWithoutVectors).toBe(3);
+    const missing = await new PostgresObservationEmbeddingsRepository(pool).listMissing({ model: 'next', limit: 10 });
+    expect(missing.map(row => row.id).sort()).toEqual(Object.values(ids).sort());
+  });
+
+  it('reports the last embedding failure until an embed succeeds', async () => {
+    if (!vectorAvailable) return;
+    const failing: Embedder = { modelId: 'test', dims: 384, embed: async () => { throw new Error('model download failed'); } };
+    const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+
+    expect(await embedSearchQuery(pool, 'a query', failing)).toBeNull();
+    expect((await getVectorSearchStatus(pool, failing)).lastEmbedError?.message).toBe('model download failed');
+
+    expect(await embedSearchQuery(pool, 'a query', working)).not.toBeNull();
+    expect((await getVectorSearchStatus(pool, working)).lastEmbedError).toBeNull();
   });
 
   it('deletes an observation\'s vectors with it', async () => {

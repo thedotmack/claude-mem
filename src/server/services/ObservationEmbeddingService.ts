@@ -18,10 +18,43 @@ import type { Embedder } from '../../services/vector/types.js';
 import { logger } from '../../utils/logger.js';
 
 let sharedEmbedder: Embedder | null = null;
+// The most recent embed failure, cleared by the next success, so /v1/info can
+// say why search is keyword-only instead of leaving it to the log.
+let lastEmbedError: { message: string; at: string } | null = null;
 
 export function getSharedEmbedder(): Embedder {
   sharedEmbedder ??= new LocalEmbedder();
   return sharedEmbedder;
+}
+
+function recordEmbedError(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  lastEmbedError = { message, at: new Date().toISOString() };
+  return message;
+}
+
+export interface VectorSearchStatus {
+  /** pgvector 0.8+ was installable and the embeddings table exists. */
+  available: boolean;
+  model: string;
+  /** Observations a search by meaning cannot find yet; null when unavailable. */
+  observationsWithoutVectors: number | null;
+  lastEmbedError: { message: string; at: string } | null;
+}
+
+export async function getVectorSearchStatus(
+  client: PostgresQueryable,
+  embedder: Embedder = getSharedEmbedder(),
+): Promise<VectorSearchStatus> {
+  const available = await vectorSearchAvailable(client);
+  return {
+    available,
+    model: embedder.modelId,
+    observationsWithoutVectors: available
+      ? await new PostgresObservationEmbeddingsRepository(client).countMissing(embedder.modelId)
+      : null,
+    lastEmbedError,
+  };
 }
 
 /** The query's vector, or null when search should stay keyword-only. */
@@ -34,10 +67,11 @@ export async function embedSearchQuery(
   try {
     if (!(await vectorSearchAvailable(client))) return null;
     const [vector] = await embedder.embed([query]);
+    lastEmbedError = null;
     return vector ?? null;
   } catch (error) {
     logger.warn('SYSTEM', 'query embedding failed; searching by keyword only', {
-      error: error instanceof Error ? error.message : String(error),
+      error: recordEmbedError(error),
     });
     return null;
   }
@@ -63,6 +97,7 @@ export async function embedObservationRows(
     if (!(await vectorSearchAvailable(client))) return null;
     const partsPerRow = rows.map(row => observationEmbeddingParts(row.kind, row.metadata, row.content));
     const vectors = await embedder.embed(partsPerRow.flat().map(p => p.text));
+    lastEmbedError = null;
     let offset = 0;
     return partsPerRow.map(parts => {
       const slice = vectors.slice(offset, offset + parts.length);
@@ -71,7 +106,7 @@ export async function embedObservationRows(
     });
   } catch (error) {
     logger.warn('SYSTEM', 'observation embedding failed; rows are written without vectors', {
-      error: error instanceof Error ? error.message : String(error),
+      error: recordEmbedError(error),
     });
     return null;
   }
@@ -94,7 +129,7 @@ export async function backfillMissingEmbeddings(
   const repo = new PostgresObservationEmbeddingsRepository(client);
   let after: { createdAt: Date; id: string } | null = null;
   for (;;) {
-    const rows = await repo.listMissing({ limit: batchSize, after });
+    const rows = await repo.listMissing({ model: embedder.modelId, limit: batchSize, after });
     if (rows.length === 0) break;
     const last = rows[rows.length - 1]!;
     after = { createdAt: last.createdAt, id: last.id };

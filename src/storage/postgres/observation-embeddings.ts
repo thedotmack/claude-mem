@@ -102,11 +102,13 @@ export class PostgresObservationEmbeddingsRepository {
   }
 
   /**
-   * Observations with no embedding at all, in (created_at, id) order after the
-   * given cursor, so a row that yields no vector cannot stall a caller paging
-   * through the gap.
+   * Observations with no embedding from `model`, in (created_at, id) order
+   * after the given cursor, so a row that yields no vector cannot stall a
+   * caller paging through the gap. Vectors from another model count as
+   * missing: they live in another space and are overwritten part by part.
    */
   async listMissing(input: {
+    model: string;
     limit: number;
     after?: { createdAt: Date; id: string } | null;
   }): Promise<MissingEmbeddingRow[]> {
@@ -114,12 +116,12 @@ export class PostgresObservationEmbeddingsRepository {
       `
         SELECT o.id, o.kind, o.content, o.metadata, o.created_at
         FROM observations o
-        WHERE NOT EXISTS (SELECT 1 FROM observation_embeddings e WHERE e.observation_id = o.id)
+        WHERE NOT EXISTS (SELECT 1 FROM observation_embeddings e WHERE e.observation_id = o.id AND e.model = $4)
           AND ($2::timestamptz IS NULL OR (o.created_at, o.id) > ($2::timestamptz, $3::text))
         ORDER BY o.created_at, o.id
         LIMIT $1
       `,
-      [input.limit, input.after?.createdAt ?? null, input.after?.id ?? null]
+      [input.limit, input.after?.createdAt ?? null, input.after?.id ?? null, input.model]
     );
     return result.rows.map(row => ({
       id: row.id,
@@ -128,6 +130,19 @@ export class PostgresObservationEmbeddingsRepository {
       metadata: toJsonObject(row.metadata),
       createdAt: row.created_at,
     }));
+  }
+
+  /** How many observations listMissing would return, across every project. */
+  async countMissing(model: string): Promise<number> {
+    const row = await this.client.query<{ n: number }>(
+      `
+        SELECT count(*)::int AS n
+        FROM observations o
+        WHERE NOT EXISTS (SELECT 1 FROM observation_embeddings e WHERE e.observation_id = o.id AND e.model = $1)
+      `,
+      [model]
+    );
+    return row.rows[0]?.n ?? 0;
   }
 }
 
