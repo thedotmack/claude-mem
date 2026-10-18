@@ -984,6 +984,29 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it('only checks directory names below the project root', async () => {
+    // A project that itself lives under ~/build or ~/res must still get folder CLAUDE.md files.
+    for (const parent of ['build', 'res', 'node_modules']) {
+      const apiResponse = {
+        content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+      };
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(apiResponse)
+      } as Response));
+      global.fetch = fetchMock;
+
+      await updateFolderClaudeMdFiles(
+        ['src/utils/file.ts'],
+        'test-project',
+        37777,
+        join(tempDir, parent, 'myapp')
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it('should skip deeply nested unsafe directories', async () => {
     const fetchMock = mock(() => Promise.resolve({ ok: true } as Response));
     global.fetch = fetchMock;
