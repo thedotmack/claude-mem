@@ -131,6 +131,7 @@ export class PaginationHelper {
         ss.next_steps,
         ss.notes,
         ss.project,
+        ss.merged_into_project,
         ss.created_at,
         ss.created_at_epoch
       FROM session_summaries ss
