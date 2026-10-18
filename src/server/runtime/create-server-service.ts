@@ -12,6 +12,7 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
+import { backfillMissingEmbeddings } from '../services/ObservationEmbeddingService.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
@@ -219,6 +220,14 @@ export async function createServerService(
 
   if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
     generationWorkerManager.start();
+    // Rows written while vectors were unavailable (pgvector just installed,
+    // the model failed to load, or the rows predate this feature) get them
+    // now, in the background, so search by meaning covers the whole store.
+    void backfillMissingEmbeddings(pool).catch((error: unknown) => {
+      logger.warn('SYSTEM', 'embedding backfill stopped; it resumes at the next worker start', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
   }
 
   return new ServerService({ graph });

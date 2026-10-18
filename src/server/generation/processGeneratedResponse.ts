@@ -21,6 +21,8 @@ import {
   type PostgresPoolClient,
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
+import { PostgresObservationEmbeddingsRepository } from '../../storage/postgres/observation-embeddings.js';
+import { embedObservationRows, getSharedEmbedder } from '../services/ObservationEmbeddingService.js';
 
 // processGeneratedResponse owns the full "we got XML from a provider →
 // persist + link + advance outbox" pipeline. Every side-effect runs inside
@@ -296,8 +298,22 @@ async function persistGeneratedObservations(
 ): Promise<ProcessGeneratedResponseOutcome> {
   const { job } = input;
 
+  // Vectors for search by meaning, computed before the transaction opens so
+  // the model never holds it, and written beside each row inside it. Null when
+  // unavailable: the rows are written anyway and the worker's startup
+  // backfill embeds them later.
+  const embedded = await embedObservationRows(
+    input.pool,
+    rendered.map(({ kind, content, metadata }) => ({
+      kind,
+      content: stripTags(content).stripped,
+      metadata,
+    })),
+  );
+
   return withPostgresTransaction(input.pool, async (client) => {
     const obsRepo = new PostgresObservationRepository(client);
+    const embeddingsRepo = new PostgresObservationEmbeddingsRepository(client);
     const sourcesRepo = new PostgresObservationSourcesRepository(client);
     const jobsRepo = new PostgresObservationGenerationJobRepository(client);
     const eventsLogRepo = new PostgresObservationGenerationJobEventsRepository(client);
@@ -374,6 +390,16 @@ async function persistGeneratedObservations(
         createdByJobId: fresh.id,
       });
       persisted.push(observation);
+
+      const vectors = embedded?.[index];
+      if (vectors && vectors.parts.length > 0) {
+        await embeddingsRepo.upsert({
+          observationId: observation.id,
+          model: getSharedEmbedder().modelId,
+          parts: vectors.parts,
+          vectors: vectors.vectors,
+        });
+      }
 
       await sourcesRepo.addSource({
         observationId: observation.id,

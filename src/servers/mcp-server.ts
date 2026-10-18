@@ -851,7 +851,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
   },
   {
     name: 'observation_search',
-    description: 'Full-text search across generated observations using the server\'s GIN tsvector index (Phase 1). Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
+    description: 'Search generated observations by keyword (Postgres full-text) and, when the server\'s Postgres has pgvector, by meaning (embedding similarity), fused by reciprocal rank; keyword-only without pgvector. A natural-language question works. There is no relevance cutoff, so results are always the nearest matches. Calls /v1/search. Server runtime only. Params: query (required), projectId (optional), platformSource, limit (default 20, max 100).',
     inputSchema: {
       type: 'object',
       properties: {

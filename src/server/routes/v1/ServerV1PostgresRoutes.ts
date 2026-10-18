@@ -17,6 +17,12 @@ import {
 } from '../../../storage/postgres/generation-jobs.js';
 import { PostgresAuthRepository } from '../../../storage/postgres/auth.js';
 import { PostgresObservationRepository } from '../../../storage/postgres/observations.js';
+import {
+  embedObservationRows,
+  embedSearchQuery,
+  getSharedEmbedder,
+} from '../../services/ObservationEmbeddingService.js';
+import { PostgresObservationEmbeddingsRepository } from '../../../storage/postgres/observation-embeddings.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
@@ -923,8 +929,18 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         };
         try {
           const repo = new PostgresObservationRepository(this.options.pool);
+          const embedded = await embedObservationRows(this.options.pool, [createInput]);
           const observation = await repo.create(createInput);
           if (observation.id === createInput.id) {
+            const vectors = embedded?.[0];
+            if (vectors && vectors.parts.length > 0) {
+              await new PostgresObservationEmbeddingsRepository(this.options.pool).upsert({
+                observationId: observation.id,
+                model: getSharedEmbedder().modelId,
+                parts: vectors.parts,
+                vectors: vectors.vectors,
+              });
+            }
             await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
             res.status(201).json({ memory: serializeObservation(observation) });
             return;
@@ -974,6 +990,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             query: body.query,
             limit: body.limit ?? 20,
             platformSource,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           });
         } catch (error) {
           const err = error instanceof Error ? error : new Error(String(error));
@@ -1078,6 +1095,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
             platformSource,
             folderProjects: body.folderProjects ?? null,
             excludeSubagents: body.excludeSubagents === true,
+            queryEmbedding: await embedSearchQuery(this.options.pool, body.query),
           };
           if (body.summaryLimit === undefined) {
             results = await repo.search(searchInput);
@@ -1142,7 +1160,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       const backend: RecallBackend = {
         search: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           // Audit the read, same as POST /v1/search — the MCP path is no exception.
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'search', via: 'mcp', query, limit,
@@ -1168,7 +1187,8 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         },
         context: async ({ projectId, query, limit }) => {
           assertProjectAllowed(projectId);
-          const rows = await repo.search({ projectId, teamId, query, limit });
+          const queryEmbedding = await embedSearchQuery(this.options.pool, query);
+          const rows = await repo.search({ projectId, teamId, query, limit, queryEmbedding });
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'context', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
