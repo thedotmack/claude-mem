@@ -37,7 +37,9 @@ export interface SessionScopedRow {
  * `?project=` pagination returns both, so the client filter must keep both.
  */
 export function rowInProject(row: { project: string; merged_into_project?: string | null }, project: string): boolean {
-  return row.project === project || row.merged_into_project === project;
+  // Same rule as the worker's `COLLATE NOCASE` project match.
+  const wanted = project.toLowerCase();
+  return row.project.toLowerCase() === wanted || row.merged_into_project?.toLowerCase() === wanted;
 }
 
 /** The session a feed row belongs to, or null when the row does not say. */

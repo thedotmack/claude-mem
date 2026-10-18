@@ -42,5 +42,7 @@ describe('viewer project scope keeps rows merged into the selected project', () 
     expect(rowInProject({ project: 'app/feature-wt', merged_into_project: 'app' }, 'app/feature-wt')).toBe(true);
     expect(rowInProject({ project: 'app', merged_into_project: null }, 'app')).toBe(true);
     expect(rowInProject({ project: 'other', merged_into_project: null }, 'app')).toBe(false);
+    // `project merge app/feature-wt App` keeps the destination's case; the worker matches it NOCASE.
+    expect(rowInProject({ project: 'app/feature-wt', merged_into_project: 'App' }, 'app')).toBe(true);
   });
 });
