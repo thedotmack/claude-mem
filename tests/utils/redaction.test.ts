@@ -26,6 +26,7 @@ describe('redactSensitive built-in patterns', () => {
     ['github_pat',      'token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 trailing',                  "<redacted type='github_pat'/>"],
     ['github_pat',      'oauth: gho_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                      "<redacted type='github_pat'/>"],
     ['github_pat',      'refresh: ghr_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                    "<redacted type='github_pat'/>"],
+    ['github_pat',      'app user: ghu_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                   "<redacted type='github_pat'/>"],
     ['openai_key',      'Authorization: Bearer sk-ABCDEFGHIJ1234567890abcdef',                        "<redacted type='openai_key'/>"],
     ['anthropic_key',   'key=sk-ant-api03-abcdef1234567890ABCDEF',                                    "<redacted type='anthropic_key'/>"],
     // Split string literals here and below so GitHub's secret-push-protection
