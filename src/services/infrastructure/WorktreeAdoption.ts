@@ -80,7 +80,16 @@ function gitTimeoutError(): Error {
  */
 function spawnGit(cwd: string, args: string[]): Promise<GitCommandResult> {
   return new Promise(resolve => {
-    const child = spawn('git', ['-C', cwd, ...args], { windowsHide: true });
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn('git', ['-C', cwd, ...args], { windowsHide: true });
+    } catch (err) {
+      // Bun can throw from spawn() itself while it sets up stdio ("undefined
+      // is not an object (evaluating 'NativeWritable')"). Report it as a git
+      // failure so the sweep goes on to the next call.
+      resolve({ status: null, stdout: '', stderr: '', error: err instanceof Error ? err : new Error(String(err)) });
+      return;
+    }
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
     let stdout = '';
