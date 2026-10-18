@@ -1476,6 +1476,13 @@ async function main() {
     process.exit(0);
   }
 
+  // The launcher and bun-runner.js start Bun in a neutral directory (#4628);
+  // commands that act on the caller's project return there, as `hook` does.
+  if (command === 'generate' || command === 'clean' || command === 'adopt' || command === 'memory') {
+    const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+    restoreHookOriginalCwd();
+  }
+
   const port = getWorkerPort();
 
   function exitWithStatus(status: 'ready' | 'error', message?: string): never {
