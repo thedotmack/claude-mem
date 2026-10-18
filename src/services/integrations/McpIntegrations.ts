@@ -163,6 +163,14 @@ function isYamlContentLine(line: string): boolean {
   return line.trim() !== '' && !line.trimStart().startsWith('#');
 }
 
+/** What follows `key:` when `line` is that key at `indent`, written plain or quoted; null for any other line. */
+function yamlKeyLineRest(line: string, indent: string, key: string): string | null {
+  const match = new RegExp(`^${indent}(["']?)${key}\\1:`).exec(line);
+  if (!match) return null;
+  const rest = line.slice(match[0].length);
+  return rest === '' || /^\s/.test(rest) ? rest : null;
+}
+
 /**
  * `content` with claude-mem set in the top-level `extensions` mapping, the
  * only place Goose starts MCP servers from: it never reads a `mcpServers` key
@@ -171,12 +179,12 @@ function isYamlContentLine(line: string): boolean {
  */
 function upsertGooseExtension(content: string, mcpServerPath: string): string {
   const lines = content.split('\n');
-  const header = lines.findIndex(line => line.startsWith('extensions:'));
+  const header = lines.findIndex(line => yamlKeyLineRest(line, '', 'extensions') !== null);
   if (header === -1) {
     const existingLines = content.trimEnd() ? [content.trimEnd()] : [];
     return [...existingLines, 'extensions:', ...buildGooseClaudeMemExtensionLines(mcpServerPath, '  ')].join('\n') + '\n';
   }
-  if (isYamlContentLine(lines[header].slice('extensions:'.length))) {
+  if (isYamlContentLine(yamlKeyLineRest(lines[header], '', 'extensions')!)) {
     throw new Error('Goose config.yaml sets extensions inline; write it as a block mapping and install again');
   }
 
@@ -187,14 +195,16 @@ function upsertGooseExtension(content: string, mcpServerPath: string): string {
   const indent = ' '.repeat(firstEntry ? leadingSpaceCount(firstEntry) : 2);
   const extension = buildGooseClaudeMemExtensionLines(mcpServerPath, indent);
 
-  const existing = lines.findIndex((line, index) => index > header && index < end && line.trimEnd() === `${indent}claude-mem:`);
+  const existing = lines.findIndex((line, index) => index > header && index < end && yamlKeyLineRest(line, indent, 'claude-mem') !== null);
   if (existing === -1) {
     return [...lines.slice(0, header + 1), ...extension, ...lines.slice(header + 1)].join('\n');
   }
+  // The entry runs to the next sibling; blank lines and comments just before it stay with it.
   let existingEnd = existing + 1;
-  while (existingEnd < end && isYamlContentLine(lines[existingEnd]) && leadingSpaceCount(lines[existingEnd]) > indent.length) {
+  while (existingEnd < end && !(isYamlContentLine(lines[existingEnd]) && leadingSpaceCount(lines[existingEnd]) <= indent.length)) {
     existingEnd++;
   }
+  while (existingEnd > existing + 1 && !isYamlContentLine(lines[existingEnd - 1])) existingEnd--;
   return [...lines.slice(0, existing), ...extension, ...lines.slice(existingEnd)].join('\n');
 }
 

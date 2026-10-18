@@ -79,6 +79,44 @@ describe('Goose install registers claude-mem as a Goose extension', () => {
     expect(read().extensions['claude-mem']).toEqual(claudeMemExtension('/new/mcp-server.cjs'));
   });
 
+  it('replaces an extension written with a commented key, comments and blank lines', () => {
+    writeFileSync(configPath, [
+      'extensions:',
+      '  claude-mem: # memory tools',
+      '    enabled: true',
+      '',
+      '    # pinned by hand',
+      '    cmd: /old/node',
+      '    args:',
+      '      - /old/mcp-server.cjs',
+      '  developer:',
+      '    bundled: true',
+      '    enabled: true',
+      '    name: developer',
+      '    timeout: 300',
+      '    type: builtin',
+      '',
+    ].join('\n'));
+
+    mergeGooseYamlConfig(configPath, '/new/mcp-server.cjs');
+
+    const content = readFileSync(configPath, 'utf-8');
+    expect(content.match(/claude-mem:|cmd:/g)).toEqual(['claude-mem:', 'cmd:']);
+    expect(read().extensions).toEqual({ 'claude-mem': claudeMemExtension('/new/mcp-server.cjs'), developer });
+  });
+
+  it('finds an extensions key written in quotes', () => {
+    writeFileSync(configPath, '"extensions":\n  developer:\n    bundled: true\n    enabled: true\n    name: developer\n    timeout: 300\n    type: builtin\n');
+
+    mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs');
+
+    expect(readFileSync(configPath, 'utf-8').match(/extensions/g)).toHaveLength(1);
+    expect(read().extensions).toEqual({
+      'claude-mem': claudeMemExtension('/plugin/scripts/mcp-server.cjs'),
+      developer,
+    });
+  });
+
   it('appends an extensions mapping to a config without one', () => {
     writeFileSync(configPath, 'GOOSE_PROVIDER: ollama\n');
 
