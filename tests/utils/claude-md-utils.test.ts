@@ -194,6 +194,20 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('🟣');
     expect(result).toContain('Session started');
   });
+
+  it('keeps titles that contain a pipe intact', () => {
+    // FormattingService writes titles (and session requests) verbatim, so a
+    // `|` inside the title is part of the cell, not a column separator.
+    const input = `| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 | - |
+| #8 | ″ | 🔵 | Default with a || b fallback | ~90 | - |
+| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - | - |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    expect(result).toContain('| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 |');
+    expect(result).toContain('| #8 | " | 🔵 | Default with a || b fallback | ~90 |');
+    expect(result).toContain('| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - |');
+  });
 });
 
 describe('writeClaudeMdToFolder', () => {
