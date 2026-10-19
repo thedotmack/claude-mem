@@ -425,7 +425,7 @@ export async function startGeneratorWithProvider(
         // SessionStart banner must not call a 95% reserve pause a spent
         // allowance, nor a provider's own refusal a precaution.
         const pause = quotaPauseForExit(provider, reason, session.observerProfile);
-        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile);
+        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile, apiKeyAuthOf(session, provider));
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
         // session-start warning is structurally blind to an entire outage
@@ -452,12 +452,14 @@ export async function startGeneratorWithProvider(
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
         });
       }
-      // A Claude fallback run that finds Claude signed out (or refused by org
-      // policy) takes Claude out of the fallback rotation for a cooldown, as a
+      // A Claude fallback run, or a subscription stand-in for a spent API key,
+      // that finds Claude signed out (or refused by org policy) takes Claude
+      // out of the fallback rotation for a cooldown, as a
       // thrown auth refusal already does (bookClassifiedFailure). Otherwise each
       // captured event would start the same signed-out fallback again while
       // the primary is held. A Claude primary keeps retrying on the next event.
-      const claudeStandInSignedOut = provider === 'claude' && session.fallbackFrom != null && !failureBooked
+      const claudeStandInSignedOut = provider === 'claude' && !failureBooked
+        && (session.fallbackFrom != null || session.claudeAuthOverride === 'oauth')
         && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy');
       if (claudeStandInSignedOut) {
         recordAuthCooldown('claude', 'Claude Code reported the fallback observer as signed out', session.observerProfile);
@@ -589,6 +591,17 @@ export async function startGeneratorWithProvider(
 }
 
 /**
+ * 'api-key' when this Claude run spent an ANTHROPIC_API_KEY's allowance, so its
+ * breaker may hand the work to the subscription login. A stand-in run that fell
+ * back to the key is not tagged: the login it was meant to use is unavailable.
+ */
+function apiKeyAuthOf(session: ActiveSession, provider: SelectableProvider): 'api-key' | undefined {
+  return provider === 'claude' && session.observerAuth === 'api-key' && session.claudeAuthOverride !== 'oauth'
+    ? 'api-key'
+    : undefined;
+}
+
+/**
  * Book a classified provider failure once, with the provider's own detail
  * (code, message, action, link, request id), so the session-start warning
  * shows the same words as the log line. Returns when and why a paused session
@@ -605,7 +618,7 @@ function bookClassifiedFailure(
     case 'quota_exhausted':
       // A spent allowance: withhold requests for a cooldown, then let one
       // through to re-probe, instead of one doomed request per event (#3634).
-      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
+      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile, apiKeyAuthOf(session, provider));
       break;
     case 'auth_invalid':
       // A refused credential fails every request until the user acts; the

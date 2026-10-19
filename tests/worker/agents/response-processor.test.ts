@@ -304,6 +304,28 @@ describe('ResponseProcessor', () => {
     }
   });
 
+  it("keeps the API key's breaker when a subscription stand-in stores memory", async () => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession('stand-in-session', 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, 'stand-in-memory');
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: 'stand-in-session', memorySessionId: 'stand-in-memory',
+      currentProvider: 'claude', claudeAuthOverride: 'oauth',
+    });
+    const cooldown = recordQuotaExhausted('claude', 'Credit balance is too low', undefined, undefined, undefined, 'api-key');
+    try {
+      const result = await processAgentResponse(
+        '<observation><type>discovery</type><title>Useful result</title><narrative>Real finding</narrative></observation>',
+        session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result?.observationIds.length).toBeGreaterThan(0);
+      expect(getQuotaCooldown('claude')).toEqual(cooldown);
+    } finally {
+      store.close();
+    }
+  });
+
   describe('parsing observations from XML response', () => {
     it('should parse single observation from response', async () => {
       const session = createMockSession({ project: 'repo-b/worktree' });

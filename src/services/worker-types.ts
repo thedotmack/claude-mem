@@ -36,6 +36,14 @@ export interface ActiveSession {
    * changed while it ran.
    */
   observerProfile?: string;
+  /** The credential the latest Claude generator was spawned with; fixed at spawn like observerProfile. */
+  observerAuth?: 'api-key' | 'oauth';
+  /**
+   * 'oauth' while admission runs this session on the Claude Code login because
+   * the API key's quota breaker holds (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD).
+   * Cleared on every normal admission, so a recovered key is used again.
+   */
+  claudeAuthOverride?: 'oauth' | null;
   /**
    * The provider the current run stands in for when dispatch routed around it
    * (the provider fallback), else null/undefined. A stand-in that is refused

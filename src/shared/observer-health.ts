@@ -542,6 +542,10 @@ export function renderObserverQuotaCooldownNotice(
   // below applies — least of all "do not restart", advice about a problem
   // that is not happening. No primary/fallback wording: the held provider can
   // be either one.
+  if (cooldown?.servingProvider === 'claude' && provider === 'claude') {
+    // CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=subscription: same provider, other credential.
+    return `ℹ️ claude-mem's Claude API key is in a quota cooldown${windowText}; memory is running on your Claude Code subscription login meanwhile, and switches back to the key after ${untilText}.`;
+  }
   if (cooldown?.servingProvider === 'claude') {
     // The default fallback: say plainly that memory is on the Anthropic plan.
     const why = cooldown.window === 'unavailable' ? 'is unavailable'

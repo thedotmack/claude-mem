@@ -35,7 +35,7 @@ import { isOpenRouterAvailable, isOpenRouterSelected } from './OpenRouterProvide
 import { isOpenAICompatAvailable, isOpenAICompatSelected } from './OpenAICompatProvider.js';
 import { isCodexSelected } from './CodexProvider.js';
 import { isClassified, type ClassifiedProviderError } from './provider-errors.js';
-import { canClaudeServeAsFallback } from '../../shared/claude-fallback-readiness.js';
+import { canClaudeServeAsFallback, canSubscriptionStandInForApiKey } from '../../shared/claude-fallback-readiness.js';
 import {
   cooldownAppliesToCurrentAccount,
   getQuotaCooldown,
@@ -268,6 +268,8 @@ function noteQuotaFallbackTransition(primary: SelectableProvider, routed: Routed
       logger.info('SESSION', 'Primary quota cooldown elapsed; probing primary', { primary });
       return;
     case 'blocked': {
+      // Not blocked: admission runs the work on the subscription login and logs that itself.
+      if (primary === 'claude' && canSubscriptionStandInForApiKey()) return;
       // Distinct from probing: nothing is being probed and nothing can take
       // the work. Name the real cause — the fallback may be held too, or it may
       // simply be unable to serve (no credentials, or equal to the primary).
@@ -354,6 +356,8 @@ export function getSelectedProvider(): SelectableProvider {
  * take them.
  */
 export function quotaServingProvider(held: QuotaProvider, nowMs: number = Date.now()): SelectableProvider | null {
+  // The API key is held but its runs go on the subscription login meanwhile.
+  if (held === 'claude' && canSubscriptionStandInForApiKey()) return 'claude';
   if (readQuotaFallbackProvider() === null) return null;
   const serving = getSelectedProvider();
   if (serving === held || isQuotaCooldownHolding(serving, nowMs)) return null;

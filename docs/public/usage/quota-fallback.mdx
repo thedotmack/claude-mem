@@ -9,7 +9,7 @@ When the observer's provider can't serve (its allowance is spent, it stays rate 
 
 **By default, that work moves to your Anthropic plan (Claude)** for as long as the provider is held, provided Claude can run on this machine (a Claude Code login, or an `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `~/.claude-mem/.env`). When the cooldown ends, one generator probes the original provider; if it answers, everything moves back on its own. If Claude can't run, or you turn the fallback off, work waits and stays queued until the provider recovers.
 
-This applies when your selected provider is the claude-mem observer (cmem.ai), OpenRouter, Gemini, Codex, or an OpenAI-compatible endpoint. When Claude is your selected provider there is nothing to fall back to.
+This applies when your selected provider is the claude-mem observer (cmem.ai), OpenRouter, Gemini, Codex, or an OpenAI-compatible endpoint. When Claude is your selected provider there is no other provider to fall back to, but a Claude observer on an API key can fall back to your Claude Code login: see [API key to subscription](#api-key-to-subscription).
 
 ## Settings
 
@@ -19,6 +19,7 @@ Add these to `~/.claude-mem/settings.json`, or set them in the viewer under **Se
 |---|---|---|
 | `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` (the default; `""` means the same), `gemini`, `openrouter`, `openai-compatible`, `off` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: work waits for the provider. |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | `""` or a Claude model id or alias | The model for a **Claude** fallback run. Empty keeps `CLAUDE_MEM_MODEL` and tier routing. Ignored for every other fallback. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | `""` (the default, off), `subscription` | For a **Claude** observer on `ANTHROPIC_API_KEY`: while the key's allowance is spent, run on your Claude Code login instead. See below. |
 
 For example, Gemini as the primary with Claude Haiku as the fallback:
 
@@ -50,6 +51,15 @@ The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatibl
 - **A fallback with a bad key is skipped once it is refused.** Only a *missing* key is detected ahead of time; an invalid or revoked fallback key fails its first run, and its auth cooldown then takes it out of rotation. Fix or clear the fallback key.
 - **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. The worker's periodic resume (once a minute) restarts them on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — and the session's next tool call does the same sooner. If neither can, it waits as before.
 - **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
+
+## API key to subscription
+
+With Claude as the provider and an `ANTHROPIC_API_KEY` in `~/.claude-mem/.env`, a spent key ("Credit balance is too low", a usage limit) holds Claude for the 30-minute quota cooldown like any other provider. Set `"CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD": "subscription"` to keep capturing on your Claude Code login meanwhile:
+
+- **How it starts:** a generator that the key's cooldown would hold runs with the key removed from its environment and your Claude Code OAuth token in its place. This needs a signed-in Claude Code login. It does not apply under `ANTHROPIC_BASE_URL`, since the token is never sent to a gateway. The log says `API key quota exhausted; running the Claude observer on the subscription login until the key recovers`.
+- **How it ends:** when the cooldown elapses, one generator probes the key. If the key answers, the cooldown clears and every session goes back to the key. If not, the cooldown re-arms and the login carries on.
+- **It draws on your subscription allowance.** Those runs count against the plan you use interactively, so the quota guard (`CLAUDE_MEM_QUOTA_THRESHOLD_*`) still pauses them near its five-hour and weekly limits.
+- **Both spent:** if the login is also refused (its own limit, or signed out), capture pauses as it does without this setting.
 
 ## Things to know
 

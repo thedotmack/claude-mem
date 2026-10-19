@@ -327,6 +327,12 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
  */
 export async function buildIsolatedEnvWithFreshOAuth(
   includeCredentials: boolean = true,
+  /**
+   * Bill the Claude Code login even though .env holds a key: the subscription
+   * stand-in for an API key in its quota cooldown. Falls back to the key when
+   * no usable token is found. Ignored under ANTHROPIC_BASE_URL.
+   */
+  { preferOAuth = false }: { preferOAuth?: boolean } = {},
 ): Promise<Record<string, string>> {
   const isolatedEnv = buildIsolatedEnv(includeCredentials);
 
@@ -354,11 +360,26 @@ export async function buildIsolatedEnvWithFreshOAuth(
     clearStaleMarker();
     return isolatedEnv;
   }
+  const explicitCredentials = {
+    ...(isolatedEnv.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: isolatedEnv.ANTHROPIC_API_KEY } : {}),
+    ...(isolatedEnv.ANTHROPIC_AUTH_TOKEN ? { ANTHROPIC_AUTH_TOKEN: isolatedEnv.ANTHROPIC_AUTH_TOKEN } : {}),
+  };
+  const hasExplicitCredentials = Object.keys(explicitCredentials).length > 0;
   // Direct API with explicit credentials: skip OAuth lookup.
-  if (isolatedEnv.ANTHROPIC_API_KEY || isolatedEnv.ANTHROPIC_AUTH_TOKEN) {
+  if (hasExplicitCredentials && !preferOAuth) {
     clearStaleMarker();
     return isolatedEnv;
   }
+  // The CLI prefers a key over the token, so the key must go for the login to bill.
+  delete isolatedEnv.ANTHROPIC_API_KEY;
+  delete isolatedEnv.ANTHROPIC_AUTH_TOKEN;
+  const restoreExplicitCredentials = (reason: string): Record<string, string> => {
+    if (hasExplicitCredentials) {
+      logger.warn('OAUTH', `Subscription stand-in unavailable (${reason}); using the .env credentials`);
+      Object.assign(isolatedEnv, explicitCredentials);
+    }
+    return isolatedEnv;
+  };
 
   let result: OAuthTokenResult;
   try {
@@ -370,7 +391,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
       {},
       error instanceof Error ? error : new Error(String(error)),
     );
-    return isolatedEnv;
+    return restoreExplicitCredentials('token read failed');
   }
 
   switch (result.kind) {
@@ -401,6 +422,7 @@ export async function buildIsolatedEnvWithFreshOAuth(
       break;
   }
 
+  if (result.kind !== 'present') return restoreExplicitCredentials(`token ${result.kind}`);
   return isolatedEnv;
 }
 

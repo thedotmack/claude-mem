@@ -638,6 +638,19 @@ export function ContextSettingsModal({
               )}
 
               <FormField
+                label="API Key Quota Fallback"
+                tooltip="For a Claude observer on ANTHROPIC_API_KEY: while the key's allowance is spent (e.g. credit balance too low), run it on your Claude Code subscription login instead, and return to the key once it recovers. This draws on your subscription allowance; the quota guard still pauses near its limits. Needs a signed-in Claude Code login."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD', e.target.value)}
+                >
+                  <option value="">Off (wait for the key)</option>
+                  <option value="subscription">Subscription (Claude Code login)</option>
+                </select>
+              </FormField>
+
+              <FormField
                 label="Claude Code CLI path"
                 tooltip="Executable path for the Claude Code CLI. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_CODE_PATH in the environment, then restart the worker."
               >

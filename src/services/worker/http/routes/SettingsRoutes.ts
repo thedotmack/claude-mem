@@ -268,6 +268,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+      'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -368,6 +369,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
         return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
+      && settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD !== 'subscription') {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription" or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {

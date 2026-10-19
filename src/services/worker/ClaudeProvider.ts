@@ -415,8 +415,14 @@ export class ClaudeProvider {
     // it in observer health.
     let responseProcessingThrew = false;
     try {
-      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-      const authMethod = getAuthMethodDescription();
+      const isSubscriptionStandIn = session.claudeAuthOverride === 'oauth';
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: isSubscriptionStandIn }));
+      session.observerAuth = isolatedEnv.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
+      // A stand-in bills the subscription, so the quota guard must not read
+      // "API key" and wave it through the user's interactive plan.
+      const authMethod = isSubscriptionStandIn && session.observerAuth === 'oauth'
+        ? 'Claude Code OAuth token (subscription stand-in for an exhausted API key)'
+        : getAuthMethodDescription();
       // The account this generator bills for its whole life: its env (and so
       // its OAuth identity) is fixed at spawn, even if the setting changes
       // while it runs. Quota snapshots are tagged with it and checked against
@@ -1018,11 +1024,13 @@ export class ClaudeProvider {
       signals?: AbortSignal[];
       /** Set when the session's gateway already refused the thinking param (#4732). */
       thinkingStripped?: boolean;
+      /** The session's subscription stand-in (ActiveSession.claudeAuthOverride). */
+      preferOAuth?: boolean;
     },
     modelId: string,
     claudePath: string,
   ): Promise<string | null> {
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: context.preferOAuth }));
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -1089,6 +1097,7 @@ export class ClaudeProvider {
         project: session.project,
         signals: [signal, session.abortController.signal],
         thinkingStripped: session.observerThinkingStripped,
+        preferOAuth: session.claudeAuthOverride === 'oauth',
       },
       modelId,
       claudePath,

@@ -193,6 +193,63 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
       oauthSpy.mockRestore();
     }
   });
+
+  describe('preferOAuth (subscription stand-in for a spent API key)', () => {
+    const presentToken: oauthToken.OAuthTokenResult = { kind: 'present', token: 'oauth-token', source: 'keychain' };
+
+    it('drops the .env key and injects the login token', async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-spent\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: true });
+        expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-token');
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it('keeps the .env key when no login token is available', async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-spent\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken')
+        .mockResolvedValue({ kind: 'absent', reason: 'no login' });
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: true });
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-ant-spent');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it('is ignored under a gateway ANTHROPIC_BASE_URL', async () => {
+      fs.writeFileSync(
+        TEST_ENV_FILE,
+        'ANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_API_KEY=sk-gateway\n',
+        { mode: 0o600 },
+      );
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: true });
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-gateway');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it('leaves the key alone without preferOAuth', async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-live\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth();
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-ant-live');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+  });
 });
 
 /**

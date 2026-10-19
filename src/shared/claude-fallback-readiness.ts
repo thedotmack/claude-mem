@@ -17,7 +17,8 @@ import { join } from 'path';
 import { paths } from './paths.js';
 import { parseJsonWithBom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
-import { hasAnthropicApiKey, hasAnthropicAuthToken } from './EnvManager.js';
+import { getCredential, hasAnthropicApiKey, hasAnthropicAuthToken } from './EnvManager.js';
+import { cooldownAppliesToCurrentAccount, getQuotaCooldown } from './quota-cooldown.js';
 import { resolveClaudeCredentialProfile } from './oauth-token.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -43,6 +44,11 @@ function claudeJsonHasSignedInAccount(claudeJsonFile: string): boolean {
 export function hasClaudeCredentials(): boolean {
   if (hasAnthropicApiKey() || hasAnthropicAuthToken()) return true;
   if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return true;
+  return hasClaudeSubscriptionLogin();
+}
+
+/** Whether a Claude Code login (not a key) exists for the profile the next Claude spawn uses. */
+export function hasClaudeSubscriptionLogin(): boolean {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
   const profile = resolveClaudeCredentialProfile(settings.CLAUDE_MEM_CLAUDE_CONFIG_DIR);
   // Linux and Windows keep the login in the profile's credentials file; macOS
@@ -53,6 +59,22 @@ export function hasClaudeCredentials(): boolean {
     ? join(profile.configDir, '.claude.json')
     : join(homedir(), '.claude.json');
   return claudeJsonHasSignedInAccount(claudeJson);
+}
+
+/**
+ * Whether a Claude run held by its API key's quota breaker may go on the
+ * Claude Code login instead (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=subscription).
+ * Only a breaker an API-key run armed qualifies: once the login's own run is
+ * refused (quota or signed out), it re-arms without `auth` and capture pauses.
+ * A gateway (ANTHROPIC_BASE_URL) never gets the OAuth token, so it never qualifies.
+ */
+export function canSubscriptionStandInForApiKey(): boolean {
+  const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
+  if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD !== 'subscription') return false;
+  const cooldown = getQuotaCooldown('claude');
+  if (!cooldown || cooldown.auth !== 'api-key' || !cooldownAppliesToCurrentAccount(cooldown)) return false;
+  if (getCredential('ANTHROPIC_BASE_URL')) return false;
+  return hasClaudeSubscriptionLogin();
 }
 
 function detectClaudeFallbackReadiness(): boolean {
