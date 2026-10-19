@@ -555,6 +555,7 @@ export class WorkerService implements WorkerRef {
       () => hookSpoolConsumedMarkers(this.dbManager.getSessionStore()),
       () => { void this.hookSpoolDrainer.requestDrain(); },
       () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_TOKEN,
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
     ));
 
     this.workViewRoutes = new WorkViewRoutes({ getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '' });

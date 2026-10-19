@@ -27,7 +27,7 @@ function readState(dataDir: string): Required<PersistedFailureState> {
   return JSON.parse(readFileSync(join(dataDir, 'state', 'hook-failures.json'), 'utf-8'));
 }
 
-function recordFailure(dataDir: string, threshold: number): ReturnType<typeof Bun.spawnSync> {
+function recordFailure(dataDir: string, threshold: number, telemetryEnv: Record<string, string> = { CLAUDE_MEM_TELEMETRY: '0' }): ReturnType<typeof Bun.spawnSync> {
   const source = `
     const { recordWorkerUnreachable } = await import(${JSON.stringify(WORKER_UTILS_URL)});
     await recordWorkerUnreachable();
@@ -39,9 +39,19 @@ function recordFailure(dataDir: string, threshold: number): ReturnType<typeof Bu
       CLAUDE_MEM_DATA_DIR: dataDir,
       CLAUDE_CONFIG_DIR: dataDir,
       CLAUDE_MEM_HOOK_FAIL_LOUD_THRESHOLD: String(threshold),
-      CLAUDE_MEM_TELEMETRY: '0',
+      ...telemetryEnv,
     },
   });
+}
+
+/** Records one failure with telemetry printed to stderr instead of sent, and returns the hook_failed properties. */
+function recordFailureTelemetry(dataDir: string, threshold: number): Record<string, unknown> | null {
+  const result = recordFailure(dataDir, threshold, { CLAUDE_MEM_TELEMETRY: '1', CLAUDE_MEM_TELEMETRY_DEBUG: '1', DO_NOT_TRACK: '0' });
+  expect(result.exitCode).toBe(0);
+  const line = new TextDecoder().decode(result.stderr)
+    .split('\n')
+    .find(entry => entry.startsWith('[telemetry] ') && entry.includes('"hook_failed"'));
+  return line ? JSON.parse(line.slice('[telemetry] '.length)).properties : null;
 }
 
 function resetFailureState(dataDir: string): ReturnType<typeof Bun.spawnSync> {
@@ -96,6 +106,25 @@ describe('worker-unreachable fail-loud latch', () => {
       consecutiveFailures: 0,
       lastFailureAt: 0,
       thresholdTripped: false,
+    });
+  });
+
+  it('flags an escalation that reads a counter written by a pre-latch version', () => {
+    // A pre-latch version writes no thresholdTripped field, so its streak
+    // can span an outage that started before the upgrade.
+    const legacyDir = createStateDir({ consecutiveFailures: 22_632, lastFailureAt: 1 });
+    expect(recordFailureTelemetry(legacyDir, 3)).toMatchObject({
+      error_mode: 'worker_unavailable',
+      consecutive_failures: 22_633,
+      threshold_tripped: true,
+      pre_latch_state: true,
+    });
+
+    const currentDir = createStateDir({ consecutiveFailures: 2, lastFailureAt: 1, thresholdTripped: false });
+    expect(recordFailureTelemetry(currentDir, 3)).toMatchObject({
+      consecutive_failures: 3,
+      threshold_tripped: true,
+      pre_latch_state: false,
     });
   });
 
