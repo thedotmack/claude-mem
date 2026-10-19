@@ -184,7 +184,7 @@ describe('maskRequestBody (magpie MaskJSON)', () => {
   });
 
   it('masks secret-named fields inside JSON-encoded tool arguments (OpenAI chat and Responses)', () => {
-    const argumentsText = JSON.stringify({ username: 'bob', password: '12345678', nested: [{ api_key: '87654321' }] });
+    const argumentsText = JSON.stringify({ username: 'bob', password: '1234\\5678', nested: [{ api_key: '87654321' }] });
     const bodies: Record<string, string> = {
       'chat tool_calls': JSON.stringify({ messages: [{ role: 'assistant', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'login', arguments: argumentsText } }] }] }),
       'responses function_call': JSON.stringify({ input: [{ type: 'function_call', call_id: 'call_1', name: 'login', arguments: argumentsText }] }),
@@ -192,7 +192,7 @@ describe('maskRequestBody (magpie MaskJSON)', () => {
     for (const [name, body] of Object.entries(bodies)) {
       const masked = maskJson(body);
       const unmaskedText = unmarked(masked.text);
-      expect({ name, leaked: unmaskedText.includes('12345678') || unmaskedText.includes('87654321') }).toEqual({ name, leaked: false });
+      expect({ name, leaked: unmaskedText.includes('5678') || unmaskedText.includes('87654321') }).toEqual({ name, leaked: false });
       expect({ name, maskedCount: masked.maskedCount }).toEqual({ name, maskedCount: 2 });
       expect(masked.text).toContain('\\"username\\":\\"bob\\"');
       expect(placeholders.restoreJsonText(masked.text)).toBe(body);
@@ -200,6 +200,10 @@ describe('maskRequestBody (magpie MaskJSON)', () => {
     // Arguments that are not JSON are left to the text detectors.
     const notJson = JSON.stringify({ messages: [{ role: 'assistant', tool_calls: [{ id: 'c', type: 'function', function: { name: 'f', arguments: '{"password":' } }] }] });
     expect(maskJson(notJson).text).toBe(notJson);
+    // JSON quoted in message text is not walked: restore puts values back raw
+    // there, so a decoded `1234\5678` would come back as broken JSON.
+    const quotedInText = JSON.stringify({ messages: [{ role: 'user', content: '{"password":"1234\\\\5678"}' }] });
+    expect(maskJson(quotedInText).text).toBe(quotedInText);
   });
 
   it('masks only descriptions in what the agent defines for the vendor (tools, schemas, settings)', () => {

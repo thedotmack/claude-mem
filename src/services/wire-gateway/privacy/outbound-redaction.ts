@@ -446,10 +446,13 @@ export class OutboundRedactionPlaceholders {
      * A string that is itself JSON (OpenAI's tool-call `arguments`, Responses'
      * function_call `arguments`): its secret-named fields are masked whole,
      * as in the body, since the key the walker sees is `arguments`. Every
-     * other byte of it stays as the agent wrote it.
+     * other byte of it stays as the agent wrote it. Only under `arguments`:
+     * restore puts a value back JSON-escaped there (valueHoldsJson), but raw
+     * in `content` or `text`, where a decoded value with a backslash or quote
+     * would come back as broken JSON.
      */
-    const maskSecretFieldsInJsonText = (text: string): string => {
-      if (!/^\s*[[{]/.test(text)) return text;
+    const maskSecretFieldsInJsonText = (key: string, text: string): string => {
+      if (key !== 'arguments' || !/^\s*[[{]/.test(text)) return text;
       const rewritten = rewriteJsonStringsInText(text, (_path, key, value) => {
         if (value === '' || value.startsWith('data:') || !isSecretFieldName(key) || isWholePlaceholder(value)) return value;
         maskedCount++;
@@ -469,7 +472,7 @@ export class OutboundRedactionPlaceholders {
         splices.push(stringValueSplice(site.span, remember('SECRET', site.value)));
         continue;
       }
-      const masked = this.maskWith(maskSecretFieldsInJsonText(site.value), remember);
+      const masked = this.maskWith(maskSecretFieldsInJsonText(site.key, site.value), remember);
       maskedCount += masked.maskedCount;
       if (masked.text !== site.value) splices.push(stringValueSplice(site.span, masked.text));
     }
