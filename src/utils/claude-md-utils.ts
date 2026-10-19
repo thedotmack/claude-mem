@@ -136,7 +136,9 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
       continue;
     }
 
-    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
+    // The title cell is written verbatim and may itself contain `|`, so it runs
+    // up to the Read cell (`~N`, or `-` for sessions) instead of the next pipe.
+    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+?)\s*\|\s*(~\d+|-)\s*\|/);
     if (match) {
       const [, id, timeStr, typeEmoji, title, tokens] = match;
 
