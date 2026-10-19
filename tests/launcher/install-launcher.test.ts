@@ -551,6 +551,22 @@ describe.skipIf(!isPosixHost)('removeInstalledLauncher (uninstall)', () => {
     expect(readFileSync(path.join(scratchHome, '.zshrc'), 'utf-8')).toBe(zshrcBefore);
   });
 
+  it('names the fish PATH line the installer actually wrote', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome, { SHELL: '/usr/local/bin/fish' });
+    writeFakeLauncher(resolveLauncherBinaryPath(host), String(LAUNCHER_PROTOCOL));
+    ensureLocalBinOnShellPath({ purposeLabel: 'claude-mem', logger: recordingLogger(), host: posixHost(scratchHome, { SHELL: '/usr/local/bin/fish' }) });
+    const configFish = path.join(scratchHome, '.config', 'fish', 'config.fish');
+    const fishLine = `set -gx PATH ${path.join(scratchHome, '.local', 'bin')} $PATH`;
+    expect(readFileSync(configFish, 'utf-8')).toContain(fishLine);
+
+    const removal = removeInstalledLauncher(host);
+
+    expect(removal.pathCleanupHint).toContain(configFish);
+    expect(removal.pathCleanupHint).toContain(fishLine);
+    expect(removal.pathCleanupHint).not.toContain('export PATH=');
+  });
+
   it('leaves a claude-mem that is not our launcher in place', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);

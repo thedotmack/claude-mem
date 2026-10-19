@@ -42,6 +42,15 @@ describe('SessionStore session lifecycle', () => {
       expect(session?.user_prompt.endsWith('…')).toBe(true);
     });
 
+    it('never persists a prompt that is entirely private', () => {
+      // /api/sessions/init passes the raw prompt here before its privacy gate,
+      // and a tool-first observer later reads this column as the user request.
+      const id = store.createSDKSession('content-all-private', 'project', '<private>my AWS secret is AKIAEXAMPLE123</private>');
+
+      expect(store.getSessionById(id)?.user_prompt).not.toContain('AKIAEXAMPLE123');
+      expect(store.getSessionById(id)?.user_prompt).not.toContain('<private>');
+    });
+
     it('repairs a media prompt placeholder when a real prompt arrives', () => {
       const id = store.createSDKSession('content-media-placeholder', 'project', MEDIA_PROMPT_PLACEHOLDER);
       store.createSDKSession('content-media-placeholder', 'project', 'real user prompt');

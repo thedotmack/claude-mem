@@ -556,16 +556,25 @@ export class SettingsRoutes extends BaseRouteHandler {
     return { valid: true };
   }
 
-  private isMcpEnabled(): boolean {
+  // Installed plugin: the worker bundle runs from <pluginRoot>/scripts, so the
+  // package root is the plugin root and holds .mcp.json. Repo checkout: plugin/.
+  // Same layout resolution as ViewerRoutes' UI assets.
+  private mcpConfigDir(): string {
     const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    return existsSync(mcpPath);
+    const candidates = [packageRoot, path.join(packageRoot, 'plugin')];
+    return candidates.find(dir =>
+      existsSync(path.join(dir, '.mcp.json')) || existsSync(path.join(dir, '.mcp.json.disabled'))
+    ) ?? candidates[0];
+  }
+
+  private isMcpEnabled(): boolean {
+    return existsSync(path.join(this.mcpConfigDir(), '.mcp.json'));
   }
 
   private toggleMcp(enabled: boolean): void {
-    const packageRoot = getPackageRoot();
-    const mcpPath = path.join(packageRoot, 'plugin', '.mcp.json');
-    const mcpDisabledPath = path.join(packageRoot, 'plugin', '.mcp.json.disabled');
+    const mcpDir = this.mcpConfigDir();
+    const mcpPath = path.join(mcpDir, '.mcp.json');
+    const mcpDisabledPath = path.join(mcpDir, '.mcp.json.disabled');
 
     if (enabled && existsSync(mcpDisabledPath)) {
       renameSync(mcpDisabledPath, mcpPath);

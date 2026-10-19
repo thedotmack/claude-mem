@@ -107,6 +107,7 @@ const semanticContextSchema = z.object({
   format: z.string().optional(),
   platformSource: z.string().optional(),
   platform_source: z.string().optional(),
+  cwd: z.string().optional(),
 }).passthrough();
 
 export class SearchRoutes extends BaseRouteHandler {
@@ -568,14 +569,30 @@ export class SearchRoutes extends BaseRouteHandler {
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
-    const project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
-    const projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
+    let project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
+    let projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
     const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
     if (!query || query.length < 20) {
       res.json({ context: '', count: 0 });
       return;
+    }
+
+    // Resolve the same checkout keys as /api/context/inject when none were named.
+    const hostCwd = typeof req.body?.cwd === 'string' ? req.body.cwd.trim() : '';
+    if (hostCwd) {
+      const excludedProjects = process.env.CLAUDE_MEM_EXCLUDED_PROJECTS
+        ?? this.getCachedSettings().CLAUDE_MEM_EXCLUDED_PROJECTS;
+      if (isProjectExcluded(hostCwd, excludedProjects)) {
+        res.json({ context: '', count: 0 });
+        return;
+      }
+      if (!project && projects.length === 0) {
+        const checkout = getProjectContext(hostCwd);
+        project = checkout.primary;
+        projects = checkout.allProjects;
+      }
     }
 
     let result: any;

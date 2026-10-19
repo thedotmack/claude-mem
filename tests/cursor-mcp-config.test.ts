@@ -82,14 +82,16 @@ describe('Cursor MCP Configuration', () => {
       expect(config.mcpServers['claude-mem'].args).toEqual([newPath]);
     });
 
-    it('recovers from corrupt mcp.json', () => {
+    it('refuses to overwrite an unparseable mcp.json, keeping the user\'s servers', () => {
       mkdirSync(join(tempDir, '.cursor'), { recursive: true });
-      writeFileSync(mcpJsonPath, 'not valid json {{{{');
+      const userConfig = `{
+  // my servers
+  "mcpServers": { "github": { "command": "npx", "args": ["github-mcp"] } },
+}`;
+      writeFileSync(mcpJsonPath, userConfig);
 
-      configureCursorMcp(mcpJsonPath, mcpServerPath);
-
-      const config: CursorMcpConfig = JSON.parse(readFileSync(mcpJsonPath, 'utf-8'));
-      expect(config.mcpServers['claude-mem']).toBeDefined();
+      expect(() => configureCursorMcp(mcpJsonPath, mcpServerPath)).toThrow(/refusing to overwrite/);
+      expect(readFileSync(mcpJsonPath, 'utf-8')).toBe(userConfig);
     });
 
     it('handles mcp.json with missing mcpServers key', () => {

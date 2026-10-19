@@ -21,6 +21,7 @@ import { viewerBaseUrl } from './viewer-url.js';
 import { relayedLine, relayedLink } from './relayed-text.js';
 import { logger } from '../utils/logger.js';
 import { emitContextInvalidation } from './context-invalidation.js';
+import { sleepSync } from './atomic-json.js';
 
 export interface ObserverHealthState {
   /** Failures since the last successful store. */
@@ -203,10 +204,6 @@ const LEDGER_LOCK_STALE_MS = 5_000;
 /** Give up waiting and update unlocked rather than lose the failure entirely. */
 const LEDGER_LOCK_MAX_WAIT_MS = 2_000;
 const LEDGER_LOCK_RETRY_MS = 10;
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
 
 /**
  * Serialize the ledger's read-modify-write across processes. Every worker and

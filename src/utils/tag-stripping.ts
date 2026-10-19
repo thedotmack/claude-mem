@@ -134,7 +134,13 @@ export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminde
 const MAX_TAG_COUNT = 100;
 
 export function stripTags(input: string): { stripped: string; counts: Record<TagName, number> } {
-  const { text: stripped, counts, total } = stripBalancedMemoryTags(input);
+  return finishStrippedTags(input, stripBalancedMemoryTags(input));
+}
+
+function finishStrippedTags(
+  input: string,
+  { text: stripped, counts, total }: ReturnType<typeof stripBalancedMemoryTags>,
+): { stripped: string; counts: Record<TagName, number> } {
 
   if (total > MAX_TAG_COUNT) {
     logger.warn('SYSTEM', 'tag count exceeds limit', undefined, {
@@ -156,10 +162,6 @@ export function stripMemoryTags(content: string): string {
   return stripTags(content).stripped;
 }
 
-const CONTAINS_MEMORY_TAG_REGEX = new RegExp(
-  `<(${TAG_NAMES.join('|')})\\b[^>]*>[\\s\\S]*?</\\1>`
-);
-
 /**
  * The value with memory tags (<private> and the rest) removed from every
  * string in it (object values and array items, at any depth); the caller's
@@ -172,7 +174,10 @@ const CONTAINS_MEMORY_TAG_REGEX = new RegExp(
 export function stripMemoryTagsFromJsonStrings<T>(value: T): T {
   const walk = (node: unknown): unknown => {
     if (typeof node === 'string') {
-      return CONTAINS_MEMORY_TAG_REGEX.test(node) ? stripMemoryTags(node) : node;
+      // Same scanner as stripMemoryTags, so every tag form it removes (e.g.
+      // `</private >`) is detected here too; its result is reused, not rescanned.
+      const scan = stripBalancedMemoryTags(node);
+      return scan.total > 0 ? finishStrippedTags(node, scan).stripped : node;
     }
     if (Array.isArray(node)) return node.map(walk);
     if (node !== null && typeof node === 'object') {
