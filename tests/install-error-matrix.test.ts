@@ -106,6 +106,23 @@ describe('error taxonomy', () => {
     expect(remediation).toContain('CLAUDE_MEM_INSTALL_TIMEOUT_MS');
   });
 
+  // #4858: on musl the download works but the glibc executable cannot run, so
+  // the remediation must not blame the network.
+  it('classifies a downloaded tree-sitter CLI that cannot run with the PATH workaround', () => {
+    const cat = classifyError(
+      new Error('tree-sitter-cli provisioning failed in /x: The downloaded tree-sitter 0.26.9 executable matches the pinned SHA-256 but cannot run on this system: spawn ENOENT'),
+      { component: 'tree-sitter-cli-cache', phase: 'dependency-install' },
+    );
+    expect(cat.id).toBe('tree-sitter-cli-cannot-run');
+    const remediation = cat.remediation({ platform: 'linux', dataDir: '/tmp/claude-mem' });
+    expect(remediation).toContain('musl');
+    expect(remediation).toContain('0.26 or newer');
+    expect(remediation).toContain('PATH');
+    expect(remediation).toContain('npx claude-mem doctor');
+    expect(remediation).not.toContain('network');
+    expect(remediation).not.toContain('last-install-error.json');
+  });
+
   it('defaults unknown errors to ABORT (fail-loud)', () => {
     const cat = classifyError(new Error('something we have never seen'), {
       component: 'mystery',
