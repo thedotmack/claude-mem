@@ -94,6 +94,8 @@ describe('wire preview', () => {
     const box = sandbox('preview', { PATH: process.env.PATH });
     const configPath = box.write('.config/crush/crush.json', '{\n  "providers": {\n    "deepseek": {\n      "base_url": "https://api.deepseek.com/v1",\n      "api_key": "sk-secret"\n    }\n  }\n}\n');
     const original = box.read('.config/crush/crush.json');
+    // A binary file beside the config (Finder's .DS_Store) is not UTF-8; an unchanged one must not fail the preview.
+    writeFileSync(join(dirname(configPath), '.DS_Store'), Buffer.from([0, 0, 0, 1, 0x42, 0x75, 0x64, 0x31, 0xff, 0xfe, 0x80]));
     const previewOptions = {
       descriptor: descriptor('crush'),
       environment: box.environment,
@@ -224,7 +226,7 @@ describe('wire run', () => {
     expect(process.listenerCount('SIGINT')).toBe(interruptListenersBefore);
   });
 
-  it('starts the agent in the folder --cwd names and returns its exit code', async () => {
+  it('starts the agent in the folder --cwd names, honours --capture, and returns its exit code', async () => {
     if (IS_WINDOWS) return;
     const box = sandbox('run-cli');
     const agentsDirectory = join(WIRE_GATEWAY_DIR, 'agents');
@@ -237,7 +239,7 @@ describe('wire run', () => {
     const gateway = await startWireGatewayForTest({ routesReloadCheckIntervalMs: 0 });
     const printedPath = join(box.root, 'pwd.txt');
     try {
-      const exitCode = await runWireAgentCli('run', ['cwd-stub-agent', '--cwd', box.home, '--', '/bin/sh', '-c', 'pwd -P > "$0"; exit 7', printedPath], {
+      const exitCode = await runWireAgentCli('run', ['cwd-stub-agent', '--cwd', box.home, '--capture', 'native', '--', '/bin/sh', '-c', 'pwd -P > "$0"; exit 7', printedPath], {
         config: { ...loadWireGatewayConfig(), host: '127.0.0.1', port: gateway.port },
         bunPath: process.execPath,
         scriptPath: WIRE_GATEWAY_SCRIPT,
@@ -248,6 +250,8 @@ describe('wire run', () => {
       });
       expect(exitCode).toBe(7);
       expect(readFileSync(printedPath, 'utf-8').trim()).toBe(realpathSync(box.home));
+      // A stub with no native integration would default to wire capture; the flag wins.
+      expect(readWireGatewayRoutesFile().routes['cwd-stub-agent'].captureSource).toBe('native');
     } finally {
       await gateway.stop();
       rmSync(descriptorPath, { force: true });

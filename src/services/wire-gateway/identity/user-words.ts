@@ -75,6 +75,11 @@ export const AGENT_INJECTED_TEXT_PREFIXES: readonly string[] = [
   'New agent types are now available for the Agent tool:',
   "The TodoWrite tool hasn't been used recently.", "The task tools haven't been used recently.",
   'Conversation rewind applied.', 'Workspace rewind applied.',
+  // Claude Code's local commands (/compact, /clear, …) and the summary a
+  // compaction leaves; the turn after a /compact carries all of them before
+  // the user's words (seen live, claude 2.1.303).
+  '<local-command-caveat>', '<command-name>', '<local-command-stdout>', '<local-command-stderr>',
+  'This session is being continued from a previous conversation that ran out of context.',
 ];
 
 /**

@@ -124,13 +124,18 @@ describe('wire identity through the relay', () => {
     expect(launchId).toMatch(/^[a-z2-7]{26}$/);
 
     upstream.setReply({ kind: 'json', body: { ok: true } });
-    const relayed = await post(`/r/claude/l/${launchId}/v1/messages?beta=true`, simpleTurn, { 'x-claude-code-session-id': 'ignored-under-launch' });
+    const relayed = await post(`/r/claude/l/${launchId}/v1/messages?beta=true`, simpleTurn);
     expect(relayed.status).toBe(200);
     expect(upstream.requests.at(-1)!.path).toBe('/v1/messages');
     expect(upstream.requests.at(-1)!.query).toBe('?beta=true');
     expect(relayed.headers.get('x-claude-mem-session')).toBe(launchId);
     expect(exchanges.at(-1)!.identity).toMatchObject({ sessionId: launchId, sessionSource: 'launch', workDir: '/Users/me/launched', agentId: 'claude-code' });
     expect(exchanges.at(-1)!.suffixPath).toBe('/v1/messages');
+
+    // An agent that names its session keeps it under a launch (a resumed
+    // conversation under a new `wire run`); the launch still gives the folder.
+    await post(`/r/claude/l/${launchId}/v1/messages`, simpleTurn, { 'x-claude-code-session-id': 'resumed-session' });
+    expect(exchanges.at(-1)!.identity).toMatchObject({ sessionId: 'resumed-session', sessionSource: 'header', workDir: '/Users/me/launched' });
 
     // An unknown launch still relays, stripped, and falls back to what the request says.
     const unknown = await post(`/r/claude/l/${'b'.repeat(26)}/v1/messages`, simpleTurn);

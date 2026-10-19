@@ -12,7 +12,7 @@ import { resolveIdentity, sessionIdToEcho, sessionWasNamedByClient, type WireIde
 import { cleanSessionId, fingerprintSessionId, MAX_SESSION_ID_BYTES } from '../../src/services/wire-gateway/identity/session-id.js';
 import { SESSION_STALE_MS, TURN_QUIET_MS, TurnTracker, type WireSessionStale, type WireTurnEnd } from '../../src/services/wire-gateway/identity/turn-tracker.js';
 import { userTurnPositionOfRequest } from '../../src/services/wire-gateway/identity/turn-start.js';
-import { firstUserWordsOfConversation, userWordsInText } from '../../src/services/wire-gateway/identity/user-words.js';
+import { firstUserWordsOfConversation, latestUserWordsOfConversation, userWordsInText } from '../../src/services/wire-gateway/identity/user-words.js';
 import { gitRepositoryOnDisk, gitRepositorySaidInText, workDirSaidInText, workPlaceOfRequest } from '../../src/services/wire-gateway/identity/work-dir.js';
 
 // Phase 4: identity. Literal bodies and texts are magpie's (MIT, Copyright (c)
@@ -82,7 +82,7 @@ describe('wire identity: agent', () => {
 });
 
 describe('wire identity: session precedence and caps', () => {
-  it('x-claude-mem-session > launch > agent headers in list order > body > fingerprint', () => {
+  it('x-claude-mem-session > agent headers in list order > body > launch > fingerprint', () => {
     const request = parseFixture('workdir/claude-code-2.1.296.json', 'anthropic');
     const launch = new WireLaunchRegistry().create({ agentId: 'claude-code', cwd: '/Users/me/launched' });
     const allHeaders = {
@@ -97,7 +97,11 @@ describe('wire identity: session precedence and caps', () => {
     };
     expect(identityOf({ headers: allHeaders, request, launch })).toMatchObject({ sessionId: 'mine', sessionSource: 'named' });
     const { 'x-claude-mem-session': _named, ...agentHeaders } = allHeaders;
-    expect(identityOf({ headers: agentHeaders, request, launch })).toMatchObject({ sessionId: launch.launchId, sessionSource: 'launch', workDir: '/Users/me/launched' });
+    // The agent's own id beats the launch (a resumed conversation under a new
+    // `wire run` stays one session); the launch still gives the folder.
+    expect(identityOf({ headers: agentHeaders, request, launch })).toMatchObject({ sessionId: 'cc-1', sessionSource: 'header', workDir: '/Users/me/launched' });
+    expect(identityOf({ request, launch })).toMatchObject({ sessionId: '790b2fef-7571-49e7-8619-e5bf3806b7ca', sessionSource: 'body', workDir: '/Users/me/launched' });
+    expect(identityOf({ request: parseBody('anthropic', anthropicBody([['user', 'hi']])), launch })).toMatchObject({ sessionId: launch.launchId, sessionSource: 'launch' });
     const order = ['x-claude-code-session-id', 'x-opencode-session', 'x-session-affinity', 'x-session-id', 'session_id', 'session-id', 'thread-id'];
     for (let index = 0; index < order.length; index++) {
       const headers = Object.fromEntries(order.slice(index).map(name => [name, agentHeaders[name as keyof typeof agentHeaders]]));
@@ -443,6 +447,20 @@ describe('wire identity: the folder and words readers stay linear on hostile tex
     expect(userWordsInText('# AGENTS.md instructions for /app\r\nRun it')).toBe('# AGENTS.md instructions for /app\r\nRun it');
     // codex-cli 0.162.1 drops the "for <path>" (seen live).
     expect(userWordsInText('# AGENTS.md instructions\n\n<INSTRUCTIONS>\nRun the tests.\n</INSTRUCTIONS>')).toBe('');
+    // The turn after a Claude Code /compact (seen live, claude 2.1.303): the
+    // summary and the local command's parts come before the user's words.
+    const afterCompact = parseBody('anthropic', anthropicBody([
+      ['user', 'This session is being continued from a previous conversation that ran out of context. The summary below covers it.'],
+      ['assistant', 'ok'],
+      ['user', '<local-command-caveat>The command below was run directly in Claude Code.</local-command-caveat>'],
+    ]));
+    afterCompact.messages.at(-1)!.parts.push(
+      { kind: 'text', text: '<command-name>/compact</command-name>\n<command-message>compact</command-message>' },
+      { kind: 'text', text: '<local-command-stdout>Compacted</local-command-stdout>' },
+      { kind: 'text', text: 'List the functions inventory.py defines now' },
+    );
+    expect(latestUserWordsOfConversation(afterCompact)).toBe('List the functions inventory.py defines now');
+    expect(firstUserWordsOfConversation(afterCompact)).toBe('List the functions inventory.py defines now');
   });
 });
 

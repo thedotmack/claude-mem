@@ -259,6 +259,9 @@ export function runWirePreview(options: PreviewOptions): PreviewResult {
         continue;
       }
       if (changed === null) continue;
+      // Unchanged siblings are never decoded: a folder like ~/.claude also holds
+      // binary files (.DS_Store) that are not config text.
+      if (original !== null && Buffer.from(original).equals(changed)) continue;
       const lines = diffConfigLines(original === null ? '' : decodeConfigText(original), decodeConfigText(changed));
       if (original === null) changes.push({ displayPath, created: true, removed: false, lines });
       else if (lines.length > 0) changes.push({ displayPath, created: false, removed: false, lines });

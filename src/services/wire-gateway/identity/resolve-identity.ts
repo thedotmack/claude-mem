@@ -37,11 +37,11 @@ import { gitRepositoryOnDisk, workPlaceOfRequest } from './work-dir.js';
 
 /**
  * Where the session id came from, in precedence order:
- * named (`x-claude-mem-session`), launch (`/l/<launchId>`), header (an agent
- * session header), body (an id in the request body), fingerprint (derived
- * from the user's first words).
+ * named (`x-claude-mem-session`), header (an agent session header), body (an
+ * id in the request body), launch (`/l/<launchId>`), fingerprint (derived
+ * from the user's first words). A launch still gives the folder either way.
  */
-export type WireSessionSource = 'named' | 'launch' | 'header' | 'body' | 'fingerprint';
+export type WireSessionSource = 'named' | 'header' | 'body' | 'launch' | 'fingerprint';
 
 export interface WireIdentity {
   agentId: string;
@@ -207,12 +207,15 @@ export function resolveIdentity(
   const bodySessionId = request ? sessionIdFromRequestBody(request, codexMetadata) : undefined;
   if (namedSessionId) {
     [sessionId, sessionSource] = [namedSessionId, 'named'];
-  } else if (context.launch) {
-    [sessionId, sessionSource] = [context.launch.launchId, 'launch'];
   } else if (headerSessionId) {
     [sessionId, sessionSource] = [headerSessionId, 'header'];
   } else if (bodySessionId) {
     [sessionId, sessionSource] = [bodySessionId, 'body'];
+  } else if (context.launch) {
+    // After the agent's own id: `claude --resume` or `codex resume` under a
+    // new `wire run` is one conversation with a new launch (seen live, where
+    // launch first split one resumed session into four).
+    [sessionId, sessionSource] = [context.launch.launchId, 'launch'];
   } else {
     [sessionId, sessionSource] = [fingerprintSessionId(agentId, request ? firstUserWordsOfConversation(request) : ''), 'fingerprint'];
   }

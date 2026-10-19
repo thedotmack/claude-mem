@@ -221,7 +221,8 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
     case 'run': {
       const environment = currentAgentEnvironment();
       const native = descriptor.nativeIntegration;
-      const captureSource: WireGatewayCaptureSource = native && (native.alwaysNative || native.isInstalled(environment)) ? 'native' : 'wire';
+      const captureSource: WireGatewayCaptureSource = parseCaptureFlag(ownArguments)
+        ?? (native && (native.alwaysNative || native.isInstalled(environment)) ? 'native' : 'wire');
       return runAgentThroughGateway(descriptor, agentArguments, {
         environment,
         cwd: parseWorkingDirectoryFlag(ownArguments),
