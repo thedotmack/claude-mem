@@ -47,6 +47,7 @@ const SECRET_SETTING_KEYS = new Set([
   'CLAUDE_MEM_SERVER_API_KEY',
   'CLAUDE_MEM_SERVER_BETA_API_KEY',
   'CLAUDE_MEM_TV_TOKEN',
+  'CLAUDE_MEM_WORKER_INGEST_TOKEN',
   'CLAUDE_MEM_PRO_MEMORY_KEY',
   'CLAUDE_MEM_REDIS_URL',
   // Brainbeat webhook: the shared secret, and the URL (it can carry userinfo

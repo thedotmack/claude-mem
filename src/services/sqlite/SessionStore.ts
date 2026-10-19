@@ -63,6 +63,41 @@ import {
 // abandoned by a process crash between claiming and marking the row sent.
 export const TELEGRAM_WRAPUP_CLAIM_STALE_AFTER_MS = 5 * 60_000;
 
+// The sync ledgers whose `kind` CHECK must name every content kind
+// (CanonicalContent ContentKind). Their DDL lives here so widenSyncKindCheck
+// can rebuild a table created before a kind existed from the same text.
+const SYNC_ENTITY_HEADS_DDL = `
+  CREATE TABLE IF NOT EXISTS sync_entity_heads (
+    entity_id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt', 'work_state')),
+    origin_device_id TEXT NOT NULL,
+    origin_local_id TEXT NOT NULL,
+    entity_rev TEXT NOT NULL,
+    operation_sha256 TEXT NOT NULL,
+    deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
+    updated_at_epoch INTEGER NOT NULL
+  )`;
+const SYNC_CONTENT_OUTBOX_DDL = `
+  CREATE TABLE IF NOT EXISTS sync_content_outbox (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    entity_id TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt', 'work_state')),
+    origin_local_id TEXT NOT NULL,
+    entity_rev TEXT NOT NULL,
+    body TEXT NOT NULL,
+    operation_sha256 TEXT NOT NULL,
+    deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
+    created_at_epoch INTEGER NOT NULL,
+    UNIQUE(entity_id, entity_rev)
+  )`;
+const SYNC_LAUNCH_EXCLUSIONS_DDL = `
+  CREATE TABLE IF NOT EXISTS sync_launch_exclusions (
+    kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt', 'work_state')),
+    origin_local_id TEXT NOT NULL,
+    through_rev TEXT NOT NULL,
+    PRIMARY KEY (kind, origin_local_id)
+  )`;
+
 /**
  * Coerce a value to something bun:sqlite can bind. The cloud/export shape
  * (CloudSync `toCloud`) carries columns like facts/concepts/files_read as real
@@ -193,6 +228,8 @@ export class SessionStore {
   private readonly syncOpsEnabled: boolean;
   /** See cachedStatement. Keyed by SQL text; only fixed SQL ever goes in. */
   private readonly statementCache = new Map<string, Statement>();
+  /** This device's sync id; native work-state rows fold as its writes (setLocalSyncDeviceId). */
+  private localSyncDeviceId = '';
 
   constructor(dbPathOrDb: string | Database = DB_PATH, options: SessionStoreOptions = {}) {
     this.syncOpsEnabled = options.syncOpsEnabled ?? true;
@@ -908,32 +945,9 @@ export class SessionStore {
    * decimal TEXT so a remote value is never rounded through a JS number.
    */
   private ensureSyncEntityLedger(): void {
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sync_entity_heads (
-        entity_id TEXT PRIMARY KEY,
-        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
-        origin_device_id TEXT NOT NULL,
-        origin_local_id TEXT NOT NULL,
-        entity_rev TEXT NOT NULL,
-        operation_sha256 TEXT NOT NULL,
-        deleted INTEGER NOT NULL CHECK (deleted IN (0, 1)),
-        updated_at_epoch INTEGER NOT NULL
-      )
-    `);
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sync_content_outbox (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        entity_id TEXT NOT NULL,
-        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
-        origin_local_id TEXT NOT NULL,
-        entity_rev TEXT NOT NULL,
-        body TEXT NOT NULL,
-        operation_sha256 TEXT NOT NULL,
-        deleted INTEGER NOT NULL DEFAULT 0 CHECK (deleted IN (0, 1)),
-        created_at_epoch INTEGER NOT NULL,
-        UNIQUE(entity_id, entity_rev)
-      )
-    `);
+    this.db.run(SYNC_ENTITY_HEADS_DDL);
+    this.widenSyncKindCheck('sync_entity_heads', SYNC_ENTITY_HEADS_DDL);
+    this.db.run(SYNC_CONTENT_OUTBOX_DDL);
     const contentColumns = new Set(
       (this.db.query('PRAGMA table_info(sync_content_outbox)').all() as TableColumnInfo[]).map(column => column.name)
     );
@@ -944,6 +958,7 @@ export class SessionStore {
         SET deleted = CASE WHEN json_extract(body, '$.deleted') = 1 THEN 1 ELSE 0 END
       `);
     }
+    this.widenSyncKindCheck('sync_content_outbox', SYNC_CONTENT_OUTBOX_DDL);
     this.db.run(`
       CREATE TABLE IF NOT EXISTS sync_dead_letter (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -986,6 +1001,32 @@ export class SessionStore {
       .run(45, new Date().toISOString());
   }
 
+  /**
+   * v67 — a sync ledger's CHECK on `kind` was written for the three launch
+   * kinds; work_state joined later (work-state.ts). SQLite cannot alter a
+   * CHECK, so a table whose stored DDL predates the kind is rebuilt in place
+   * from the current DDL, its rows copied by column name. Idempotent: the
+   * rebuilt table's DDL names the kind, so later boots skip it.
+   */
+  private widenSyncKindCheck(table: string, createSql: string): void {
+    const stored = this.db.prepare(
+      `SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?`
+    ).get(table) as { sql: string } | undefined;
+    if (!stored || stored.sql.includes("'work_state'")) return;
+    const columns = (this.db.query(`PRAGMA table_info(${table})`).all() as TableColumnInfo[])
+      .map(column => column.name)
+      .join(', ');
+    const previous = `${table}_pre_work_state`;
+    this.db.transaction(() => {
+      this.db.run(`DROP TABLE IF EXISTS ${previous}`);
+      this.db.run(`ALTER TABLE ${table} RENAME TO ${previous}`);
+      this.db.run(createSql);
+      this.db.run(`INSERT INTO ${table} (${columns}) SELECT ${columns} FROM ${previous}`);
+      this.db.run(`DROP TABLE ${previous}`);
+    }).immediate();
+    logger.info('DB', `Rebuilt ${table} to admit the work_state sync kind`);
+  }
+
 
   /**
    * One-time launch boundary (v47) plus its durable revision exclusions
@@ -1005,14 +1046,8 @@ export class SessionStore {
       SELECT 1 AS present FROM sqlite_master
       WHERE type = 'table' AND name = 'sync_launch_exclusions'
     `).get() !== undefined;
-    this.db.run(`
-      CREATE TABLE IF NOT EXISTS sync_launch_exclusions (
-        kind TEXT NOT NULL CHECK (kind IN ('observation', 'summary', 'prompt')),
-        origin_local_id TEXT NOT NULL,
-        through_rev TEXT NOT NULL,
-        PRIMARY KEY (kind, origin_local_id)
-      )
-    `);
+    this.db.run(SYNC_LAUNCH_EXCLUSIONS_DDL);
+    this.widenSyncKindCheck('sync_launch_exclusions', SYNC_LAUNCH_EXCLUSIONS_DDL);
 
     const applied = this.db.prepare(
       'SELECT version, applied_at FROM schema_versions WHERE version = ?'
@@ -2014,6 +2049,13 @@ export class SessionStore {
   private ensureWorkStateTable(): void {
     createWorkStateSchema(this.db);
     this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(61, new Date().toISOString());
+    // Both work-state sync steps are introspection-guarded, so a database that
+    // already ran v65 still gets them; v65 itself is the run-once gate of
+    // refreshUnicodeTitleNormKeys, which these rows must never claim.
+    // v66 — cloud sync columns on the same table (work-state.ts ensureWorkStateSyncColumns).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(66, new Date().toISOString());
+    // v67 — the sync ledgers admit the work_state kind (widenSyncKindCheck).
+    this.db.prepare('INSERT OR IGNORE INTO schema_versions (version, applied_at) VALUES (?, ?)').run(67, new Date().toISOString());
   }
 
   // v63 — SessionStart reads the newest N rows per project key. Ordered
@@ -3096,8 +3138,17 @@ export class SessionStore {
     return entryId;
   }
 
+  /**
+   * The id CloudSync syncs this device under, once it is resolved: work-state
+   * reads order native rows as this device's writes, the way other devices
+   * and cmem.ai order them. Empty (the default) when sync has no device id.
+   */
+  setLocalSyncDeviceId(deviceId: string): void {
+    this.localSyncDeviceId = deviceId;
+  }
+
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
-    const entries = getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName);
+    const entries = getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName, this.localSyncDeviceId);
     // Keys explicitly supplied by the checkout describe one list history.
     // Adopted projects discovered by getProjectReadKeys retain their own scope.
     const foldKey = (key: string) => key.replace(/[A-Z]/g, character => character.toLowerCase());
@@ -3500,9 +3551,18 @@ export class SessionStore {
 
     if (existing) {
       if (project) {
+        // 'unknown' is the placeholder ingest paths register when a payload has
+        // no cwd (#4772); a later init with the real project must repair it, but
+        // a real project is never demoted back to the placeholder. 'unknown' is
+        // also a legitimate path-mode project name — a non-git checkout literally
+        // named `unknown` resolves to it (#4774 review) — so only repair rows
+        // that provably hold the placeholder: every ingest/init path that
+        // resolves a real cwd also records it via setSessionCwd (first-write-wins,
+        // guarded on cwd IS NULL), so a stored 'unknown' with a NULL cwd can only
+        // come from a no-cwd payload.
         this.db.prepare(`
           UPDATE sdk_sessions SET project = ?
-          WHERE id = ? AND (project IS NULL OR project = '')
+          WHERE id = ? AND (project IS NULL OR project = '' OR (project = 'unknown' AND cwd IS NULL))
         `).run(project, existing.id);
       }
       // A tool-first init persists the placeholder; the first real prompt repairs it.

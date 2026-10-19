@@ -15,6 +15,8 @@ import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
+import { workStateTool } from '../../../shared/work-state-telemetry.js';
+import { recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -65,11 +67,16 @@ function getBashSkipPattern(pattern: string): RegExp | null {
 
 // The shell command CLAUDE_MEM_SKIP_BASH_PATTERNS is matched against. Claude
 // Code sends `Bash` + `command` (Cursor and Windsurf adapters normalize to the
-// same shape); the Codex transcript watcher sends `exec_command` + `cmd`.
+// same shape); the Codex transcript watcher sends `exec_command` + `cmd`; on
+// Windows the primary shell arrives as `PowerShell` + `command` (issue #4745 —
+// without this branch the setting silently did nothing there).
 function shellCommandOf(toolName: string, toolInput: unknown): string {
   if (!toolInput || typeof toolInput !== 'object') return '';
   const input = toolInput as { command?: unknown; cmd?: unknown };
-  const command = toolName === 'Bash' ? input.command : toolName === 'exec_command' ? input.cmd : undefined;
+  const command =
+    toolName === 'Bash' || toolName === 'PowerShell' ? input.command
+    : toolName === 'exec_command' ? input.cmd
+    : undefined;
   return typeof command === 'string' ? command : '';
 }
 
@@ -112,10 +119,13 @@ export type IngestResult =
 export interface ObservationPayload {
   contentSessionId: string;
   toolName: string;
-  toolInput: unknown;
-  toolResponse: unknown;
+  toolInput?: unknown;
+  toolResponse?: unknown;
   cwd?: string;
   platformSource?: string;
+  telemetryPlatformSource?: string;
+  /** Direct live callbacks retain their original time without changing memory prompt lookup. */
+  telemetryToolEpochMs?: number;
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
@@ -144,12 +154,37 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   const platformSource = normalizePlatformSource(payload.platformSource);
   const cwd = typeof payload.cwd === 'string' ? payload.cwd : '';
   const projectContext = cwd.trim() ? getProjectContext(cwd) : null;
-  const project = projectContext?.primary ?? '';
+  // Same fallback as session init: an empty project makes cloud sync quarantine
+  // every content line the session produces (#4772).
+  const project = projectContext?.primary || 'unknown';
 
   const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
 
   if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
+  }
+
+  // Native todo tools are normally excluded from memory generation. Count
+  // their bounded identity before that filter, but after project, agent and
+  // prompt privacy checks. Do not store their contents or buy an observation.
+  const trackedTool = workStateTool(payload.toolName);
+  const telemetryAttribution = {
+    ...payload,
+    platformSource: payload.telemetryPlatformSource ?? payload.platformSource,
+    enqueuedAtEpochMs: payload.telemetryToolEpochMs ?? payload.enqueuedAtEpochMs,
+  };
+  if (trackedTool && !shouldSkipAgentObservation(payload.agentId, payload.agentType, settings).skip) {
+    try {
+      const telemetryStore = dbManager.getSessionStore();
+      const knownSession = telemetryStore.findSessionDbIdByContentSessionId(payload.contentSessionId, platformSource);
+      const promptNumber = telemetryStore.getPromptNumberFromUserPrompts(payload.contentSessionId, knownSession ?? undefined, payload.enqueuedAtEpochMs);
+      // Missing prompt capture is not evidence that this turn is public.
+      const publicPrompt = knownSession === null ? null
+        : telemetryStore.getUserPrompt(payload.contentSessionId, promptNumber, knownSession);
+      if (publicPrompt?.trim() && isPublicWorkStateTurn(telemetryStore.db, telemetryAttribution)) {
+        recordWorkStateTool(telemetryStore.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
+      }
+    } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
   }
 
   if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
@@ -226,6 +261,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   );
   if (!privacy.allow) {
     return { ok: true, status: 'skipped', reason: 'private' };
+  }
+
+  if (!trackedTool && privacy.prompt.trim() && isPublicWorkStateTurn(store.db, telemetryAttribution)) {
+    recordWorkStateTool(store.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
   }
 
   const cleanedToolInput = payload.toolInput !== undefined
@@ -453,7 +492,8 @@ export function ingestAdvisorCalls(
     return { status: 'skipped', reason: 'project_excluded' };
   }
 
-  const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : '';
+  // Same fallback as session init — an empty project gets quarantined by cloud sync (#4772).
+  const project = typeof cwd === 'string' && cwd.trim() ? getProjectContext(cwd).primary : 'unknown';
 
   const store = dbManager.getSessionStore();
   const sessionDbId = store.createSDKSession(contentSessionId, project, '', undefined, platformSource);

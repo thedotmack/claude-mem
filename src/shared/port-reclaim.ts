@@ -62,7 +62,7 @@
  */
 
 import { execFile } from 'node:child_process';
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync, promises as fsPromises } from 'node:fs';
 import { promisify } from 'node:util';
 import { logger } from '../utils/logger.js';
 import { killProcessTree } from './kill-process-tree.js';
@@ -71,7 +71,8 @@ import { readOwnedWorkerPidInfo } from '../supervisor/index.js';
 import { waitForHealth } from '../services/infrastructure/HealthMonitor.js';
 import { captureProcessStartToken, isSameProcess, normalizeProcessName } from './process-identity.js';
 import { readWedgedWorkerUptimeSeconds } from './hook-constants.js';
-import { DATA_DIR } from './paths.js';
+import { DATA_DIR, USER_SETTINGS_PATH, paths } from './paths.js';
+import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -440,6 +441,7 @@ export type GhostPortReclaimResult =
         // Wedged-worker path refusals — our worker is alive but not provably wedged:
         | 'owner-booting' // inside its boot/migration grace (pid-file age)
         | 'owner-responding' // answered a health re-probe
+        | 'owner-progressing' // silent, but its heartbeat is fresh: slow, not dead
         | 'owner-identity-mismatch' // start token or command line is not our worker
         | 'out-of-budget'; // a caller's hook deadline leaves too little to finish (RECLAIM_MIN_BUDGET_MS)
       killedPids?: number[];
@@ -500,6 +502,12 @@ export interface GhostPortReclaimDeps {
   readIdentity?: (pid: number, capMs?: number) => Promise<ProcessIdentity>;
   /** Minimum worker age (seconds) before a silent worker may count as wedged. */
   minOwnerAgeSeconds?: number;
+  /** The worker's own liveness heartbeat, or null when it has written none (or it is unreadable). */
+  readHeartbeat?: () => WorkerHeartbeat | null;
+  /** A heartbeat younger than this (ms) means the worker's event loop still turns. */
+  heartbeatStaleMs?: number;
+  /** A fresh heartbeat spares the worker only if it finished an HTTP response within this long (ms). */
+  maxSilentProtectionMs?: number;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
   /** Deadline (read with `now`) of a caller spending a hook budget; absent or null for none. */
@@ -513,6 +521,9 @@ interface WedgedReclaimDeps {
   probeHealth: (port: number) => Promise<boolean>;
   readIdentity: (pid: number) => Promise<ProcessIdentity>;
   minOwnerAgeSeconds: number;
+  readHeartbeat: () => WorkerHeartbeat | null;
+  heartbeatStaleMs: number;
+  maxSilentProtectionMs: number;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
   /** False when a kill could no longer finish inside the caller's deadline. */
@@ -554,7 +565,7 @@ async function reclaimWedgedOwnedWorker(
   const owned = deps.readOwnedWorker();
   if (owned === null || owned.port !== port) return null;
   const refuse = (
-    reason: 'owner-booting' | 'owner-responding' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
+    reason: 'owner-booting' | 'owner-responding' | 'owner-progressing' | 'owner-identity-mismatch' | 'netstat-unreadable' | 'out-of-budget',
     details: Record<string, unknown> = {},
   ): GhostPortReclaimResult => {
     logger.info('PROCESS', 'Wedged-worker reclaim declined', { port, pid: owned.pid, reason, ...details });
@@ -583,6 +594,39 @@ async function reclaimWedgedOwnedWorker(
       listeners,
     });
     return null;
+  }
+
+  // Silence is not death. Under on-access antivirus a worker's event loop can
+  // be held in slow synchronous file opens (traced up to 2 s each), and a held
+  // loop misses health probes. After one such reclaim the restart re-ran the
+  // backfill, and health came back about 9 minutes after the kill. The worker
+  // publishes its own heartbeat: a timer (which runs only when the loop turns)
+  // stamps beatAtMs, and lastResponseAtMs is when it last finished any HTTP
+  // response. A fresh beat alone cannot tell a slow worker from one whose loop
+  // turns while every request hangs, so it spares the worker only while that
+  // worker has finished a response within maxSilentProtectionMs. The worker
+  // writes both fields, so a recovery resets the window by itself and no hook
+  // keeps state of its own. A heartbeat from another pid (an earlier run), or
+  // none at all (an older worker), keeps the previous verdict.
+  const heartbeat = deps.readHeartbeat();
+  if (heartbeat !== null && heartbeat.pid === owned.pid) {
+    const nowMs = deps.now();
+    const heartbeatAgeMs = Math.max(0, nowMs - heartbeat.beatAtMs);
+    const sinceLastResponseMs = Math.max(0, nowMs - heartbeat.lastResponseAtMs);
+    if (heartbeatAgeMs < deps.heartbeatStaleMs) {
+      if (sinceLastResponseMs < deps.maxSilentProtectionMs) {
+        return refuse('owner-progressing', {
+          heartbeatAgeMs: Math.round(heartbeatAgeMs),
+          sinceLastResponseMs: Math.round(sinceLastResponseMs),
+        });
+      }
+      logger.warn('PROCESS', 'Worker finished no response within the protection window despite a fresh liveness heartbeat', {
+        port,
+        pid: owned.pid,
+        sinceLastResponseMs: Math.round(sinceLastResponseMs),
+        maxSilentProtectionMs: deps.maxSilentProtectionMs,
+      });
+    }
   }
 
   const identity = await deps.readIdentity(owned.pid);
@@ -717,6 +761,9 @@ export async function reclaimGhostListeningPort(
     probeHealth: deps.probeHealth ?? ((p: number) => waitForHealth(p, WEDGED_HEALTH_PROBE_TIMEOUT_MS)),
     readIdentity: (pid: number) => readIdentity(pid, readCapMs()),
     minOwnerAgeSeconds: deps.minOwnerAgeSeconds ?? readWedgedWorkerUptimeSeconds(),
+    readHeartbeat: deps.readHeartbeat ?? (() => readWorkerHeartbeat()),
+    heartbeatStaleMs: deps.heartbeatStaleMs ?? readWorkerHeartbeatStaleMs(),
+    maxSilentProtectionMs: deps.maxSilentProtectionMs ?? MAX_SILENT_PROTECTION_MS,
     now,
     sleep: deps.sleep ?? ((ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))),
     hasKillBudget: () => !lacksBudget(RECLAIM_KILL_BUDGET_MS),
@@ -982,4 +1029,105 @@ export async function reclaimOrphanChromaDataDirWriters(deps: OrphanSweepDeps): 
     }
   }
   return { killedPids };
+}
+
+/** How often the worker refreshes its liveness heartbeat file. */
+export const WORKER_HEARTBEAT_INTERVAL_MS = 5_000;
+export const WORKER_HEARTBEAT_STALE_DEFAULT_MS = 120_000;
+const WORKER_HEARTBEAT_STALE_BOUNDS_MS = { min: 10_000, max: 3_600_000 } as const;
+
+/**
+ * CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS from the environment, else settings.json,
+ * else the default. Hooks are short processes, so each reclaim reads it afresh.
+ */
+export function readWorkerHeartbeatStaleMs(
+  env: NodeJS.ProcessEnv = process.env,
+  settingsPath: string = USER_SETTINGS_PATH,
+): number {
+  const raw = env.CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS
+    ?? SettingsDefaultsManager.loadFromFile(settingsPath, false, { readOnly: true }).CLAUDE_MEM_WORKER_HEARTBEAT_STALE_MS;
+  const value = Number(raw);
+  return Number.isSafeInteger(value)
+    && value >= WORKER_HEARTBEAT_STALE_BOUNDS_MS.min
+    && value <= WORKER_HEARTBEAT_STALE_BOUNDS_MS.max
+    ? value
+    : WORKER_HEARTBEAT_STALE_DEFAULT_MS;
+}
+
+/**
+ * A fresh liveness heartbeat spares a silent worker only while it has finished
+ * an HTTP response within this long: a worker with no completed response for
+ * 10 minutes is judged as before, whatever its heartbeat says.
+ */
+export const MAX_SILENT_PROTECTION_MS = 600_000;
+
+/** What the worker publishes about itself. Only the worker ever writes it. */
+export interface WorkerHeartbeat {
+  /** The worker process that wrote it; a heartbeat from any other pid is ignored. */
+  pid: number;
+  /** When the heartbeat timer last ran (ms epoch). Fresh means the event loop turns. */
+  beatAtMs: number;
+  /** When the worker last finished an HTTP response (ms epoch), or when it started if it has finished none. */
+  lastResponseAtMs: number;
+}
+
+/** The worker's heartbeat, or null when there is none or it does not parse as one. */
+export function readWorkerHeartbeat(heartbeatPath: string = paths.workerHeartbeat()): WorkerHeartbeat | null {
+  try {
+    const parsed = JSON.parse(readFileSync(heartbeatPath, 'utf8')) as Partial<WorkerHeartbeat> | null;
+    if (parsed
+      && Number.isSafeInteger(parsed.pid)
+      && Number.isFinite(parsed.beatAtMs)
+      && Number.isFinite(parsed.lastResponseAtMs)) {
+      return { pid: parsed.pid!, beatAtMs: parsed.beatAtMs!, lastResponseAtMs: parsed.lastResponseAtMs! };
+    }
+  } catch {
+    // No heartbeat yet (an older worker, or before the first beat).
+  }
+  return null;
+}
+
+export interface WorkerHeartbeatOptions {
+  /** When the worker last finished an HTTP response (ms epoch), or null if it has finished none. */
+  readLastResponseAtMs: () => number | null;
+  heartbeatPath?: string;
+  intervalMs?: number;
+  pid?: number;
+  now?: () => number;
+}
+
+/**
+ * Publish the heartbeat from an unref'd timer. The timer fires only when the
+ * event loop turns, so beatAtMs measures progress. Each beat writes a temp
+ * file and renames it over the heartbeat, so a hook never reads a torn one.
+ * The write is async (a thread-pool thread waits on a slow filesystem, not
+ * the loop), and a failed write is ignored: a missing or stale heartbeat only
+ * restores the old verdict.
+ */
+export function startWorkerHeartbeat(options: WorkerHeartbeatOptions): () => void {
+  const heartbeatPath = options.heartbeatPath ?? paths.workerHeartbeat();
+  const pid = options.pid ?? process.pid;
+  const now = options.now ?? Date.now;
+  const startedAtMs = now();
+  const tmpPath = `${heartbeatPath}.${pid}.tmp`;
+  // One write at a time: on a slow filesystem a second beat truncating the
+  // temp file while the first renames it could publish a torn heartbeat.
+  let writing = false;
+  const beat = () => {
+    if (writing) return;
+    writing = true;
+    const heartbeat: WorkerHeartbeat = {
+      pid,
+      beatAtMs: now(),
+      lastResponseAtMs: options.readLastResponseAtMs() ?? startedAtMs,
+    };
+    void fsPromises.writeFile(tmpPath, JSON.stringify(heartbeat))
+      .then(() => fsPromises.rename(tmpPath, heartbeatPath))
+      .catch(() => {})
+      .finally(() => { writing = false; });
+  };
+  beat();
+  const timer = setInterval(beat, options.intervalMs ?? WORKER_HEARTBEAT_INTERVAL_MS);
+  timer.unref?.();
+  return () => clearInterval(timer);
 }

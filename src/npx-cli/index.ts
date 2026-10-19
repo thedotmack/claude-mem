@@ -62,6 +62,11 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem t3code status|uninstall [--settings <path>]')}   Inspect or disable T3 Code provider plugins
   ${styleText('cyan', 'npx claude-mem pi install|status|uninstall')}   Manage the native Pi extension
 
+${styleText('bold', 'TeamBrain')} (one shared brain for your team; your own memory stays private):
+  ${styleText('cyan', 'npx claude-mem teambrain start')}                Create a team on cmem.ai
+  ${styleText('cyan', 'npx claude-mem teambrain join <invite-link>')}   Join a team, then choose which projects to share
+  ${styleText('cyan', 'npx claude-mem teambrain status|share|leave')}   Check your teams, change what you share, or leave
+
 ${styleText('bold', 'Claude Code Hooks')}:
   Each hook runs ${styleText('cyan', 'claude-mem hook claude-code <event>')} directly, with no shell.
   That ${styleText('cyan', 'claude-mem')} is a small launcher the installer places on PATH:
@@ -131,7 +136,18 @@ function parseInstallOptions(argv: string[]): InstallOptions {
   };
 }
 
+// Commands that change the install or the worker and would otherwise ignore -h/--help
+const HELP_AWARE_COMMANDS = new Set([
+  '', 'install', 'update', 'upgrade', 'uninstall', 'remove', 'repair', 'prune', 'start', 'stop', 'restart',
+]);
+
 async function main(): Promise<void> {
+  // `uninstall --help` must show help, not run the uninstall.
+  if (HELP_AWARE_COMMANDS.has(command) && args.slice(1).some((arg) => arg === '--help' || arg === '-h')) {
+    printHelp();
+    return;
+  }
+
   switch (command) {
     case '':
     case 'install': {
@@ -210,6 +226,12 @@ async function main(): Promise<void> {
     case 'telemetry': {
       const { runTelemetryCommand } = await import('./commands/telemetry.js');
       await runTelemetryCommand(args.slice(1));
+      break;
+    }
+
+    case 'teambrain': {
+      const { runTeamBrainCommand } = await import('./commands/teambrain.js');
+      process.exitCode = await runTeamBrainCommand(args.slice(1));
       break;
     }
 

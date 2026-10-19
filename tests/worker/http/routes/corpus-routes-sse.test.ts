@@ -1,7 +1,9 @@
-import { describe, it, expect, mock } from 'bun:test';
+import { describe, it, expect, mock, beforeEach, afterEach, spyOn } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import type { Request, Response } from 'express';
 import { CorpusRoutes } from '../../../../src/services/worker/http/routes/CorpusRoutes.js';
+import { KnowledgeAgent } from '../../../../src/services/worker/knowledge/KnowledgeAgent.js';
+import { logger } from '../../../../src/utils/logger.js';
 
 const HEARTBEAT_INTERVAL_MS = 20;
 
@@ -275,5 +277,53 @@ describe('CorpusRoutes JSON mode (no event-stream Accept)', () => {
 
     expect(seen.abortController?.signal.aborted).toBe(true);
     expect(res.jsonBodies).toEqual([]);
+  });
+});
+
+describe('CorpusRoutes query on a corpus that was never primed', () => {
+  let errorSink: ReturnType<typeof mock>;
+  let warnSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    errorSink = mock(() => {});
+    logger.setErrorSink(errorSink);
+    warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logger.setErrorSink(null);
+    warnSpy.mockRestore();
+  });
+
+  function unprimedQueryHandler() {
+    const routes = createRoutes(new KnowledgeAgent({} as any), { ...createCorpus('alpha'), session_id: null });
+    return captureHandler(routes, '/api/corpus/:name/query');
+  }
+
+  it('answers 409 CORPUS_NOT_PRIMED in JSON mode and sends nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', undefined, { question: 'why?' });
+    const res = new FakeResponse();
+
+    unprimedQueryHandler()(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.statusCode).toBe(409);
+    expect(res.jsonBodies).toEqual([{ error: 'Corpus "alpha" has no session — call prime first', code: 'CORPUS_NOT_PRIMED' }]);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(errorSink).not.toHaveBeenCalled();
+  });
+
+  it('sends a 409 error event in SSE mode and nothing to the error sink', async () => {
+    const { req } = createRequest('alpha', 'text/event-stream', { question: 'why?' });
+    const res = new FakeResponse();
+
+    unprimedQueryHandler()(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.terminalEvents()).toEqual([{
+      event: 'error',
+      data: { error: 'Corpus "alpha" has no session — call prime first', code: 'CORPUS_NOT_PRIMED', status: 409 },
+    }]);
+    expect(errorSink).not.toHaveBeenCalled();
   });
 });

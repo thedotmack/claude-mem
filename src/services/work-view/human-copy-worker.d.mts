@@ -1,0 +1,13 @@
+type HumanCopyProvider = (input: unknown) => Promise<Record<string, unknown>>;
+export function chatCompletionsHumanCopyProvider(options: { url: string; apiKey: string; model: string; fetchImpl?: typeof fetch }): HumanCopyProvider;
+export function fitGeneratedCopy(output: unknown): unknown;
+export class HumanCopyWorker {
+  revision: number;
+  provider: HumanCopyProvider | null | undefined;
+  constructor(options?: { provider?: HumanCopyProvider | null; cachePath?: string | null; concurrency?: number; quietMs?: number; maxWaitMs?: number; minIntervalMs?: number; retryMs?: number; now?: () => number });
+  load(): Promise<void>;
+  start(): void;
+  close(): void;
+  observe<T extends { humanRequests?: unknown[] }>(view: T): T;
+  status(): { cached: number; queued: number; generating: number; failures: Array<{ reason: string; at: number }>; revision: number };
+}

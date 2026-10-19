@@ -222,7 +222,7 @@ describe('getProjectName', () => {
         const cwd = ${JSON.stringify(cwd)};
         console.log(JSON.stringify({ name: getProjectName(cwd), allProjects: getProjectContext(cwd).allProjects }));
       `;
-      const result = Bun.spawnSync(['bun', '-e', script], { env: { ...process.env, ...env } });
+      const result = Bun.spawnSync([process.execPath, '-e', script], { env: { ...process.env, ...env } });
       if (result.exitCode !== 0) {
         throw new Error(new TextDecoder().decode(result.stderr));
       }

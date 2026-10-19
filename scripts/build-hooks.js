@@ -34,6 +34,11 @@ const DIRNAME_BANNER = [
   'var __CM_DIRNAME__ = typeof __dirname !== "undefined" ? __dirname : require("node:path").dirname(__CM_FILENAME__);',
 ];
 
+// posthog-node >=5.56 lazily import()s the optional OpenTelemetry API for trace ids
+// and swallows the failure when it is absent, so every bundle that includes the
+// telemetry client must leave it unresolved instead of failing the build.
+const POSTHOG_OPTIONAL_IMPORTS = ['@opentelemetry/api'];
+
 // Emit an external source map (names only, no inlined source text) next to each
 // bundle. Bun and Node symbolicate stack traces against the adjacent .map, so a
 // worker crash names the real symbol instead of a two-letter minified id.
@@ -163,10 +168,16 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
     host: 'codex-cli', requireFile: 'bun-runner.js', requireFileSecondary: 'worker-service.cjs',
     trailingCommand: ccTrailing(...tail), notFoundMessage: 'claude-mem: plugin scripts not found',
     extraEnv: { CLAUDE_MEM_CODEX_HOOK: '1' },
+    // Codex's own plugin copy carries the scripts but never `node_modules`
+    // (the CLI rebuilds that folder on every `codex plugin add`), so a hook
+    // resolving to it dies on its first import. Require the host-injected
+    // root to have its dependencies; without them the resolver falls back to
+    // the installer-prepared copies (#4763).
+    requireDependencies: true,
   });
   const codexHookPair = (tail) => ({
     command: codexHook(tail),
-    commandWindows: buildCodexWindowsCommand(tail),
+    commandWindows: buildCodexWindowsCommand(tail, { requireDependencies: true }),
   });
 
   return {
@@ -523,6 +534,14 @@ async function buildHooks() {
       target: 'node18',
       format: 'cjs',
       outfile: `${hooksDir}/${WORKER_SERVICE.name}.cjs`,
+      // Zod is inlined, and the worker's dynamic imports make esbuild wrap it in
+      // lazy initializers. `zod/v4` (imported by @modelcontextprotocol/sdk) is a
+      // pure `export *` re-export of that wrapped code, and esbuild emits no
+      // initializer call through it, so the SDK's top-level `z.custom()` ran
+      // before Zod's classes existed and the worker crashed on load. One Zod
+      // entry point gets initialized correctly. The self-contained bundle test
+      // (tests/infrastructure/worker-bundle-self-contained.test.ts) guards this.
+      alias: { 'zod/v4': 'zod' },
       minify: true,
       ...SOURCEMAP_OPTS,
       logLevel: 'error', // Suppress warnings (import.meta warning is benign)
@@ -530,7 +549,6 @@ async function buildHooks() {
         'bun:sqlite',
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
-        'zod',
         'cohere-ai',
         'ollama',
         '@chroma-core/default-embed',
@@ -546,6 +564,7 @@ async function buildHooks() {
         'better-auth/node',
         'better-auth/plugins',
         '@better-auth/api-key',
+        ...POSTHOG_OPTIONAL_IMPORTS,
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
@@ -566,6 +585,14 @@ async function buildHooks() {
     });
 
     assertBundleIntegrity(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
+
+    const workerZodRequire = fs.readFileSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 'utf-8')
+      .match(/require\(\s*["']zod(?:\/[^"']*)?["']\s*\)/);
+    if (workerZodRequire) {
+      throw new Error(
+        `worker-service.cjs contains external ${workerZodRequire[0]}. Codex plugin caches may have no node_modules, so Zod must be bundled into the worker.`
+      );
+    }
 
     fs.chmodSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`, 0o755);
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
@@ -783,11 +810,12 @@ async function buildHooks() {
       minify: true,
       ...SOURCEMAP_OPTS,
       logLevel: 'error',
-      // Externalize zod for consistency with worker-service / server-beta-service —
-      // any zod usage in the processor.ts import chain should resolve at runtime
-      // against plugin/node_modules instead of being inlined (avoids duplicate-
-      // instance hazards and keeps the bundle slim).
-      external: ['bun:sqlite', 'zod'],
+      // Externalize zod for consistency with server-service, context-generator and the other plugin bundles —
+      // any zod usage in the processor.ts import chain resolves at runtime against
+      // plugin/node_modules instead of being inlined (keeps the bundle slim). The
+      // worker and MCP server inline zod because a Codex or Claude Desktop copy of
+      // the plugin may have no node_modules.
+      external: ['bun:sqlite', 'zod', ...POSTHOG_OPTIONAL_IMPORTS],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,
         ...DIRNAME_DEFINE

@@ -2,6 +2,7 @@
 import { readFile, readdir, stat } from "node:fs/promises";
 import { basename, extname, join, relative } from "node:path";
 import { parseFilesBatch, formatFoldedView, qualifySymbolName, matchScore, type FoldedFile } from "./parser.js";
+import { detectLanguage } from "./language-map.js";
 import { logger } from "../../utils/logger.js";
 
 const CODE_EXTENSIONS = new Set([
@@ -118,6 +119,15 @@ export async function searchCodebase(
     maxResults?: number;
     includeImports?: boolean;
     filePattern?: string;
+    /**
+     * Skip tree-sitter symbol extraction entirely (#4758). With a
+     * present-but-unloadable CLI, spawning it stalls on grammar build/query
+     * timeouts while the file-path matches below need no parsing at all, so
+     * checking loadability first and passing this flag keeps a broken install
+     * from delaying results that were always available. Symbol results and
+     * folded views stay empty; path matching is unchanged.
+     */
+    skipSymbolExtraction?: boolean;
   } = {}
 ): Promise<SearchResult> {
   const maxResults = options.maxResults || 20;
@@ -142,7 +152,23 @@ export async function searchCodebase(
     });
   }
 
-  const parsedFiles = parseFilesBatch(filesToParse);
+  // With a broken tree-sitter CLI, parsing can never succeed and only burns
+  // build/query timeouts, while path matches need nothing from the parser.
+  // Synthesize parse-shape entries with no symbols so the extraction below is
+  // never attempted, instead of running the batch and discarding its output.
+  const parsedFiles: Map<string, FoldedFile> = options.skipSymbolExtraction === true
+    ? new Map(filesToParse.map((file) => {
+        const entry: FoldedFile = {
+          filePath: file.relativePath,
+          language: detectLanguage(file.relativePath),
+          symbols: [],
+          imports: [],
+          totalLines: file.content.split("\n").length,
+          foldedTokenEstimate: 0,
+        };
+        return [file.relativePath, entry];
+      }))
+    : parseFilesBatch(filesToParse);
 
   const foldedFiles: FoldedFile[] = [];
   const matchingSymbols: SymbolMatch[] = [];

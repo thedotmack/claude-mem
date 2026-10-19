@@ -7,6 +7,7 @@ import { spoolHookEvent } from '../spool-hook-event.js';
 import { logger } from '../../utils/logger.js';
 import { HOOK_EXIT_CODES } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { shouldTrackProject } from '../../shared/should-track-project.js';
 import { resolveRuntimeContext } from '../../services/hooks/runtime-selector.js';
 
 // Claude Code gives plugin SessionEnd hooks a 1.5-second budget, so this hook
@@ -18,6 +19,12 @@ export const sessionEndHandler: EventHandler = {
 
     if (!sessionId) {
       logger.warn('HOOK', 'session-end: No sessionId provided, skipping');
+      return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
+    }
+
+    // Session-init never registers an untracked session (observer, plugin cache,
+    // excluded project), so its SessionEnd would sit in the spool until it expired.
+    if (!shouldTrackProject(input.cwd ?? '')) {
       return { continue: true, suppressOutput: true, exitCode: HOOK_EXIT_CODES.SUCCESS };
     }
 

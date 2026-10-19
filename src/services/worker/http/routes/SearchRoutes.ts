@@ -7,6 +7,7 @@ import { SearchManager } from '../../SearchManager.js';
 import type { SearchTelemetryEnvelope } from '../../SearchManager.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { AppError } from '../../../server/ErrorHandler.js';
+import { resolveDateBound } from '../../../../shared/date-bounds.js';
 import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
@@ -40,6 +41,7 @@ import type { ObservationSearchResult, SessionSummarySearchResult } from '../../
 import { captureEvent } from '../../../telemetry/telemetry.js';
 import { telemetryBuffer } from '../../../telemetry/buffer.js';
 import { proTrialLine } from '../../../../shared/pro-promo.js';
+import { teamBriefReserveChars } from '../../../../shared/teambrain.js';
 import { ProgressiveMemorySearch } from '../../ProgressiveMemorySearch.js';
 import { progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearchInput } from '../../../../shared/progressive-search.js';
 
@@ -551,7 +553,13 @@ export class SearchRoutes extends BaseRouteHandler {
       projects: projects,
       ...(platformSource ? { platformSource } : {}),
       full,
-      reserveChars: workStateSection ? workStateSection.length + 2 : 0,
+      // Beside the work-state section: room for what the hook appends after
+      // this body once the install is in a team (the TeamBrain brief). Env
+      // first, as the hook reads it.
+      reserveChars: (workStateSection ? workStateSection.length + 2 : 0) + teamBriefReserveChars({
+        CLAUDE_MEM_TEAMBRAIN_URL: process.env.CLAUDE_MEM_TEAMBRAIN_URL ?? settings.CLAUDE_MEM_TEAMBRAIN_URL,
+        CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED: process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED ?? settings.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED,
+      }),
       timePlaceholders: true,
       includePriorMessage: request.includePriorMessage,
     }, forHuman);
@@ -626,6 +634,7 @@ export class SearchRoutes extends BaseRouteHandler {
    */
   private searchArgsFromRequest(req: Request): Record<string, any> {
     const searchArgs: Record<string, any> = { ...(req.query as Record<string, any>) };
+    SearchRoutes.assertValidDateBounds(searchArgs);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
     if (platformSource) {
       searchArgs.platformSource = platformSource;
@@ -636,7 +645,54 @@ export class SearchRoutes extends BaseRouteHandler {
     } else {
       delete searchArgs.projects;
     }
+    SearchRoutes.assertValidPagination(searchArgs);
     return searchArgs;
+  }
+
+  /**
+   * Reject an unparseable date bound up front. Left alone it reaches the search
+   * strategies, where it matches nothing on the SQLite path and filters nothing
+   * on the Chroma path, and the strategies' own error handling would swallow it.
+   */
+  private static assertValidDateBounds(searchArgs: Record<string, any>): void {
+    for (const [keys, boundary] of [
+      [['dateStart', 'date_start', 'date_from'], 'start'],
+      [['dateEnd', 'date_end', 'date_to'], 'end'],
+    ] as const) {
+      for (const key of keys) {
+        const value = searchArgs[key];
+        if (value === undefined || value === '') continue;
+        if (typeof value !== 'string') {
+          throw new AppError(`${key} must be a single date string`, 400, 'INVALID_DATE');
+        }
+        resolveDateBound(value, boundary);
+      }
+    }
+  }
+
+  /**
+   * `limit` and `offset` come straight from the query string and reach SQLite's
+   * LIMIT/OFFSET: `limit=-1` returned every row and `limit=abc` became NaN
+   * (no results). Accept only digits, with `limit >= 1`, like /api/logs does
+   * for `lines`; an empty value counts as absent.
+   */
+  private static assertValidPagination(searchArgs: Record<string, any>): void {
+    for (const [key, minimum] of [['limit', 1], ['offset', 0]] as const) {
+      const value = searchArgs[key];
+      if (value === undefined || value === '') {
+        delete searchArgs[key];
+        continue;
+      }
+      const parsed = typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : NaN;
+      if (!Number.isSafeInteger(parsed) || parsed < minimum) {
+        throw new AppError(
+          `${key} must be ${minimum === 1 ? 'a positive' : 'a non-negative'} integer`,
+          400,
+          'INVALID_PAGINATION'
+        );
+      }
+      searchArgs[key] = String(parsed);
+    }
   }
 
   /**

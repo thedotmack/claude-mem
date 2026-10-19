@@ -36,6 +36,7 @@ mock.module('../../../src/services/hooks/runtime-selector.js', () => ({
 
 import { claudeCodeAdapter } from '../../../src/cli/adapters/claude-code.js';
 import { logger } from '../../../src/utils/logger.js';
+import { OBSERVER_SESSIONS_DIR } from '../../../src/shared/paths.js';
 import { spooledEntries, useTempHookSpoolDataDir } from '../../helpers/temp-hook-spool.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -113,5 +114,31 @@ describe('sessionEndHandler', () => {
     expect(result.suppressOutput).toBe(true);
     expect(workerCallLog).toHaveLength(0);
     expect(spooledEntries()).toHaveLength(0);
+  });
+
+  it('does not spool a SessionEnd from an untracked session that was never registered', async () => {
+    const { sessionEndHandler } = await import('../../../src/cli/handlers/session-end.js');
+
+    const observerResult = await sessionEndHandler.execute({
+      sessionId: 'observer-session-end',
+      cwd: OBSERVER_SESSIONS_DIR,
+      platform: 'claude-code',
+      reason: 'other',
+    });
+
+    const originalInternalFlag = process.env.CLAUDE_MEM_INTERNAL;
+    process.env.CLAUDE_MEM_INTERNAL = '1';
+    try {
+      // The observer subprocess runs with CLAUDE_MEM_INTERNAL=1; its hook payload may carry no cwd.
+      await sessionEndHandler.execute({ sessionId: 'internal-session-end', cwd: '', platform: 'claude-code', reason: 'other' });
+    } finally {
+      if (originalInternalFlag === undefined) delete process.env.CLAUDE_MEM_INTERNAL;
+      else process.env.CLAUDE_MEM_INTERNAL = originalInternalFlag;
+    }
+
+    expect(observerResult.continue).toBe(true);
+    expect(observerResult.suppressOutput).toBe(true);
+    expect(spooledEntries('session_end')).toHaveLength(0);
+    expect(nudgeLog).toHaveLength(0);
   });
 });

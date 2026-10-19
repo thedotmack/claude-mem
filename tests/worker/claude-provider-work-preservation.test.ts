@@ -795,3 +795,68 @@ describe('work preservation — a generator that throws, seen from the runner', 
     }
   });
 });
+
+describe('work preservation with observation batching', () => {
+  let previousBatchSize: string | undefined;
+  beforeEach(() => {
+    previousBatchSize = process.env.CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE;
+    process.env.CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE = '4';
+  });
+  afterEach(() => {
+    if (previousBatchSize === undefined) delete process.env.CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE;
+    else process.env.CLAUDE_MEM_CLAUDE_OBSERVATION_BATCH_SIZE = previousBatchSize;
+  });
+
+  it('one prompt claims up to the batch size from the backlog', async () => {
+    const h = createHarness(6);
+    liveSessions.push(h.session);
+    const { run } = await claimFirstObservation(h);
+
+    expect(h.session.claimedMessageIds.length).toBe(4);
+    for (let i = 0; i < 4; i++) expect(sdk().prompts[1]).toContain(`step ${i}`);
+    expect(sdk().prompts[1]).not.toContain('step 4');
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
+  });
+
+  it('an answered batch confirms every event in it, once', async () => {
+    const h = createHarness(6);
+    liveSessions.push(h.session);
+    const realConfirm = h.sessionManager.confirmClaimedMessages.bind(h.sessionManager);
+    let confirmed = 0;
+    h.sessionManager.confirmClaimedMessages = async (sessionDbId: number) => {
+      const n = await realConfirm(sessionDbId);
+      confirmed += n;
+      return n;
+    };
+    const { run } = await claimFirstObservation(h);
+
+    sdk().answer(SKIP_REPLY);
+    await sdk().until(() => sdk().prompts.length >= 3, 'second batch');
+    // The first 4 are confirmed and gone; the last 2 ride on the second prompt.
+    expect(h.pending()).toBe(2);
+    expect(h.session.claimedMessageIds.length).toBe(2);
+    expect(sdk().prompts[2]).toContain('step 5');
+    expect(confirmed).toBe(4);
+
+    h.session.abortController.abort();
+    await withTimeout(run, 'startSession after abort');
+  });
+
+  it('clean EOF mid-batch releases every claim in the batch', async () => {
+    const h = createHarness(6);
+    liveSessions.push(h.session);
+    const { run } = await claimFirstObservation(h);
+    expect(h.session.claimedMessageIds.length).toBe(4);
+
+    sdk().end();
+    await withTimeout(run, 'startSession after EOF');
+    await sdk().until(() => sdk().inputFinished, 'generator released after EOF');
+
+    expect(h.pending()).toBe(6);
+    expect(h.session.claimedMessageIds).toEqual([]);
+    const outcome = await h.exit();
+    expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 6 });
+  });
+});

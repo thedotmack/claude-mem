@@ -25,6 +25,8 @@ let store: SessionStore;
 let checkout: string;
 let project: string;
 let loggerSpies: Array<ReturnType<typeof spyOn>> = [];
+/** Every row is a `work_state` sync op: the route nudges the push drain once per save. */
+let cloudSyncNotifyCalls = 0;
 
 beforeEach(async () => {
   loggerSpies = [
@@ -34,12 +36,17 @@ beforeEach(async () => {
     spyOn(logger, 'error').mockImplementation(() => {}),
   ];
   store = new SessionStore(':memory:');
+  cloudSyncNotifyCalls = 0;
   checkout = mkdtempSync(join(tmpdir(), 'work-state-checkout-'));
   project = getProjectContext(checkout).primary;
 
   const app = express();
   app.use(express.json());
-  new WorkStateRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
+  const dbManager = {
+    getSessionStore: () => store,
+    getCloudSync: () => ({ notify: () => { cloudSyncNotifyCalls++; } }),
+  };
+  new WorkStateRoutes(dbManager as any).setupRoutes(app);
   ModeManager.getInstance().loadMode('code');
   new SearchRoutes({ getSessionStore: () => store } as any).setupRoutes(app);
   await new Promise<void>((resolve, reject) => {
@@ -250,5 +257,27 @@ describe('literal primitive field keys', () => {
     const readResponse = await read({ cwd: checkout, list: 'config' });
     expect(await readResponse.text()).toContain('__proto__=literal state');
     expect(Object.getPrototypeOf(stored.fields)).toBe(Object.prototype);
+  });
+});
+
+describe('WorkStateRoutes cloud sync', () => {
+  it('nudges the push drain once per saved row, and not for a refused or excluded write', async () => {
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'todo' } });
+    await write({ cwd: checkout, list: 'release', fields: { version: '13.35.0' } });
+    expect(cloudSyncNotifyCalls).toBe(2);
+
+    expect((await write({ cwd: checkout, list: 'release', fields: {} })).status).toBe(400);
+    expect(cloudSyncNotifyCalls).toBe(2);
+
+    process.env.CLAUDE_MEM_EXCLUDED_PROJECTS = basename(checkout);
+    await write({ cwd: checkout, list: 'release', fields: { task: 'publish', status: 'done' } });
+    expect(cloudSyncNotifyCalls).toBe(2);
+  });
+
+  it('refuses an integer past 2^53, which canonical JSON could not carry to the cloud', async () => {
+    const response = await write({ cwd: checkout, list: 'release', fields: { count: 9007199254740993 } });
+    expect(response.status).toBe(400);
+    expect(store.getWorkStateEntries([project])).toEqual([]);
+    expect((await write({ cwd: checkout, list: 'release', fields: { ratio: 0.5, count: 9007199254740991 } })).status).toBe(200);
   });
 });

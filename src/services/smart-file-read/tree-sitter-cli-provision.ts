@@ -10,9 +10,11 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
+import { isExecutableFile } from "./tree-sitter-bin-path.js";
 import { pinnedTreeSitterExecutableSha256 } from "./tree-sitter-cli-checksums.js";
 
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
+const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
 
 function treeSitterCliPackageDir(pluginRoot: string): string {
   return join(pluginRoot, "node_modules", "tree-sitter-cli");
@@ -23,22 +25,43 @@ export function treeSitterCliBinaryPath(pluginRoot: string): string {
   return join(treeSitterCliPackageDir(pluginRoot), treeSitterBinaryName());
 }
 
-async function answersTreeSitterVersion(executablePath: string): Promise<boolean> {
-  return await new Promise<boolean>((resolve) => {
-    const child = execFile(executablePath, ["--version"], {
-      encoding: "utf-8",
-      timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
-      windowsHide: true,
-    }, (error, stdout) => {
-      resolve(!error && /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/.test((stdout ?? "").trim()));
-    });
-    child.stdin?.end();
+export interface TreeSitterCliVersionProbe {
+  usable: boolean;
+  /** The spawn failure's stderr (or error) first line when not usable. */
+  reason?: string;
+}
+
+async function answersTreeSitterVersion(executablePath: string): Promise<TreeSitterCliVersionProbe> {
+  return await new Promise<TreeSitterCliVersionProbe>((resolve) => {
+    // Bun can throw synchronously when the OS refuses the file outright (a
+    // truncated Mach-O is EBADMACHO on macOS); that is "not usable", the same
+    // as a spawn failure reported through the callback.
+    try {
+      const child = execFile(executablePath, ["--version"], {
+        encoding: "utf-8",
+        timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
+        windowsHide: true,
+      }, (error, stdout, stderr) => {
+        if (!error && TREE_SITTER_VERSION_OUTPUT.test((stdout ?? "").trim())) {
+          resolve({ usable: true });
+          return;
+        }
+        const detail = (stderr ?? "").trim().split("\n")[0]
+          || (error?.message ?? "").split("\n")[0]
+          || undefined;
+        resolve({ usable: false, reason: detail });
+      });
+      child.stdin?.end();
+    } catch (spawnError) {
+      const message = spawnError instanceof Error ? spawnError.message : String(spawnError);
+      resolve({ usable: false, reason: message.split("\n")[0] || undefined });
+    }
   });
 }
 
 /** True when the package-local tree-sitter CLI answers `--version`. */
 export async function isTreeSitterCliBinaryUsable(pluginRoot: string): Promise<boolean> {
-  return await answersTreeSitterVersion(treeSitterCliBinaryPath(pluginRoot));
+  return (await answersTreeSitterVersion(treeSitterCliBinaryPath(pluginRoot))).usable;
 }
 
 function runInstallScript(
@@ -76,7 +99,10 @@ function sha256OfFile(filePath: string): string {
  * place only once it then answers `--version`. The File Read Gate and the
  * parser only check that the file exists, so a download that fails, times out
  * or dies with its process must never leave a partial executable there.
- * Throws when no verified, working executable results.
+ * Throws when no verified, working executable results. When the existing
+ * executable is intact (matches the pinned SHA-256) but the OS cannot run it
+ * (#4758), the download would fetch identical bytes, so it throws immediately
+ * with the spawn failure's reason instead.
  *
  * `pinnedSha256ForVersion` exists for tests; callers pass none.
  */
@@ -89,7 +115,9 @@ export async function ensureTreeSitterCliBinary(
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
   }
-  if (await isTreeSitterCliBinaryUsable(pluginRoot)) return;
+  const existingBinaryPath = treeSitterCliBinaryPath(pluginRoot);
+  const existingProbe = await answersTreeSitterVersion(existingBinaryPath);
+  if (existingProbe.usable) return;
 
   const installScript = join(cliDir, "install.js");
   if (!existsSync(installScript)) {
@@ -104,6 +132,29 @@ export async function ensureTreeSitterCliBinary(
     );
   }
 
+  // The executable is intact (it matches the pinned SHA-256) but the OS cannot
+  // run it — e.g. tree-sitter-cli 0.26.9 links against GLIBC_2.39, which
+  // Ubuntu 22.04 / Debian 12 / RHEL 9 do not have (#4758). Downloading the
+  // same release asset again cannot help, so fail fast with the real reason
+  // instead of burning a download on every worker start. A corrupt or stale
+  // binary (SHA mismatch) still falls through to the download below, as does
+  // a binary that merely lost its executable bit: the download restores 755.
+  if (existsSync(existingBinaryPath)) {
+    let existingSha256 = "(unreadable)";
+    try {
+      existingSha256 = sha256OfFile(existingBinaryPath);
+    } catch {
+      // Fall through to the download; it cannot make things worse.
+    }
+    if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
+      throw new Error(
+        `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
+        + `but cannot run on this system${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
+        + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
+      );
+    }
+  }
+
   // Inside the package, so the final rename stays on one filesystem.
   const stagingDir = mkdtempSync(join(cliDir, ".provision-"));
   try {
@@ -116,9 +167,13 @@ export async function ensureTreeSitterCliBinary(
         installOutput,
       );
     }
-    if (!(await answersTreeSitterVersion(stagedExecutable))) {
+    const stagedProbe = await answersTreeSitterVersion(stagedExecutable);
+    if (!stagedProbe.usable) {
       throw Object.assign(
-        new Error(`tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`),
+        new Error(
+          `tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`
+          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}`,
+        ),
         installOutput,
       );
     }

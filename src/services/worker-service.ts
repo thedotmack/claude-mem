@@ -11,7 +11,8 @@ import { getCurrentWorkerPid, verifyRestartedWorker } from './restart-verify.js'
 import { runShutdownSequence, type WorkerShutdownReason } from './worker-shutdown.js';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH, ensureDir } from '../shared/paths.js';
 import { HookSpool, migrateLegacySessionEndReplay } from '../shared/hook-spool.js';
-import { HookSpoolDrainer } from './worker/hook-spool-drain.js';
+import { HookSpoolDrainer, hookSpoolConsumedMarkers } from './worker/hook-spool-drain.js';
+import { HookSpoolRoutes } from './worker/http/routes/HookSpoolRoutes.js';
 import { HOOK_TIMEOUTS } from '../shared/hook-constants.js';
 import { getUptimeSeconds } from '../shared/uptime.js';
 import { SettingsDefaultsManager } from '../shared/SettingsDefaultsManager.js';
@@ -70,7 +71,7 @@ import {
 } from './infrastructure/ProcessManager.js';
 import { runOneTimeV12_4_3Cleanup } from './infrastructure/CleanupV12_4_3.js';
 import { scheduleOneTimeFtsBloatReclaim } from './infrastructure/FtsMaintenance.js';
-import { reclaimGhostListeningPort } from '../shared/port-reclaim.js';
+import { reclaimGhostListeningPort, startWorkerHeartbeat } from '../shared/port-reclaim.js';
 import {
   isPortInUse,
   probePortBind,
@@ -122,6 +123,7 @@ import { ClassifiedProviderError, isClassified, type ProviderErrorClass } from '
 import { PaginationHelper } from './worker/PaginationHelper.js';
 import { SettingsManager } from './worker/SettingsManager.js';
 import { SearchManager } from './worker/SearchManager.js';
+import { parseSearchRecencyWindowMs, SEARCH_CONSTANTS } from './worker/search/types.js';
 import { FormattingService } from './worker/FormattingService.js';
 import { TimelineService } from './worker/TimelineService.js';
 import { SessionEventBroadcaster } from './worker/events/SessionEventBroadcaster.js';
@@ -137,6 +139,7 @@ import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
+import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
@@ -153,6 +156,7 @@ import { DedupRoutes } from './worker/http/routes/DedupRoutes.js';
 import { CorpusRoutes } from './worker/http/routes/CorpusRoutes.js';
 import { ChromaRoutes } from './worker/http/routes/ChromaRoutes.js';
 import { CloudSyncRoutes } from './worker/http/routes/CloudSyncRoutes.js';
+import { TeamBrainRoutes } from './worker/http/routes/TeamBrainRoutes.js';
 
 import { CorpusStore } from './worker/knowledge/CorpusStore.js';
 import { CorpusBuilder } from './worker/knowledge/CorpusBuilder.js';
@@ -276,6 +280,7 @@ export class WorkerService implements WorkerRef {
   private corpusStore: CorpusStore;
 
   private searchRoutes: SearchRoutes | null = null;
+  private workViewRoutes: WorkViewRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
@@ -448,7 +453,7 @@ export class WorkerService implements WorkerRef {
       getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
       getLastRequestAt: () => this.server.getLastRequestAt(),
       getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
-      getViewerClientCount: () => this.sseBroadcaster.getClientCount(),
+      getViewerClientCount: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0),
       getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
       onIdle: () => {
         // The sequence never exits the process for non-restart reasons —
@@ -545,6 +550,15 @@ export class WorkerService implements WorkerRef {
       res.status(202).json({ status: 'draining' });
     });
 
+    this.server.registerRoutes(new HookSpoolRoutes(
+      this.hookSpool,
+      () => hookSpoolConsumedMarkers(this.dbManager.getSessionStore()),
+      () => { void this.hookSpoolDrainer.requestDrain(); },
+      () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_TOKEN,
+    ));
+
+    this.workViewRoutes = new WorkViewRoutes({ getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '' });
+    this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
@@ -668,6 +682,10 @@ export class WorkerService implements WorkerRef {
       port,
       startedAt: new Date().toISOString()
     });
+    // Liveness heartbeat: a fresh beat with a recently finished response means
+    // a silent worker is slow, not dead, so the hooks' wedged-worker reclaim spares it.
+    const server = this.server;
+    startWorkerHeartbeat({ readLastResponseAtMs: () => server.getLastResponseFinishedAt() });
 
     getSupervisor().registerProcess('worker', {
       pid: process.pid,
@@ -816,12 +834,18 @@ export class WorkerService implements WorkerRef {
       logger.info('WORKER', 'Initializing search services...');
       const formattingService = new FormattingService();
       const timelineService = new TimelineService();
+      const parsedRecencyWindowMs = parseSearchRecencyWindowMs(settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS);
+      if (parsedRecencyWindowMs === null) {
+        logger.warn('WORKER', `CLAUDE_MEM_SEARCH_RECENCY_DAYS: invalid value "${settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS}" — keeping the default ${SEARCH_CONSTANTS.RECENCY_WINDOW_MS / 86_400_000}-day window. Use a non-negative integer of days; 0 disables the window.`, { value: settings.CLAUDE_MEM_SEARCH_RECENCY_DAYS });
+      }
+      const searchRecencyWindowMs = parsedRecencyWindowMs ?? SEARCH_CONSTANTS.RECENCY_WINDOW_MS;
       const searchManager = new SearchManager(
         this.dbManager.getSessionSearch(),
         this.dbManager.getSessionStore(),
         this.dbManager.getChromaSync(),
         formattingService,
-        timelineService
+        timelineService,
+        searchRecencyWindowMs
       );
       // Precomputed SessionStart context (liveness plan, Phase 6): the route
       // records each live render, the service re-renders on writes.
@@ -856,6 +880,11 @@ export class WorkerService implements WorkerRef {
       // unconfigured install answers {configured: false} instead of 404.
       this.server.registerRoutes(new CloudSyncRoutes(this.dbManager));
       logger.info('WORKER', 'CloudSyncRoutes registered');
+      // TeamBrain proxy for the team_* MCP tools, beside cloud sync because it
+      // signs with the same credentials. Settings are read per request, so a
+      // join or leave applies without a restart.
+      this.server.registerRoutes(new TeamBrainRoutes(() => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)));
+      logger.info('WORKER', 'TeamBrainRoutes registered');
       this.initPhaseTracker.setInitPhase('routes_ready');
 
       this.initializationCompleteFlag = true;
@@ -1119,6 +1148,8 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.workViewRoutes?.close();
+        this.workViewRoutes = null;
         this.stopPendingSessionResume();
         this.hookSpoolDrainer.stop();
         // Stop the idle monitor before the drain: its own trigger has
@@ -1456,6 +1487,12 @@ async function main() {
   }
 
   switch (command) {
+    case 'upload-spool': {
+      const { uploadRemoteHookSpool } = await import('../cli/spool-hook-event.js');
+      await uploadRemoteHookSpool();
+      process.exit(0);
+      break;
+    }
     case 'start': {
       // hooks.json runs `start` at every SessionStart, whatever the runtime. In
       // server runtime the hooks talk to the shared server and nothing uses a
