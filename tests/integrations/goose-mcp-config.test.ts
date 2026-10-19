@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { mergeGooseYamlConfig } from '../../src/services/integrations/McpIntegrations.js';
+import { mergeGooseYamlConfig, uninstallGooseMcpIntegration } from '../../src/services/integrations/McpIntegrations.js';
 
 // Goose starts MCP servers only from the top-level `extensions` mapping of
 // ~/.config/goose/config.yaml (stdio entries with `cmd` and `args`); a
@@ -164,5 +164,83 @@ describe('Goose install registers claude-mem as a Goose extension', () => {
 
     expect(() => mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs')).toThrow(/extensions/);
     expect(readFileSync(configPath, 'utf-8')).toBe('extensions: {}\n');
+  });
+});
+
+describe('Goose uninstall removes the claude-mem extension', () => {
+  let tmp: string;
+  let configPath: string;
+  let logSpy: ReturnType<typeof spyOn>;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(path.join(tmpdir(), 'goose-uninstall-'));
+    configPath = path.join(tmp, 'config.yaml');
+    logSpy = spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('restores a config with other extensions byte for byte', () => {
+    const original = [
+      'GOOSE_PROVIDER: anthropic',
+      'extensions:',
+      '  developer:',
+      '    bundled: true',
+      '    enabled: true',
+      '    name: developer',
+      '    timeout: 300',
+      '    type: builtin',
+      'GOOSE_MODE: smart_approve',
+      '',
+    ].join('\n');
+    writeFileSync(configPath, original);
+    mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs');
+
+    expect(uninstallGooseMcpIntegration(configPath)).toBe(0);
+
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
+    expect((Bun.YAML.parse(readFileSync(configPath, 'utf-8')) as any).extensions['claude-mem']).toBeUndefined();
+  });
+
+  it('drops the extensions key it created when claude-mem was the only entry', () => {
+    writeFileSync(configPath, 'GOOSE_PROVIDER: ollama\n');
+    mergeGooseYamlConfig(configPath, '/plugin/scripts/mcp-server.cjs');
+
+    expect(uninstallGooseMcpIntegration(configPath)).toBe(0);
+
+    expect(Bun.YAML.parse(readFileSync(configPath, 'utf-8'))).toEqual({ GOOSE_PROVIDER: 'ollama' });
+  });
+
+  it('removes an entry that sits between other extensions', () => {
+    writeFileSync(configPath, [
+      'extensions:',
+      '  alpha:',
+      '    enabled: true',
+      '  claude-mem:',
+      '    enabled: true',
+      '    cmd: node',
+      '  omega:',
+      '    enabled: false',
+      '',
+    ].join('\n'));
+
+    expect(uninstallGooseMcpIntegration(configPath)).toBe(0);
+
+    expect((Bun.YAML.parse(readFileSync(configPath, 'utf-8')) as any).extensions).toEqual({
+      alpha: { enabled: true },
+      omega: { enabled: false },
+    });
+  });
+
+  it('leaves the file alone when there is nothing to remove', () => {
+    const original = 'extensions:\n  developer:\n    enabled: true\n';
+    writeFileSync(configPath, original);
+
+    expect(uninstallGooseMcpIntegration(configPath)).toBe(1);
+    expect(uninstallGooseMcpIntegration(path.join(tmp, 'missing.yaml'))).toBe(1);
+    expect(readFileSync(configPath, 'utf-8')).toBe(original);
   });
 });

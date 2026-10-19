@@ -426,6 +426,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallWindsurfHooks } = await import('../../services/integrations/WindsurfHooksInstaller.js');
       return uninstallWindsurfHooks();
     }},
+    { label: 'Goose MCP extension', fn: async () => {
+      const { uninstallGooseMcpIntegration } = await import('../../services/integrations/McpIntegrations.js');
+      return uninstallGooseMcpIntegration();
+    }},
     { label: 'OpenCode plugin', fn: async () => {
       const { uninstallOpenCodePlugin } = await import('../../services/integrations/OpenCodeInstaller.js');
       return uninstallOpenCodePlugin();
