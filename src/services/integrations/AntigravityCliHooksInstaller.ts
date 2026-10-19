@@ -642,13 +642,15 @@ export function removeClaudeMemHooks(
 }
 
 // What `status` reports for a hooks.json: the events the named `claude-mem`
-// hook covers, and how many claude-mem handlers a pre-#4196 install left under
-// top-level event keys. Other tools' entries there are not counted, because
-// re-running install only migrates claude-mem's. Exported for tests (#4196).
+// hook covers, how many claude-mem handlers a pre-#4196 install left under
+// top-level event keys, and whether a stale pre-#4911 PreInvocation handler
+// remains registered. Other tools' entries there are not counted, because
+// re-running install only migrates claude-mem's. Exported for tests (#4196, #4911).
 export function describeAntigravityHooks(
   config: AntigravityHooksConfig,
-): { installedEvents: string[]; legacyHandlerCount: number } {
+): { installedEvents: string[]; legacyHandlerCount: number; hasStalePreInvocation: boolean } {
   const installedEvents: string[] = [];
+  let hasStalePreInvocation = false;
   const namedHook = config[HOOK_NAME];
   if (namedHook && typeof namedHook === 'object' && !Array.isArray(namedHook)) {
     for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
@@ -657,11 +659,16 @@ export function describeAntigravityHooks(
         installedEvents.push(event);
       }
     }
+
+    const preInvocation = (namedHook as Record<string, unknown>)['PreInvocation'];
+    if (Array.isArray(preInvocation) && preInvocation.length > 0) {
+      hasStalePreInvocation = true;
+    }
   }
 
   // stripLegacyEventHooks replaces top-level keys on the copy only.
   const legacyHandlerCount = stripLegacyEventHooks({ ...config });
-  return { installedEvents, legacyHandlerCount };
+  return { installedEvents, legacyHandlerCount, hasStalePreInvocation };
 }
 
 export function checkAntigravityCliHooksStatus(): number {
@@ -684,9 +691,9 @@ export function checkAntigravityCliHooksStatus(): number {
     return 0;
   }
 
-  const { installedEvents, legacyHandlerCount } = describeAntigravityHooks(hooksConfig);
+  const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(hooksConfig);
 
-  if (installedEvents.length === 0) {
+  if (installedEvents.length === 0 && !hasStalePreInvocation) {
     console.log('Hooks: Not installed');
     console.log('Run: claude-mem install --ide antigravity\n');
   } else {
@@ -697,6 +704,13 @@ export function checkAntigravityCliHooksStatus(): number {
       const internalEvent = ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT[event] ?? 'unknown';
       console.log(`  ${event} → ${internalEvent}`);
     }
+  }
+
+  // A pre-#4911 install leaves a named PreInvocation handler that injects context
+  // on every invocation, busting prefix cache. Warn the user to migrate.
+  if (hasStalePreInvocation) {
+    console.log(`\nStale hooks: PreInvocation context handler found (pre-#4911). This invalidates LLM prefix caching on every invocation.`);
+    console.log('Re-run install to migrate: claude-mem install --ide antigravity\n');
   }
 
   // A pre-#4196 install leaves claude-mem under top-level event keys, which agy

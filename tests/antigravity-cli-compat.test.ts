@@ -221,12 +221,28 @@ describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issu
       Stop: [{ matcher: '*', hooks: [{ name: 'claude-mem', command: 'old', timeout: 10000 }] }],
     } as unknown as Parameters<typeof describeAntigravityHooks>[0];
 
-    const { installedEvents, legacyHandlerCount } = describeAntigravityHooks(config);
+    const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(config);
 
     expect(installedEvents).toEqual(['SessionStart', 'PreToolUse', 'PostToolUse', 'PostInvocation', 'Stop']);
     expect(legacyHandlerCount).toBe(2);
+    expect(hasStalePreInvocation).toBe(false);
     expect((config as Record<string, any>).PreToolUse[0].hooks).toHaveLength(2);
     expect((config as Record<string, any>).Stop).toHaveLength(1);
+  });
+
+  it('flags stale PreInvocation handler in named claude-mem config (issue #4911, #4912)', () => {
+    const config = {
+      'claude-mem': {
+        PreInvocation: [{ command: 'bun worker-service.cjs hook antigravity-cli context' }],
+        PostToolUse: [{ matcher: '*', hooks: [{ command: 'bun worker-service.cjs hook antigravity-cli observation' }] }],
+      },
+    } as unknown as Parameters<typeof describeAntigravityHooks>[0];
+
+    const { installedEvents, legacyHandlerCount, hasStalePreInvocation } = describeAntigravityHooks(config);
+
+    expect(hasStalePreInvocation).toBe(true);
+    expect(installedEvents).toEqual(['PostToolUse']);
+    expect(legacyHandlerCount).toBe(0);
   });
 
   it("does not count another tool's top-level event arrays as claude-mem leftovers", () => {
@@ -234,7 +250,7 @@ describe('AntigravityCliHooksInstaller - status sees leftover legacy hooks (issu
       Stop: [{ matcher: '*', hooks: [{ name: 'other', command: './other.sh' }] }],
     } as unknown as Parameters<typeof describeAntigravityHooks>[0];
 
-    expect(describeAntigravityHooks(config)).toEqual({ installedEvents: [], legacyHandlerCount: 0 });
+    expect(describeAntigravityHooks(config)).toEqual({ installedEvents: [], legacyHandlerCount: 0, hasStalePreInvocation: false });
   });
 });
 
