@@ -68,6 +68,25 @@ describe('overall requests and progress reviews', () => {
   expect(() => validateProgress({ ...base, preferences: [{ kind: 'vibe', preference: 'x', quote: 'y' }] }, groups)).toThrow(/kind/);
 });
 
+  it('a review records how released work landed, with evidence and the why of each change', () => {
+  const groups = { g_000000000001: { title: 'Cards' } };
+  const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.' };
+  const outcome = {
+    landed: { text: 'Released in v14.0.0 on Oct 3.', at: '2026-10-03T00:00:00Z', evidence: ['PR #4845'] },
+    usage: { level: 'in-use', text: 'Owner opened My Work daily since.', evidence: ['obs 101'] },
+    value: { level: 'high', text: 'Replaced the manual standup.', evidence: ['Oct 5 ask: "this is excellent work"'] },
+    regressions: [{ text: 'Cards lost summaries after a refresh.', at: '2026-10-04T00:00:00Z', fixedBy: 'PR #4850', evidence: ['obs 120'] }],
+    changes: [{ what: 'Restored the approved cards', why: 'Owner: "restore the approved My Work cards"', evidence: ['ce3636c05'] }],
+  };
+  const recorded = validateProgress({ ...base, outcome }, groups).outcome;
+  expect(recorded.usage.level).toBe('in-use');
+  expect(recorded.regressions[0].fixedBy).toBe('PR #4850');
+  expect(recorded.changes[0].at).toBeNull();
+  expect(validateProgress(base, groups).outcome).toBeNull();
+  expect(() => validateProgress({ ...base, outcome: { usage: { level: 'popular', text: 'x' } } }, groups)).toThrow(/usage.level/);
+  expect(() => validateProgress({ ...base, outcome: { changes: [{ what: 'x' }] } }, groups)).toThrow(/why/);
+});
+
   it('CLI round trip: apply groups, see them due, record a review, then nothing is due', () => {
   const dir = ledgerDir();
   try {

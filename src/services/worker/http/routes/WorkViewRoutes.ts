@@ -1,7 +1,7 @@
 import type express from 'express';
 import type { Request, Response, NextFunction } from 'express';
 import { createHash } from 'node:crypto';
-import { join } from 'node:path';
+import { extname, join } from 'node:path';
 import { z } from 'zod';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
@@ -10,6 +10,7 @@ import { logger } from '../../../../utils/logger.js';
 import { formatHostForUrl } from '../../../../shared/worker-url.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
+import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -118,6 +119,21 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.setHeader('Cache-Control', 'no-store');
       if (!evidence) { this.notFound(res, 'Recorded evidence not found.'); return; }
       res.json(evidence);
+    }));
+    // A recorded work-product file, found through the record that names it.
+    // Pages and images render sandboxed so they cannot act as the viewer.
+    app.get('/api/work-view/file/:kind/:id/:index', workViewLoopbackOnly, this.wrapHandler((req, res) => {
+      const id = this.parseIntParam(req, res, 'id');
+      if (id === null) return;
+      const index = this.parseIntParam(req, res, 'index');
+      if (index === null) return;
+      const path = this.source.file(this.toStringParam(req.params.kind), id, index);
+      if (!path) { this.notFound(res, 'Recorded file not found.'); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', 'sandbox allow-scripts');
+      res.type(FILE_CONTENT_TYPES[extname(path).toLowerCase()] ?? 'application/octet-stream');
+      res.sendFile(path, { dotfiles: 'allow' });
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
   }

@@ -14,6 +14,7 @@ export class WorkStateSource {
   constructor(options?: { databasePath?: string; currentProject?: string; parentProject?: string; titleCachePath?: string | null; ledgerDir?: string | null; pollIntervalMs?: number; localDeviceId?: string });
   read(): { agentView: WorkViewSnapshot; [key: string]: unknown };
   evidence(kind: string, id: number): Record<string, unknown> | null;
+  file(kind: string, id: number, index: number): string | null;
   close(): void;
 }
 export function reduceWorkState(entries: Array<Record<string, any>>, options?: Record<string, any>): any;

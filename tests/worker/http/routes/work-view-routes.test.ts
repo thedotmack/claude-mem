@@ -105,6 +105,24 @@ function seedLinkedEvidence(promptText = 'Build a local work viewer') {
 }
 
 describe('local work view', () => {
+  it('serves a work-product file only through the work-state entry that attached it', async () => {
+    const image = join(directory, 'hero.png');
+    writeFileSync(image, 'png-bytes');
+    append({ task: 'Make the hero image', status: 'done', request_id: 'viewer-request', human_request: 'Build a local work viewer', work_product: [{ title: 'Hero', path: image }, 'https://claude.ai/artifact/abc'] });
+    const view = await (await fetch(`${origin}/api/work-view`)).json();
+    const products = view.humanRequests[0].workProduct;
+    expect(products.map((product: { title: string }) => product.title)).toEqual(['Hero', 'claude.ai']);
+    expect(products[0].fileUrl).toBe('/api/work-view/file/work-state/2/0');
+    expect(products[0].available).toBe(true);
+    const file = await fetch(`${origin}${products[0].fileUrl}`);
+    expect(file.status).toBe(200);
+    expect(file.headers.get('content-type')).toContain('image/png');
+    expect(file.headers.get('content-security-policy')).toBe('sandbox allow-scripts');
+    expect(await file.text()).toBe('png-bytes');
+    expect((await fetch(`${origin}/api/work-view/file/work-state/2/1`)).status).toBe(404);
+    expect((await fetch(`${origin}/api/work-view/file/work-state/1/0`)).status).toBe(404);
+  });
+
   it('projects explicit completion and evidence without inventing presence or altering source', async () => {
     const before = source.prepare('SELECT * FROM work_state_entries').all();
     const view = await snapshot();

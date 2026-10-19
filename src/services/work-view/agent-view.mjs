@@ -2,6 +2,7 @@
 // tool call establishes its author, never the assignee or live presence.
 import { buildHumanRequests } from './request-projection.mjs';
 import { OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
+import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -78,8 +79,9 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
     FROM observations ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [observationLimit]);
   const summaries = safeRead(database, `SELECT id, project, memory_session_id, prompt_number, request, completed, next_steps, created_at_epoch
     FROM session_summaries ORDER BY created_at_epoch DESC, id DESC LIMIT ?`, [summaryLimit]);
-  const ids = [...new Set(calls.map((call) => call.session_db_id).filter((id) => id != null))];
-  const memoryIds = [...new Set([...observations, ...summaries].map((row) => row.memory_session_id).filter(Boolean))];
+  const { productCalls, productObservations } = readProductRecords((sql, params) => safeRead(database, sql, params), workSinceEpoch);
+  const ids = [...new Set([...calls, ...productCalls].map((call) => call.session_db_id).filter((id) => id != null))];
+  const memoryIds = [...new Set([...observations, ...summaries, ...productObservations].map((row) => row.memory_session_id).filter(Boolean))];
   const predicates = [], args = [];
   if (ids.length) { predicates.push(`id IN (${ids.map(() => '?')})`); args.push(...ids); }
   if (memoryIds.length) { predicates.push(`memory_session_id IN (${memoryIds.map(() => '?')})`); args.push(...memoryIds); }
@@ -88,7 +90,7 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   const sessionIds = sessions.map((session) => session.id);
   const prompts = sessionIds.length ? safeRead(database, `SELECT id, session_db_id, prompt_number, substr(prompt_text, 1, 1200) AS prompt_text, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${sessionIds.map(() => '?')}) ORDER BY id DESC LIMIT 12000`, sessionIds) : [];
-  return { calls, observations, summaries, sessions, prompts };
+  return { calls, observations, summaries, sessions, prompts, productCalls, productObservations };
 }
 
 export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null } = {}) {
@@ -130,7 +132,14 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     const notes = describe(['post_ship', 'after_ship']);
     const status = recordedField(item, ['request_status'])[0] ?? null;
     const complete = recordedField(item, ['request_complete'], (value) => typeof value === 'boolean')[0] ?? null;
+    // Each attached product points at the entry that recorded it, so a local
+    // file can be served from that entry alone.
+    const workProduct = Object.keys({ ...item.list.fields, ...item.fields }).filter(isWorkProductField).flatMap((field) => {
+      const event = fieldEvents.get(JSON.stringify([Object.hasOwn(item.fields, field) ? item.id : item.list.id, field]));
+      return event ? productsFromFields(event.fields, { atEpoch: event.atEpoch, sourceRef: { kind: 'work-state', id: event.id } }).filter((product) => product.field === field) : [];
+    });
     return {
+      workProduct,
       requestedBy: requester?.value.trim() ?? null, requestedBySource: requester,
       shipEstimate: estimate?.value ?? null, shipEstimateSource: estimate,
       stageSourceText: stage?.value ?? null, stageSource: stage,
@@ -361,6 +370,7 @@ export function readEvidence(database, kind, id) {
     prompt: 'SELECT id, session_db_id, prompt_number, prompt_text, created_at_epoch FROM user_prompts WHERE id = ?',
     summary: 'SELECT id, project, request, completed, next_steps, created_at_epoch FROM session_summaries WHERE id = ?',
     session: 'SELECT id, project, platform_source, user_prompt, custom_title, status, started_at_epoch FROM sdk_sessions WHERE id = ?',
+    'tool-use': 'SELECT id, project, tool_name, substr(tool_input, 1, 4000) AS tool_input, substr(tool_response, 1, 4000) AS tool_response, created_at_epoch FROM tool_uses WHERE id = ?',
   };
   if (!queries[kind]) return null;
   const row = safeRead(database, queries[kind], [id])[0];

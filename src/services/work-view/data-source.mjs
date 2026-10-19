@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
 import { ledgerSignature, readLedger } from './request-groups.mjs';
+import { recordedFile } from './work-product.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
@@ -322,6 +323,12 @@ export class WorkStateSource {
 
   evidence(kind, id) {
     try { return readEvidence(this.openDatabase(), kind, id); }
+    catch { return null; }
+  }
+
+  /** The local file a recorded work product names, or null. */
+  file(kind, id, index) {
+    try { return recordedFile((sql, params) => this.openDatabase().prepare(sql).all(...params), kind, id, index); }
     catch { return null; }
   }
 

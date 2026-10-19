@@ -1111,3 +1111,40 @@ dialog::backdrop{backdrop-filter:none}
   .story-requests li { grid-template-columns: minmax(0, 1fr); }
   .milestones li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
 }
+
+/* Work product: what a request produced that a person can open. */
+.card-products { margin-top: 10px; color: var(--metadata); font-size: 14px; line-height: 1.4; overflow-wrap: anywhere; }
+.card-products-label { color: var(--muted); font-weight: 600; }
+.work-product { margin-top: 34px; }
+.work-product .section-heading { display: flex; align-items: baseline; gap: 10px; }
+.section-count { color: var(--metadata); font-size: 15px; font-variant-numeric: tabular-nums; }
+.product-grid { list-style: none; padding: 0; display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 14px; }
+.product-tile > a, .product-tile > div { display: flex; flex-direction: column; gap: 4px; height: 100%; padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); color: var(--ink); text-decoration: none; min-width: 0; }
+.product-tile > a:hover { border-color: var(--violet); }
+.product-tile > a:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+.product-tile.has-thumb > a { padding-top: 10px; }
+.product-thumb { display: block; aspect-ratio: 16 / 10; margin-bottom: 8px; overflow: hidden; border-radius: 8px; background: var(--canvas); }
+.product-thumb img { width: 100%; height: 100%; object-fit: cover; object-position: top; }
+.product-kind { color: var(--violet-ink); font-size: 13px; font-weight: 600; }
+.product-title { font-size: 15px; font-weight: 600; line-height: 1.35; overflow-wrap: anywhere; }
+.product-place { color: var(--metadata); font-size: 13px; overflow-wrap: anywhere; }
+.product-tile.unavailable > div { background: var(--canvas); }
+.product-tile.unavailable .product-kind { color: var(--quiet); }
+.work-product .dialog-note { margin-top: 12px; }
+@media (max-width: 640px) { .product-grid { grid-template-columns: 1fr 1fr; gap: 10px; } }
+
+/* How released work landed: one review, evidence beside each judgment. */
+.how-it-landed { margin-top: 34px; }
+.how-it-landed h2 { font-size: 25px; line-height: 1.3; margin-bottom: 14px; }
+.how-it-landed h3 { font-size: 18px; margin: 22px 0 10px; }
+.outcome-facts { display: grid; gap: 1px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background: var(--line); }
+.outcome-facts > div { display: grid; grid-template-columns: 150px 1fr; gap: 16px; padding: 14px 18px; background: var(--surface); }
+.outcome-facts dt { color: var(--metadata); font-size: 14px; }
+.outcome-facts dd { color: var(--ink); font-size: 15px; line-height: 1.5; overflow-wrap: anywhere; }
+.outcome-facts ul { padding-left: 18px; }
+.outcome-evidence { display: block; margin-top: 3px; color: var(--metadata); font-size: 13px; }
+.outcome-fixed { color: var(--done); font-size: 13px; font-weight: 600; }
+.outcome-open { color: var(--needs-you); font-size: 13px; font-weight: 600; }
+.outcome-changes { display: grid; gap: 12px; padding-left: 20px; }
+.outcome-changes p { color: var(--muted); font-size: 15px; line-height: 1.5; }
+@media (max-width: 640px) { .outcome-facts > div { grid-template-columns: 1fr; gap: 4px; } }

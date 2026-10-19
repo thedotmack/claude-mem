@@ -5,6 +5,27 @@ import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSy
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+// src/services/work-view/work-product.mjs
+var FILE_KINDS = {
+  ".png": "image",
+  ".jpg": "image",
+  ".jpeg": "image",
+  ".webp": "image",
+  ".gif": "image",
+  ".svg": "image",
+  ".mp4": "video",
+  ".mov": "video",
+  ".webm": "video",
+  ".pdf": "document",
+  ".docx": "document",
+  ".pptx": "deck",
+  ".key": "deck",
+  ".xlsx": "spreadsheet",
+  ".csv": "spreadsheet",
+  ".html": "page"
+};
+var FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
+
 // src/services/work-view/request-projection.mjs
 function requestText(value, max = 1200) {
   if (typeof value !== "string") return null;
@@ -46,6 +67,8 @@ var DAY_MS = 864e5;
 var MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
 var PROGRESS_STATES = ["shipped", "in-progress", "stalled", "abandoned", "unknown"];
 var PREFERENCE_KINDS = ["directive", "correction", "praise", "frustration"];
+var USAGE_LEVELS = ["in-use", "some-use", "no-evidence", "unknown"];
+var VALUE_LEVELS = ["high", "medium", "low", "unclear"];
 var LINK_KINDS = ["shared-work-list", "shared-request-id", "agent-judgment"];
 var iso = (epoch) => Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toISOString() : null;
 var groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
@@ -209,6 +232,40 @@ function boundedText(value, max, label, optional = false) {
   if (typeof value !== "string" || !value.trim() || value.length > max) throw new TypeError(`${label} must be 1\u2013${max} characters.`);
   return value.trim();
 }
+var evidenceList = (value) => (Array.isArray(value) ? value : []).map(String).slice(0, 8);
+function validateOutcome(outcome) {
+  if (outcome == null) return null;
+  if (typeof outcome !== "object" || Array.isArray(outcome)) throw new TypeError("outcome must be an object.");
+  const leveled = (entry, levels, label) => {
+    if (entry == null) return null;
+    if (!levels.includes(entry.level)) throw new TypeError(`${label}.level must be one of ${levels.join(", ")}.`);
+    return { level: entry.level, text: boundedText(entry.text, 400, `${label}.text`), evidence: evidenceList(entry.evidence) };
+  };
+  const regressions = outcome.regressions ?? [], changes = outcome.changes ?? [];
+  if (!Array.isArray(regressions) || regressions.length > 10) throw new TypeError("outcome.regressions must be an array of at most 10.");
+  if (!Array.isArray(changes) || changes.length > 12) throw new TypeError("outcome.changes must be an array of at most 12.");
+  const dated = (value, label) => {
+    if (!isIsoOrNull(value ?? null)) throw new TypeError(`${label} must be an ISO date or null.`);
+    return value ?? null;
+  };
+  return {
+    landed: outcome.landed == null ? null : { text: boundedText(outcome.landed.text, 400, "outcome.landed.text"), at: dated(outcome.landed.at, "outcome.landed.at"), evidence: evidenceList(outcome.landed.evidence) },
+    usage: leveled(outcome.usage, USAGE_LEVELS, "outcome.usage"),
+    value: leveled(outcome.value, VALUE_LEVELS, "outcome.value"),
+    regressions: regressions.map((regression, index) => ({
+      text: boundedText(regression.text, 300, `outcome.regressions[${index}].text`),
+      at: dated(regression.at, `outcome.regressions[${index}].at`),
+      fixedBy: boundedText(regression.fixedBy, 200, `outcome.regressions[${index}].fixedBy`, true) || null,
+      evidence: evidenceList(regression.evidence)
+    })),
+    changes: changes.map((change, index) => ({
+      what: boundedText(change.what, 200, `outcome.changes[${index}].what`),
+      why: boundedText(change.why, 400, `outcome.changes[${index}].why`),
+      at: dated(change.at, `outcome.changes[${index}].at`),
+      evidence: evidenceList(change.evidence)
+    }))
+  };
+}
 function validateProgress(entry, knownGroups) {
   if (!entry || typeof entry !== "object") throw new TypeError("Progress must be an object.");
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
@@ -238,6 +295,7 @@ function validateProgress(entry, knownGroups) {
       if (!isIsoOrNull(preference.at ?? null)) throw new TypeError(`preferences[${index}].at must be an ISO date or null.`);
       return { kind: preference.kind, preference: boundedText(preference.preference, 200, `preferences[${index}].preference`), quote: boundedText(preference.quote, 300, `preferences[${index}].quote`), at: preference.at ?? null };
     }),
+    outcome: validateOutcome(entry.outcome),
     evidence: (entry.evidence ?? []).map(String).slice(0, 20)
   };
 }

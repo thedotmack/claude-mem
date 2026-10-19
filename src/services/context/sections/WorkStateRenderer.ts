@@ -21,6 +21,7 @@ export const WORK_STATE_RULE = [
   '- One list per to-do list or tracked thing: work_state_write with list="<name>" and the fields to set',
   '- To-do item: fields {"task": "<name>", "status": "todo" | "doing" | "done" | "dropped", ...any details}',
   '- State: fields {"<key>": <value>} (the latest value of each key wins; null clears a key; "status": "done" closes the list)',
+  '- Made something a person can open (PR, deck, page, image, report)? Attach it to that item: fields {"work_product": [{"title": "<name>", "url": "https://…" or "path": "/absolute/file"}]}',
   '- Read every list, closed items included: work_state_read with includeClosed=true',
 ].join('\n');
 
