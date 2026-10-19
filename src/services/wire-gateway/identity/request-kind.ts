@@ -67,8 +67,16 @@ export function isAutoModeClassifierRequest(request: WireRequest): boolean {
     message.role === 'user' && textPartsOf(message).some(text => text.trim().startsWith('<transcript>')));
 }
 
-/** How Claude Desktop's title prompt begins (its client, or Claude Code's --system-prompt). */
-export const DESKTOP_TITLE_SYSTEM_PROMPT = 'You write short session titles.';
+/**
+ * How title prompts begin: Claude Desktop's (its client, or Claude Code's
+ * --system-prompt), and OpenCode's (opencode 1.19, seen live: its title
+ * request comes first and has no folder, so read as a turn it opened the
+ * session in no project).
+ */
+export const TITLE_HELPER_SYSTEM_PROMPTS: readonly string[] = [
+  'You write short session titles.',
+  'You are a title generator. You output ONLY a thread title.',
+];
 
 /** The largest max_tokens magpie's `small` takes for a short side answer. */
 export const SMALL_REQUEST_MAX_OUTPUT_TOKENS = 4096;
@@ -78,11 +86,11 @@ const SMALL_TOOLLESS_HELPER_AGENT_IDS: ReadonlySet<string> = new Set(['claude-co
 
 /**
  * A title helper: the system prompt (as a string or any of its blocks)
- * starts with Desktop's title prompt; or, from Claude Code or Claude Desktop,
+ * starts with a title prompt; or, from Claude Code or Claude Desktop,
  * the request asks for at most 4096 tokens and offers no tools.
  */
 export function isTitleHelperRequest(request: WireRequest, agentId: string): boolean {
-  if (request.system.some(part => (part.text ?? '').startsWith(DESKTOP_TITLE_SYSTEM_PROMPT))) return true;
+  if (request.system.some(part => TITLE_HELPER_SYSTEM_PROMPTS.some(prompt => (part.text ?? '').startsWith(prompt)))) return true;
   const maxOutputTokens = request.maxOutputTokens ?? 0;
   return SMALL_TOOLLESS_HELPER_AGENT_IDS.has(agentId)
     && maxOutputTokens > 0

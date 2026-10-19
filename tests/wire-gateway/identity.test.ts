@@ -280,6 +280,13 @@ describe('wire identity: request kind', () => {
     // Only the title prompt itself counts for other agents; their small tool-less calls stay turns.
     expect(kindOf(notificationClassifier, { agentId: 'opencode' })).toBe('turn');
     expect(kindOf(desktopTitle, { agentId: 'opencode' })).toBe('helper:title');
+    // OpenCode's own title request (opencode 1.19.3, seen live), sent before the turn.
+    const openCodeTitle = JSON.stringify({ model: 'big-pickle', max_tokens: 32000, stream: true, messages: [
+      { role: 'system', content: 'You are a title generator. You output ONLY a thread title. Nothing else.\n\n<task>\nGenerate a brief title' },
+      { role: 'user', content: 'Generate a title for this conversation:\n' },
+      { role: 'user', content: '"Reply with the single word ok."' },
+    ] });
+    expect(kindOf(openCodeTitle, { agentId: 'opencode', protocol: 'openai-chat', suffixPath: '/zen/v1/chat/completions' })).toBe('helper:title');
     // A small request that offers tools is a turn.
     expect(kindOf('{"model":"m","max_tokens":100,"tools":[{"name":"Bash","input_schema":{}}],"messages":[{"role":"user","content":"hi"}]}')).toBe('turn');
   });
