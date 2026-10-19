@@ -70,6 +70,31 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     expect(body.reasoning).toEqual({ enabled: false });
     expect(body.response_format).toEqual({ type: 'text' });
   });
+
+  it('asks a field condensation for an answer instead of reasoning, over the effort setting', () => {
+    const label = { kind: 'field_compression' as const, sessionId: 'session-1' };
+    for (const apiUrl of [OPENROUTER_URL, 'https://cmem.ai/api/inference/v1/chat/completions']) {
+      const body = buildOpenRouterRequestBody({ ...base, apiUrl, label, reasoningEffort: 'high' });
+      expect(body.reasoning).toEqual({ enabled: false });
+      expect(body.response_format).toEqual({ type: 'text' });
+    }
+    const observation = buildOpenRouterRequestBody({
+      ...base, apiUrl: OPENROUTER_URL, label: { kind: 'observation', sessionId: 'session-1' }, reasoningEffort: 'high',
+    });
+    expect(observation.reasoning).toEqual({ effort: 'high' });
+  });
+
+  it('leaves a custom gateway field condensation to its own extra body', () => {
+    const body = buildOpenRouterRequestBody({
+      ...base,
+      apiUrl: 'https://api.deepseek.com/chat/completions',
+      label: { kind: 'field_compression', sessionId: 'session-1' },
+      extraBody: { thinking: { type: 'disabled' }, reasoning: { effort: 'low' } },
+    });
+    expect(body.thinking).toEqual({ type: 'disabled' });
+    expect(body.reasoning).toEqual({ effort: 'low' });
+    expect(body.response_format).toBeUndefined();
+  });
 });
 
 describe('parseOpenRouterReasoningEffort', () => {
