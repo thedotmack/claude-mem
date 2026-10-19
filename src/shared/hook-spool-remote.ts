@@ -22,6 +22,13 @@ const observationPayload = commonPayload.extend({
   agentType: z.string().max(128).optional(),
 });
 const timestamp = z.number().finite().nonnegative().max(Number.MAX_SAFE_INTEGER);
+const workStateTelemetryPayload = z.object({
+  contentSessionId: z.string().min(1).max(512),
+  platformSource: z.string().min(1).max(128),
+  eventId: z.string().min(1).max(2048),
+  agentId: z.string().max(128).optional(),
+  agentRole: z.enum(['main', 'subagent', 'unknown']).optional(),
+});
 const entrySchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('observation'), payload: observationPayload, enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('file_edit'), payload: observationPayload, enqueuedAtEpochMs: timestamp }),
@@ -42,6 +49,17 @@ const entrySchema = z.discriminatedUnion('kind', [
       transcriptByteOffset: z.number().int().nonnegative().nullable().optional(),
     }).passthrough()).min(1).max(128),
   }), enqueuedAtEpochMs: timestamp }),
+  z.object({ kind: z.literal('work_state_telemetry'), payload: z.discriminatedUnion('kind', [
+    workStateTelemetryPayload.extend({
+      kind: z.literal('instruction'),
+      state: z.enum(['returned', 'disabled', 'excluded', 'missing', 'unknown']),
+    }).strict(),
+    workStateTelemetryPayload.extend({
+      kind: z.literal('mcp'),
+      tool: z.enum(['read', 'write']),
+      outcome: z.enum(['ok', 'error', 'excluded', 'disabled', 'unknown']),
+    }).strict(),
+  ]), enqueuedAtEpochMs: timestamp }),
 ]);
 
 export const remoteSpoolEnvelopeSchema = z.object({
