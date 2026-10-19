@@ -10,6 +10,7 @@ import { findClaudeExecutable, isClaudeExecutableUnspawnable } from '../../../sh
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 import { resolveTierAlias } from '../model-aliases.js';
 import { AppError } from '../../server/ErrorHandler.js';
+import { isAuthFailureObserverOutput, isOrgDisabledSubscriptionObserverOutput } from '../../../sdk/output-classifier.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -52,6 +53,12 @@ function errorFromUnsuccessfulResult(
     : (Array.isArray(resultMessage.errors)
       ? resultMessage.errors.map((entry) => String(entry).trim()).filter(Boolean).join('; ')
       : '');
+  if (isAuthFailureObserverOutput(details)) {
+    // A signed-out CLI or a refused key is the user's setup state, not a worker
+    // fault: a 4xx keeps it out of the error sink and tells the caller what to fix.
+    const remedy = isOrgDisabledSubscriptionObserverOutput(details) ? '' : ' Run /login in Claude Code, then retry.';
+    return new AppError(`Knowledge ${action} failed: Claude Code is not authenticated (${details}).${remedy}`, 401, 'CLAUDE_NOT_AUTHENTICATED');
+  }
   return new Error(`Knowledge ${action} failed (${resultMessage.subtype})${details ? `: ${details}` : ''}`);
 }
 

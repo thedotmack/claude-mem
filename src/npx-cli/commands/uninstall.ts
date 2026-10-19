@@ -165,8 +165,8 @@ export function removeFromClaudeSettings(): void {
   }
 }
 
-function removeStrayClaudeMemPaths(): number {
-  const home = homedir();
+/** Exported for tests; `home` is injectable so tests never touch the real home directory. */
+export function removeStrayClaudeMemPaths(home: string = homedir()): number {
   let removedCount = 0;
 
   const npxRoot = join(home, '.npm', '_npx');
@@ -219,7 +219,7 @@ function removeStrayClaudeMemPaths(): number {
     }
   }
 
-  const pluginDataDir = join(home, '.claude', 'plugins', 'data', 'claude-mem-thedotmack');
+  const pluginDataDir = join(pluginsDirectory(), 'data', 'claude-mem-thedotmack');
   if (existsSync(pluginDataDir)) {
     try {
       rmSync(pluginDataDir, { recursive: true, force: true });
