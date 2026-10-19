@@ -86,8 +86,6 @@ describe('FTS any-term fallback is bounded by prompt size (#4804)', () => {
     expect(Array.isArray(results)).toBe(true);
   });
 
-  // Regression: the small-prompt path must keep working. Pick terms that
-  // the doc-frequency filter does NOT drop -- i.e. words that are not in
   // Regression: the small-prompt path must keep working. Seed the same
   // shape as the existing search-fts-any-term test: a row that actually
   // matches the search prompt, plus 4 rows of common words to make sure
@@ -175,6 +173,27 @@ describe('bounded any-term query follows the measured #4804 recipe', () => {
     expect(picked).toContain('zebrafish');
     expect(picked).toContain('frequent');
     expect(picked).not.toContain('common');
+  });
+
+  it('deduplicates tokens case-insensitively, keeping the first spelling', () => {
+    const built = build('Retry retry RETRY zebrafish');
+    expect(built).not.toBeNull();
+    const retries = (built ?? '').split(' OR ').filter(term => term.toLowerCase() === '"retry"');
+    expect(retries).toEqual(['"Retry"']);
+  });
+
+  it('widens over session summaries with the same bound', () => {
+    const sdkId = store.createSDKSession('sum-rare-raw', 'proj', 'prompt');
+    store.ensureMemorySessionIdRegistered(sdkId, 'sum-rare');
+    store.importSessionSummary({
+      memory_session_id: 'sum-rare', project: 'proj', request: 'Retune the compensation loop after the oscillator drift',
+      investigated: null, learned: null, completed: null, next_steps: null, files_read: null, files_edited: null,
+      notes: null, prompt_number: 1, discovery_tokens: 0,
+      created_at: new Date(1_700_000_000_000).toISOString(), created_at_epoch: 1_700_000_000_000,
+    });
+    const results = search.searchSessions('why did the compensation loop need retuning today', { project: 'proj' });
+    expect(results.length).toBeGreaterThan(0);
+    expect(results[0].request).toBe('Retune the compensation loop after the oscillator drift');
   });
 
   it('leaves the database schema untouched', () => {

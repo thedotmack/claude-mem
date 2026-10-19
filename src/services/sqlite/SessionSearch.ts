@@ -502,7 +502,7 @@ export class SessionSearch {
     const length = [...query].length;
     let picked: string[];
     if (!docFrequency) {
-      picked = [...new Set(tokens)].slice(0, SessionSearch.ANY_TERM_LONG_PROMPT_CAP);
+      picked = SessionSearch.dedupeTokens(tokens).slice(0, SessionSearch.ANY_TERM_LONG_PROMPT_CAP);
     } else if (length < SessionSearch.ANY_TERM_SHORT_PROMPT_CHARS) {
       picked = SessionSearch.pickRareTokens(tokens, docFrequency, SessionSearch.ANY_TERM_SHORT_PROMPT_CAP);
     } else if (length < SessionSearch.ANY_TERM_MEDIUM_PROMPT_CHARS) {
@@ -591,9 +591,22 @@ export class SessionSearch {
     return Math.max(total * share, 2);
   }
 
+  /** Tokens deduplicated case-insensitively, keeping each one's first spelling: `Retry retry RETRY` is one term. */
+  private static dedupeTokens(tokens: string[]): string[] {
+    const seen = new Set<string>();
+    return tokens.filter(token => {
+      const key = token.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }
+
   private static pickRareTokens(tokens: string[], docFrequency: DocFrequency, cap: number): string[] {
     const limit = SessionSearch.commonRowLimit(docFrequency.total, SessionSearch.ANY_TERM_COMMON_SHARE);
-    const kept = [...new Set(tokens)].filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
+    const kept = SessionSearch.dedupeTokens(tokens).filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
     if (kept.length <= cap) {
       return kept;
     }
