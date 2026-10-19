@@ -46,7 +46,7 @@
     </div>
     <section id="team-workspace" class="team-view" hidden aria-labelledby="team-heading">
       <header class="team-page-heading">
-        <div><p class="team-kicker">Optional shared workspace</p><h1 id="team-heading" tabindex="-1">TeamBrain</h1><p class="team-intro">See the work your team chose to share, and the next step you can help with.</p></div>
+        <div><p class="team-kicker">Shared work</p><h1 id="team-heading" tabindex="-1">TeamBrain</h1><p class="team-intro">Find your team’s shared work and the next step you can help with.</p></div>
         <span class="team-local-note">Your personal work stays separate.</span>
       </header>
       <div class="team-connection">
@@ -55,12 +55,12 @@
         <p id="team-last-error" hidden></p>
       </div>
       <section id="team-setup" class="team-setup" aria-labelledby="team-setup-heading">
-        <div class="team-setup-intro"><p class="team-kicker">Get connected</p><h2 id="team-setup-heading">Choose how to join your team.</h2><p>TeamBrain adds a shared view beside My Work. Each member chooses what to share; opening this page does not upload your local work.</p></div>
+        <div class="team-setup-intro"><p class="team-kicker">Get connected</p><h2 id="team-setup-heading">Join your team or start one.</h2><p>Each member chooses what to share. Connect this computer to see shared lists, tasks and findings beside My Work.</p></div>
         <div class="team-setup-options">
-          <article class="team-setup-option"><span class="team-option-number" aria-hidden="true">01</span><h3>Start a team</h3><p>Set up a team account in CMEM Cloud, check the available plan, and invite the people you work with.</p><a class="team-primary" href="https://cmem.ai/teambrain/start" target="_blank" rel="noopener noreferrer">Set up a team ↗</a><p class="team-option-note">Plan eligibility and current pricing are shown during setup. This page does not start a subscription.</p></article>
-          <article class="team-setup-option"><span class="team-option-number" aria-hidden="true">02</span><h3>Use an existing invitation</h3><p>Ask a team owner for an invite link, then run this command in a terminal on this computer:</p><pre class="team-join-command"><code>npx claude-mem teambrain join '&lt;invite-link&gt;'</code></pre><p class="team-option-note">Sign in and approve this device. An installation already connected to another account must resolve that account choice first.</p><button id="team-refresh" type="button" class="team-secondary">Refresh connection</button></article>
+          <article class="team-setup-option"><p class="team-kicker">Already invited?</p><h3>Connect this computer</h3><p>Get your invite link from a team owner, then run this command in a terminal:</p><pre class="team-join-command"><code>npx claude-mem teambrain join '&lt;invite-link&gt;'</code></pre><p class="team-option-note">Replace &lt;invite-link&gt; with your link. Sign in and approve this device, then refresh below. If this install uses another account, resolve that account choice first.</p><button id="team-refresh" type="button" class="team-primary">Refresh connection</button></article>
+          <article class="team-setup-option"><p class="team-kicker">For a new team</p><h3>Start a team</h3><p>Create a team in CMEM Cloud, choose a plan, and invite the people you work with.</p><a class="team-secondary" href="https://cmem.ai/teambrain/start" target="_blank" rel="noopener noreferrer">Set up a team ↗</a><p class="team-option-note">Plan eligibility and current pricing are shown during setup. Opening setup does not start a subscription.</p></article>
         </div>
-        <div class="team-setup-footnote"><h3>What connects here</h3><p>This panel reads shared lists, tasks and findings through your approved CMEM connection. Claude.ai and ChatGPT setup remains separate. TeamBrain does not assign work, send replies, or sync your private review notes.</p><p><a href="https://cmem.ai/teambrain/app" target="_blank" rel="noopener noreferrer">Already a member? Open your team account ↗</a></p></div>
+        <div class="team-setup-footnote"><h3>Your sharing stays in your control</h3><p>Opening this page does not upload local work. TeamBrain reads your approved shared work; it does not assign tasks, send replies, or sync private review notes. Claude.ai and ChatGPT connections are set up separately.</p><p><a href="https://cmem.ai/teambrain/app" target="_blank" rel="noopener noreferrer">Already a member? Open your team account ↗</a></p></div>
       </section>
       <section id="team-connected" hidden aria-labelledby="shared-work-heading">
         <div class="team-context">

@@ -23,10 +23,11 @@ export function presentWork(snapshot, previous = [], now = Date.now()) {
     const hasCopy = Boolean(request.humanCopy?.title) && ['current', 'outdated'].includes(request.copyState);
     const status = ({ 'in-progress': 'working', 'needs-you': 'needs', done: 'ready' })[request.status] || request.status;
     const activity = hasCopy ? request.summary : updates[0]?.text || cleanText(request.original?.text, 300) || 'No progress update has been recorded.';
-    const next = hasCopy ? request.next : cleanText(items.find(item => item.nextStep?.text)?.nextStep?.text, 300)
+    const recordedNext = cleanText(items.find(item => item.nextStep?.text)?.nextStep?.text, 300);
+    const next = hasCopy ? request.next : recordedNext
       || (status === 'ready' ? 'Read the reported result and recorded evidence.' : status === 'needs' ? 'Read the handoff, then continue in the original work conversation.' : 'Follow the latest recorded activity.');
     return {
-      ...request, status, sourceLabel: STATUS[request.status]?.label, activity, summary: activity, next, contributors,
+      ...request, status, sourceLabel: STATUS[request.status]?.label, activity, summary: activity, next, nextSource: hasCopy ? 'summary' : recordedNext ? 'recorded' : 'fallback', contributors,
       stage: cleanText(request.stageSourceText || (hasCopy ? request.stage : ''), 80) || 'Not recorded',
       workstreams: request.workstreams.map(stream => {
         const original = originals.get(request.id)?.workstreams?.find(item => item.id === stream.id);

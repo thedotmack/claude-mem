@@ -54,6 +54,7 @@ function render() {
   if (teamActive) return;
   lastWorkRoute = personalRoute(state.view, state);
   const open = new Set([...document.querySelectorAll('details[open]')].map(element => element.dataset.updates));
+  const openDetails = new Set([...document.querySelectorAll('details[open][data-detail-key]')].map(element => element.dataset.detailKey));
   const projects = [...new Set(state.rows.flatMap(row => row.projects?.length ? row.projects : [row.project]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (state.project && !projects.includes(state.project)) state.project = '';
   $('project-filter').hidden = false;
@@ -86,7 +87,9 @@ function render() {
     const work = row?.workstreams.find(item => item.id === state.workId);
     const route = work ? personalRoute('request', { ...state, workId: null }) : personalRoute(state.from, { ...state, requestId: null, workId: null });
     trail = `<a class="back-button" href="${esc(route)}" data-route>← ${work ? 'Back to request' : 'Back to My Work'}</a>`;
-    html = row ? work ? workstreamPage(row, work) : requestPage(row, state) : '<div class="empty-work"><h3>This request is outside the loaded history</h3><p>Return to My Work to see the current requests.</p></div>';
+    html = row ? work ? workstreamPage(row, work) : requestPage(row, state)
+      : state.loaded ? '<div class="empty-work"><h1 tabindex="-1">This request is outside the loaded history</h1><p>Return to My Work to see the current requests.</p></div>'
+      : `<div class="empty-work"><h1 tabindex="-1">${state.failed ? 'Waiting for local work' : 'Loading this request…'}</h1><p>${state.failed ? 'Keep this page open to reconnect, or return to My Work.' : 'Reading the saved request from this computer.'}</p></div>`;
   } else {
     if (state.agentId) {
       const agent = state.rows.flatMap(row => row.contributors || []).find(agent => agent.id === state.agentId);
@@ -99,6 +102,7 @@ function render() {
   $('work-grid').className = !detail && (state.view === 'cards' || state.agentId) ? 'work-grid request-grid' : !detail && state.view === 'agents' ? 'agent-grid' : '';
   $('work-grid').innerHTML = html;
   for (const element of document.querySelectorAll('details[data-updates]')) if (open.has(element.dataset.updates)) element.open = true;
+  for (const element of document.querySelectorAll('details[data-detail-key]')) if (openDetails.has(element.dataset.detailKey)) element.open = true;
   $('reading-note').textContent = 'Working, reported complete, and human checked are separate states. Your review closes the loop.';
   $('unlinked-work').hidden = detail || !state.unlinked.length;
   $('unlinked-count').textContent = `${state.unlinked.length} work records need a linked human request`;
