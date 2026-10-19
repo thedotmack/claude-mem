@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   HermesConfigShapeError,
   putMcpServer,
+  removeMcpServer,
   restoreMemoryProvider,
   selectMemoryProvider,
 } from '../src/services/integrations/hermes-config-yaml.js';
@@ -26,5 +27,23 @@ describe('Hermes config edits on files other editors wrote', () => {
   it('refuses a file whose root keys are all indented, and changes nothing', () => {
     const original = '  memory:\n    memory_enabled: true\n';
     expect(() => selectMemoryProvider(original, 'claude-mem')).toThrow(HermesConfigShapeError);
+  });
+
+  it('refuses an indented root that follows a document marker or a directive', () => {
+    for (const original of ['---\n  memory:\n    provider: old\n', '%YAML 1.2\n---\n  memory:\n    provider: old\n']) {
+      expect(() => selectMemoryProvider(original, 'claude-mem')).toThrow(HermesConfigShapeError);
+    }
+  });
+
+  it('still edits a normal root that follows a document marker', () => {
+    const { text } = selectMemoryProvider('---\nmemory:\n  memory_enabled: true\n', 'claude-mem');
+    expect(text).toBe('---\nmemory:\n  provider: claude-mem\n  memory_enabled: true\n');
+  });
+
+  it('gives back a file that held only the mark once the added block is removed', () => {
+    const selected = selectMemoryProvider('\uFEFF', 'claude-mem');
+    expect(restoreMemoryProvider(selected.text, 'claude-mem', selected.receipt)).toBe('\uFEFF');
+    const put = putMcpServer('\uFEFF', 'claude-mem', { command: 'node', args: ['mcp-server.cjs'] });
+    expect(removeMcpServer(put.text, 'claude-mem', put.receipt)).toBe('\uFEFF');
   });
 });

@@ -32,7 +32,7 @@ function splitLines(text: string): { lines: string[]; eol: string; bom: string }
 }
 
 function joinLines(lines: string[], eol: string, bom: string): string {
-  return lines.length === 0 ? '' : bom + lines.join(eol) + eol;
+  return lines.length === 0 ? bom : bom + lines.join(eol) + eol;
 }
 
 function stripComment(value: string): string {
@@ -55,7 +55,8 @@ function indentOf(line: string): number {
 function findBlock(lines: string[], key: string): Block | null {
   // A file whose root keys are all indented is valid YAML, but the keys below would
   // not be found and a second block would be appended beside them.
-  const firstContent = lines.find(isContent);
+  // A `---` document marker or a `%` directive in front of the keys is not a key.
+  const firstContent = lines.find(line => isContent(line) && !/^(---(\s|$)|%)/.test(line));
   if (firstContent !== undefined && indentOf(firstContent) > 0) {
     throw new HermesConfigShapeError('the top level of config.yaml is indented; claude-mem edits only unindented root keys');
   }
