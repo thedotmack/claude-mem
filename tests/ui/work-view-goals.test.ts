@@ -42,9 +42,12 @@ describe('owner goals in My Work', () => {
     expect(html).toContain('Last 31 days · 823 prompts you typed');
     expect(html).toContain('Top priorities');
     expect(html).toContain('Open asks');
-    expect(html).toContain('Evidence · 2 quotes');
-    expect(html).toContain('<time>2026-10-17 06:40</time><q>that never got done &lt;b&gt;</q>');
-    expect(html).toContain('My Work · Latest 2026-10-18 22:11 · Asked 4×');
+    expect(html).toContain('Why it\'s here');
+    expect(html).toContain('2 quotes');
+    expect(html).toContain('datetime="2026-10-17T06:40"');
+    expect(html).toContain('<q>that never got done &lt;b&gt;</q>');
+    expect(html).toContain('Asked 4 times');
+    expect(html).toContain('Last mentioned <time datetime="2026-10-18T22:11"');
     expect(html.indexOf('Ship My Work')).toBeLessThan(html.indexOf('Restore mem-search'));
     expect(goalsPanel(null)).toBe('');
   });
@@ -52,8 +55,8 @@ describe('owner goals in My Work', () => {
   it('folds open asks past the first few into a disclosure', () => {
     const goals = { priorities: [], openAsks: Array.from({ length: 12 }, (_, index) => ({ id: `a${index}`, rank: index + 1, title: `Ask ${index + 1}`, evidence: [] })) };
     const html = goalsPanel(goals);
-    expect(html).toContain('2 more open asks');
-    expect(html.indexOf('Ask 11')).toBeGreaterThan(html.indexOf('2 more open asks'));
+    expect(html).toContain('9 more open asks');
+    expect(html.indexOf('Ask 4')).toBeGreaterThan(html.indexOf('9 more open asks'));
   });
 
   const pastMonth = (start: string, end: string) => [
