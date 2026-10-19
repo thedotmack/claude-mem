@@ -129,7 +129,31 @@ function stripBalancedMemoryTags(input: string): {
   return { text: out, counts, total };
 }
 
-export const SYSTEM_REMINDER_REGEX = /<system-reminder>[\s\S]*?<\/system-reminder>/g;
+const SYSTEM_REMINDER_OPEN = '<system-reminder>';
+const SYSTEM_REMINDER_CLOSE = '</system-reminder>';
+
+/**
+ * Remove <system-reminder>...</system-reminder> blocks the way the shipped
+ * `/<system-reminder>[\s\S]*?<\/system-reminder>/g` replace did: leftmost open
+ * pairs with the first close after it, opens inside that span go with it.
+ * Linear indexOf passes replace a regex whose per-position restart made
+ * unclosed-tag payloads quadratic. A failed close search proves no close
+ * exists for any later open either (the window only shrinks), so the tail,
+ * unclosed open included, is kept verbatim.
+ */
+export function stripSystemReminderBlocks(text: string): string {
+  let out = '';
+  let pos = 0;
+  for (;;) {
+    const open = text.indexOf(SYSTEM_REMINDER_OPEN, pos);
+    if (open === -1) break;
+    const close = text.indexOf(SYSTEM_REMINDER_CLOSE, open + SYSTEM_REMINDER_OPEN.length);
+    if (close === -1) break;
+    out += text.slice(pos, open);
+    pos = close + SYSTEM_REMINDER_CLOSE.length;
+  }
+  return out + text.slice(pos);
+}
 
 const MAX_TAG_COUNT = 100;
 
@@ -174,8 +198,8 @@ export function stripMemoryTags(content: string): string {
 export function stripMemoryTagsFromJsonStrings<T>(value: T): T {
   const walk = (node: unknown): unknown => {
     if (typeof node === 'string') {
-      // Same scanner as stripMemoryTags, so every tag form it removes (e.g.
-      // `</private >`) is detected here too; its result is reused, not rescanned.
+      // Gate on the linear scanner, not a regex probe (quadratic on unclosed
+      // tags, and blind to `</private >`); its result is reused, not rescanned.
       const scan = stripBalancedMemoryTags(node);
       return scan.total > 0 ? finishStrippedTags(node, scan).stripped : node;
     }

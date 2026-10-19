@@ -3,7 +3,7 @@ import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
-import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
+import { stripSystemReminderBlocks } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import { poolSize, rankByStrength } from '../reinforcement/rank.js';
@@ -314,7 +314,7 @@ function parseAssistantTextFromLine(line: string): string | null {
     for (const block of entry.message.content) {
       if (block.type === 'text') text += block.text;
     }
-    text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
+    text = stripSystemReminderBlocks(text).trim();
     if (text) return text;
   }
   return null;
