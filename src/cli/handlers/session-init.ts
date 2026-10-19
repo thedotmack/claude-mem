@@ -16,6 +16,7 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { workStatePlatform } from '../../shared/work-state-telemetry.js';
 import { isCodexInternalPrompt, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
@@ -136,6 +137,8 @@ export const isQwenCodeHookEvent = (
 
 const sessionInit = {
   async run(input: NormalizedHookInput, requireRecordedPrompt: boolean): Promise<HookResult> {
+    // The transcript anchor has no original event time. A real hook does.
+    const telemetryPromptEpochMs = requireRecordedPrompt ? undefined : Date.now();
     const { sessionId, prompt: rawPrompt, submittedPrompt } = input;
     const cwd = input.cwd ?? process.cwd();  
 
@@ -276,6 +279,10 @@ const sessionInit = {
         project,
         prompt,
         platformSource,
+        telemetryPlatformSource: workStatePlatform(input.platform),
+        telemetryPromptEpochMs,
+        agentId: input.agentId,
+        agentType: input.agentType,
         // Where `project` was resolved from and how, so the worker can record
         // the session's checkout even if it never reports an observation.
         cwd,

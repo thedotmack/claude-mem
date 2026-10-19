@@ -195,12 +195,15 @@ async function initializeSessionForUserPrompt(
   cwd: string,
   prompt: string,
 ): Promise<void> {
+  // This helper is entered only from live v1/v2 user-prompt hooks.
+  const telemetryPromptEpochMs = Date.now();
   const contentSessionId = resolveContentSessionId(openCodeSessionId);
   await workerPost("/api/sessions/init", {
     contentSessionId,
     prompt,
     cwd,
     platform_source: PLATFORM_SOURCE,
+    telemetryPromptEpochMs,
   });
 }
 
@@ -252,6 +255,7 @@ export interface ClaudeMemCore {
   captureTool(input: {
     tool: string;
     sessionID: string;
+    toolUseId?: string;
     args?: Record<string, unknown>;
     output: string;
   }): Promise<void>;
@@ -321,7 +325,8 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
   }
 
   return {
-    async captureTool({ tool, sessionID, args, output }) {
+    async captureTool({ tool, sessionID, toolUseId, args, output }) {
+      const telemetryToolEpochMs = Date.now();
       const contentSessionId = resolveContentSessionId(sessionID);
       // apply_patch carries its patch as `patchText`, and the worker's file
       // evidence reads `patch`. Renamed rather than copied, so the observer
@@ -341,6 +346,8 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
         tool_response: truncate(output || ""),
         cwd: ctx.directory,
         platform_source: PLATFORM_SOURCE,
+        telemetryToolEpochMs,
+        ...(toolUseId ? { tool_use_id: toolUseId } : {}),
       });
     },
 

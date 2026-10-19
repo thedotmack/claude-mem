@@ -17,6 +17,8 @@ import { PrivacyCheckValidator } from '../validation/PrivacyCheckValidator.js';
 import { captureEvent } from '../../telemetry/telemetry.js';
 import { classifySkillId, firstPartySkillFromSlashPrompt, skillNameFromToolInput } from '../../telemetry/skill-id.js';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../../shared/memory-retrieval-tools.js';
+import { workStateTool } from '../../../shared/work-state-telemetry.js';
+import { recordWorkStatePrivacy, recordWorkStatePrompt, recordWorkStateTool, isPublicWorkStateTurn } from '../../telemetry/work-state.js';
 
 export interface IngestContext {
   sessionManager: SessionManager;
@@ -137,6 +139,12 @@ export interface SessionInitPayload {
    * by their own enqueue time, belong to it. HTTP callers omit it (= now).
    */
   enqueuedAtEpochMs?: number;
+  /** Work-state telemetry: when the host saw the prompt (absent for a replay, which the recorders ignore). */
+  telemetryPromptEpochMs?: number;
+  /** Work-state telemetry: the host's raw platform name. */
+  telemetryPlatformSource?: string;
+  agentId?: string;
+  agentType?: string;
 }
 
 /** What session init did. The HTTP route maps each to its JSON reply; the spool drain unlinks every one. */
@@ -272,8 +280,16 @@ export async function ingestSessionInit(
   }
 
   const cleanedPrompt = stripMemoryTags(prompt);
+  const telemetryAttribution = {
+    contentSessionId,
+    enqueuedAtEpochMs: payload.telemetryPromptEpochMs,
+    platformSource: payload.telemetryPlatformSource,
+    agentId: payload.agentId,
+    agentType: payload.agentType,
+  };
 
   if (!cleanedPrompt || cleanedPrompt.trim() === '') {
+    recordWorkStatePrivacy(store.db, telemetryAttribution, true);
     logger.debug('HOOK', 'Session init - prompt entirely private', {
       sessionId: sessionDbId,
       promptNumber,
@@ -308,6 +324,10 @@ export async function ingestSessionInit(
   const duplicatePrompt = nativeAnchor
     ? (nativeAnchor.duplicate ? { id: nativeAnchor.id, prompt_number: nativeAnchor.promptNumber } : undefined)
     : store.findRecentDuplicateUserPrompt(contentSessionId, cleanedPrompt, USER_PROMPT_DEDUPE_WINDOW_MS, sessionDbId);
+
+  // A newer public submission reopens coverage even if its text reuses a row.
+  // The recorder rejects missing/old timestamps and preserves newer boundaries.
+  recordWorkStatePrivacy(store.db, telemetryAttribution, false);
 
   if (duplicatePrompt) {
     const activeSession = sessionManager.getSession(sessionDbId);
@@ -354,6 +374,8 @@ export async function ingestSessionInit(
   }
   // Saved: the hand-off point. Synchronously, before the generator kick.
   handoff.markHandedOff?.();
+
+  recordWorkStatePrompt(store.db, telemetryAttribution, savedUserPromptId);
 
   // Fire-and-forget cloud sync nudge, beside the write itself so every
   // saved prompt nudges — including cursor sessions, which skip the
@@ -441,6 +463,9 @@ export interface ObservationPayload {
   toolResponse?: unknown;
   cwd?: string;
   platformSource?: string;
+  telemetryPlatformSource?: string;
+  /** Direct live callbacks retain their original time without changing memory prompt lookup. */
+  telemetryToolEpochMs?: number;
   agentId?: string;
   agentType?: string;
   toolUseId?: string;
@@ -484,6 +509,29 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
 
   if (cwd && isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
     return { ok: true, status: 'skipped', reason: 'project_excluded' };
+  }
+
+  // Native todo tools are normally excluded from memory generation. Count
+  // their bounded identity before that filter, but after project, agent and
+  // prompt privacy checks. Do not store their contents or buy an observation.
+  const trackedTool = workStateTool(payload.toolName);
+  const telemetryAttribution = {
+    ...payload,
+    platformSource: payload.telemetryPlatformSource ?? payload.platformSource,
+    enqueuedAtEpochMs: payload.telemetryToolEpochMs ?? payload.enqueuedAtEpochMs,
+  };
+  if (trackedTool && !shouldSkipAgentObservation(payload.agentId, payload.agentType, settings).skip) {
+    try {
+      const telemetryStore = dbManager.getSessionStore();
+      const knownSession = telemetryStore.findSessionDbIdByContentSessionId(payload.contentSessionId, platformSource);
+      const promptNumber = telemetryStore.getPromptNumberFromUserPrompts(payload.contentSessionId, knownSession ?? undefined, payload.enqueuedAtEpochMs);
+      // Missing prompt capture is not evidence that this turn is public.
+      const publicPrompt = knownSession === null ? null
+        : telemetryStore.getUserPrompt(payload.contentSessionId, promptNumber, knownSession);
+      if (publicPrompt?.trim() && isPublicWorkStateTurn(telemetryStore.db, telemetryAttribution)) {
+        recordWorkStateTool(telemetryStore.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
+      }
+    } catch { /* A telemetry lookup must not turn a skipped tool into an error. */ }
   }
 
   if (isToolSkipped(payload.toolName, settings.CLAUDE_MEM_SKIP_TOOLS)) {
@@ -568,6 +616,10 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
   // capture after its own restart) would be observed twice.
   if (payload.toolUseId && store.isToolUseLinkedToObservation(payload.contentSessionId, payload.toolUseId)) {
     return { ok: true, status: 'skipped', reason: 'tool_use_already_observed' };
+  }
+
+  if (!trackedTool && privacy.prompt.trim() && isPublicWorkStateTurn(store.db, telemetryAttribution)) {
+    recordWorkStateTool(store.db, telemetryAttribution, payload.toolUseId, payload.toolName, payload.toolResponse);
   }
 
   const cleanedToolInput = payload.toolInput !== undefined

@@ -226,6 +226,16 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   'wire_requests_relayed_count',
   'wire_capture_events_count',
   'wire_rewrites_applied_count',
+  // Work-state usage: closed dimensions and counts; no task/session/agent IDs.
+  'platform', 'agent_role', 'instruction_state',
+  'instruction_returned_count', 'instruction_disabled_count',
+  'instruction_excluded_count', 'instruction_missing_count', 'instruction_unknown_count',
+  'captured_prompt_count', 'captured_session_count', 'captured_tool_count',
+  'unidentified_tool_event_count', 'native_todo_count',
+  ...['captured', 'mcp'].flatMap(source => ['read', 'write'].flatMap(operation => [
+    `${source}_${operation}_count`,
+    ...['ok', 'error', 'excluded', 'disabled', 'unknown'].map(outcome => `${source}_${operation}_${outcome}_count`),
+  ])),
 ]);
 
 const MAX_STRING_LENGTH = 200;
