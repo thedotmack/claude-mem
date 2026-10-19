@@ -155,7 +155,7 @@ export class KnowledgeAgent {
 
   async query(corpus: CorpusFile, question: string, callOptions: KnowledgeAgentCallOptions = {}): Promise<QueryResult> {
     if (!corpus.session_id) {
-      throw new Error(`Corpus "${corpus.name}" has no session — call prime first`);
+      throw new AppError(`Corpus "${corpus.name}" has no session — call prime first`, 409, 'CORPUS_NOT_PRIMED');
     }
 
     try {
