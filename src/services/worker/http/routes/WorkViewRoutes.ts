@@ -3,12 +3,15 @@ import type { Request, Response, NextFunction } from 'express';
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { z } from 'zod';
-import { DATA_DIR, DB_PATH } from '../../../../shared/paths.js';
+import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
 import { logger } from '../../../../utils/logger.js';
 import { formatHostForUrl } from '../../../../shared/worker-url.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
+import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 
@@ -54,6 +57,22 @@ interface WorkViewOptions {
   reviewPath?: string;
   pollIntervalMs?: number;
   getLocalDeviceId?: () => string;
+  humanCopy?: HumanCopyWorker | null;
+}
+
+type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
+
+/** Readable request summaries use the observer endpoint the user already
+ * configured. Other providers keep the recorded wording. */
+export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): HumanCopyProvider | null {
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
+  const apiKey = settings.CLAUDE_MEM_OPENROUTER_API_KEY?.trim();
+  if (settings.CLAUDE_MEM_PROVIDER !== 'openrouter' || !apiKey) return null;
+  return chatCompletionsHumanCopyProvider({
+    url: resolveOpenRouterChatCompletionsUrl(settings.CLAUDE_MEM_OPENROUTER_BASE_URL),
+    apiKey,
+    model: settings.CLAUDE_MEM_OPENROUTER_MODEL,
+  });
 }
 
 export class WorkViewRoutes extends BaseRouteHandler {
@@ -66,6 +85,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private closed = false;
   private pollIntervalMs: number;
   private getLocalDeviceId: () => string;
+  private humanCopy: HumanCopyWorker | null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -73,6 +93,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
     this.source = new WorkStateSource({ databasePath: options.databasePath ?? DB_PATH, pollIntervalMs: this.pollIntervalMs });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
+    this.humanCopy = options.humanCopy === undefined
+      ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })
+      : options.humanCopy;
+    if (this.humanCopy) void this.humanCopy.load().then(() => this.humanCopy?.start());
   }
 
   setupRoutes(app: express.Application): void {
@@ -100,7 +124,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
       request.review = this.reviews.read(request.id, request.contentFingerprint);
     }
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
-    return { ...snapshot, revision: `${snapshot.revision}:${reviewRevision}` };
+    // Generated wording is display only: it never changes what was reviewed.
+    const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
+    return { ...view, revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
   }
 
   private review = (req: Request, res: Response): void => {
@@ -185,5 +211,6 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.clients.clear();
     this.source.close();
     this.reviews.close();
+    this.humanCopy?.close();
   }
 }
