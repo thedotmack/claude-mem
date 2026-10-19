@@ -136,6 +136,45 @@ describe('Hermes installer', () => {
     expect(config()).toBe(original);
   });
 
+  it('keeps comments on existing block headers through install and uninstall', () => {
+    const original = HERMES_CONFIG.replace('memory:\n', 'memory: # shared settings\n')
+      .replace('mcp_servers:\n', 'mcp_servers: # shared tools\n')
+      .replace('  memory_enabled: true', '  provider: another-provider\n  memory_enabled: true');
+    writeFileSync(configPath(), original);
+    expect(installHermesIntegration()).toBe(0);
+    expect(config()).toContain('memory: # shared settings\n');
+    expect(config()).toContain('mcp_servers: # shared tools\n');
+    expect(parseYaml(config()).memory.provider).toBe('claude-mem');
+    expect(uninstallHermesIntegration()).toBe(0);
+    expect(config()).toBe(original);
+  });
+
+  it.each(['', '{}', 'null', '~'])('keeps commented empty mappings through install and uninstall: %s', (value) => {
+    const inline = value ? ' ' + value : '';
+    const original = `memory:${inline} # shared settings\nmcp_servers:${inline} # shared tools\n`;
+    writeFileSync(configPath(), original);
+    expect(installHermesIntegration()).toBe(0);
+    expect(config()).toContain('memory: # shared settings\n');
+    expect(config()).toContain('mcp_servers: # shared tools\n');
+    expect(parseYaml(config()).memory).toEqual({ provider: 'claude-mem' });
+    expect(parseYaml(config()).mcp_servers['claude-mem'].enabled).toBe(true);
+    expect(uninstallHermesIntegration()).toBe(0);
+    expect(config()).toBe(original);
+  });
+
+  it.each(['...\n', '... # end\n'])('inserts missing blocks before a document-end marker: %s', (ending) => {
+    const original = 'model:\n  default: some-model\n' + ending;
+    writeFileSync(configPath(), original);
+    expect(installHermesIntegration()).toBe(0);
+    expect(config()).toEndWith(ending);
+    const parsed = parseYaml(config());
+    expect(parsed.model).toEqual({ default: 'some-model' });
+    expect(parsed.memory).toEqual({ provider: 'claude-mem' });
+    expect(parsed.mcp_servers['claude-mem'].enabled).toBe(true);
+    expect(uninstallHermesIntegration()).toBe(0);
+    expect(config()).toBe(original);
+  });
+
   it('installs twice without stacking changes, and the second receipt still restores the original', () => {
     const original = HERMES_CONFIG.replace('  memory_enabled: true', '  provider: another-provider\n  memory_enabled: true');
     writeFileSync(configPath(), original);

@@ -597,7 +597,8 @@ class ClaudeMemClient:
 
     def relevant_notes(self, cwd: str, query: str, limit: int = 5) -> str:
         """Notes that match this prompt, from every agent in this project."""
-        if len(query.strip()) < 20 or self._excluded(cwd):
+        query = strip_tags(query).strip()
+        if len(query) < 20 or self._excluded(cwd):
             return ""
         try:
             if self.config.server:

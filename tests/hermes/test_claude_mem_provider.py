@@ -510,6 +510,46 @@ class CheckoutProjectTest(unittest.TestCase):
         self.assertEqual(client_module.checkout_project(plain), "notes")
 
 
+class RecallPrivacyTest(unittest.TestCase):
+    def test_protected_sections_never_leave_either_recall_runtime(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        for server in (False, True):
+            config = client_module.Config(fake.base, fake.base, "key", "project") if server else client_module.Config(fake.base)
+            client = client_module.ClaudeMemClient(config)
+            self.addCleanup(client.close)
+            path = "/v1/context" if server else "/api/context/semantic"
+            fake.replies[path] = (200, {"context": "recalled note"})
+            for tag in ("private", "memory-context", "claude-mem-context", "system_instruction",
+                        "system-instruction", "persisted-output", "system-reminder"):
+                with self.subTest(server=server, tag=tag):
+                    fake.requests.clear()
+                    query = "Investigate parser failures <%s>confidentialtoken</%s>" % (tag, tag)
+                    self.assertEqual(client.relevant_notes(REPO, query), "recalled note")
+                    self.assertEqual(fake.paths(), [path])
+                    body = fake.requests[0]["body"]
+                    self.assertNotIn("confidentialtoken", json.dumps(body))
+                    self.assertEqual(body["query" if server else "q"],
+                                     "investigate or parser or failures" if server else "Investigate parser failures")
+
+    def test_private_or_short_public_prompts_make_no_recall_request(self):
+        fake = FakeClaudeMem()
+        self.addCleanup(fake.close)
+        for server in (False, True):
+            config = client_module.Config(fake.base, fake.base, "key", "project") if server else client_module.Config(fake.base)
+            client = client_module.ClaudeMemClient(config)
+            self.addCleanup(client.close)
+            for query in ("<private>confidential parser details</private>",
+                          "  <memory-context>previously recalled details</memory-context>  ",
+                          "<private>outer <private>inner</private> secret</private>",
+                          "<private>unclosed confidential details",
+                          "parser <private>confidential parser details</private>"):
+                with self.subTest(server=server, query=query):
+                    fake.requests.clear()
+                    self.assertEqual(client.relevant_notes(REPO, query), "")
+                    self.assertEqual(fake.requests, [])
+
+
 class ServerModeTest(unittest.TestCase):
     def test_events_go_to_the_hosted_server_with_the_key(self):
         fake = FakeClaudeMem()

@@ -109,12 +109,17 @@ function hasChildren(lines: string[], block: Block): boolean {
   return lines.slice(block.header + 1, block.end).some(isContent);
 }
 
-/** Open a block for children: `key: {}` / `key: null` becomes `key:`; an absent key is appended. */
+/** Open a block for children, preserving comments and inserting before a document-end marker. */
 function openBlock(lines: string[], key: string): Block {
   const existing = findBlock(lines, key);
   if (existing) {
-    lines[existing.header] = key + ':';
+    lines[existing.header] = lines[existing.header].replace(/^([^:]+:)[ \t]*(?:\{\}|null|~)/, '$1');
     return existing;
+  }
+  const documentEnd = lines.findIndex(line => /^\.\.\.(?:\s|$)/.test(line));
+  if (documentEnd !== -1) {
+    lines.splice(documentEnd, 0, key + ':');
+    return { header: documentEnd, end: documentEnd + 1, childIndent: 2 };
   }
   while (lines.length > 0 && lines[lines.length - 1].trim() === '') lines.pop();
   lines.push(key + ':');
