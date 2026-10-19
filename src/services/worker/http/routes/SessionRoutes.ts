@@ -5,6 +5,7 @@ import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContex
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
 import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
@@ -1015,7 +1016,7 @@ export class SessionRoutes extends BaseRouteHandler {
             prompt: truncatedPrompt
           });
         }).catch((error) => {
-          logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
+          logChromaWriteFailure('CHROMA', 'User prompt sync failed, continuing without vector search', {
             promptId: savedUserPrompt.id,
             prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
           }, error);

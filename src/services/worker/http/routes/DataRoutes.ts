@@ -4,6 +4,7 @@ import { z } from 'zod';
 import path from 'path';
 import { readFileSync, statSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
+import { logChromaWriteFailure } from '../../search/errors.js';
 import { getPackageRoot, paths } from '../../../../shared/paths.js';
 import { getWorkerPort } from '../../../../shared/worker-utils.js';
 import { PaginationHelper } from '../../PaginationHelper.js';
@@ -902,7 +903,7 @@ export class DataRoutes extends BaseRouteHandler {
             obs.created_at_epoch,
             platformSource
           ).catch(err => {
-            logger.error('CHROMA', 'Import ChromaDB sync failed', { id }, err as Error);
+            logChromaWriteFailure('CHROMA', 'Import ChromaDB sync failed', { id }, err);
           });
         };
 
