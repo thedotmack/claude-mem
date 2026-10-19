@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { buildAgentView } from '../../src/services/work-view/agent-view.mjs';
 import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import { goalsPanel } from '../../src/ui/work-view/request-views.js';
+import { isOwnerGoalsList } from '../../src/services/work-view/owner-goals.mjs';
 
 const NOW = Date.parse('2026-10-18T23:40:00Z');
 let nextId = 1;
@@ -53,5 +54,38 @@ describe('owner goals in My Work', () => {
     const html = goalsPanel(goals);
     expect(html).toContain('2 more open asks');
     expect(html.indexOf('Ask 11')).toBeGreaterThan(html.indexOf('2 more open asks'));
+  });
+
+  const pastMonth = (start: string, end: string) => [
+    entry(`owner-goals/${start}`, { human_summary: `Month of ${start}.`, period_start: start, period_end: end, source_prompt_count: 700, status: 'done' }),
+    entry(`owner-goals/${start}`, { task: `Priority: Old ${start}`, status: 'done', goal_kind: 'priority', rank: 1, title: `Old ${start}`, evidence: `${start} 10:00 | then` }),
+    entry(`owner-goals/${start}`, { task: `Open ask: Ask ${start}`, status: 'done', goal_kind: 'open-ask', rank: 1, title: `Ask ${start}`, evidence: `${start} 11:00 | asked` }),
+  ];
+
+  it('keeps past months as closed history, newest first, outside request cards', () => {
+    const view = viewFor([...snapshot, ...pastMonth('2025-11-18', '2025-12-18'), ...pastMonth('2025-12-18', '2026-01-18')]);
+    expect(view.goals.listName).toBe('owner-goals');
+    expect(view.goalHistory.map((month: { listName: string }) => month.listName)).toEqual(['owner-goals/2025-12-18', 'owner-goals/2025-11-18']);
+    expect(view.goalHistory[1]).toMatchObject({ history: true, periodStart: '2025-11-18', periodEnd: '2025-12-18', summary: 'Month of 2025-11-18.' });
+    expect(view.goalHistory[1].openAsks.map((item: { title: string }) => item.title)).toEqual(['Ask 2025-11-18']);
+    const work = view.agents.flatMap((agent: { work: { listName?: string }[] }) => agent.work);
+    expect(work.some((item) => isOwnerGoalsList(item.listName))).toBe(false);
+    expect(isOwnerGoalsList('owner-goals-old')).toBe(false);
+  });
+
+  it('defaults to the current month and switches to a labeled history month', () => {
+    const view = viewFor([...snapshot, ...pastMonth('2025-11-18', '2025-12-18'), ...pastMonth('2025-12-18', '2026-01-18')]);
+    const current = goalsPanel(view.goals, { history: view.goalHistory });
+    expect(current).toContain('Ship My Work');
+    expect(current).toContain('<option value="owner-goals/2025-11-18">Nov 18 – Dec 18, 2025 · history</option>');
+    expect(current).toContain('<option value="owner-goals/2025-12-18">Dec 18, 2025 – Jan 18, 2026 · history</option>');
+    expect(current).toContain('data-goals-month="owner-goals/2025-12-18" aria-label="Older month"');
+    const past = goalsPanel(view.goals, { history: view.goalHistory, selected: 'owner-goals/2025-11-18' });
+    expect(past).toContain('Old 2025-11-18');
+    expect(past).not.toContain('Ship My Work');
+    expect(past).toContain('Nov 18 – Dec 18, 2025 · history · 700 prompts you typed');
+    expect(past).toContain('Open asks then');
+    expect(past).toContain('<button type="button" class="goals-step" disabled aria-label="Older month">');
+    expect(past).toContain('data-goals-month="owner-goals/2025-12-18" aria-label="Newer month"');
   });
 });

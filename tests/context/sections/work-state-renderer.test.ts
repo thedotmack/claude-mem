@@ -114,7 +114,8 @@ describe('buildWorkStateContextSection', () => {
   });
 
   it('leaves the owner-goals snapshot to the Goals panel in My Work', () => {
-    const entries = [...releaseEntries(), entry('owner-goals', { task: 'Priority: Ship it', status: 'todo', evidence: '2026-10-18 22:11 | ship it' }, MINUTE_MS)];
+    const entries = [...releaseEntries(), entry('owner-goals', { task: 'Priority: Ship it', status: 'todo', evidence: '2026-10-18 22:11 | ship it' }, MINUTE_MS),
+      entry('owner-goals/2025-11-18', { task: 'Open ask: Old ask', status: 'todo', evidence: '2025-11-20 10:00 | old ask' }, MINUTE_MS)];
     const section = buildWorkStateContextSection(entries, NOW_EPOCH);
     expect(section).not.toContain('owner-goals');
     expect(section).toContain('- release: version=13.25.3');

@@ -1,6 +1,7 @@
 // A read-only projection of recorded work and observation activity. A captured
 // tool call establishes its author, never the assignee or live presence.
 import { buildHumanRequests } from './request-projection.mjs';
+import { OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -8,10 +9,6 @@ const stamp = (value) => Number.isFinite(Number(value)) && Number(value) > 0 ? n
 const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
 const callKey = (project, list, fields) => JSON.stringify([PROJECT_KEY(project), list, fingerprint(fields)]);
 const agentKey = (platform, session, agent) => JSON.stringify(['session', platform ?? 'unknown', String(session ?? ''), agent ?? 'unidentified']);
-
-// The owner-goals skill saves the owner's top priorities and open asks to this
-// one list. My Work shows it as Goals above the request cards, not as a request.
-export const OWNER_GOALS_LIST = 'owner-goals';
 
 export function compactText(value, max = 260) {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return null;
@@ -205,7 +202,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     activity.push({ ...entry, agentGroupId: group.id });
   }
 
-  const candidates = state.lists.filter((list) => list.name !== OWNER_GOALS_LIST).flatMap((list) => [
+  const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name)).flatMap((list) => [
     ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
     ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !CLOSED.has(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
@@ -304,7 +301,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache });
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
-    agents, recentActivity, goals: buildOwnerGoals(state),
+    agents, recentActivity, goals: buildOwnerGoals(state), goalHistory: buildOwnerGoalHistory(state),
     ...requestProjection,
     coverage: { workRows: candidates.length, workLimit, linkedWork, ownerWork, unattributedWork, observations: observations.length, observationLimit: 300, summaries: summaries.length, livePresenceAvailable: false, summaryMethod: 'bounded-recorded-text', fullHistoryUrl: '/viewer' },
   };
@@ -320,24 +317,40 @@ function goalEvidence(value) {
   });
 }
 
-/** The most recently written owner-goals list, open items only, ranked. */
-export function buildOwnerGoals(state) {
-  const list = state.lists.find((item) => item.name === OWNER_GOALS_LIST);
-  if (!list || !list.isOpen) return null;
+// One goals list as the panel shows it. The current month shows its open items;
+// a past month (saved closed, as history) shows everything but dropped items.
+function goalsFromList(list, history) {
   const count = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
-  const items = list.tasks.filter((task) => task.isOpen).map((task) => ({
+  const items = list.tasks.filter((task) => history ? task.status !== 'dropped' : task.isOpen).map((task) => ({
     id: task.id, task: task.name, kind: task.fields.goal_kind === 'open-ask' ? 'open-ask' : 'priority',
     rank: count(task.fields.rank), title: compactText(task.fields.title ?? task.name, 240),
     product: compactText(task.fields.product, 60), latestAt: compactText(task.fields.latest_at, 20),
     timesAsked: count(task.fields.times_asked), status: task.status, evidence: goalEvidence(task.fields.evidence),
   })).sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.title.localeCompare(b.title));
+  const day = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? '')) ? String(value) : null;
   return {
-    listId: list.id, project: list.project, updatedAt: list.updatedAt,
+    listId: list.id, listName: list.name, history, project: list.project, updatedAt: list.updatedAt,
+    periodStart: day(list.fields.period_start) ?? (history ? day(list.name.slice(OWNER_GOALS_LIST.length + 1)) : null),
+    periodEnd: day(list.fields.period_end),
     summary: compactText(list.fields.human_summary, 1600), generatedAt: compactText(list.fields.generated_at, 40),
     windowDays: count(list.fields.window_days), sourcePromptCount: count(list.fields.source_prompt_count),
     mapPath: compactText(list.fields.map_path, 400),
     priorities: items.filter((item) => item.kind === 'priority'), openAsks: items.filter((item) => item.kind === 'open-ask'),
   };
+}
+
+/** The current month: the owner-goals list, open items only, ranked. */
+export function buildOwnerGoals(state) {
+  const list = state.lists.find((item) => item.name === OWNER_GOALS_LIST);
+  return list && list.isOpen ? goalsFromList(list, false) : null;
+}
+
+/** Past months: every owner-goals/<start> list, newest first. */
+export function buildOwnerGoalHistory(state) {
+  return state.lists.filter((list) => list.name !== OWNER_GOALS_LIST && isOwnerGoalsList(list.name) && list.status !== 'dropped')
+    .map((list) => goalsFromList(list, true))
+    .filter((goals) => goals.priorities.length || goals.openAsks.length)
+    .sort((a, b) => String(b.periodStart ?? b.listName).localeCompare(String(a.periodStart ?? a.listName)));
 }
 
 export function readEvidence(database, kind, id) {

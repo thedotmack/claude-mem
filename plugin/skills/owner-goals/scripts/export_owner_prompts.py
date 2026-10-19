@@ -16,7 +16,8 @@ Writes into --out:
   owner-prompts.md                    the owner's prompts, oldest first, headed "## YYYY-MM-DD HH:MM · tool · project"
   excluded-agent-written-prompts.md   what step 2 removed, for audit
 
-Usage: python3 export_owner_prompts.py --out <dir> [--days 31]
+Usage: python3 export_owner_prompts.py --out <dir> [--days 31 | --start YYYY-MM-DD --end YYYY-MM-DD]
+  --start/--end read a past period instead: from local midnight on --start up to local midnight on --end.
 """
 import argparse, glob, json, os, re, subprocess, sys, time
 
@@ -181,14 +182,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--out", required=True, help="folder for owner-prompts.md (created if missing)")
     parser.add_argument("--days", type=int, default=31, help="how many days back to read (default 31)")
+    parser.add_argument("--start", help="read from this day instead, YYYY-MM-DD (with --end)")
+    parser.add_argument("--end", help="read up to, not including, this day, YYYY-MM-DD (with --start)")
     args = parser.parse_args()
+    if bool(args.start) != bool(args.end):
+        sys.exit("--start and --end go together")
 
     out_dir = os.path.abspath(args.out)
     os.makedirs(out_dir, exist_ok=True)
     keep_out_of_git(out_dir)
     cutoff_seconds = time.time() - args.days * 86400
+    end_seconds = float("inf")
+    if args.start:
+        cutoff_seconds, end_seconds = (time.mktime(time.strptime(day, "%Y-%m-%d")) for day in (args.start, args.end))
+        if end_seconds <= cutoff_seconds:
+            sys.exit("--end must be after --start")
+    window = f"{args.start} to {args.end}" if args.start else f"last {args.days} days"
 
-    owner_typed = read_owner_typed_prompts(cutoff_seconds)
+    owner_typed = [prompt for prompt in read_owner_typed_prompts(cutoff_seconds) if prompt[0] < end_seconds]
     # Agent text written a little before the window can still be the source of a prompt inside it.
     agent_chunks = read_agent_authored_text(cutoff_seconds - 9 * 86400)
 
@@ -207,9 +218,9 @@ def main():
         with open(os.path.join(out_dir, filename), "w") as markdown_file:
             markdown_file.write(f"# {title}\n\n{len(sections)} prompts, oldest first.\n\n" + "\n---\n\n".join(sections))
 
-    write("owner-prompts.md", f"Owner prompts (typed by the owner, not written by an agent), last {args.days} days", owner_written)
+    write("owner-prompts.md", f"Owner prompts (typed by the owner, not written by an agent), {window}", owner_written)
     write("excluded-agent-written-prompts.md", "Excluded: prompts an agent wrote first (audit file)", agent_written)
-    print(json.dumps({"out": out_dir, "days": args.days, "owner_prompts": len(owner_written),
+    print(json.dumps({"out": out_dir, "window": window, "owner_prompts": len(owner_written),
                       "excluded_agent_written": len(agent_written)}))
 
 

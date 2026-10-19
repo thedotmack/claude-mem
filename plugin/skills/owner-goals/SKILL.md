@@ -17,7 +17,7 @@ Pick an output folder inside the current project, such as `.scratch/owner-goals/
 python3 "${CLAUDE_SKILL_DIR}/scripts/export_owner_prompts.py" --out "<folder>" --days 31
 ```
 
-Use `--days` when the user asks for a different window. The script:
+Use `--days` when the user asks for a different window. For a specific period, such as a past month, pass `--start YYYY-MM-DD --end YYYY-MM-DD` instead of `--days` (from midnight on the start day up to, not including, the end day) and use a folder named for the start day. The script:
 
 - reads Claude Code transcripts (`~/.claude/projects`) and interactive Codex sessions (`~/.codex/sessions`), keeping prompts the transcripts label as typed by a person;
 - removes prompts an agent wrote first: ones whose opening already appears in earlier agent-written text (assistant messages, tool inputs, Codex function calls), and long prompts that open by assigning a role ("You are the…", "Task: ", "Branch: ");
@@ -64,6 +64,8 @@ It prints how many prompts it kept and excluded.
 python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --goals "<folder>/owner-goals.json" --prompts "<folder>/owner-prompts.md" --map "<folder>/owner-map.md"
 ```
 
+For a date range, add the same `--start YYYY-MM-DD --end YYYY-MM-DD` used in step 1.
+
 The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. `--dry-run` shows the writes without saving.
 
 It saves through the local claude-mem worker to the `owner-goals` work-state list, one list per computer:
@@ -73,6 +75,8 @@ It saves through the local claude-mem worker to the `owner-goals` work-state lis
 
 Items from the previous run that are not in this one are marked dropped, so each run replaces the last snapshot. `work_state_read` with `list: "owner-goals"` shows the saved items as text.
 
+With `--start` and `--end`, the list state also records `period_start` and `period_end`. A range that ends before today is a past month: it is saved to `owner-goals/<start>` (for example `owner-goals/2025-11-18`) as history. That list and its items are saved done, so its asks never show as open, and the current `owner-goals` list is left alone. A range that reaches today saves to `owner-goals` as usual. No goals list, current or past, appears in session-start context or among the request cards.
+
 ## 4. Tell the user where to look
 
-Open My Work at the URL the script prints (the worker's address, `http://localhost:37777/` by default). Goals is the panel at the top, above the request cards: top priorities on the left, open asks on the right, each with an expandable list of dated quotes. Give the path to `owner-map.md` for the full map, and list the top three priorities in a line each.
+Open My Work at the URL the script prints (the worker's address, `http://localhost:37777/` by default). Goals is the panel at the top, above the request cards: top priorities on the left, open asks on the right, each with an expandable list of dated quotes. When past months are saved, a month switcher in the panel steps back through them, newest first, each labeled as history. Give the path to `owner-map.md` for the full map, and list the top three priorities in a line each.

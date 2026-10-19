@@ -1,6 +1,7 @@
 import type { WorkStateEntry, WorkStateFields, WorkStateValue } from '../../sqlite/work-state.js';
 import { describeDuration } from '../../../shared/observer-health.js';
 import { relativeTimePlaceholder } from '../../../shared/context-cache.js';
+import { isOwnerGoalsList } from '../../work-view/owner-goals.mjs';
 
 /**
  * When "updated N ago" is measured from: an epoch, or 'placeholders' to leave
@@ -132,19 +133,14 @@ export function renderWorkStateLines(entries: WorkStateEntry[], nowEpoch: WorkSt
     });
 }
 
-/**
- * The owner-goals skill's snapshot (src/services/work-view/agent-view.mjs). It
- * is shown as Goals in My Work; its quoted evidence would fill this section.
- */
-export const OWNER_GOALS_LIST = 'owner-goals';
-
 /** The SessionStart section: the rule, then what is still open, cut to `characterLimit`. */
 export function buildWorkStateContextSection(
   entries: WorkStateEntry[],
   nowEpoch: WorkStateClock,
   characterLimit: number = WORK_STATE_SECTION_CHARACTER_LIMIT,
 ): string {
-  const openLines = renderWorkStateLines(entries.filter(entry => entry.list_name !== OWNER_GOALS_LIST), nowEpoch);
+  // Goals lists (owner-goals and its past months) show in My Work; their quotes would fill this section.
+  const openLines = renderWorkStateLines(entries.filter(entry => !isOwnerGoalsList(entry.list_name)), nowEpoch);
   if (openLines.length === 0) {
     return `${WORK_STATE_RULE}\n\nNothing open yet.`;
   }
