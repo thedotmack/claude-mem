@@ -226,3 +226,50 @@ export function agentIcon(agent) {
   const name = { codex: 'chatgpt', claude: 'claude', 'gemini-cli': 'gemini', 'hermes-cli': 'hermes' }[agent.platformSource];
   return name ? `/assets/agents/${name}.svg` : null;
 }
+
+const shortDate = epoch => new Date(epoch).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+export function durationLabel(ms) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  const days = Math.floor(minutes / 1440), hours = Math.floor(minutes / 60) % 24;
+  return days ? `${days}d${hours ? ` ${hours}h` : ''}` : hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+}
+
+// A progress review is an agent's evidence-backed assessment from memory. It
+// fills the meter; it never changes the recorded request status.
+export function progressMeter(progress) {
+  if (!progress || !Number.isInteger(progress.percent)) return null;
+  const started = Date.parse(progress.startedAt), shipped = Date.parse(progress.shippedAt), last = Date.parse(progress.lastActivityAt);
+  const label = progress.state === 'shipped' && Number.isFinite(shipped)
+    ? `Shipped ${shortDate(shipped)}${Number.isFinite(started) ? ` · took ${durationLabel(shipped - started)}` : ''}`
+    : progress.state === 'stalled' ? `${progress.percent}% · stalled${Number.isFinite(last) ? ` since ${shortDate(last)}` : ''}`
+      : progress.state === 'abandoned' ? `Set aside${Number.isFinite(last) ? ` ${shortDate(last)}` : ''}`
+        : progress.state === 'unknown' ? 'Progress unclear from memory'
+          : `${progress.percent}%${Number.isFinite(started) ? ` · started ${shortDate(started)}` : ''}`;
+  return { percent: progress.percent, state: progress.state, label, checkedAt: Date.parse(progress.checkedAt) || null };
+}
+
+const median = values => {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b), middle = Math.floor(sorted.length / 2);
+  return sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2;
+};
+
+export function velocity(reviews, now = Date.now(), maxWeeks = 8) {
+  // Chart only the weeks the reviews cover, so unreviewed time is not shown as zero output.
+  const earliest = Math.min(now, ...reviews.map(review => Date.parse(review.startedAt)).filter(Number.isFinite));
+  const weeks = Math.min(maxWeeks, Math.max(1, Math.ceil((now - earliest) / (7 * 86400000))));
+  const shipped = reviews.filter(review => review.state === 'shipped' && Number.isFinite(Date.parse(review.shippedAt)));
+  const shippedWithin = days => shipped.filter(review => now - Date.parse(review.shippedAt) <= days * 86400000).length;
+  const cycleTimes = shipped.map(review => Date.parse(review.shippedAt) - Date.parse(review.startedAt)).filter(ms => Number.isFinite(ms) && ms >= 0);
+  const weekly = Array.from({ length: weeks }, (_, index) => {
+    const end = now - index * 7 * 86400000, start = end - 7 * 86400000;
+    return { start, count: shipped.filter(review => { const at = Date.parse(review.shippedAt); return at > start && at <= end; }).length };
+  }).reverse();
+  return {
+    shipped7: shippedWithin(7), shipped30: shippedWithin(30),
+    medianCycleMs: median(cycleTimes),
+    inProgress: reviews.filter(review => review.state === 'in-progress').length,
+    stalled: reviews.filter(review => review.state === 'stalled').length,
+    reviewed: reviews.length, weekly,
+  };
+}

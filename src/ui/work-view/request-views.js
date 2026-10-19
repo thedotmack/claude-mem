@@ -1,4 +1,4 @@
-import { activityFor, cleanText, relativeTime, requestElapsed, STATUS } from './view-model.js';
+import { activityFor, cleanText, durationLabel, progressMeter, relativeTime, requestElapsed, STATUS, velocity } from './view-model.js';
 import { effectiveStatus } from './presentation.js';
 
 export const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, character => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]);
@@ -10,7 +10,7 @@ const projectLabel = project => String(project || 'Unknown project').split('/')[
 const projectNames = row => [...new Set((row.projects || [row.project]).filter(Boolean).map(projectLabel))].join(' · ');
 
 export function personalRoute(view, state = {}) {
-  if (view === 'goals' || view === 'teambrain') return `#${view}`;
+  if (['goals', 'story', 'teambrain'].includes(view)) return `#${view}`;
   const parameters = new URLSearchParams();
   for (const [key, value] of Object.entries({ id: view === 'request' ? state.requestId : null, work: view === 'request' ? state.workId : null, agent: state.agentId, from: view === 'request' ? state.from : null, project: state.project, range: state.range, sort: state.sort, status: state.filter, q: state.query })) {
     if (value && !((key === 'range' && value === 'day') || (key === 'sort' && value === 'attention') || (key === 'status' && value === 'all'))) parameters.set(key, value);
@@ -21,7 +21,7 @@ export function personalRoute(view, state = {}) {
 export function parsePersonalRoute(hash) {
   const [rawView, query = ''] = hash.replace(/^#/, '').split('?');
   const parameters = new URLSearchParams(query);
-  const view = ['cards', 'list', 'agents', 'request', 'goals', 'teambrain'].includes(rawView) ? rawView : rawView === 'board' ? 'list' : 'cards';
+  const view = ['cards', 'list', 'agents', 'request', 'goals', 'story', 'teambrain'].includes(rawView) ? rawView : rawView === 'board' ? 'list' : 'cards';
   return { view, requestId: parameters.get('id'), workId: parameters.get('work'), agentId: parameters.get('agent'),
     from: ['cards', 'list', 'agents'].includes(parameters.get('from')) ? parameters.get('from') : 'cards',
     project: parameters.get('project') || '', range: ['all', 'week'].includes(parameters.get('range')) ? parameters.get('range') : 'day',
@@ -47,6 +47,12 @@ export function contributors(agents = []) {
     group.count++; groups.set(key, group);
   }
   return [...groups.values()].map(group => `<span class="card-contributor">${group.icon ? `<img src="${esc(group.icon)}" width="25" height="25" alt="">` : ''}<span>${esc(group.label)}${group.count > 1 ? `<span class="contributor-count"> · ${group.count} contributors</span>` : ''}</span></span>`).join('') || '<span class="contributor-count">No contributor recorded</span>';
+}
+// The meter shows the request-progress review, separate from the recorded status.
+export function meter(row) {
+  const progress = progressMeter(row.progress);
+  if (!progress) return '';
+  return `<div class="progress-meter" data-state="${esc(progress.state)}"><span class="meter-track" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${progress.percent}" aria-label="Progress from memory review"><span style="width:${progress.percent}%"></span></span><span class="meter-label">${esc(progress.label)}</span></div>`;
 }
 function copyNote(row) {
   return row.humanCopy && ['pending', 'outdated'].includes(row.copyState) ? '<small class="copy-note">Summary updating</small>' : '';
@@ -79,7 +85,7 @@ export function requestCards(rows, state) {
     const action = status === 'ready' ? 'Review result' : status === 'needs' ? 'Read handoff' : 'Open request';
     return `<article class="request-card work-card status-${esc(status)}${state.changed?.has(row.id) ? ' updated' : ''}" data-id="${esc(row.id)}" tabindex="-1"><a class="request-card-open" href="${esc(route)}" data-route aria-label="${esc(action)}: ${esc(row.title)}">
       <div class="request-card-meta">${badge(row)}<span>${time(row.updated)}${state.unread?.has(row.id) ? '<span class="new-dot">New update</span>' : ''}</span></div>
-      <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><div class="card-update"><span class="card-update-label">${row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update'}</span><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div></div></div>
+      <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><div class="card-update"><span class="card-update-label">${row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update'}</span><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div>${meter(row)}</div></div>
       ${nextSteps(row, true)}
       <div class="request-card-footer"><div class="request-card-context"><div class="request-contributors" aria-label="Recorded contributors">${contributors(row.contributors)}</div><span class="card-project" title="${esc((row.projects || [row.project]).join(' · '))}">${esc(projectNames(row))}</span></div><span class="open-label">${action} ${chevron}</span></div>
     </a></article>`;
@@ -90,7 +96,7 @@ export function requestList(rows, state) {
   return `<div class="board-surface request-list-surface"><table class="work-table" aria-label="Requests"><thead><tr><th scope="col">Status</th><th scope="col">Request</th><th scope="col">What’s next / latest update</th><th scope="col">Last update</th><th scope="col"><span class="sr-only">Open request</span></th></tr></thead><tbody>${rows.map(row => {
     const route = personalRoute('request', { ...state, requestId: row.id, workId: null, from: 'list' });
     const next = nextSteps(row, true), progressLabel = next ? 'What’s next' : (row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update');
-    return `<tr class="work-row" data-id="${esc(row.id)}"><td data-label="Status">${badge(row)}</td><td data-label="Request"><a class="request-title" href="${esc(route)}" data-route>${esc(row.title)}</a><p class="project-name">${esc(projectNames(row))}</p></td><td class="list-progress" data-label="${esc(progressLabel)}">${next || `<span class="list-copy-label">${esc(progressLabel)}</span><p class="next-copy">${esc(row.activity)}</p>`}${copyNote(row)}</td><td data-label="Last update">${time(row.updated)}</td><td class="row-arrow"><a href="${esc(route)}" data-route aria-label="Open request: ${esc(row.title)}">${chevron}</a></td></tr>`;
+    return `<tr class="work-row" data-id="${esc(row.id)}"><td data-label="Status">${badge(row)}</td><td data-label="Request"><a class="request-title" href="${esc(route)}" data-route>${esc(row.title)}</a><p class="project-name">${esc(projectNames(row))}</p>${meter(row)}</td><td class="list-progress" data-label="${esc(progressLabel)}">${next || `<span class="list-copy-label">${esc(progressLabel)}</span><p class="next-copy">${esc(row.activity)}</p>`}${copyNote(row)}</td><td data-label="Last update">${time(row.updated)}</td><td class="row-arrow"><a href="${esc(route)}" data-route aria-label="Open request: ${esc(row.title)}">${chevron}</a></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 
@@ -144,8 +150,36 @@ export function requestPage(row, state) {
     <details class="original-request request-context" data-detail-key="${esc(`request:${row.id}:context`)}"><summary>Request context &amp; original</summary><div class="original-body">${requestFacts(row)}<h3>Original request</h3><p>${esc(row.original?.text || 'No original request text was recorded.')}</p>${sourceDisclosure([row.original?.url], 'Read full original')}</div></details>
     <div class="section-heading"><h2>Work behind this request</h2></div><div class="workstream-list">${row.workstreams.map(work => `<article class="workstream-row"><a class="workstream-open" href="${esc(personalRoute('request', { ...state, requestId: row.id, workId: work.id }))}" data-route><div class="workstream-text"><h3>${esc(work.title)}</h3><p>${esc(work.summary)}</p><div class="request-contributors">${contributors(work.contributors)}</div></div>${badge({ status: work.status })}${chevron}</a></article>`).join('') || '<p class="workstream-empty">No linked workstreams have been recorded yet.</p>'}</div>
     ${row.scopeUpdates?.length ? `<details class="original-request" data-detail-key="${esc(`request:${row.id}:followups`)}"><summary>Follow-ups to this request</summary><div class="original-body">${row.scopeUpdates.map(update => `<p>${esc(update.text)}</p>${sourceDisclosure([update.url])}`).join('')}</div></details>` : ''}
+    ${buildStory(row)}
     ${afterShip(row)}
   </div>`;
+}
+
+function buildStory(row) {
+  const progress = row.progress;
+  if (!progress) return '';
+  const checked = Date.parse(progress.checkedAt);
+  const milestones = (progress.milestones || []).map(milestone => `<li>${milestone.at ? time(Date.parse(milestone.at)) : '<span class="card-time">Date not recorded</span>'}<p>${esc(milestone.text)}</p></li>`).join('');
+  return `<section class="build-story"><h2>Build story</h2>${meter(row)}<p>${esc(progress.narrative || progress.summary)}</p>${milestones ? `<ol class="milestones">${milestones}</ol>` : ''}<p class="dialog-note">Reviewed from memory${Number.isFinite(checked) ? ` ${esc(relativeTime(checked))}` : ''}. This is an assessment, separate from the recorded status.</p></section>`;
+}
+
+// Story: shipping velocity, the build narrative and learned working
+// preferences, all written by the request-progress skill.
+export function storyPanel(data) {
+  const heading = subtitle => `<div class="goals-heading"><div><p class="eyebrow">How your requests turned into shipped work</p><h1 id="story-heading" tabindex="-1">Build story</h1>${subtitle ? `<p class="subtitle">${esc(subtitle)}</p>` : ''}</div></div>`;
+  if (!data?.reviews?.length) return `${heading('')}<div class="empty-work"><h2>No build story yet</h2><p>Ask your agent to run the request-progress skill. It groups your conversations into overall requests, reviews each one from memory and writes the story.</p></div>`;
+  const stats = velocity(data.reviews);
+  const peak = Math.max(1, ...stats.weekly.map(week => week.count));
+  const tile = (value, label) => `<div class="velocity-tile"><strong>${esc(value)}</strong><span>${esc(label)}</span></div>`;
+  const reviews = [...data.reviews].sort((a, b) => String(b.shippedAt || b.lastActivityAt || '').localeCompare(String(a.shippedAt || a.lastActivityAt || '')));
+  const narrative = (data.story?.narrative || '').split(/\n{2,}/).map(block => block.trim()).filter(Boolean).map(block => /^#{1,3}\s/.test(block) ? `<h3>${esc(block.replace(/^#{1,3}\s+/, ''))}</h3>` : `<p>${esc(block.replace(/\n/g, ' '))}</p>`).join('');
+  const preferences = (data.story?.preferences || []).map(item => `<li><p><strong>${esc(item.preference)}</strong> <span class="pref-meta">${esc(item.kind)} · seen ${esc(item.supportCount)}×</span></p>${(item.quotes || []).map(quote => `<blockquote>“${esc(quote.quote)}”${quote.at ? ` <time class="card-time">${esc(new Date(quote.at).toLocaleDateString())}</time>` : ''}</blockquote>`).join('')}</li>`).join('');
+  return `${heading(`${stats.reviewed} overall requests reviewed from memory across ${data.groups} linked groups.`)}
+    <section class="story-section"><h2>Shipping velocity</h2><div class="velocity-tiles">${tile(stats.shipped7, 'shipped in 7 days')}${tile(stats.shipped30, 'shipped in 30 days')}${tile(stats.medianCycleMs == null ? '—' : durationLabel(stats.medianCycleMs), 'median ask to ship')}${tile(stats.inProgress, 'in progress')}${tile(stats.stalled, 'stalled')}</div>
+    <div class="weekly-bars" role="img" aria-label="Requests shipped per week, last ${stats.weekly.length} weeks: ${stats.weekly.map(week => week.count).join(', ')}">${stats.weekly.map(week => `<span class="week-bar" title="Week of ${esc(new Date(week.start).toLocaleDateString())}: ${week.count} shipped"><span style="height:${Math.round(week.count / peak * 100)}%"></span><small>${week.count}</small></span>`).join('')}</div></section>
+    ${narrative ? `<section class="story-section story-narrative"><h2>What we built</h2>${narrative}</section>` : ''}
+    <section class="story-section"><h2>Requests</h2><ul class="story-requests">${reviews.map(review => `<li><div><h3>${esc(review.title)}</h3><p>${esc(review.summary)}</p></div>${meter({ progress: review })}</li>`).join('')}</ul></section>
+    ${preferences ? `<section class="story-section preferences"><h2>How you like to work with agents</h2><p class="dialog-note">Taken from your own prompts, with the quotes behind each one.</p><ul>${preferences}</ul></section>` : ''}`;
 }
 
 export function workstreamPage(row, work) {

@@ -1069,3 +1069,45 @@ dialog::backdrop{backdrop-filter:none}
 
 .next-step-neutral { margin-top: 12px; }
 .next-steps .next-step-neutral p { margin: 0; line-height: 1.55; }
+
+/* Progress meter: an evidence-backed review from memory, not the recorded status. */
+.progress-meter { display: flex; align-items: center; gap: 10px; margin-top: 12px; min-width: 0; }
+.meter-track { position: relative; flex: 0 0 112px; height: 6px; border-radius: 999px; background: var(--line); overflow: hidden; }
+.meter-track > span { position: absolute; inset: 0 auto 0 0; border-radius: inherit; background: var(--in-progress); }
+.progress-meter[data-state="shipped"] .meter-track > span { background: var(--done); }
+.progress-meter:is([data-state="stalled"], [data-state="abandoned"], [data-state="unknown"]) .meter-track > span { background: var(--quiet); }
+.meter-label { color: var(--metadata); font-size: 13px; line-height: 1.35; overflow-wrap: anywhere; }
+.progress-meter[data-state="shipped"] .meter-label { color: var(--done); font-weight: 600; }
+.request-list-surface .progress-meter { margin-top: 6px; }
+
+.build-story { margin-top: 34px; padding-top: 26px; border-top: 1px solid var(--line); }
+.build-story > h2, .story-section > h2 { font-size: 24px; line-height: 1.3; margin-bottom: 9px; }
+.build-story > p:not(.dialog-note) { max-width: 76ch; color: var(--muted); font-size: 16px; line-height: 1.55; margin-top: 12px; }
+.milestones { display: grid; gap: 12px; margin: 18px 0 0; padding: 0; list-style: none; }
+.milestones li { display: grid; grid-template-columns: 110px minmax(0, 1fr); gap: 14px; color: var(--muted); font-size: 15px; line-height: 1.5; }
+
+.story-section { margin-top: 34px; }
+.velocity-tiles { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 14px; margin-top: 14px; }
+.velocity-tile { padding: 16px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.velocity-tile strong { display: block; font-family: "Space Grotesk", sans-serif; font-size: 30px; line-height: 1.1; color: var(--ink); }
+.velocity-tile span { color: var(--metadata); font-size: 13px; }
+.weekly-bars { display: flex; align-items: flex-end; gap: 8px; height: 120px; margin-top: 18px; }
+.week-bar { position: relative; flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+.week-bar > span { width: 100%; max-width: 44px; min-height: 2px; border-radius: 6px 6px 0 0; background: var(--done); }
+.week-bar small { color: var(--metadata); font-size: 12px; margin-top: 4px; }
+.story-narrative h3 { font-size: 19px; margin-top: 20px; }
+.story-narrative p { max-width: 76ch; color: var(--muted); font-size: 16px; line-height: 1.6; margin-top: 10px; }
+.story-requests, .preferences ul { display: grid; gap: 12px; margin: 14px 0 0; padding: 0; list-style: none; }
+.story-requests li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 18px; align-items: center; padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.story-requests h3 { font-size: 17px; line-height: 1.35; }
+.story-requests p { color: var(--muted); font-size: 14px; line-height: 1.45; margin-top: 4px; }
+.story-requests .progress-meter { margin-top: 0; }
+.preferences li { padding: 14px 18px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.pref-meta { color: var(--metadata); font-size: 13px; font-weight: 400; }
+.preferences blockquote { margin: 8px 0 0; padding-left: 12px; border-left: 3px solid var(--line); color: var(--muted); font-size: 14px; line-height: 1.5; }
+
+@media (max-width: 760px) {
+  .velocity-tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .story-requests li { grid-template-columns: minmax(0, 1fr); }
+  .milestones li { grid-template-columns: minmax(0, 1fr); gap: 2px; }
+}

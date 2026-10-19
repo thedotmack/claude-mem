@@ -659,6 +659,21 @@ async function buildHooks() {
       console.log(`✓ ${mod.out} built (${(fs.statSync(mod.out).size / 1024).toFixed(2)} KB)`);
     }
 
+    // The request-progress skill runs this with bun to group conversations
+    // into overall requests and record progress reviews for My Work.
+    const REQUEST_GROUPS_CLI = 'plugin/skills/request-progress/scripts/request-groups.mjs';
+    await build({
+      entryPoints: ['src/services/work-view/request-groups-cli.mjs'],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'esm',
+      outfile: REQUEST_GROUPS_CLI,
+      logLevel: 'error',
+      external: ['bun:sqlite'],
+    });
+    console.log(`✓ ${REQUEST_GROUPS_CLI} built (${(fs.statSync(REQUEST_GROUPS_CLI).size / 1024).toFixed(2)} KB)`);
+
     console.log(`\n🔧 Building server beta service...`);
     await build({
       entryPoints: [SERVER_SERVICE.source],

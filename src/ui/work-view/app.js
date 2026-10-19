@@ -1,7 +1,7 @@
 import { setupTeamView } from './team-view.js';
 import { relativeTime, requestElapsed } from './view-model.js';
 import { presentWork, effectiveStatus, statusCategory, contentSignature, handoffText, scopeWork, sortWork } from './presentation.js';
-import { personalRoute, parsePersonalRoute, requestCards, requestList, agentCards, requestPage, workstreamPage, goalsPanel } from './request-views.js';
+import { personalRoute, parsePersonalRoute, requestCards, requestList, agentCards, requestPage, workstreamPage, goalsPanel, storyPanel } from './request-views.js';
 import { getConnectionStatus } from './live-status.js';
 
 const $ = id => document.getElementById(id);
@@ -35,15 +35,22 @@ function focusedGoalSelector() {
 function render() {
   const goalFocus = focusedGoalSelector();
   const openGoals = new Set([...document.querySelectorAll('details[open][data-goal]')].map(element => element.dataset.goal));
-  const goalsView = state.view === 'goals', teamActive = state.view === 'teambrain';
+  const goalsView = state.view === 'goals', storyView = state.view === 'story', teamActive = state.view === 'teambrain';
   teamView.setActive(teamActive);
-  $('personal-workspace').hidden = goalsView || teamActive;
+  $('personal-workspace').hidden = goalsView || storyView || teamActive;
   $('goals-workspace').hidden = !goalsView;
+  $('story-workspace').hidden = !storyView;
   $('updates-banner').hidden = teamActive;
-  $('workspace-personal').setAttribute('aria-pressed', String(!goalsView && !teamActive));
+  $('workspace-personal').setAttribute('aria-pressed', String(!goalsView && !storyView && !teamActive));
   $('workspace-goals').setAttribute('aria-pressed', String(goalsView));
+  $('workspace-story').setAttribute('aria-pressed', String(storyView));
   $('workspace-team').setAttribute('aria-pressed', String(teamActive));
-  document.title = `${goalsView ? 'Goals' : teamActive ? 'TeamBrain' : 'My Work'} · claude-mem`;
+  document.title = `${goalsView ? 'Goals' : storyView ? 'Build story' : teamActive ? 'TeamBrain' : 'My Work'} · claude-mem`;
+  if (storyView) {
+    $('story').innerHTML = state.loaded ? storyPanel(state.snapshot?.story)
+      : '<div class="goals-heading"><div><h1 id="story-heading" tabindex="-1">Build story</h1></div></div><div class="empty-work"><h2>Loading your build story…</h2><p>Reading saved progress reviews from this computer.</p></div>';
+    return;
+  }
   if (goalsView) {
     $('goals').innerHTML = goalsPanel(state.snapshot?.goals, { history: state.snapshot?.goalHistory, selected: state.goalsMonth, askFilter: state.goalsAskFilter })
       || `<div class="goals-heading"><div><p class="eyebrow">Your priorities &amp; follow-through</p><h1 id="goals-heading" tabindex="-1">Goals</h1></div></div><div class="empty-work"><h2>${state.loaded ? 'No goals recorded yet' : 'Loading your goals…'}</h2><p>${state.loaded ? 'Your saved priorities and open asks will appear here.' : 'Reading your saved priorities from this computer.'}</p></div>`;
@@ -128,7 +135,7 @@ function syncControls() {
 function restorePosition(route) {
   const position = positions.get(route);
   const restore = position?.focus && [...document.querySelectorAll('[href]')].find(element => element.getAttribute('href') === position.focus);
-  (restore || (state.view === 'goals' ? $('goals-heading') : state.view === 'teambrain' ? $('team-heading') : document.querySelector('#work-grid h1') || $('work-heading')))?.focus({ preventScroll: true });
+  (restore || (state.view === 'goals' ? $('goals-heading') : state.view === 'story' ? $('story-heading') : state.view === 'teambrain' ? $('team-heading') : document.querySelector('#work-grid h1') || $('work-heading')))?.focus({ preventScroll: true });
   window.scrollTo(0, position?.scroll || 0);
 }
 function navigate(route, replace = false) {
@@ -307,6 +314,7 @@ renderedHash = location.hash;
 teamView = setupTeamView({ managedNavigation: true });
 $('workspace-personal').onclick = () => navigate(lastWorkRoute);
 $('workspace-goals').onclick = () => navigate('#goals');
+$('workspace-story').onclick = () => navigate('#story');
 $('workspace-team').onclick = () => navigate('#teambrain');
 render();
 refresh().catch(() => { state.failed = true; renderConnection(); render(); });

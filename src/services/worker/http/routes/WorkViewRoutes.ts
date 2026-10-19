@@ -58,6 +58,8 @@ interface WorkViewOptions {
   pollIntervalMs?: number;
   getLocalDeviceId?: () => string;
   humanCopy?: HumanCopyWorker | null;
+  /** Overall-request ledger written by the request-progress skill; null disables it. */
+  ledgerDir?: string | null;
 }
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
@@ -91,7 +93,11 @@ export class WorkViewRoutes extends BaseRouteHandler {
     super();
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
-    this.source = new WorkStateSource({ databasePath: options.databasePath ?? DB_PATH, pollIntervalMs: this.pollIntervalMs });
+    this.source = new WorkStateSource({
+      databasePath: options.databasePath ?? DB_PATH,
+      pollIntervalMs: this.pollIntervalMs,
+      ledgerDir: options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir,
+    });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
     this.humanCopy = options.humanCopy === undefined
       ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })

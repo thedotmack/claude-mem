@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
+import { ledgerSignature, readLedger } from './request-groups.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
 const normalizedKey = (value) => String(value).replace(/[A-Z]/g, (letter) => letter.toLowerCase());
@@ -149,6 +150,7 @@ export class WorkStateSource {
     currentProject = '',
     parentProject = currentProject,
     titleCachePath = null,
+    ledgerDir = null,
     pollIntervalMs = 1000,
     localDeviceId = '',
   } = {}) {
@@ -160,6 +162,9 @@ export class WorkStateSource {
     this.titleCachePath = titleCachePath;
     this.titleCache = {};
     this.titleCacheSignature = null;
+    this.ledgerDir = ledgerDir;
+    this.ledger = null;
+    this.ledgerSignature = null;
     this.database = null;
     this.databaseIdentity = null;
     this.cachedState = reduceWorkState([], { currentProject, currentProjectScope: [parentProject, currentProject] });
@@ -197,7 +202,8 @@ export class WorkStateSource {
       const revision = database.prepare(`SELECT COUNT(*) AS count, MAX(id) AS id${this.columns.has('sync_rev') ? ', SUM(CAST(sync_rev AS INTEGER)) AS synced_revision' : ''} FROM work_state_entries`).get();
       const signature = `${revision.count}:${revision.id ?? 0}:${revision.synced_revision ?? 0}:${this.localDeviceId}`;
       this.readTitleCache();
-      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}`;
+      this.readLedger();
+      const activity = `${activitySignature(database)}|titles:${this.titleCacheSignature}|ledger:${this.ledgerSignature}`;
       if (signature !== this.signature || activity !== this.activitySignature || !this.source.connected) {
         database.exec('BEGIN');
         try {
@@ -211,7 +217,7 @@ export class WorkStateSource {
             this.cachedState = reduceWorkState(scopedEntries, { currentProject: this.currentProject, currentProjectScope, localDeviceId: this.localDeviceId });
           }
           this.agentRevision++;
-          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState }), { titleCache: this.titleCache }), revision: this.agentRevision };
+          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState }), { titleCache: this.titleCache, ledger: this.ledger }), revision: this.agentRevision };
           // Hash full linked evidence without sending its potentially large raw
           // text in every snapshot. A review covers the source disclosure too.
           const evidenceHashes = new Map();
@@ -288,11 +294,22 @@ export class WorkStateSource {
     this.titleCacheSignature = signature;
   }
 
+  readLedger() {
+    const signature = this.ledgerDir ? ledgerSignature(this.ledgerDir) : 'disabled';
+    if (signature === this.ledgerSignature) return;
+    try { this.ledger = this.ledgerDir ? readLedger(this.ledgerDir) : null; }
+    catch { this.ledger = null; }
+    this.ledgerSignature = signature;
+  }
+
   agentsSnapshot() {
     const now = Date.now();
     return {
       ...this.agentView,
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
+      // Progress reviews and the build story come from the request-progress
+      // skill; they are assessments, separate from recorded lifecycle.
+      story: this.ledger ? { reviews: Object.values(this.ledger.progress), story: this.ledger.story, groups: Object.keys(this.ledger.groups.groups).length } : null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
