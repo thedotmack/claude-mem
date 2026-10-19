@@ -255,6 +255,17 @@ describe('wire run', () => {
       expect(readFileSync(printedPath, 'utf-8').trim()).toBe(realpathSync(box.home));
       // A stub with no native integration would default to wire capture; the flag wins.
       expect(readWireGatewayRoutesFile().routes['cwd-stub-agent'].captureSource).toBe('native');
+      // As with connect, wire capture is refused for an agent its claude-mem hooks capture:
+      // both would record the same session.
+      await expect(runWireAgentCli('run', ['claude-code', '--capture', 'wire', '--', '/bin/true'], {
+        config: { ...loadWireGatewayConfig(), host: '127.0.0.1', port: gateway.port },
+        bunPath: process.execPath,
+        scriptPath: WIRE_GATEWAY_SCRIPT,
+        startDaemon: async () => undefined,
+        stopDaemon: async () => undefined,
+        writeLine: () => undefined,
+        writeErrorLine: () => undefined,
+      })).rejects.toThrow(/always captured by its claude-mem hooks; it cannot use --capture wire/);
     } finally {
       await gateway.stop();
       rmSync(descriptorPath, { force: true });

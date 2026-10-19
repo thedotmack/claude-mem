@@ -314,17 +314,7 @@ export function planAgentConnection(
     throw new Error(`${refusal}. The wire gateway never forwards subscription sign-ins, so nothing was changed: ${nativePathPhrase(descriptor)}.`);
   }
 
-  const native = descriptor.nativeIntegration;
-  const nativeInstalled = native ? native.isInstalled(environment) : false;
-  if (request.captureSource === 'wire' && (nativeInstalled || native?.alwaysNative)) {
-    throw new Error(
-      native?.alwaysNative
-        ? `${descriptor.name} is always captured by its claude-mem hooks; it cannot use --capture wire.`
-        : `${descriptor.name} has claude-mem's native integration installed, and each agent has one capture source. `
-          + `Remove it first (${native!.uninstallCommand}) or connect without --capture wire.`,
-    );
-  }
-  const captureSource: WireGatewayCaptureSource = nativeInstalled || native?.alwaysNative ? 'native' : (request.captureSource ?? 'wire');
+  const captureSource = resolveCaptureSource(descriptor, environment, request.captureSource);
 
   const existingRoutes = readWireGatewayRoutesFile(options.routesFilePath).routes;
   const takenRouteIds = new Set<string>();
@@ -505,6 +495,30 @@ export function applyConnectionPlan(plan: ConnectionPlan, options: Pick<WiringOp
       });
     });
   });
+}
+
+/**
+ * The capture source an agent gets, for `connect` and `wire run` alike: an
+ * agent whose claude-mem hooks are installed (or always apply) is captured
+ * natively, and asking for wire capture is refused, so a session is never
+ * recorded twice. Otherwise what was asked, or wire.
+ */
+export function resolveCaptureSource(
+  descriptor: AgentDescriptor,
+  environment: AgentEnvironment,
+  requested: WireGatewayCaptureSource | undefined,
+): WireGatewayCaptureSource {
+  const native = descriptor.nativeIntegration;
+  const nativeInstalled = native ? native.isInstalled(environment) : false;
+  if (requested === 'wire' && (nativeInstalled || native?.alwaysNative)) {
+    throw new Error(
+      native?.alwaysNative
+        ? `${descriptor.name} is always captured by its claude-mem hooks; it cannot use --capture wire.`
+        : `${descriptor.name} has claude-mem's native integration installed, and each agent has one capture source. `
+          + `Remove it first (${native!.uninstallCommand}) or leave out --capture wire.`,
+    );
+  }
+  return nativeInstalled || native?.alwaysNative ? 'native' : (requested ?? 'wire');
 }
 
 export interface ConnectResult {

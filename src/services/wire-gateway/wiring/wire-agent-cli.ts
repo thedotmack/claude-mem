@@ -27,6 +27,7 @@ import { PREVIEW_SANDBOX_FLAG, runWirePreview } from './preview.js';
 import {
   connectAgent,
   disconnectAgent,
+  resolveCaptureSource,
   type ConnectResult,
   type DisconnectResult,
   type WiringOptions,
@@ -220,9 +221,7 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
     }
     case 'run': {
       const environment = currentAgentEnvironment();
-      const native = descriptor.nativeIntegration;
-      const captureSource: WireGatewayCaptureSource = parseCaptureFlag(ownArguments)
-        ?? (native && (native.alwaysNative || native.isInstalled(environment)) ? 'native' : 'wire');
+      const captureSource = resolveCaptureSource(descriptor, environment, parseCaptureFlag(ownArguments));
       return runAgentThroughGateway(descriptor, agentArguments, {
         environment,
         cwd: parseWorkingDirectoryFlag(ownArguments),
