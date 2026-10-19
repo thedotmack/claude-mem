@@ -42,4 +42,10 @@ describe("SearchManager type='all'", () => {
     expect(counts(omitted)).toEqual([1, 1, 1]);
     expect(counts(all)).toEqual(counts(omitted));
   });
+
+  it("treats a type array containing 'all' as every category", async () => {
+    const manager = setup();
+    expect(counts(await manager.search({ query: 'retry limit', type: ['all'], format: 'json' }))).toEqual([1, 1, 1]);
+    expect(counts(await manager.search({ query: 'retry limit', type: ['all', 'sessions'], format: 'json' }))).toEqual([1, 1, 1]);
+  });
 });

@@ -379,7 +379,7 @@ export class SearchManager {
     const isCategorySelector = typeValues.length > 0 && typeValues.every(t => CATEGORY_TYPES.includes(t));
 
     if (isCategorySelector) {
-      return { category: type, effectiveObsType: obs_type };
+      return { category: typeValues.includes('all') ? 'all' : type, effectiveObsType: obs_type };
     }
 
     const existingObsType = Array.isArray(obs_type)
