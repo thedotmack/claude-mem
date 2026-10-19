@@ -25,6 +25,15 @@ import { assertCanonicalDecimal, type ContentKind } from '../../../sync/Canonica
 import type { CloudSync } from '../../../sync/CloudSync.js';
 import { emitContextInvalidation } from '../../../../shared/context-invalidation.js';
 
+// Chroma doc_type per content kind. Observation and summary id spaces overlap,
+// so the delete-route cleanup must be scoped by doc_type, not sqlite_id alone.
+type IndexedRowKind = Exclude<ContentKind, 'work_state'>;
+const CHROMA_DOC_TYPES: Record<IndexedRowKind, string> = {
+  observation: 'observation',
+  summary: 'session_summary',
+  prompt: 'user_prompt',
+};
+
 const integerArrayLike = z.preprocess((value) => {
   if (Array.isArray(value)) return value;
   if (typeof value === 'string') {
@@ -467,11 +476,32 @@ export class DataRoutes extends BaseRouteHandler {
     return null;
   }
 
+  /**
+   * Rows are committed gone — drop their fragments from the vector index too
+   * (#4805). Backfill only walks SQLite rows, so nothing else would reclaim
+   * them. Best-effort and in the background: rows are cleaned one at a time so
+   * a large session delete doesn't flood chroma-mcp, and a Chroma failure is
+   * logged per row and never blocks or undoes the delete.
+   */
+  private scheduleChromaRowCleanup(rows: ReadonlyArray<{ kind: IndexedRowKind; id: string }>): void {
+    const chromaSync = this.dbManager.getChromaSync();
+    if (!chromaSync || rows.length === 0) return;
+    void (async () => {
+      for (const row of rows) {
+        try {
+          await chromaSync.deleteRowDocuments(CHROMA_DOC_TYPES[row.kind], Number(row.id));
+        } catch (error: unknown) {
+          logger.warn('CHROMA_SYNC', 'Post-delete Chroma cleanup failed', { kind: row.kind, sqlite_id: row.id, error });
+        }
+      }
+    })();
+  }
+
   /** Production deletion surface: safety check and row delete for a single content row. */
   private deleteSyncedContent(
     req: Request,
     res: Response,
-    kind: ContentKind,
+    kind: IndexedRowKind,
     table: 'observations' | 'session_summaries' | 'user_prompts',
   ): void {
     let originLocalId: string;
@@ -500,6 +530,8 @@ export class DataRoutes extends BaseRouteHandler {
     }
 
     const entityRev = this.commitRowDelete(cloudSync, store, kind, table, originLocalId);
+
+    this.scheduleChromaRowCleanup([{ kind, id: originLocalId }]);
     emitContextInvalidation('all', `delete-${kind}`, 'removal');
 
     // Only after the delete committed: open viewer tabs drop the row live.
@@ -631,25 +663,25 @@ export class DataRoutes extends BaseRouteHandler {
       return;
     }
 
-    type ChildRow = { kind: ContentKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
+    type ChildRow = { kind: IndexedRowKind; table: 'observations' | 'session_summaries' | 'user_prompts'; id: string };
     const childRows: ChildRow[] = [];
 
     if (sessionRow.memory_session_id) {
       const observations = store.db.prepare(
         `SELECT CAST(id AS TEXT) AS id FROM observations WHERE memory_session_id = ? AND origin_device_id IS NULL`
       ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...observations.map(row => ({ kind: 'observation' as ContentKind, table: 'observations' as const, id: row.id })));
+      childRows.push(...observations.map(row => ({ kind: 'observation' as const, table: 'observations' as const, id: row.id })));
 
       const summaries = store.db.prepare(
         `SELECT CAST(id AS TEXT) AS id FROM session_summaries WHERE memory_session_id = ? AND origin_device_id IS NULL`
       ).all(sessionRow.memory_session_id) as Array<{ id: string }>;
-      childRows.push(...summaries.map(row => ({ kind: 'summary' as ContentKind, table: 'session_summaries' as const, id: row.id })));
+      childRows.push(...summaries.map(row => ({ kind: 'summary' as const, table: 'session_summaries' as const, id: row.id })));
     }
 
     const prompts = store.db.prepare(
       `SELECT CAST(id AS TEXT) AS id FROM user_prompts WHERE session_db_id = ? AND origin_device_id IS NULL`
     ).all(sessionRow.id) as Array<{ id: string }>;
-    childRows.push(...prompts.map(row => ({ kind: 'prompt' as ContentKind, table: 'user_prompts' as const, id: row.id })));
+    childRows.push(...prompts.map(row => ({ kind: 'prompt' as const, table: 'user_prompts' as const, id: row.id })));
 
     const cloudSync = this.dbManager.getCloudSync();
 
@@ -681,6 +713,7 @@ export class DataRoutes extends BaseRouteHandler {
       store.db.prepare(`DELETE FROM sdk_sessions WHERE id = ?`).run(sessionRow.id);
     })();
     emitContextInvalidation('all', 'delete-session', 'removal');
+    this.scheduleChromaRowCleanup(childRows);
 
     // Only after the delete committed: open viewer tabs drop the session live.
     this.sseBroadcaster.broadcast({ type: 'session_deleted', platformSource, contentSessionId });

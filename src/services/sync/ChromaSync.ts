@@ -49,6 +49,20 @@ export interface ChromaDocument {
 }
 
 /**
+ * Chroma doc_type → row-writer kind, mirroring the worker routes'
+ * CHROMA_DOC_TYPES. Row cleanup (`deleteRowDocuments`) receives the doc_type
+ * but must queue on the same `rowWriters` turn live writes and backfill key by
+ * kind, so the two string spaces meet here. Unknown doc types fall back to
+ * their own name: they match no writer key, which only matters if a new doc
+ * type is added without updating this table.
+ */
+const DOC_TYPE_ROW_KIND: Record<string, string> = {
+  observation: 'observations',
+  session_summary: 'summaries',
+  user_prompt: 'prompts',
+};
+
+/**
  * Why a backfill run stopped before attempting every row: the worker began
  * shutting down (local Chroma then refuses every write), Chroma refused
  * writes for MAX_CONSECUTIVE_BATCH_FAILURES rows in a row, or the collection
@@ -871,16 +885,18 @@ export class ChromaSync {
     return written;
   }
 
-  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
-  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
+  /**
+   * Look up the deterministic fragment ids of one content row that belong to
+   * `docType`. Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and
+   * member over every document matching it before the selective condition
+   * narrows anything, so a doc_type prefix scanned ~1.2M observation docs per
+   * lookup and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
+   * doc_type still matters — observation and session_summary ids overlap —
+   * so it is filtered client-side here.
+   */
+  private async lookupRowFragmentIds(docType: string, sqliteId: number): Promise<string[]> {
     await this.ensureCollectionExists();
     const manager = ChromaMcpManager.getInstance();
-    // Query by sqlite_id alone: chromadb 1.5.9 evaluates an $and member over
-    // every document matching it before the selective condition narrows
-    // anything, so a doc_type prefix scanned ~1.2M observation docs per lookup
-    // and blew the chroma-mcp 60s timeout on a cold page cache (#4682).
-    // doc_type still matters — observation and session_summary ids overlap —
-    // so it is filtered client-side below.
     const existing = await manager.callTool('chroma_get_documents', {
       collection_name: this.collectionName,
       where: { sqlite_id: sqliteId },
@@ -899,12 +915,45 @@ export class ChromaSync {
       || (ids.length > 0 && (!Array.isArray(metadatas) || metadatas.length !== ids.length))) {
       throw new Error('Chroma fragment lookup did not return a valid document ID list with metadatas');
     }
+    return (ids as string[]).filter((id, k) =>
+      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType);
+  }
+
+  /** Remove only disappeared fragments; surviving deterministic IDs update in place. */
+  private async removeObsoleteFragments(docType: string, sqliteId: number, documents: ChromaDocument[]): Promise<void> {
     const currentIds = new Set(documents.map(doc => doc.id));
-    const obsolete = (ids as string[]).filter((id, k) =>
-      (metadatas as Array<Record<string, unknown> | null>)[k]?.doc_type === docType
-      && !currentIds.has(id));
+    const obsolete = (await this.lookupRowFragmentIds(docType, sqliteId))
+      .filter(id => !currentIds.has(id));
+    const manager = ChromaMcpManager.getInstance();
     for (let i = 0; i < obsolete.length; i += this.BATCH_SIZE) {
       await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: obsolete.slice(i, i + this.BATCH_SIZE) });
+    }
+  }
+
+  /**
+   * Delete every remaining fragment of one content row. The delete routes call
+   * this after the SQLite row is committed gone; without it the row's documents
+   * stay in the index forever (#4805) — backfill walks SQLite rows and never
+   * reconciles toward Chroma, so nothing else reclaims them.
+   * Returns the number of fragments removed.
+   */
+  public async deleteRowDocuments(docType: string, sqliteId: number): Promise<number> {
+    // Queue on the same per-row writer turn live writes and backfill use: a
+    // batch still being written when the delete committed must land before the
+    // lookup below, or it would finish after these deletions and orphan its
+    // fragments again even though every Chroma call here succeeded (Greptile
+    // P1 on PR #4813). Holding the turn through deletion also makes a write
+    // that races the delete wait instead of interleaving with it.
+    const release = await this.acquireRowWriter(DOC_TYPE_ROW_KIND[docType] ?? docType, sqliteId);
+    try {
+      const doomed = await this.lookupRowFragmentIds(docType, sqliteId);
+      const manager = ChromaMcpManager.getInstance();
+      for (let i = 0; i < doomed.length; i += this.BATCH_SIZE) {
+        await manager.callTool('chroma_delete_documents', { collection_name: this.collectionName, ids: doomed.slice(i, i + this.BATCH_SIZE) });
+      }
+      return doomed.length;
+    } finally {
+      release();
     }
   }
 
