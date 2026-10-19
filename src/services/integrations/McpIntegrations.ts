@@ -132,7 +132,7 @@ const ROO_CODE_CONFIG: McpInstallerConfig = {
 const WARP_CONFIG: McpInstallerConfig = {
   ideId: 'warp',
   ideLabel: 'Warp',
-  configPath: path.join(homedir(), '.warp', 'mcp.json'),
+  configPath: path.join(homedir(), '.warp', '.mcp.json'),
   configKey: 'mcpServers',
   contextPath: path.join(process.cwd(), 'WARP.md'),
 };

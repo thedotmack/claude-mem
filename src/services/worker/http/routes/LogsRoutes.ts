@@ -3,7 +3,7 @@ import express, { Request, Response } from 'express';
 import { openSync, fstatSync, readSync, closeSync, existsSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { logger } from '../../../../utils/logger.js';
-import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
+import { paths } from '../../../../shared/paths.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 
 export function readLastLines(filePath: string, lineCount: number): { lines: string; totalEstimate: number } {
@@ -68,16 +68,10 @@ export function readLastLines(filePath: string, lineCount: number): { lines: str
 }
 
 export class LogsRoutes extends BaseRouteHandler {
+  // Same directory the logger writes to (src/utils/logger.ts).
   private getLogFilePath(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-    const logsDir = join(dataDir, 'logs');
     const date = new Date().toISOString().split('T')[0];
-    return join(logsDir, `claude-mem-${date}.log`);
-  }
-
-  private getLogsDir(): string {
-    const dataDir = SettingsDefaultsManager.get('CLAUDE_MEM_DATA_DIR');
-    return join(dataDir, 'logs');
+    return join(paths.logsDir(), `claude-mem-${date}.log`);
   }
 
   setupRoutes(app: express.Application): void {

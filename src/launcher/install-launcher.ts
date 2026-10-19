@@ -105,20 +105,17 @@ const DEFAULT_WINDOWS_PATH_EXTENSIONS = '.COM;.EXE;.BAT;.CMD';
  * tried with every PATHEXT extension in order, the way a shell-style lookup
  * resolves a bare command, so an npm `claude-mem.cmd` shim earlier on PATH is
  * reported instead of the launcher `.exe` behind it.
- * `skipCandidate` drops that PATH directory and keeps searching, so doctor can
- * ignore the `npx` CLI and report the launcher hooks will exec.
  */
 export function findExecutableOnPath(
   executableName: string,
   pathValue: string,
   platform: NodeJS.Platform,
-  windowsPathExtensions: string | undefined = DEFAULT_WINDOWS_PATH_EXTENSIONS,
-  skipCandidate?: (candidatePath: string) => boolean,
+  windowsPathExtensions: string = DEFAULT_WINDOWS_PATH_EXTENSIONS,
 ): string | null {
   const platformPath = pathModuleFor(platform);
   const pathDelimiter = platform === 'win32' ? ';' : ':';
   const candidateFileNames = platform === 'win32'
-    ? (windowsPathExtensions ?? DEFAULT_WINDOWS_PATH_EXTENSIONS).split(';').map((extension) => extension.trim()).filter(Boolean)
+    ? windowsPathExtensions.split(';').map((extension) => extension.trim()).filter(Boolean)
       .map((extension) => `${executableName}${extension.toLowerCase()}`)
     : [executableName];
   for (const pathEntry of pathValue.split(pathDelimiter)) {
@@ -126,11 +123,7 @@ export function findExecutableOnPath(
     if (!directory) continue;
     for (const candidateFileName of candidateFileNames) {
       const candidatePath = platformPath.join(directory, candidateFileName);
-      if (!existsSync(candidatePath)) continue;
-      // A skipped hit (the running npx CLI) hides the rest of that directory.
-      // The next PATH entry is the command hooks will actually exec.
-      if (skipCandidate?.(candidatePath)) break;
-      return candidatePath;
+      if (existsSync(candidatePath)) return candidatePath;
     }
   }
   return null;
@@ -157,6 +150,13 @@ export function detectShellConfigFile(
     if (existsSync(bashProfile)) return { path: bashProfile, shell: 'bash' };
   }
   return { path: posixPath.join(homeDirectory, '.bashrc'), shell: 'bash' };
+}
+
+/** The PATH line the installer writes for this shell (and that uninstall names). */
+function shellPathExportLine(shell: 'zsh' | 'bash' | 'fish', localBinDirectory: string): string {
+  return shell === 'fish'
+    ? `set -gx PATH ${localBinDirectory} $PATH`
+    : 'export PATH="$HOME/.local/bin:$PATH"';
 }
 
 export function shellPathSetupMarkerComment(purposeLabel: string): string {
@@ -192,9 +192,7 @@ export function ensureLocalBinOnShellPath(options: {
     host.platform,
   );
   const binPathLiteral = '$HOME/.local/bin';
-  const exportLine = shell === 'fish'
-    ? `set -gx PATH ${localBinDirectory} $PATH`
-    : `export PATH="${binPathLiteral}:$PATH"`;
+  const exportLine = shellPathExportLine(shell, localBinDirectory);
 
   let existingContent = '';
   if (existsSync(configFile)) {
@@ -666,14 +664,15 @@ export function removeInstalledLauncher(host: LauncherHostEnvironment = currentL
       pathCleanupHint = `${binDirectory} is still on your user Path; remove it in Environment Variables if you no longer need it.`;
     }
   } else {
-    const { path: configFile } = detectShellConfigFile(
+    const { path: configFile, shell } = detectShellConfigFile(
       host.homeDirectory,
       host.environmentVariables.SHELL ?? '',
       host.platform,
     );
     const markerComment = shellPathSetupMarkerComment('claude-mem');
     if (existsSync(configFile) && readFileSync(configFile, 'utf-8').includes(markerComment)) {
-      pathCleanupHint = `${configFile} still has the "${markerComment}" PATH line (export PATH="$HOME/.local/bin:$PATH"); remove it if nothing else in ~/.local/bin needs it.`;
+      const exportLine = shellPathExportLine(shell, posixPath.join(host.homeDirectory, '.local', 'bin'));
+      pathCleanupHint = `${configFile} still has the "${markerComment}" PATH line (${exportLine}); remove it if nothing else in ~/.local/bin needs it.`;
     }
   }
   return { removedBinaryPath, pathCleanupHint };
