@@ -24,11 +24,12 @@ export type NormalizedAbortReason =
   | 'none';
 
 /**
- * A fallback run that ends after a stored reply because its primary recovered
+ * A running generator that ended at its next message boundary because dispatch
+ * now selects another provider, such as the primary back after a fallback
  * (#4846). It keeps the session's buffered work like any provider switch, and
- * the runner resumes it on the primary at once.
+ * the runner resumes it on the selected provider at once.
  */
-export const PRIMARY_RECOVERED_ABORT_REASON = 'provider_switch:primary_recovered';
+export const PROVIDER_SWITCH_BOUNDARY_ABORT_REASON = 'provider_switch:boundary';
 
 /** The category of a raw abort reason: the text before the first ':'. */
 export function abortCategoryOf(reason: string | null | undefined): string {

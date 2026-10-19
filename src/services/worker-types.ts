@@ -42,12 +42,6 @@ export interface ActiveSession {
    * must not strand the work: the primary takes it back once it recovers.
    */
   fallbackFrom?: 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | null;
-  /**
-   * Set when dispatch selects the primary again while its stand-in is still
-   * running (#4846). A live generator in an active session may never end on
-   * its own, so the stand-in hands back after its next stored reply instead.
-   */
-  primaryReturnPending?: boolean;
   consecutiveRestarts: number;
   /**
    * Rejected replies (neither observation/summary XML nor the
@@ -147,6 +141,13 @@ export interface ActiveSession {
   abortReason?: 'idle' | 'shutdown' | 'overflow' | 'restart-guard' | 'quota' | 'provider_switch' | string | null;
   /** Why buffered work was last parked after a generator exit. */
   pausedReason?: string | null;
+  /**
+   * Set when dispatch selects a provider other than the one the running
+   * generator uses (the primary is back after a fallback, or settings
+   * changed). The generator ends at its next message boundary, before it
+   * sends again, and a fresh one starts on the selected provider.
+   */
+  providerSwitchPending?: boolean;
   respawnTimer?: ReturnType<typeof setTimeout>;
   /** When the latest compression prompt was dispatched to the model — telemetry compression_ms. */
   lastPromptSentAt?: number | null;

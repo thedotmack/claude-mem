@@ -382,9 +382,10 @@ export class SessionRoutes extends BaseRouteHandler {
     // because the idle monitor only runs once the generator loop is
     // consuming messages. Abort the parked wait and restart with the new
     // provider immediately instead of leaving it stuck. A generator that HAS
-    // acquired its slot (mid-response) is left alone — falls through to the
-    // log-only "switch after it finishes" path below, unchanged.
-    if (session.currentProvider && session.currentProvider !== selectedProvider && isSessionParkedForSlot(sessionDbId)) {
+    // acquired its slot (mid-response) is not aborted here — it switches at
+    // its next message boundary (see below).
+    const providerChanged = Boolean(session.currentProvider && session.currentProvider !== selectedProvider);
+    if (providerChanged && isSessionParkedForSlot(sessionDbId)) {
       // Defensive re-guard: `session` is already narrowed non-null by the
       // early return above, but this branch spans a 3-operand `&&` plus a
       // trailing function call before any property access — re-asserting
@@ -413,38 +414,21 @@ export class SessionRoutes extends BaseRouteHandler {
     // keep the gateway re-probe it claimed on the way in.
     releaseCmemGatewayProbe(selection.gatewayProbeClaimId);
 
-    // A hand-back the latest selection no longer asks for must not fire later.
-    if (session.primaryReturnPending && selectedProvider !== session.fallbackFrom) {
-      session.primaryReturnPending = false;
-    }
-
-    // A stand-in whose primary is selectable again hands back at the next
-    // reply boundary (#4846): in an active session the generator may never
-    // finish, which kept a two-minute outage on the fallback for hours.
-    if (session.currentProvider && session.currentProvider !== selectedProvider
-        && session.fallbackFrom != null && session.fallbackFrom === selectedProvider) {
-      if (!session.primaryReturnPending) {
-        logger.info('SESSION', 'Primary recovered; switching back after the current reply', {
-          sessionId: sessionDbId,
-          currentProvider: session.currentProvider,
-          primary: selectedProvider,
-        });
-      }
-      session.primaryReturnPending = true;
-      return;
-    }
-
-    if (session.currentProvider && session.currentProvider !== selectedProvider) {
-      logger.info('SESSION', `Provider changed, will switch after current generator finishes`, {
+    // A running generator in an active session never idles out, so it ends at
+    // its next message boundary and the runner resumes on the selected
+    // provider (#4846). Not when dispatch routes around the provider this
+    // generator runs on: it is that provider's probe, or its own failure moves
+    // the work to the fallback, so a switch would only restart a healthy run.
+    const switchNeeded = providerChanged && (selection.fallbackFrom ?? null) !== session.currentProvider;
+    if (switchNeeded && !session.providerSwitchPending) {
+      logger.info('SESSION', 'Provider changed, will switch at the next message boundary', {
         sessionId: sessionDbId,
         currentProvider: session.currentProvider,
         selectedProvider,
         historyLength: session.conversationHistory.length
       });
-      // Let current generator finish naturally, next one will use new provider.
-      // The buffered queue carries over; the next generator opens a new
-      // generation seeded from this session's memory (#3800, #3479).
     }
+    session.providerSwitchPending = switchNeeded;
   }
 
   /**
@@ -539,8 +523,6 @@ export class SessionRoutes extends BaseRouteHandler {
       }
       this.applyQuotaFallbackModel(session, selectedProvider, fallbackFrom);
       session.fallbackFrom = fallbackFrom;
-      // A hand-back requested of an earlier run never applies to this one.
-      session.primaryReturnPending = false;
       // The claim travels with the run that took it: only that run may release
       // it, or an earlier generator's exit would clear a later session's probe.
       await this.startGeneratorWithProvider(

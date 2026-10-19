@@ -8,7 +8,6 @@ export type {
 } from './types.js';
 
 export {
-  handBackToRecoveredPrimary,
   processAgentResponse,
   snapshotResponseContext,
   takeObserverSchemaReminder,

@@ -123,14 +123,14 @@ describe('observer resumes itself after recycling its conversation (#3800)', () 
     expect(starts).toBe(2);
   });
 
-  it('resumes buffered work at once after a stand-in hands back to its primary (#4846)', async () => {
+  it('resumes buffered work at once after a generator ends at a message boundary to switch providers (#4846)', async () => {
     const session = makeSession();
     let starts = 0;
 
     const { routes, stats } = buildRoutes(session, async () => {
       starts += 1;
       if (starts === 1) {
-        session.abortReason = 'provider_switch:primary_recovered';
+        session.abortReason = 'provider_switch:boundary';
         return;
       }
       await new Promise<void>(() => {});

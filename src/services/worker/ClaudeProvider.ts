@@ -15,7 +15,7 @@ import type { ActiveSession, PendingMessageWithId, SDKUserMessage } from '../wor
 import { sameObservationContext } from './codex-observation-batch.js';
 import { boundedInteger } from './CodexAppServerPool.js';
 import { ModeManager } from '../domain/ModeManager.js';
-import { handBackToRecoveredPrimary, processAgentResponse, snapshotResponseContext, takeObserverSchemaReminder, type WorkerRef } from './agents/index.js';
+import { processAgentResponse, snapshotResponseContext, takeObserverSchemaReminder, type WorkerRef } from './agents/index.js';
 import {
   createSdkSpawnFactory,
   getSdkProcessForSession,
@@ -879,12 +879,6 @@ export class ClaudeProvider {
           }
           turnDispatchedText = false;
           turnEmptyOutputReason = undefined;
-          // Hand a stand-in back to its recovered primary only here, after
-          // every text frame of the turn was stored, and before the feed opens
-          // for the next prompt (#4846).
-          if (handBackToRecoveredPrimary(session)) {
-            break;
-          }
           // The result frame is the one turn boundary every outcome passes
           // through — XML, empty/prose, and the failed-turn re-queue above,
           // which never reaches processAgentResponse. Opening the feed per text
