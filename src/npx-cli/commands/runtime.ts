@@ -269,6 +269,9 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
       .filter((block): block is { type: 'text'; text: string } => block?.type === 'text' && typeof block.text === 'string')
       .map(block => block.text)
       .join('\n\n'));
+    if ((data as { isError?: unknown }).isError === true) {
+      process.exit(1);
+    }
   } else if (typeof data === 'object' && data !== null) {
     console.log(JSON.stringify(data, null, 2));
   } else {
