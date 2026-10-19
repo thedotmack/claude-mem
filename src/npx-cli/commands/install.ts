@@ -418,6 +418,23 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'hermes': {
+      return {
+        title: 'Hermes Agent: installing memory provider',
+        task: async (message) => {
+          message('Loading Hermes installer…');
+          const { installHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
+          message('Installing the memory provider plugin…');
+          const { result, output } = await bufferConsole(async () => installHermesIntegration());
+          if (result !== 0) {
+            recordFailure('Hermes Agent: memory provider installation failed', output);
+            return `Hermes Agent: memory provider installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Hermes Agent: memory provider installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'pi': {
       return {
         title: 'Pi: installing memory extension',
@@ -739,6 +756,7 @@ function copyPluginToMarketplace(): void {
     'package-lock.json',
     'openclaw',
     'omp',
+    'hermes',
     'pi',
     'dsh',
     'dist',

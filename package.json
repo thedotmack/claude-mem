@@ -55,6 +55,7 @@
     "plugin/ui",
     "openclaw",
     "omp",
+    "hermes",
     "pi",
     "dsh",
     "NOTICE"

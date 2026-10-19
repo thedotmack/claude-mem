@@ -184,6 +184,29 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('"');
   });
 
+  it('keeps the by-file route\'s newest-first order across days', () => {
+    // /api/search/by-file renders days and rows newest-first.
+    const input = `### Oct 17, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #4 | 5:00 PM | 🔵 | Newest | ~10 |
+| #3 | 3:00 PM | 🔵 | Third | ~10 |
+
+### Oct 16, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #2 | 5:00 PM | 🔵 | Second | ~10 |
+| #1 | 3:00 PM | 🔵 | Oldest | ~10 |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    const ids = [...result.matchAll(/^\| (#\d+) \|/gm)].map(m => m[1]);
+    expect(ids).toEqual(['#4', '#3', '#2', '#1']);
+    expect(result.indexOf('### Oct 17, 2026')).toBeLessThan(result.indexOf('### Oct 16, 2026'));
+  });
+
   it('should parse session ID format (#S123) correctly', () => {
     const input = '| #S123 | 4:30 PM | 🟣 | Session started | ~200 |';
 

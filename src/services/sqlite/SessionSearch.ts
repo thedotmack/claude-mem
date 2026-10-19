@@ -1,4 +1,4 @@
-import { Database } from 'bun:sqlite';
+import { Database, type Statement } from 'bun:sqlite';
 import { TableNameRow } from '../../types/database.js';
 import { DATA_DIR, DB_PATH, ensureDir } from '../../shared/paths.js';
 import { logger } from '../../utils/logger.js';
@@ -91,6 +91,14 @@ export const SESSION_SUMMARIES_FTS_TRIGGERS_SQL = `
     VALUES (new.id, new.request, new.investigated, new.learned, new.completed, new.next_steps, new.notes);
   END;
 `;
+
+type AnyTermFtsTable = 'observations_fts' | 'session_summaries_fts';
+
+/** Rows of an FTS table holding a word, and the table's row count, for one any-term query. */
+interface DocFrequency {
+  rows: (word: string) => number;
+  total: number;
+}
 
 export class SessionSearch {
   private db: Database;
@@ -471,16 +479,162 @@ export class SessionSearch {
    * rarest, terms first. Queries of one or two terms stay keyword queries, matched with AND as #4130 intends
    * ("authentication bug" must not widen to every row that mentions "bug"); widening starts at three terms, where
    * a query reads as a question. Null when the query is not widened.
+   *
+   * The OR is bounded by prompt size (#4804): FTS5 scores every row holding any term before the filters apply, so
+   * an OR of every word of a long prompt ran for minutes on a large store. Document frequencies come from an
+   * fts5vocab table in this connection's temp schema, looked up one term at a time.
+   *
+   *   prompt chars | terms kept
+   *   < 200        | its tokens, deduplicated, minus those whose rarest word is in >= 30% of rows; at most 40, rarest first
+   *   200..600     | the same, at most 60
+   *   >= 600       | the first 40 distinct words of >= 3 characters that are in at least one row and in < 2% of rows
+   *
+   * Without the vocabulary (no FTS5 vocab module, or a connection that cannot create temp tables) the tokens are
+   * deduplicated and capped at 40.
    */
-  private static buildFTSAnyTermQuery(query: string): string | null {
+  private buildFTSAnyTermQuery(query: string, ftsTable: AnyTermFtsTable): string | null {
     const tokens = (query.match(/\S+/g) ?? []).filter(token => /[\p{L}\p{N}]/u.test(token));
     if (tokens.length < SessionSearch.MIN_ANY_TERM_TOKENS) {
       return null;
     }
 
-    return tokens
+    const docFrequency = this.termDocFrequency(ftsTable);
+    const length = [...query].length;
+    let picked: string[];
+    if (!docFrequency) {
+      picked = SessionSearch.dedupeTokens(tokens).slice(0, SessionSearch.ANY_TERM_LONG_PROMPT_CAP);
+    } else if (length < SessionSearch.ANY_TERM_SHORT_PROMPT_CHARS) {
+      picked = SessionSearch.pickRareTokens(tokens, docFrequency, SessionSearch.ANY_TERM_SHORT_PROMPT_CAP);
+    } else if (length < SessionSearch.ANY_TERM_MEDIUM_PROMPT_CHARS) {
+      picked = SessionSearch.pickRareTokens(tokens, docFrequency, SessionSearch.ANY_TERM_MEDIUM_PROMPT_CAP);
+    } else {
+      picked = SessionSearch.pickRareWords(query, docFrequency);
+    }
+
+    if (picked.length === 0) {
+      return null;
+    }
+    return picked
       .map(token => `"${token.replace(/"/g, '""')}"`)
       .join(' OR ');
+  }
+
+  private static readonly ANY_TERM_SHORT_PROMPT_CHARS = 200;
+  private static readonly ANY_TERM_MEDIUM_PROMPT_CHARS = 600;
+  private static readonly ANY_TERM_SHORT_PROMPT_CAP = 40;
+  private static readonly ANY_TERM_MEDIUM_PROMPT_CAP = 60;
+  private static readonly ANY_TERM_LONG_PROMPT_CAP = 40;
+  /** Short and medium prompts drop a token whose rarest word is in this share of rows or more. */
+  private static readonly ANY_TERM_COMMON_SHARE = 0.30;
+  /** Long prompts keep only words in less than this share of rows. */
+  private static readonly ANY_TERM_LONG_PROMPT_MAX_SHARE = 0.02;
+  private static readonly ANY_TERM_LONG_PROMPT_MIN_WORD_CHARS = 3;
+  private static readonly ANY_TERM_CONTENT_TABLES: Record<AnyTermFtsTable, string> = {
+    observations_fts: 'observations',
+    session_summaries_fts: 'session_summaries',
+  };
+
+  /** Per FTS table: the temp-schema vocabulary lookup, or null once it could not be created on this connection. */
+  private readonly vocabLookups = new Map<AnyTermFtsTable, Statement | null>();
+
+  /**
+   * A document-frequency reader for one query: `(word) => rows holding it`, plus the row count. Null when the
+   * vocabulary is unavailable. Words are folded the way unicode61 indexes them (lowercase, no diacritics).
+   */
+  private termDocFrequency(ftsTable: AnyTermFtsTable): DocFrequency | null {
+    if (!this.vocabLookups.has(ftsTable)) {
+      let lookup: Statement | null = null;
+      try {
+        this.db.run(`CREATE VIRTUAL TABLE IF NOT EXISTS temp.${ftsTable}_vocab USING fts5vocab(main, '${ftsTable}', 'row')`);
+        lookup = this.db.prepare(`SELECT doc FROM temp.${ftsTable}_vocab WHERE term = ?`);
+      } catch (error) {
+        logger.debug('DB', 'FTS5 vocabulary unavailable; any-term queries are capped without frequencies', { ftsTable }, error instanceof Error ? error : undefined);
+      }
+      this.vocabLookups.set(ftsTable, lookup);
+    }
+    const lookup = this.vocabLookups.get(ftsTable);
+    if (!lookup) {
+      return null;
+    }
+    try {
+      const contentTable = SessionSearch.ANY_TERM_CONTENT_TABLES[ftsTable];
+      const total = (this.db.prepare(`SELECT count(*) AS n FROM ${contentTable}`).get() as { n: number }).n;
+      const cache = new Map<string, number>();
+      const rows = (word: string): number => {
+        const term = word.toLowerCase().normalize('NFD').replace(/\p{Mn}/gu, '');
+        let doc = cache.get(term);
+        if (doc === undefined) {
+          doc = (lookup.get(term) as { doc: number } | null)?.doc ?? 0;
+          cache.set(term, doc);
+        }
+        return doc;
+      };
+      return { rows, total };
+    } catch (error) {
+      logger.debug('DB', 'FTS5 vocabulary lookup failed; any-term queries are capped without frequencies', { ftsTable }, error instanceof Error ? error : undefined);
+      this.vocabLookups.set(ftsTable, null);
+      return null;
+    }
+  }
+
+  /** A token is as common as its rarest word: FTS splits `qa-hub,` into `qa` and `hub`, and a phrase needs both. */
+  private static tokenRows(token: string, docFrequency: DocFrequency): number {
+    const words = token.match(/[\p{L}\p{N}]+/gu) ?? [];
+    return words.length === 0 ? 0 : Math.min(...words.map(word => docFrequency.rows(word)));
+  }
+
+  /**
+   * Rows at or above which a word counts as common. A word in a single row is never common, so a small store
+   * still widens: 2% of 30 rows is less than one row.
+   */
+  private static commonRowLimit(total: number, share: number): number {
+    return Math.max(total * share, 2);
+  }
+
+  /** Tokens deduplicated case-insensitively, keeping each one's first spelling: `Retry retry RETRY` is one term. */
+  private static dedupeTokens(tokens: string[]): string[] {
+    const seen = new Set<string>();
+    return tokens.filter(token => {
+      const key = token.toLowerCase();
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    });
+  }
+
+  private static pickRareTokens(tokens: string[], docFrequency: DocFrequency, cap: number): string[] {
+    const limit = SessionSearch.commonRowLimit(docFrequency.total, SessionSearch.ANY_TERM_COMMON_SHARE);
+    const kept = SessionSearch.dedupeTokens(tokens).filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
+    if (kept.length <= cap) {
+      return kept;
+    }
+    return kept
+      .map(token => ({ token, rows: SessionSearch.tokenRows(token, docFrequency) }))
+      .sort((a, b) => a.rows - b.rows)
+      .slice(0, cap)
+      .map(entry => entry.token);
+  }
+
+  private static pickRareWords(query: string, docFrequency: DocFrequency): string[] {
+    const limit = SessionSearch.commonRowLimit(docFrequency.total, SessionSearch.ANY_TERM_LONG_PROMPT_MAX_SHARE);
+    const words = new Set(
+      (query.match(/[\p{L}\p{N}]+/gu) ?? [])
+        .filter(word => [...word].length >= SessionSearch.ANY_TERM_LONG_PROMPT_MIN_WORD_CHARS)
+        .map(word => word.toLowerCase()),
+    );
+    const kept: string[] = [];
+    for (const word of words) {
+      const rows = docFrequency.rows(word);
+      if (rows > 0 && rows < limit) {
+        kept.push(word);
+        if (kept.length === SessionSearch.ANY_TERM_LONG_PROMPT_CAP) {
+          break;
+        }
+      }
+    }
+    return kept;
   }
 
   private buildOrderClause(orderBy: SearchOptions['orderBy'] = 'relevance', hasFTS: boolean = true, ftsTable: string = 'observations_fts'): string {
@@ -616,7 +770,7 @@ export class SessionSearch {
         return substringRows;
       }
       // No row holds every term, as a token or as a substring: widen to any term, ranked by bm25.
-      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset) ?? substringRows;
+      return this.searchFtsAnyTerm<ObservationSearchResult>(sql, query, params, limit, offset, 'observations_fts') ?? substringRows;
     }
 
     return this.searchObservationsBySubstring(query, filters, orderBy, limit, offset);
@@ -694,7 +848,7 @@ export class SessionSearch {
       if (substringRows.length > 0 || (offset > 0 && this.searchSessionsBySubstring(query, filters, orderBy, 1, 0).length > 0)) {
         return substringRows;
       }
-      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset) ?? substringRows;
+      return this.searchFtsAnyTerm<SessionSummarySearchResult>(sql, query, params, limit, offset, 'session_summaries_fts') ?? substringRows;
     }
 
     return this.searchSessionsBySubstring(query, filters, orderBy, limit, offset);
@@ -705,8 +859,15 @@ export class SessionSearch {
    * argument and the rest are the filter parameters, as built by the callers. Returns null when the query has
    * nothing to widen or the any-term form matches nothing either.
    */
-  private searchFtsAnyTerm<T>(sql: string, query: string, params: any[], limit: number, offset: number): T[] | null {
-    const anyTermQuery = SessionSearch.buildFTSAnyTermQuery(query);
+  private searchFtsAnyTerm<T>(
+    sql: string,
+    query: string,
+    params: any[],
+    limit: number,
+    offset: number,
+    ftsTable: AnyTermFtsTable,
+  ): T[] | null {
+    const anyTermQuery = this.buildFTSAnyTermQuery(query, ftsTable);
     if (!anyTermQuery) {
       return null;
     }

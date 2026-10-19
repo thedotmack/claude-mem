@@ -4,6 +4,7 @@ import { homedir } from 'os';
 import { join } from 'path';
 import { IS_WINDOWS } from '../utils/paths.js';
 import { t3CodeSettingsPath } from '../../services/integrations/T3CodeInstaller.js';
+import { hermesHome } from '../../services/integrations/HermesInstaller.js';
 
 export interface IDEInfo {
   id: string;
@@ -123,6 +124,12 @@ export function detectInstalledIDEs(): IDEInfo[] {
       label: 'OMP',
       detected: isCommandInPath('omp') || existsSync(join(home, '.omp')),
       hint: 'native hooks integration',
+    },
+    {
+      id: 'hermes',
+      label: 'Hermes Agent',
+      detected: isCommandInPath('hermes') || existsSync(hermesHome()),
+      hint: 'memory provider plugin + MCP search',
     },
     {
       id: 'pi',

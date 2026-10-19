@@ -61,6 +61,9 @@ jobs:
       - name: Test (openclaw)
         run: bun test openclaw
 
+      - name: Test (Hermes provider, Python)
+        run: python3 -B -m unittest discover -s tests/hermes -v
+
   # #3482 was first characterised as a Windows bug, but a bare SIGKILL on the
   # stale worker orphans the identical uvx -> uv -> python chain on POSIX (the
   # descendants re-parent to init instead of surviving a single-PID
