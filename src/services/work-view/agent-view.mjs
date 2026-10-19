@@ -9,6 +9,10 @@ const fingerprint = (value) => JSON.stringify(Object.entries(value).sort(([a], [
 const callKey = (project, list, fields) => JSON.stringify([PROJECT_KEY(project), list, fingerprint(fields)]);
 const agentKey = (platform, session, agent) => JSON.stringify(['session', platform ?? 'unknown', String(session ?? ''), agent ?? 'unidentified']);
 
+// The owner-goals skill saves the owner's top priorities and open asks to this
+// one list. My Work shows it as Goals above the request cards, not as a request.
+export const OWNER_GOALS_LIST = 'owner-goals';
+
 export function compactText(value, max = 260) {
   if (typeof value !== 'string' && typeof value !== 'number' && typeof value !== 'boolean') return null;
   const text = String(value).replace(/\s+/g, ' ').trim();
@@ -201,7 +205,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     activity.push({ ...entry, agentGroupId: group.id });
   }
 
-  const candidates = state.lists.flatMap((list) => [
+  const candidates = state.lists.filter((list) => list.name !== OWNER_GOALS_LIST).flatMap((list) => [
     ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
     ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !CLOSED.has(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
@@ -300,9 +304,39 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache });
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
-    agents, recentActivity,
+    agents, recentActivity, goals: buildOwnerGoals(state),
     ...requestProjection,
     coverage: { workRows: candidates.length, workLimit, linkedWork, ownerWork, unattributedWork, observations: observations.length, observationLimit: 300, summaries: summaries.length, livePresenceAvailable: false, summaryMethod: 'bounded-recorded-text', fullHistoryUrl: '/viewer' },
+  };
+}
+
+// Evidence is saved as one string field, a line per quote: "YYYY-MM-DD HH:MM | quote".
+function goalEvidence(value) {
+  if (typeof value !== 'string') return [];
+  return value.split('\n').flatMap((line) => {
+    const match = /^(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)\s*\|\s*(.+)$/.exec(line.trim());
+    if (match) return [{ at: match[1], quote: compactText(match[2], 400) }];
+    return compactText(line, 400) ? [{ at: null, quote: compactText(line, 400) }] : [];
+  });
+}
+
+/** The most recently written owner-goals list, open items only, ranked. */
+export function buildOwnerGoals(state) {
+  const list = state.lists.find((item) => item.name === OWNER_GOALS_LIST);
+  if (!list || !list.isOpen) return null;
+  const count = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const items = list.tasks.filter((task) => task.isOpen).map((task) => ({
+    id: task.id, task: task.name, kind: task.fields.goal_kind === 'open-ask' ? 'open-ask' : 'priority',
+    rank: count(task.fields.rank), title: compactText(task.fields.title ?? task.name, 240),
+    product: compactText(task.fields.product, 60), latestAt: compactText(task.fields.latest_at, 20),
+    timesAsked: count(task.fields.times_asked), status: task.status, evidence: goalEvidence(task.fields.evidence),
+  })).sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.title.localeCompare(b.title));
+  return {
+    listId: list.id, project: list.project, updatedAt: list.updatedAt,
+    summary: compactText(list.fields.human_summary, 1600), generatedAt: compactText(list.fields.generated_at, 40),
+    windowDays: count(list.fields.window_days), sourcePromptCount: count(list.fields.source_prompt_count),
+    mapPath: compactText(list.fields.map_path, 400),
+    priorities: items.filter((item) => item.kind === 'priority'), openAsks: items.filter((item) => item.kind === 'open-ask'),
   };
 }
 
