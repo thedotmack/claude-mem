@@ -26,6 +26,7 @@ import { createHash } from 'crypto';
 import type { WireMessage, WirePart, WireReply, WireRequest } from '../ir/types.js';
 import type { WireIdentity } from '../identity/resolve-identity.js';
 import { userWordsInMessage } from '../identity/user-words.js';
+import { startsUserTurn } from '../identity/turn-start.js';
 import type { WireSessionStale, WireTurnEnd } from '../identity/turn-tracker.js';
 import { logger } from '../../../utils/logger.js';
 import { MEDIA_PROMPT_PLACEHOLDER } from '../../sqlite/prompt-storage.js';
@@ -120,10 +121,7 @@ function requestItemsOf(request: WireRequest): RequestItem[] {
 function latestUserTurnMessageIndex(request: WireRequest): number {
   let latest = -1;
   request.messages.forEach((message, messageIndex) => {
-    if (message.role !== 'user') return;
-    if (message.parts.some(part => part.kind === 'tool_result')) return;
-    const saidSomething = userWordsInMessage(message) !== '' || message.parts.some(part => part.kind === 'image' || part.kind === 'file');
-    if (saidSomething) latest = messageIndex;
+    if (startsUserTurn(message)) latest = messageIndex;
   });
   return latest;
 }

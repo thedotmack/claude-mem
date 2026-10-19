@@ -504,6 +504,30 @@ describe('wire identity: user words and turn start', () => {
     }
   });
 
+  it('the next prompt after an interrupt begins a turn even beside the cut turn\'s tool results', () => {
+    // codex 0.163 after Ctrl-C then `exec resume` (seen live): the cut turn's
+    // outputs, its <turn_aborted> note and the new prompt parse to one user message.
+    const body = JSON.stringify({ model: 'm', input: [
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Write a long essay' }] },
+      { type: 'function_call', call_id: 'c1', name: 'exec', arguments: '{}' },
+      { type: 'function_call_output', call_id: 'c1', output: 'partial' },
+      { type: 'message', role: 'developer', content: [{ type: 'input_text', text: '<turn_aborted>\nThe previous turn was interrupted on purpose.' }] },
+      { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Forget the essay. Write a glossary.' }] },
+    ] });
+    const codexRequest = parseBody('openai-responses', body);
+    expect(codexRequest.messages.at(-1)!.parts.some(part => part.kind === 'tool_result')).toBe(true);
+    expect(userTurnPositionOfRequest(codexRequest)).toEqual({ userTurnOrdinal: 2, withinTurn: false });
+    expect(latestUserWordsOfConversation(codexRequest)).toBe('Forget the essay. Write a glossary.');
+
+    // Claude Code's own interrupt marker beside a tool result is not words said.
+    const interrupted = parseBody('anthropic', anthropicBody([
+      ['user', 'Write a long essay'],
+      ['assistant', '[{"type":"tool_use","id":"t1","name":"Bash","input":{}}]'],
+      ['user', '[{"type":"tool_result","tool_use_id":"t1","content":"partial"},{"type":"text","text":"[Request interrupted by user for tool use]"}]'],
+    ]));
+    expect(userTurnPositionOfRequest(interrupted)).toEqual({ userTurnOrdinal: 1, withinTurn: true });
+  });
+
   it('Codex sending its context again after the cwd changed is within the turn (magpie user_said_test.go:84-93)', () => {
     const item = (role: string, text: string) => ({ type: 'message', role, content: [{ type: role === 'assistant' ? 'output_text' : 'input_text', text }] });
     const body = JSON.stringify({ model: 'm', input: [

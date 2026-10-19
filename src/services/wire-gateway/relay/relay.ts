@@ -19,6 +19,7 @@ import {
   errorEnvelopeFamilyOf,
   EventStreamSniffer,
   isEventStreamContentType,
+  replyKindContentType,
   protocolErrorResponse,
   type WireProtocol,
 } from './protocols.js';
@@ -617,8 +618,11 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       });
     }
 
+    // With no content-type (or only application/octet-stream) the first bytes
+    // decide (EventStreamSniffer), so the end detector may arrive with them.
+    const replyContentType = replyKindContentType(upstreamResponse.headers.get('content-type'));
     if (observer?.onResponseStarted) {
-      const responseStart: RelayResponseStart = { status: upstreamResponse.status, contentType: upstreamResponse.headers.get('content-type') };
+      const responseStart: RelayResponseStart = { status: upstreamResponse.status, contentType: replyContentType };
       notifyObserver(() => observer.onResponseStarted!(exchange, responseStart));
     }
 
@@ -637,8 +641,6 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       return new Response(null, responseInit);
     }
 
-    // With no content-type the first bytes decide (EventStreamSniffer), so the detector may arrive with them.
-    const replyContentType = upstreamResponse.headers.get('content-type');
     const endDetectorFor = (isEventStream: boolean): StreamEndMarkerDetector | null =>
       classification.protocol && isEventStream ? new StreamEndMarkerDetector(classification.protocol) : null;
     endDetector = replyContentType ? endDetectorFor(isEventStreamContentType(replyContentType)) : null;
@@ -652,7 +654,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     const candidateRestorer = outboundRedaction && outboundRedactionOn
       ? new PlaceholderRestoringResponse({
         placeholders: outboundRedaction.placeholders,
-        contentType: upstreamResponse.headers.get('content-type'),
+        contentType: replyContentType,
         contentEncoding: upstreamResponse.headers.get('content-encoding'),
       })
       : null;
@@ -671,7 +673,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       ? new ResponseStageTransform({
         run: rewriteRun,
         status: upstreamResponse.status,
-        contentType: upstreamResponse.headers.get('content-type'),
+        contentType: replyContentType,
         contentEncoding: upstreamResponse.headers.get('content-encoding'),
       })
       : null;

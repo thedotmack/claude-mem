@@ -386,6 +386,28 @@ describe('client disconnects cancel the upstream', () => {
     expect(result.outcome).toBe('complete');
     expect(result.recordedStatus).toBe(200);
   });
+
+  it('a stream labelled only application/octet-stream is told by its first bytes, like an unlabelled one', async () => {
+    // A proxy in front of an unlabelled stream can add the generic label
+    // (Bun.serve does, seen live with a logging proxy before chatgpt.com).
+    const completed = sse('event: response.completed\ndata: {"type":"response.completed","response":{"status":"completed"}}');
+    upstream.setReply({ kind: 'sse', omitContentType: true, headers: { 'content-type': 'application/octet-stream' }, chunks: [sse('event: response.created\ndata: {"type":"response.created"}'), completed, sse('data: {"padding":1}')], delayMs: 300 });
+    const controller = new AbortController();
+    const response = await fetch(`${gateway.baseUrl}/r/codex/responses`, { method: 'POST', body: '{"stream":true}', signal: controller.signal });
+    const reader = response.body!.getReader();
+    const decoder = new TextDecoder();
+    let received = '';
+    while (!received.includes('response.completed"')) {
+      const next = await reader.read();
+      if (next.done) break;
+      received += decoder.decode(next.value);
+    }
+    const recorded = upstream.requests.at(-1)!;
+    controller.abort();
+    await reader.read().catch(() => undefined);
+    await waitFor(() => (recorded.aborted ? true : undefined));
+    expect((await resultOf(lastExchange())).outcome).toBe('complete');
+  });
 });
 
 describe('a relayed request survives long silent gaps', () => {

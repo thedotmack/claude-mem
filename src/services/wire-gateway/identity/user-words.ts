@@ -79,6 +79,8 @@ export const AGENT_INJECTED_TEXT_PREFIXES: readonly string[] = [
   // compaction leaves; the turn after a /compact carries all of them before
   // the user's words (seen live, claude 2.1.303).
   '<local-command-caveat>', '<command-name>', '<local-command-stdout>', '<local-command-stderr>',
+  // What Claude Code puts beside the tool results of a turn the user stopped.
+  '[Request interrupted by user',
   'This session is being continued from a previous conversation that ran out of context.',
 ];
 

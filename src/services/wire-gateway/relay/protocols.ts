@@ -166,6 +166,17 @@ export function isEventStreamContentType(contentType: string): boolean {
 }
 
 /**
+ * A reply's content-type as a hint of its kind: null when absent or only the
+ * generic application/octet-stream, so its first bytes decide. A proxy can
+ * put that label on an unlabelled stream (Bun.serve does, seen live with a
+ * logging proxy in front of chatgpt.com's unlabelled SSE).
+ */
+export function replyKindContentType(contentType: string | null): string | null {
+  const mediaType = (contentType ?? '').split(';')[0].trim().toLowerCase();
+  return mediaType === '' || mediaType === 'application/octet-stream' ? null : contentType;
+}
+
+/**
  * Holds a reply's first chunks until sniffEventStream can tell (replies with
  * no content-type only), then hands back every chunk held so far.
  */
