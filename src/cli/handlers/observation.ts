@@ -15,11 +15,13 @@ import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { resolveRuntimeContext, logServerFallback } from '../../services/hooks/runtime-selector.js';
 import { isServerClientError, type ServerRecordEventRequest } from '../../services/hooks/server-client.js';
 import { isRecursiveMemoryTool, isExplicitMemoryWrite } from '../../shared/memory-retrieval-tools.js';
+import { workStatePlatform } from '../../shared/work-state-telemetry.js';
 
 function spoolObservation(input: NormalizedHookInput, platformSource: string): HookResult {
   spoolHookEvent('observation', {
     contentSessionId: input.sessionId,
     platformSource,
+    telemetryPlatformSource: workStatePlatform(input.platform),
     toolName: input.toolName!,
     toolInput: input.toolInput,
     toolResponse: input.toolResponse,

@@ -14,7 +14,7 @@ export const WORK_STATE_SECTION_CHARACTER_LIMIT = 3_000;
 
 const CLOSED_STATUSES = new Set(['done', 'dropped']);
 
-const WORK_STATE_RULE = [
+export const WORK_STATE_RULE = [
   '# Work state: your to-do lists and working state',
   "Use claude-mem's work_state_write tool to track all to-do lists and multi-step work. It is your canonical to-do list: use it instead of any built-in to-do tool. Also use it to track the state of anything you need an ongoing understanding of. Whatever is still open is shown here at the start of every session in this project.",
   '- One list per to-do list or tracked thing: work_state_write with list="<name>" and the fields to set',

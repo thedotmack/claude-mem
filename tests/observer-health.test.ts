@@ -261,7 +261,7 @@ describe('observer-health ledger', () => {
 
   it('serializes concurrent failure writes so the warning threshold is never lost', async () => {
     const gatePath = join(dataDir, 'writers.gate');
-    const writers = Array.from({ length: 3 }, () => Bun.spawn(['bun', '-e', `
+    const writers = Array.from({ length: 3 }, () => Bun.spawn([process.execPath, '-e', `
       import { existsSync } from 'fs';
       import { recordObserverFailure } from ${JSON.stringify(join(repoRoot, 'src/shared/observer-health.ts'))};
       while (!existsSync(${JSON.stringify(gatePath)})) Bun.sleepSync(1);
@@ -858,7 +858,7 @@ describe('ContextBuilder observer-health injection', () => {
   }
 
   function runContextChild(childDataDir: string): ChildRender {
-    const result = Bun.spawnSync(['bun', '-e', `
+    const result = Bun.spawnSync([process.execPath, '-e', `
       import { generateContext, withObserverHealthWarning } from './src/services/context/ContextBuilder.ts';
       import { ModeManager } from './src/services/domain/ModeManager.ts';
       ModeManager.getInstance().loadMode('code');

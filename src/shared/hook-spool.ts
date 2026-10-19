@@ -5,6 +5,7 @@ import { writeJsonFileAtomic } from './atomic-json.js';
 import { resolveDataDir } from './paths.js';
 import { normalizePlatformSource } from './platform-source.js';
 import { logger } from '../utils/logger.js';
+import type { AgentRole, InstructionState, WorkStateOutcome } from './work-state-telemetry.js';
 
 /**
  * Durable hand-off from short-lived write hooks to the worker.
@@ -29,12 +30,14 @@ import { logger } from '../utils/logger.js';
  * each file all-or-nothing.
  */
 
-export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'advisor_calls'] as const;
+export const HOOK_SPOOL_KINDS = ['observation', 'file_edit', 'summarize', 'session_end', 'advisor_calls', 'work_state_telemetry'] as const;
 export type HookSpoolKind = typeof HOOK_SPOOL_KINDS[number];
 
 export interface SpooledObservationPayload {
   contentSessionId: string;
   platformSource: string;
+  /** Preserve missing host attribution separately from the legacy DB default. */
+  telemetryPlatformSource?: string;
   toolName: string;
   toolInput?: unknown;
   toolResponse?: unknown;
@@ -81,6 +84,17 @@ export interface HookSpoolPayloadByKind {
   summarize: SpooledSummarizePayload;
   session_end: SpooledSessionEndPayload;
   advisor_calls: SpooledAdvisorCallsPayload;
+  work_state_telemetry: {
+    contentSessionId: string;
+    platformSource: string;
+    eventId: string;
+    agentId?: string;
+    agentRole?: AgentRole;
+    kind: 'instruction' | 'mcp';
+    state?: InstructionState;
+    tool?: 'read' | 'write';
+    outcome?: WorkStateOutcome;
+  };
 }
 
 export type HookSpoolEntry = {
@@ -227,6 +241,14 @@ function parseHookSpoolEntry(raw: string): HookSpoolEntry | { corruptReason: str
   if (kind === 'advisor_calls' && (!Array.isArray(payload.calls) || payload.calls.length === 0)) {
     return { corruptReason: 'advisor_calls payload has no calls' };
   }
+  if (kind === 'work_state_telemetry' && (
+    !isNonEmptyString(payload.eventId)
+    || !['main', 'subagent', 'unknown', undefined].includes(payload.agentRole as any)
+    || (payload.kind === 'instruction'
+      ? !['returned', 'disabled', 'excluded', 'missing', 'unknown'].includes(String(payload.state))
+      : payload.kind !== 'mcp' || !['read', 'write'].includes(String(payload.tool))
+        || !['ok', 'error', 'excluded', 'disabled', 'unknown'].includes(String(payload.outcome)))
+  )) return { corruptReason: 'invalid work-state telemetry shape' };
   return {
     kind,
     payload: { ...payload, platformSource: normalizePlatformSource(payload.platformSource as string | undefined) },

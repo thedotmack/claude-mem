@@ -37,12 +37,70 @@ beforeEach(() => {
   upstream.requests.length = 0;
   upstream.state.brief = {};
   upstream.state.search = {};
+  upstream.state.board = {};
+  upstream.state.status = null;
   settings = {
     CLAUDE_MEM_TEAMBRAIN_URL: upstream.origin,
     CLAUDE_MEM_TEAMBRAIN_TEAM_ID: MOCK_TEAM.id,
     CLAUDE_MEM_CLOUD_SYNC_TOKEN: MOCK_SEAT_SETUP_TOKEN,
     CLAUDE_MEM_CLOUD_SYNC_USER_ID: MOCK_SEAT_USER_ID,
   };
+});
+
+describe('local TeamBrain workspace reads', () => {
+  const teamId = '11111111-1111-4111-8111-111111111111';
+  const board = { lists: [{ user_id: 'member-one', display_name: 'One teammate', project: 'shared-project', name: 'Shared feature', closed: false,
+    state: [['human_summary', 'A shared implementation']], state_updated_at: '2026-10-17T08:00:00Z', last_written_at: '2026-10-17T08:00:00Z', closed_task_count: 1,
+    tasks: [{ name: 'Check the interface', status: 'doing', details: [['next', 'Review the narrow layout']], updated_at: '2026-10-17T08:00:00Z', latest_feed_id: 10, finding_ids: [5] }] }],
+    findings: [{ id: 5, type: 'collision', title: 'Shared file', subtitle: null, narrative: 'Compare changes before continuing.', member_ids: ['member-one'], created_at: '2026-10-17T08:00:00Z' }] };
+
+  it('keeps disconnected personal installs local without a remote request', async () => {
+    settings = {};
+    const response = await fetch(`${workerUrl}/api/teambrain/status`);
+    expect(await response.json()).toEqual({ configured: false, teams: [], startUrl: 'https://cmem.ai/teambrain/start' });
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it('returns real membership and sharing scope without exposing credentials', async () => {
+    const response = await fetch(`${workerUrl}/api/teambrain/status`);
+    const body = await response.json();
+    expect(body.configured).toBe(true);
+    expect(body.teams[0].name).toBe(MOCK_TEAM.name);
+    expect(body.teams[0].broadcasting).toBe(false);
+    expect(JSON.stringify(body)).not.toContain(MOCK_SEAT_SETUP_TOKEN);
+    expect(upstream.requestsTo('/api/teambrain/cli/status')).toHaveLength(1);
+  });
+
+  it('reads the consent-filtered board using only the sync identity', async () => {
+    upstream.state.board = { body: board };
+    const before = JSON.stringify(settings);
+    const response = await fetch(`${workerUrl}/api/teambrain/board?team_id=${teamId}`);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ teamId, ...board });
+    const request = upstream.requestsTo('/api/teambrain/cli/board')[0];
+    expect(request.query.get('team_id')).toBe(teamId);
+    expect(request.authorization).toBe(`Bearer ${MOCK_SEAT_SETUP_TOKEN}`);
+    expect(request.userId).toBe(MOCK_SEAT_USER_ID);
+    expect(JSON.stringify(settings)).toBe(before);
+  });
+
+  it('refuses invalid ids and remote/forwarded requests before contacting cloud', async () => {
+    expect((await fetch(`${workerUrl}/api/teambrain/board?team_id=other`)).status).toBe(400);
+    expect((await fetch(`${workerUrl}/api/teambrain/status`, { headers: { 'X-Forwarded-For': '127.0.0.1' } })).status).toBe(403);
+    expect((await fetch(`${workerUrl}/api/teambrain/status`, { headers: { Host: 'evil.example' } })).status).toBe(403);
+    expect(upstream.requests).toHaveLength(0);
+  });
+
+  it('preserves membership refusal status and rejects malformed board data', async () => {
+    upstream.state.board = { status: 404, body: { error: 'not_a_member' } };
+    expect((await fetch(`${workerUrl}/api/teambrain/board?team_id=${teamId}`)).status).toBe(404);
+    upstream.state.board = { status: 403, body: { error: 'team_inactive' } };
+    expect((await fetch(`${workerUrl}/api/teambrain/board?team_id=${teamId}`)).status).toBe(403);
+    upstream.state.board = { body: { lists: [{ privateData: 'malformed' }], findings: [] } };
+    const response = await fetch(`${workerUrl}/api/teambrain/board?team_id=${teamId}`);
+    expect(response.status).toBe(502);
+    expect(await response.text()).not.toContain('privateData');
+  });
 });
 
 async function getBrief(project?: string): Promise<{ status: number; type: string | null; text: string }> {

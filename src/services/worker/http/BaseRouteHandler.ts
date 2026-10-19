@@ -69,7 +69,7 @@ export abstract class BaseRouteHandler {
     return typeof current === 'string' && current.trim() ? current : undefined;
   }
 
-  private static rawPlatformSourceFromRequest(req: Request): string | undefined {
+  protected static rawPlatformSourceFromRequest(req: Request): string | undefined {
     const body = req.body && typeof req.body === 'object' ? req.body as Record<string, unknown> : {};
     const header = req.get?.('x-platform-source')
       ?? req.get?.('x-claude-mem-platform-source');

@@ -203,7 +203,9 @@ function post(path: string, body: unknown): Promise<void> {
  * init is counted by the breaker, and a later prompt simply tries again.
  */
 function sendPrompt(target: OmpSession, cwd: string | undefined, prompt: string): void {
-  const body: Record<string, unknown> = { contentSessionId: target.id, prompt, platformSource: "omp" };
+  const body: Record<string, unknown> = {
+    contentSessionId: target.id, prompt, platformSource: "omp", telemetryPromptEpochMs: Date.now(),
+  };
   if (cwd) body.cwd = cwd;
   target.lastInit = (target.lastInit ?? Promise.resolve(true)).then(() => recordPrompt(target, body));
 }
@@ -315,6 +317,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
   // creates the session row from the observation itself when no prompt came
   // first).
   pi.on("tool_result", async (event, ctx) => {
+    const telemetryToolEpochMs = Date.now();
     const toolName = String(event?.toolName ?? "");
     if (!toolName || toolName.startsWith("memory_")) return; // avoid claude-mem recursion
 
@@ -329,6 +332,7 @@ export default function claudeMemBridge(pi: HookAPI): void {
       tool_input: event?.input,
       tool_response: response.length > MAX_LEN ? response.slice(0, MAX_LEN) : response,
       platformSource: "omp",
+      telemetryToolEpochMs,
     };
     if (ctx?.cwd) body.cwd = ctx.cwd;
 

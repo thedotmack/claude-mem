@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>My Work · claude-mem</title>
+  <link rel="icon" href="/work-view/assets/cmem-mark.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/work-view/styles.css">
+  <link rel="stylesheet" href="/work-view/team-styles.css">
+  <script type="module" src="/work-view/app.js"></script>
+</head>
+<body data-mode="live">
+  <a class="skip" href="#main">Skip to my work</a>
+  <header class="app-header">
+    <a class="brand" href="#cards" data-route aria-label="Claude-Mem My Work"><img src="/work-view/assets/cmem-mark.svg" width="35" height="35" alt=""></a>
+    <nav aria-label="Main"><button type="button" class="workspace-link" id="workspace-personal" aria-pressed="true">My Work</button><button type="button" class="workspace-link" id="workspace-team" aria-pressed="false">TeamBrain</button><a href="/viewer">Memory &amp; settings</a></nav>
+    <div class="local-state"><span class="connection" id="connection" data-state="connecting" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Connecting locally…</span></span></div>
+
+  </header>
+
+  <main id="main" class="page" tabindex="-1">
+    <div id="personal-workspace">
+    <div class="page-heading" id="personal-heading">
+      <div><p class="eyebrow">Your workspace, at a glance</p><h1>My Work</h1><p class="subtitle">Your requests. What landed. What needs you.</p></div>
+      <div class="view-switch" role="group" aria-label="Work view"><button type="button" data-view="cards" aria-pressed="true"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></svg><span>Cards</span></button><button type="button" data-view="list" aria-pressed="false"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M8 5h13M8 12h13M8 19h13"/><path d="M3 5h.01M3 12h.01M3 19h.01" stroke-width="3"/></svg><span>List</span></button><button type="button" data-view="agents" aria-pressed="false">Agents</button></div>
+    </div>
+    <div class="toolbar" id="personal-toolbar" role="search">
+      <label class="search-field"><img src="/work-view/assets/icons/search.svg" width="22" height="22" alt=""><span class="sr-only">Search requests and agents</span><input id="search" type="search" placeholder="Search requests or agents" autocomplete="off"></label>
+      <label><span class="sr-only">Project</span><select id="project-filter" aria-label="Filter by project"><option value="">All projects</option></select></label>
+      <label><span class="sr-only">Time range</span><select id="time-range"><option value="day">Past 24 hours</option><option value="week">Past 7 days</option><option value="all">All recorded work</option></select></label>
+      <label class="sort-field"><span>Sort</span><select id="sort" aria-label="Sort requests"><option value="attention">Attention first</option><option value="latest">Latest update</option><option value="oldest">Oldest update</option><option value="title">Request A–Z</option></select></label>
+    </div>
+    <nav class="status-tabs" aria-label="Filter work" id="status-tabs"></nav>
+    <div id="updates-banner"></div><div id="scope-trail"></div>
+    <section class="work-section" aria-labelledby="work-heading">
+      <div class="section-heading sr-only"><h2 id="work-heading" tabindex="-1">All work</h2><span id="view-count"></span></div>
+      <div id="work-grid" class="work-grid"></div>
+      <details id="unlinked-work" class="unlinked-note" hidden><summary id="unlinked-count"></summary><div id="unlinked-items"></div></details>
+    </section>
+    <footer class="page-footer"><div><p id="source-note">Reading saved requests from this computer…</p><p id="reading-note">Working, reported complete, and human checked are separate states.</p><p><span id="sync-state">Cloud sync: checking configuration…</span> · <span id="received-time">Waiting for the local connection…</span></p></div><div class="connect-options" aria-label="Optional connections"><button type="button" data-connect="Claude.ai">Connect Claude.ai ↗</button><button type="button" data-connect="ChatGPT">Connect ChatGPT ↗</button></div></footer>
+    </div>
+    <section id="team-workspace" class="team-view" hidden aria-labelledby="team-heading">
+      <header class="team-page-heading">
+        <div><p class="team-kicker">Optional shared workspace</p><h1 id="team-heading">TeamBrain</h1><p class="team-intro">See the work your team chose to share, and the next step you can help with.</p></div>
+        <span class="team-local-note">Your personal work stays separate.</span>
+      </header>
+      <div class="team-connection">
+        <p id="team-health" data-state="idle" role="status">Check your connection to see shared work.</p>
+        <p id="team-received">No shared update received in this visit.</p>
+        <p id="team-last-error" hidden></p>
+      </div>
+      <section id="team-setup" class="team-setup" aria-labelledby="team-setup-heading">
+        <div class="team-setup-intro"><p class="team-kicker">Get connected</p><h2 id="team-setup-heading">Choose how to join your team.</h2><p>TeamBrain adds a shared view beside My Work. Each member chooses what to share; opening this page does not upload your local work.</p></div>
+        <div class="team-setup-options">
+          <article class="team-setup-option"><span class="team-option-number" aria-hidden="true">01</span><h3>Start a team</h3><p>Set up a team account in CMEM Cloud, check the available plan, and invite the people you work with.</p><a class="team-primary" href="https://cmem.ai/teambrain/start" target="_blank" rel="noopener noreferrer">Set up a team ↗</a><p class="team-option-note">Plan eligibility and current pricing are shown during setup. This page does not start a subscription.</p></article>
+          <article class="team-setup-option"><span class="team-option-number" aria-hidden="true">02</span><h3>Use an existing invitation</h3><p>Ask a team owner for an invite link, then run this command in a terminal on this computer:</p><pre class="team-join-command"><code>npx claude-mem teambrain join '&lt;invite-link&gt;'</code></pre><p class="team-option-note">Sign in and approve this device. An installation already connected to another account must resolve that account choice first.</p><button id="team-refresh" type="button" class="team-secondary">Refresh connection</button></article>
+        </div>
+        <div class="team-setup-footnote"><h3>What connects here</h3><p>This panel reads shared lists, tasks and findings through your approved CMEM connection. Claude.ai and ChatGPT setup remains separate. TeamBrain does not assign work, send replies, or sync your private review notes.</p><p><a href="https://cmem.ai/teambrain/app" target="_blank" rel="noopener noreferrer">Already a member? Open your team account ↗</a></p></div>
+      </section>
+      <section id="team-connected" hidden aria-labelledby="shared-work-heading">
+        <div class="team-context">
+          <div class="team-identity"><h2 id="team-name">Shared work</h2><span id="team-seat-count"></span></div>
+          <div class="team-tools"><label class="sr-only" for="team-select">Team</label><select id="team-select"></select><a id="team-manage" href="https://cmem.ai/teambrain/app" target="_blank" rel="noopener noreferrer">Team settings ↗</a><button type="button" class="team-secondary" id="team-refresh-connected">Refresh</button></div>
+          <p id="team-sharing"></p>
+        </div>
+        <div class="team-controls"><label class="team-search-label"><span class="sr-only">Search shared work, people and projects</span><input id="team-search" type="search" placeholder="Search shared work, people or projects"></label><label><span class="sr-only">Filter shared work by project</span><select id="team-project" aria-label="Filter shared work by project" hidden></select></label></div>
+        <div id="team-updates"></div>
+        <div class="team-section-heading"><h2 id="shared-work-heading" tabindex="-1">Shared work</h2><span id="team-count"></span></div>
+        <div id="team-cards" class="request-grid"></div>
+        <p class="team-footnote">Recorded team activity, not a presence signal. Continue with your teammate or in the source conversation. Private review notes stay on this computer.</p>
+      </section>
+    </section>
+  </main>
+
+  <dialog id="review-dialog" aria-labelledby="review-title"><div id="review-content"></div></dialog>
+  <dialog id="question-dialog" aria-labelledby="question-title"><div id="question-content"></div></dialog>
+  <dialog id="detail-dialog" aria-labelledby="detail-title"><div id="detail-content"></div></dialog>
+  <dialog id="connect-dialog" aria-labelledby="connection-title"><div id="connect-content"></div></dialog>
+  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="announcement" class="sr-only" aria-live="polite" aria-atomic="true"></div>
+</body>
+</html>

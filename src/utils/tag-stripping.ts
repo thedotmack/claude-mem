@@ -211,6 +211,10 @@ const CODEX_INTERNAL_PROMPT_OPENINGS: readonly RegExp[] = [
   /^## Memory Writing Agent: Phase 2 \(Consolidation\)/,
   // Codex app: onboarding suggestions.
   /^# Overview\r?\n(?:\r?\n)?Generate 0 to 3 hyperpersonalized suggestions/,
+  // Codex app: suggests the next message for the empty composer (#4811).
+  /^This is an app-generated request for a suggested next user message\. The user did not write this message\./,
+  // Codex memories: folds rollout summaries into memory_summary.md (#4811).
+  /^Consolidate the supplied rollout summaries into `memory_summary\.md`/,
 ];
 
 /**

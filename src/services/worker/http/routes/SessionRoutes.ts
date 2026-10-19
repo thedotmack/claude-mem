@@ -25,6 +25,7 @@ import { getProjectContext, isProjectKeySource } from '../../../../utils/project
 import { isProjectExcluded } from '../../../../utils/project-filter.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { captureEvent } from '../../../telemetry/telemetry.js';
+import { recordWorkStatePrompt, recordWorkStatePrivacy } from '../../../telemetry/work-state.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
@@ -684,6 +685,10 @@ export class SessionRoutes extends BaseRouteHandler {
       toolResponse: tool_response,
       cwd,
       platformSource,
+      telemetryPlatformSource: typeof req.body.telemetryPlatformSource === 'string'
+        ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req) ?? 'unknown',
+      enqueuedAtEpochMs: typeof req.body.enqueuedAtEpochMs === 'number' ? req.body.enqueuedAtEpochMs : undefined,
+      telemetryToolEpochMs: typeof req.body.telemetryToolEpochMs === 'number' ? req.body.telemetryToolEpochMs : undefined,
       agentId,
       agentType,
       toolUseId: typeof tool_use_id === 'string' ? tool_use_id : (typeof toolUseId === 'string' ? toolUseId : undefined),
@@ -848,8 +853,17 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const cleanedPrompt = stripMemoryTags(prompt);
+    const telemetryAttribution = {
+      contentSessionId,
+      enqueuedAtEpochMs: typeof req.body.telemetryPromptEpochMs === 'number' ? req.body.telemetryPromptEpochMs : undefined,
+      platformSource: typeof req.body.telemetryPlatformSource === 'string'
+        ? req.body.telemetryPlatformSource : SessionRoutes.rawPlatformSourceFromRequest(req),
+      agentId: typeof req.body.agentId === 'string' ? req.body.agentId : undefined,
+      agentType: typeof req.body.agentType === 'string' ? req.body.agentType : undefined,
+    };
 
     if (!cleanedPrompt || cleanedPrompt.trim() === '') {
+      recordWorkStatePrivacy(store.db, telemetryAttribution, true);
       logger.debug('HOOK', 'Session init - prompt entirely private', {
         sessionId: sessionDbId,
         promptNumber,
@@ -888,6 +902,10 @@ export class SessionRoutes extends BaseRouteHandler {
     const duplicatePrompt = nativeAnchor
       ? (nativeAnchor.duplicate ? { id: nativeAnchor.id, prompt_number: nativeAnchor.promptNumber } : undefined)
       : store.findRecentDuplicateUserPrompt(contentSessionId, cleanedPrompt, USER_PROMPT_DEDUPE_WINDOW_MS, sessionDbId);
+
+    // A newer public submission reopens coverage even if its text reuses a row.
+    // The recorder rejects missing/old timestamps and preserves newer boundaries.
+    recordWorkStatePrivacy(store.db, telemetryAttribution, false);
 
     if (duplicatePrompt) {
       const activeSession = this.sessionManager.getSession(sessionDbId);
@@ -937,6 +955,8 @@ export class SessionRoutes extends BaseRouteHandler {
       store.reopenCompletedSession(sessionDbId);
       savedUserPromptId = store.saveUserPrompt(contentSessionId, promptNumber, cleanedPrompt, sessionDbId);
     }
+
+    recordWorkStatePrompt(store.db, telemetryAttribution, savedUserPromptId);
 
     // Fire-and-forget cloud sync nudge, beside the write itself so every
     // saved prompt nudges — including cursor sessions, which skip the
