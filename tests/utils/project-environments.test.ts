@@ -51,6 +51,13 @@ describe('matchProjectEnvironment', () => {
     expect(matchProjectEnvironment(join(tmp, 'play'), environments)).toBeNull();
   });
 
+  it('matches a direct child through an intermediate globstar directory', () => {
+    const environments = [{ name: 'acme', patterns: [`${tmp}/**/work/acme/**`] }];
+    expect(matchProjectEnvironment(join(tmp, 'work', 'acme'), environments)).toBe('acme');
+    expect(matchProjectEnvironment(join(tmp, 'work', 'acme', 'api'), environments)).toBe('acme');
+    expect(matchProjectEnvironment(join(tmp, 'work', 'acme-docs'), environments)).toBeNull();
+  });
+
   it('returns the first matching environment', () => {
     const environments = [
       { name: 'docs', patterns: [`${tmp}/work/acme-docs`] },

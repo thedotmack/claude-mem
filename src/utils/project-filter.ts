@@ -18,10 +18,14 @@ function globToRegex(pattern: string): RegExp {
   let regex = expanded.replace(/[.+^${}()|[\]\\]/g, '\\$&');
 
   regex = regex
+    // A complete **/ directory segment also matches no directory. Keep its
+    // slash until after tokenization so consecutive globstars are recognized.
+    .replace(/(^|\/)\*\*(?=\/)/g, '$1<<<GLOBSTAR_DIR>>>')
     .replace(/\*\*/g, '<<<GLOBSTAR>>>')  
     .replace(/\*/g, '[^/]*')              
     .replace(/\?/g, '[^/]')               
-    .replace(/<<<GLOBSTAR>>>/g, '.*');    
+    .replace(/<<<GLOBSTAR>>>/g, '.*')
+    .replace(/<<<GLOBSTAR_DIR>>>\//g, '(?:.*/)?');
 
   return new RegExp(`^${regex}$`);
 }
