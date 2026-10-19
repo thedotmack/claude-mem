@@ -16,7 +16,8 @@ describe('embedding models', () => {
   it('rejects an unknown model by name, listing the known ones', () => {
     expect(() => resolveEmbeddingModel('multilingual')).toThrow(
       'CLAUDE_MEM_EMBEDDING_MODEL="multilingual" is not a known embedding model; use one of ' +
-      'all-MiniLM-L6-v2, paraphrase-multilingual-MiniLM-L12-v2, multilingual-e5-small',
+      'all-MiniLM-L6-v2, paraphrase-multilingual-MiniLM-L12-v2, multilingual-e5-small, ' +
+      'granite-embedding-97m-multilingual-r2',
     );
   });
 
@@ -26,6 +27,7 @@ describe('embedding models', () => {
       'Xenova/all-MiniLM-L6-v2/fp32/mean/l2/256',
       'Xenova/paraphrase-multilingual-MiniLM-L12-v2/fp32/mean/l2/128',
       'Xenova/multilingual-e5-small/fp32/mean/l2/512',
+      'onnx-community/granite-embedding-97m-multilingual-r2-ONNX/fp32/cls/l2/512',
     ]);
   });
 

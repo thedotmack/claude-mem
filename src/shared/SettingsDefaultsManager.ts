@@ -577,12 +577,12 @@ export class SettingsDefaultsManager {
     // That start caps the embedder at this many CPU threads until the next
     // restart: empty is half the machine's threads, 0 is every thread.
     CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: '',
-    // Embedding model the server's search by meaning uses. 'all-MiniLM-L6-v2'
-    // is Chroma's default (English-tuned); 'paraphrase-multilingual-MiniLM-L12-v2'
-    // and 'multilingual-e5-small' are multilingual. All three run locally and
-    // produce 384 dimensions. Any other value is rejected. Changing it
-    // re-embeds every observation, and search by meaning covers only rows
-    // already re-embedded until that finishes.
+    // Embedding model the server's search by meaning uses: a key of
+    // EMBEDDING_MODELS in src/services/vector/models.ts, which lists them and
+    // their vector widths. 'all-MiniLM-L6-v2' is Chroma's default
+    // (English-tuned). Any other value is rejected. Changing it re-embeds
+    // every observation, and search by meaning covers only rows already
+    // re-embedded until that finishes.
     CLAUDE_MEM_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
     CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     CLAUDE_MEM_SEARCH_RECENCY_DAYS: '90',      // Date-less semantic search only ranks matches from the last N days (#4770). 0 = no window (every match eligible); an explicit dateStart/dateEnd always wins. Restart the worker after changing it

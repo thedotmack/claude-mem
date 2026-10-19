@@ -12,14 +12,15 @@
  * choice: the server's Postgres column is declared vector(dims), so the
  * schema reads it from here (see applyVectorSchema).
  *
- * CLAUDE_MEM_EMBEDDING_MODEL names the entry in use; the other two entries are
- * the multilingual candidates measured in rich-murphey/claude-mem-search-eval.
+ * CLAUDE_MEM_EMBEDDING_MODEL names the entry in use; the other three entries
+ * are the multilingual candidates measured in rich-murphey/claude-mem-search-eval.
  */
 export interface EmbeddingModel {
   /** Hugging Face repository transformers.js loads. */
   repo: string;
   dtype: 'fp32';
-  pooling: 'mean';
+  /** mean: the average over real tokens; cls: the first token's vector. */
+  pooling: 'mean' | 'cls';
   /** Vector length; sizes the server's vector(n) column. */
   dims: number;
   /**
@@ -61,6 +62,20 @@ export const EMBEDDING_MODELS = {
     maxTokens: 512,
     queryPrefix: 'query: ',
     passagePrefix: 'passage: ',
+  },
+  // IBM's granite-embedding-97m-multilingual-r2 (ModernBERT, Apache-2.0). Its
+  // sentence-transformers config pools the [CLS] token and sets no prompts.
+  // It was trained to 8192 tokens; cut at 512 here, because at 8192 one text
+  // takes about 10 s and 8 GB on a CPU (attention grows with length squared),
+  // and 512 keeps a forward pass the size of e5-small's.
+  'granite-embedding-97m-multilingual-r2': {
+    repo: 'onnx-community/granite-embedding-97m-multilingual-r2-ONNX',
+    dtype: 'fp32',
+    pooling: 'cls',
+    dims: 384,
+    maxTokens: 512,
+    queryPrefix: '',
+    passagePrefix: '',
   },
 } satisfies Record<string, EmbeddingModel>;
 

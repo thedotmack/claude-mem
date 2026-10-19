@@ -129,19 +129,24 @@ export class LocalEmbedder implements Embedder {
     }
     const { last_hidden_state: hidden } = await model(inputs);
     const h = hidden.data as Float32Array;
-    // Mean over the real tokens, then unit length, so cosine reduces to a dot
-    // product at query time.
+    // Mean over the real tokens (or the first token's vector), then unit
+    // length, so cosine reduces to a dot product at query time.
     return texts.map((_, r) => {
       const v = new Float32Array(this.dims);
-      let n = 0;
-      for (let t = 0; t < width; t++) {
-        if (mask[r * width + t] !== 1n) continue;
-        n++;
-        const base = (r * width + t) * this.dims;
-        for (let d = 0; d < this.dims; d++) v[d] += h[base + d];
+      if (this.model.pooling === 'cls') {
+        v.set(h.subarray(r * width * this.dims, r * width * this.dims + this.dims));
+      } else {
+        let n = 0;
+        for (let t = 0; t < width; t++) {
+          if (mask[r * width + t] !== 1n) continue;
+          n++;
+          const base = (r * width + t) * this.dims;
+          for (let d = 0; d < this.dims; d++) v[d] += h[base + d];
+        }
+        for (let d = 0; d < this.dims; d++) v[d] /= n;
       }
       let norm = 0;
-      for (let d = 0; d < this.dims; d++) { v[d] /= n; norm += v[d] * v[d]; }
+      for (let d = 0; d < this.dims; d++) norm += v[d] * v[d];
       norm = Math.sqrt(norm);
       for (let d = 0; d < this.dims; d++) v[d] /= norm;
       return v;
