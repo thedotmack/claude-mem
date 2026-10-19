@@ -71,7 +71,7 @@ describe('DataRoutes synchronized delete APIs', () => {
     const routes = new DataRoutes(
       {} as any,
       { getSessionStore: () => store, getCloudSync: () => sync, getChromaSync: () => chromaSync } as any,
-      {} as any,
+      { getSession: () => undefined } as any,
       { broadcast: (event: Record<string, unknown>) => { broadcasts.push(event); } } as any,
       {} as any,
       Date.now(),
@@ -214,6 +214,57 @@ describe('DataRoutes synchronized delete APIs', () => {
 
     // The failure is swallowed into a warning, asynchronously.
     await new Promise(resolve => setImmediate(resolve));
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  function deleteSession(): { status: number; body: any } {
+    let status = 200;
+    let body: any;
+    const response = {
+      status(code: number) { status = code; return this; },
+      json(value: unknown) { body = value; return this; },
+    } as unknown as Response;
+    handlers.get('/api/sessions/:platformSource/:contentSessionId')!(
+      { params: { platformSource: 'claude', contentSessionId: 'content-delete' } } as unknown as Request,
+      response,
+    );
+    return { status, body };
+  }
+
+  it('deletes every child row\'s Chroma fragments when a session is deleted', async () => {
+    const { status, body } = deleteSession();
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ success: true, deletedCounts: { observations: 1, summaries: 1, prompts: 1 } });
+
+    // Cleanup runs in the background, one row at a time.
+    for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+    expect(chromaCalls).toEqual([
+      { docType: 'observation', sqliteId: 1 },
+      { docType: 'session_summary', sqliteId: 1 },
+      { docType: 'user_prompt', sqliteId: 1 },
+    ]);
+  });
+
+  it('keeps the session delete successful and cleans the remaining rows when a Chroma cleanup fails', async () => {
+    const attempted: string[] = [];
+    chromaSync = {
+      deleteRowDocuments: mock((docType: string) => {
+        attempted.push(docType);
+        return docType === 'observation' ? Promise.reject(new Error('chroma down')) : Promise.resolve(1);
+      }),
+    };
+    const warn = spyOn(logger, 'warn').mockImplementation(() => {});
+
+    const { status, body } = deleteSession();
+
+    expect(status).toBe(200);
+    expect(body).toMatchObject({ success: true });
+    expect(db.prepare('SELECT COUNT(*) AS n FROM sdk_sessions').get()).toEqual({ n: 0 });
+
+    for (let i = 0; i < 5; i++) await new Promise(resolve => setImmediate(resolve));
+    expect(attempted).toEqual(['observation', 'session_summary', 'user_prompt']);
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
