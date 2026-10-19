@@ -18,7 +18,18 @@ function scopedRows() {
   return scopeWork(state.rows, state).filter(row => !state.agentId || row.agentIds.includes(state.agentId));
 }
 function visibleRows() { return sortWork(scopedRows().filter(row => state.filter === 'all' || (state.filter === 'other' ? statusCategory(row) === 'other' : effectiveStatus(row) === state.filter)), state.sort); }
+function focusedGoalSelector() {
+  const active = document.activeElement;
+  if (!$('goals').contains(active)) return null;
+  if (active.id) return `#${CSS.escape(active.id)}`;
+  if (active.matches('summary') && active.parentElement.dataset.goal) return `[data-goal="${CSS.escape(active.parentElement.dataset.goal)}"] > summary`;
+  if (active.hasAttribute('data-goals-jump')) return '[data-goals-jump]';
+  if (active.dataset.goalsFilter) return `.goals-ask-filters [data-goals-filter="${CSS.escape(active.dataset.goalsFilter)}"]`;
+  if (active.classList.contains('goals-step')) return `.goals-step[aria-label="${CSS.escape(active.getAttribute('aria-label'))}"]`;
+  return null;
+}
 function render() {
+  const goalFocus = focusedGoalSelector();
   const open = new Set([...document.querySelectorAll('details[open]')].map(element => element.dataset.updates));
   const openGoals = new Set([...document.querySelectorAll('details[open][data-goal]')].map(element => element.dataset.goal));
   const projects = [...new Set(state.rows.flatMap(row => row.projects?.length ? row.projects : [row.project]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
@@ -42,10 +53,11 @@ function render() {
   const detail = state.view === 'request';
   $('work-heading').parentElement.hidden = detail;
   $('personal-heading').hidden = detail;
-  const goals = goalsPanel(state.snapshot?.goals, { history: state.snapshot?.goalHistory, selected: state.goalsMonth });
+  const goals = goalsPanel(state.snapshot?.goals, { history: state.snapshot?.goalHistory, selected: state.goalsMonth, askFilter: state.goalsAskFilter });
   $('goals').hidden = detail || !goals;
   if (!detail) $('goals').innerHTML = goals;
   for (const element of $('goals').querySelectorAll('details[data-goal]')) if (openGoals.has(element.dataset.goal)) element.open = true;
+  if (goalFocus && !detail) $('goals').querySelector(goalFocus)?.focus({ preventScroll: true });
   $('personal-toolbar').hidden = detail;
   $('status-tabs').hidden = detail;
   $('unlinked-work').hidden = detail || !state.unlinked.length;
@@ -210,7 +222,16 @@ document.addEventListener('click', async event => {
   const target = event.target.closest('button'); if (!target) return;
   if (target.dataset.view) { navigate(personalRoute(target.dataset.view, { ...state, requestId: null, workId: null, agentId: null, from: null })); return; }
   if (target.dataset.filter) { state.filter = target.dataset.filter; saveScope(); render(); [...document.querySelectorAll('[data-filter]')].find(button => button.dataset.filter === state.filter)?.focus({ preventScroll: true }); }
-  if (target.dataset.goalsMonth) { const label = target.getAttribute('aria-label'); state.goalsMonth = target.dataset.goalsMonth; render(); const again = $('goals').querySelector(`.goals-step[aria-label="${label}"]`); (again && !again.disabled ? again : $('goals-month'))?.focus({ preventScroll: true }); }
+  if (target.dataset.goalsMonth) { const label = target.getAttribute('aria-label'); state.goalsMonth = target.dataset.goalsMonth; state.goalsAskFilter = 'all'; render(); const again = $('goals').querySelector(`.goals-step[aria-label="${label}"]`); (again && !again.disabled ? again : $('goals-month'))?.focus({ preventScroll: true }); }
+  if (target.dataset.goalsFilter) {
+    state.goalsAskFilter = target.dataset.goalsFilter;
+    render();
+    if (target.hasAttribute('data-goals-jump')) {
+      $('goals').querySelector('.goals-all-asks').open = true;
+      $('goals-asks-heading')?.focus();
+    }
+    else $('goals').querySelector(`.goals-ask-filters [data-goals-filter="${state.goalsAskFilter}"]`)?.focus({ preventScroll: true });
+  }
   if (target.dataset.review) openReview(target.dataset.review);
   if (target.dataset.detail) openDetail(target.dataset.detail);
   if (target.dataset.copyHandoff) {
@@ -236,7 +257,7 @@ document.addEventListener('click', async event => {
     catch { pre.textContent = 'This source record is no longer available.'; }
   }
 });
-document.addEventListener('change', event => { if (event.target.id === 'goals-month') { state.goalsMonth = event.target.value; render(); $('goals-month')?.focus({ preventScroll: true }); } });
+document.addEventListener('change', event => { if (event.target.id === 'goals-month') { state.goalsMonth = event.target.value; state.goalsAskFilter = 'all'; render(); $('goals-month')?.focus({ preventScroll: true }); } });
 document.addEventListener('toggle', event => { if (event.target.matches('details[open][data-updates]')) markRead(event.target.dataset.updates); }, true);
 $('search').addEventListener('input', event => { state.query = event.target.value.trim().toLowerCase(); saveScope(); render(); });
 $('time-range').addEventListener('change', event => { state.range = event.target.value; saveScope(); render(); });

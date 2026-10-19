@@ -134,12 +134,27 @@ export function workstreamPage(row, work) {
 
 // Goals: the owner's top priorities and open asks, each with the dated quotes
 // from the owner's own prompts that support it (saved by the owner-goals skill).
-function goalItem(item) {
-  const meta = [item.product, item.latestAt ? `Latest ${item.latestAt}` : '', item.timesAsked > 1 ? `Asked ${item.timesAsked}×` : ''].filter(Boolean);
+function goalItem(item, { lead = false } = {}) {
   const evidence = item.evidence || [];
-  return `<li class="goal-item"><span class="goal-rank" aria-hidden="true">${esc(item.rank ?? '•')}</span><div class="goal-copy"><p class="goal-title">${esc(item.title)}</p><div class="goal-line">${meta.length ? `<p class="goal-meta">${meta.map(esc).join(' · ')}</p>` : ''}${evidence.length ? `<details class="goal-evidence" data-goal="${esc(item.id)}"><summary>Evidence · ${evidence.length} ${evidence.length === 1 ? 'quote' : 'quotes'}</summary><ul>${evidence.map(quote => `<li>${quote.at ? `<time>${esc(quote.at)}</time>` : ''}<q>${esc(quote.quote)}</q></li>`).join('')}</ul></details>` : ''}</div></div></li>`;
+  const meta = [item.timesAsked > 1 ? `<span class="goal-recurrence">Asked ${esc(item.timesAsked)} times</span>` : '', item.product ? `<span>${esc(item.product)}</span>` : '', item.latestAt ? `<span>Last mentioned ${goalDate(item.latestAt)}</span>` : ''].filter(Boolean).join('');
+  return `<li class="goal-item${lead ? ' goal-lead' : ''}"><span class="goal-rank" aria-hidden="true">${esc(item.rank ?? '•')}</span><div class="goal-copy">${lead ? '<p class="goal-lead-label">Your clearest priority</p>' : ''}<p class="goal-title">${esc(item.title)}</p><div class="goal-line">${meta ? `<p class="goal-meta">${meta}</p>` : ''}${evidence.length ? `<details class="goal-evidence" data-goal="${esc(item.id)}"><summary>Why it's here <span class="goal-evidence-count">${evidence.length} ${evidence.length === 1 ? 'quote' : 'quotes'}</span></summary><ul>${evidence.map(quote => `<li>${quote.at ? goalDate(quote.at, true) : ''}<q>${esc(quote.quote)}</q></li>`).join('')}</ul></details>` : ''}</div></div></li>`;
+}
+// These are signals from the saved goal map, not measurements of completed work.
+export function goalSignals(goals = {}) {
+  const priorities = goals?.priorities || [];
+  const openAsks = goals?.openAsks || [];
+  return { priorities, openAsks, repeatedAsks: openAsks.filter(item => Number.isFinite(item.timesAsked) && item.timesAsked > 1), lead: priorities[0] || null };
 }
 const shortDay = (day, withYear) => new Date(`${day}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}), timeZone: 'UTC' });
+// The source has a local wall-clock date, not a guaranteed timezone. Keep it
+// intact in datetime/title and format the calendar day without shifting it.
+function goalDate(value, full = false) {
+  const raw = String(value || '');
+  const match = raw.match(/^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?/);
+  if (!match || !Number.isFinite(Date.parse(`${match[1]}T00:00:00Z`))) return `<span>${esc(raw)}</span>`;
+  const date = shortDay(match[1], full);
+  return `<time datetime="${esc(match[1] + (match[2] ? `T${match[2]}` : ''))}" title="${esc(raw)}">${esc(date)}${full && match[2] ? ` · ${esc(match[2])}` : ''}</time>`;
+}
 // "Nov 18 – Dec 18, 2025", or with both years when the period crosses New Year.
 export function goalsPeriod(goals) {
   if (!goals?.periodStart) return '';
@@ -150,7 +165,7 @@ export function goalsPeriod(goals) {
 const monthLabel = goals => goals.history ? `${goalsPeriod(goals) || goals.listName} · history` : `${goalsPeriod(goals) || 'This month'} · current`;
 
 // The current month first, then past months newest first; `selected` is a list name.
-export function goalsPanel(current, { history = [], selected = '' } = {}) {
+export function goalsPanel(current, { history = [], selected = '', askFilter = 'all' } = {}) {
   const months = [current, ...history].filter(goals => goals && (goals.priorities?.length || goals.openAsks?.length));
   if (!months.length) return '';
   const index = Math.max(0, months.findIndex(goals => goals.listName === selected));
@@ -158,10 +173,17 @@ export function goalsPanel(current, { history = [], selected = '' } = {}) {
   const source = [goals.history ? monthLabel(goals) : goals.windowDays ? `Last ${goals.windowDays} days` : '', goals.sourcePromptCount ? `${goals.sourcePromptCount} prompts you typed` : '', goals.generatedAt ? `Mapped ${String(goals.generatedAt).slice(0, 10)}` : ''].filter(Boolean).join(' · ');
   const step = (target, label, glyph) => `<button type="button" class="goals-step" ${target ? `data-goals-month="${esc(target.listName)}"` : 'disabled'} aria-label="${label}">${glyph}</button>`;
   const switcher = months.length > 1 ? `<div class="goals-months" role="group" aria-label="Goals month">${step(months[index + 1], 'Older month', '‹')}<label><span class="sr-only">Goals month</span><select id="goals-month">${months.map((month, position) => `<option value="${esc(month.listName)}"${position === index ? ' selected' : ''}>${esc(monthLabel(month))}</option>`).join('')}</select></label>${step(months[index - 1], 'Newer month', '›')}</div>` : '';
-  const asks = goals.openAsks || [];
-  const shownOpenAsks = 10;
-  const more = asks.slice(shownOpenAsks);
+  const { priorities, openAsks: asks, repeatedAsks } = goalSignals(goals);
+  const filteredAsks = askFilter === 'repeated' ? repeatedAsks : asks;
+  const shownOpenAsks = 3;
+  const more = filteredAsks.slice(shownOpenAsks);
   const asksHeading = goals.history ? 'Open asks then' : 'Open asks';
-  return `<div class="goals-heading"><div><p class="eyebrow">${esc(source || 'From your own prompts')}</p><h2 id="goals-heading">Goals${goals.history ? ' <span class="goals-history-tag">History</span>' : ''}</h2></div>${switcher}</div>${goals.summary ? `<p class="goals-summary">${esc(goals.summary)}</p>` : ''}
-    <div class="goals-columns">${goals.priorities?.length ? `<section class="goals-group" aria-label="Top priorities"><h3>Top priorities</h3><ol class="goal-list">${goals.priorities.map(goalItem).join('')}</ol></section>` : ''}${asks.length ? `<section class="goals-group" aria-label="${asksHeading}"><h3>${asksHeading}</h3><ol class="goal-list">${asks.slice(0, shownOpenAsks).map(goalItem).join('')}</ol>${more.length ? `<details class="goals-more" data-goal="more-open-asks"><summary>${more.length} more ${goals.history ? '' : 'open '}${more.length === 1 ? 'ask' : 'asks'}</summary><ol class="goal-list">${more.map(goalItem).join('')}</ol></details>` : ''}</section>` : ''}</div>`;
+  const rest = priorities.slice(3);
+  return `<div class="goals-heading"><div><p class="eyebrow">Your priorities &amp; follow-through</p><h2 id="goals-heading">Goals${goals.history ? ' <span class="goals-history-tag">History</span>' : ''}</h2></div>${switcher}</div>
+    <div class="goals-overview${priorities.length && asks.length ? ' goals-overview-split' : ''}">
+      ${priorities.length ? `<section class="goals-priorities" aria-label="Top priorities"><div class="goals-section-heading"><h3>${goals.history ? 'What mattered to you then' : 'What matters most to you'}</h3><span>${priorities.length} priorities</span></div><ol class="goal-list">${priorities.slice(0, 3).map((item, i) => goalItem(item, { lead: i === 0 })).join('')}</ol>${rest.length ? `<details class="goals-more" data-goal="more-priorities"><summary>${rest.length} more priorities</summary><ol class="goal-list" start="4">${rest.map(goalItem).join('')}</ol></details>` : ''}</section>` : ''}
+      ${asks.length ? `<aside class="goals-follow-through" aria-labelledby="goals-follow-heading"><p class="eyebrow">Worth a closer look</p><h3 id="goals-follow-heading">${repeatedAsks.length ? `<strong>${repeatedAsks.length}</strong> of ${asks.length} open asks${goals.history ? ' then' : ''} came up more than once.` : 'No repeated requests in this map.'}</h3><p>Repetition shows what keeps coming back. It doesn’t tell us what’s finished.</p><button type="button" class="goal-repeat-action" data-goals-filter="${repeatedAsks.length ? 'repeated' : 'all'}" data-goals-jump>${repeatedAsks.length ? 'See repeated requests' : 'Browse open asks'} <span aria-hidden="true">→</span></button></aside>` : ''}
+    </div>
+    ${asks.length ? `<details class="goals-all-asks" data-goal="all-open-asks"><summary><span class="goals-index-title">${asks.length} ${asksHeading.toLowerCase()}</span><span class="goals-index-hint">Browse requests from ${goals.history ? 'that period' : 'this month'}</span>${chevron}</summary><section class="goals-asks" aria-labelledby="goals-asks-heading"><div class="goals-asks-heading"><h3 id="goals-asks-heading" tabindex="-1">${asksHeading}</h3><div class="goals-ask-filters" role="group" aria-label="Filter open asks"><button type="button" data-goals-filter="all" aria-pressed="${askFilter !== 'repeated'}">All ${asks.length}</button><button type="button" data-goals-filter="repeated" aria-pressed="${askFilter === 'repeated'}">Repeated ${repeatedAsks.length}</button></div></div><ol class="goal-list">${filteredAsks.slice(0, shownOpenAsks).map(goalItem).join('')}</ol>${!filteredAsks.length ? '<p class="goals-empty-filter">No repeated requests in this map.</p>' : ''}${more.length ? `<details class="goals-more" data-goal="more-open-asks"><summary>${more.length} more ${askFilter === 'repeated' ? 'repeated requests' : `${goals.history ? '' : 'open '}${more.length === 1 ? 'ask' : 'asks'}`}</summary><ol class="goal-list" start="4">${more.map(goalItem).join('')}</ol></details>` : ''}</section></details>` : ''}
+    <div class="goals-footnotes">${goals.summary ? `<details class="goals-narrative" data-goal="month-narrative"><summary>Read the month in full</summary><p class="goals-summary">${esc(goals.summary)}</p></details>` : ''}<details class="goals-narrative" data-goal="goals-method"><summary>How to read this</summary><p class="goals-summary">This map brings together priorities and open asks from your own prompts. Repeated asks are counted within the open requests only. Completion isn't linked to this map yet, so these counts don't measure finished work.${goals.history ? ' History preserves what was open then; it does not show whether those requests were completed later.' : ''}</p></details><p class="goals-source">${esc(source || 'From your own prompts')}</p></div>`;
 }
