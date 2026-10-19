@@ -205,8 +205,10 @@ const EXCLUDED_UNSAFE_DIRECTORIES = new Set([
   '__pycache__'
 ]);
 
-function isExcludedUnsafeDirectory(folderPath: string): boolean {
-  const normalized = path.normalize(folderPath);
+function isExcludedUnsafeDirectory(folderPath: string, projectRoot?: string): boolean {
+  // Only directories inside the project count: a project checked out under
+  // ~/build or ~/res is not itself an unsafe directory.
+  const normalized = path.normalize(projectRoot ? path.relative(projectRoot, folderPath) : folderPath);
   const segments = normalized.split(path.sep);
   return segments.some(segment => EXCLUDED_UNSAFE_DIRECTORIES.has(segment));
 }
@@ -298,7 +300,7 @@ export async function updateFolderClaudeMdFiles(
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
         continue;
       }
-      if (isExcludedUnsafeDirectory(folderPath)) {
+      if (isExcludedUnsafeDirectory(folderPath, projectRoot)) {
         logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }
