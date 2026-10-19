@@ -8,6 +8,7 @@ import type { WireProtocol } from '../../src/services/wire-gateway/relay/protoco
 import type { WireIdentity } from '../../src/services/wire-gateway/identity/resolve-identity.js';
 import { userTurnPositionOfRequest } from '../../src/services/wire-gateway/identity/turn-start.js';
 import { latestUserWordsOfConversation } from '../../src/services/wire-gateway/identity/user-words.js';
+import { MEDIA_PROMPT_PLACEHOLDER } from '../../src/services/sqlite/prompt-storage.js';
 
 interface EmittedEvent { kind: HookSpoolKind; payload: Record<string, unknown> }
 
@@ -135,6 +136,38 @@ describe('WireCaptureAssembler', () => {
     // A new turn after the compaction is still a new turn.
     feed(assembler, 'anthropic', { model: 'm', messages: [...compacted, { role: 'assistant', content: 'done' }, { role: 'user', content: 'ship it' }] });
     expect(sink.events.slice(afterCompaction).map(event => [event.kind, event.payload.prompt])).toEqual([['session_init', 'ship it']]);
+  });
+
+  it('an image-only first turn still emits session_init, with the media placeholder', () => {
+    const sink = recordingSink();
+    const assembler = new WireCaptureAssembler({ eventSink: sink });
+    const imageOnly = { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA' } }] };
+    feed(assembler, 'anthropic', { model: 'm', messages: [imageOnly] }, {}, { text: 'A cat.' });
+    expect(sink.events.map(event => [event.kind, event.payload.prompt])).toEqual([['session_init', MEDIA_PROMPT_PLACEHOLDER]]);
+    expect(sink.events[0].payload.nativePromptId).toMatch(/^wire:[0-9a-f]{32}$/);
+  });
+
+  it('an attachment-only turn after a text turn is saved with the placeholder, never the older words', () => {
+    const sink = recordingSink();
+    const assembler = new WireCaptureAssembler({ eventSink: sink });
+    const user1 = { role: 'user', content: 'review this design' };
+    const answer1 = { role: 'assistant', content: 'Send it over.' };
+    const fileOnly = { role: 'user', content: [{ type: 'document', title: 'spec.pdf', source: { type: 'base64', media_type: 'application/pdf', data: 'AA' } }] };
+    feed(assembler, 'anthropic', { model: 'm', messages: [user1] }, {}, { text: 'Send it over.' });
+    feed(assembler, 'anthropic', { model: 'm', messages: [user1, answer1, fileOnly] }, {}, { text: 'Looks good.' });
+    expect(sink.events.map(event => [event.kind, event.payload.prompt])).toEqual([
+      ['session_init', 'review this design'],
+      ['session_init', MEDIA_PROMPT_PLACEHOLDER],
+    ]);
+    expect(sink.events[1].payload.nativePromptId).not.toBe(sink.events[0].payload.nativePromptId);
+  });
+
+  it('first sight of an image-only turn with earlier text uses the placeholder, not the earlier words', () => {
+    const sink = recordingSink();
+    const assembler = new WireCaptureAssembler({ eventSink: sink });
+    const imageOnly = { role: 'user', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AA' } }] };
+    feed(assembler, 'anthropic', { model: 'm', messages: [{ role: 'user', content: 'old words' }, { role: 'assistant', content: 'ok' }, imageOnly] });
+    expect(sink.events.map(event => [event.kind, event.payload.prompt])).toEqual([['session_init', MEDIA_PROMPT_PLACEHOLDER]]);
   });
 
   it('helper requests never become events', () => {

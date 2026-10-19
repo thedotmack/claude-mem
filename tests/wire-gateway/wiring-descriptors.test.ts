@@ -495,6 +495,37 @@ describe('connect and disconnect bookkeeping', () => {
     expect(sideEffects.calls).toContain('uninstallOsService');
   });
 
+  it('restarts the gateway and keeps the service when an agent is wired while the last disconnect drains it', async () => {
+    const box = sandbox('wired-during-drain');
+    box.write('.config/crush/crush.json', '{"providers":{"x":{"base_url":"https://x.example.com/v1"}}}\n');
+    box.write('.aider.conf.yml', 'model: gpt-5\n');
+    const sideEffects = recordingSideEffects();
+    await connectAgent(descriptor('crush'), box.options(sideEffects));
+    expect(sideEffects.serviceInstalled).toBe(true);
+    const stopGatewayWithoutRace = sideEffects.stopGateway;
+    let connectedDuringDrain = false;
+    sideEffects.stopGateway = async () => {
+      await stopGatewayWithoutRace();
+      // Another command connects while the daemon drains: it sees the service installed and the daemon `ready`.
+      const duringDrain = await connectAgent(descriptor('aider'), box.options(sideEffects));
+      connectedDuringDrain = duringDrain.alreadyConnected === false;
+    };
+    sideEffects.calls.length = 0;
+
+    const result = await disconnectAgent('crush', box.options(sideEffects));
+
+    expect(connectedDuringDrain).toBe(true);
+    expect(result.lastRouteRemoved).toBe(false);
+    expect(result.messages.join('\n')).toMatch(/running again/);
+    expect(Object.keys(readWireGatewayRoutesFile(box.routesFilePath).routes).every((routeId) => routeId.startsWith('aider'))).toBe(true);
+    const stopIndex = sideEffects.calls.indexOf('stopGateway');
+    const uninstallIndex = sideEffects.calls.indexOf('uninstallOsService');
+    expect(stopIndex).toBeGreaterThanOrEqual(0);
+    expect(uninstallIndex).toBeGreaterThan(stopIndex);
+    expect(sideEffects.calls.slice(uninstallIndex + 1)).toEqual(['ensureGatewayRunning', 'installOsService']);
+    expect(sideEffects.serviceInstalled).toBe(true);
+  });
+
   it('disconnect of an agent never connected removes only its own routes', async () => {
     const box = sandbox('orphan-routes');
     const { addWireGatewayRoute } = await import('../../src/services/wire-gateway/routes.js');

@@ -1026,6 +1026,8 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
           bunPath: process.execPath,
           scriptPath: wireGatewayScriptPath(),
           drainTimeoutMs: config.drainTimeoutMs,
+          host: config.host,
+          port: config.port,
         }));
         return;
       }

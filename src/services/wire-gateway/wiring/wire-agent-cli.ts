@@ -83,7 +83,7 @@ function sideEffectsFor(runtime: WireAgentCliRuntime, inPreviewSandbox: boolean)
     ensureGatewayRunning: () => runtime.startDaemon(),
     stopGateway: () => runtime.stopDaemon(),
     isOsServiceInstalled: isWireGatewayOsServiceInstalled,
-    installOsService: () => installWireGatewayOsService({ bunPath: runtime.bunPath, scriptPath: runtime.scriptPath, drainTimeoutMs: runtime.config.drainTimeoutMs }),
+    installOsService: () => installWireGatewayOsService({ bunPath: runtime.bunPath, scriptPath: runtime.scriptPath, drainTimeoutMs: runtime.config.drainTimeoutMs, host: runtime.config.host, port: runtime.config.port }),
     uninstallOsService: uninstallWireGatewayOsService,
     probeRouteIdentity,
   };

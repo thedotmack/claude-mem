@@ -28,6 +28,7 @@ import type { WireIdentity } from '../identity/resolve-identity.js';
 import { userWordsInMessage } from '../identity/user-words.js';
 import type { WireSessionStale, WireTurnEnd } from '../identity/turn-tracker.js';
 import { logger } from '../../../utils/logger.js';
+import { MEDIA_PROMPT_PLACEHOLDER } from '../../sqlite/prompt-storage.js';
 import type { WireCaptureEventSink } from './capture-event-sink.js';
 
 /** Conversations kept in memory; the least recently used is forgotten first. */
@@ -127,6 +128,17 @@ function latestUserTurnMessageIndex(request: WireRequest): number {
   return latest;
 }
 
+/**
+ * The prompt of the latest user turn: its own words, or the worker's media
+ * placeholder when it carries only images or files. Never an older turn's
+ * words. Null when the request holds no user turn.
+ */
+function latestUserTurnPrompt(request: WireRequest): string | null {
+  const messageIndex = latestUserTurnMessageIndex(request);
+  if (messageIndex < 0) return null;
+  return userWordsInMessage(request.messages[messageIndex]) || MEDIA_PROMPT_PLACEHOLDER;
+}
+
 function commonPrefixLength(previous: string[], current: string[]): number {
   let length = 0;
   while (length < previous.length && length < current.length && previous[length] === current[length]) length++;
@@ -203,7 +215,7 @@ export class WireCaptureAssembler {
       firstNewItemIndex = historyMatched ? prefixLength : 0;
     }
 
-    if (identity.kind === 'turn') this.maybeEmitSessionInit(identity, conversation, isFirstSight, historyMatched);
+    if (identity.kind === 'turn') this.maybeEmitSessionInit(identity, exchange.request, conversation, isFirstSight, historyMatched);
     this.emitObservationsForNewResults(exchange, conversation, items, firstNewItemIndex);
 
     conversation.previousItemKeys = itemKeys;
@@ -299,8 +311,10 @@ export class WireCaptureAssembler {
   }
 
   /**
-   * One session_init per user turn with words. The agent's own prompt id
-   * (Claude Code's prompt id, Codex's turn id) decides first when this
+   * One session_init per user turn: its words, or the media placeholder for
+   * a turn of only images or files (never an older turn's words). The
+   * agent's own prompt id (Claude Code's prompt id, Codex's turn id) decides
+   * first when this
    * request and the last initialized turn both have one: a new id is a new
    * turn even when the words repeat and the history does not (a Responses
    * `previous_response_id` request sends only its new input). Otherwise, with
@@ -308,8 +322,9 @@ export class WireCaptureAssembler {
    * mismatch (a compaction rewrites the history and its ordinals), the same
    * words as the last turn initialized are that turn, not a new one.
    */
-  private maybeEmitSessionInit(identity: WireIdentity, conversation: ConversationState, isFirstSight: boolean, historyMatched: boolean): void {
-    if (identity.userWords === '') return;
+  private maybeEmitSessionInit(identity: WireIdentity, request: WireRequest, conversation: ConversationState, isFirstSight: boolean, historyMatched: boolean): void {
+    const prompt = latestUserTurnPrompt(request);
+    if (prompt === null) return;
     const agentPromptId = identity.nativePromptId && NATIVE_PROMPT_ID_PATTERN.test(identity.nativePromptId) ? identity.nativePromptId : undefined;
     const isNewTurn = isFirstSight
       ? true
@@ -317,21 +332,21 @@ export class WireCaptureAssembler {
         ? agentPromptId !== conversation.lastInitializedNativePromptId
         : historyMatched
           ? identity.userTurnOrdinal > conversation.lastInitializedUserTurnOrdinal
-          : identity.userWords !== conversation.lastInitializedUserWords;
+          : prompt !== conversation.lastInitializedUserWords;
     if (isNewTurn) {
       const nativePromptId = agentPromptId
-        ?? `wire:${sha256Hex(identity.sessionId, String(identity.userTurnOrdinal), identity.userWords).slice(0, 32)}`;
+        ?? `wire:${sha256Hex(identity.sessionId, String(identity.userTurnOrdinal), prompt).slice(0, 32)}`;
       this.eventSink.emit('session_init', {
         contentSessionId: identity.sessionId,
         platformSource: identity.agentId,
-        prompt: identity.userWords,
+        prompt,
         nativePromptId,
         ...this.placeOf(identity),
       });
       this.noteSessionEvent(identity, identity.sessionId);
     }
     conversation.lastInitializedUserTurnOrdinal = identity.userTurnOrdinal;
-    conversation.lastInitializedUserWords = identity.userWords;
+    conversation.lastInitializedUserWords = prompt;
     conversation.lastInitializedNativePromptId = agentPromptId;
   }
 

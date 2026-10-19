@@ -35,6 +35,22 @@ export interface WireGatewayServiceCommand {
   drainTimeoutMs: number;
   /** Defaults to the resolved DATA_DIR, so a shell-only CLAUDE_MEM_DATA_DIR survives a reboot. */
   dataDir?: string;
+  /**
+   * The resolved CLAUDE_MEM_WIRE_GATEWAY_HOST and _PORT. connect writes this
+   * address into the agent's config, so the service pins it: a shell-only
+   * override must survive a login, or the wired agent dials a dead port.
+   */
+  host: string;
+  port: number;
+}
+
+/** The env every service definition sets before it starts Bun. */
+function serviceEnvironment(command: WireGatewayServiceCommand): Array<[name: string, value: string]> {
+  return [
+    ['CLAUDE_MEM_DATA_DIR', command.dataDir ?? DATA_DIR],
+    ['CLAUDE_MEM_WIRE_GATEWAY_HOST', command.host],
+    ['CLAUDE_MEM_WIRE_GATEWAY_PORT', String(command.port)],
+  ];
 }
 
 /** Seconds a supervisor must allow between SIGTERM and exit: the drain plus a margin. */
@@ -72,6 +88,9 @@ export function buildLaunchAgentPlist(command: WireGatewayServiceCommand): strin
   const programArguments = serviceArguments(command)
     .map(argument => `    <string>${escapeXml(argument)}</string>`)
     .join('\n');
+  const environmentVariables = serviceEnvironment(command)
+    .map(([name, value]) => `    <key>${name}</key>\n    <string>${escapeXml(value)}</string>`)
+    .join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,8 +103,7 @@ ${programArguments}
   </array>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>CLAUDE_MEM_DATA_DIR</key>
-    <string>${escapeXml(dataDir)}</string>
+${environmentVariables}
   </dict>
   <key>WorkingDirectory</key>
   <string>${escapeXml(dataDir)}</string>
@@ -116,7 +134,7 @@ Description=claude-mem wire gateway
 [Service]
 Type=simple
 ExecStart=${serviceArguments(command).map(quoteSystemdArgument).join(' ')}
-Environment=${quoteSystemdArgument(`CLAUDE_MEM_DATA_DIR=${dataDir}`)}
+${serviceEnvironment(command).map(([name, value]) => `Environment=${quoteSystemdArgument(`${name}=${value}`)}`).join('\n')}
 WorkingDirectory=${quoteSystemdArgument(dataDir)}
 Restart=on-failure
 TimeoutStopSec=${serviceStopTimeoutSeconds(command.drainTimeoutMs)}
@@ -153,16 +171,16 @@ function escapeCmdUnquoted(value: string): string {
 
 /**
  * A logon task has no environment of its own, so the task runs cmd.exe to set
- * CLAUDE_MEM_DATA_DIR before it starts Bun. `/s` makes cmd strip only the
- * outer quotes; `/v:off` keeps `!` literal. The data dir uses the unquoted
+ * CLAUDE_MEM_DATA_DIR and the gateway host and port before it starts Bun. `/s`
+ * makes cmd strip only the outer quotes; `/v:off` keeps `!` literal. Each value uses the unquoted
  * `set VAR=value` form: the quoted `set "VAR=value"` form cannot carry the
  * `"^%"` escape. Windows has no SIGTERM drain to wait for (stop tree-kills).
  * https://learn.microsoft.com/windows-server/administration/windows-commands/cmd
  */
 export function buildSchtasksCreateArguments(command: WireGatewayServiceCommand): string[] {
-  const dataDir = command.dataDir ?? DATA_DIR;
+  const setCommands = serviceEnvironment(command).map(([name, value]) => `set ${name}=${escapeCmdUnquoted(value)}&& `).join('');
   const bunCommand = serviceArguments(command).map(quoteCmdArgument).join(' ');
-  const taskRun = `cmd.exe /d /v:off /s /c "set CLAUDE_MEM_DATA_DIR=${escapeCmdUnquoted(dataDir)}&& ${bunCommand}"`;
+  const taskRun = `cmd.exe /d /v:off /s /c "${setCommands}${bunCommand}"`;
   return ['/Create', '/F', '/SC', 'ONLOGON', '/RL', 'LIMITED', '/TN', WINDOWS_TASK_NAME, '/TR', taskRun];
 }
 

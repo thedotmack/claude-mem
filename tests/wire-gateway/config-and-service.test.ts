@@ -86,6 +86,8 @@ describe('wire gateway OS service definitions', () => {
     scriptPath: '/plugin dir/scripts/wire-gateway-service.cjs',
     dataDir: '/Users/me/.claude-mem',
     drainTimeoutMs: 600_000,
+    host: '::1',
+    port: 39000,
   };
 
   it('stop timeout is the drain budget plus a margin, in whole seconds', () => {
@@ -108,6 +110,13 @@ describe('wire gateway OS service definitions', () => {
     expect(buildLaunchAgentPlist({ ...command, drainTimeoutMs: 10_000 })).toContain('<integer>25</integer>');
   });
 
+  it('launchd plist pins the resolved gateway host and port, so a shell-only override survives login', () => {
+    const plist = buildLaunchAgentPlist(command);
+    expect(plist).toContain('<key>CLAUDE_MEM_WIRE_GATEWAY_HOST</key>\n    <string>::1</string>');
+    expect(plist).toContain('<key>CLAUDE_MEM_WIRE_GATEWAY_PORT</key>\n    <string>39000</string>');
+    expect(buildLaunchAgentPlist({ ...command, host: '<&>' })).toContain('<string>&lt;&amp;&gt;</string>');
+  });
+
   it('launchd plist defaults CLAUDE_MEM_DATA_DIR to the resolved data dir', () => {
     const { dataDir: _omitted, ...withoutDataDir } = command;
     expect(buildLaunchAgentPlist(withoutDataDir)).toContain(`<key>CLAUDE_MEM_DATA_DIR</key>\n    <string>${DATA_DIR}</string>`);
@@ -128,12 +137,25 @@ describe('wire gateway OS service definitions', () => {
     expect(buildSystemdUnit(withoutDataDir)).toContain(`Environment="CLAUDE_MEM_DATA_DIR=${DATA_DIR}"`);
   });
 
+  it('systemd user unit pins the resolved gateway host and port', () => {
+    const unit = buildSystemdUnit(command);
+    expect(unit).toContain('Environment="CLAUDE_MEM_WIRE_GATEWAY_HOST=::1"\n');
+    expect(unit).toContain('Environment="CLAUDE_MEM_WIRE_GATEWAY_PORT=39000"\n');
+    expect(buildSystemdUnit({ ...command, host: 'a"b\\c' })).toContain('Environment="CLAUDE_MEM_WIRE_GATEWAY_HOST=a\\"b\\\\c"');
+  });
+
   it('schtasks creates an ONLOGON task that sets CLAUDE_MEM_DATA_DIR before starting Bun', () => {
     const args = buildSchtasksCreateArguments({ ...command, dataDir: 'C:\\Users\\me\\mem data' });
     expect(args.slice(0, 4)).toEqual(['/Create', '/F', '/SC', 'ONLOGON']);
     expect(args[args.length - 1]).toBe(
-      'cmd.exe /d /v:off /s /c "set CLAUDE_MEM_DATA_DIR=C:\\Users\\me\\mem data&& "/Users/me/.bun/bin/bun" "/plugin dir/scripts/wire-gateway-service.cjs" "start" "--foreground""',
+      'cmd.exe /d /v:off /s /c "set CLAUDE_MEM_DATA_DIR=C:\\Users\\me\\mem data&& set CLAUDE_MEM_WIRE_GATEWAY_HOST=::1&& set CLAUDE_MEM_WIRE_GATEWAY_PORT=39000&& "/Users/me/.bun/bin/bun" "/plugin dir/scripts/wire-gateway-service.cjs" "start" "--foreground""',
     );
+  });
+
+  it('schtasks task pins the resolved gateway host and port', () => {
+    const parsed = parseCmdTaskLine(buildSchtasksCreateArguments(command).at(-1)!);
+    expect(parsed.environment.CLAUDE_MEM_WIRE_GATEWAY_HOST).toBe('::1');
+    expect(parsed.environment.CLAUDE_MEM_WIRE_GATEWAY_PORT).toBe('39000');
   });
 
   it('schtasks task defaults CLAUDE_MEM_DATA_DIR to the resolved data dir', () => {
@@ -150,10 +172,13 @@ describe('wire gateway OS service definitions', () => {
       scriptPath: 'C:\\Users\\AT&T (x86)\\%PATH%\\a^b!c\\wire-gateway-service.cjs',
       drainTimeoutMs: 600_000,
       dataDir: awkwardDataDir,
+      host: '127.0.0.1',
+      port: 39000,
     };
     const taskRun = buildSchtasksCreateArguments(awkwardCommand).at(-1)!;
     expect(parseCmdTaskLine(taskRun)).toEqual({
       dataDir: awkwardDataDir,
+      environment: { CLAUDE_MEM_DATA_DIR: awkwardDataDir, CLAUDE_MEM_WIRE_GATEWAY_HOST: '127.0.0.1', CLAUDE_MEM_WIRE_GATEWAY_PORT: '39000' },
       argv: [awkwardCommand.bunPath, awkwardCommand.scriptPath, 'start', '--foreground'],
     });
   });
@@ -171,7 +196,7 @@ describe('wire gateway OS service definitions', () => {
  * removes `^` escapes there. The program then splits its own argv
  * (quotes delimit, are dropped).
  */
-function parseCmdTaskLine(taskRun: string): { dataDir: string; argv: string[] } {
+function parseCmdTaskLine(taskRun: string): { dataDir: string; environment: Record<string, string>; argv: string[] } {
   const prefix = 'cmd.exe /d /v:off /s /c "';
   expect(taskRun.startsWith(prefix) && taskRun.endsWith('"')).toBe(true);
   const line = taskRun.slice(prefix.length, -1);
@@ -196,19 +221,24 @@ function parseCmdTaskLine(taskRun: string): { dataDir: string; argv: string[] } 
     }
     commands[commands.length - 1] += character;
   }
-  expect(commands).toHaveLength(2);
-  const setPrefix = 'set CLAUDE_MEM_DATA_DIR=';
-  expect(commands[0].startsWith(setPrefix)).toBe(true);
+  const bunCommand = commands.pop()!;
+  const environment: Record<string, string> = {};
+  for (const setCommand of commands) {
+    const assignment = /^set ([A-Z_]+)=(.*)$/s.exec(setCommand);
+    expect(assignment).not.toBeNull();
+    environment[assignment![1]] = assignment![2];
+  }
+  expect(Object.keys(environment)).toEqual(['CLAUDE_MEM_DATA_DIR', 'CLAUDE_MEM_WIRE_GATEWAY_HOST', 'CLAUDE_MEM_WIRE_GATEWAY_PORT']);
   const argv: string[] = [];
   let current: string | null = null;
   inQuotes = false;
-  for (const character of commands[1]) {
+  for (const character of bunCommand) {
     if (character === '"') { inQuotes = !inQuotes; current ??= ''; continue; }
     if (character === ' ' && !inQuotes) { if (current !== null) argv.push(current); current = null; continue; }
     current = (current ?? '') + character;
   }
   if (current !== null) argv.push(current);
-  return { dataDir: commands[0].slice(setPrefix.length), argv };
+  return { dataDir: environment.CLAUDE_MEM_DATA_DIR, environment, argv };
 }
 
 describe('worker-service `wire <sub>` dispatch', () => {

@@ -183,6 +183,25 @@ describe('maskRequestBody (magpie MaskJSON)', () => {
     }
   });
 
+  it('masks secret-named fields inside JSON-encoded tool arguments (OpenAI chat and Responses)', () => {
+    const argumentsText = JSON.stringify({ username: 'bob', password: '12345678', nested: [{ api_key: '87654321' }] });
+    const bodies: Record<string, string> = {
+      'chat tool_calls': JSON.stringify({ messages: [{ role: 'assistant', tool_calls: [{ id: 'call_1', type: 'function', function: { name: 'login', arguments: argumentsText } }] }] }),
+      'responses function_call': JSON.stringify({ input: [{ type: 'function_call', call_id: 'call_1', name: 'login', arguments: argumentsText }] }),
+    };
+    for (const [name, body] of Object.entries(bodies)) {
+      const masked = maskJson(body);
+      const unmaskedText = unmarked(masked.text);
+      expect({ name, leaked: unmaskedText.includes('12345678') || unmaskedText.includes('87654321') }).toEqual({ name, leaked: false });
+      expect({ name, maskedCount: masked.maskedCount }).toEqual({ name, maskedCount: 2 });
+      expect(masked.text).toContain('\\"username\\":\\"bob\\"');
+      expect(placeholders.restoreJsonText(masked.text)).toBe(body);
+    }
+    // Arguments that are not JSON are left to the text detectors.
+    const notJson = JSON.stringify({ messages: [{ role: 'assistant', tool_calls: [{ id: 'c', type: 'function', function: { name: 'f', arguments: '{"password":' } }] }] });
+    expect(maskJson(notJson).text).toBe(notJson);
+  });
+
   it('masks only descriptions in what the agent defines for the vendor (tools, schemas, settings)', () => {
     const kept: Array<[string, string, string]> = [
       ['anthropic tools', `{"messages":[{"role":"user","content":"hi"}],"tools":[{"name":"t","description":"use ${openaiKey}","input_schema":{"type":"object","properties":{"mode":{"type":"string","enum":["${openaiKey}"]}}}}]}`, `"enum":["${openaiKey}"]`],

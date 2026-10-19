@@ -442,6 +442,21 @@ export class OutboundRedactionPlaceholders {
       if (!maskedValues.has(value)) maskedValues.set(value, placeholder);
       return placeholder;
     };
+    /**
+     * A string that is itself JSON (OpenAI's tool-call `arguments`, Responses'
+     * function_call `arguments`): its secret-named fields are masked whole,
+     * as in the body, since the key the walker sees is `arguments`. Every
+     * other byte of it stays as the agent wrote it.
+     */
+    const maskSecretFieldsInJsonText = (text: string): string => {
+      if (!/^\s*[[{]/.test(text)) return text;
+      const rewritten = rewriteJsonStringsInText(text, (_path, key, value) => {
+        if (value === '' || value.startsWith('data:') || !isSecretFieldName(key) || isWholePlaceholder(value)) return value;
+        maskedCount++;
+        return remember('SECRET', value);
+      });
+      return rewritten.text;
+    };
     const sealedSites: typeof sites = [];
     for (const site of sites) {
       if (isExempt(site.path, site.key, site.value, site.context)) continue;
@@ -454,7 +469,7 @@ export class OutboundRedactionPlaceholders {
         splices.push(stringValueSplice(site.span, remember('SECRET', site.value)));
         continue;
       }
-      const masked = this.maskWith(site.value, remember);
+      const masked = this.maskWith(maskSecretFieldsInJsonText(site.value), remember);
       maskedCount += masked.maskedCount;
       if (masked.text !== site.value) splices.push(stringValueSplice(site.span, masked.text));
     }

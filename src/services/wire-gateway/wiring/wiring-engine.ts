@@ -603,7 +603,7 @@ export interface DisconnectResult {
   wasConnected: boolean;
   fields: DisconnectFieldReport[];
   removedRouteIds: string[];
-  /** True when that was the last route: the daemon stopped and the service was removed. */
+  /** True when that was the last route: the daemon stopped and the service was removed (false again when another route was added while it stopped, and it was restarted). */
   lastRouteRemoved: boolean;
   messages: string[];
 }
@@ -733,11 +733,24 @@ export async function disconnectAgent(agentId: string, options: WiringOptions): 
     });
   });
 
-  const remainingRoutes = Object.keys(readWireGatewayRoutesFile(options.routesFilePath).routes).length;
-  const lastRouteRemoved = removedRouteIds.length > 0 && remainingRoutes === 0;
+  const routeCount = () => Object.keys(readWireGatewayRoutesFile(options.routesFilePath).routes).length;
+  let lastRouteRemoved = removedRouteIds.length > 0 && routeCount() === 0;
   if (lastRouteRemoved) {
     await options.sideEffects.stopGateway();
-    if (options.sideEffects.isOsServiceInstalled()) messages.push(options.sideEffects.uninstallOsService());
+    const serviceWasInstalled = options.sideEffects.isOsServiceInstalled();
+    if (serviceWasInstalled) messages.push(options.sideEffects.uninstallOsService());
+    // The stop runs without the locks (it waits for the daemon to drain), so a
+    // connect or `wire run` may have added a route and got `ready` from the
+    // daemon just stopped. Re-checked after both the stop and the uninstall:
+    // a route written before this read is served again here; one written after
+    // it is followed by its own command's ensureGatewayRunning, which starts a
+    // fresh daemon.
+    if (routeCount() > 0) {
+      lastRouteRemoved = false;
+      await options.sideEffects.ensureGatewayRunning();
+      if (serviceWasInstalled && !options.sideEffects.isOsServiceInstalled()) messages.push(options.sideEffects.installOsService());
+      messages.push('Another agent was wired while the gateway stopped; it is running again.');
+    }
   }
   return { wasConnected, fields: reports, removedRouteIds, lastRouteRemoved, messages };
 }
