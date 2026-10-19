@@ -36,11 +36,14 @@ only the acknowledged copy; a concurrent replacement remains queued.
 The client outbox is temporary delivery state, not a local memory database or
 processing worker. Each hook's exit can retry a pending outbox after connectivity
 returns. A short-lived detached uploader discovers the oldest pending entries
-and sends up to 16 with a shared one-second network budget. It runs no listener,
-observer, local memory database or vector index. Events in the same process
-share one scheduled uploader per burst. Events arriving during delivery request
-one follow-up pass when that uploader exits, without making hooks wait for the
-network. A later hook can retry after a launch or delivery failure.
+and starts up to 16 requests within a shared one-second scheduling budget. Each
+request has its own ten-second timeout, so an acknowledgement or permanent
+rejection can arrive after the scheduling budget without stranding the outbox.
+It runs no listener, observer, local memory database or vector index. Events in
+the same process share one scheduled uploader per burst. Events arriving during
+delivery request one follow-up pass when that uploader exits, without making
+hooks wait for the network. A later hook can retry after a launch or delivery
+failure.
 Concurrent uploaders from separate hook processes are safe:
 the receiver deduplicates receipts and the client claims files atomically before
 removing them. A refused
