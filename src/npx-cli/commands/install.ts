@@ -2994,8 +2994,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             return `Worker ready at http://localhost:${port} ${styleText('green', 'OK')}`;
           case 'warming':
             return `Worker starting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`;
-          case 'dead':
-            return `Worker did not start ${styleText('red', '✗')}`;
+          case 'dead': {
+            const startFailure = getLastWorkerBootFailure()?.split('\n')[0];
+            return `Worker did not start${startFailure ? ` (${startFailure})` : ''} ${styleText('red', '✗')}`;
+          }
         }
       },
     },

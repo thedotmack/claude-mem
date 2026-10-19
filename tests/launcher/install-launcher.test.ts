@@ -10,6 +10,7 @@ import {
   ensureLauncherOnPath,
   ensureLocalBinOnShellPath,
   findExecutableOnPath,
+  probeLauncherVersion,
   removeInstalledLauncher,
   resolveLauncherBinaryPath,
   shellPathSetupMarkerComment,
@@ -224,7 +225,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     });
 
     expect(ensureResult).toEqual({ status: 'foreign-binary-kept', binaryPath, pathSetupOutcome: null });
-    expect(logger.lines).toEqual([`warn: ${binaryPath} exists and is not the claude-mem hook launcher; not replacing`]);
+    expect(logger.lines).toEqual([`warn: ${binaryPath} exists and is not the claude-mem hook launcher (--version printed "13.28.0" instead of a protocol number); not replacing`]);
     expect(readFileSync(binaryPath, 'utf-8')).toContain('13.28.0');
   });
 
@@ -317,11 +318,24 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(readdirSync(path.join(scratchHome, '.local', 'bin'))).toEqual([]);
   });
 
+  it.skipIf(!isPosixHost)('puts the --version failure in the error when the compiled binary does not run', () => {
+    const scratchHome = makeScratchHome();
+    const compileCrashingLauncher: LauncherCompileRunner = (_bunPath, compileArguments) => {
+      const outfilePath = compileArguments[compileArguments.indexOf('--outfile') + 1];
+      writeFileSync(outfilePath, '#!/bin/sh\necho "blocked by policy" >&2\nexit 5\n');
+      chmodSync(outfilePath, 0o755);
+      return { status: 0, stderr: '' };
+    };
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome), runCompile: compileCrashingLauncher, runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    })).toThrow(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL} (--version exited 5: blocked by policy)`);
+  });
+
   it('ad-hoc re-signs the compiled binary before the protocol probe (macOS 27 kills invalidly-signed builds, #4778)', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
     const binDirectory = path.join(scratchHome, '.local', 'bin');
-    // The compile output prints garbage — what readLauncherProtocol sees when
+    // The compile output prints garbage — what probeLauncherVersion sees when
     // macOS kills the binary — and only the signing step, which must run
     // first, repairs it.
     const compileThenResign: LauncherCompileRunner = (_bunPath, compileArguments) => {
@@ -444,6 +458,46 @@ describe.skipIf(!isPosixHost)('ensureLocalBinOnShellPath keeps the Claude Code a
     });
     expect(readFileSync(path.join(scratchHome, '.config', 'fish', 'config.fish'), 'utf-8'))
       .toContain(`set -gx PATH ${path.join(scratchHome, '.local', 'bin')} $PATH`);
+  });
+});
+
+describe.skipIf(!isPosixHost)('probeLauncherVersion says why no protocol came back', () => {
+  function writeScript(body: string): string {
+    const scriptPath = path.join(makeScratchHome(), 'claude-mem');
+    writeFileSync(scriptPath, `#!/bin/sh\n${body}\n`);
+    chmodSync(scriptPath, 0o755);
+    return scriptPath;
+  }
+
+  it('returns the protocol and no failure for the launcher', () => {
+    expect(probeLauncherVersion(writeScript(`echo ${LAUNCHER_PROTOCOL}`))).toEqual({ protocol: LAUNCHER_PROTOCOL, failure: null, failedToStart: false });
+  });
+
+  it('reports a non-zero exit with the last stderr line', () => {
+    expect(probeLauncherVersion(writeScript('echo first >&2\necho "access denied" >&2\nexit 3')))
+      .toEqual({ protocol: null, failure: 'exited 3: access denied', failedToStart: false });
+  });
+
+  it('reports a kill signal', () => {
+    expect(probeLauncherVersion(writeScript('kill -KILL $$')).failure).toBe('killed by SIGKILL');
+  });
+
+  it('reports a timeout', () => {
+    expect(probeLauncherVersion(writeScript('exec sleep 5'), 200).failure).toBe('timed out after 200 ms');
+  });
+
+  it('reports a binary that cannot start as a spawn failure', () => {
+    const scriptPath = writeScript('echo 1');
+    chmodSync(scriptPath, 0o644);
+    const versionProbe = probeLauncherVersion(scriptPath);
+    expect(versionProbe.protocol).toBeNull();
+    expect(versionProbe.failedToStart).toBe(true);
+    expect(versionProbe.failure).toStartWith('could not start: ');
+    expect(versionProbe.failure).toContain('EACCES');
+  });
+
+  it('reports a missing file', () => {
+    expect(probeLauncherVersion(path.join(makeScratchHome(), 'claude-mem')).failure).toBe('file not found');
   });
 });
 
@@ -600,7 +654,7 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     writeFakeLauncher(path.join(binDirectory, 'claude-mem'), '13.28.0');
     const row = hookLauncherCheck(posixHost(scratchHome, { PATH: binDirectory }));
     expect(row).toMatchObject({ status: 'fail', required: true });
-    expect(row.detail).toContain('is not the claude-mem hook launcher');
+    expect(row.detail).toContain('did not report a launcher protocol (--version printed "13.28.0" instead of a protocol number)');
   });
 
   it('finds the first PATH hit without spawning', () => {
