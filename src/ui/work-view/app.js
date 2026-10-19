@@ -1,7 +1,7 @@
 import { setupTeamView } from './team-view.js';
 import { relativeTime, requestElapsed } from './view-model.js';
 import { presentWork, effectiveStatus, statusCategory, contentSignature, handoffText, scopeWork, sortWork } from './presentation.js';
-import { personalRoute, parsePersonalRoute, requestCards, requestList, agentCards, requestPage, workstreamPage } from './request-views.js';
+import { personalRoute, parsePersonalRoute, requestCards, requestList, agentCards, requestPage, workstreamPage, goalsPanel } from './request-views.js';
 import { getConnectionStatus } from './live-status.js';
 
 const $ = id => document.getElementById(id);
@@ -20,6 +20,7 @@ function scopedRows() {
 function visibleRows() { return sortWork(scopedRows().filter(row => state.filter === 'all' || (state.filter === 'other' ? statusCategory(row) === 'other' : effectiveStatus(row) === state.filter)), state.sort); }
 function render() {
   const open = new Set([...document.querySelectorAll('details[open]')].map(element => element.dataset.updates));
+  const openGoals = new Set([...document.querySelectorAll('details[open][data-goal]')].map(element => element.dataset.goal));
   const projects = [...new Set(state.rows.flatMap(row => row.projects?.length ? row.projects : [row.project]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (state.project && !projects.includes(state.project)) state.project = '';
   $('project-filter').hidden = false;
@@ -41,6 +42,10 @@ function render() {
   const detail = state.view === 'request';
   $('work-heading').parentElement.hidden = detail;
   $('personal-heading').hidden = detail;
+  const goals = goalsPanel(state.snapshot?.goals);
+  $('goals').hidden = detail || !goals;
+  if (!detail) $('goals').innerHTML = goals;
+  for (const element of $('goals').querySelectorAll('details[data-goal]')) if (openGoals.has(element.dataset.goal)) element.open = true;
   $('personal-toolbar').hidden = detail;
   $('status-tabs').hidden = detail;
   $('unlinked-work').hidden = detail || !state.unlinked.length;

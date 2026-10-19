@@ -131,3 +131,19 @@ export function workstreamPage(row, work) {
   const activity = activityFor(work, null, 100);
   return `<div class="records-page"><div class="request-heading"><h1 tabindex="-1">${esc(work.title)}</h1><div class="request-meta">${badge({ status: work.status })}<div class="request-contributors">${contributors(work.contributors)}</div></div></div><div class="records-intro"><p>${esc(work.summary)}</p></div><div class="section-heading"><h2>Recorded changes</h2></div><ul class="records-list">${activity.map(item => `<li><div class="record-meta">${time(item.atEpoch)}<span>${item.kind === 'work-state' ? 'Work update' : 'Observation'}</span></div><div class="record-copy"><p>${esc(item.title || item.detail)}</p>${item.detail && item.detail !== item.title ? `<p class="record-detail">${esc(item.detail)}</p>` : ''}</div>${sourceDisclosure([item.url])}</li>`).join('') || '<li>No detailed updates have been recorded yet.</li>'}</ul></div>`;
 }
+
+// Goals: the owner's top priorities and open asks, each with the dated quotes
+// from the owner's own prompts that support it (saved by the owner-goals skill).
+function goalItem(item) {
+  const meta = [item.product, item.latestAt ? `Latest ${item.latestAt}` : '', item.timesAsked > 1 ? `Asked ${item.timesAsked}×` : ''].filter(Boolean);
+  const evidence = item.evidence || [];
+  return `<li class="goal-item"><span class="goal-rank" aria-hidden="true">${esc(item.rank ?? '•')}</span><div class="goal-copy"><p class="goal-title">${esc(item.title)}</p><div class="goal-line">${meta.length ? `<p class="goal-meta">${meta.map(esc).join(' · ')}</p>` : ''}${evidence.length ? `<details class="goal-evidence" data-goal="${esc(item.id)}"><summary>Evidence · ${evidence.length} ${evidence.length === 1 ? 'quote' : 'quotes'}</summary><ul>${evidence.map(quote => `<li>${quote.at ? `<time>${esc(quote.at)}</time>` : ''}<q>${esc(quote.quote)}</q></li>`).join('')}</ul></details>` : ''}</div></div></li>`;
+}
+export function goalsPanel(goals, shownOpenAsks = 10) {
+  if (!goals || (!goals.priorities?.length && !goals.openAsks?.length)) return '';
+  const source = [goals.windowDays ? `Last ${goals.windowDays} days` : '', goals.sourcePromptCount ? `${goals.sourcePromptCount} prompts you typed` : '', goals.generatedAt ? `Mapped ${String(goals.generatedAt).slice(0, 10)}` : ''].filter(Boolean).join(' · ');
+  const asks = goals.openAsks || [];
+  const more = asks.slice(shownOpenAsks);
+  return `<div class="goals-heading"><div><p class="eyebrow">${esc(source || 'From your own prompts')}</p><h2 id="goals-heading">Goals</h2></div></div>${goals.summary ? `<p class="goals-summary">${esc(goals.summary)}</p>` : ''}
+    <div class="goals-columns">${goals.priorities?.length ? `<section class="goals-group" aria-label="Top priorities"><h3>Top priorities</h3><ol class="goal-list">${goals.priorities.map(goalItem).join('')}</ol></section>` : ''}${asks.length ? `<section class="goals-group" aria-label="Open asks"><h3>Open asks</h3><ol class="goal-list">${asks.slice(0, shownOpenAsks).map(goalItem).join('')}</ol>${more.length ? `<details class="goals-more" data-goal="more-open-asks"><summary>${more.length} more open ${more.length === 1 ? 'ask' : 'asks'}</summary><ol class="goal-list">${more.map(goalItem).join('')}</ol></details>` : ''}</section>` : ''}</div>`;
+}

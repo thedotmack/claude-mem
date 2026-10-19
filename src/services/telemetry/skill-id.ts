@@ -27,6 +27,7 @@ export const FIRST_PARTY_SKILL_IDS = [
   'mem-search',
   'mode-creator',
   'oh-my-issues',
+  'owner-goals',
   'pathfinder',
   'release',
   'screenpipe',
