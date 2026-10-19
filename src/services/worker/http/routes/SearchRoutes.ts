@@ -178,7 +178,11 @@ export class SearchRoutes extends BaseRouteHandler {
       ? await this.contextReader.hasObservations(projects, platformSource)
       : countObservationsByProjects(sessionStore, projects, platformSource) > 0;
     if (hasObservations) {
-      if (removalGeneration !== undefined) this.projectsKnownNonEmpty.add(cacheKey);
+      // The read awaited the context reader: a delete that landed meanwhile
+      // makes this positive stale, so only remember it for the same generation.
+      if (removalGeneration !== undefined && removalGeneration === this.contextCache?.removalGenerationNow()) {
+        this.projectsKnownNonEmpty.add(cacheKey);
+      }
       return true;
     }
     return false;
