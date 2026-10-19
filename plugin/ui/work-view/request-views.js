@@ -10,6 +10,7 @@ const projectLabel = project => String(project || 'Unknown project').split('/')[
 const projectNames = row => [...new Set((row.projects || [row.project]).filter(Boolean).map(projectLabel))].join(' · ');
 
 export function personalRoute(view, state = {}) {
+  if (view === 'goals' || view === 'teambrain') return `#${view}`;
   const parameters = new URLSearchParams();
   for (const [key, value] of Object.entries({ id: view === 'request' ? state.requestId : null, work: view === 'request' ? state.workId : null, agent: state.agentId, from: view === 'request' ? state.from : null, project: state.project, range: state.range, sort: state.sort, status: state.filter, q: state.query })) {
     if (value && !((key === 'range' && value === 'day') || (key === 'sort' && value === 'attention') || (key === 'status' && value === 'all'))) parameters.set(key, value);
@@ -20,7 +21,7 @@ export function personalRoute(view, state = {}) {
 export function parsePersonalRoute(hash) {
   const [rawView, query = ''] = hash.replace(/^#/, '').split('?');
   const parameters = new URLSearchParams(query);
-  const view = ['cards', 'list', 'agents', 'request'].includes(rawView) ? rawView : rawView === 'board' ? 'list' : 'cards';
+  const view = ['cards', 'list', 'agents', 'request', 'goals', 'teambrain'].includes(rawView) ? rawView : rawView === 'board' ? 'list' : 'cards';
   return { view, requestId: parameters.get('id'), workId: parameters.get('work'), agentId: parameters.get('agent'),
     from: ['cards', 'list', 'agents'].includes(parameters.get('from')) ? parameters.get('from') : 'cards',
     project: parameters.get('project') || '', range: ['all', 'week'].includes(parameters.get('range')) ? parameters.get('range') : 'day',
@@ -54,17 +55,21 @@ function nextCopy(row) {
   if (effectiveStatus(row) === 'checked') return { label: 'Checked locally', text: 'You reviewed this version. New work will need a fresh check.' };
   const summary = String(row.activity || '').replace(/\s+/g, ' ').trim();
   const next = String(row.next || '').replace(/\s+/g, ' ').trim();
-  return next && next !== summary ? { label: effectiveStatus(row) === 'needs' ? 'Needs you' : effectiveStatus(row) === 'ready' ? 'Ready to check' : 'Next step', text: next } : null;
+  const comparable = text => text.toLocaleLowerCase().replace(/[\s.!?…]+$/u, '');
+  if (!next || comparable(next) === comparable(summary) || comparable(next) === 'follow the latest recorded activity') return null;
+  const hasSummary = row.humanCopy && ['current', 'outdated'].includes(row.copyState);
+  return { label: hasSummary ? 'Next step' : 'Recorded next step', text: next };
 }
 export function requestCards(rows, state) {
   return rows.map(row => {
     const next = nextCopy(row), status = effectiveStatus(row);
     const route = personalRoute('request', { ...state, requestId: row.id, workId: null, from: state.view });
-    return `<article class="request-card work-card status-${esc(status)}${state.changed?.has(row.id) ? ' updated' : ''}" data-id="${esc(row.id)}" tabindex="-1"><a class="request-card-open" href="${esc(route)}" data-route>
+    const action = status === 'ready' ? 'Review result' : status === 'needs' ? 'Read handoff' : 'Open request';
+    return `<article class="request-card work-card status-${esc(status)}${state.changed?.has(row.id) ? ' updated' : ''}" data-id="${esc(row.id)}" tabindex="-1"><a class="request-card-open" href="${esc(route)}" data-route aria-label="${esc(action)}: ${esc(row.title)}">
       <div class="request-card-meta">${badge(row)}<span>${time(row.updated)}${state.unread?.has(row.id) ? '<span class="new-dot">New update</span>' : ''}</span></div>
-      <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div></div>
-      <div class="request-card-context"><div class="request-contributors" aria-label="Contributors">${contributors(row.contributors)}</div><span class="card-project" title="${esc((row.projects || [row.project]).join(' · '))}">${esc(projectNames(row))}</span></div>
-      <div class="request-card-footer${next ? '' : ' no-next'}">${next ? `<div><span class="card-next-label">${esc(next.label)}</span><p>${esc(next.text)}</p></div>` : ''}<span class="open-label">${status === 'ready' ? 'Review result' : status === 'needs' ? 'Read handoff' : 'Open request'} ${chevron}</span></div>
+      <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><div class="card-update"><span class="card-update-label">${row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update'}</span><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div></div></div>
+      ${next ? `<div class="card-next"><span class="card-next-label">${esc(next.label)}</span><p>${esc(next.text)}</p></div>` : ''}
+      <div class="request-card-footer"><div class="request-card-context"><div class="request-contributors" aria-label="Recorded contributors">${contributors(row.contributors)}</div><span class="card-project" title="${esc((row.projects || [row.project]).join(' · '))}">${esc(projectNames(row))}</span></div><span class="open-label">${action} ${chevron}</span></div>
     </a></article>`;
   }).join('');
 }
@@ -179,7 +184,7 @@ export function goalsPanel(current, { history = [], selected = '', askFilter = '
   const more = filteredAsks.slice(shownOpenAsks);
   const asksHeading = goals.history ? 'Open asks then' : 'Open asks';
   const rest = priorities.slice(3);
-  return `<div class="goals-heading"><div><p class="eyebrow">Your priorities &amp; follow-through</p><h2 id="goals-heading">Goals${goals.history ? ' <span class="goals-history-tag">History</span>' : ''}</h2></div>${switcher}</div>
+  return `<div class="goals-heading"><div><p class="eyebrow">Your priorities &amp; follow-through</p><h1 id="goals-heading" tabindex="-1">Goals${goals.history ? ' <span class="goals-history-tag">History</span>' : ''}</h1></div>${switcher}</div>
     <div class="goals-overview${priorities.length && asks.length ? ' goals-overview-split' : ''}">
       ${priorities.length ? `<section class="goals-priorities" aria-label="Top priorities"><div class="goals-section-heading"><h3>${goals.history ? 'What mattered to you then' : 'What matters most to you'}</h3><span>${priorities.length} priorities</span></div><ol class="goal-list">${priorities.slice(0, 3).map((item, i) => goalItem(item, { lead: i === 0 })).join('')}</ol>${rest.length ? `<details class="goals-more" data-goal="more-priorities"><summary>${rest.length} more priorities</summary><ol class="goal-list" start="4">${rest.map(goalItem).join('')}</ol></details>` : ''}</section>` : ''}
       ${asks.length ? `<aside class="goals-follow-through" aria-labelledby="goals-follow-heading"><p class="eyebrow">Worth a closer look</p><h3 id="goals-follow-heading">${repeatedAsks.length ? `<strong>${repeatedAsks.length}</strong> of ${asks.length} open asks${goals.history ? ' then' : ''} came up more than once.` : 'No repeated requests in this map.'}</h3><p>Repetition shows what keeps coming back. It doesn’t tell us what’s finished.</p><button type="button" class="goal-repeat-action" data-goals-filter="${repeatedAsks.length ? 'repeated' : 'all'}" data-goals-jump>${repeatedAsks.length ? 'See repeated requests' : 'Browse open asks'} <span aria-hidden="true">→</span></button></aside>` : ''}
