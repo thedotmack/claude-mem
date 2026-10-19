@@ -403,6 +403,26 @@ describe('concept exact-match injection (#3379)', () => {
       db.close();
     }
   });
+
+  it('skips a row whose concepts value is not valid JSON and still returns the other rows', () => {
+    const db = new Database(':memory:');
+    try {
+      const store = new SessionStore(db);
+      const sessionDbId = store.createSDKSession('content-bad-json', 'concept-project', 'prompt');
+      store.ensureMemorySessionIdRegistered(sessionDbId, 'mem-bad-json');
+      const insert = db.prepare(`
+        INSERT INTO observations (memory_session_id, project, type, title, concepts, created_at, created_at_epoch)
+        VALUES ('mem-bad-json', 'concept-project', 'discovery', ?, ?, ?, ?)
+      `);
+      insert.run('GOOD_OBS', '["gotcha"]', new Date().toISOString(), 1_700_000_000_000);
+      insert.run('BAD_JSON_OBS', 'gotcha, [unterminated', new Date().toISOString(), 1_700_000_100_000);
+
+      expect(queryObservationsMulti(store, ['concept-project'], config).map(obs => obs.title)).toEqual(['GOOD_OBS']);
+      expect(queryObservationsNewest(store, config, { limit: 10 }).map(obs => obs.title)).toEqual(['GOOD_OBS']);
+    } finally {
+      db.close();
+    }
+  });
 });
 
 describe('queryObservationsNewest house feed', () => {

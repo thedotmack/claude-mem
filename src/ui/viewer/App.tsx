@@ -20,6 +20,7 @@ import {
   deleteSession,
   parseViewRoute,
   removeSessionRows,
+  rowInProject,
   sameSession,
   sessionHash,
   sessionKey,
@@ -111,9 +112,9 @@ export function App() {
     if (route.view === 'sessions') void refreshCatalog(currentFilter);
   }, [route.view, currentFilter, refreshCatalog]);
 
-  const matchesScope = useCallback((item: SessionScopedRow & { project: string }) => {
+  const matchesScope = useCallback((item: SessionScopedRow & { project: string; merged_into_project?: string | null }) => {
     if (feedScope.session) return sameSession(sessionRefOf(item), feedScope.session);
-    return !feedScope.project || item.project === feedScope.project;
+    return !feedScope.project || rowInProject(item, feedScope.project);
   }, [feedScope]);
 
   useEffect(() => {

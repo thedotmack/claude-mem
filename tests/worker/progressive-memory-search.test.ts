@@ -107,6 +107,31 @@ describe('progressive worker search with real SQLite fixtures', () => {
     expect(auto.observations[0].content).toContain('SUMMARY_DETAIL');
   });
 
+  it('reranks semantic candidates beyond the requested limit before cutting the index (#4865)', async () => {
+    const target = 'candidate-limit-fixture';
+    const query = 'Authentication token expiry correction';
+    const recent = Date.now() - 60_000;
+    const ids = [...Array.from({ length: 5 }, (_, i) => `Authentication notes ${i}`), query]
+      .map((title, i) => seed(target, title, `CANDIDATE_BODY_${i}`, recent + i));
+    const exactId = ids[5];
+    const chroma = {
+      queryChroma: async () => ({
+        ids: ids.map(Number),
+        distances: ids.map((_, i) => 0.1 + i * 0.01),
+        metadatas: ids.map((id, i) => ({ sqlite_id: Number(id), doc_type: 'observation', project: target, created_at_epoch: recent + i })),
+      }),
+    };
+    const semantic = new ProgressiveMemorySearch(
+      new SearchManager(new SessionSearch(db), store, chroma as any, new FormattingService(), new TimelineService()),
+      store,
+    );
+    const guided = await semantic.run({ query, project: target, mode: 'guided', limit: 5 });
+    expect(guided.index).toHaveLength(5);
+    expect(guided.index[0].id).toBe(exactId);
+    const auto = await semantic.run({ query, project: target, mode: 'auto', limit: 5, maxDetails: 1, depthBefore: 0, depthAfter: 0 });
+    expect(auto.observations[0].id).toBe(exactId);
+  });
+
   it('returns the same curated text from the HTTP worker route without duplicate internal state', async () => {
     const app = express();
     app.use(express.json());
