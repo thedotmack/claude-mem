@@ -763,7 +763,23 @@ async function runWireGatewayForeground(config: WireGatewayConfig): Promise<void
   };
   process.once('SIGTERM', shutdown);
   process.once('SIGINT', shutdown);
+  logUncaughtWireGatewayFailures();
   await service.start();
+}
+
+/**
+ * The daemon's stdio is ignored, so an uncaught error would end it with no
+ * trace (a gateway died that way once, seen live). Log it and keep relaying,
+ * as the worker daemon does: the agents wired through it would otherwise
+ * fail until someone noticed.
+ */
+export function logUncaughtWireGatewayFailures(): void {
+  process.on('uncaughtException', (error) => {
+    logger.error('WIRE', 'Uncaught exception in the wire gateway; it keeps running', {}, error instanceof Error ? error : new Error(String(error)));
+  });
+  process.on('unhandledRejection', (reason) => {
+    logger.error('WIRE', 'Unhandled rejection in the wire gateway; it keeps running', {}, reason instanceof Error ? reason : new Error(String(reason)));
+  });
 }
 
 function printWireGatewayUsage(): void {

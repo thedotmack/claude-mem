@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { existsSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
+import { fileURLToPath } from 'url';
 import { ensureWireGatewayDirs, paths, wireGatewaySubdirPath } from '../../src/shared/paths.js';
 import { WIRE_GATEWAY_VERSION } from '../../src/services/wire-gateway/router.js';
 import {
@@ -168,6 +169,20 @@ describe('wire gateway state-file ownership on stop', () => {
     for (const file of [paths.wireGatewayPid(), paths.wireGatewayPort(), paths.wireGatewayRuntime()]) {
       expect(existsSync(file)).toBe(false);
     }
+  });
+
+  it('an uncaught error or rejection in the gateway process is logged and the gateway keeps running', async () => {
+    // The daemon's stdio is ignored: without the handlers Bun would end it (exit 1) with no trace.
+    const servicePath = fileURLToPath(new URL('../../src/services/wire-gateway/WireGatewayService.ts', import.meta.url));
+    const child = Bun.spawn([process.execPath, '-e', `
+      const { logUncaughtWireGatewayFailures } = await import(${JSON.stringify(servicePath)});
+      logUncaughtWireGatewayFailures();
+      setTimeout(() => { throw new Error('thrown from a timer'); }, 10);
+      setTimeout(() => { Promise.reject(new Error('rejected promise')); }, 20);
+      setTimeout(() => { process.stdout.write('alive\\n'); process.exit(0); }, 200);
+    `], { stdout: 'pipe', stderr: 'pipe' });
+    expect(await child.exited).toBe(0);
+    expect(await new Response(child.stdout).text()).toBe('alive\n');
   });
 
   it.skipIf(process.platform === 'win32')('stop keeps the state of a replacement that started while the old gateway drained', async () => {
