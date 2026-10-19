@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { join } from 'path';
+import { MARKETPLACE_ROOT } from '../src/shared/paths.js';
 import {
   findHermesPluginSource,
   hermesHome,
@@ -97,7 +98,12 @@ describe('Hermes installer', () => {
   });
 
   it('finds the provider shipped in hermes/claude-mem', () => {
-    expect(findHermesPluginSource()).toBe(join(process.cwd(), 'hermes', 'claude-mem'));
+    // The installed marketplace copy wins over the checkout when both exist, so
+    // on a machine with claude-mem installed either root is a correct answer.
+    expect([
+      join(process.cwd(), 'hermes', 'claude-mem'),
+      join(MARKETPLACE_ROOT, 'hermes', 'claude-mem'),
+    ]).toContain(findHermesPluginSource());
   });
 
   it('installs the plugin, selects it and adds the MCP server, then uninstall puts the config back byte for byte', () => {
