@@ -178,7 +178,8 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
     return '';
   }
 
-  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
+  // Same newest-first day order the by-file route renders; rows inside a day keep the route's order.
+  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString(), { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
