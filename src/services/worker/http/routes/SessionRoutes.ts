@@ -5,7 +5,7 @@ import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContex
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -772,6 +772,14 @@ export class SessionRoutes extends BaseRouteHandler {
     // suggestions) arrive like a user turn; Codex only (see the hook handler).
     if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
+    // Grok Bot's own research sub-agent briefings arrive like a user turn;
+    // Grok Bot only (see the hook handler, #4811).
+    if (rawPrompt && platformSource === 'grok-bot' && isGrokBotInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Grok Bot internal helper prompt before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_system_prompt' });
       return;
     }
