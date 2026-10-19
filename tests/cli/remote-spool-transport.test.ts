@@ -7,7 +7,7 @@ import { join } from 'path';
 import { pathToFileURL } from 'url';
 import { HookSpoolRoutes } from '../../src/services/worker/http/routes/HookSpoolRoutes.js';
 import { HookSpool, type HookSpoolConsumedMarkers } from '../../src/shared/hook-spool.js';
-import { REMOTE_SPOOL_TIMEOUT_MS } from '../../src/shared/hook-spool-remote.js';
+import { REMOTE_SPOOL_TIMEOUT_MS, REMOTE_SPOOL_REQUEST_TIMEOUT_MS } from '../../src/shared/hook-spool-remote.js';
 
 const root = join(import.meta.dir, '..', '..');
 const moduleUrl = (path: string) => pathToFileURL(join(root, path)).href;
@@ -15,7 +15,7 @@ let directory: string;
 let spool: HookSpool;
 let server: Server;
 let port: number;
-let mode: 'normal' | 'legacy' | 'wrong-ack' | 'stalled-body';
+let mode: 'normal' | 'legacy' | 'wrong-ack' | 'stalled-body' | 'slow-accept' | 'slow-reject';
 let requestPaths: string[];
 const markers: HookSpoolConsumedMarkers = {
   isConsumed: () => false, markConsumed() {}, clearConsumed() {}, pruneConsumedBefore() {},
@@ -33,6 +33,15 @@ async function listen(): Promise<void> {
     if (mode === 'stalled-body') {
       res.setHeader('Content-Type', 'application/json');
       res.write('{"protocolVersion":1');
+      return;
+    }
+    if (mode === 'slow-accept' || mode === 'slow-reject') {
+      const reject = mode === 'slow-reject';
+      const timer = setTimeout(() => {
+        if (reject) res.status(413).json({ error: 'Payload too large' });
+        else next();
+      }, REMOTE_SPOOL_TIMEOUT_MS + 300);
+      res.once('close', () => clearTimeout(timer));
       return;
     }
     next();
@@ -188,7 +197,28 @@ describe('remote hook spool forwarding', () => {
     mode = 'stalled-body';
     const result = await child('observation');
     expect(result.entries).toHaveLength(1);
-    expect(result.elapsedMs).toBeGreaterThanOrEqual(REMOTE_SPOOL_TIMEOUT_MS - 100);
-    expect(result.elapsedMs).toBeLessThan(REMOTE_SPOOL_TIMEOUT_MS + 700);
+    expect(result.elapsedMs).toBeGreaterThanOrEqual(REMOTE_SPOOL_REQUEST_TIMEOUT_MS - 100);
+    expect(result.elapsedMs).toBeLessThan(REMOTE_SPOOL_REQUEST_TIMEOUT_MS + 700);
+  }, REMOTE_SPOOL_REQUEST_TIMEOUT_MS + 3_000);
+
+  it('accepts an event whose acknowledgement arrives after the scheduling budget', async () => {
+    mode = 'slow-accept';
+    const result = await child('observation');
+    expect(result.elapsedMs).toBeGreaterThan(REMOTE_SPOOL_TIMEOUT_MS);
+    expect(result.entries).toEqual([]);
+    expect(spool.entries()).toHaveLength(1);
+  });
+
+  it('quarantines a delayed 413 and delivers the following event on the next pass', async () => {
+    mode = 'slow-reject';
+    const first = await child('poison');
+    expect(first.entries).toHaveLength(1);
+    const corrupt = join(directory, 'client/state/hook-spool/corrupt');
+    expect(existsSync(corrupt) ? readdirSync(corrupt) : []).toHaveLength(1);
+    mode = 'normal';
+    expect((await child('flush')).entries).toEqual([]);
+    expect(spool.entries()).toHaveLength(1);
+    expect(spool.entries()[0].payload).toMatchObject({ toolUseId: 'client-tool-1' });
+    expect(requestPaths).toEqual(['/api/spool/ingest', '/api/spool/ingest']);
   });
 });
