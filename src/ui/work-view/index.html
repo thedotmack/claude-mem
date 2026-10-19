@@ -14,7 +14,7 @@
   <a class="skip" id="skip-to-content" href="#main">Skip to content</a>
   <header class="app-header">
     <a class="brand" href="#cards" data-route aria-label="Claude-Mem My Work"><img src="/work-view/assets/cmem-mark.svg" width="35" height="35" alt=""></a>
-    <nav aria-label="Main"><button type="button" class="workspace-link" id="workspace-personal" aria-pressed="true">My Work</button><button type="button" class="workspace-link" id="workspace-goals" aria-pressed="false">Goals</button><button type="button" class="workspace-link" id="workspace-team" aria-pressed="false">TeamBrain</button><a href="/viewer">Memory &amp; settings</a></nav>
+    <nav aria-label="Main"><button type="button" class="workspace-link" id="workspace-personal" aria-pressed="true">My Work</button><button type="button" class="workspace-link" id="workspace-goals" aria-pressed="false">Goals</button><button type="button" class="workspace-link" id="workspace-story" aria-pressed="false">Story</button><button type="button" class="workspace-link" id="workspace-team" aria-pressed="false">TeamBrain</button><a href="/viewer">Memory &amp; settings</a></nav>
     <div class="local-state"><span class="connection" id="connection" data-state="connecting" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Connecting locally…</span></span></div>
 
   </header>
@@ -43,6 +43,9 @@
     </div>
     <div id="goals-workspace" hidden>
       <section id="goals" class="goals" aria-labelledby="goals-heading"></section>
+    </div>
+    <div id="story-workspace" hidden>
+      <section id="story" class="goals story" aria-labelledby="story-heading"></section>
     </div>
     <section id="team-workspace" class="team-view" hidden aria-labelledby="team-heading">
       <header class="team-page-heading">

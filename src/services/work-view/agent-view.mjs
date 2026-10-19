@@ -91,7 +91,7 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   return { calls, observations, summaries, sessions, prompts };
 }
 
-export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {} } = {}) {
+export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null } = {}) {
   const { calls = [], observations = [], summaries = [], sessions = [], prompts = [] } = records;
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const sessionsByMemory = new Map(sessions.filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
@@ -298,7 +298,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     };
   }).sort((a, b) => String(b.presence.lastActivityAt ?? '').localeCompare(String(a.presence.lastActivityAt ?? '')));
   const recentActivity = activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, activityLimit);
-  const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache });
+  const requestProjection = buildHumanRequests({ agents, recentActivity }, records, { titleCache, ledger });
   return {
     version: 1, generatedAt: stamp(now), currentProject: state.currentProject, currentProjectScope: state.currentProjectScope,
     agents, recentActivity, goals: buildOwnerGoals(state), goalHistory: buildOwnerGoalHistory(state),

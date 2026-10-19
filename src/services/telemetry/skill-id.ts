@@ -30,6 +30,7 @@ export const FIRST_PARTY_SKILL_IDS = [
   'owner-goals',
   'pathfinder',
   'release',
+  'request-progress',
   'screenpipe',
   'smart-explore',
   'standup',

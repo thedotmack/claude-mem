@@ -44,7 +44,7 @@ export function humanRequestTitle(original) {
   return `${cut.slice(0, boundary > 60 ? boundary : 99).trimEnd()}…`;
 }
 
-function conversationKey(session) {
+export function conversationKey(session) {
   if (!session?.content_session_id || !session?.platform_source) return null;
   return JSON.stringify(['conversation', session.platform_source, session.content_session_id]);
 }
@@ -57,7 +57,7 @@ function compareSourceOrder(a = null, b = null) {
   return time || device || (left < right ? -1 : left > right ? 1 : 0);
 }
 
-function originalFor(session, prompts) {
+export function originalFor(session, prompts) {
   const ordered = prompts.filter((prompt) => prompt.session_db_id === session.id)
     .sort((a, b) => (a.prompt_number ?? Infinity) - (b.prompt_number ?? Infinity) || (a.created_at_epoch ?? 0) - (b.created_at_epoch ?? 0) || a.id - b.id);
   const first = ordered.find((prompt) => isHumanActionRequest(prompt.prompt_text));
@@ -67,7 +67,10 @@ function originalFor(session, prompts) {
   return null;
 }
 
-export function buildHumanRequests(view, records = {}, { titleCache = {} } = {}) {
+// `ledger` holds evidence-backed overall-request groups (request-groups.mjs).
+// A group joins conversations that serve one goal; an explicit work-state
+// request_id still wins because the producer recorded it directly.
+export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
   const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
@@ -115,12 +118,17 @@ export function buildHumanRequests(view, records = {}, { titleCache = {} } = {})
       unlinkedWork.push({ ...item, reason: key ? 'no-substantive-human-request' : 'no-confirmed-conversation-or-explicit-request' });
       continue;
     }
-    const id = explicit ? JSON.stringify(['explicit-request', explicit]) : key;
+    const groupId = !explicit && key ? ledger?.groups?.conversations?.[key] ?? null : null;
+    const id = explicit ? JSON.stringify(['explicit-request', explicit]) : groupId ? JSON.stringify(['overall-request', groupId]) : key;
     let request = requests.get(id);
     if (!request) {
-      request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit };
+      request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit, groupId };
       requests.set(id, request);
-    } else if (!request.explicitRequestText && explicitText) request.explicitRequestText = explicitText;
+    } else {
+      if (!request.explicitRequestText && explicitText) request.explicitRequestText = explicitText;
+      // An overall request starts at its earliest linked human ask.
+      if (groupId && (original.atEpoch ?? Infinity) < (request.original.atEpoch ?? Infinity)) request.original = original;
+    }
     if (key && !request.conversationKeys.includes(key)) request.conversationKeys.push(key);
     if (item.project && !request.projects.includes(item.project)) request.projects.push(item.project);
     if (!request.agentIds.includes(item.agentId)) request.agentIds.push(item.agentId);
@@ -154,6 +162,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {} } = {})
       || Number(b.field === 'request_complete') - Number(a.field === 'request_complete'));
     request.lifecycle = lifecycleRecords[0] ?? null;
     request.startedAtEpoch = request.original.atEpoch ?? null;
+    request.progress = request.groupId ? ledger?.progress?.[request.groupId] ?? null : null;
     request.completedAtEpoch = request.lifecycle && (request.lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(request.lifecycle.status.toLowerCase())) ? request.lifecycle.atEpoch : null;
     request.requestedBy = metadata('requestedBySource')[0]?.item.requestedBy ?? null;
     request.requestedBySource = metadata('requestedBySource')[0]?.record ?? null;
@@ -175,8 +184,9 @@ export function buildHumanRequests(view, records = {}, { titleCache = {} } = {})
     request.afterShip = resources.length || classifications.length || notes.length ? { resources, classifications, notes } : null;
     const cached = titleCache instanceof Map ? titleCache.get(request.id) : titleCache[request.id];
     const cachedTitle = typeof cached === 'string' ? cached.trim() : cached && cached.source === request.original.source && cached.sourceId != null && String(cached.sourceId) === String(request.original.sourceId) && typeof cached.title === 'string' ? cached.title.trim() : '';
-    request.title = cachedTitle || humanRequestTitle(request.explicitRequestText ?? request.original);
-    request.titleSource = cachedTitle ? 'title-cache' : request.explicitRequestText ? 'explicit-work-state-request' : 'original-human-request';
+    const groupTitle = request.groupId ? ledger?.groups?.groups?.[request.groupId]?.title?.trim() ?? '' : '';
+    request.title = cachedTitle || groupTitle || humanRequestTitle(request.explicitRequestText ?? request.original);
+    request.titleSource = cachedTitle ? 'title-cache' : groupTitle ? 'request-group' : request.explicitRequestText ? 'explicit-work-state-request' : 'original-human-request';
     request.items.sort((a, b) => (b.lastUpdateEpoch ?? 0) - (a.lastUpdateEpoch ?? 0));
   }
   return { humanRequests: [...requests.values()].sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch), unlinkedWork };
