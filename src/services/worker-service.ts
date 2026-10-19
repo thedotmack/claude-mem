@@ -50,6 +50,9 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 // boot is never laundered as success.
 export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
 
+/** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
+export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
+
 // The bind must happen within this window. server.listen() is the first ref'd
 // handle in the boot path, so a stall before it lets the event loop empty and
 // the process exit 0 with no trace. A ref'd watchdog holds the loop open and
@@ -1476,6 +1479,15 @@ async function main() {
       configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude',
     });
     process.exit(0);
+  }
+
+  // The launcher and bun-runner.js start Bun in a neutral directory (#4628);
+  // commands that act on the caller's project return there. `hook` restores
+  // separately, after its argument checks, to keep the hook IO-discipline
+  // ordering; the worker itself (`start`, `--daemon`) keeps the neutral cwd.
+  if (command !== undefined && COMMANDS_THAT_ACT_ON_CALLER_PROJECT.has(command)) {
+    const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+    restoreHookOriginalCwd();
   }
 
   const port = getWorkerPort();
