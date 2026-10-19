@@ -543,7 +543,10 @@ export class HookSpool {
     return false;
   }
 
-  /** Moves an entry older than `windowMs` to `expired/`, with an error log. */
+  /**
+   * Moves an entry older than `windowMs` to `expired/`, with an error log.
+   * True when the file is gone (moved here, or by a concurrent drain).
+   */
   private expireIfPastWindow(file: HookSpoolFile, windowMs: number, windowDescription: string): boolean {
     const ageMs = Date.now() - file.entry.enqueuedAtEpochMs;
     if (ageMs <= windowMs) return false;
@@ -560,6 +563,8 @@ export class HookSpool {
       mkdirSync(this.expiredDirectory, { recursive: true });
       renameSync(file.path, join(this.expiredDirectory, file.filename));
     } catch (error) {
+      // ENOENT: a concurrent drain (another worker process) already moved it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return true;
       logger.error('HOOK', `Hook spool entry is past its ${windowDescription} but could not be moved to expired/; keeping it`, details,
         error instanceof Error ? error : new Error(String(error)));
       return false;
@@ -594,6 +599,8 @@ export class HookSpool {
       });
       return true;
     } catch (error) {
+      // ENOENT: a concurrent drain (another worker process) already moved it.
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
       logger.error('HOOK', 'Corrupt hook spool entry could not be quarantined; leaving it in place', {
         file: filename,
         reason,

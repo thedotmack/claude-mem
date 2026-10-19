@@ -158,7 +158,13 @@ export function stripSystemReminderBlocks(text: string): string {
 const MAX_TAG_COUNT = 100;
 
 export function stripTags(input: string): { stripped: string; counts: Record<TagName, number> } {
-  const { text: stripped, counts, total } = stripBalancedMemoryTags(input);
+  return finishStrippedTags(input, stripBalancedMemoryTags(input));
+}
+
+function finishStrippedTags(
+  input: string,
+  { text: stripped, counts, total }: ReturnType<typeof stripBalancedMemoryTags>,
+): { stripped: string; counts: Record<TagName, number> } {
 
   if (total > MAX_TAG_COUNT) {
     logger.warn('SYSTEM', 'tag count exceeds limit', undefined, {
@@ -192,11 +198,10 @@ export function stripMemoryTags(content: string): string {
 export function stripMemoryTagsFromJsonStrings<T>(value: T): T {
   const walk = (node: unknown): unknown => {
     if (typeof node === 'string') {
-      // Gate on the scanner, not on a regex probe: the scanner is linear on
-      // unclosed-tag payloads where the old probe was quadratic, and it
-      // accepts whitespace closes (`</private >`) the old probe missed.
-      const scanned = stripBalancedMemoryTags(node);
-      return scanned.total > 0 ? stripMemoryTags(node) : node;
+      // Gate on the linear scanner, not a regex probe (quadratic on unclosed
+      // tags, and blind to `</private >`); its result is reused, not rescanned.
+      const scan = stripBalancedMemoryTags(node);
+      return scan.total > 0 ? finishStrippedTags(node, scan).stripped : node;
     }
     if (Array.isArray(node)) return node.map(walk);
     if (node !== null && typeof node === 'object') {
