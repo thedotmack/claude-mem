@@ -9,9 +9,10 @@ import {
   rmSync,
   statSync,
   symlinkSync,
-  utimesSync,
+  writeFileSync,
   type Stats,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { executableFingerprint } from '../../shared/executable-fingerprint.js';
@@ -22,10 +23,12 @@ import { getSupervisor } from '../../supervisor/index.js';
 import { logger } from '../../utils/logger.js';
 
 const APP_SERVER_WORKDIR_PREFIX = 'claude-mem-codex-app-server-';
-// A private runtime whose root has not been touched for this long was left by a
-// worker that died before it could clean up. Live roots are touched on every
-// turn, so a worker that stays up is never swept by a later one.
-const STALE_APP_SERVER_WORKDIR_MS = 6 * 60 * 60 * 1000;
+// Each private runtime records the worker that owns it, so a later worker can
+// tell a leftover from a root another live worker is still using.
+const APP_SERVER_OWNER_FILE = 'owner.json';
+// Roots written before owner.json existed have no owner to ask; once they are
+// this old they are treated as left behind.
+const LEGACY_APP_SERVER_WORKDIR_MAX_AGE_MS = 6 * 60 * 60 * 1000;
 const MAX_PROTOCOL_LINE_BYTES = 8 * 1024 * 1024;
 const MAX_STDERR_TAIL_BYTES = 64 * 1024;
 const INTERRUPT_TIMEOUT_MS = 5_000;
@@ -254,58 +257,90 @@ function codexIsolationError(message: string): Error {
   return Object.assign(new Error(message), { code: CODEX_ISOLATION_UNATTESTED_CODE });
 }
 
-const liveAppServerRoots = new Set<string>();
 let sweptStaleWorkdirs = false;
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM: the process exists but belongs to another user.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+function readAppServerOwnerPid(root: string): number | null {
+  try {
+    const owner = JSON.parse(readFileSync(join(root, APP_SERVER_OWNER_FILE), 'utf8')) as { pid?: unknown };
+    return typeof owner.pid === 'number' && Number.isInteger(owner.pid) && owner.pid > 0 ? owner.pid : null;
+  } catch {
+    return null;
+  }
+}
+
+export interface SweepStaleAppServerWorkdirsOptions {
+  baseDir?: string;
+  now?: number;
+  legacyMaxAgeMs?: number;
+  isPidAlive?: (pid: number) => boolean;
+}
 
 /**
  * Remove private runtimes that a crashed or killed worker left in the temp
  * directory (#4788). invalidate() removes a root on a normal exit, but nothing
  * runs when the worker itself dies, and each leftover holds a Codex home.
- * Returns the removed paths. Never throws: a directory still held open (Windows)
- * is retried on the next sweep.
+ * A root is removed only when its owner process is dead, or, for roots that
+ * predate owner.json, when it is older than legacyMaxAgeMs. The directory scan
+ * is synchronous and cheap; the deletions run asynchronously, and the promise
+ * resolves with the removed paths once they settle. Never rejects: a directory
+ * still held open (Windows) is retried on the next sweep.
  */
-export function sweepStaleAppServerWorkdirs(
-  baseDir: string = tmpdir(),
-  now: number = Date.now(),
-  maxAgeMs: number = STALE_APP_SERVER_WORKDIR_MS,
-  keep: ReadonlySet<string> = liveAppServerRoots,
-): string[] {
-  const removed: string[] = [];
+export async function sweepStaleAppServerWorkdirs(options: SweepStaleAppServerWorkdirsOptions = {}): Promise<string[]> {
+  const {
+    baseDir = tmpdir(),
+    now = Date.now(),
+    legacyMaxAgeMs = LEGACY_APP_SERVER_WORKDIR_MAX_AGE_MS,
+    isPidAlive = isProcessAlive,
+  } = options;
   let names: string[];
   try {
     names = readdirSync(baseDir);
   } catch {
-    return removed;
+    return [];
   }
+  const staleRoots: string[] = [];
   for (const name of names) {
     if (!name.startsWith(APP_SERVER_WORKDIR_PREFIX)) continue;
-    const path = join(baseDir, name);
-    if (keep.has(path)) continue;
+    const root = join(baseDir, name);
     try {
-      const stat = statSync(path);
-      if (!stat.isDirectory() || now - stat.mtimeMs < maxAgeMs) continue;
-      rmSync(path, { recursive: true, force: true });
-      removed.push(path);
+      const stat = statSync(root);
+      if (!stat.isDirectory()) continue;
+      const ownerPid = readAppServerOwnerPid(root);
+      if (ownerPid !== null ? isPidAlive(ownerPid) : now - stat.mtimeMs < legacyMaxAgeMs) continue;
+      staleRoots.push(root);
     } catch { /* best effort */ }
   }
-  return removed;
-}
-
-function touchAppServerRoot(root: string): void {
-  try {
-    const at = new Date();
-    utimesSync(root, at, at);
-  } catch { /* best effort */ }
+  const results = await Promise.allSettled(
+    staleRoots.map(root => rm(root, { recursive: true, force: true }).then(() => root)),
+  );
+  return results.flatMap(result => (result.status === 'fulfilled' ? [result.value] : []));
 }
 
 function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
   if (!sweptStaleWorkdirs) {
     sweptStaleWorkdirs = true;
-    const removed = sweepStaleAppServerWorkdirs();
-    if (removed.length > 0) logger.debug('SDK', 'Removed stale Codex app-server workdirs', { count: removed.length });
+    // Not awaited: removing many leftover Codex homes must not delay this turn.
+    void sweepStaleAppServerWorkdirs().then(removed => {
+      if (removed.length > 0) logger.debug('SDK', 'Removed stale Codex app-server workdirs', { count: removed.length });
+    });
   }
   const root = mkdtempSync(join(tmpdir(), APP_SERVER_WORKDIR_PREFIX));
   try {
+    writeFileSync(
+      join(root, APP_SERVER_OWNER_FILE),
+      JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }),
+      { mode: 0o600 },
+    );
     const workspace = join(root, 'workspace');
     const codexHome = join(root, 'codex-home');
     mkdirSync(workspace, { mode: 0o700 });
@@ -345,11 +380,9 @@ function createPrivateRuntime(nativeCodexHome: string): PrivateRuntime {
     const scopedAuth = join(codexHome, 'auth.json');
     if (process.platform === 'win32') linkSync(nativeAuth, scopedAuth);
     else symlinkSync(nativeAuth, scopedAuth, 'file');
-    liveAppServerRoots.add(root);
     return { root, workspace, codexHome };
   } catch (error) {
     rmSync(root, { recursive: true, force: true });
-    liveAppServerRoots.delete(root);
     throw error;
   }
 }
@@ -461,7 +494,6 @@ export class CodexAppServerClient {
     await this.ensureStarted(options.codexPath, options.timeoutMs, options.signal);
     const workspace = this.workspace;
     if (!workspace) throw new Error('Codex app-server workspace is unavailable');
-    if (this.privateRoot) touchAppServerRoot(this.privateRoot);
 
     const mcpServerNames = await this.readInheritedMcpServerNames(workspace, options.timeoutMs, options.signal);
     const threadConfig = buildCodexAppServerThreadConfig(mcpServerNames);
@@ -963,7 +995,6 @@ export class CodexAppServerClient {
     const cleanup = termination.then(() => {
       if (privateRoot) {
         try { rmSync(privateRoot, { recursive: true, force: true }); } catch { /* best effort */ }
-        liveAppServerRoots.delete(privateRoot);
       }
     });
     // A timeout or protocol error may have already started teardown before close.

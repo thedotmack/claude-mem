@@ -607,34 +607,72 @@ describe('CodexAppServerClient transport', () => {
 });
 
 describe('sweepStaleAppServerWorkdirs (#4788)', () => {
-  it('removes app-server workdirs left by a dead worker and keeps fresh, live and unrelated ones', () => {
-    const base = mkdtempSync(join(tmpdir(), 'claude-mem-sweep-'));
-    try {
-      const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const make = (name: string, old: boolean) => {
+  const longAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const deadPid = 999_001;
+  const livePid = 999_002;
+  const isPidAlive = (pid: number) => pid === livePid;
+
+  function withBase(run: (base: string, make: (name: string, options: { ownerPid?: number; old: boolean }) => string) => Promise<void>) {
+    return async () => {
+      const base = mkdtempSync(join(tmpdir(), 'claude-mem-sweep-'));
+      const make = (name: string, { ownerPid, old }: { ownerPid?: number; old: boolean }) => {
         const dir = join(base, name);
         mkdirSync(join(dir, 'codex-home'), { recursive: true });
+        if (ownerPid !== undefined) writeFileSync(join(dir, 'owner.json'), JSON.stringify({ pid: ownerPid }));
         if (old) utimesSync(dir, longAgo, longAgo);
         return dir;
       };
-      const stale = make('claude-mem-codex-app-server-stale', true);
-      const live = make('claude-mem-codex-app-server-live', true);
-      const fresh = make('claude-mem-codex-app-server-fresh', false);
-      const other = make('someone-elses-dir', true);
+      try {
+        await run(base, make);
+      } finally {
+        rmSync(base, { recursive: true, force: true });
+      }
+    };
+  }
 
-      const removed = sweepStaleAppServerWorkdirs(base, Date.now(), undefined, new Set([live]));
+  it('keeps an old workdir whose owner process is still alive', withBase(async (base, make) => {
+    const live = make('claude-mem-codex-app-server-live', { ownerPid: livePid, old: true });
 
-      expect(removed).toEqual([stale]);
-      expect(existsSync(stale)).toBe(false);
-      expect(existsSync(live)).toBe(true);
-      expect(existsSync(fresh)).toBe(true);
-      expect(existsSync(other)).toBe(true);
-    } finally {
-      rmSync(base, { recursive: true, force: true });
-    }
-  });
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([]);
+    expect(existsSync(live)).toBe(true);
+  }));
 
-  it('returns nothing when the temp directory cannot be read', () => {
-    expect(sweepStaleAppServerWorkdirs(join(tmpdir(), 'claude-mem-no-such-dir-4788'))).toEqual([]);
+  it('removes a workdir whose owner process is dead, however recent', withBase(async (base, make) => {
+    const orphan = make('claude-mem-codex-app-server-orphan', { ownerPid: deadPid, old: false });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+  }));
+
+  it('removes an old workdir with no owner file and keeps a fresh one', withBase(async (base, make) => {
+    const legacy = make('claude-mem-codex-app-server-legacy', { old: true });
+    const fresh = make('claude-mem-codex-app-server-fresh', { old: false });
+    const unrelated = make('someone-elses-dir', { ownerPid: deadPid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive })).toEqual([legacy]);
+    expect(existsSync(legacy)).toBe(false);
+    expect(existsSync(fresh)).toBe(true);
+    expect(existsSync(unrelated)).toBe(true);
+  }));
+
+  it('returns before the removal finishes, so the caller is not blocked', withBase(async (base, make) => {
+    const orphan = make('claude-mem-codex-app-server-orphan', { ownerPid: deadPid, old: true });
+
+    const sweep = sweepStaleAppServerWorkdirs({ baseDir: base, isPidAlive });
+    expect(sweep).toBeInstanceOf(Promise);
+    expect(existsSync(orphan)).toBe(true);
+    expect(await sweep).toEqual([orphan]);
+    expect(existsSync(orphan)).toBe(false);
+  }));
+
+  it('treats the current process as a live owner by default', withBase(async (base, make) => {
+    const own = make('claude-mem-codex-app-server-own', { ownerPid: process.pid, old: true });
+
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: base })).toEqual([]);
+    expect(existsSync(own)).toBe(true);
+  }));
+
+  it('returns nothing when the temp directory cannot be read', async () => {
+    expect(await sweepStaleAppServerWorkdirs({ baseDir: join(tmpdir(), 'claude-mem-no-such-dir-4788') })).toEqual([]);
   });
 });
