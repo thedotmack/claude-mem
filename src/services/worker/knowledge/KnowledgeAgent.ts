@@ -168,10 +168,10 @@ export class KnowledgeAgent {
     } catch (error) {
       // The caller walked away; the route logs that once. Not a query failure.
       if (callOptions.abortController?.signal.aborted) throw error;
-      // A CLI setup failure is the user's to fix; the route logs it once at warn.
-      if (error instanceof AppError) throw error;
       if (!isSessionResumeError(error)) {
-        if (error instanceof Error) {
+        if (error instanceof AppError && error.statusCode < 500) {
+          logger.warn('WORKER', `Query rejected for corpus "${corpus.name}"`, {}, error);
+        } else if (error instanceof Error) {
           logger.error('WORKER', `Query failed for corpus "${corpus.name}"`, {}, error);
         } else {
           logger.error('WORKER', `Query failed for corpus "${corpus.name}" (non-Error thrown)`, { thrownValue: String(error) });
