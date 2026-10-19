@@ -405,4 +405,24 @@ describe('CorpusRoutes when every Claude CLI is too old', () => {
     expect(res.jsonBodies[0]).toMatchObject({ code: 'CLAUDE_CLI_SETUP_REQUIRED' });
     expect(errorSink).not.toHaveBeenCalled();
   });
+
+  it('keeps an unspawnable CLI a 500 that reaches the error sink (a worker restart fixes it)', async () => {
+    // The file is on disk but the OS cannot launch it: no exit status, no signal.
+    Object.assign(claudeResolver, {
+      existsSync: () => true,
+      execFileSync: () => {
+        throw Object.assign(new Error('spawn /stale/claude ENOENT'), { code: 'ENOENT' });
+      },
+    });
+    const { req } = createRequest('alpha', undefined);
+    const res = new FakeResponse();
+
+    handlerFor('/api/corpus/:name/prime')(req, res as unknown as Response);
+    await waitFor(() => res.ended);
+
+    expect(res.statusCode).toBe(500);
+    expect((res.jsonBodies[0] as { error: string }).error).toContain('could not be spawned');
+    expect(res.jsonBodies[0]).not.toHaveProperty('code');
+    expect(errorSink).toHaveBeenCalledTimes(1);
+  });
 });
