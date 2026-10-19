@@ -9,6 +9,7 @@ import { buildIsolatedEnvWithFreshOAuth } from '../../../shared/EnvManager.js';
 import { findClaudeExecutable } from '../../../shared/find-claude-executable.js';
 import { sanitizeEnv } from '../../../supervisor/env-sanitizer.js';
 import { resolveTierAlias } from '../model-aliases.js';
+import { AppError } from '../../server/ErrorHandler.js';
 
 // @ts-ignore - Agent SDK types may not be available
 import { query } from '@anthropic-ai/claude-agent-sdk';
@@ -138,7 +139,7 @@ export class KnowledgeAgent {
 
   async query(corpus: CorpusFile, question: string, callOptions: KnowledgeAgentCallOptions = {}): Promise<QueryResult> {
     if (!corpus.session_id) {
-      throw new Error(`Corpus "${corpus.name}" has no session — call prime first`);
+      throw new AppError(`Corpus "${corpus.name}" has no session — call prime first`, 409, 'CORPUS_NOT_PRIMED');
     }
 
     try {
