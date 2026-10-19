@@ -39,7 +39,12 @@ export const errorHandler: ErrorRequestHandler = (
   res: Response,
   _next: NextFunction
 ): void => {
-  const statusCode = err instanceof AppError ? err.statusCode : 500;
+  // express.json() rejects malformed (400), oversized (413) and badly encoded
+  // (415) bodies with an http-errors error that carries its client status.
+  const clientStatus = (err as { status?: unknown }).status;
+  const statusCode = err instanceof AppError
+    ? err.statusCode
+    : typeof clientStatus === 'number' && clientStatus >= 400 && clientStatus < 500 ? clientStatus : 500;
 
   logger.error('HTTP', `Error handling ${req.method} ${req.path}`, {
     statusCode,

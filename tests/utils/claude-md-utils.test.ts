@@ -217,6 +217,20 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('🟣');
     expect(result).toContain('Session started');
   });
+
+  it('keeps titles that contain a pipe intact', () => {
+    // FormattingService writes titles (and session requests) verbatim, so a
+    // `|` inside the title is part of the cell, not a column separator.
+    const input = `| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 | - |
+| #8 | ″ | 🔵 | Default with a || b fallback | ~90 | - |
+| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - | - |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    expect(result).toContain('| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 |');
+    expect(result).toContain('| #8 | " | 🔵 | Default with a || b fallback | ~90 |');
+    expect(result).toContain('| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - |');
+  });
 });
 
 describe('writeClaudeMdToFolder', () => {
@@ -1005,6 +1019,32 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('only checks directory names below the project root', async () => {
+    // A project that itself lives under ~/build or ~/res must still get folder CLAUDE.md files.
+    for (const parent of ['build', 'res', 'node_modules']) {
+      const apiResponse = {
+        content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+      };
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(apiResponse)
+      } as Response));
+      global.fetch = fetchMock;
+      const projectRoot = join(tempDir, parent, 'myapp');
+      mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
+
+      await updateFolderClaudeMdFiles(
+        ['src/utils/file.ts'],
+        'test-project',
+        37777,
+        projectRoot
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
+    }
   });
 
   it('should skip deeply nested unsafe directories', async () => {
