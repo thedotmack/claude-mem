@@ -326,6 +326,13 @@ describe("OpenCode V2 checkout resolution", () => {
     expect(cwd).toBeUndefined();
   });
 
+  it("registers nothing and sends no write when location.directory is empty", async () => {
+    promptCallbacks.length = 0;
+    const cwd = await captureCheckout({ location: { directory: "" }, session: recordingSession });
+    expect(promptCallbacks.length).toBe(0);
+    expect(cwd).toBeUndefined();
+  });
+
   it("ignores a top-level ctx.directory, which V2 does not provide", async () => {
     promptCallbacks.length = 0;
     const cwd = await captureCheckout({
