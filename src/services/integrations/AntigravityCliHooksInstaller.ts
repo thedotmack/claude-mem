@@ -32,6 +32,7 @@ interface AntigravityHookGroup {
 
 interface AntigravityNamedHook {
   enabled?: boolean;
+  SessionStart?: AntigravityHookHandler[];
   PreToolUse?: AntigravityHookGroup[];
   PostToolUse?: AntigravityHookGroup[];
   PreInvocation?: AntigravityHookHandler[];
@@ -66,11 +67,11 @@ interface AntigravitySettingsJson {
 // Antigravity CLI (`agy`) shares Gemini CLI's `~/.gemini/` config tree for
 // context (GEMINI.md) and MCP, but — contrary to an earlier assumption — it
 // does NOT read lifecycle hooks from `settings.json`. Confirmed against
-// `agy` 1.2.1 (issue #4057): the CLI loads hook definitions from a dedicated
-// `hooks.json` and fires the `PreToolUse` / `PostToolUse` / `PreInvocation` /
-// `PostInvocation` / `Stop` events (the Gemini-CLI `BeforeTool` / `AfterTool`
-// / `BeforeAgent` / `SessionStart` names do not exist in the binary, so hooks
-// written under those keys never execute).
+// `agy` 1.2.1 (issue #4057, #4911): the CLI loads hook definitions from a dedicated
+// `hooks.json` and fires lifecycle events including `SessionStart`, `PreToolUse`,
+// `PostToolUse`, `PreInvocation`, `PostInvocation`, and `Stop` (the Gemini-CLI
+// `BeforeTool` / `AfterTool` / `BeforeAgent` settings.json names do not exist
+// in the binary, so hooks written under those keys in settings.json never execute).
 const GEMINI_CONFIG_DIR = path.join(homedir(), '.gemini');
 // Legacy path — retained ONLY so uninstall can strip hooks written by prior
 // (pre-#4057) versions that mistakenly registered them here. New installs
@@ -108,21 +109,23 @@ const HOOK_TIMEOUT_SECONDS = ANTIGRAVITY_HOOK_TIMEOUT_MS / 1000;
 // builtin docs/hooks.md, "Supported Event Types").
 const ANTIGRAVITY_GROUPED_EVENTS = new Set<string>(['PreToolUse', 'PostToolUse']);
 
-// The 5 hook events `agy` 1.2.1 actually fires (issue #4057), mapped to
-// claude-mem's internal handlers:
-//   - PreInvocation  → context     (inject memory before the agent runs; the
-//                                    adapter emits `injectSteps` on this path)
+// The 5 hook events `agy` fires, mapped to claude-mem's internal handlers:
+//   - SessionStart   → context     (inject startup memory once when a session starts;
+//                                    prevents invalidating LLM prefix cache on every
+//                                    turn/invocation, issue #4911)
 //   - PreToolUse     → observation (records tool intent; adapter emits
 //                                    `{"decision":"allow"}` so the call proceeds)
 //   - PostToolUse    → observation (records the tool result)
 //   - PostInvocation → observation (records the assistant response, pulled from
 //                                    the transcript's PLANNER_RESPONSE node)
 //   - Stop           → summarize   (session/turn end → summary)
-// The old Gemini-CLI names (SessionStart/BeforeAgent/AfterAgent/BeforeTool/
-// AfterTool/Notification/PreCompress) are NOT present in the agy binary and
-// were never executed.
+// Note: SessionStart is the official agy lifecycle event for startup context injection
+// (builtin `agy-customizations/docs/hooks.md`). Mapping PreInvocation to context
+// injected ephemeral context into every model call, destroying prefix cache hit rates.
+// Legacy Gemini-CLI names (BeforeAgent/AfterAgent/BeforeTool/AfterTool/Notification/
+// PreCompress) are not present in agy.
 const ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT: Record<string, string> = {
-  'PreInvocation': 'context',
+  'SessionStart': 'context',
   'PreToolUse': 'observation',
   'PostToolUse': 'observation',
   'PostInvocation': 'observation',
@@ -199,8 +202,8 @@ function createHookHandler(
 // Build the canonical agy hooks.json fragment for claude-mem. Top-level key is
 // the hook NAME (`claude-mem`); each event uses the shape agy expects — grouped
 // (matcher + hooks) for PreToolUse/PostToolUse, flat handler arrays for
-// PreInvocation/PostInvocation/Stop. Exported for the schema contract tests
-// (issue #4196).
+// SessionStart/PostInvocation/Stop. Exported for the schema contract tests
+// (issue #4196, #4911).
 export function buildAntigravityHooksConfig(
   bunPath: string,
   workerServicePath: string,
@@ -280,6 +283,11 @@ function mergeNamedHook(
   incoming: AntigravityNamedHook,
 ): AntigravityNamedHook {
   const merged: Record<string, unknown> = { ...(existing ?? {}) };
+
+  // Prior versions of claude-mem (#4057) mapped context to PreInvocation,
+  // which injected context on every turn and invalidated prefix caching (#4911).
+  // Clean up PreInvocation on upgrade if it was registered for claude-mem.
+  delete merged.PreInvocation;
 
   for (const event of Object.keys(ANTIGRAVITY_EVENT_TO_INTERNAL_EVENT)) {
     const value = (incoming as Record<string, unknown>)[event];
