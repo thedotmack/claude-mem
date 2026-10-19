@@ -128,6 +128,19 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
     expect(result.ANTHROPIC_AUTH_TOKEN).toBe('test-token');
   });
 
+  it('reads the first key of a BOM-prefixed .env (Notepad / PowerShell "UTF-8")', () => {
+    fs.writeFileSync(
+      TEST_ENV_FILE,
+      '\uFEFFANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_AUTH_TOKEN=test-token\n',
+      { mode: 0o600 },
+    );
+
+    const result = buildIsolatedEnv();
+
+    expect(result.ANTHROPIC_BASE_URL).toBe('https://gateway.example');
+    expect(result.ANTHROPIC_AUTH_TOKEN).toBe('test-token');
+  });
+
   it('leaked process.env BASE_URL never reaches the OAuth-skip predicate', async () => {
     // The root cause of #2375: a BASE_URL exported by the parent shell used to
     // survive into isolatedEnv and trigger the OAuth-skip path, leaving the

@@ -5,6 +5,7 @@ import { parseEnv } from 'util';
 import { basename } from 'path';
 import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
+import { stripUtf8Bom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import {
   readClaudeOAuthToken,
@@ -122,7 +123,9 @@ const CREDENTIAL_KEYS = [
 // keys in the file never reach a ClaudeMemEnv. serializeEnvFile is kept custom
 // (header banner + selective quoting; no stdlib equivalent).
 function parseEnvFile(content: string): Record<string, string> {
-  return parseEnv(content) as Record<string, string>;
+  // Windows editors (Notepad, PowerShell 5.1 "UTF8") prefix a BOM, which
+  // parseEnv would otherwise glue onto the first key name.
+  return parseEnv(stripUtf8Bom(content)) as Record<string, string>;
 }
 
 function serializeEnvFile(env: Record<string, string>): string {

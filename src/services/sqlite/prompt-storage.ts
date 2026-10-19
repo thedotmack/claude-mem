@@ -7,9 +7,9 @@ export const MAX_STORED_PROMPT_CHARS = 4000;
 export const MEDIA_PROMPT_PLACEHOLDER = '[media prompt]';
 
 export function normalizeStoredPromptText(promptText: string): string {
-  const trimmedRawPrompt = promptText.trim();
-  const strippedPrompt = stripMemoryTags(promptText).trim();
-  const preferredPrompt = strippedPrompt || trimmedRawPrompt;
+  // Never fall back to the raw text: a prompt that is entirely <private> (or
+  // other memory tags) must not be stored, unstripped and unredacted.
+  const preferredPrompt = stripMemoryTags(promptText).trim();
 
   if (preferredPrompt.length <= MAX_STORED_PROMPT_CHARS) {
     return preferredPrompt;

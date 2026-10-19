@@ -276,7 +276,8 @@ function formatObservationsForClaudeMd(observations: ObservationRow[], folderPat
     return lines.join('\n');
   }
 
-  const byDate = groupByDate(observations, obs => obs.created_at);
+  // Rows arrive newest-first (ORDER BY created_at_epoch DESC); keep days in the same order.
+  const byDate = groupByDate(observations, obs => obs.created_at, { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
