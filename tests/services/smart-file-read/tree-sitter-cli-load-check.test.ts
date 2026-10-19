@@ -89,6 +89,19 @@ describe.skipIf(process.platform === 'win32')('checkTreeSitterCliLoadable with e
     return binPath;
   }
 
+  it.each(['0.24.4', '0.25.10'])('rejects tree-sitter %s, which lacks required query options', (version) => {
+    const binPath = writeExecutable(join(scratchRoot, `old-${version}`), binaryName, `echo "tree-sitter ${version}"`);
+    const check = checkTreeSitterCliLoadable(binPath);
+    expect(check.present).toBe(true);
+    expect(check.loadable).toBe(false);
+    expect(check.reason).toContain('0.26.0');
+  });
+
+  it('accepts the minimum compatible tree-sitter version', () => {
+    const binPath = writeExecutable(join(scratchRoot, 'minimum-version'), binaryName, 'echo "tree-sitter 0.26.0"');
+    expect(checkTreeSitterCliLoadable(binPath).loadable).toBe(true);
+  });
+
   it('is loadable for a binary that answers --version as tree-sitter', () => {
     const binPath = writeExecutable(join(scratchRoot, 'working'), binaryName, 'echo "tree-sitter 0.26.9"');
 

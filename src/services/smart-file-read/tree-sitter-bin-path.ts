@@ -104,12 +104,12 @@ export function isTreeSitterCliAvailable(
 export const TREE_SITTER_CLI_PATH_WORKAROUND = "put a tree-sitter 0.26 or newer build that runs on this system on PATH";
 
 const TREE_SITTER_LOAD_PROBE_TIMEOUT_MS = 2_000;
-const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
+const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter (\d+)\.(\d+)\.(\d+)(?:\s|$)/;
 
 export interface TreeSitterCliLoadCheck {
   /** A tree-sitter CLI binary file was found (it may still not run). */
   present: boolean;
-  /** The binary executed and answered `--version` as tree-sitter. */
+  /** The binary executed and answered `--version` as a compatible tree-sitter. */
   loadable: boolean;
   /** Why the binary is absent or not loadable; undefined when loadable. */
   reason?: string;
@@ -160,7 +160,17 @@ function probeTreeSitterCliLoadable(absoluteBinPath: string): TreeSitterCliLoadC
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
     });
-    if (TREE_SITTER_VERSION_OUTPUT.test(stdout.trim())) {
+    const version = TREE_SITTER_VERSION_OUTPUT.exec(stdout.trim());
+    if (version) {
+      // parser.ts uses query --grammar-path / --lib-path / --lang-name,
+      // which first appeared in tree-sitter 0.26.0.
+      if (Number(version[1]) === 0 && Number(version[2]) < 26) {
+        return {
+          present: true,
+          loadable: false,
+          reason: `tree-sitter CLI at ${absoluteBinPath} is ${version[1]}.${version[2]}.${version[3]}; smart parsing requires tree-sitter >= 0.26.0`,
+        };
+      }
       return { present: true, loadable: true };
     }
     return {
