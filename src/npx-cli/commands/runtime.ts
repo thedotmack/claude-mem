@@ -262,7 +262,17 @@ export async function runSearchCommand(queryParts: string[]): Promise<void> {
     process.exit(1);
   }
 
-  if (typeof data === 'object' && data !== null) {
+  // /api/search answers in the MCP tool shape: print its rendered text.
+  const content = (data as { content?: unknown } | null)?.content;
+  if (Array.isArray(content)) {
+    console.log(content
+      .filter((block): block is { type: 'text'; text: string } => block?.type === 'text' && typeof block.text === 'string')
+      .map(block => block.text)
+      .join('\n\n'));
+    if ((data as { isError?: unknown }).isError === true) {
+      process.exit(1);
+    }
+  } else if (typeof data === 'object' && data !== null) {
     console.log(JSON.stringify(data, null, 2));
   } else {
     console.log(data);
