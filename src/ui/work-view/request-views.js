@@ -139,11 +139,29 @@ function goalItem(item) {
   const evidence = item.evidence || [];
   return `<li class="goal-item"><span class="goal-rank" aria-hidden="true">${esc(item.rank ?? '•')}</span><div class="goal-copy"><p class="goal-title">${esc(item.title)}</p><div class="goal-line">${meta.length ? `<p class="goal-meta">${meta.map(esc).join(' · ')}</p>` : ''}${evidence.length ? `<details class="goal-evidence" data-goal="${esc(item.id)}"><summary>Evidence · ${evidence.length} ${evidence.length === 1 ? 'quote' : 'quotes'}</summary><ul>${evidence.map(quote => `<li>${quote.at ? `<time>${esc(quote.at)}</time>` : ''}<q>${esc(quote.quote)}</q></li>`).join('')}</ul></details>` : ''}</div></div></li>`;
 }
-export function goalsPanel(goals, shownOpenAsks = 10) {
-  if (!goals || (!goals.priorities?.length && !goals.openAsks?.length)) return '';
-  const source = [goals.windowDays ? `Last ${goals.windowDays} days` : '', goals.sourcePromptCount ? `${goals.sourcePromptCount} prompts you typed` : '', goals.generatedAt ? `Mapped ${String(goals.generatedAt).slice(0, 10)}` : ''].filter(Boolean).join(' · ');
+const shortDay = (day, withYear) => new Date(`${day}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', ...(withYear ? { year: 'numeric' } : {}), timeZone: 'UTC' });
+// "Nov 18 – Dec 18, 2025", or with both years when the period crosses New Year.
+export function goalsPeriod(goals) {
+  if (!goals?.periodStart) return '';
+  if (!goals.periodEnd) return `From ${shortDay(goals.periodStart, true)}`;
+  const sameYear = goals.periodStart.slice(0, 4) === goals.periodEnd.slice(0, 4);
+  return `${shortDay(goals.periodStart, !sameYear)} – ${shortDay(goals.periodEnd, true)}`;
+}
+const monthLabel = goals => goals.history ? `${goalsPeriod(goals) || goals.listName} · history` : `${goalsPeriod(goals) || 'This month'} · current`;
+
+// The current month first, then past months newest first; `selected` is a list name.
+export function goalsPanel(current, { history = [], selected = '' } = {}) {
+  const months = [current, ...history].filter(goals => goals && (goals.priorities?.length || goals.openAsks?.length));
+  if (!months.length) return '';
+  const index = Math.max(0, months.findIndex(goals => goals.listName === selected));
+  const goals = months[index];
+  const source = [goals.history ? monthLabel(goals) : goals.windowDays ? `Last ${goals.windowDays} days` : '', goals.sourcePromptCount ? `${goals.sourcePromptCount} prompts you typed` : '', goals.generatedAt ? `Mapped ${String(goals.generatedAt).slice(0, 10)}` : ''].filter(Boolean).join(' · ');
+  const step = (target, label, glyph) => `<button type="button" class="goals-step" ${target ? `data-goals-month="${esc(target.listName)}"` : 'disabled'} aria-label="${label}">${glyph}</button>`;
+  const switcher = months.length > 1 ? `<div class="goals-months" role="group" aria-label="Goals month">${step(months[index + 1], 'Older month', '‹')}<label><span class="sr-only">Goals month</span><select id="goals-month">${months.map((month, position) => `<option value="${esc(month.listName)}"${position === index ? ' selected' : ''}>${esc(monthLabel(month))}</option>`).join('')}</select></label>${step(months[index - 1], 'Newer month', '›')}</div>` : '';
   const asks = goals.openAsks || [];
+  const shownOpenAsks = 10;
   const more = asks.slice(shownOpenAsks);
-  return `<div class="goals-heading"><div><p class="eyebrow">${esc(source || 'From your own prompts')}</p><h2 id="goals-heading">Goals</h2></div></div>${goals.summary ? `<p class="goals-summary">${esc(goals.summary)}</p>` : ''}
-    <div class="goals-columns">${goals.priorities?.length ? `<section class="goals-group" aria-label="Top priorities"><h3>Top priorities</h3><ol class="goal-list">${goals.priorities.map(goalItem).join('')}</ol></section>` : ''}${asks.length ? `<section class="goals-group" aria-label="Open asks"><h3>Open asks</h3><ol class="goal-list">${asks.slice(0, shownOpenAsks).map(goalItem).join('')}</ol>${more.length ? `<details class="goals-more" data-goal="more-open-asks"><summary>${more.length} more open ${more.length === 1 ? 'ask' : 'asks'}</summary><ol class="goal-list">${more.map(goalItem).join('')}</ol></details>` : ''}</section>` : ''}</div>`;
+  const asksHeading = goals.history ? 'Open asks then' : 'Open asks';
+  return `<div class="goals-heading"><div><p class="eyebrow">${esc(source || 'From your own prompts')}</p><h2 id="goals-heading">Goals${goals.history ? ' <span class="goals-history-tag">History</span>' : ''}</h2></div>${switcher}</div>${goals.summary ? `<p class="goals-summary">${esc(goals.summary)}</p>` : ''}
+    <div class="goals-columns">${goals.priorities?.length ? `<section class="goals-group" aria-label="Top priorities"><h3>Top priorities</h3><ol class="goal-list">${goals.priorities.map(goalItem).join('')}</ol></section>` : ''}${asks.length ? `<section class="goals-group" aria-label="${asksHeading}"><h3>${asksHeading}</h3><ol class="goal-list">${asks.slice(0, shownOpenAsks).map(goalItem).join('')}</ol>${more.length ? `<details class="goals-more" data-goal="more-open-asks"><summary>${more.length} more ${goals.history ? '' : 'open '}${more.length === 1 ? 'ask' : 'asks'}</summary><ol class="goal-list">${more.map(goalItem).join('')}</ol></details>` : ''}</section>` : ''}</div>`;
 }

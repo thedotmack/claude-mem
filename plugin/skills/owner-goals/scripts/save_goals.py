@@ -21,9 +21,14 @@ work_state_write tool) under the home folder's project key so there is one list 
                      latest_at, times_asked, evidence ("YYYY-MM-DD HH:MM | quote" per line)
 Items from the previous snapshot that are not in this one are marked dropped, so a re-run replaces it.
 
-Usage: python3 save_goals.py --goals owner-goals.json --prompts owner-prompts.md [--map owner-map.md] [--dry-run]
+With --start and --end (the period the prompts cover), the list state also records period_start and period_end.
+A period that ended before today is a past month: it is saved to "owner-goals/<start>" as history (the list and
+its items are saved done, so they never count as open), and My Work lists it under the Goals month switcher.
+
+Usage: python3 save_goals.py --goals owner-goals.json --prompts owner-prompts.md [--map owner-map.md]
+                             [--start YYYY-MM-DD --end YYYY-MM-DD] [--dry-run]
 """
-import argparse, json, os, re, sys, urllib.error, urllib.request
+import argparse, datetime, json, os, re, sys, urllib.error, urllib.request
 
 LIST_NAME = "owner-goals"
 MAX_FIELDS_JSON_CHARS = 2000  # MAX_WORK_STATE_FIELDS_JSON_CHARS in WorkStateRoutes.ts
@@ -94,11 +99,11 @@ def unverified_quotes(goals, prompts):
     return problems
 
 
-def item_fields(kind, item, snapshot):
+def item_fields(kind, item, snapshot, status):
     title = str(item["title"]).strip()
     evidence = [f'{str(q["at"])[:16]} | {re.sub(r"\s+", " ", str(q["quote"])).strip()[:MAX_QUOTE_CHARS]}' for q in item.get("evidence", [])]
     fields = {
-        "task": f"{KIND_LABELS[kind]}: {title}", "status": "todo", "goal_kind": kind,
+        "task": f"{KIND_LABELS[kind]}: {title}", "status": status, "goal_kind": kind,
         "rank": item.get("rank"), "title": title, "product": item.get("product"),
         "latest_at": item.get("latest_at"), "times_asked": item.get("times_asked"),
         "snapshot": snapshot, "evidence": "\n".join(evidence),
@@ -117,8 +122,14 @@ def main():
     parser.add_argument("--goals", required=True, help="owner-goals.json from the map step")
     parser.add_argument("--prompts", required=True, help="owner-prompts.md the map was built from")
     parser.add_argument("--map", help="owner-map.md, recorded on the list so the full map can be found")
+    parser.add_argument("--start", type=datetime.date.fromisoformat, help="first day the prompts cover, YYYY-MM-DD")
+    parser.add_argument("--end", type=datetime.date.fromisoformat, help="day after the last day the prompts cover, YYYY-MM-DD")
     parser.add_argument("--dry-run", action="store_true", help="validate and print the writes without saving")
     args = parser.parse_args()
+    if bool(args.start) != bool(args.end) or (args.start and args.end <= args.start):
+        sys.exit("--start and --end go together, and --end must be after --start")
+    history = bool(args.end and args.end < datetime.date.today())
+    list_name = f"{LIST_NAME}/{args.start.isoformat()}" if history else LIST_NAME
 
     goals = json.load(open(args.goals))
     items = [("priority", item) for item in goals.get("priorities", [])] + [("open-ask", item) for item in goals.get("open_asks", [])]
@@ -133,30 +144,32 @@ def main():
     state_fields = {
         "human_summary": str(goals.get("human_summary") or "")[:1500] or None, "generated_at": snapshot or None,
         "window_days": goals.get("window_days"), "source_prompt_count": goals.get("source_prompt_count"),
-        "map_path": os.path.abspath(args.map) if args.map else None, "status": "open",
+        "map_path": os.path.abspath(args.map) if args.map else None, "status": "done" if history else "open",
     }
-    writes = [state_fields] + [item_fields(kind, item, snapshot) for kind, item in items]
+    if args.start:
+        state_fields.update(period_start=args.start.isoformat(), period_end=args.end.isoformat())
+    writes = [state_fields] + [item_fields(kind, item, snapshot, "done" if history else "todo") for kind, item in items]
     new_tasks = {fields["task"] for fields in writes[1:]}
     if len(new_tasks) != len(writes) - 1:
         sys.exit("two items share a title; give each priority and open ask its own title")
 
     base_url = worker_base_url()
     if args.dry_run:
-        print(json.dumps(writes, indent=2))
+        print(json.dumps({"list": list_name, "writes": writes}, indent=2))
         return
     view = json.loads(worker_request(base_url, "/api/work-view"))
-    if "goals" not in view:
-        sys.exit("this claude-mem worker predates Goals; update claude-mem and restart the worker")
-    previous = view["goals"] or {}
+    if "goals" not in view or (history and "goalHistory" not in view):
+        sys.exit(f"this claude-mem worker predates {'Goals history' if history else 'Goals'}; update claude-mem and restart the worker")
+    previous = (next((month for month in view["goalHistory"] if month["listName"] == list_name), None) if history else view["goals"]) or {}
     stale_tasks = [item["task"] for item in previous.get("priorities", []) + previous.get("openAsks", []) if item["task"] not in new_tasks]
 
     home = os.path.expanduser("~")
     for fields in writes + [{"task": task, "status": "dropped"} for task in stale_tasks]:
-        reply = worker_request(base_url, "/api/work-state/entries", {"cwd": home, "list": LIST_NAME, "fields": fields})
+        reply = worker_request(base_url, "/api/work-state/entries", {"cwd": home, "list": list_name, "fields": fields})
         if not reply.startswith("Saved to"):
             sys.exit(f"work state did not save: {reply[:300]}")
     print(json.dumps({"saved_items": len(writes) - 1, "dropped_previous_items": len(stale_tasks),
-                      "view": f"{base_url}/#cards", "list": LIST_NAME}))
+                      "view": f"{base_url}/#cards", "list": list_name, "history": history}))
 
 
 if __name__ == "__main__":

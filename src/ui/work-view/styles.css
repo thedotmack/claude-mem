@@ -277,6 +277,11 @@ a.back-button { font-size: 14px; text-decoration: none; }
 .goal-evidence time { color: var(--metadata); font-size: 12px; line-height: 1.75; font-variant-numeric: tabular-nums; }
 .goal-evidence q { overflow-wrap: anywhere; }
 .goals-more { margin-top: 10px; font-size: 14px; }
+.goals-months { display: flex; align-items: center; gap: 6px; flex: none; }
+.goals-months select { min-width: 0; max-width: 100%; padding: 7px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); font: inherit; font-size: 14px; }
+.goals-step { display: inline-grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--violet-ink); font-size: 20px; line-height: 1; cursor: pointer; }
+.goals-step:disabled { color: var(--metadata); opacity: .45; cursor: default; }
+.goals-history-tag { display: inline-block; vertical-align: middle; margin-left: 8px; padding: 3px 9px; border-radius: 999px; background: #f1f2f7; color: var(--metadata); font-size: 13px; font-weight: 600; letter-spacing: 0; }
 
 @media (min-width: 1600px) {
   .page { margin-top: 48px; }
@@ -399,6 +404,10 @@ a.back-button { font-size: 14px; text-decoration: none; }
 @media (max-width: 720px) {
   .goals { padding: 20px 18px 22px; }
   .goals-heading h2 { font-size: 25px; }
+  .goals-heading { flex-wrap: wrap; align-items: flex-start; }
+  .goals-months { flex: 1 1 100%; }
+  .goals-months label { flex: 1; min-width: 0; }
+  .goals-months select { width: 100%; }
   .goal-evidence li { grid-template-columns: 1fr; gap: 2px; }
 }
 
