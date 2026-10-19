@@ -23,6 +23,7 @@ export interface Summary {
   id: number;
   session_id: string;
   project: string;
+  merged_into_project?: string | null;
   platform_source: string;
   request?: string;
   investigated?: string;

@@ -136,7 +136,9 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
       continue;
     }
 
-    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|/);
+    // The title cell is written verbatim and may itself contain `|`, so it runs
+    // up to the Read cell (`~N`, or `-` for sessions) instead of the next pipe.
+    const match = line.match(/^\|\s*(#[S]?\d+)\s*\|\s*([^|]+)\s*\|\s*([^|]+)\s*\|\s*(.+?)\s*\|\s*(~\d+|-)\s*\|/);
     if (match) {
       const [, id, timeStr, typeEmoji, title, tokens] = match;
 
@@ -176,7 +178,8 @@ export function formatTimelineForClaudeMd(timelineText: string): string {
     return '';
   }
 
-  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString());
+  // Same newest-first day order the by-file route renders; rows inside a day keep the route's order.
+  const byDate = groupByDate(observations, obs => new Date(obs.epoch).toISOString(), { order: 'desc' });
 
   for (const [day, dayObs] of byDate) {
     lines.push(`### ${day}`);
@@ -205,8 +208,10 @@ const EXCLUDED_UNSAFE_DIRECTORIES = new Set([
   '__pycache__'
 ]);
 
-function isExcludedUnsafeDirectory(folderPath: string): boolean {
-  const normalized = path.normalize(folderPath);
+function isExcludedUnsafeDirectory(folderPath: string, projectRoot?: string): boolean {
+  // Only directories inside the project count: a project checked out under
+  // ~/build or ~/res is not itself an unsafe directory.
+  const normalized = path.normalize(projectRoot ? path.relative(projectRoot, folderPath) : folderPath);
   const segments = normalized.split(path.sep);
   return segments.some(segment => EXCLUDED_UNSAFE_DIRECTORIES.has(segment));
 }
@@ -298,7 +303,7 @@ export async function updateFolderClaudeMdFiles(
         logger.debug('FOLDER_INDEX', 'Skipping project root CLAUDE.md', { folderPath });
         continue;
       }
-      if (isExcludedUnsafeDirectory(folderPath)) {
+      if (isExcludedUnsafeDirectory(folderPath, projectRoot)) {
         logger.debug('FOLDER_INDEX', 'Skipping unsafe directory for CLAUDE.md', { folderPath });
         continue;
       }

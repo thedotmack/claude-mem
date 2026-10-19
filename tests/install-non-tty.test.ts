@@ -179,6 +179,17 @@ describe('Install Non-TTY Support', () => {
       expect(packageJson.files).toContain('omp');
     });
 
+    it('copies the Hermes provider to the marketplace directory the Hermes installer reads', () => {
+      const copyRegion = installSource.slice(
+        installSource.indexOf('const allowedTopLevelEntries = ['),
+        installSource.indexOf('function copyPluginToCache'),
+      );
+      // HermesInstaller reads the durable marketplace, not the npm package.
+      expect(copyRegion).toContain("'hermes'");
+      const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
+      expect(packageJson.files).toContain('hermes');
+    });
+
     it('publishes the Claude marketplace root manifest in the npm package (#3424)', () => {
       const packageJson = JSON.parse(readFileSync(join(__dirname, '..', 'package.json'), 'utf-8'));
       expect(packageJson.files).toContain('.claude-plugin');

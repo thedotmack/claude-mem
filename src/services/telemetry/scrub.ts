@@ -128,11 +128,13 @@ export const ALLOWED_PROPERTY_KEYS: Set<string> = new Set([
   // hook_failed distress signal — hook_type is one of OUR hook names
   // (context | session-init | observation | summarize | session-end | file-context),
   // error_mode (worker_unavailable | blocking_error), plus a consecutive
-  // failure counter and threshold flag. Never an error message.
+  // failure counter, threshold flag, and a pre-latch-state flag. Never an
+  // error message.
   'hook_type',
   'error_mode',
   'consecutive_failures',
   'threshold_tripped',
+  'pre_latch_state',
   // usage_limit_hit — the SDK's rate_limit_info projected to closed enums:
   // limit_window (five_hour | seven_day | seven_day_opus | seven_day_sonnet |
   // seven_day_overage_included | overage | unknown), overage_status (allowed |

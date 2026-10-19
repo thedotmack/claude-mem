@@ -231,8 +231,15 @@ export async function setupV2(
 ): Promise<() => Promise<void>> {
   // V1 read `ctx.directory`; V2 nests it under `ctx.location`. Without this the
   // worker rejects every write with "Missing cwd when ingesting observation".
+  const directory = context.location?.directory ?? context.directory;
+  if (typeof directory !== "string" || directory === "") {
+    // OpenCode also calls setup() with a host registry that has no checkout.
+    // Registering hooks there would send every write to the worker without a cwd.
+    console.warn("[claude-mem] OpenCode plugin skipped: context has no directory");
+    return async () => {};
+  }
   const ctx: CoreContext = {
-    directory: context.location?.directory ?? "",
+    directory,
     client: context.client,
   };
 
