@@ -32,6 +32,7 @@
  *                                        deliberately untouched.
  */
 
+import { CONTENT_KIND_NAMES } from "./canonical-content";
 import { CONTROL_PLANE_PROBE_CRON, runControlPlaneProbe } from "./control-plane-probe";
 import type { PushOp } from "./do/SyncHub";
 import {
@@ -547,7 +548,8 @@ async function handleGetStatus(
 	try {
 		const result = await stub.getStatus(deviceId, deviceName);
 		if ("refused" in result) return errorResponse(409, result.error);
-		return json(200, result);
+		// `content_kinds`: the client pushes a kind only once this list names it.
+		return json(200, { ...result, content_kinds: CONTENT_KIND_NAMES });
 	} catch (e) {
 		return mapHubError(e);
 	}

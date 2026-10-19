@@ -31,6 +31,19 @@ export interface SessionScopedRow {
   platform_source?: string | null;
 }
 
+/**
+ * A feed row belongs to a project filter when it was captured there or was
+ * merged into it (worktree adoption, `project merge`). The worker's
+ * `?project=` pagination returns both, so the client filter must keep both.
+ */
+export function rowInProject(row: { project: string; merged_into_project?: string | null }, project: string): boolean {
+  // Same rule as the worker's `COLLATE NOCASE` project match, which folds ASCII letters only.
+  const foldAscii = (value: string) => value.replace(/[A-Z]/g, char => char.toLowerCase());
+  const wanted = foldAscii(project);
+  return foldAscii(row.project) === wanted
+    || (row.merged_into_project != null && foldAscii(row.merged_into_project) === wanted);
+}
+
 /** The session a feed row belongs to, or null when the row does not say. */
 export function sessionRefOf(row: SessionScopedRow): SessionRef | null {
   const contentSessionId = row.content_session_id ?? row.session_id;

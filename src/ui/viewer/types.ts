@@ -23,6 +23,7 @@ export interface Summary {
   id: number;
   session_id: string;
   project: string;
+  merged_into_project?: string | null;
   platform_source: string;
   request?: string;
   investigated?: string;
@@ -127,4 +128,6 @@ export interface Settings {
 
   /** File/env only — shown read-only. Not written via POST /api/settings. */
   CLAUDE_CODE_PATH?: string;
+  /** Written by `npx claude-mem teambrain join`; read-only here. Set once this install is in a team. */
+  CLAUDE_MEM_TEAMBRAIN_URL?: string;
 }

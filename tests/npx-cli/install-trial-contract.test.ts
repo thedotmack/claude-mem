@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import {
@@ -23,13 +23,14 @@ const loginClaim = `/api/pro/trial/claim?pairing=${pairingId}&login_only=1`;
 const authorizationUrl = `https://cmem.ai/login?next=${encodeURIComponent(loginClaim)}`;
 const checkoutUrl = `https://cmem.ai/api/pro/trial/claim?pairing=${pairingId}&trial=7`;
 
-function runCompletedPairingChild(body: Record<string, unknown>): {
+function runCompletedPairingChild(body: Record<string, unknown>, initialSettings?: Record<string, string>): {
   output: string;
   settings: Record<string, string>;
   settingsMode: number;
 } {
   const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-installer-contract-'));
   try {
+    if (initialSettings) writeFileSync(join(dataDir, 'settings.json'), JSON.stringify(initialSettings, null, 2));
     const script = `
       globalThis.fetch = async () => new Response(${JSON.stringify(JSON.stringify(body))}, {
         status: 200,
@@ -363,15 +364,29 @@ describe('installer trial-ready contract', () => {
       userId: 'user_123',
       setupToken: 'setup_secret',
       hubUrl: 'https://sync.cmem.ai',
-      memoryKey: 'cm_pro_memory_secret',
-      memoryBaseUrl: 'https://cmem.ai/api/inference/v1',
-      memoryModel: 'cmem-observer-v2',
+      memory: {
+        memoryKey: 'cm_pro_memory_secret',
+        memoryBaseUrl: 'https://cmem.ai/api/inference/v1',
+        memoryModel: 'cmem-observer-v2',
+      },
       plan: 'pro',
       trialEndsAt: '2026-09-02T12:00:00.000Z',
+      team: null,
+      teambrainUrl: null,
     });
   });
 
-  it('supports the legacy response by using the setup token and gateway defaults', () => {
+  it('fills in only the gateway endpoint and model beside a delivered key', () => {
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'user_123',
+      setup_token: 'setup_secret',
+      hub_url: 'https://sync.cmem.ai',
+      memory_key: 'cm_pro_memory_secret',
+    })?.memory).toEqual({ memoryKey: 'cm_pro_memory_secret', memoryBaseUrl: CMEM_PRO_BASE_URL, memoryModel: CMEM_PRO_MODEL });
+  });
+
+  it('never stands the setup token or the gateway in for observer credentials the server did not send', () => {
     expect(parseTrialReadyBody({
       status: 'ready',
       user_id: 'legacy_user',
@@ -381,11 +396,32 @@ describe('installer trial-ready contract', () => {
       userId: 'legacy_user',
       setupToken: 'legacy_one_shot_token',
       hubUrl: 'https://legacy-sync.cmem.ai',
-      memoryKey: 'legacy_one_shot_token',
-      memoryBaseUrl: CMEM_PRO_BASE_URL,
-      memoryModel: CMEM_PRO_MODEL,
+      memory: null,
       plan: 'trial',
       trialEndsAt: null,
+      team: null,
+      teambrainUrl: null,
+    });
+  });
+
+  it('reads a TeamBrain seat holder: sync only, the team and its TeamBrain address', () => {
+    expect(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'seat_user',
+      setup_token: 'seat_setup_token',
+      hub_url: 'https://sync.cmem.ai',
+      plan: 'teambrain_seat',
+      team: { id: 'team_1', name: 'Acme Eng' },
+      teambrain_url: 'https://cmem.ai',
+    })).toEqual({
+      userId: 'seat_user',
+      setupToken: 'seat_setup_token',
+      hubUrl: 'https://sync.cmem.ai',
+      memory: null,
+      plan: 'teambrain_seat',
+      trialEndsAt: null,
+      team: { id: 'team_1', name: 'Acme Eng' },
+      teambrainUrl: 'https://cmem.ai',
     });
   });
 
@@ -422,15 +458,34 @@ describe('installer trial-ready contract', () => {
       memory_model: '',
       plan: 'future-plan',
       trial: { ends_at: 123 },
+      team: { name: 'no id' },
+      teambrain_url: '',
     })).toEqual({
       userId: 'user_123',
       setupToken: 'setup_secret',
       hubUrl: 'https://sync.cmem.ai',
-      memoryKey: 'setup_secret',
-      memoryBaseUrl: CMEM_PRO_BASE_URL,
-      memoryModel: CMEM_PRO_MODEL,
+      memory: null,
       plan: 'trial',
       trialEndsAt: null,
+      team: null,
+      teambrainUrl: null,
+    });
+  });
+
+  it('writes only the sync connection for a body without observer credentials', () => {
+    const settings = buildTrialReadySettings(parseTrialReadyBody({
+      status: 'ready',
+      user_id: 'seat_user',
+      setup_token: 'seat_setup_token',
+      hub_url: 'https://sync.cmem.ai',
+      plan: 'teambrain_seat',
+    })!, 'test-device');
+    expect(settings).toEqual({
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'seat_setup_token',
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'seat_user',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: 'test-device',
     });
   });
 
@@ -439,11 +494,15 @@ describe('installer trial-ready contract', () => {
       userId: 'user_123',
       setupToken: 'setup_secret',
       hubUrl: 'https://sync.cmem.ai',
-      memoryKey: 'cm_pro_memory_secret',
-      memoryBaseUrl: 'https://cmem.ai/api/inference/v1',
-      memoryModel: 'cmem-observer',
+      memory: {
+        memoryKey: 'cm_pro_memory_secret',
+        memoryBaseUrl: 'https://cmem.ai/api/inference/v1',
+        memoryModel: 'cmem-observer',
+      },
       plan: 'none',
       trialEndsAt: null,
+      team: null,
+      teambrainUrl: null,
     }, 'test-device');
 
     expect(settings).toEqual({
@@ -488,20 +547,83 @@ describe('installer trial-ready contract', () => {
     expect(settingsMode).toBe(0o600);
   });
 
-  it('persists the legacy ready response with its setup token as the memory credential', () => {
+  it('persists a seat-only ready response as the sync connection alone, leaving the observer as it was', () => {
     const { output, settings } = runCompletedPairingChild({
       status: 'ready',
-      user_id: 'legacy_user',
-      setup_token: 'LEGACY_TOKEN_MUST_NOT_LEAK',
-      hub_url: 'https://legacy-sync.cmem.ai',
+      user_id: 'seat_user',
+      setup_token: 'SEAT_TOKEN_MUST_NOT_LEAK',
+      hub_url: 'https://sync.cmem.ai',
+      plan: 'teambrain_seat',
+      team: { id: 'team_1', name: 'Acme Eng' },
+      teambrain_url: 'https://cmem.ai',
+    }, {
+      CLAUDE_MEM_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: 'personal-gemini-key',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+      CLAUDE_MEM_PRO_MEMORY_KEY: '',
     });
 
-    expect(output).toContain('__PAIRING_RESULT__={"plan":"trial","ready":true}');
-    expect(output).not.toContain('LEGACY_TOKEN_MUST_NOT_LEAK');
-    expect(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN).toBe('LEGACY_TOKEN_MUST_NOT_LEAK');
-    expect(settings.CLAUDE_MEM_PRO_MEMORY_KEY).toBe('LEGACY_TOKEN_MUST_NOT_LEAK');
-    expect(settings.CLAUDE_MEM_PRO_MEMORY_BASE_URL).toBe(CMEM_PRO_BASE_URL);
-    expect(settings.CLAUDE_MEM_PRO_MEMORY_MODEL).toBe(CMEM_PRO_MODEL);
+    expect(output).toContain('__PAIRING_RESULT__={"plan":"teambrain_seat","ready":true}');
+    expect(output).not.toContain('SEAT_TOKEN_MUST_NOT_LEAK');
+    expect(settings).toEqual({
+      CLAUDE_MEM_PROVIDER: 'gemini',
+      CLAUDE_MEM_GEMINI_API_KEY: 'personal-gemini-key',
+      CLAUDE_MEM_OPENROUTER_BASE_URL: '',
+      CLAUDE_MEM_PRO_MEMORY_KEY: '',
+      CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'SEAT_TOKEN_MUST_NOT_LEAK',
+      CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'seat_user',
+      CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: expect.any(String),
+    });
+  });
+
+  it('keeps the provider when CMEM Pro is chosen for a seat-only account, promoting no staged gateway key', () => {
+    const script = `
+      const { writeFileSync, readFileSync } = await import('fs');
+      const { USER_SETTINGS_PATH } = await import('./src/shared/paths.ts');
+      const before = JSON.stringify({
+        CLAUDE_MEM_PROVIDER: 'gemini',
+        CLAUDE_MEM_GEMINI_API_KEY: 'personal-gemini-key',
+        CLAUDE_MEM_PRO_MEMORY_KEY: 'cm_pro_staged_by_an_old_pairing',
+        CLAUDE_MEM_PRO_MEMORY_BASE_URL: 'https://cmem.ai/api/inference/v1',
+        CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'seat_setup_token',
+        CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'seat_user',
+        CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://sync.cmem.ai',
+      }, null, 2);
+      writeFileSync(USER_SETTINGS_PATH, before);
+      const { parseTrialReadyBody, promptProvider } = await import('./src/npx-cli/commands/install.ts');
+      const delivered = parseTrialReadyBody({
+        status: 'ready', user_id: 'seat_user', setup_token: 'seat_setup_token',
+        hub_url: 'https://sync.cmem.ai', plan: 'teambrain_seat',
+      });
+      const pairing = {
+        pairingId: 'p', secret: 's', userCode: 'ABCD-2345', pollIntervalMs: 1,
+        authorizationUrl: 'https://cmem.ai/login', checkoutUrl: 'https://cmem.ai/api/pro/trial/claim?pairing=p&trial=7',
+        delivered,
+      };
+      const provider = await promptProvider({ provider: 'cmem', providerSource: 'flag' }, pairing, 'test-version');
+      console.log('__PROVIDER__=' + provider);
+      console.log('__UNCHANGED__=' + String(readFileSync(USER_SETTINGS_PATH, 'utf-8') === before));
+    `;
+    const dataDir = mkdtempSync(join(tmpdir(), 'claude-mem-installer-seat-'));
+    try {
+      const result = Bun.spawnSync([process.execPath, '--eval', script], {
+        cwd: repoRoot,
+        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir, CLAUDE_MEM_TELEMETRY: '0' },
+        stdin: 'ignore',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const output = decoder.decode(result.stdout) + decoder.decode(result.stderr);
+      expect(result.exitCode, output).toBe(0);
+      expect(output).toContain('__PROVIDER__=gemini');
+      expect(output).toContain('__UNCHANGED__=true');
+      expect(output).toContain('TeamBrain seat');
+      expect(output).not.toContain('CMEM Pro configured');
+    } finally {
+      rmSync(dataDir, { recursive: true, force: true });
+    }
   });
 
   it('treats Ctrl+C during required OAuth polling as an incomplete login', () => {

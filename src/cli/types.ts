@@ -46,6 +46,8 @@ export interface NormalizedHookInput {
 }
 
 export interface HookResult {
+  /** Internal measurement hint; stripped before platform formatting/output. */
+  workStateTelemetry?: 'measure' | 'excluded' | 'unknown';
   continue?: boolean;
   suppressOutput?: boolean;
   hookSpecificOutput?: {

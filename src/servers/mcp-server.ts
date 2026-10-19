@@ -3,6 +3,7 @@ declare const __DEFAULT_PACKAGE_VERSION__: string;
 const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DEFAULT_PACKAGE_VERSION__ : '0.0.0-dev';
 
 import { logger } from '../utils/logger.js';
+import { spoolWorkStateMcpResult } from '../cli/work-state-telemetry.js';
 
 console['log'] = (...args: any[]) => {
   logger.error('CONSOLE', 'Intercepted console output (MCP protocol protection)', undefined, { args });
@@ -40,8 +41,15 @@ import {
   type ServerRuntimeContext,
 } from '../services/hooks/runtime-selector.js';
 import { normalizePlatformSource } from '../shared/platform-source.js';
-import { getAdvertisedMcpToolsForRuntime, withoutDisabledWorkStateTools, WORK_STATE_TOOL_NAMES } from './mcp-tool-visibility.js';
+import {
+  getAdvertisedMcpToolsForRuntime,
+  TEAMBRAIN_TOOL_NAMES,
+  withoutDisabledWorkStateTools,
+  withoutUnjoinedTeamBrainTools,
+  WORK_STATE_TOOL_NAMES,
+} from './mcp-tool-visibility.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
+import { teamBrainConnection } from '../shared/teambrain.js';
 import { isWorkStateEnabled } from '../shared/work-state-setting.js';
 import { getProjectContext, type ProjectContext } from '../utils/project-name.js';
 import { withCheckoutProjects } from './checkout-search-scope.js';
@@ -755,6 +763,40 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     }),
   },
   {
+    name: 'team_brief',
+    description: "TeamBrain brief for a project: where teammates' work collides with yours, recent plans and decisions, who is active in it now, and work delegated to you. Params: project (defaults to this checkout).",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        project: { type: 'string', description: 'Project name; defaults to this checkout' },
+      },
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => callWorker('/api/teambrain/brief', {
+      query: { project: args?.project || currentCheckout().primary },
+      text: true,
+    }),
+  },
+  {
+    name: 'team_search',
+    description: "Search what your team shared with TeamBrain: teammates' observations, plans and decisions across the projects they share. Params: query (required), limit.",
+    inputSchema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'What to look for, up to 500 characters' },
+        limit: { type: 'integer', minimum: 1, maximum: 50, description: 'Max results' },
+      },
+      required: ['query'],
+      additionalProperties: false,
+    },
+    annotations: READ_ONLY_TOOL_ANNOTATIONS,
+    handler: async (args: any) => callWorker('/api/teambrain/search', {
+      body: { query: args?.query, limit: args?.limit },
+      text: true,
+    }),
+  },
+  {
     name: 'session_start_context',
     description: 'Render the exact worker-mode SessionStart context for a project. Calls /api/context/inject and returns the same text hooks inject at startup. Params: project OR projects, platformSource, full, colors.',
     inputSchema: {
@@ -1125,10 +1167,14 @@ function workStateEnabled(): boolean {
   return isWorkStateEnabled(loadFromFileOnce().CLAUDE_MEM_WORK_STATE_ENABLED);
 }
 
+function teamBrainJoined(): boolean {
+  return teamBrainConnection(loadFromFileOnce()) !== null;
+}
+
 server.setRequestHandler(ListToolsRequestSchema, async () => {
-  const advertisedTools = withoutDisabledWorkStateTools(
-    getAdvertisedMcpToolsForRuntime(tools, selectRuntime()),
-    workStateEnabled(),
+  const advertisedTools = withoutUnjoinedTeamBrainTools(
+    withoutDisabledWorkStateTools(getAdvertisedMcpToolsForRuntime(tools, selectRuntime()), workStateEnabled()),
+    teamBrainJoined(),
   );
   return {
     tools: advertisedTools.map(tool => ({
@@ -1148,23 +1194,39 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   }
 
   if ((WORK_STATE_TOOL_NAMES as readonly string[]).includes(tool.name) && !workStateEnabled()) {
-    return {
+    const result = {
       content: [{ type: 'text' as const, text: 'Work state is turned off (CLAUDE_MEM_WORK_STATE_ENABLED=false).' }],
+      isError: true
+    };
+    spoolWorkStateMcpResult(tool.name, result);
+    return result;
+  }
+
+  if ((TEAMBRAIN_TOOL_NAMES as readonly string[]).includes(tool.name) && !teamBrainJoined()) {
+    return {
+      content: [{
+        type: 'text' as const,
+        text: 'TeamBrain is not set up on this install. Join a team with `npx claude-mem teambrain join <invite-link>`, or start one with `npx claude-mem teambrain start`.',
+      }],
       isError: true
     };
   }
 
   try {
-    return await tool.handler(request.params.arguments || {});
+    const result = await tool.handler(request.params.arguments || {});
+    spoolWorkStateMcpResult(tool.name, result);
+    return result;
   } catch (error: unknown) {
     logger.error('SYSTEM', 'Tool execution failed', { tool: request.params.name }, error instanceof Error ? error : new Error(String(error)));
-    return {
+    const result = {
       content: [{
         type: 'text' as const,
         text: `Tool execution failed: ${error instanceof Error ? error.message : String(error)}`
       }],
       isError: true
     };
+    spoolWorkStateMcpResult(tool.name, result);
+    return result;
   }
 });
 

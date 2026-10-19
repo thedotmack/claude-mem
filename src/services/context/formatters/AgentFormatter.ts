@@ -54,11 +54,12 @@ export function renderAgentContextEconomics(
     `${economics.totalDiscoveryTokens.toLocaleString()}t work`
   ];
 
-  if (economics.totalDiscoveryTokens > 0 && (config.showSavingsAmount || config.showSavingsPercent)) {
+  if (economics.totalDiscoveryTokens > 0) {
+    if (config.showSavingsAmount) {
+      parts.push(`${economics.savings.toLocaleString()}t saved`);
+    }
     if (config.showSavingsPercent) {
       parts.push(`${economics.savingsPercent}% savings`);
-    } else if (config.showSavingsAmount) {
-      parts.push(`${economics.savings.toLocaleString()}t saved`);
     }
   }
 

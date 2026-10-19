@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
+import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import extension, { extractTextContent, type PiExtensionAPI } from '../../src/integrations/pi-extension/index.js';
 
 type Handler = (event: any, context: any) => any;
@@ -67,7 +67,7 @@ describe('native Pi capture', () => {
     const result = await request();
     expect(inits()[0].body).toMatchObject({
       contentSessionId: 'real-session-id', cwd: '/work/project', platformSource: 'pi',
-      prompt: 'Fix the parser', nativePromptId: 'persisted-user-1',
+      prompt: 'Fix the parser', nativePromptId: 'persisted-user-1', telemetryPromptEpochMs: user.timestamp,
     });
     expect(result.messages[0]).toMatchObject({ toolsAdded: [{ name: 'read' }] });
     expect(result.messages[0].content).toContain('Base prompt');
@@ -85,7 +85,9 @@ describe('native Pi capture', () => {
     const pending = ask('Read the file', 'user-read');
     // Wait for the mocked init request before enqueueing a tool.
     await initStarted;
+    const clock = spyOn(Date, 'now').mockReturnValue(1234);
     const tool = emit('tool_result', { toolName: 'read', toolCallId: 'tool-7', input: { path: 'x.ts' }, content: [{ type: 'text', text: 'file text' }] });
+    clock.mockRestore();
     expect(calls.some(call => call.route === '/api/sessions/observations')).toBe(false);
     finishInit(acknowledge({ nativePromptId: 'user-read' }));
     await Promise.all([pending, tool]);
@@ -94,7 +96,7 @@ describe('native Pi capture', () => {
     expect(calls.filter(call => call.body).map(call => call.route)).toEqual([
       '/api/sessions/init', '/api/sessions/observations', '/api/sessions/summarize',
     ]);
-    expect(calls.find(call => call.route === '/api/sessions/observations')?.body).toMatchObject({ tool_use_id: 'tool-7', tool_response: 'file text' });
+    expect(calls.find(call => call.route === '/api/sessions/observations')?.body).toMatchObject({ tool_use_id: 'tool-7', tool_response: 'file text', telemetryToolEpochMs: 1234 });
     expect(calls.at(-1)?.body.last_assistant_message).toBe('The fix works');
   });
 
@@ -161,8 +163,8 @@ describe('native Pi capture', () => {
     expect(calls.filter(call => call.route === '/api/sessions/native-prompt-capability')).toHaveLength(2);
     expect(inits()).toHaveLength(2);
     expect(inits().map(call => call.body)).toEqual([
-      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry' },
-      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry' },
+      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry', telemetryPromptEpochMs: acceptedEntry.message.timestamp },
+      { contentSessionId: 'real-session-id', cwd: '/work/project', prompt: 'Stable native prompt', platformSource: 'pi', nativePromptId: 'recovered-entry', telemetryPromptEpochMs: acceptedEntry.message.timestamp },
     ]);
     expect(recovered.messages[0].content).toContain('Useful project memory');
     expect(recovered.messages[1]).toBe(acceptedEntry.message);
@@ -272,6 +274,7 @@ describe('native Pi capture', () => {
     await emit('tool_result', { toolName: 'read', content: 'older branch result' });
     await emit('agent_end');
     expect(inits().map(call => call.body.nativePromptId)).toEqual(['branch-a', 'branch-b', 'branch-a']);
+    expect(inits().map(call => call.body.telemetryPromptEpochMs)).toEqual([101, 102, 101]);
     expect(calls.some(call => call.route === '/api/sessions/observations' || call.route === '/api/sessions/summarize')).toBe(false);
   });
 

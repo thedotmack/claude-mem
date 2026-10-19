@@ -33,6 +33,8 @@ import {
 import { resolveConfigDirProfileKey } from '../../../../src/shared/EnvManager.js';
 import { getProjectContext } from '../../../../src/utils/project-name.js';
 import { buildWorkStateContextSection } from '../../../../src/services/context/sections/WorkStateRenderer.js';
+import { TEAM_BRIEF_RESERVE_CHARS } from '../../../../src/shared/teambrain.js';
+import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../../../src/shared/memory-instructions.js';
 
 // The route reads the ledger from paths.dataDir() (CLAUDE_MEM_DATA_DIR, set to a
 // per-run temp dir by tests/preload.ts), so write it there for the health case.
@@ -488,6 +490,34 @@ describe('SearchRoutes Welcome Hint', () => {
       expect(workStateEntriesStub).not.toHaveBeenCalled();
       expect(res.send).toHaveBeenCalledWith('CONTEXT_FROM_GENERATOR');
       expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: 0 }), false);
+    });
+
+    it('leaves room for the TeamBrain brief and the memory instructions the hook appends once the install is in a team', async () => {
+      process.env.CLAUDE_MEM_WORK_STATE_ENABLED = 'false';
+      countQueryStub = mock(() => ({ count: 7 }));
+      prepareStub = mock(() => ({ get: countQueryStub }));
+      mockSessionStore = { db: { prepare: prepareStub }, getWorkStateEntries: workStateEntriesStub };
+      const render = async () => {
+        generateContextStub.mockClear();
+        const handler = captureContextInjectHandler(new SearchRoutes({ getSessionStore: () => mockSessionStore } as any));
+        handler({ query: { projects: '/path/to/active-project' } } as unknown as Request, createMockRes() as unknown as Response);
+        await new Promise(resolve => setImmediate(resolve));
+      };
+      try {
+        process.env.CLAUDE_MEM_TEAMBRAIN_URL = 'https://cmem.ai';
+        await render();
+        expect(generateContextStub).toHaveBeenCalledWith(
+          expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS + MEMORY_PLUGIN_INSTRUCTIONS.length + 2 }),
+          false,
+        );
+
+        process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED = 'false';
+        await render();
+        expect(generateContextStub).toHaveBeenCalledWith(expect.objectContaining({ reserveChars: TEAM_BRIEF_RESERVE_CHARS }), false);
+      } finally {
+        delete process.env.CLAUDE_MEM_TEAMBRAIN_URL;
+        delete process.env.CLAUDE_MEM_MEMORY_INSTRUCTIONS_ENABLED;
+      }
     });
 
     it('leaves the work state out of the welcome hint when CLAUDE_MEM_WORK_STATE_ENABLED=false', async () => {

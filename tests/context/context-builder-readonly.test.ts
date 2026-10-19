@@ -62,7 +62,7 @@ const childScript = `
 
   if (process.env.READONLY_CASE === 'exclusive-lock') {
     const lockReadyPath = process.env.LOCK_READY ?? dbPath + '.lock-ready';
-    const lockHolder = Bun.spawn(['bun', '-e', \`
+    const lockHolder = Bun.spawn([process.execPath, '-e', \`
       import { Database } from 'bun:sqlite';
       const db = new Database(process.env.LOCK_DB!);
       db.run('BEGIN EXCLUSIVE');
@@ -140,7 +140,7 @@ const childScript = `
 `;
 
 function runChild(dataDir: string, extraEnv: Record<string, string>): Record<string, any> {
-  const result = Bun.spawnSync(['bun', '-e', childScript], {
+  const result = Bun.spawnSync([process.execPath, '-e', childScript], {
     cwd: repoRoot,
     env: {
       ...process.env,
@@ -217,7 +217,7 @@ describe('context database ownership', () => {
     try {
       const result = runChild(dataDir, { READONLY_CASE: 'missing' });
       expect(result.exists).toBe(false);
-      const workerResult = Bun.spawnSync(['bun', '-e', `
+      const workerResult = Bun.spawnSync([process.execPath, '-e', `
         import { SessionStore } from './src/services/sqlite/SessionStore.ts';
         const store = new SessionStore(process.env.CLAUDE_MEM_DATA_DIR + '/claude-mem.db');
         console.log(JSON.stringify({ versions: (store.db.prepare('SELECT COUNT(*) as count FROM schema_versions').get() as { count: number }).count }));

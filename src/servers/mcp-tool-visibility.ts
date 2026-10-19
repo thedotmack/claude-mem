@@ -46,3 +46,22 @@ export function withoutDisabledWorkStateTools<T extends { name: string }>(
   }
   return advertisedTools.filter((tool) => !workStateToolNameSet.has(tool.name));
 }
+
+export const TEAMBRAIN_TOOL_NAMES = ['team_brief', 'team_search'] as const;
+
+const teamBrainToolNameSet = new Set<string>(TEAMBRAIN_TOOL_NAMES);
+
+/**
+ * The team_* tools are advertised only once this install has joined a
+ * TeamBrain team (CLAUDE_MEM_TEAMBRAIN_URL set): before that they could only
+ * answer that TeamBrain is not set up.
+ */
+export function withoutUnjoinedTeamBrainTools<T extends { name: string }>(
+  advertisedTools: readonly T[],
+  teamBrainJoined: boolean
+): T[] {
+  if (teamBrainJoined) {
+    return [...advertisedTools];
+  }
+  return advertisedTools.filter((tool) => !teamBrainToolNameSet.has(tool.name));
+}
