@@ -5,6 +5,7 @@ import { formatHostForUrl } from './worker-url.js';
 
 export const REMOTE_SPOOL_PROTOCOL_VERSION = 1;
 export const REMOTE_SPOOL_TIMEOUT_MS = 1000;
+export const REMOTE_SPOOL_REQUEST_TIMEOUT_MS = 10_000;
 export const REMOTE_SPOOL_MAX_ENTRIES = 16;
 
 const commonPayload = z.object({
