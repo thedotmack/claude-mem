@@ -92,6 +92,11 @@ const CONTEXT_GENERATOR = {
   source: 'src/services/context-generator.ts'
 };
 
+const CONTEXT_READ_WORKER = {
+  name: 'context-read-worker',
+  source: 'src/services/context/context-read-worker.ts'
+};
+
 const TRANSCRIPT_WATCHER = {
   name: 'transcript-watcher',
   source: 'src/services/transcripts/transcript-watcher-entry.ts'
@@ -598,6 +603,36 @@ async function buildHooks() {
     const workerStats = fs.statSync(`${hooksDir}/${WORKER_SERVICE.name}.cjs`);
     console.log(`✓ worker-service built (${(workerStats.size / 1024).toFixed(2)} KB)`);
 
+    await build({
+      entryPoints: [CONTEXT_READ_WORKER.source],
+      bundle: true,
+      platform: 'node',
+      target: 'node18',
+      format: 'cjs',
+      outfile: `${hooksDir}/${CONTEXT_READ_WORKER.name}.cjs`,
+      alias: { 'zod/v4': 'zod' },
+      minify: true,
+      ...SOURCEMAP_OPTS,
+      logLevel: 'error',
+      external: [
+        'bun:sqlite', 'bun:ffi', 'cohere-ai', 'ollama', '@chroma-core/default-embed', 'onnxruntime-node',
+        'better-auth', 'better-auth/node', 'better-auth/plugins', '@better-auth/api-key',
+        ...POSTHOG_OPTIONAL_IMPORTS,
+      ],
+      define: {
+        '__DEFAULT_PACKAGE_VERSION__': JSON.stringify(version),
+        ...DIRNAME_DEFINE,
+        'import.meta.url': '__IMPORT_META_URL__'
+      },
+      banner: {
+        js: [
+          ...DIRNAME_BANNER,
+          'var __IMPORT_META_URL__ = require("node:url").pathToFileURL(__CM_FILENAME__).href;'
+        ].join('\n')
+      }
+    });
+    assertBundleIntegrity(`${hooksDir}/${CONTEXT_READ_WORKER.name}.cjs`);
+
     // Advisory only — a sudden jump usually means a heavy server-only dependency
     // (better-auth, kysely, a database driver) leaked into the worker bundle via a
     // transitive import (#2584). Never blocks the build.
@@ -1026,6 +1061,8 @@ async function buildHooks() {
       'plugin/hooks/qoder-hooks.json',
       'plugin/hooks/qoder-repo-hooks.json',
       'plugin/scripts/bun-runner.js',
+      'plugin/scripts/context-read-worker.cjs',
+      'plugin/scripts/context-read-worker.cjs.map',
       'plugin/sqlite/SessionStore.js',
       'plugin/sqlite/observations/files.js',
       'plugin/.claude-plugin/plugin.json',

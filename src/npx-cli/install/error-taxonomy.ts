@@ -10,6 +10,9 @@
  *  - There is NO `SILENT` severity.
  */
 
+import { TREE_SITTER_CLI_CANNOT_RUN } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
+
 export enum ErrorSeverity {
   /** exit 1, do not continue. */
   ABORT = 'ABORT',
@@ -105,6 +108,19 @@ export const ERROR_CATEGORIES: ErrorCategory[] = [
     match: (cause) => /\bEALLOWSCRIPTS\b/.test(causeMessage(cause)),
     remediation: () =>
       'npm refused an `allow-scripts` setting that reached it through the command line or environment (npm 11.16+ accepts it only from package.json or .npmrc). Unset NPM_CONFIG_ALLOW_SCRIPTS in your shell. If ~/.npmrc has an `allow-scripts=` line, older npx versions re-export it to the installer: upgrade npm (`npm install -g npm@latest`) or comment that line out, then re-run `npx claude-mem install`.',
+  },
+  {
+    // The download worked (or was not needed), but the OS cannot run the
+    // verified release executable: tree-sitter publishes no musl build (#4858),
+    // and its glibc build can need a newer glibc than the OS has (#4758).
+    // Network advice does not help here. `install` shows this text in a
+    // warning, which writes no last-install-error.json, so it names no file.
+    id: 'tree-sitter-cli-cannot-run',
+    severity: ErrorSeverity.ABORT,
+    match: (cause, ctx) =>
+      ctx.component === 'tree-sitter-cli-cache' && causeMessage(cause).includes(TREE_SITTER_CLI_CANNOT_RUN),
+    remediation: () =>
+      `The tree-sitter CLI (used by smart_search and smart_outline) downloaded, but its executable cannot run on this system. tree-sitter publishes Linux builds for glibc only, so musl systems such as Alpine cannot run them, and an older glibc can also be the cause. To use the smart tools, ${TREE_SITTER_CLI_PATH_WORKAROUND}, install a C compiler (the CLI compiles the grammars), then run \`npx claude-mem doctor\` to confirm.`,
   },
   {
     // Only `repair` reports this as ABORT; `install` downgrades it to a warning

@@ -6,12 +6,13 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from 'fs';
-import { join, posix as posixPath, win32 as windowsPath } from 'path';
+import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
 import { getBunVersion, getUvVersion, isInstallCurrent } from '../install/setup-runtime.js';
-import { isTreeSitterCliBinaryUsable, treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { treeSitterCliBinaryPath } from '../../services/smart-file-read/tree-sitter-cli-provision.js';
+import { checkTreeSitterCliLoadable, resolveTreeSitterBinPathFor, TREE_SITTER_CLI_PATH_WORKAROUND } from '../../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveDataDir } from '../../shared/paths.js';
 import { paths } from '../../shared/paths.js';
 import { findOrphanedChromaRoots, readProcessTablePosix } from '../../supervisor/orphan-chroma-sweep.js';
@@ -25,7 +26,7 @@ import {
 import {
   currentLauncherHostEnvironment,
   findExecutableOnPath,
-  readLauncherProtocol,
+  probeLauncherVersion,
   resolveLauncherBinaryPath,
   type LauncherHostEnvironment,
 } from '../../launcher/install-launcher.js';
@@ -234,18 +235,32 @@ export function pluginRootCheck(resolution: PluginRootResolution | null): CheckR
   };
 }
 
-/** The "tree-sitter CLI" row for the plugin root the worker runs from. Exported for tests. */
-export async function treeSitterCliCheck(pluginRoot: string): Promise<CheckResult> {
+/**
+ * The "tree-sitter CLI" row for the plugin root the worker runs from. It
+ * resolves the CLI the same way the parser does, so a working tree-sitter on
+ * PATH counts when the package-local one is missing or cannot run (#4858).
+ * Exported for tests, which also pass searchPath.
+ */
+export async function treeSitterCliCheck(pluginRoot: string, searchPath: string = process.env.PATH ?? ''): Promise<CheckResult> {
   const name = 'tree-sitter CLI';
-  const binaryPath = treeSitterCliBinaryPath(pluginRoot);
-  return (await isTreeSitterCliBinaryUsable(pluginRoot))
-    ? { name, status: 'ok', detail: binaryPath, required: false }
-    : {
-        name,
-        status: 'warn',
-        detail: `missing or unusable at ${binaryPath} — smart_search/smart_outline disabled; run \`npx claude-mem repair\``,
-        required: false,
-      };
+  const packageLocalBinPath = treeSitterCliBinaryPath(pluginRoot);
+  const resolvedBinPath = resolveTreeSitterBinPathFor(packageLocalBinPath, searchPath);
+  const check = checkTreeSitterCliLoadable(resolvedBinPath, searchPath);
+  if (check.loadable) {
+    return {
+      name,
+      status: 'ok',
+      detail: isAbsolute(resolvedBinPath) ? resolvedBinPath : `${resolvedBinPath} on PATH`,
+      required: false,
+    };
+  }
+  const problem = check.present ? check.reason : `missing at ${packageLocalBinPath} and not on PATH`;
+  return {
+    name,
+    status: 'warn',
+    detail: `${problem} — smart_search/smart_outline disabled; run \`npx claude-mem repair\`, or ${TREE_SITTER_CLI_PATH_WORKAROUND}`,
+    required: false,
+  };
 }
 
 /** The "Marketplace manifest" row. Exported for tests. */
@@ -366,13 +381,13 @@ export function hookLauncherCheck(
     };
   }
   const probeStartedAt = performance.now();
-  const printedProtocol = readLauncherProtocol(launcherOnPath);
+  const { protocol: printedProtocol, failure: probeFailure } = probeLauncherVersion(launcherOnPath);
   const roundTripMilliseconds = Math.round(performance.now() - probeStartedAt);
   if (printedProtocol === null) {
     return {
       name,
       status: 'fail',
-      detail: `${launcherOnPath} is not the claude-mem hook launcher (--version printed no protocol number); ${reinstallHint}`,
+      detail: `${launcherOnPath} did not report a launcher protocol (--version ${probeFailure}); ${reinstallHint}`,
       required: true,
     };
   }

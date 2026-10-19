@@ -21,6 +21,14 @@ import { condaPackageUnsupportedReason, treeSitterExecutableFromCondaPackage } f
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
 const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
 
+/**
+ * Every provisioning error for a verified release executable that the OS
+ * cannot run (#4758: glibc too old; #4858: musl) contains this text. The
+ * installer error taxonomy uses it to tell this case apart from a failed
+ * download.
+ */
+export const TREE_SITTER_CLI_CANNOT_RUN = "cannot run on this system";
+
 function treeSitterCliPackageDir(pluginRoot: string): string {
   return join(pluginRoot, "node_modules", "tree-sitter-cli");
 }
@@ -248,7 +256,7 @@ export async function ensureTreeSitterCliBinary(
     if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
       return await useGlibcCompatibleBuildOrThrow(existingProbe, new Error(
         `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
-        + `but cannot run on this system${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
+        + `but ${TREE_SITTER_CLI_CANNOT_RUN}${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
         + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
       ));
     }
@@ -272,8 +280,8 @@ export async function ensureTreeSitterCliBinary(
       // not find an intact-but-unrunnable binary either way.
       return await useGlibcCompatibleBuildOrThrow(stagedProbe, Object.assign(
         new Error(
-          `tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`
-          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}`,
+          `The downloaded tree-sitter ${version} executable matches the pinned SHA-256 but ${TREE_SITTER_CLI_CANNOT_RUN}`
+          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}; it was not moved to ${treeSitterCliBinaryPath(pluginRoot)}`,
         ),
         installOutput,
       ));

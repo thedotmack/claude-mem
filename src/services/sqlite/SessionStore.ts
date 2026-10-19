@@ -34,6 +34,7 @@ import {
   createWorkStateSchema,
   appendWorkStateEntry as appendWorkStateEntryRow,
   getWorkStateEntries as getWorkStateEntriesRows,
+  scopeWorkStateEntries,
   type WorkStateEntry,
   type WorkStateFields,
 } from './work-state.js';
@@ -3147,16 +3148,15 @@ export class SessionStore {
     this.localSyncDeviceId = deviceId;
   }
 
+  getLocalSyncDeviceId(): string {
+    return this.localSyncDeviceId;
+  }
+
   getWorkStateEntries(projects: string[], listName?: string): WorkStateEntry[] {
-    const entries = getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName, this.localSyncDeviceId);
-    // Keys explicitly supplied by the checkout describe one list history.
-    // Adopted projects discovered by getProjectReadKeys retain their own scope.
-    const foldKey = (key: string) => key.replace(/[A-Z]/g, character => character.toLowerCase());
-    const aliases = new Set(projects.map(foldKey));
-    const primary = projects.at(-1);
-    return entries.map(entry => primary && aliases.has(foldKey(entry.project))
-      ? { ...entry, scope_project: primary }
-      : entry);
+    return scopeWorkStateEntries(
+      getWorkStateEntriesRows(this.db, this.getProjectReadKeys(projects), listName, this.localSyncDeviceId),
+      projects,
+    );
   }
 
   countToolUses(filters: ToolUseQueryFilters = {}): Array<{ tool_name: string; uses: number }> {

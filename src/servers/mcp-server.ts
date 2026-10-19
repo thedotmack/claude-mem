@@ -19,7 +19,7 @@ import { getWorkerPort, workerHttpRequest, resolveWorkerScriptPath } from '../sh
 import { ensureWorkerStarted } from '../services/worker-spawner.js';
 import { searchCodebase, formatSearchResults } from '../services/smart-file-read/search.js';
 import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } from '../services/smart-file-read/parser.js';
-import { checkTreeSitterCliLoadable } from '../services/smart-file-read/tree-sitter-bin-path.js';
+import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
@@ -63,22 +63,6 @@ let workspaceCheckout: ProjectContext | null = null;
 function currentCheckout(): ProjectContext {
   workspaceCheckout ??= getProjectContext(process.cwd());
   return workspaceCheckout;
-}
-
-/**
- * Non-null when a tree-sitter CLI binary is present but cannot run on this
- * system (#4758 — e.g. linked against a newer glibc than the OS provides).
- * Without this, smart_outline answers "Could not parse … unsupported language
- * or empty" and smart_search reports "found 0 symbols", which read like a
- * grammar problem instead of the broken install they are.
- */
-function treeSitterCliBrokenMessage(): string | null {
-  const check = checkTreeSitterCliLoadable();
-  if (check.present && !check.loadable) {
-    return `the installed tree-sitter CLI cannot run on this system${check.reason ? ` (${check.reason})` : ""}`
-      + ": this is a broken-install/environment issue, not an unsupported language";
-  }
-  return null;
 }
 
 let mcpServerDirResolutionFailed = false;
@@ -937,17 +921,17 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
       // Check the CLI before any parsing (#4758): with a broken install,
       // symbol extraction stalls on build/query timeouts, so skip it up
       // front while keeping path matches, which need no tree-sitter.
-      const brokenCli = treeSitterCliBrokenMessage();
+      const unavailableCli = treeSitterCliUnavailableMessage();
       const result = await searchCodebase(rootDir, args.query, {
         maxResults: args.max_results || 20,
         filePattern: args.file_pattern,
-        skipSymbolExtraction: brokenCli !== null,
+        skipSymbolExtraction: unavailableCli !== null,
       });
       const formatted = formatSearchResults(result, args.query);
       // Path matches need no tree-sitter, so a broken CLI only degrades symbol
       // extraction: keep the results and warn instead of blocking the search.
-      const text = brokenCli
-        ? `Note: symbol extraction is unavailable (${brokenCli}); path matches below are unaffected.\n\n${formatted}`
+      const text = unavailableCli
+        ? `Note: symbol extraction is unavailable (${unavailableCli}); path matches below are unaffected.\n\n${formatted}`
         : formatted;
       return {
         content: [{ type: 'text' as const, text }]
@@ -975,10 +959,10 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const brokenCli = treeSitterCliBrokenMessage();
-      if (brokenCli) {
+      const unavailableCli = treeSitterCliUnavailableMessage();
+      if (unavailableCli) {
         return {
-          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${brokenCli}.` }]
+          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${unavailableCli}.` }]
         };
       }
       const unfolded = unfoldSymbol(content, filePath, args.symbol_name);
@@ -1022,10 +1006,10 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     handler: async (args: any) => {
       const filePath = await resolveWithinWorkspace(args.file_path);
       const content = await readFile(filePath, 'utf-8');
-      const brokenCli = treeSitterCliBrokenMessage();
-      if (brokenCli) {
+      const unavailableCli = treeSitterCliUnavailableMessage();
+      if (unavailableCli) {
         return {
-          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${brokenCli}.` }]
+          content: [{ type: 'text' as const, text: `Could not parse ${args.file_path}: ${unavailableCli}.` }]
         };
       }
       const parsed = parseFile(content, filePath);

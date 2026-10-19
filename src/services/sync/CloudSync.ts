@@ -855,8 +855,10 @@ export class CloudSync {
     this.authFailure = failure;
     // The ladder is irrelevant while paused; start fresh after recovery.
     this.nextBackoffMs = this.backoffInitialMs;
+    // warn, not error: a rejected token or lapsed plan is an expected server
+    // answer, and logger.error would ship it to error tracking on every start.
     if (changed) {
-      logger.error('CLOUD_SYNC', 'Cloud sync paused: the sync server rejected this device\'s credentials', {
+      logger.warn('CLOUD_SYNC', 'Cloud sync paused: the sync server rejected this device\'s credentials', {
         code: failure.code,
         status: failure.status,
         recheckInMs: this.authRetryMs,

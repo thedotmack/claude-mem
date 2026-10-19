@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { execFile, execSync } from 'child_process';
 import { createRequire } from 'module';
 import { join } from 'path';
-import { ErrorSeverity } from './error-taxonomy.js';
+import { classifyError, ErrorSeverity } from './error-taxonomy.js';
 import { installerError, type InstallSummary } from './error-reporter.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { bunCommonPaths, findBunExecutablePath, getToolPath, spawnVersionProbe } from './tool-path.js';
@@ -458,15 +458,16 @@ export async function provisionTreeSitterCli(
       : typeof processError.code === 'number'
         ? `exited with code ${processError.code}`
         : err.message;
+    const matchContext = { component: 'tree-sitter-cli-cache', phase: 'dependency-install' };
+    const cause = Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
+      code: processError.code,
+      killed: processError.killed,
+    });
     installerError(severity, {
-      component: 'tree-sitter-cli-cache',
-      phase: 'dependency-install',
-      cause: Object.assign(new Error(`tree-sitter-cli provisioning failed in ${targetDir}: ${failure}`), {
-        code: processError.code,
-        killed: processError.killed,
-      }),
+      ...matchContext,
+      cause,
       details: describeExecError(err, true).slice(0, 4000),
-      ...(severity === ErrorSeverity.WARN_CONTINUE
+      ...(severity === ErrorSeverity.WARN_CONTINUE && classifyError(cause, matchContext).id !== 'tree-sitter-cli-cannot-run'
         ? { remediation: 'smart_search and smart_outline stay disabled until the tree-sitter CLI is provisioned: run `npx claude-mem repair`.' }
         : {}),
     }, summary);

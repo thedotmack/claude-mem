@@ -54,12 +54,14 @@ export interface ContextVariantRender {
   body: string;
   /** False when the block must stay live (health banner, or a reply chosen for the asking session). */
   cacheable: boolean;
+  readKeys?: string[];
+  invalidationGenerationAtStart?: number;
 }
 
 export interface ContextCacheServiceOptions {
   renderVariant: (keys: ContextCacheKeys) => Promise<ContextVariantRender>;
   /** Every stored key a read of `projects` matches (projectReadKeys). */
-  expandProjectReadKeys: (projects: string[]) => string[];
+  expandProjectReadKeys: (projects: string[]) => string[] | Promise<string[]>;
   debounceMs?: number;
   maxVariants?: number;
   /** False keeps the files unservable until setServable(true). Default true. */
@@ -88,6 +90,7 @@ export class ContextCacheService {
   private stopped = false;
   /** Bumped by every 'removal' invalidation; a render that saw it change mid-flight is not persisted. */
   private removalGeneration = 0;
+  private invalidationGeneration = 0;
   private servable: boolean;
   private readonly debounceMs: number;
   private readonly maxVariants: number;
@@ -145,7 +148,7 @@ export class ContextCacheService {
     renderedAtEpochMs: number,
     /** removalGenerationNow() taken before the render began; omitted = no removal check. */
     removalGenerationAtRenderStart?: number,
-  ): void {
+  ): void | Promise<void> {
     if (this.stopped) return;
     const variantId = contextCacheVariantId(keys);
     if (!this.variants.has(variantId)) {
@@ -154,13 +157,23 @@ export class ContextCacheService {
       this.writeIndex();
       logger.debug('CONTEXT_CACHE', 'Learned a SessionStart context variant', { variantId, keys });
     }
-    this.refreshReadKeys(variantId);
-    if (removalGenerationAtRenderStart !== undefined && removalGenerationAtRenderStart !== this.removalGeneration) {
-      // A delete landed while this render ran: its body may show what is gone.
-      this.requeueAfterRemoval(variantId);
-      return;
-    }
-    this.persistRender(keys, render, renderedAtEpochMs);
+    const variant = this.variants.get(variantId);
+    if (!variant) return;
+    const complete = () => {
+      if (this.stopped || this.variants.get(variantId) !== variant) return;
+      if (removalGenerationAtRenderStart !== undefined && removalGenerationAtRenderStart !== this.removalGeneration) {
+        this.requeueAfterRemoval(variantId);
+        return;
+      }
+      this.persistRender(keys, render, renderedAtEpochMs);
+      if (render.invalidationGenerationAtStart !== undefined && render.invalidationGenerationAtStart !== this.invalidationGeneration) {
+        this.pendingVariantIds.add(variantId);
+        this.scheduleRender();
+      }
+    };
+    const refreshed = this.refreshReadKeys(variantId, render.readKeys);
+    if (refreshed) return refreshed.then(complete);
+    complete();
   }
 
   /**
@@ -169,20 +182,31 @@ export class ContextCacheService {
    * fresh file is on disk, render its cached block (which has no reply) through
    * the render queue, so the hook has it to fall back on while the worker is down.
    */
-  warmVariant(keys: ContextCacheKeys): void {
+  warmVariant(keys: ContextCacheKeys, readKeys?: string[]): void | Promise<void> {
     if (this.stopped) return;
     const variantId = contextCacheVariantId(keys);
-    if (!this.variants.has(variantId)) {
-      this.recordLiveRender(keys, { body: '', cacheable: false }, this.now());
+    const complete = () => {
+      if (this.stopped || !this.variants.has(variantId) || readContextCache(keys, this.now())) return;
+      this.pendingVariantIds.add(variantId);
+      this.scheduleRender();
+    };
+    if (this.variants.has(variantId)) {
+      if (readKeys) this.refreshReadKeys(variantId, readKeys);
+      complete();
+      return;
     }
-    if (readContextCache(keys, this.now())) return;
-    this.pendingVariantIds.add(variantId);
-    this.scheduleRender();
+    const learned = this.recordLiveRender(keys, { body: '', cacheable: false, readKeys }, this.now());
+    if (learned) return learned.then(complete);
+    complete();
   }
 
   /** Pass to recordLiveRender to discard a render that a removal overtook. */
   removalGenerationNow(): number {
     return this.removalGeneration;
+  }
+
+  invalidationGenerationNow(): number {
+    return this.invalidationGeneration;
   }
 
   /** Render everything pending now (tests, shutdown). */
@@ -220,11 +244,13 @@ export class ContextCacheService {
   }
 
   private handleInvalidation(invalidation: ContextInvalidation): void {
+    this.invalidationGeneration++;
     const removal = invalidation.kind === 'removal';
     if (removal) this.removalGeneration++;
     let matched = 0;
     for (const [variantId, variant] of this.variants) {
-      if (invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
+      const unresolvedRemoval = removal && (variant.readKeys.size === 0 || this.activeVariantIds.has(variantId));
+      if (unresolvedRemoval || invalidation.scope === 'all' || invalidation.scope.projects.some(project => variant.readKeys.has(project.toLowerCase()))) {
         this.pendingVariantIds.add(variantId);
         // Synchronous: the writer's HTTP route responds only after this returns.
         if (removal) this.removeFile(variant.keys);
@@ -277,7 +303,8 @@ export class ContextCacheService {
       const removalGenerationAtStart = this.removalGeneration;
       this.activeVariantIds.add(variantId);
       try {
-        this.refreshReadKeys(variantId);
+        await this.refreshReadKeys(variantId);
+        if (this.stopped || this.variants.get(variantId) !== variant) continue;
         const render = await this.options.renderVariant(variant.keys);
         // A queued render owns this exact registry entry. Teardown or eviction
         // can remove it while the renderer awaits, and a later live request
@@ -322,13 +349,19 @@ export class ContextCacheService {
     }
   }
 
-  private refreshReadKeys(variantId: string): void {
+  private refreshReadKeys(variantId: string, provided?: string[]): void | Promise<void> {
     const variant = this.variants.get(variantId);
     if (!variant) return;
-    variant.readKeys = new Set(
-      [...variant.keys.projects, ...this.options.expandProjectReadKeys(variant.keys.projects)]
-        .map(project => project.toLowerCase())
-    );
+    const expanded = provided ?? this.options.expandProjectReadKeys(variant.keys.projects);
+    const apply = (readKeys: string[]) => {
+      if (this.stopped || this.variants.get(variantId) !== variant) return;
+      variant.readKeys = new Set([...variant.keys.projects, ...readKeys].map(project => project.toLowerCase()));
+    };
+    if (Array.isArray(expanded)) {
+      apply(expanded);
+      return;
+    }
+    return expanded.then(apply);
   }
 
   private evictOldestVariants(): void {

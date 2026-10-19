@@ -1407,7 +1407,7 @@ export async function ensureWorkerRunning(timeoutMs?: number): Promise<boolean> 
       // A stale worker we just killed already proved its port closed
       // (waitForWorkerPortReleased); every other spawn must first prove the port
       // free (#3171).
-      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt))) return false;
+      if (!recycledStaleWorker && !(await preSpawnPortIsFree(preSpawnDeadline, deadlineAt, scriptPath))) return false;
       const runtimePath = resolveWorkerRuntimePath();
       if (!runtimePath) {
         logger.warn('SYSTEM', 'Cannot lazy-spawn worker: Bun runtime not found (PATH, BUN / BUN_PATH / BUN_INSTALL, or ~/.bun/bin)');
@@ -1546,7 +1546,11 @@ let unbindablePortDiagnosis: number | null = null;
  * - indeterminate (the bind neither succeeded nor hit EADDRINUSE in time) →
  *   no spawn: never start another worker onto a port in an unknown state.
  */
-async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | null): Promise<boolean> {
+async function preSpawnPortIsFree(
+  deadline: number,
+  hookDeadlineAt: number | null,
+  scriptPath: string | null,
+): Promise<boolean> {
   const port = getWorkerPort();
   const remainingMs = deadline - Date.now();
   if (remainingMs <= 0) return false;
@@ -1577,6 +1581,9 @@ async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | nul
     logger.info('SYSTEM', 'Reclaimed the worker port before lazy-spawn', { port, killedPids: reclaim.killedPids });
     return true;
   }
+  if (reclaim.reason === 'out-of-budget' && hookDeadlineAt !== null) {
+    handOffReclaimToDaemon(port, scriptPath, hookDeadlineAt);
+  }
   if (readOwnedWorkerPidInfo() === null) {
     orphanedPortDiagnosis = port;
   }
@@ -1586,6 +1593,152 @@ async function preSpawnPortIsFree(deadline: number, hookDeadlineAt: number | nul
     ...(orphanedPortDiagnosis === port ? { fix: ORPHANED_PORT_REMEDIATION } : {}),
   });
   return false;
+}
+
+/**
+ * Minimum spacing between two reclaim handoffs. A daemon that declines (the
+ * worker answered, or is still booting) exits fast, and without this every
+ * hook event of a long silence would launch another one.
+ */
+const RECLAIM_HANDOFF_MIN_SPACING_MS = 30_000;
+
+/**
+ * Upper bound on one handoff while its daemon is alive (or its pid is unknown:
+ * the Windows launch goes through Start-Process and returns none). The
+ * unbudgeted reclaim's slowest path is Windows: a health wait, two health
+ * probes (4 s), the listener read (up to 15 s), the process-table read for the
+ * identity check (up to 30 s), the tree-kill (5.5 s) and a second listener
+ * read (15 s), about 75 s. A daemon that wins the port becomes the worker and
+ * stays alive, so the bound also keeps a later wedge of that worker from being
+ * blocked forever by its own handoff.
+ */
+const RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS = 120_000;
+
+interface ReclaimHandoffMarker {
+  /** The detached daemon's pid, or null before the launch returns or when the launch gives none. */
+  daemonPid: number | null;
+}
+
+function reclaimHandoffMarkerPath(): string {
+  return path.join(resolveDataDir(), 'reclaim-handoff.json');
+}
+
+function writeReclaimHandoffMarker(port: number, daemonPid: number | null): void {
+  // Atomic: a write that fails partway (a full disk) must never leave a
+  // truncated marker in place of a good one.
+  writeJsonFileAtomic(reclaimHandoffMarkerPath(), { hookPid: process.pid, daemonPid, port, at: new Date().toISOString() });
+}
+
+function clearReclaimHandoffMarker(): void {
+  try {
+    unlinkSync(reclaimHandoffMarkerPath());
+  } catch {
+    // Already gone.
+  }
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error: unknown) {
+    return (error as NodeJS.ErrnoException)?.code === 'EPERM';
+  }
+}
+
+/**
+ * A handoff is in flight inside the minimum spacing, and after it, up to the
+ * upper bound, while its daemon is alive or its pid is unknown. Age comes from
+ * the marker's mtime, never from a clock value in its content.
+ */
+function reclaimHandoffInFlight(): boolean {
+  const markerPath = reclaimHandoffMarkerPath();
+  let ageMs: number;
+  try {
+    ageMs = Date.now() - statSync(markerPath).mtimeMs;
+  } catch {
+    return false;
+  }
+  // Contents that cannot be read (however that happened) are judged by age
+  // alone, like a marker with no pid.
+  let marker: ReclaimHandoffMarker = { daemonPid: null };
+  try {
+    const parsed = JSON.parse(readFileSync(markerPath, 'utf-8')) as { daemonPid?: unknown };
+    const pid = parsed?.daemonPid;
+    if (typeof pid === 'number' && Number.isInteger(pid) && pid > 0) marker = { daemonPid: pid };
+  } catch {
+    // Keep daemonPid null.
+  }
+  if (ageMs < RECLAIM_HANDOFF_MIN_SPACING_MS) return true;
+  if (ageMs >= RECLAIM_HANDOFF_MAX_IN_FLIGHT_MS) return false;
+  return marker.daemonPid === null || isProcessAlive(marker.daemonPid);
+}
+
+/**
+ * #4809: a hook reaches the reclaim with about 7 s of its budget left, and the
+ * reclaim needs 9.5 s, so it declines with 'out-of-budget' on every hook
+ * event and a wedged worker stays down until some launcher without a deadline
+ * comes along (16 minutes in the report). Instead, launch a detached worker
+ * daemon and return: the daemon's duplicate gate (worker-service.ts, the
+ * `--daemon` branch) runs the same reclaim with no deadline, under the same
+ * evidence rules, then binds the port or exits 0. The caller holds the spawn
+ * lock, so at most one hook launches it, and the in-flight marker keeps the
+ * next hook events from launching another while it runs.
+ */
+function handOffReclaimToDaemon(port: number, scriptPath: string | null, hookDeadlineAt: number): void {
+  if (reclaimHandoffInFlight()) {
+    logger.debug('SYSTEM', 'A detached reclaim is already in flight; not launching another', { port });
+    return;
+  }
+  const runtimePath = resolveWorkerRuntimePath();
+  if (!runtimePath || !scriptPath) {
+    logger.warn('SYSTEM', 'Cannot hand the port reclaim to a detached daemon: Bun runtime or worker script not found', {
+      port,
+      hasRuntime: Boolean(runtimePath),
+      hasScript: Boolean(scriptPath),
+    });
+    return;
+  }
+  try {
+    writeReclaimHandoffMarker(port, null);
+  } catch (error: unknown) {
+    // Without the marker every hook event could launch a daemon; skip rather
+    // than risk a pile-up, and leave the reclaim to an unbudgeted launcher.
+    logger.warn('SYSTEM', 'Could not record the reclaim handoff; not launching it', {
+      port,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return;
+  }
+  try {
+    const spawned = spawnDetachedWorkerDaemon(
+      runtimePath,
+      scriptPath,
+      sanitizeEnv({ ...process.env, CLAUDE_MEM_WORKER_PORT: String(port) }),
+      process.platform,
+      remainingBudgetMs(hookDeadlineAt) ?? undefined,
+    );
+    if (spawned === undefined) {
+      // No daemon started: let the next hook event try again.
+      clearReclaimHandoffMarker();
+      return;
+    }
+    if (spawned > 0) {
+      try {
+        writeReclaimHandoffMarker(port, spawned);
+      } catch {
+        // The pid-less marker stays, and counts as in flight up to the bound.
+      }
+    }
+    logger.info('SYSTEM', 'Handed the port reclaim to a detached worker daemon; this hook event returns its fallback', {
+      port,
+      daemonPid: spawned > 0 ? spawned : null,
+    });
+  } catch (error: unknown) {
+    clearReclaimHandoffMarker();
+    logger.error('SYSTEM', 'Could not launch the detached reclaim daemon', { port, runtimePath, scriptPath },
+      error instanceof Error ? error : new Error(String(error)));
+  }
 }
 
 let aliveCache: boolean | null = null;
@@ -1797,8 +1950,7 @@ function releaseHookFailureLock(token: string): void {
   }
 }
 
-function parseHookFailureState(raw: string): HookFailureState {
-  const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+function parseHookFailureState(parsed: Partial<HookFailureState>): HookFailureState {
   return {
     consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
       ? Math.max(0, Math.floor(parsed.consecutiveFailures))
@@ -1819,14 +1971,25 @@ function parseHookFailureState(raw: string): HookFailureState {
 }
 
 function readHookFailureState(): HookFailureState {
+  return readHookFailureStateWithWriter().state;
+}
+
+/**
+ * preLatchWriter: the file has no thresholdTripped field, so a claude-mem
+ * version older than the latch wrote it last. Its count can span an outage
+ * that started on that older version.
+ */
+function readHookFailureStateWithWriter(): { state: HookFailureState; preLatchWriter: boolean } {
   try {
-    return parseHookFailureState(readFileSync(getHookFailuresPath(), 'utf-8'));
+    const parsed = JSON.parse(readFileSync(getHookFailuresPath(), 'utf-8')) as Partial<HookFailureState>;
+    const state = parseHookFailureState(parsed);
+    return { state, preLatchWriter: state.consecutiveFailures > 0 && parsed.thresholdTripped === undefined };
   } catch {
     // [ANTI-PATTERN IGNORED]: the failure-counter state file is optional and
     // absent (ENOENT) on every hook run until the first worker failure, so
     // logging here would fire on effectively every healthy invocation; the
     // recovery is the zeroed default state below.
-    return { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false };
+    return { state: { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false }, preLatchWriter: false };
   }
 }
 
@@ -1981,8 +2144,10 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   let next: HookFailureState;
   let shouldEscalate = false;
+  let preLatchState = false;
   try {
-    const state = readHookFailureState();
+    const { state, preLatchWriter } = readHookFailureStateWithWriter();
+    preLatchState = preLatchWriter;
     next = {
       consecutiveFailures: state.consecutiveFailures + 1,
       lastFailureAt: Date.now(),
@@ -2012,6 +2177,7 @@ export async function recordWorkerUnreachable(): Promise<number> {
       error_mode: 'worker_unavailable',
       consecutive_failures: next.consecutiveFailures,
       threshold_tripped: true,
+      pre_latch_state: preLatchState,
     });
     // DIAGNOSTIC only (stderr, bypassing the hook's stderr buffer). This used
     // to be emitBlockingError, whose exit 2 blocked the user's prompt on

@@ -619,6 +619,14 @@ export function buildWindowsHiddenDaemonPowerShellArgs(
   return ['-NoProfile', '-WindowStyle', 'Hidden', '-EncodedCommand', encodedCommand];
 }
 
+// Why the last daemon launch returned undefined, so callers can show the user
+// the cause instead of pointing them at the log. Cleared on every launch.
+let lastWorkerDaemonLaunchError: string | undefined;
+
+export function getLastWorkerDaemonLaunchError(): string | undefined {
+  return lastWorkerDaemonLaunchError;
+}
+
 /**
  * Spawn the worker as a background daemon without a visible console, with its
  * cwd pinned to claude-mem's data dir (daemonWorkingDirectory, #3706).
@@ -641,6 +649,7 @@ export function spawnDetachedWorkerDaemon(
   platform: NodeJS.Platform = process.platform,
   launchCapMs?: number
 ): number | undefined {
+  lastWorkerDaemonLaunchError = undefined;
   if (platform === 'win32') {
     const powershell = resolveWindowsPowerShellPath(env);
     const args = buildWindowsHiddenDaemonPowerShellArgs(runtimePath, scriptPath);
@@ -671,6 +680,7 @@ export function spawnDetachedWorkerDaemon(
       return 0;
     } catch (error: unknown) {
       const err = error instanceof Error ? error : new Error(String(error));
+      lastWorkerDaemonLaunchError = `${powershell} could not launch the worker: ${err.message}`;
       logger.error(
         'SYSTEM',
         'Failed to spawn worker daemon on Windows',
@@ -706,6 +716,7 @@ export function spawnDetachedWorkerDaemon(
   });
 
   if (child.pid === undefined) {
+    lastWorkerDaemonLaunchError = `could not launch ${execPath}`;
     return undefined;
   }
 
@@ -729,6 +740,7 @@ export function spawnDaemon(
   const runtimePath = resolveWorkerRuntimePath();
   if (!runtimePath) {
     logger.error('SYSTEM', BUN_NOT_FOUND_MESSAGE);
+    lastWorkerDaemonLaunchError = BUN_NOT_FOUND_MESSAGE;
     return undefined;
   }
 
