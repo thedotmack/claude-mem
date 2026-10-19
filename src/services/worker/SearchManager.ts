@@ -369,7 +369,7 @@ export class SearchManager {
    * observations — the only category obs_type applies to.
    */
   private resolveTypeFilters(type: any, obs_type: any): { category: any; effectiveObsType: any } {
-    const CATEGORY_TYPES = ['observations', 'sessions', 'prompts'];
+    const CATEGORY_TYPES = ['all', 'observations', 'sessions', 'prompts'];
 
     if (type == null) {
       return { category: type, effectiveObsType: obs_type };
@@ -379,7 +379,7 @@ export class SearchManager {
     const isCategorySelector = typeValues.length > 0 && typeValues.every(t => CATEGORY_TYPES.includes(t));
 
     if (isCategorySelector) {
-      return { category: type, effectiveObsType: obs_type };
+      return { category: typeValues.includes('all') ? 'all' : type, effectiveObsType: obs_type };
     }
 
     const existingObsType = Array.isArray(obs_type)
@@ -478,7 +478,7 @@ export class SearchManager {
       }
       if (sessionIds.length > 0) {
         sessions = this.sessionStore.getSessionSummariesByIds(sessionIds, {
-          orderBy: requestedDateOrder ?? 'date_desc',
+          orderBy: requestedDateOrder ?? 'relevance',
           limit: options.limit,
           project: options.project,
           projects: options.projects,
@@ -487,7 +487,7 @@ export class SearchManager {
       }
       if (promptIds.length > 0) {
         prompts = this.sessionStore.getUserPromptsByIds(promptIds, {
-          orderBy: requestedDateOrder ?? 'date_desc',
+          orderBy: requestedDateOrder ?? 'relevance',
           limit: options.limit,
           project: options.project,
           projects: options.projects,

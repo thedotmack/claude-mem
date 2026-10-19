@@ -441,7 +441,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       ],
     });
     expect(getSessionSummariesByIds).toHaveBeenCalledWith([session.id], {
-      orderBy: 'date_desc',
+      orderBy: 'relevance',
       limit: 10,
       project: 'search-project',
       projects: ['search-project'],
@@ -500,7 +500,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     });
 
     expect(getUserPromptsByIds).toHaveBeenCalledWith([prompt.id], {
-      orderBy: 'date_desc',
+      orderBy: 'relevance',
       limit: 10,
       project: 'search-project',
       projects: ['search-project'],

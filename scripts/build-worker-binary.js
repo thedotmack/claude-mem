@@ -12,7 +12,7 @@ console.log(`Building Windows exe v${version}...`);
 
 try {
   execSync(
-    `bun build --compile --minify --target=bun-windows-x64 ./src/services/worker-service.ts --outfile ${outDir}/worker-service-v${version}-win-x64.exe`,
+    `bun build --compile --minify --target=bun-windows-x64 --entry-naming "[name].js" ./src/services/worker-service.ts ./src/services/context/context-read-worker.ts --outfile ${outDir}/worker-service-v${version}-win-x64.exe`,
     { stdio: 'inherit' }
   );
   console.log(`\nBuilt: ${outDir}/worker-service-v${version}-win-x64.exe`);

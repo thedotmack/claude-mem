@@ -29,3 +29,47 @@ export function pinnedTreeSitterExecutableSha256(
 ): string | undefined {
   return TREE_SITTER_EXECUTABLE_SHA256[version]?.[`${platform}-${arch}`];
 }
+
+/**
+ * A build of the same tree-sitter-cli release that runs on older glibc. The
+ * release assets above are built on Ubuntu 24.04 and link against GLIBC_2.39
+ * (pidfd_spawnp, pidfd_getpid), so they cannot run on Ubuntu 22.04, Debian 12
+ * or RHEL 9 (#4758), and upstream builds only on GitHub-hosted runners
+ * (tree-sitter/tree-sitter#5221, #4174). conda-forge builds the same version
+ * against glibc 2.17 and links only system libraries (libc, libm, libdl,
+ * libpthread, librt, libgcc_s).
+ */
+export interface GlibcCompatibleTreeSitterBuild {
+  /** The conda-forge package (.conda: a stored zip holding pkg-*.tar.zst). */
+  url: string;
+  /** SHA-256 of the .conda file, as conda-forge publishes it. */
+  archiveSha256: string;
+  /** SHA-256 of bin/tree-sitter inside the package. */
+  executableSha256: string;
+}
+
+// Each archive digest matches the sha256 the anaconda.org API lists for that
+// file; each executable digest is of bin/tree-sitter extracted from it.
+export const GLIBC_COMPATIBLE_TREE_SITTER_BUILDS: Readonly<Record<string, Readonly<Record<string, GlibcCompatibleTreeSitterBuild>>>> = {
+  "0.26.9": {
+    "linux-arm64": {
+      url: "https://conda.anaconda.org/conda-forge/linux-aarch64/tree-sitter-cli-0.26.9-h4f14f73_0.conda",
+      archiveSha256: "9a7751d55e419d411fcbc3155f79773321b1858e02f39bf8ec989cc306f77326",
+      executableSha256: "eb4f706458f38b9aeef229747f4f5c3cb389beab422506a5547af76a34845ed7",
+    },
+    "linux-x64": {
+      url: "https://conda.anaconda.org/conda-forge/linux-64/tree-sitter-cli-0.26.9-hc7555a6_0.conda",
+      archiveSha256: "c940aa36efa86533720ad636579103ab88aa366ef0b332ac9e53cfde8c0f0e2d",
+      executableSha256: "0afa5aa43bdfd4b2ccc6f0f94f00c1ef855a22d77d32dd1cf3e30aee27988bd8",
+    },
+  },
+};
+
+/** The glibc-compatible build of a tree-sitter-cli version for this machine, if any. */
+export function glibcCompatibleTreeSitterBuild(
+  version: string,
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): GlibcCompatibleTreeSitterBuild | undefined {
+  return GLIBC_COMPATIBLE_TREE_SITTER_BUILDS[version]?.[`${platform}-${arch}`];
+}

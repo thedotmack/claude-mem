@@ -172,9 +172,11 @@ export interface SettingsDefaults {
   CLAUDE_MEM_MODEL: string;
   CLAUDE_MEM_CONTEXT_OBSERVATIONS: string;
   CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: string;
+  CLAUDE_MEM_CONTEXT_PROJECTS: string;
   CLAUDE_MEM_WORKER_PORT: string;
   CLAUDE_MEM_WORKER_HOST: string;
   CLAUDE_MEM_WORKER_INGEST_TOKEN: string;
+  CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: string;
   CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: string;
   CLAUDE_MEM_ALLOWED_ORIGINS: string;
   CLAUDE_MEM_PUBLIC_URL: string;
@@ -422,9 +424,11 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_MODEL: 'claude-haiku-4-5-20251001',
     CLAUDE_MEM_CONTEXT_OBSERVATIONS: '50',
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: 'false',
+    CLAUDE_MEM_CONTEXT_PROJECTS: 'current', // 'current' = this checkout only; 'all' = SessionStart context spans every project
     CLAUDE_MEM_WORKER_PORT: String(37700 + ((process.getuid?.() ?? 77) % 100)),
     CLAUDE_MEM_WORKER_HOST: '127.0.0.1',
     CLAUDE_MEM_WORKER_INGEST_TOKEN: '',
+    CLAUDE_MEM_WORKER_INGEST_MAX_BYTES: '5242880',
     CLAUDE_MEM_HOOK_SPOOL_TRANSPORT: 'auto',
     CLAUDE_MEM_ALLOWED_ORIGINS: '',  // Comma-separated browser origins allowed to call the worker
                                      // cross-origin besides http://localhost:* / http://127.0.0.1:*.

@@ -26,6 +26,16 @@ export interface WorkStateEntry {
   created_at_epoch: number;
 }
 
+/** Explicit checkout aliases share a history; adopted projects retain their own scope. */
+export function scopeWorkStateEntries(entries: WorkStateEntry[], projects: string[]): WorkStateEntry[] {
+  const foldKey = (key: string) => key.replace(/[A-Z]/g, character => character.toLowerCase());
+  const aliases = new Set(projects.map(foldKey));
+  const primary = projects.at(-1);
+  return entries.map(entry => primary && aliases.has(foldKey(entry.project))
+    ? { ...entry, scope_project: primary }
+    : entry);
+}
+
 export function createWorkStateSchema(db: Database): void {
   db.run(`
     CREATE TABLE IF NOT EXISTS work_state_entries (
@@ -97,11 +107,16 @@ export function getWorkStateEntries(
   if (projects.length === 0) return [];
   const placeholders = projects.map(() => '?').join(', ');
   const listFilter = listName === undefined ? '' : ' AND list_name = ?';
-  const rows = db.prepare(`
+  const statement = db.prepare(`
     SELECT id, project, list_name, fields, created_at_epoch
     FROM work_state_entries
     WHERE project COLLATE NOCASE IN (${placeholders})${listFilter}
     ORDER BY created_at_epoch, COALESCE(origin_device_id, ?), COALESCE(CAST(origin_local_id AS INTEGER), id)
-  `).all(...projects, ...(listName === undefined ? [] : [listName]), localDeviceId) as Array<Omit<WorkStateEntry, 'fields'> & { fields: string }>;
-  return rows.map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
+  `);
+  try {
+    const rows = statement.all(...projects, ...(listName === undefined ? [] : [listName]), localDeviceId) as Array<Omit<WorkStateEntry, 'fields'> & { fields: string }>;
+    return rows.map(row => ({ ...row, fields: JSON.parse(row.fields) as WorkStateFields }));
+  } finally {
+    statement.finalize();
+  }
 }

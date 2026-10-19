@@ -82,6 +82,7 @@ const COLLECTED_FIELDS = [
   'error_mode       worker_unavailable / blocking_error (never a message)',
   'consecutive_failures   hook failures in a row (the fail-loud counter)',
   'threshold_tripped      whether the fail-loud threshold was reached',
+  'pre_latch_state        the counter was last written by a version older than the fail-loud latch',
   'skill_id         first-party plugin/skills name or other (never a third-party name)',
   'skill_source     first_party / third_party',
   'skill_trigger    tool (Skill tool) / prompt (typed /skill)',

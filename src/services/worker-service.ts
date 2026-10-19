@@ -51,6 +51,9 @@ const packageVersion = typeof __DEFAULT_PACKAGE_VERSION__ !== 'undefined' ? __DE
 // boot is never laundered as success.
 export const WORKER_BOOT_FAILED_EXIT_CODE = 78;
 
+/** Subcommands that read or write the caller's project, so they run in its directory (#4628). */
+export const COMMANDS_THAT_ACT_ON_CALLER_PROJECT: ReadonlySet<string> = new Set(['generate', 'clean', 'adopt', 'memory', 'cursor']);
+
 // The bind must happen within this window. server.listen() is the first ref'd
 // handle in the boot path, so a stall before it lets the event loop empty and
 // the process exit 0 with no trace. A ref'd watchdog holds the loop open and
@@ -136,11 +139,12 @@ import { ensureWireGatewayRunning } from './wire-gateway/WireGatewayService.js';
 import { runMemoryCommand } from './memory/cli.js';
 import { SyncApply } from './sync/SyncApply.js';
 import { ContextCacheService } from './worker/ContextCacheService.js';
-import { projectReadKeys } from './sqlite/project-read-keys.js';
+import { getContextReadWorker, closeContextReadWorker } from './context/ContextReadWorkerClient.js';
 import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
+import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
 import { AdvisorRoutes } from './worker/http/routes/AdvisorRoutes.js';
@@ -281,6 +285,7 @@ export class WorkerService implements WorkerRef {
   private corpusStore: CorpusStore;
 
   private searchRoutes: SearchRoutes | null = null;
+  private workViewRoutes: WorkViewRoutes | null = null;
 
   private chromaMcpManager: ChromaMcpManager | null = null;
   private transcriptWatcher: TranscriptWatcher | null = null;
@@ -453,7 +458,7 @@ export class WorkerService implements WorkerRef {
       getQueueDepth: () => this.sessionManager.getTotalQueueDepth(),
       getLastRequestAt: () => this.server.getLastRequestAt(),
       getInFlightRequestCount: () => this.server.getInFlightRequestCount(),
-      getViewerClientCount: () => this.sseBroadcaster.getClientCount(),
+      getViewerClientCount: () => this.sseBroadcaster.getClientCount() + (this.workViewRoutes?.getClientCount() ?? 0),
       getLastAiInteractionAt: () => this.lastAiInteraction?.timestamp ?? null,
       onIdle: () => {
         // The sequence never exits the process for non-restart reasons —
@@ -555,8 +560,11 @@ export class WorkerService implements WorkerRef {
       () => hookSpoolConsumedMarkers(this.dbManager.getSessionStore()),
       () => { void this.hookSpoolDrainer.requestDrain(); },
       () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_TOKEN,
+      SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
     ));
 
+    this.workViewRoutes = new WorkViewRoutes({ getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '' });
+    this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);
     this.server.registerRoutes(sessionRoutes);
@@ -847,18 +855,18 @@ export class WorkerService implements WorkerRef {
       );
       // Precomputed SessionStart context (liveness plan, Phase 6): the route
       // records each live render, the service re-renders on writes.
-      const contextCacheDb = this.dbManager.getConnection();
+      const contextReader = getContextReadWorker();
       this.contextCacheService = new ContextCacheService({
         renderVariant: (keys) => {
           if (!this.searchRoutes) throw new Error('Context cache render before search routes exist');
           return this.searchRoutes.renderContextVariant(keys);
         },
-        expandProjectReadKeys: (projects) => projectReadKeys(contextCacheDb, projects),
+        expandProjectReadKeys: (projects) => contextReader.readKeys(projects),
         // Local-first: the local db is the source of truth, so the files are
         // servable with or without cloud sync. Sync applies other devices' ops in
         // the background, and every applied op invalidates the files (SyncApply).
       });
-      this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient);
+      this.searchRoutes = new SearchRoutes(searchManager, this.contextCacheService, this.syncClient, contextReader);
       this.server.registerRoutes(this.searchRoutes);
       this.contextCacheService.start();
       logger.info('WORKER', 'SearchManager initialized and search routes registered');
@@ -1152,6 +1160,8 @@ export class WorkerService implements WorkerRef {
       isShuttingDown: () => this.isShuttingDown,
       markShuttingDown: () => { this.isShuttingDown = true; },
       beforeGracefulShutdown: async () => {
+        this.workViewRoutes?.close();
+        this.workViewRoutes = null;
         this.stopPendingSessionResume();
         this.hookSpoolDrainer.stop();
         // Stop the idle monitor before the drain: its own trigger has
@@ -1195,6 +1205,7 @@ export class WorkerService implements WorkerRef {
         server: this.server.getHttpServer(),
         sessionManager: this.sessionManager,
         mcpClient: this.mcpClient,
+        contextReader: { close: closeContextReadWorker },
         dbManager: this.dbManager,
         chromaMcpManager: this.chromaMcpManager || undefined
       }),
@@ -1518,6 +1529,15 @@ async function main() {
       configDir: process.env.CLAUDE_CONFIG_DIR || '~/.claude',
     });
     process.exit(0);
+  }
+
+  // The launcher and bun-runner.js start Bun in a neutral directory (#4628);
+  // commands that act on the caller's project return there. `hook` restores
+  // separately, after its argument checks, to keep the hook IO-discipline
+  // ordering; the worker itself (`start`, `--daemon`) keeps the neutral cwd.
+  if (command !== undefined && COMMANDS_THAT_ACT_ON_CALLER_PROJECT.has(command)) {
+    const { restoreHookOriginalCwd } = await import('../cli/hook-original-cwd.js');
+    restoreHookOriginalCwd();
   }
 
   const port = getWorkerPort();

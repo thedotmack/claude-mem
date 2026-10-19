@@ -184,6 +184,29 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('"');
   });
 
+  it('keeps the by-file route\'s newest-first order across days', () => {
+    // /api/search/by-file renders days and rows newest-first.
+    const input = `### Oct 17, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #4 | 5:00 PM | 🔵 | Newest | ~10 |
+| #3 | 3:00 PM | 🔵 | Third | ~10 |
+
+### Oct 16, 2026
+
+| ID | Time | T | Title | Read |
+|----|------|---|-------|------|
+| #2 | 5:00 PM | 🔵 | Second | ~10 |
+| #1 | 3:00 PM | 🔵 | Oldest | ~10 |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    const ids = [...result.matchAll(/^\| (#\d+) \|/gm)].map(m => m[1]);
+    expect(ids).toEqual(['#4', '#3', '#2', '#1']);
+    expect(result.indexOf('### Oct 17, 2026')).toBeLessThan(result.indexOf('### Oct 16, 2026'));
+  });
+
   it('should parse session ID format (#S123) correctly', () => {
     const input = '| #S123 | 4:30 PM | 🟣 | Session started | ~200 |';
 
@@ -193,6 +216,20 @@ describe('formatTimelineForClaudeMd', () => {
     expect(result).toContain('4:30 PM');
     expect(result).toContain('🟣');
     expect(result).toContain('Session started');
+  });
+
+  it('keeps titles that contain a pipe intact', () => {
+    // FormattingService writes titles (and session requests) verbatim, so a
+    // `|` inside the title is part of the cell, not a column separator.
+    const input = `| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 | - |
+| #8 | ″ | 🔵 | Default with a || b fallback | ~90 | - |
+| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - | - |`;
+
+    const result = formatTimelineForClaudeMd(input);
+
+    expect(result).toContain('| #7 | 3:00 PM | 🔵 | Parse a | b union types | ~120 |');
+    expect(result).toContain('| #8 | " | 🔵 | Default with a || b fallback | ~90 |');
+    expect(result).toContain('| #S9 | 3:05 PM | 🎯 | run ls | grep foo | - |');
   });
 });
 
@@ -982,6 +1019,32 @@ describe('issue #912 - skip unsafe directories for CLAUDE.md generation', () => 
     );
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('only checks directory names below the project root', async () => {
+    // A project that itself lives under ~/build or ~/res must still get folder CLAUDE.md files.
+    for (const parent of ['build', 'res', 'node_modules']) {
+      const apiResponse = {
+        content: [{ text: '| #123 | 4:30 PM | 🔵 | Test | ~100 |' }]
+      };
+      const fetchMock = mock(() => Promise.resolve({
+        ok: true,
+        json: () => Promise.resolve(apiResponse)
+      } as Response));
+      global.fetch = fetchMock;
+      const projectRoot = join(tempDir, parent, 'myapp');
+      mkdirSync(join(projectRoot, 'src', 'utils'), { recursive: true });
+
+      await updateFolderClaudeMdFiles(
+        ['src/utils/file.ts'],
+        'test-project',
+        37777,
+        projectRoot
+      );
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(readFileSync(join(projectRoot, 'src', 'utils', 'CLAUDE.md'), 'utf-8')).toContain('#123');
+    }
   });
 
   it('should skip deeply nested unsafe directories', async () => {

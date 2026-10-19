@@ -7,14 +7,27 @@
 // like tree-sitter-bin-path.ts, so the npx installer and the worker share it.
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { treeSitterBinaryName } from "./tree-sitter-bin-name.js";
 import { isExecutableFile } from "./tree-sitter-bin-path.js";
-import { pinnedTreeSitterExecutableSha256 } from "./tree-sitter-cli-checksums.js";
+import {
+  glibcCompatibleTreeSitterBuild,
+  pinnedTreeSitterExecutableSha256,
+  type GlibcCompatibleTreeSitterBuild,
+} from "./tree-sitter-cli-checksums.js";
+import { condaPackageUnsupportedReason, treeSitterExecutableFromCondaPackage } from "./tree-sitter-cli-conda.js";
 
 const TREE_SITTER_VERSION_TIMEOUT_MS = 10_000;
 const TREE_SITTER_VERSION_OUTPUT = /^tree-sitter \d+\.\d+\.\d+(?:\s|$)/;
+
+/**
+ * Every provisioning error for a verified release executable that the OS
+ * cannot run (#4758: glibc too old; #4858: musl) contains this text. The
+ * installer error taxonomy uses it to tell this case apart from a failed
+ * download.
+ */
+export const TREE_SITTER_CLI_CANNOT_RUN = "cannot run on this system";
 
 function treeSitterCliPackageDir(pluginRoot: string): string {
   return join(pluginRoot, "node_modules", "tree-sitter-cli");
@@ -90,6 +103,75 @@ function sha256OfFile(filePath: string): string {
   return createHash("sha256").update(readFileSync(filePath)).digest("hex");
 }
 
+function sha256OfBytes(bytes: Buffer): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+/** Where a glibc-compatible build comes from; tests replace both. */
+export interface GlibcCompatibleFallback {
+  buildFor: (version: string) => GlibcCompatibleTreeSitterBuild | undefined;
+  download: (url: string, timeoutMs: number) => Promise<Buffer>;
+}
+
+async function downloadArchive(url: string, timeoutMs: number): Promise<Buffer> {
+  const response = await fetch(url, { signal: AbortSignal.timeout(timeoutMs), redirect: "follow" });
+  if (!response.ok) throw new Error(`GET ${url} answered HTTP ${response.status}`);
+  return Buffer.from(await response.arrayBuffer());
+}
+
+const CONDA_FORGE_FALLBACK: GlibcCompatibleFallback = {
+  buildFor: glibcCompatibleTreeSitterBuild,
+  download: downloadArchive,
+};
+
+/** The OS refused the release asset because this glibc is too old (#4758). */
+function refusedForOlderGlibc(probe: TreeSitterCliVersionProbe): boolean {
+  return process.platform === "linux" && /GLIBC_\d/.test(probe.reason ?? "");
+}
+
+/**
+ * Install the glibc-compatible build of `version` at the package-local path.
+ * The package must match its pinned SHA-256 before it is opened, and the
+ * executable inside it must match its own pinned SHA-256 before it is run.
+ * Throws when either does not, or when the result does not answer --version.
+ */
+async function installGlibcCompatibleBuild(
+  pluginRoot: string,
+  build: GlibcCompatibleTreeSitterBuild,
+  timeoutMs: number,
+  download: GlibcCompatibleFallback["download"],
+): Promise<void> {
+  // The worker runs under Bun, which can; Node 20 (the npx installer) cannot.
+  // Say so before downloading anything.
+  const unsupported = condaPackageUnsupportedReason();
+  if (unsupported) throw new Error(unsupported);
+  const archive = await download(build.url, timeoutMs);
+  const archiveSha256 = sha256OfBytes(archive);
+  if (archiveSha256 !== build.archiveSha256) {
+    throw new Error(`${build.url} has SHA-256 ${archiveSha256}, not the pinned ${build.archiveSha256}; it was not opened`);
+  }
+  const executable = treeSitterExecutableFromCondaPackage(archive);
+  const executableSha256 = sha256OfBytes(executable);
+  if (executableSha256 !== build.executableSha256) {
+    throw new Error(`bin/tree-sitter in ${build.url} has SHA-256 ${executableSha256}, not the pinned ${build.executableSha256}; it was not run`);
+  }
+  const stagingDir = mkdtempSync(join(treeSitterCliPackageDir(pluginRoot), ".provision-"));
+  try {
+    const stagedExecutable = join(stagingDir, treeSitterBinaryName());
+    writeFileSync(stagedExecutable, executable);
+    chmodSync(stagedExecutable, 0o755);
+    const probe = await answersTreeSitterVersion(stagedExecutable);
+    if (!probe.usable) {
+      throw new Error(`the glibc-compatible tree-sitter build does not run either${probe.reason ? `: ${probe.reason}` : ""}`);
+    }
+    renameSync(stagedExecutable, treeSitterCliBinaryPath(pluginRoot));
+  } finally {
+    rmSync(stagingDir, { recursive: true, force: true });
+  }
+}
+
+export type TreeSitterCliBinarySource = "already-usable" | "release" | "glibc-compatible";
+
 /**
  * Run tree-sitter-cli's own install.js when the package-local CLI is not
  * usable. The script downloads the executable into its working directory, so
@@ -104,20 +186,27 @@ function sha256OfFile(filePath: string): string {
  * (#4758), the download would fetch identical bytes, so it throws immediately
  * with the spawn failure's reason instead.
  *
- * `pinnedSha256ForVersion` exists for tests; callers pass none.
+ * When the OS refuses the release asset because its glibc is too old, the
+ * conda-forge build of the same version is installed instead, if one is pinned
+ * for this platform (linux-x64, linux-arm64); see
+ * GLIBC_COMPATIBLE_TREE_SITTER_BUILDS. Resolves to where the working
+ * executable came from.
+ *
+ * `pinnedSha256ForVersion` and `glibcFallback` exist for tests; callers pass none.
  */
 export async function ensureTreeSitterCliBinary(
   pluginRoot: string,
   installTimeoutMs: number,
   pinnedSha256ForVersion: (version: string) => string | undefined = pinnedTreeSitterExecutableSha256,
-): Promise<void> {
+  glibcFallback: GlibcCompatibleFallback = CONDA_FORGE_FALLBACK,
+): Promise<TreeSitterCliBinarySource> {
   const cliDir = treeSitterCliPackageDir(pluginRoot);
   if (existsSync(cliDir) && !statSync(cliDir).isDirectory()) {
     throw new Error(`tree-sitter-cli package path is not a directory: ${cliDir}`);
   }
   const existingBinaryPath = treeSitterCliBinaryPath(pluginRoot);
   const existingProbe = await answersTreeSitterVersion(existingBinaryPath);
-  if (existingProbe.usable) return;
+  if (existingProbe.usable) return "already-usable";
 
   const installScript = join(cliDir, "install.js");
   if (!existsSync(installScript)) {
@@ -125,6 +214,24 @@ export async function ensureTreeSitterCliBinary(
   }
   const version = String((JSON.parse(readFileSync(join(cliDir, "package.json"), "utf-8")) as { version?: unknown }).version);
   const pinnedSha256 = pinnedSha256ForVersion(version);
+
+  // Falls back to the glibc-compatible build when the OS refused the release
+  // asset for its glibc; otherwise, or when that fails too, throws `failure`.
+  const useGlibcCompatibleBuildOrThrow = async (
+    probe: TreeSitterCliVersionProbe,
+    failure: Error,
+  ): Promise<TreeSitterCliBinarySource> => {
+    const build = refusedForOlderGlibc(probe) ? glibcFallback.buildFor(version) : undefined;
+    if (!build) throw failure;
+    try {
+      await installGlibcCompatibleBuild(pluginRoot, build, installTimeoutMs, glibcFallback.download);
+      return "glibc-compatible";
+    } catch (fallbackError) {
+      const detail = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+      failure.message += ` The glibc-compatible build (${build.url}) could not be installed either: ${detail}`;
+      throw failure;
+    }
+  };
   if (!pinnedSha256) {
     throw new Error(
       `No SHA-256 is pinned for the tree-sitter ${version} executable on ${process.platform}-${process.arch}, `
@@ -147,11 +254,11 @@ export async function ensureTreeSitterCliBinary(
       // Fall through to the download; it cannot make things worse.
     }
     if (existingSha256 === pinnedSha256 && isExecutableFile(existingBinaryPath)) {
-      throw new Error(
+      return await useGlibcCompatibleBuildOrThrow(existingProbe, new Error(
         `The tree-sitter ${version} executable at ${existingBinaryPath} is intact (SHA-256 matches the pinned value) `
-        + `but cannot run on this system${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
+        + `but ${TREE_SITTER_CLI_CANNOT_RUN}${existingProbe.reason ? `: ${existingProbe.reason}` : ""}. `
         + "smart_search, smart_outline and smart_unfold cannot parse here, and the File Read Gate stays off.",
-      );
+      ));
     }
   }
 
@@ -169,15 +276,18 @@ export async function ensureTreeSitterCliBinary(
     }
     const stagedProbe = await answersTreeSitterVersion(stagedExecutable);
     if (!stagedProbe.usable) {
-      throw Object.assign(
+      // The verified release asset stays out of place, so the next start does
+      // not find an intact-but-unrunnable binary either way.
+      return await useGlibcCompatibleBuildOrThrow(stagedProbe, Object.assign(
         new Error(
-          `tree-sitter-cli install completed without creating a working executable ${treeSitterCliBinaryPath(pluginRoot)}`
-          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}`,
+          `The downloaded tree-sitter ${version} executable matches the pinned SHA-256 but ${TREE_SITTER_CLI_CANNOT_RUN}`
+          + `${stagedProbe.reason ? `: ${stagedProbe.reason}` : ""}; it was not moved to ${treeSitterCliBinaryPath(pluginRoot)}`,
         ),
         installOutput,
-      );
+      ));
     }
     renameSync(stagedExecutable, treeSitterCliBinaryPath(pluginRoot));
+    return "release";
   } finally {
     rmSync(stagingDir, { recursive: true, force: true });
   }

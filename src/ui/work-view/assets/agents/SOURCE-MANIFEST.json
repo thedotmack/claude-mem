@@ -1,0 +1,42 @@
+{
+  "confirmed_identities": true,
+  "assets": [
+    {
+      "id": "chatgpt",
+      "identity": "ChatGPT / OpenAI Blossom",
+      "file": "chatgpt.svg",
+      "source_url": "https://images.ctfassets.net/kftzwdyauwt9/3hUGLn3ypllZ0oa01qOYVq/28e8188e6f11b84c3e876569d492734f/Blossom_Light.svg?w=3840&q=90",
+      "primary_page": "https://openai.com/brand/",
+      "export_note": "Exact original black Blossom path isolated from primary brand SVG; only viewBox tightened. Original guide SVG preserved as chatgpt-blossom.svg. XML namespace prefixes normalized for HTML image rendering; vector paths unchanged.",
+      "file_sha256": "8524928826f32cc04f296ad5d8b540f6bf45e5ca76cbff3e60f17cf4b9acef6a"
+    },
+    {
+      "id": "claude",
+      "identity": "Anthropic Claude Spark, Clay",
+      "file": "claude.svg",
+      "source_url": "https://anthropic.com/press-kit",
+      "primary_page": "https://www.anthropic.com/news",
+      "archive_path": "Anthropic media resources/Anthropic logos/Claude logos/3 Claude Spark/SVG/Claude Spark - Clay.svg",
+      "export_note": "Original SVG extracted unchanged from official press-kit ZIP.",
+      "file_sha256": "6d53db4be375e899c937c26cf16684a80d6e869b1928d72b37748bef2560e219"
+    },
+    {
+      "id": "gemini",
+      "identity": "Google Gemini current aurora sparkle",
+      "file": "gemini.svg",
+      "source_url": "https://www.gstatic.com/lamda/images/gemini_sparkle_aurora_33f86dc0c0257da337c63.svg",
+      "primary_page": "https://gemini.google.com/",
+      "export_note": "Original og:logo SVG downloaded unchanged.",
+      "file_sha256": "f56df33f86dc0c0257da337c63bf7ad68c0a1b27b796ec707e147984351bccb3"
+    },
+    {
+      "id": "hermes",
+      "identity": "Nous Research Hermes Agent app icon",
+      "file": "hermes.svg",
+      "source_url": "https://raw.githubusercontent.com/NousResearch/hermes-agent/main/assets/icon-master.svg",
+      "primary_page": "https://github.com/NousResearch/hermes-agent",
+      "export_note": "Original icon-master SVG downloaded unchanged. XML namespace prefixes normalized for HTML image rendering; vector paths unchanged.",
+      "file_sha256": "76124cfefd61da0fd2cddd6fd4909076e71591a4b29d145266491bc416febb76"
+    }
+  ]
+}

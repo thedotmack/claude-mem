@@ -23,6 +23,7 @@ export interface GracefulShutdownConfig {
   server: http.Server | null;
   sessionManager: ShutdownableService;
   mcpClient?: CloseableClient;
+  contextReader?: CloseableClient;
   dbManager?: CloseableDatabase;
   chromaMcpManager?: StoppableService;
 }
@@ -59,6 +60,10 @@ export async function performGracefulShutdown(config: GracefulShutdownConfig): P
       await config.chromaMcpManager!.stop();
       logger.info('SHUTDOWN', 'Chroma MCP connection stopped');
     });
+  }
+
+  if (config.contextReader) {
+    await cleanup('context reader', () => config.contextReader!.close());
   }
 
   if (config.dbManager) {
