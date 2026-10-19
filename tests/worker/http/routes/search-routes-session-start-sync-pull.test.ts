@@ -30,7 +30,7 @@ async function runSessionStart(socketLive: boolean) {
     }),
   };
   const sessionStore = {
-    db: { prepare: () => ({ get: () => ({ count: 0 }) }) },
+    db: { prepare: () => ({ get: () => ({ count: 0 }), finalize: () => {} }) },
     getWorkStateEntries: () => {
       events.push('render');
       return [];
