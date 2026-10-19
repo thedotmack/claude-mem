@@ -92,6 +92,69 @@
 .team-footnote { margin-top: 24px; max-width: 100ch; }
 .team-view .updates-banner { border: 1px solid #d5ceec; border-radius: 9px; background: #f7f5fc; padding: 14px 18px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: center; gap: 16px; font-size: 14px; }
 .team-view .updates-banner button { color: #534286; font-weight: 650; text-decoration: underline; }
+/* Shared work: make the task and next step lead, with context kept nearby. */
+.team-card .request-card-meta { margin-bottom: 12px; }
+.team-card h3 { margin-bottom: 8px; }
+.team-card-byline { margin-bottom: 12px; }
+.team-task-count { margin: 0 0 16px; }
+.team-card-summary { margin-bottom: 0; }
+.team-card-next { margin-top: 20px; padding: 14px 16px; border: 0; border-radius: 8px; background: #f5f3fa; }
+.team-card-next span { color: #5b497c; font-weight: 600; }
+.team-card-details > summary { justify-content: flex-start; color: #3c315c; font-weight: 600; }
+.team-card-details > summary::after { margin-left: auto; }
+.team-detail-count { color: var(--team-muted); font-size: 12px; font-weight: 400; }
+.team-card-details[open] > summary { background: #faf9fc; }
+.team-task-heading h4 { color: var(--team-ink); }
+.team-empty .team-secondary { margin-top: 18px; }
+/* Keep setup readable and let an expanded list become its own detail workspace. */
+.team-view .team-setup { max-width: 1120px; }
+.team-setup-intro { padding: 28px 32px 0; }
+.team-setup-options { grid-template-columns: minmax(0, 1.1fr) minmax(0, .9fr); margin-top: 28px; }
+.team-setup-option { padding: 0 32px 24px; }
+.team-setup-option > .team-secondary { margin-top: 18px; }
+.team-setup-option > .team-primary { margin: 8px 0 0; }
+.team-setup-footnote { padding: 20px 32px; }
+#team-workspace .team-controls { margin-bottom: 24px; }
+.team-view #team-cards { align-items: start; }
+.team-card:has(.team-card-details[open]) { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, .85fr) minmax(0, 1.15fr); align-items: start; }
+.team-card:has(.team-card-details[open]) .team-card-details { border-top: 0; border-left: 1px solid var(--team-line); }
+.team-card-details[open] > summary { margin-bottom: 4px; }
+.team-task-list { padding-top: 12px; }
+.team-task-list > li + li { margin-top: 24px; padding-top: 24px; }
+.team-task-detail { max-width: 72ch; }
+/* Keep secondary facts readable without competing with the work itself. */
+.team-page-heading h1 { font-size: 38px; line-height: 1.15; }
+.team-intro { max-width: 65ch; line-height: 1.6; }
+.team-setup-option > .team-kicker { font-size: 13px; line-height: 1.5; margin-bottom: 8px; }
+.team-setup-option h3 { font-size: 22px; line-height: 1.3; letter-spacing: -.015em; }
+.team-option-note { max-width: 64ch; }
+.team-card h3 { font-size: 23px; letter-spacing: -.02em; }
+.team-task-count, .team-detail-count, .team-task-status, .team-task-time, .team-finding .team-finding-meta { font-size: 13px; line-height: 1.5; }
+.team-card-summary, .team-card-next p { max-width: 68ch; }
+.team-card-details > summary { flex-wrap: wrap; row-gap: 4px; line-height: 1.5; }
+.team-task-heading { align-items: baseline; }
+.team-task-heading h4 { font-size: 17px; line-height: 1.4; }
+.team-task-detail { line-height: 1.65; }
+.team-task-detail strong { font-size: 13px; color: var(--team-muted); margin-bottom: 3px; }
+.team-finding p { line-height: 1.65; }
+.team-view .team-empty p { max-width: 75ch; }
+.team-view :is(a, button, input, select, summary):focus-visible { outline: 3px solid #7551bb; outline-offset: 3px; }
+.team-view :is(button, input, select), .team-card-details > summary { min-height: 44px; }
+.team-view a:not(.team-primary):not(.team-secondary):hover { text-decoration: underline; text-underline-offset: 3px; }
+.team-view button:disabled { opacity: .65; cursor: wait; }
+.team-card-details > summary:hover { background: #f4f1fa; }
+.team-card-details > summary { border-radius: 0 0 11px 11px; }
+.team-card-details[open] > summary { border-radius: 0; }
+.team-view .team-finding { background: #f8f9fc; }
+#team-workspace .team-finding summary { min-height: 32px; padding: 5px 0; }
+.team-connection:has(#team-health[data-state="error"]), .team-connection:has(#team-health[data-state="stale"]) { border-color: #e4c9b7; background: #fff8f2; }
+.team-connection #team-health[data-state="error"], .team-connection #team-health[data-state="stale"] { color: #824229; }
+.team-view .team-empty { border-style: solid; background: #fff; }
+.team-view .team-empty h3 { line-height: 1.35; }
+@media (max-width: 900px) {
+  .team-card:has(.team-card-details[open]) { display: flex; }
+  .team-card:has(.team-card-details[open]) .team-card-details { border-left: 0; border-top: 1px solid var(--team-line); }
+}
 @media (max-width: 800px) {
   .team-page-heading { align-items: flex-start; flex-direction: column; gap: 14px; }
   .team-page-heading h1 { font-size: 39px; }
@@ -111,4 +174,11 @@
   .team-task-list { padding: 0 20px 20px; }
   .team-task-heading { flex-direction: column; gap: 3px; }
   .team-view .updates-banner { align-items: flex-start; flex-direction: column; }
+  .team-page-heading h1 { font-size: 34px; }
+  .team-card-details > summary { display: grid; grid-template-columns: minmax(0, 1fr) auto; column-gap: 12px; }
+  .team-card-details > summary .team-detail-count { grid-column: 1; }
+  .team-card-details > summary::after { grid-column: 2; grid-row: 1 / span 2; }
+  .team-view .team-tools { gap: 10px 12px; }
+  .team-view .team-tools select { flex: 1; min-width: 0; }
+  .team-view .team-tools a { display: inline-flex; align-items: center; min-height: 44px; }
 }

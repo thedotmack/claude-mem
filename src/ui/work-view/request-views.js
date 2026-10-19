@@ -60,24 +60,37 @@ function nextCopy(row) {
   const hasSummary = row.humanCopy && ['current', 'outdated'].includes(row.copyState);
   return { label: hasSummary ? 'Next step' : 'Recorded next step', text: next };
 }
+const botIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M12 3v3m-1-3h2M5 10H3v7h2m14-7h2v7h-2"/><rect x="5" y="6" width="14" height="14" rx="4"/><path d="M8 15h.01M16 15h.01M9 17h6" stroke-linecap="round"/></svg>';
+const personIcon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="12" cy="7" r="3.5"/><path d="M5 21v-3a7 7 0 0 1 14 0v3" stroke-linecap="round"/></svg>';
+export function nextSteps(row, compact = false) {
+  const status = effectiveStatus(row);
+  // Free-text plans do not identify their actor. Icons only label the explicit
+  // recorded state and the available human handoff; they never assign the plan.
+  const recorded = status === 'checked' || row.nextSource === 'fallback' ? null : nextCopy(row);
+  const agent = status === 'ready' ? 'This request is reported complete.' : status === 'needs' ? 'Waiting for your input.' : null;
+  const human = status === 'ready' ? 'Review the result and recorded evidence.' : status === 'needs' ? 'Read the handoff, then continue in the original conversation.' : status === 'checked' ? 'You checked this version. Review again when new work arrives.' : null;
+  if (!recorded && !human) return '';
+  return `<div class="${compact ? 'card-next' : 'request-next'} next-steps"><${compact ? 'span' : 'h3'} class="${compact ? 'card-next-label' : 'next-steps-heading'}">What’s next</${compact ? 'span' : 'h3'}>${recorded ? `<div class="next-step-neutral"><span class="next-step-label">${esc(recorded.label)}</span><p>${esc(recorded.text)}</p></div>` : ''}${agent ? `<div class="next-step-person next-step-agent">${botIcon}<div><span class="next-step-label">Agent</span><p>${esc(agent)}</p></div></div>` : ''}${human ? `<div class="next-step-person next-step-human">${personIcon}<div><span class="next-step-label">You</span><p>${esc(human)}</p></div></div>` : ''}</div>`;
+}
 export function requestCards(rows, state) {
   return rows.map(row => {
-    const next = nextCopy(row), status = effectiveStatus(row);
+    const status = effectiveStatus(row);
     const route = personalRoute('request', { ...state, requestId: row.id, workId: null, from: state.view });
     const action = status === 'ready' ? 'Review result' : status === 'needs' ? 'Read handoff' : 'Open request';
     return `<article class="request-card work-card status-${esc(status)}${state.changed?.has(row.id) ? ' updated' : ''}" data-id="${esc(row.id)}" tabindex="-1"><a class="request-card-open" href="${esc(route)}" data-route aria-label="${esc(action)}: ${esc(row.title)}">
       <div class="request-card-meta">${badge(row)}<span>${time(row.updated)}${state.unread?.has(row.id) ? '<span class="new-dot">New update</span>' : ''}</span></div>
       <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><div class="card-update"><span class="card-update-label">${row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update'}</span><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div></div></div>
-      ${next ? `<div class="card-next"><span class="card-next-label">${esc(next.label)}</span><p>${esc(next.text)}</p></div>` : ''}
+      ${nextSteps(row, true)}
       <div class="request-card-footer"><div class="request-card-context"><div class="request-contributors" aria-label="Recorded contributors">${contributors(row.contributors)}</div><span class="card-project" title="${esc((row.projects || [row.project]).join(' · '))}">${esc(projectNames(row))}</span></div><span class="open-label">${action} ${chevron}</span></div>
     </a></article>`;
   }).join('');
 }
 
 export function requestList(rows, state) {
-  return `<div class="board-surface"><table class="work-table" aria-label="Requests"><thead><tr><th scope="col">Status</th><th scope="col">Request</th><th scope="col">Next step / outcome</th><th scope="col">Last update</th><th scope="col"><span class="sr-only">Open request</span></th></tr></thead><tbody>${rows.map(row => {
+  return `<div class="board-surface request-list-surface"><table class="work-table" aria-label="Requests"><thead><tr><th scope="col">Status</th><th scope="col">Request</th><th scope="col">What’s next / latest update</th><th scope="col">Last update</th><th scope="col"><span class="sr-only">Open request</span></th></tr></thead><tbody>${rows.map(row => {
     const route = personalRoute('request', { ...state, requestId: row.id, workId: null, from: 'list' });
-    return `<tr class="work-row" data-id="${esc(row.id)}"><td data-label="Status">${badge(row)}</td><td data-label="Request"><a class="request-title" href="${esc(route)}" data-route>${esc(row.title)}</a><p class="project-name">${esc(projectNames(row))}</p></td><td data-label="Next step / outcome"><p class="next-copy">${esc(nextCopy(row)?.text || row.activity)}</p>${copyNote(row)}</td><td data-label="Last update">${time(row.updated)}</td><td class="row-arrow"><a href="${esc(route)}" data-route aria-label="Open request: ${esc(row.title)}">${chevron}</a></td></tr>`;
+    const next = nextSteps(row, true), progressLabel = next ? 'What’s next' : (row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update');
+    return `<tr class="work-row" data-id="${esc(row.id)}"><td data-label="Status">${badge(row)}</td><td data-label="Request"><a class="request-title" href="${esc(route)}" data-route>${esc(row.title)}</a><p class="project-name">${esc(projectNames(row))}</p></td><td class="list-progress" data-label="${esc(progressLabel)}">${next || `<span class="list-copy-label">${esc(progressLabel)}</span><p class="next-copy">${esc(row.activity)}</p>`}${copyNote(row)}</td><td data-label="Last update">${time(row.updated)}</td><td class="row-arrow"><a href="${esc(route)}" data-route aria-label="Open request: ${esc(row.title)}">${chevron}</a></td></tr>`;
   }).join('')}</tbody></table></div>`;
 }
 
@@ -88,10 +101,10 @@ export function agentCards(rows, state) {
     agents.get(agent.id).requests.push(row);
   }
   return [...agents.values()].map(({ agent, requests }) => {
-    const latest = [...requests].sort((a, b) => b.updated - a.updated)[0];
+    const recent = [...requests].sort((a, b) => b.updated - a.updated), latest = recent[0];
     const route = personalRoute('agents', { ...state, agentId: agent.id, requestId: null, workId: null });
-    return `<article class="agent-card"><a class="agent-open" href="${esc(route)}" data-route><div class="agent-top"><span class="agent-avatar">${agent.icon ? `<img src="${esc(agent.icon)}" width="32" height="32" alt="">` : esc((agent.label || '?').slice(0, 1))}</span><div class="agent-identity"><h2>${esc(agent.label)}</h2><p>${esc(agent.agentType && !['main', 'default'].includes(agent.agentType) ? agent.agentType : 'Contributing to your requests')}</p></div>${time(latest.updated)}</div>${badge(latest)}<p class="agent-summary">${esc(latest.title)}</p><div class="agent-requests">${requests.slice(0, 2).map(row => `<p>${esc(row.activity)}</p>`).join('')}</div><div class="agent-footer"><span>${requests.length} human ${requests.length === 1 ? 'request' : 'requests'}</span><span class="open-label">View requests ${chevron}</span></div></a></article>`;
-  }).join('') || '<div class="empty-work"><h3>No contributors in this view</h3><p>Requests without recorded contributor identity remain in Cards and List.</p></div>';
+    return `<article class="agent-card"><a class="agent-open" href="${esc(route)}" data-route><div class="agent-top"><span class="agent-avatar">${agent.icon ? `<img src="${esc(agent.icon)}" width="32" height="32" alt="">` : esc((agent.label || '?').slice(0, 1))}</span><div class="agent-identity"><h2>${esc(agent.label)}</h2><p>${esc(agent.agentType && !['main', 'default'].includes(agent.agentType) ? agent.agentType : 'Recorded contributor')}</p></div>${time(latest.updated)}</div><div class="agent-latest"><span class="agent-section-label">Most recently updated request</span>${badge(latest)}<p class="agent-summary">${esc(latest.title)}</p><p class="agent-update">${esc(latest.activity)}</p>${copyNote(latest)}</div>${recent.length > 1 ? `<div class="agent-other-requests"><span class="agent-section-label">Also contributing to</span><p>${esc(recent[1].title)}</p>${recent.length > 2 ? `<span class="agent-more">+${recent.length - 2} more ${recent.length - 2 === 1 ? 'request' : 'requests'}</span>` : ''}</div>` : ''}<div class="agent-footer"><span>${requests.length} human ${requests.length === 1 ? 'request' : 'requests'}</span><span class="open-label">View requests ${chevron}</span></div></a></article>`;
+  }).join('') || `<div class="empty-work agent-empty"><h3>No contributors in this view</h3><p>Requests without a recorded contributor are still available in your list.</p><a class="agent-empty-link" href="${esc(personalRoute('list', { ...state, agentId: null }))}" data-route>Browse requests ${chevron}</a></div>`;
 }
 
 export function sourceDisclosure(urls, label = 'Original source') {
@@ -99,7 +112,7 @@ export function sourceDisclosure(urls, label = 'Original source') {
     const match = String(url).match(/^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/(\d+)$/);
     return match ? [`<button type="button" class="source-link" data-evidence-kind="${match[1]}" data-evidence-id="${match[2]}">Read ${match[1]} #${match[2]}</button>`] : [];
   }).join(' ');
-  return sources ? `<details class="source-details" data-evidence-record><summary>${esc(label)}</summary><div class="source-content">${sources}<pre class="raw-source" hidden></pre></div></details>` : '';
+  return sources ? `<details class="source-details" data-evidence-record data-detail-key="${esc(`source:${label}:${urls.join('|')}`)}"><summary>${esc(label)}</summary><div class="source-content">${sources}<pre class="raw-source" hidden></pre></div></details>` : '';
 }
 
 export function requestFacts(row) {
@@ -120,21 +133,24 @@ export function afterShip(row) {
   }).join('');
   const docs = links('documentation'), promo = links('promotion');
   const categories = (data.classifications || []).map(item => `<li>${esc(cleanText(item.text, 160))}${sources(item)}</li>`).join('');
+  if (!docs && !promo && !categories && !data.notes?.length) return '<section class="after-ship after-ship-empty"><h2>After ship</h2><p>No documentation, promotion material or classification recorded yet.</p></section>';
   return `<section class="after-ship"><h2>After ship</h2><p>Keep the documentation, promotion and classification with the work.</p><div class="after-ship-grid"><section class="after-ship-group"><h3>Documentation</h3>${docs ? `<ul>${docs}</ul>` : '<p class="empty-copy">No documentation linked yet.</p>'}</section><section class="after-ship-group"><h3>Promotion</h3>${promo ? `<ul>${promo}</ul>` : '<p class="empty-copy">No promotion material linked yet.</p>'}</section><section class="after-ship-group"><h3>Classification</h3>${categories ? `<ul>${categories}</ul>` : '<p class="empty-copy">Not classified yet.</p>'}</section></div>${(data.notes || []).map(note => `<div class="after-ship-note"><p>${esc(cleanText(note.text, 220))}</p>${sources(note)}</div>`).join('')}</section>`;
 }
 
 export function requestPage(row, state) {
-  return `<div class="request-page"><div class="request-heading"><h1 tabindex="-1">${esc(row.title)}</h1><div class="request-meta">${badge(row)}<span>${esc(projectNames(row))}</span>${time(row.updated)}</div>${requestFacts(row)}</div>
-    <section class="request-overview"><h2>Where it stands</h2><p>${esc(row.activity)}</p>${copyNote(row)}<p class="request-next"><strong>${esc(nextCopy(row)?.label || 'Next step')}:</strong> ${esc(nextCopy(row)?.text || row.next)}</p><details class="original-request"><summary>Original request</summary><div class="original-body"><p>${esc(row.original?.text)}</p>${sourceDisclosure([row.original?.url], 'Read full original')}</div></details></section>
-    <div class="section-heading"><h2>Work behind this request</h2></div><div class="workstream-list">${row.workstreams.map(work => `<article class="workstream-row"><a class="workstream-open" href="${esc(personalRoute('request', { ...state, requestId: row.id, workId: work.id }))}" data-route><div class="workstream-text"><h3>${esc(work.title)}</h3><p>${esc(work.summary)}</p><div class="request-contributors">${contributors(work.contributors)}</div></div>${badge({ status: work.status })}${chevron}</a></article>`).join('') || '<p class="empty-work">No linked workstreams have been recorded yet.</p>'}</div>
-    ${row.scopeUpdates?.length ? `<details class="original-request"><summary>Follow-ups to this request</summary><div class="original-body">${row.scopeUpdates.map(update => `<p>${esc(update.text)}</p>${sourceDisclosure([update.url])}`).join('')}</div></details>` : ''}
-    <div class="request-actions">${effectiveStatus(row) === 'ready' ? `<button type="button" class="button-primary" data-review="${esc(row.id)}">Review result</button>` : effectiveStatus(row) === 'checked' ? `<button type="button" class="button-secondary" data-undo="${esc(row.id)}">Undo check</button>` : ''}<button type="button" class="button-secondary" data-copy-handoff="${esc(row.id)}">Copy handoff</button><a class="source-link" href="/viewer">Memory &amp; sessions →</a></div><p class="dialog-note" id="handoff-feedback" role="status"></p><label class="sr-only" for="handoff-text">Handoff text to copy</label><textarea class="raw-source" id="handoff-text" readonly rows="9" hidden></textarea>${afterShip(row)}
+  return `<div class="request-page"><div class="request-heading"><h1 tabindex="-1">${esc(row.title)}</h1><div class="request-meta">${badge(row)}<span>${esc(projectNames(row))}</span>${time(row.updated)}</div></div>
+    <section class="request-overview"><h2>Where it stands</h2><p>${esc(row.activity)}</p>${copyNote(row)}${nextSteps(row)}</section>
+    <div class="request-actions">${effectiveStatus(row) === 'ready' ? `<button type="button" class="button-primary" data-review="${esc(row.id)}">Review result</button>` : effectiveStatus(row) === 'checked' ? `<button type="button" class="button-secondary" data-undo="${esc(row.id)}">Undo check</button>` : ''}<button type="button" class="button-secondary" data-copy-handoff="${esc(row.id)}">Copy handoff</button><a class="source-link" href="/viewer">Memory &amp; sessions →</a></div><p class="dialog-note" id="handoff-feedback" role="status"></p><label class="sr-only" for="handoff-text">Handoff text to copy</label><textarea class="raw-source" id="handoff-text" readonly rows="9" hidden></textarea>
+    <details class="original-request request-context" data-detail-key="${esc(`request:${row.id}:context`)}"><summary>Request context &amp; original</summary><div class="original-body">${requestFacts(row)}<h3>Original request</h3><p>${esc(row.original?.text || 'No original request text was recorded.')}</p>${sourceDisclosure([row.original?.url], 'Read full original')}</div></details>
+    <div class="section-heading"><h2>Work behind this request</h2></div><div class="workstream-list">${row.workstreams.map(work => `<article class="workstream-row"><a class="workstream-open" href="${esc(personalRoute('request', { ...state, requestId: row.id, workId: work.id }))}" data-route><div class="workstream-text"><h3>${esc(work.title)}</h3><p>${esc(work.summary)}</p><div class="request-contributors">${contributors(work.contributors)}</div></div>${badge({ status: work.status })}${chevron}</a></article>`).join('') || '<p class="workstream-empty">No linked workstreams have been recorded yet.</p>'}</div>
+    ${row.scopeUpdates?.length ? `<details class="original-request" data-detail-key="${esc(`request:${row.id}:followups`)}"><summary>Follow-ups to this request</summary><div class="original-body">${row.scopeUpdates.map(update => `<p>${esc(update.text)}</p>${sourceDisclosure([update.url])}`).join('')}</div></details>` : ''}
+    ${afterShip(row)}
   </div>`;
 }
 
 export function workstreamPage(row, work) {
   const activity = activityFor(work, null, 100);
-  return `<div class="records-page"><div class="request-heading"><h1 tabindex="-1">${esc(work.title)}</h1><div class="request-meta">${badge({ status: work.status })}<div class="request-contributors">${contributors(work.contributors)}</div></div></div><div class="records-intro"><p>${esc(work.summary)}</p></div><div class="section-heading"><h2>Recorded changes</h2></div><ul class="records-list">${activity.map(item => `<li><div class="record-meta">${time(item.atEpoch)}<span>${item.kind === 'work-state' ? 'Work update' : 'Observation'}</span></div><div class="record-copy"><p>${esc(item.title || item.detail)}</p>${item.detail && item.detail !== item.title ? `<p class="record-detail">${esc(item.detail)}</p>` : ''}</div>${sourceDisclosure([item.url])}</li>`).join('') || '<li>No detailed updates have been recorded yet.</li>'}</ul></div>`;
+  return `<div class="records-page"><div class="request-heading"><p class="workstream-parent">Part of ${esc(row.title)}</p><h1 tabindex="-1">${esc(work.title)}</h1><div class="request-meta">${badge({ status: work.status })}<div class="request-contributors">${contributors(work.contributors)}</div></div></div><div class="records-intro"><p>${esc(work.summary)}</p></div><div class="section-heading"><h2>Recorded changes</h2></div><ul class="records-list">${activity.map(item => `<li><div class="record-meta">${time(item.atEpoch)}<span>${item.kind === 'work-state' ? 'Work update' : 'Observation'}</span></div><div class="record-copy"><p>${esc(item.title || item.detail)}</p>${item.detail && item.detail !== item.title ? `<p class="record-detail">${esc(item.detail)}</p>` : ''}</div>${sourceDisclosure([item.url])}</li>`).join('') || '<li>No detailed updates have been recorded yet.</li>'}</ul></div>`;
 }
 
 // Goals: the owner's top priorities and open asks, each with the dated quotes

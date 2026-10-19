@@ -4,7 +4,7 @@ const $ = id => document.getElementById(id);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const field = (pairs, names) => names.map(name => pairs?.find(pair => pair[0] === name)?.[1]).find(value => typeof value === 'string' && value.trim()) || '';
 const statusLabel = value => ({ doing: 'In progress', 'in-progress': 'In progress', todo: 'To do', blocked: 'Blocked', 'needs-you': 'Needs you', 'needs-input': 'Needs you', 'waiting-on-user': 'Needs you', 'awaiting-approval': 'Needs you' })[String(value || '').toLowerCase()] || (value || 'Status not recorded');
-const detailLabel = key => ({ human_summary: 'Update', progress: 'Progress', next: 'Next', next_step: 'Next', outcome: 'Outcome', result: 'Result' })[key] || key;
+const detailLabel = key => ({ human_summary: 'Update', progress: 'Progress', next: 'Next', next_step: 'Next', next_action: 'Next', blocker: 'Blocker', blockers: 'Blockers', evidence: 'Evidence', outcome: 'Outcome', result: 'Result' })[key] || key;
 
 export function sharingDescription(team) {
   if (!team.broadcasting) return 'You are viewing shared work. Sharing from this computer is off.';
@@ -59,10 +59,12 @@ export function teamCardHtml(list, findings = new Map(), members = new Map(), op
   const summary = field(list.state, ['human_summary', 'progress', 'stage', 'phase']) || 'Open the recorded tasks to see the work and its next steps.';
   const next = field(list.state, ['next', 'next_step', 'next_action']) || list.tasks.map(task => field(task.details, ['next', 'next_step', 'next_action'])).find(Boolean);
   const activity = teamTaskActivity(list), count = activity.count;
-  return `<article class="request-card team-card" tabindex="-1"><div class="team-card-main"><div class="request-card-meta"><span class="team-card-state" data-task-state="${activity.state}"><span class="team-state-dot" aria-hidden="true"></span>${esc(activity.label)}</span>${timeMarkup(list.last_written_at)}</div><h3>${esc(list.name)}</h3><p class="team-task-count">${esc(count)}${recordedStatus ? ` · Recorded list status: ${esc(statusLabel(recordedStatus))}` : ''}</p><p class="team-card-summary">${esc(summary)}</p><div class="team-card-byline"><strong>${esc(list.display_name)}</strong><span>${esc(list.project)}</span></div>${next ? `<div class="team-card-next"><span>Next step</span><p>${esc(next)}</p></div>` : ''}</div><details class="team-card-details" data-list="${esc(key)}" ${open ? 'open' : ''}><summary>${esc(count)} · View details</summary><ol class="team-task-list">${list.tasks.map(task => `<li><div class="team-task-heading"><h4>${esc(task.name)}</h4><span class="team-task-status">${esc(statusLabel(task.status))}</span></div><span class="team-task-time">${timeMarkup(task.updated_at)}</span>${task.details.filter(([name, value]) => typeof value === 'string' && value.trim() && detailKeys.includes(name)).map(([name, value]) => `<p class="team-task-detail"><strong>${esc(detailLabel(name).replace(/_/g, ' '))}</strong>${esc(value)}</p>`).join('')}${task.finding_ids.map(id => findings.get(id)).filter(Boolean).map(finding => {
+  const recorded = `${list.tasks.length} recorded ${list.tasks.length === 1 ? 'task' : 'tasks'}`;
+  const findingCount = new Set(list.tasks.flatMap(task => task.finding_ids).filter(id => findings.has(id))).size;
+  return `<article class="request-card team-card" tabindex="-1"><div class="team-card-main"><div class="request-card-meta"><span class="team-card-state" data-task-state="${activity.state}"><span class="team-state-dot" aria-hidden="true"></span>${esc(activity.label)}</span>${timeMarkup(list.last_written_at)}</div><h3>${esc(list.name)}</h3><div class="team-card-byline"><strong>${esc(list.display_name)}</strong><span>${esc(list.project)}</span></div><p class="team-task-count">${esc(count)}${recordedStatus ? ` · Recorded list status: ${esc(statusLabel(recordedStatus))}` : ''}</p><p class="team-card-summary">${esc(summary)}</p>${next ? `<div class="team-card-next"><span>What’s next</span><p>${esc(next)}</p></div>` : ''}</div><details class="team-card-details" data-list="${esc(key)}" ${open ? 'open' : ''}><summary aria-label="View tasks and findings for ${esc(list.name)}"><span>View tasks${findingCount ? ' &amp; findings' : ''}</span><span class="team-detail-count">${esc(recorded)}${findingCount ? ` · ${findingCount} ${findingCount === 1 ? 'finding' : 'findings'}` : ''}</span></summary><ol class="team-task-list" aria-label="Recorded tasks">${list.tasks.map(task => `<li><div class="team-task-heading"><h4>${esc(task.name)}</h4><span class="team-task-status">${esc(statusLabel(task.status))}</span></div><span class="team-task-time">${timeMarkup(task.updated_at)}</span>${task.details.filter(([name, value]) => typeof value === 'string' && value.trim() && detailKeys.includes(name)).map(([name, value]) => `<p class="team-task-detail"><strong>${esc(detailLabel(name).replace(/_/g, ' '))}</strong>${esc(value)}</p>`).join('')}${task.finding_ids.map(id => findings.get(id)).filter(Boolean).map(finding => {
     const people = [...new Set(finding.member_ids.map(id => members.get(id) || 'Team member'))];
     return `<details class="team-finding" data-finding="${finding.id}"><summary>${esc(findingLabel(finding.type))}: ${esc(finding.title)}</summary>${finding.subtitle ? `<p>${esc(finding.subtitle)}</p>` : ''}${finding.narrative ? `<p>${esc(finding.narrative)}</p>` : ''}<p class="team-finding-meta">${esc(people.join(' · '))}${people.length ? ' · ' : ''}${timeMarkup(finding.created_at, 'Recorded')}</p></details>`;
-  }).join('')}</li>`).join('') || '<li>No open tasks are recorded in this shared list.</li>'}</ol></details></article>`;
+  }).join('')}</li>`).join('') || '<li>No tasks are recorded in this shared list.</li>'}</ol></details></article>`;
 }
 
 export async function readTeamResource(path, signal, { timeoutMs = 15000, fetcher = fetch } = {}) {
@@ -94,11 +96,13 @@ export function setupTeamView({ managedNavigation = false } = {}) {
   function paintHealth() {
     const health = $('team-health');
     const stale = state.lastReceived && teamReceiptIsStale(state.receivedAt);
-    health.dataset.state = state.currentError ? 'error' : stale ? 'stale' : state.loading ? 'connecting' : state.lastReceived ? 'live' : 'idle';
-    const message = state.currentError || (stale ? 'Shared updates stale. Checking for a fresh update…' : state.loading ? 'Checking your TeamBrain connection…' : state.lastReceived ? 'Shared updates connected' : 'TeamBrain is optional. My Work remains local and free.');
+    const connecting = state.loading || (state.inFlight && !state.board);
+    health.dataset.state = state.currentError ? 'error' : stale ? 'stale' : connecting ? 'connecting' : state.lastReceived ? 'live' : 'idle';
+    const message = state.currentError || (stale ? 'Shared updates stale. Checking for a fresh update…' : connecting ? 'Checking your TeamBrain connection…' : state.lastReceived ? 'Shared updates connected' : 'TeamBrain is optional. My Work remains local and free.');
+    $('team-cards').setAttribute('aria-busy', String(!state.board && connecting));
     if (health.textContent !== message) health.textContent = message;
     $('team-received').textContent = state.lastReceived ? `Last successful update ${relativeTime(state.lastReceived)} · ${new Date(state.lastReceived).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}` : 'No shared update received in this visit.';
-    $('team-last-error').hidden = !state.lastError;
+    $('team-last-error').hidden = !state.lastError || !!state.currentError;
     if (state.lastError) $('team-last-error').textContent = `Last connection issue at ${new Date(state.lastError.at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}: ${state.lastError.message}`;
     for (const element of document.querySelectorAll('[data-team-time]')) element.textContent = `${element.dataset.timePrefix} ${relativeTime(Number(element.dataset.teamTime))}`;
     for (const id of ['team-refresh', 'team-refresh-connected']) $(id).disabled = state.loading;
@@ -132,6 +136,7 @@ export function setupTeamView({ managedNavigation = false } = {}) {
       state.board = null; state.pending = null; state.signature = '';
       $('team-updates').replaceChildren(); renderBoard();
     }
+    else if (!state.board) renderBoard();
   }
   async function loadTeams() {
     const serial = ++state.serial;
@@ -163,6 +168,7 @@ export function setupTeamView({ managedNavigation = false } = {}) {
   async function loadBoard() {
     if (!state.active || !state.selected || state.inFlight) return;
     state.inFlight = true;
+    paintHealth();
     const selected = state.selected, serial = state.serial;
     try {
       const result = await read(`/api/teambrain/board?team_id=${encodeURIComponent(selected)}`, state.controller?.signal);
@@ -179,7 +185,7 @@ export function setupTeamView({ managedNavigation = false } = {}) {
         $('apply-team-updates').onclick = () => { state.board = state.pending; state.pending = null; $('team-updates').replaceChildren(); renderBoard(); $('shared-work-heading').focus({ preventScroll: true }); };
       } else { state.board = result; state.pending = null; $('team-updates').replaceChildren(); renderBoard(); }
     } catch (error) { if (state.active && serial === state.serial && selected === state.selected) failure(error); }
-    finally { if (serial === state.serial) state.inFlight = false; }
+    finally { if (serial === state.serial) { state.inFlight = false; paintHealth(); } }
   }
   function renderBoard() {
     const team = state.teams.find(item => item.id === state.selected);
@@ -189,7 +195,15 @@ export function setupTeamView({ managedNavigation = false } = {}) {
     const appUrl = new URL(state.appUrl); if (state.selected) appUrl.searchParams.set('team', state.selected);
     $('team-manage').href = appUrl.href;
     const board = state.board;
-    if (!board) { $('team-cards').innerHTML = '<div class="team-empty"><h3>No shared work loaded</h3><p>Refresh the connection or open Team settings. Your personal work remains available.</p></div>'; $('team-count').textContent = ''; return; }
+    $('team-cards').setAttribute('aria-busy', String(!board && state.loading));
+    const controls = document.querySelector('#team-workspace .team-controls');
+    if (controls) controls.hidden = !board || board.lists.length === 0;
+    if (!board) {
+      $('team-cards').innerHTML = state.currentError
+        ? '<div class="team-empty"><h3>Shared work could not be loaded</h3><p>Refresh to try again, or check your connection in Team settings. Your personal work remains available.</p></div>'
+        : '<div class="team-empty" role="status"><h3>Loading shared work…</h3><p>Checking the lists your team has chosen to share.</p></div>';
+      $('team-count').textContent = ''; return;
+    }
     const projects = [...new Set(board.lists.map(list => list.project))].sort();
     if (state.project && !projects.includes(state.project)) state.project = '';
     $('team-project').hidden = projects.length < 2;
@@ -201,7 +215,11 @@ export function setupTeamView({ managedNavigation = false } = {}) {
     const findings = new Map(board.findings.map(finding => [finding.id, finding]));
     const members = new Map(board.lists.map(list => [list.user_id, list.display_name]));
     const expandedFindings = new Set([...document.querySelectorAll('.team-finding[open]')].map(element => element.dataset.finding));
-    $('team-cards').innerHTML = lists.length ? lists.map(list => teamCardHtml(list, findings, members, open.has(JSON.stringify([list.user_id, list.project, list.name])))).join('') : '<div class="team-empty"><h3>No shared work in this view</h3><p>Only work your teammates chose to share appears here. Try another project or search.</p></div>';
+    $('team-cards').innerHTML = lists.length ? lists.map(list => teamCardHtml(list, findings, members, open.has(JSON.stringify([list.user_id, list.project, list.name])))).join('') : board.lists.length
+      ? '<div class="team-empty"><h3>No matching shared work</h3><p>Try a different name, project or task, or clear the filters to see all shared lists.</p><button type="button" class="team-secondary" id="team-clear-filters">Clear filters</button></div>'
+      : '<div class="team-empty"><h3>No shared lists yet</h3><p>Only work your teammates choose to share appears here. Check sharing in Team settings, or return when someone shares a list.</p></div>';
+    const clear = $('team-clear-filters');
+    if (clear) clear.onclick = () => { state.search = ''; state.project = ''; $('team-search').value = ''; renderBoard(); $('team-search').focus(); };
     for (const element of document.querySelectorAll('.team-finding')) if (expandedFindings.has(element.dataset.finding)) element.open = true;
   }
   if (!managedNavigation) {

@@ -98,7 +98,7 @@ describe('shared work presentation', () => {
   it('shows recorded status, contributor, project, handoff and linked finding details without dispatch actions', () => {
     const finding = { id: 7, type: 'collision', title: 'Overlapping edits', subtitle: 'Coordinate first', narrative: 'Two changes touch the same file.', member_ids: ['member-a'], created_at: '2026-10-17T09:58:00Z' };
     const html = teamCardHtml(list(), new Map([[7, finding]]), new Map([['member-a', 'Avery']]), true);
-    for (const text of ['Tasks: Needs you', 'Recorded list status: In progress', 'Avery', 'local-project', 'Next step', 'Check the screenshot', 'Needs you', 'Overlapping work', 'Two changes touch the same file.', 'data-team-time', '1 open task']) expect(html).toContain(text);
+    for (const text of ['Tasks: Needs you', 'Recorded list status: In progress', 'Avery', 'local-project', 'What’s next', 'Check the screenshot', 'Needs you', 'Overlapping work', 'Two changes touch the same file.', 'data-team-time', '1 open task']) expect(html).toContain(text);
     expect(html).toContain(' open>');
     expect(html).not.toContain('Mark checked');
     expect(html).not.toContain('Assign');
