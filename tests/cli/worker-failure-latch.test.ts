@@ -46,7 +46,7 @@ function recordFailure(dataDir: string, threshold: number, telemetryEnv: Record<
 
 /** Records one failure with telemetry printed to stderr instead of sent, and returns the hook_failed properties. */
 function recordFailureTelemetry(dataDir: string, threshold: number): Record<string, unknown> | null {
-  const result = recordFailure(dataDir, threshold, { CLAUDE_MEM_TELEMETRY: '1', CLAUDE_MEM_TELEMETRY_DEBUG: '1' });
+  const result = recordFailure(dataDir, threshold, { CLAUDE_MEM_TELEMETRY: '1', CLAUDE_MEM_TELEMETRY_DEBUG: '1', DO_NOT_TRACK: '0' });
   expect(result.exitCode).toBe(0);
   const line = new TextDecoder().decode(result.stderr)
     .split('\n')
