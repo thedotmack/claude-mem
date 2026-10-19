@@ -149,6 +149,42 @@ export interface TeamBrainMembership extends TeamBrainTeamRef {
   seatLimit: number | null;
 }
 
+export type TeamBoardValue = string | number | boolean | null;
+export type TeamBoardPair = [string, TeamBoardValue];
+export interface TeamBrainBoardTask {
+  name: string;
+  status: string | null;
+  details: TeamBoardPair[];
+  updated_at: string;
+  latest_feed_id: number;
+  finding_ids: number[];
+}
+export interface TeamBrainBoardList {
+  user_id: string;
+  display_name: string;
+  project: string;
+  name: string;
+  closed: boolean;
+  state: TeamBoardPair[];
+  state_updated_at: string | null;
+  last_written_at: string;
+  tasks: TeamBrainBoardTask[];
+  closed_task_count: number;
+}
+export interface TeamBrainBoardFinding {
+  id: number;
+  type: string;
+  title: string;
+  subtitle: string | null;
+  narrative: string | null;
+  member_ids: string[];
+  created_at: string;
+}
+export interface TeamBrainBoard {
+  lists: TeamBrainBoardList[];
+  findings: TeamBrainBoardFinding[];
+}
+
 type JsonObject = Record<string, unknown>;
 
 /** A request's answer, with the host it was sent to. */
@@ -182,6 +218,9 @@ function httpFailure(host: string, status: number, body: unknown): TeamBrainFail
   const detail = relayedLine(message || code);
   if (status === 404 && code === 'not_a_member') {
     return failure('not_a_member', 'this account is not in an active TeamBrain team', status);
+  }
+  if (status === 403 && code === 'team_inactive') {
+    return failure('refused', 'this TeamBrain team is not active', status);
   }
   if (status === 401 || status === 403) {
     return failure('refused', `${host} refused this install's sync credentials (HTTP ${status}${detail ? `: ${detail}` : ''})`, status);
@@ -353,6 +392,54 @@ export async function fetchTeamBrainStatus(
   const teams = result.value.teams.map(parseMembership);
   if (teams.some(team => team === null)) return unexpected(result.host, 'status');
   return { ok: true, value: teams as TeamBrainMembership[] };
+}
+
+/** Same consent-filtered board as the hosted app, using the install's sync identity. */
+export async function fetchTeamBrainBoard(
+  connection: TeamBrainConnection,
+  teamId: string,
+  timeoutMs: number,
+): Promise<TeamBrainResult<TeamBrainBoard>> {
+  const query = new URLSearchParams({ team_id: teamId });
+  const result = await callTeamBrain(connection, { method: 'GET', path: `/api/teambrain/cli/board?${query}` }, timeoutMs);
+  if (!result.ok) return result;
+  const board = parseTeamBrainBoard(result.value);
+  return board ? { ok: true, value: board } : unexpected(result.host, 'board');
+}
+
+/** Validate the shared board before a malformed remote reply reaches the local panel. */
+export function parseTeamBrainBoard(value: unknown): TeamBrainBoard | null {
+  if (!isJsonObject(value) || !Array.isArray(value.lists) || !Array.isArray(value.findings)) return null;
+  const text = (v: unknown): v is string => typeof v === 'string';
+  const nullableText = (v: unknown) => v === null || text(v);
+  const number = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+  const date = (v: unknown): v is string => text(v) && Number.isFinite(Date.parse(v));
+  const numbers = (v: unknown): v is number[] => Array.isArray(v) && v.every(number);
+  const pairs = (v: unknown): v is TeamBoardPair[] => Array.isArray(v) && v.every(pair => Array.isArray(pair) && pair.length === 2
+    && text(pair[0]) && (pair[1] === null || ['string', 'boolean', 'number'].includes(typeof pair[1])));
+  const lists: TeamBrainBoardList[] = [];
+  for (const raw of value.lists) {
+    if (!isJsonObject(raw) || !text(raw.user_id) || !text(raw.display_name) || !text(raw.project) || !text(raw.name)
+      || typeof raw.closed !== 'boolean' || !pairs(raw.state) || !(raw.state_updated_at === null || date(raw.state_updated_at))
+      || !date(raw.last_written_at) || !number(raw.closed_task_count) || !Array.isArray(raw.tasks)) return null;
+    const tasks: TeamBrainBoardTask[] = [];
+    for (const task of raw.tasks) {
+      if (!isJsonObject(task) || !text(task.name) || !nullableText(task.status) || !pairs(task.details) || !date(task.updated_at)
+        || !number(task.latest_feed_id) || !numbers(task.finding_ids)) return null;
+      tasks.push({ name: task.name, status: task.status as string | null, details: task.details, updated_at: task.updated_at, latest_feed_id: task.latest_feed_id, finding_ids: task.finding_ids });
+    }
+    lists.push({ user_id: raw.user_id, display_name: raw.display_name, project: raw.project, name: raw.name, closed: raw.closed,
+      state: raw.state, state_updated_at: raw.state_updated_at as string | null, last_written_at: raw.last_written_at,
+      tasks, closed_task_count: raw.closed_task_count });
+  }
+  const findings: TeamBrainBoardFinding[] = [];
+  for (const raw of value.findings) {
+    if (!isJsonObject(raw) || !number(raw.id) || !text(raw.type) || !text(raw.title) || !nullableText(raw.subtitle)
+      || !nullableText(raw.narrative) || !Array.isArray(raw.member_ids) || !raw.member_ids.every(text) || !date(raw.created_at)) return null;
+    findings.push({ id: raw.id, type: raw.type, title: raw.title, subtitle: raw.subtitle as string | null,
+      narrative: raw.narrative as string | null, member_ids: raw.member_ids, created_at: raw.created_at });
+  }
+  return { lists, findings };
 }
 
 async function postExpectingOk(

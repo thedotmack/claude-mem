@@ -662,6 +662,12 @@ after`;
       expect(input.a).toBe('keep <private>drop-1</private>');
     });
 
+    it('strips every tag form the string stripper accepts, including whitespace before the closing >', () => {
+      const input = { prompt: 'a <private>secret</private > b', meta: ['<private>x</private\t>'] };
+      expect(stripMemoryTagsFromJsonStrings(input)).toEqual({ prompt: stripMemoryTags(input.prompt), meta: [''] });
+      expect(JSON.stringify(stripMemoryTagsFromJsonStrings(input))).not.toContain('secret');
+    });
+
     it('leaves untagged strings byte-identical', () => {
       expect(stripMemoryTagsFromJsonStrings({ s: '\n  indented\n' })).toEqual({ s: '\n  indented\n' });
     });

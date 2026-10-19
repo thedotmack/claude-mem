@@ -122,10 +122,11 @@ describe('context query statement ownership', () => {
   for (const projects of [undefined, ['app']]) {
     it(`releases the observation statement after an execution error (${projects ? 'project-scoped' : 'house-wide'})`, () => {
       const store = setup();
-      store.db.exec("UPDATE observations SET concepts = 'invalid json'");
       const captured = captureStatements(store.db);
       try {
-        expect(() => queryObservationsNewest(store, config, { limit: 3, projects })).toThrow(/malformed JSON/);
+        // SQLite raises "datatype mismatch" when it steps a non-integer LIMIT.
+        const limit = 'not-a-number' as unknown as number;
+        expect(() => queryObservationsNewest(store, config, { limit, projects })).toThrow(/datatype mismatch/);
         expect(captured.statements).toHaveLength(1);
         expect(captured.statements[0].toString()).toBe('');
         store.db.exec('SELECT 1');

@@ -1161,6 +1161,79 @@ describe('CloudSync', () => {
   // substituted at push time.
   // ---------------------------------------------------------------------------
   describe('mutation outbox drain', () => {
+    function queueRemap(number: number, frozen = false): string {
+      const opUuid = `00000000-0000-4000-8000-${String(number).padStart(12, '0')}`;
+      const mutation = {
+        op: 'remap_project' as const,
+        where: { project: `old-${number}`, merged_into_project_is_null: true },
+        fields: { merged_into_project: `new-${number}` },
+      };
+      const canonical = frozen ? buildMutationOperation({
+        originDeviceId: 'device-fixture', mutationId: opUuid, entityRev: '1', mutation,
+      }) : null;
+      db.prepare(`
+        INSERT INTO sync_outbox (op_uuid, rev, body, canonical_body, operation_sha256, created_at_epoch)
+        VALUES (?, 1, ?, ?, ?, 1)
+      `).run(opUuid, JSON.stringify(mutation), canonical?.body ?? null, canonical?.operation_sha256 ?? null);
+      return opUuid;
+    }
+
+    it('isolates each project remap while preserving ordinary batching and mutation-before-content order', async () => {
+      const title = (name: string) => store.createSDKSession(`sess-${name}`, 'proj-x', 'p', name, 'claude');
+      title('before-one');
+      title('before-two');
+      queueRemap(1);
+      title('middle-one');
+      title('middle-two');
+      queueRemap(2, true);
+      queueRemap(3);
+      title('after');
+      seedObservation();
+
+      const { impl, calls } = makeFetchMock();
+      const sync = makeCloudSync(impl);
+      await sync.flush();
+
+      expect(calls.map(call => call.parsed.ops.map((op: any) => op.kind === 'mutation'
+        ? op.body.op === 'remap_project' ? op.body.where.project : op.body.fields.custom_title
+        : op.kind))).toEqual([
+        ['before-one', 'before-two'], ['old-1'], ['middle-one', 'middle-two'],
+        ['old-2'], ['old-3'], ['after'], ['observation'],
+      ]);
+      expect(outboxRows()).toEqual([]);
+      expect(pendingCount('observations')).toBe(0);
+      expect(sync.status().lastError).toBeNull();
+      sync.stop();
+    });
+
+    for (const failingCall of [1, 2]) {
+      it(`keeps unacknowledged mutations when request ${failingCall} fails around a remap boundary`, async () => {
+        store.createSDKSession('sess-before', 'proj-x', 'p', 'before', 'claude');
+        queueRemap(1);
+        store.createSDKSession('sess-after', 'proj-x', 'p', 'after', 'claude');
+        const queued = outboxRows().map(row => row.op_uuid);
+        const { impl, calls } = makeFetchMock(call => call === failingCall
+          ? new Response('temporarily unavailable', { status: 503 }) : undefined);
+        const sync = makeCloudSync(impl, {}, { backoffInitialMs: 600_000 });
+
+        await sync.flush();
+        expect(calls.length).toBe(failingCall);
+        expect(outboxRows().map(row => row.op_uuid)).toEqual(queued.slice(failingCall - 1));
+        expect(sync.status().quarantine.count).toBe(0);
+        expect(sync.status().lastError).toContain('503');
+        const failedBytes = calls[failingCall - 1].wireParsed.ops;
+
+        await sync.flush();
+        expect(calls[failingCall].wireParsed.ops).toEqual(failedBytes);
+        expect(calls.slice(failingCall).flatMap(call => call.parsed.ops.map((op: any) => op.origin_id)))
+          .toEqual(queued.slice(failingCall - 1));
+        expect(outboxRows()).toEqual([]);
+        expect(sync.status().quarantine.count).toBe(0);
+        expect(sync.status().lastError).toBeNull();
+        sync.stop();
+      });
+    }
+
     it('drains mutation ops before row kinds and deletes them on ack', async () => {
       store.createSDKSession('sess-title', 'proj-x', 'prompt', 'My Custom Title', 'claude');
       seedObservation();

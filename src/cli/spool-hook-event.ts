@@ -7,7 +7,7 @@ import { resolveDataDir } from '../shared/paths.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { loadFromFileOnce } from '../shared/hook-settings.js';
 import { selectRuntime } from '../services/hooks/runtime-selector.js';
-import { REMOTE_SPOOL_PROTOCOL_VERSION, REMOTE_SPOOL_TIMEOUT_MS, REMOTE_SPOOL_MAX_ENTRIES,
+import { REMOTE_SPOOL_PROTOCOL_VERSION, REMOTE_SPOOL_TIMEOUT_MS, REMOTE_SPOOL_REQUEST_TIMEOUT_MS, REMOTE_SPOOL_MAX_ENTRIES,
   usesRemoteHookSpool, remoteHookSpoolToken } from '../shared/hook-spool-remote.js';
 import { logger } from '../utils/logger.js';
 
@@ -38,13 +38,12 @@ export async function uploadRemoteHookSpool(): Promise<void> {
   await new HookSpool().drain(async entry => {
       attempted++;
       try {
-        const remaining = Math.max(1, deadline! - Date.now());
         const response = await workerHttpRequest('/api/spool/ingest', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ protocolVersion: REMOTE_SPOOL_PROTOCOL_VERSION, entry }),
-          timeoutMs: remaining,
-          idleTimeoutMs: remaining,
+          timeoutMs: REMOTE_SPOOL_REQUEST_TIMEOUT_MS,
+          idleTimeoutMs: REMOTE_SPOOL_REQUEST_TIMEOUT_MS,
         });
         if (!response.ok) {
           let rejection: unknown;
