@@ -31,7 +31,7 @@ const fixture = String.raw`
   } }));
   // These external boundaries are replaced so the fixture never reads host credentials or starts Claude.
   mock.module('./src/shared/EnvManager.ts', () => ({ buildIsolatedEnvWithFreshOAuth: async () => ({ PATH: process.env.PATH }) }));
-  mock.module('./src/shared/find-claude-executable.ts', () => ({ findClaudeExecutable: () => '/fixture/claude' }));
+  mock.module('./src/shared/find-claude-executable.ts', () => ({ findClaudeExecutable: () => '/fixture/claude', isClaudeExecutableUnspawnable: () => false }));
   const { KnowledgeAgent } = await import('./src/services/worker/knowledge/KnowledgeAgent.ts');
   const { CorpusStore } = await import('./src/services/worker/knowledge/CorpusStore.ts');
   const store = new CorpusStore();
