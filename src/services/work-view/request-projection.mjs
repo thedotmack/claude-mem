@@ -23,7 +23,7 @@ export function isHumanActionRequest(value) {
   if (/^(?:(?:please|just)\s+)?make sure (?:this|that|it|everything) (?:is |will be |keeps? )?(?:working|works|ok|okay|correct)(?:[.!\s]*)$/i.test(plain)) return false;
   if (/^you can (?:def(?:initely)? )?do (?:real )?tests?[,;.!\s]/i.test(plain) && !/\b(?:fix|build|create|implement|change|update|rename|remove|add)\b/i.test(plain)) return false;
   // Any language counts: once the exclusions above pass, two letters make a request.
-  return /\p{L}[^]*\p{L}/u.test(plain);
+  return /\p{L}.*\p{L}/u.test(plain);
 }
 
 export function humanRequestTitle(original) {
