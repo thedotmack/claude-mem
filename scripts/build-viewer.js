@@ -62,6 +62,9 @@ async function buildViewer() {
 
     const srcUiDir = path.join(rootDir, 'src/ui');
     const outputUiDir = path.join(rootDir, 'plugin/ui');
+    // The local My Work surface ships alongside the legacy memory viewer.
+    // Keep its fonts/icons local so an offline install can render immediately.
+    fs.cpSync(path.join(srcUiDir, 'work-view'), path.join(outputUiDir, 'work-view'), { recursive: true });
     const iconFiles = fs.readdirSync(srcUiDir).filter(file => file.startsWith('icon-thick-') && file.endsWith('.svg'));
     for (const file of iconFiles) {
       fs.copyFileSync(

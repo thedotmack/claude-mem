@@ -47,6 +47,7 @@ export interface TeamBrainMockState {
   teams: Array<Record<string, unknown>>;
   brief: MockReply;
   search: MockReply;
+  board: MockReply;
   membership: MockReply;
   leave: MockReply;
   projects: string[];
@@ -137,6 +138,7 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
           return json({ error: 'unauthorized' }, 401);
         }
         if (route === 'GET /api/teambrain/cli/status') return state.status ? reply(state.status, {}) : json({ teams: state.teams });
+        if (route === 'GET /api/teambrain/cli/board') return reply(state.board, { lists: [], findings: [] });
         if (route === 'POST /api/teambrain/cli/membership') return reply(state.membership, { ok: true });
         if (route === 'POST /api/teambrain/cli/leave') {
           const leftTeamId = (body as { team_id?: unknown } | null)?.team_id;
@@ -174,6 +176,7 @@ export async function startTeamBrainMock(overrides: Partial<TeamBrainMockState> 
     teams: [{ ...MOCK_TEAM, role: 'member', broadcasting: false, projects: null, seats_used: 2, seat_limit: 5 }],
     brief: {},
     search: {},
+    board: {},
     membership: {},
     leave: {},
     projects: ['proj-a', 'proj-b'],

@@ -1,0 +1,64 @@
+---
+title: "TeamBrain"
+description: "Bring your team's shared work beside your personal local workspace."
+---
+
+TeamBrain adds a shared workspace to Claude-Mem. Open **TeamBrain** beside
+**My Work** in the local viewer to see the work your teammates chose to share,
+with member and project attribution and linked findings about overlapping work.
+
+My Work remains free and local. Opening the team view does not turn on sharing,
+change the memory provider, or merge shared work into your private review queue.
+
+## Set up or join a team
+
+Choose **Set up TeamBrain** to see the current team plan and checkout at
+[cmem.ai/teambrain/start](https://cmem.ai/teambrain/start). Team owners can invite
+people from the cloud workspace.
+
+With an invitation, run:
+
+```bash
+npx claude-mem teambrain join '<invite-link>'
+```
+
+Sign in, approve the device, and choose which projects to share. The command
+keeps your observer and provider settings. It does not switch an install that
+already syncs as a different account.
+
+Return to the local viewer, choose **TeamBrain**, and refresh the connection.
+The membership summary shows your team and current sharing choice. An empty
+project selection means no projects; it is different from sharing all projects.
+
+## Understand the shared board
+
+The team view shows open shared work lists and their tasks. These are labeled
+**shared work** because a task or list is not necessarily a captured human
+request. It keeps that distinction from My Work's original-request cards.
+
+- See who shared a list and which project it belongs to.
+- Open a card for recorded task state, next steps and source-linked findings.
+- Filter by project or search the currently loaded shared work.
+- Apply incoming updates when ready; reading an open card preserves your place.
+
+The local panel does not assign work, send replies, or mark a teammate's task
+checked. Continue in the source conversation or open **Sharing settings** for
+the full cloud workspace, invitations and billing.
+
+## Keep control of sharing
+
+Each member controls broadcasting and project scope. My Work's local human
+review notes are not part of the shared board. The local UI uses the sync
+connection already approved for the install; it does not receive account tokens
+in the browser or forward browser cookies to the cloud.
+
+To inspect or change sharing from the terminal:
+
+```bash
+npx claude-mem teambrain status
+npx claude-mem teambrain share
+```
+
+If the team connection is interrupted, the panel labels the last received
+board. If membership or access is refused, it clears that shared board. Your
+personal local workspace remains available either way.
