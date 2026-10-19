@@ -1797,8 +1797,7 @@ function releaseHookFailureLock(token: string): void {
   }
 }
 
-function parseHookFailureState(raw: string): HookFailureState {
-  const parsed = JSON.parse(raw) as Partial<HookFailureState>;
+function parseHookFailureState(parsed: Partial<HookFailureState>): HookFailureState {
   return {
     consecutiveFailures: typeof parsed.consecutiveFailures === 'number' && Number.isFinite(parsed.consecutiveFailures)
       ? Math.max(0, Math.floor(parsed.consecutiveFailures))
@@ -1819,14 +1818,25 @@ function parseHookFailureState(raw: string): HookFailureState {
 }
 
 function readHookFailureState(): HookFailureState {
+  return readHookFailureStateWithWriter().state;
+}
+
+/**
+ * preLatchWriter: the file has no thresholdTripped field, so a claude-mem
+ * version older than the latch wrote it last. Its count can span an outage
+ * that started on that older version.
+ */
+function readHookFailureStateWithWriter(): { state: HookFailureState; preLatchWriter: boolean } {
   try {
-    return parseHookFailureState(readFileSync(getHookFailuresPath(), 'utf-8'));
+    const parsed = JSON.parse(readFileSync(getHookFailuresPath(), 'utf-8')) as Partial<HookFailureState>;
+    const state = parseHookFailureState(parsed);
+    return { state, preLatchWriter: state.consecutiveFailures > 0 && parsed.thresholdTripped === undefined };
   } catch {
     // [ANTI-PATTERN IGNORED]: the failure-counter state file is optional and
     // absent (ENOENT) on every hook run until the first worker failure, so
     // logging here would fire on effectively every healthy invocation; the
     // recovery is the zeroed default state below.
-    return { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false };
+    return { state: { consecutiveFailures: 0, lastFailureAt: 0, thresholdTripped: false }, preLatchWriter: false };
   }
 }
 
@@ -1981,8 +1991,10 @@ export async function recordWorkerUnreachable(): Promise<number> {
 
   let next: HookFailureState;
   let shouldEscalate = false;
+  let preLatchState = false;
   try {
-    const state = readHookFailureState();
+    const { state, preLatchWriter } = readHookFailureStateWithWriter();
+    preLatchState = preLatchWriter;
     next = {
       consecutiveFailures: state.consecutiveFailures + 1,
       lastFailureAt: Date.now(),
@@ -2012,6 +2024,7 @@ export async function recordWorkerUnreachable(): Promise<number> {
       error_mode: 'worker_unavailable',
       consecutive_failures: next.consecutiveFailures,
       threshold_tripped: true,
+      pre_latch_state: preLatchState,
     });
     // DIAGNOSTIC only (stderr, bypassing the hook's stderr buffer). This used
     // to be emitBlockingError, whose exit 2 blocked the user's prompt on

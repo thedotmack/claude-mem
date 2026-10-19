@@ -220,6 +220,7 @@ describe('scrubProperties', () => {
       error_mode: 'worker_unavailable',
       consecutive_failures: 3,
       threshold_tripped: true,
+      pre_latch_state: false,
     });
 
     expect(result).toEqual({
@@ -227,6 +228,7 @@ describe('scrubProperties', () => {
       error_mode: 'worker_unavailable',
       consecutive_failures: 3,
       threshold_tripped: true,
+      pre_latch_state: false,
     });
   });
 
