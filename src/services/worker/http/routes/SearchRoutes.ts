@@ -22,12 +22,15 @@ import {
   type ContextCacheKeys,
 } from '../../../../shared/context-cache.js';
 import type { ContextCacheService, ContextVariantRender } from '../../ContextCacheService.js';
+import type { ContextReadWorkerClient } from '../../../context/ContextReadWorkerClient.js';
+import type { WorkStateEntry } from '../../../sqlite/work-state.js';
 
 interface ContextInjectRender {
   /** The block with its time placeholders. */
   body: string;
   stats: ContextInjectStats | null;
   cacheable: boolean;
+  readKeys?: string[];
 }
 import { buildWorkStateContextSection } from '../../../context/sections/WorkStateRenderer.js';
 import { isWorkStateEnabled } from '../../../../shared/work-state-setting.js';
@@ -125,9 +128,10 @@ export class SearchRoutes extends BaseRouteHandler {
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> | null = null,
+    private contextCache: (Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> & Partial<Pick<ContextCacheService, 'invalidationGenerationNow'>>) | null = null,
     // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
     private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
+    private contextReader: ContextReadWorkerClient | null = null,
   ) {
     super();
   }
@@ -157,11 +161,11 @@ export class SearchRoutes extends BaseRouteHandler {
       ?? this.getCachedSettings().CLAUDE_MEM_CONTEXT_SHOW_LAST_MESSAGE) === 'true';
   }
 
-  private projectsHaveObservations(
+  private async projectsHaveObservations(
     sessionStore: ReturnType<SearchManager['getSessionStore']>,
     projects: string[],
     platformSource?: string,
-  ): boolean {
+  ): Promise<boolean> {
     const removalGeneration = this.contextCache?.removalGenerationNow();
     if (removalGeneration !== this.projectsKnownNonEmptyGeneration) {
       this.projectsKnownNonEmpty.clear();
@@ -171,12 +175,24 @@ export class SearchRoutes extends BaseRouteHandler {
     if (removalGeneration !== undefined && this.projectsKnownNonEmpty.has(cacheKey)) {
       return true;
     }
-    const observationCount = countObservationsByProjects(sessionStore, projects, platformSource);
-    if (observationCount > 0) {
-      if (removalGeneration !== undefined) this.projectsKnownNonEmpty.add(cacheKey);
+    const hasObservations = this.contextReader
+      ? await this.contextReader.hasObservations(projects, platformSource)
+      : countObservationsByProjects(sessionStore, projects, platformSource) > 0;
+    if (hasObservations) {
+      // The read awaited the context reader: a delete that landed meanwhile
+      // makes this positive stale, so only remember it for the same generation.
+      if (removalGeneration !== undefined && removalGeneration === this.contextCache?.removalGenerationNow()) {
+        this.projectsKnownNonEmpty.add(cacheKey);
+      }
       return true;
     }
     return false;
+  }
+
+  private async readWorkStateEntries(projects: string[]): Promise<WorkStateEntry[]> {
+    const store = this.searchManager.getSessionStore();
+    if (this.contextReader) return this.contextReader.workState(projects, store.getLocalSyncDeviceId());
+    return store.getWorkStateEntries(projects);
   }
 
   setupRoutes(app: express.Application): void {
@@ -355,7 +371,8 @@ export class SearchRoutes extends BaseRouteHandler {
         projects: [projectName],
         ...(platformSource ? { platformSource } : {})
       },
-      true  
+      true,
+      { execution: this.contextReader ? 'worker' : 'inline', reader: this.contextReader ?? undefined }
     );
 
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
@@ -383,7 +400,10 @@ export class SearchRoutes extends BaseRouteHandler {
     // A host that cannot run the project resolver itself (the OMP hook) sends
     // its cwd instead: read the keys the CLI context hook sends for that checkout.
     if (!projectsParam && hostCwd.trim()) {
-      projectsParam = getProjectContext(hostCwd).allProjects.join(',');
+      const resolvedProjects = this.contextReader
+        ? await this.contextReader.projectsForCwd(hostCwd)
+        : getProjectContext(hostCwd).allProjects;
+      projectsParam = resolvedProjects.join(',');
     }
     const forHuman = req.query.colors === 'true';
     const full = req.query.full === 'true';
@@ -410,6 +430,7 @@ export class SearchRoutes extends BaseRouteHandler {
     }
     // A delete that lands while this renders must not see its row written back to the cache.
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
+    const invalidationGenerationAtStart = this.contextCache?.invalidationGenerationNow?.();
     let rendered: ContextInjectRender;
     try {
       rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
@@ -447,16 +468,26 @@ export class SearchRoutes extends BaseRouteHandler {
     // chosen for this session: its variant is warmed instead, without a reply.
     const respondedAtEpochMs = Date.now();
     if (!full && this.contextCache) {
-      const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
-      if (showLastMessage) {
-        this.contextCache.warmVariant(keys);
-      } else {
-        this.contextCache.recordLiveRender(
-          keys,
-          { body: rendered.body, cacheable: rendered.cacheable },
-          respondedAtEpochMs,
-          removalGenerationAtRenderStart,
-        );
+      try {
+        const keys = contextCacheKeys(projects, platformSource, forHuman, hostCwd || undefined);
+        if (showLastMessage) {
+          await this.contextCache.warmVariant(keys, rendered.readKeys);
+        } else {
+          await this.contextCache.recordLiveRender(
+            keys,
+            {
+              body: rendered.body, cacheable: rendered.cacheable,
+              ...(rendered.readKeys ? { readKeys: rendered.readKeys } : {}),
+              ...(invalidationGenerationAtStart !== undefined ? { invalidationGenerationAtStart } : {}),
+            },
+            respondedAtEpochMs,
+            removalGenerationAtRenderStart,
+          );
+        }
+      } catch (error) {
+        logger.warn('CONTEXT_CACHE', 'Could not cache rendered context; serving the live result', {
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
 
@@ -478,7 +509,7 @@ export class SearchRoutes extends BaseRouteHandler {
       full: false,
       includePriorMessage: false,
     });
-    return { body: rendered.body, cacheable: rendered.cacheable };
+    return { body: rendered.body, cacheable: rendered.cacheable, ...(rendered.readKeys ? { readKeys: rendered.readKeys } : {}) };
   }
 
   /**
@@ -513,7 +544,7 @@ export class SearchRoutes extends BaseRouteHandler {
     );
     const workStateSection = forHuman || !workStateEnabled
       ? ''
-      : buildWorkStateContextSection(this.searchManager.getSessionStore().getWorkStateEntries(projects), 'placeholders');
+      : buildWorkStateContextSection(await this.readWorkStateEntries(projects), 'placeholders');
     const withWorkState = (text: string): string =>
       workStateSection && text ? `${workStateSection}\n\n${text}` : workStateSection || text;
 
@@ -527,7 +558,7 @@ export class SearchRoutes extends BaseRouteHandler {
       const sessionStore = this.searchManager.getSessionStore();
       // Memoized: skips the COUNT(*) query once any project in the set has
       // observations. Hot-path: PostToolUse fires after every Read/Edit.
-      if (!this.projectsHaveObservations(sessionStore, projects, platformSource)) {
+      if (!await this.projectsHaveObservations(sessionStore, projects, platformSource)) {
         const port = process.env.CLAUDE_MEM_WORKER_PORT ?? settings.CLAUDE_MEM_WORKER_PORT;
         const viewerUrl = getViewerBaseUrl(port);
         const hintBody = WELCOME_HINT_TEMPLATE
@@ -563,8 +594,8 @@ export class SearchRoutes extends BaseRouteHandler {
       }),
       timePlaceholders: true,
       includePriorMessage: request.includePriorMessage,
-    }, forHuman);
-    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable };
+    }, forHuman, { execution: this.contextReader ? 'worker' : 'inline', reader: this.contextReader ?? undefined });
+    return { body: withWorkState(contextResult.text), stats: contextResult.stats, cacheable, ...(contextResult.readKeys ? { readKeys: contextResult.readKeys } : {}) };
   }
 
   private handleSemanticContext = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {

@@ -21,6 +21,7 @@ import { writeJsonFileAtomic } from './atomic-json.js';
 import { formatHeaderDateTime } from './timeline-formatting.js';
 import { describeDuration } from './observer-health.js';
 import { logger } from '../utils/logger.js';
+import { workerData } from 'node:worker_threads';
 
 /**
  * A cached block older than this is not served: the worker that keeps it fresh
@@ -35,8 +36,12 @@ export const CONTEXT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
  * replaces placeholders with the nonce the body was rendered under. The nonce
  * is stored with the cached file and never appears in filled output.
  */
-export const CONTEXT_PLACEHOLDER_NONCE = randomBytes(6).toString('hex');
 const PLACEHOLDER_NONCE_PATTERN = /^[0-9a-f]{12}$/;
+const inheritedNonce: unknown = workerData && typeof workerData === 'object' ? workerData.contextPlaceholderNonce : undefined;
+if (inheritedNonce !== undefined && (typeof inheritedNonce !== 'string' || !PLACEHOLDER_NONCE_PATTERN.test(inheritedNonce))) {
+  throw new Error('Invalid inherited context placeholder nonce');
+}
+export const CONTEXT_PLACEHOLDER_NONCE = typeof inheritedNonce === 'string' ? inheritedNonce : randomBytes(6).toString('hex');
 
 function headerTimePlaceholderFor(nonce: string): string {
   return `⟦CMEM_NOW_HEADER:${nonce}⟧`;
