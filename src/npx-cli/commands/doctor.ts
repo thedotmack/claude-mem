@@ -6,7 +6,7 @@
  */
 
 import { existsSync, readFileSync, realpathSync } from 'fs';
-import { delimiter, isAbsolute, join, sep } from 'path';
+import { isAbsolute, join, posix as posixPath, win32 as windowsPath } from 'path';
 import { styleText } from 'node:util';
 import { IS_WINDOWS, marketplaceDirectory, readPluginVersion } from '../utils/paths.js';
 import { formatHostForUrl, getWorkerHost, getWorkerPort, resolvePluginRoot, type PluginRootResolution } from '../../shared/worker-utils.js';
@@ -282,12 +282,62 @@ export function marketplaceManifestCheck(marketplaceDir: string): CheckResult {
  * or local install of the CLI stays: hooks do reach it, and it is not the launcher.
  */
 function pathWithoutRunningCli(pathValue: string, platform: NodeJS.Platform, runningCliPath: string | undefined): string {
+  const platformPath = platform === 'win32' ? windowsPath : posixPath;
   const runningCli = runningCliPath ? realPathOrNull(runningCliPath) : null;
-  if (!runningCli || platform === 'win32' || !runningCli.includes(`${sep}_npx${sep}`)) return pathValue;
+  if (!runningCli || !runningCli.includes(`${platformPath.sep}_npx${platformPath.sep}`)) return pathValue;
   return pathValue
-    .split(delimiter)
-    .filter(directory => realPathOrNull(join(directory.trim(), 'claude-mem')) !== runningCli)
-    .join(delimiter);
+    .split(platformPath.delimiter)
+    .filter(directory => !directoryRunsCli(directory.trim(), platform, runningCli))
+    .join(platformPath.delimiter);
+}
+
+/**
+ * True when `claude-mem` in `directory` is the running CLI. On POSIX, npx's `node_modules/.bin/claude-mem` is a
+ * symlink to it. On Windows, npm writes `claude-mem.cmd` / `claude-mem.ps1` wrappers instead, whose script path
+ * points at that same file.
+ */
+function directoryRunsCli(directory: string, platform: NodeJS.Platform, runningCli: string): boolean {
+  if (!directory) return false;
+  if (platform !== 'win32') return realPathOrNull(join(directory, 'claude-mem')) === runningCli;
+  return ['claude-mem.cmd', 'claude-mem.ps1'].some((shimFileName) => {
+    const shimPath = windowsPath.join(directory, shimFileName);
+    let shimText: string;
+    try {
+      shimText = readFileSync(shimPath, 'utf-8');
+    } catch {
+      return false;
+    }
+    return windowsShimScriptPaths(shimPath, shimText).some((scriptPath) => realPathOrNull(scriptPath) === runningCli);
+  });
+}
+
+/**
+ * Script paths a Windows npm cmd-shim (`.cmd` / `.ps1`) launches, resolved
+ * against the shim's directory. npm's wrapper and `process.argv[1]` are
+ * different files: the wrapper is `claude-mem.cmd`, and argv is
+ * `dist/npx-cli/index.js`. Exported for tests.
+ */
+export function windowsShimScriptPaths(shimPath: string, shimText: string): string[] {
+  const shimDirectory = windowsPath.dirname(shimPath);
+  const targets: string[] = [];
+  const seen = new Set<string>();
+  const add = (scriptPath: string) => {
+    const trimmed = scriptPath.trim().replace(/^["']|["']$/g, '');
+    if (!trimmed || !/\.js$/i.test(trimmed)) return;
+    const resolved = windowsPath.isAbsolute(trimmed)
+      ? windowsPath.normalize(trimmed)
+      : windowsPath.normalize(windowsPath.join(shimDirectory, trimmed));
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    targets.push(resolved);
+  };
+
+  // cmd-shim: `"%_prog%"  "%dp0%\..\claude-mem\dist\npx-cli\index.js" %*`
+  for (const match of shimText.matchAll(/%dp0%\\+([^"%\r\n]+)/gi)) add(match[1]);
+  // cmd-shim .ps1: `& "node$exe" "$basedir/../claude-mem/dist/npx-cli/index.js" $args`
+  for (const match of shimText.matchAll(/\$basedir[\\/]+([^"'\s]+)/gi)) add(match[1]);
+  return targets;
 }
 
 function realPathOrNull(path: string): string | null {

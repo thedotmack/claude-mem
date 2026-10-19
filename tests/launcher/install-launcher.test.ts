@@ -23,7 +23,7 @@ import {
 } from '../../src/launcher/install-launcher.js';
 import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 import { bunCommonPaths } from '../../src/npx-cli/install/tool-path.js';
-import { hookLauncherCheck } from '../../src/npx-cli/commands/doctor.js';
+import { hookLauncherCheck, windowsShimScriptPaths } from '../../src/npx-cli/commands/doctor.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const projectRoot = path.resolve(__dirname, '../..');
@@ -667,7 +667,38 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
     expect(findExecutableOnPath('claude-mem', '/nope', 'darwin')).toBeNull();
   });
 
-  it.skipIf(process.platform !== 'win32')('reports an earlier npm .cmd shim on Windows, in PATHEXT order', () => {
+});
+
+describe('Windows cmd-shim script paths', () => {
+  it('resolves a cmd-shim %dp0% target and a pwsh $basedir target to the CLI script', () => {
+    const shimPath = 'C:\\cache\\_npx\\hash\\node_modules\\.bin\\claude-mem.cmd';
+    const cliScript = 'C:\\cache\\_npx\\hash\\node_modules\\claude-mem\\dist\\npx-cli\\index.js';
+    const cmdText = '"%_prog%"  "%dp0%\\..\\claude-mem\\dist\\npx-cli\\index.js" %*\r\n';
+    const ps1Text = '& "node$exe" "$basedir/../claude-mem/dist/npx-cli/index.js" $args\n';
+    expect(windowsShimScriptPaths(shimPath, cmdText)).toEqual([cliScript]);
+    expect(windowsShimScriptPaths(shimPath.replace(/\.cmd$/, '.ps1'), ps1Text)).toEqual([cliScript]);
+  });
+});
+
+describe.skipIf(process.platform !== 'win32')('doctor hook launcher row on Windows', () => {
+  function windowsHost(homeDirectory: string, environmentVariables: NodeJS.ProcessEnv): LauncherHostEnvironment {
+    return { homeDirectory, platform: 'win32', environmentVariables };
+  }
+
+  function writeProtocolCmd(cmdPath: string, printedVersion: string): void {
+    mkdirSync(path.dirname(cmdPath), { recursive: true });
+    writeFileSync(cmdPath, `@echo off\r\necho ${printedVersion}\r\n`);
+  }
+
+  function writeCmdShim(cmdPath: string, relativeScriptPath: string): void {
+    mkdirSync(path.dirname(cmdPath), { recursive: true });
+    writeFileSync(
+      cmdPath,
+      `@ECHO off\r\n"%_prog%"  "%dp0%\\${relativeScriptPath}" %*\r\n`,
+    );
+  }
+
+  it('reports an earlier npm .cmd shim, in PATHEXT order', () => {
     const scratchHome = makeScratchHome();
     const npmDirectory = path.join(scratchHome, 'npm');
     const launcherDirectory = path.join(scratchHome, 'launcher');
@@ -679,6 +710,47 @@ describe.skipIf(!isPosixHost)('doctor hook launcher row', () => {
       .toBe(path.join(npmDirectory, 'claude-mem.cmd'));
     expect(findExecutableOnPath('claude-mem', `${npmDirectory};${launcherDirectory}`, 'win32', '.EXE'))
       .toBe(path.join(launcherDirectory, 'claude-mem.exe'));
+  });
+
+  it('skips npx\'s claude-mem.cmd wrapper and reports the launcher', () => {
+    const scratchHome = makeScratchHome();
+    // npx runs packages from npm's cache, `<cache>\\_npx\\<hash>\\node_modules`.
+    const cliScript = path.join(scratchHome, '_npx', 'abc123', 'node_modules', 'claude-mem', 'dist', 'npx-cli', 'index.js');
+    const npxBinDirectory = path.join(scratchHome, '_npx', 'abc123', 'node_modules', '.bin');
+    mkdirSync(path.dirname(cliScript), { recursive: true });
+    writeFileSync(cliScript, 'console.log("13.41.0")\n');
+    writeCmdShim(path.join(npxBinDirectory, 'claude-mem.cmd'), '..\\claude-mem\\dist\\npx-cli\\index.js');
+    const launcherDirectory = path.join(scratchHome, 'launcher');
+    writeProtocolCmd(path.join(launcherDirectory, 'claude-mem.cmd'), String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(
+      windowsHost(scratchHome, { PATH: `${npxBinDirectory};${launcherDirectory}` }),
+      cliScript,
+    );
+
+    expect(row).toMatchObject({ status: 'ok', required: true });
+    expect(row.detail).toContain(path.join(launcherDirectory, 'claude-mem.cmd'));
+    expect(row.detail).toContain(`protocol ${LAUNCHER_PROTOCOL}`);
+  });
+
+  it('fails when a permanent claude-mem.cmd wrapper is the running CLI and hides the launcher', () => {
+    const scratchHome = makeScratchHome();
+    const cliScript = path.join(scratchHome, 'npm-global', 'node_modules', 'claude-mem', 'dist', 'npx-cli', 'index.js');
+    const globalBinDirectory = path.join(scratchHome, 'npm-global');
+    mkdirSync(path.dirname(cliScript), { recursive: true });
+    writeFileSync(cliScript, 'console.log("13.41.0")\n');
+    writeCmdShim(path.join(globalBinDirectory, 'claude-mem.cmd'), 'node_modules\\claude-mem\\dist\\npx-cli\\index.js');
+    const launcherDirectory = path.join(scratchHome, 'launcher');
+    writeProtocolCmd(path.join(launcherDirectory, 'claude-mem.cmd'), String(LAUNCHER_PROTOCOL));
+
+    const row = hookLauncherCheck(
+      windowsHost(scratchHome, { PATH: `${globalBinDirectory};${launcherDirectory}` }),
+      cliScript,
+    );
+
+    expect(row).toMatchObject({ status: 'fail', required: true });
+    expect(row.detail).toContain(path.join(globalBinDirectory, 'claude-mem.cmd'));
+    expect(row.detail).toContain('is not the claude-mem hook launcher');
   });
 });
 
