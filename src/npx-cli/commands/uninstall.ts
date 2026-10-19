@@ -418,6 +418,10 @@ export async function runUninstallCommand(): Promise<void> {
       const { uninstallT3Code } = await import('../../services/integrations/T3CodeInstaller.js');
       return uninstallT3Code();
     }},
+    { label: 'Hermes Agent memory provider', fn: async () => {
+      const { uninstallHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
+      return uninstallHermesIntegration();
+    }},
     { label: 'Pi memory', fn: async () => {
       const { uninstallPiExtension } = await import('../../services/integrations/PiInstaller.js');
       return uninstallPiExtension();
