@@ -85,7 +85,7 @@ export function requestCards(rows, state) {
     const action = status === 'ready' ? 'Review result' : status === 'needs' ? 'Read handoff' : 'Open request';
     return `<article class="request-card work-card status-${esc(status)}${state.changed?.has(row.id) ? ' updated' : ''}" data-id="${esc(row.id)}" tabindex="-1"><a class="request-card-open" href="${esc(route)}" data-route aria-label="${esc(action)}: ${esc(row.title)}">
       <div class="request-card-meta">${badge(row)}<span>${time(row.updated)}${state.unread?.has(row.id) ? '<span class="new-dot">New update</span>' : ''}</span></div>
-      <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><div class="card-update"><span class="card-update-label">${row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update'}</span><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div>${meter(row)}</div></div>
+      <div class="request-card-body"><div class="request-card-copy"><h2>${esc(row.title)}</h2><div class="card-update"><span class="card-update-label">${row.humanCopy && ['current', 'outdated'].includes(row.copyState) ? 'Latest update' : 'Latest recorded update'}</span><p class="request-card-summary">${esc(row.activity)}</p>${copyNote(row)}</div>${meter(row)}${productSummary(row)}</div></div>
       ${nextSteps(row, true)}
       <div class="request-card-footer"><div class="request-card-context"><div class="request-contributors" aria-label="Recorded contributors">${contributors(row.contributors)}</div><span class="card-project" title="${esc((row.projects || [row.project]).join(' · '))}">${esc(projectNames(row))}</span></div><span class="open-label">${action} ${chevron}</span></div>
     </a></article>`;
@@ -143,6 +143,64 @@ export function afterShip(row) {
   return `<section class="after-ship"><h2>After ship</h2><p>Keep the documentation, promotion and classification with the work.</p><div class="after-ship-grid"><section class="after-ship-group"><h3>Documentation</h3>${docs ? `<ul>${docs}</ul>` : '<p class="empty-copy">No documentation linked yet.</p>'}</section><section class="after-ship-group"><h3>Promotion</h3>${promo ? `<ul>${promo}</ul>` : '<p class="empty-copy">No promotion material linked yet.</p>'}</section><section class="after-ship-group"><h3>Classification</h3>${categories ? `<ul>${categories}</ul>` : '<p class="empty-copy">Not classified yet.</p>'}</section></div>${(data.notes || []).map(note => `<div class="after-ship-note"><p>${esc(cleanText(note.text, 220))}</p>${sources(note)}</div>`).join('')}</section>`;
 }
 
+const PRODUCT_LABELS = { artifact: 'Artifact', page: 'Page', document: 'Document', deployment: 'Preview', 'pull-request': 'Pull request', image: 'Image', video: 'Video', deck: 'Deck', spreadsheet: 'Spreadsheet', documentation: 'Docs', promotion: 'Promotion', link: 'Link' };
+const productLabel = kind => PRODUCT_LABELS[kind] || 'Link';
+
+// A web link opens as recorded; a local file opens only through its record.
+function productHref(product) {
+  if (product.path) return product.available && /^\/api\/work-view\/file\/[\w-]+\/\d+\/\d+$/.test(product.fileUrl || '') ? product.fileUrl : null;
+  try {
+    const url = new URL(product.url);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : null;
+  } catch { return null; }
+}
+
+function productPlace(product) {
+  if (product.path) return product.available ? product.path.split('/').slice(-2, -1)[0] || '' : 'File moved or deleted';
+  try { return new URL(product.url).hostname.replace(/^www\./, ''); } catch { return ''; }
+}
+
+/** One line for a card: what this request produced, by kind. */
+export function productSummary(row) {
+  const products = row.workProduct || [];
+  if (!products.length) return '';
+  const counts = new Map();
+  for (const product of products) counts.set(product.kind, (counts.get(product.kind) || 0) + 1);
+  const parts = [...counts].map(([kind, count]) => `${count > 1 ? `${count} ` : ''}${productLabel(kind)}${count > 1 && !/s$/.test(productLabel(kind)) ? 's' : ''}`);
+  return `<p class="card-products"><span class="card-products-label">Made</span> ${esc(parts.slice(0, 4).join(' · '))}${parts.length > 4 ? ` · ${parts.length - 4} more` : ''}</p>`;
+}
+
+/** Everything the request produced that a person can open. */
+export function workProduct(row) {
+  const products = row.workProduct || [];
+  if (!products.length) return '';
+  const tile = product => {
+    const href = productHref(product), image = product.kind === 'image' && href;
+    const body = `${image ? `<span class="product-thumb"><img src="${esc(href)}" alt="" loading="lazy"></span>` : ''}<span class="product-kind">${esc(productLabel(product.kind))}</span><span class="product-title">${esc(cleanText(product.title, 90))}</span><span class="product-place">${esc(productPlace(product))}</span>`;
+    return `<li class="product-tile${image ? ' has-thumb' : ''}${href ? '' : ' unavailable'}">${href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${body}</a>` : `<div>${body}</div>`}</li>`;
+  };
+  return `<section class="work-product"><div class="section-heading"><h2>Work product</h2><span class="section-count">${products.length}</span></div><ul class="product-grid">${products.map(tile).join('')}</ul><p class="dialog-note">Found in this request's recorded tool calls, file changes and work updates.</p></section>`;
+}
+
+const USAGE_LABELS = { 'in-use': 'In use', 'some-use': 'Some use', 'no-evidence': 'No evidence of use', unknown: 'Unknown' };
+const VALUE_LABELS = { high: 'High value', medium: 'Some value', low: 'Low value', unclear: 'Value unclear' };
+
+function outcomeEvidence(evidence = []) {
+  return evidence.length ? `<span class="outcome-evidence">${esc(evidence.slice(0, 3).join(' · '))}</span>` : '';
+}
+
+/** How released work landed, from the same review as the build story. */
+export function howItLanded(row) {
+  const outcome = row.progress?.outcome;
+  if (!outcome) return '';
+  const fact = (label, level, entry) => entry ? `<div><dt>${esc(label)}</dt><dd>${level ? `<strong>${esc(level)}</strong> ` : ''}${esc(entry.text)}${outcomeEvidence(entry.evidence)}</dd></div>` : '';
+  const regressions = outcome.regressions || [], changes = outcome.changes || [];
+  return `<section class="how-it-landed"><h2>How it landed</h2><dl class="outcome-facts">
+    ${fact('Landed', null, outcome.landed)}${fact('Usage', USAGE_LABELS[outcome.usage?.level], outcome.usage)}${fact('Value to us', VALUE_LABELS[outcome.value?.level], outcome.value)}
+    <div><dt>Regressions</dt><dd>${regressions.length ? `<ul>${regressions.map(item => `<li>${esc(item.text)}${item.fixedBy ? ` <span class="outcome-fixed">Fixed by ${esc(item.fixedBy)}</span>` : ' <span class="outcome-open">Not fixed yet</span>'}${outcomeEvidence(item.evidence)}</li>`).join('')}</ul>` : 'None found in memory.'}</dd></div>
+  </dl>${changes.length ? `<h3>Why it changed</h3><ol class="outcome-changes">${changes.map(change => `<li><strong>${esc(change.what)}</strong><p>${esc(change.why)}</p>${outcomeEvidence(change.evidence)}</li>`).join('')}</ol>` : ''}<p class="dialog-note">Reviewed from memory with the cited evidence. It is an assessment, separate from the recorded status.</p></section>`;
+}
+
 export function requestPage(row, state) {
   return `<div class="request-page"><div class="request-heading"><h1 tabindex="-1">${esc(row.title)}</h1><div class="request-meta">${badge(row)}<span>${esc(projectNames(row))}</span>${time(row.updated)}</div></div>
     <section class="request-overview"><h2>Where it stands</h2><p>${esc(row.activity)}</p>${copyNote(row)}${nextSteps(row)}</section>
@@ -150,7 +208,9 @@ export function requestPage(row, state) {
     <details class="original-request request-context" data-detail-key="${esc(`request:${row.id}:context`)}"><summary>Request context &amp; original</summary><div class="original-body">${requestFacts(row)}<h3>Original request</h3><p>${esc(row.original?.text || 'No original request text was recorded.')}</p>${sourceDisclosure([row.original?.url], 'Read full original')}</div></details>
     <div class="section-heading"><h2>Work behind this request</h2></div><div class="workstream-list">${row.workstreams.map(work => `<article class="workstream-row"><a class="workstream-open" href="${esc(personalRoute('request', { ...state, requestId: row.id, workId: work.id }))}" data-route><div class="workstream-text"><h3>${esc(work.title)}</h3><p>${esc(work.summary)}</p><div class="request-contributors">${contributors(work.contributors)}</div></div>${badge({ status: work.status })}${chevron}</a></article>`).join('') || '<p class="workstream-empty">No linked workstreams have been recorded yet.</p>'}</div>
     ${row.scopeUpdates?.length ? `<details class="original-request" data-detail-key="${esc(`request:${row.id}:followups`)}"><summary>Follow-ups to this request</summary><div class="original-body">${row.scopeUpdates.map(update => `<p>${esc(update.text)}</p>${sourceDisclosure([update.url])}`).join('')}</div></details>` : ''}
+    ${workProduct(row)}
     ${buildStory(row)}
+    ${howItLanded(row)}
     ${afterShip(row)}
   </div>`;
 }

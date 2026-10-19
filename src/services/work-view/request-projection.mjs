@@ -1,5 +1,7 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
+import { fileUrl, mergeProducts, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
+
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
   const requestSection = value.match(/^\s*#{1,2}\s+My request\s*:\s*(?:\r?\n)?([\s\S]*)$/im);
@@ -136,7 +138,27 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     request.updatedAtEpoch = Math.max(request.updatedAtEpoch, item.lastUpdateEpoch ?? 0);
   }
 
+  // Recorded work product joins a request through its conversation. A
+  // conversation split across several explicit requests proves none of them.
+  const requestsByConversation = new Map();
+  for (const request of requests.values()) for (const key of request.conversationKeys) {
+    if (!requestsByConversation.has(key)) requestsByConversation.set(key, []);
+    requestsByConversation.get(key).push(request);
+  }
+  const sessionsByMemory = new Map([...sessions.values()].filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
+  const recordedProducts = new Map();
+  const attach = (session, products) => {
+    const owners = requestsByConversation.get(conversationKey(session));
+    if (owners?.length !== 1 || !products.length) return;
+    if (!recordedProducts.has(owners[0])) recordedProducts.set(owners[0], []);
+    recordedProducts.get(owners[0]).push(...products);
+  };
+  for (const call of records.productCalls ?? []) attach(sessions.get(call.session_db_id), productsFromToolUse(call));
+  for (const observation of records.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
+
   for (const request of requests.values()) {
+    request.workProduct = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])])
+      .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : true }));
     const relatedSessions = [...sessions.values()].filter((session) => request.conversationKeys.includes(conversationKey(session)));
     const relatedIds = new Set(relatedSessions.map((session) => session.id));
     request.scopeUpdates = prompts.filter((prompt) => relatedIds.has(prompt.session_db_id) && !(request.original.source === 'user-prompt' && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber))

@@ -13,7 +13,7 @@ My Work groups records by **conversation**: one session's first substantive ask 
 CLI="bun ${CLAUDE_SKILL_DIR}/scripts/request-groups.mjs"
 ```
 
-It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story; the **Story** view shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
+It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; the **Story** view shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
 
 Default window: 14 days. Use the window the user asks for.
 
@@ -84,8 +84,14 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >    - `percent`: 0 not started · 10–30 exploring or planning · 40–70 building · 80–95 in review, PR open or awaiting release · 100 shipped only.
 >    - `startedAt` (earliest ask), `shippedAt` (only when shipped), `lastActivityAt`, as ISO dates.
 >    - `summary` (≤280 chars, what it delivers for the person), `narrative` (≤1200 chars: how the build went, including turns, rework and lessons), `milestones` (≤12, dated, each citing observation ids or PR numbers in `evidence`).
+>    - `outcome`, for any request that shipped or released something (omit it otherwise). Research it, then answer from evidence only; "no-evidence" and "unclear" are honest answers:
+>      - `landed`: `{text, at, evidence}` where and how it shipped: merged PR, release version, deploy, published page.
+>      - `usage`: `{level: in-use | some-use | no-evidence | unknown, text, evidence}`. Look for the owner or users coming back to it in later asks, observations of it running, analytics or logs the agents checked, issues filed against it.
+>      - `value`: `{level: high | medium | low | unclear, text, evidence}` for us: did later work build on it, did the owner praise, rely on or replace it, did it remove a cost or a chore.
+>      - `regressions` (≤10): `{text, at, fixedBy, evidence}` for anything it broke: later fix PRs or commits that name it, reverts, bug reports, the owner's corrections. `fixedBy` is null while unfixed.
+>      - `changes` (≤12): `{what, why, at, evidence}` for each meaningful change, with the WHY from the owner's own ask (quote it), the commit or PR message, or the incident that caused it. Never write a why you cannot cite.
 >    - `preferences` (≤10): how the owner likes to work with agents, taken ONLY from the owner's own asks shown by `show`. `quote` is verbatim; `kind` is `directive` | `correction` | `praise` | `frustration`. Skip pasted agent text, secrets, keys and tokens.
-> 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `preferences` and `evidence`. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
+> 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `outcome`, `preferences` and `evidence`. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
 >
 > Return the groups you recorded and any you could not, with the reason.
 
