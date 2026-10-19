@@ -44,7 +44,15 @@ export interface PreparedLaunch {
   args: string[];
   env: Record<string, string>;
   routeId: string;
+  launchId: string;
   launchBaseUrl: string;
+}
+
+/** What `wire run` does once the agent has exited. */
+export interface AfterAgentExit {
+  /** `GET /wire/launch?launchId=` → how many requests the launch relayed; null when the gateway cannot say. */
+  countLaunchRequests(launchId: string): Promise<number | null>;
+  writeErrorLine(line: string): void;
 }
 
 /**
@@ -175,7 +183,7 @@ export async function prepareAgentLaunch(
   for (const [name, template] of Object.entries(launch.env)) env[name] = template.replaceAll('{baseUrl}', agentBaseUrl);
   // The agent is the user's, not a claude-mem helper: its own hooks must record it.
   delete env.CLAUDE_MEM_INTERNAL;
-  return { executablePath, args, env, routeId, launchBaseUrl: agentBaseUrl };
+  return { executablePath, args, env, routeId, launchId, launchBaseUrl: agentBaseUrl };
 }
 
 /**
@@ -203,7 +211,17 @@ export async function runAgentThroughGateway(
   agentArguments: string[],
   dependencies: LaunchDependencies,
   captureSource: WireGatewayCaptureSource,
+  afterExit: AfterAgentExit,
 ): Promise<number> {
   const prepared = await prepareAgentLaunch(descriptor, agentArguments, dependencies, captureSource);
-  return dependencies.spawnAgent(prepared.executablePath, prepared.args, prepared.env, dependencies.cwd);
+  const exitCode = await dependencies.spawnAgent(prepared.executablePath, prepared.args, prepared.env, dependencies.cwd);
+  // An agent that ignores the base URL variable (Antigravity's agy with a
+  // Google sign-in, seen live) runs fine and records nothing: say so.
+  if (await afterExit.countLaunchRequests(prepared.launchId) === 0) {
+    afterExit.writeErrorLine(
+      `claude-mem: ${descriptor.name} sent no requests through the wire gateway, so nothing from this run was recorded. `
+      + `It likely used its own endpoint instead of ${descriptor.launch!.baseUrlVariable}${captureSource === 'native' ? ' (its claude-mem hooks may still have recorded it)' : ''}.`,
+    );
+  }
+  return exitCode;
 }

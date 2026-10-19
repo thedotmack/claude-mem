@@ -231,12 +231,26 @@ export async function runWireAgentCli(command: 'connect' | 'disconnect' | 'previ
         ensureGatewayRunning: () => runtime.startDaemon(),
         createLaunch: (agentId, cwd) => createLaunch(gatewayOrigin(runtime.config), agentId, cwd),
         spawnAgent: spawnAgentWithInheritedStdio,
-      }, captureSource);
+      }, captureSource, {
+        countLaunchRequests: (launchId) => countLaunchRequests(gatewayOrigin(runtime.config), launchId),
+        writeErrorLine: runtime.writeErrorLine,
+      });
     }
   }
 }
 
 /** `POST /wire/launch` on the running gateway, never through a proxy (direct-http.ts). */
+/** How many requests a launch relayed; null when the gateway does not answer or no longer knows the launch. */
+export async function countLaunchRequests(origin: string, launchId: string): Promise<number | null> {
+  const answer = await requestJsonDirectly<{ requestCount?: unknown }>({
+    url: `${origin}/wire/launch?launchId=${encodeURIComponent(launchId)}`,
+    method: 'GET',
+    timeoutMs: 5_000,
+  });
+  const requestCount = answer?.statusCode === 200 ? answer.body?.requestCount : undefined;
+  return typeof requestCount === 'number' ? requestCount : null;
+}
+
 export async function createLaunch(origin: string, agentId: string, cwd: string): Promise<string> {
   const answer = await requestJsonDirectly<{ launchId?: unknown; error?: { message?: string } }>({
     url: `${origin}/wire/launch`,

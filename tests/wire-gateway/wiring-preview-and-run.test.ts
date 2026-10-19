@@ -238,6 +238,7 @@ describe('wire run', () => {
     }));
     const gateway = await startWireGatewayForTest({ routesReloadCheckIntervalMs: 0 });
     const printedPath = join(box.root, 'pwd.txt');
+    const errorLines: string[] = [];
     try {
       const exitCode = await runWireAgentCli('run', ['cwd-stub-agent', '--cwd', box.home, '--capture', 'native', '--', '/bin/sh', '-c', 'pwd -P > "$0"; exit 7', printedPath], {
         config: { ...loadWireGatewayConfig(), host: '127.0.0.1', port: gateway.port },
@@ -246,9 +247,11 @@ describe('wire run', () => {
         startDaemon: async () => undefined,
         stopDaemon: async () => undefined,
         writeLine: () => undefined,
-        writeErrorLine: () => undefined,
+        writeErrorLine: (line) => errorLines.push(line),
       });
       expect(exitCode).toBe(7);
+      // The stub sent nothing through its launch: nothing was recorded, and it is said.
+      expect(errorLines.join('\n')).toContain('sent no requests through the wire gateway');
       expect(readFileSync(printedPath, 'utf-8').trim()).toBe(realpathSync(box.home));
       // A stub with no native integration would default to wire capture; the flag wins.
       expect(readWireGatewayRoutesFile().routes['cwd-stub-agent'].captureSource).toBe('native');

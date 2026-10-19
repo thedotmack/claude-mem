@@ -136,6 +136,10 @@ describe('wire identity through the relay', () => {
     // conversation under a new `wire run`); the launch still gives the folder.
     await post(`/r/claude/l/${launchId}/v1/messages`, simpleTurn, { 'x-claude-code-session-id': 'resumed-session' });
     expect(exchanges.at(-1)!.identity).toMatchObject({ sessionId: 'resumed-session', sessionSource: 'header', workDir: '/Users/me/launched' });
+    // `wire run` asks how many requests its launch carried once the agent exits.
+    const counted = await fetch(`${gateway.baseUrl}/wire/launch?launchId=${launchId}`);
+    expect(await counted.json()).toEqual({ requestCount: 2 });
+    expect((await fetch(`${gateway.baseUrl}/wire/launch?launchId=${'c'.repeat(26)}`)).status).toBe(404);
 
     // An unknown launch still relays, stripped, and falls back to what the request says.
     const unknown = await post(`/r/claude/l/${'b'.repeat(26)}/v1/messages`, simpleTurn);
@@ -145,7 +149,7 @@ describe('wire identity through the relay', () => {
   });
 
   it('POST /wire/launch refuses bad input', async () => {
-    expect((await fetch(`${gateway.baseUrl}/wire/launch`)).status).toBe(405);
+    expect((await fetch(`${gateway.baseUrl}/wire/launch`, { method: 'PUT' })).status).toBe(405);
     expect((await createLaunch({ agentId: 'aider', cwd: 'relative/dir' })).status).toBe(400);
     expect((await createLaunch({ agentId: 'Not An Id', cwd: '/x' })).status).toBe(400);
     expect((await createLaunch({ cwd: '/x' })).status).toBe(400);

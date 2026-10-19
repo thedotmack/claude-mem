@@ -61,6 +61,8 @@ export interface WireLaunch {
   cwd: string;
   createdAt: number;
   lastUsedAt: number;
+  /** Requests relayed through the launch; `wire run` warns when its agent sent none. */
+  requestCount: number;
 }
 
 export class WireLaunchRegistry {
@@ -83,17 +85,24 @@ export class WireLaunchRegistry {
       this.launches.delete(this.launches.keys().next().value!);
     }
     const now = this.now();
-    const launch: WireLaunch = { launchId: newLaunchId(), agentId: input.agentId, cwd: input.cwd, createdAt: now, lastUsedAt: now };
+    const launch: WireLaunch = { launchId: newLaunchId(), agentId: input.agentId, cwd: input.cwd, createdAt: now, lastUsedAt: now, requestCount: 0 };
     this.launches.set(launch.launchId, launch);
     return launch;
   }
 
-  /** The launch, touched so it stays alive; undefined when unknown or expired. */
+  /** The launch, without touching it; undefined when unknown or expired. */
+  peek(launchId: string): WireLaunch | undefined {
+    this.forgetExpired();
+    return this.launches.get(launchId);
+  }
+
+  /** The launch a request came through, touched so it stays alive and counted; undefined when unknown or expired. */
   use(launchId: string): WireLaunch | undefined {
     this.forgetExpired();
     const launch = this.launches.get(launchId);
     if (!launch) return undefined;
     launch.lastUsedAt = this.now();
+    launch.requestCount++;
     this.launches.delete(launchId);
     this.launches.set(launchId, launch);
     return launch;
@@ -122,14 +131,23 @@ function launchErrorResponse(status: number, type: string, message: string): Res
   return Response.json({ error: { type, message } }, { status });
 }
 
-/** `POST /wire/launch {agentId, cwd}` → `{launchId}`. Loopback callers only, in every listen mode. */
+/**
+ * `POST /wire/launch {agentId, cwd}` → `{launchId}`; `GET /wire/launch?launchId=`
+ * → `{requestCount}`. Loopback callers only, in every listen mode.
+ */
 export async function handleWireLaunchRequest(request: Request, server: Server<undefined>, registry: WireLaunchRegistry): Promise<Response> {
-  if (request.method !== 'POST') {
-    return launchErrorResponse(405, 'invalid_request_error', 'POST /wire/launch {"agentId","cwd"}');
+  if (request.method !== 'POST' && request.method !== 'GET') {
+    return launchErrorResponse(405, 'invalid_request_error', 'POST /wire/launch {"agentId","cwd"}, or GET /wire/launch?launchId=');
   }
   const peerAddress = server.requestIP(request)?.address ?? null;
   if (!peerAddress || !isLoopbackAddress(peerAddress)) {
     return launchErrorResponse(403, 'permission_error', 'claude-mem wire launches are made from this computer only');
+  }
+  if (request.method === 'GET') {
+    const launch = registry.peek(new URL(request.url).searchParams.get('launchId') ?? '');
+    return launch
+      ? Response.json({ requestCount: launch.requestCount })
+      : launchErrorResponse(404, 'not_found_error', 'no such launch (unknown or expired)');
   }
   const bodyRead = await readBoundedRequestBody(request, { maxRequestBytes: LAUNCH_REQUEST_MAX_BYTES, idleTimeoutMs: LAUNCH_REQUEST_IDLE_TIMEOUT_MS });
   if (bodyRead.kind !== 'read') {
