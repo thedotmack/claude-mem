@@ -11,6 +11,10 @@ const connection = { transportConnected: false, reconnecting: false, lastEventAt
 const labels = { all: 'All', needs: 'Needs you', working: 'In progress', quiet: 'No recent update', ready: 'Ready to check', checked: 'Checked', blocked: 'Blocked', todo: 'To do', unknown: 'Update recorded', closed: 'Closed', other: 'Other states' };
 const rowById = id => state.rows.find(row => row.id === id);
 const closeButton = '<button type="button" class="dialog-close" data-close aria-label="Close dialog">×</button>';
+let teamView;
+let lastWorkRoute = '#cards';
+let renderedHash = '';
+let pendingGoalFocus = null;
 // Existing bookmarked memory routes continue to open the preserved viewer.
 if (/^#\/?(?:sessions(?:\/|$)|session\/|observation\/|summary\/)/.test(location.hash)) location.replace(`/viewer${location.hash}`);
 function announce(text) { $('announcement').textContent = ''; requestAnimationFrame(() => { $('announcement').textContent = text; }); }
@@ -30,8 +34,26 @@ function focusedGoalSelector() {
 }
 function render() {
   const goalFocus = focusedGoalSelector();
-  const open = new Set([...document.querySelectorAll('details[open]')].map(element => element.dataset.updates));
   const openGoals = new Set([...document.querySelectorAll('details[open][data-goal]')].map(element => element.dataset.goal));
+  const goalsView = state.view === 'goals', teamActive = state.view === 'teambrain';
+  teamView.setActive(teamActive);
+  $('personal-workspace').hidden = goalsView || teamActive;
+  $('goals-workspace').hidden = !goalsView;
+  $('updates-banner').hidden = teamActive;
+  $('workspace-personal').setAttribute('aria-pressed', String(!goalsView && !teamActive));
+  $('workspace-goals').setAttribute('aria-pressed', String(goalsView));
+  $('workspace-team').setAttribute('aria-pressed', String(teamActive));
+  document.title = `${goalsView ? 'Goals' : teamActive ? 'TeamBrain' : 'My Work'} · claude-mem`;
+  if (goalsView) {
+    $('goals').innerHTML = goalsPanel(state.snapshot?.goals, { history: state.snapshot?.goalHistory, selected: state.goalsMonth, askFilter: state.goalsAskFilter })
+      || `<div class="goals-heading"><div><p class="eyebrow">Your priorities &amp; follow-through</p><h1 id="goals-heading" tabindex="-1">Goals</h1></div></div><div class="empty-work"><h2>${state.loaded ? 'No goals recorded yet' : 'Loading your goals…'}</h2><p>${state.loaded ? 'Your saved priorities and open asks will appear here.' : 'Reading your saved priorities from this computer.'}</p></div>`;
+    for (const element of $('goals').querySelectorAll('details[data-goal]')) if (openGoals.has(element.dataset.goal)) element.open = true;
+    if (goalFocus) $('goals').querySelector(goalFocus)?.focus({ preventScroll: true });
+    return;
+  }
+  if (teamActive) return;
+  lastWorkRoute = personalRoute(state.view, state);
+  const open = new Set([...document.querySelectorAll('details[open]')].map(element => element.dataset.updates));
   const projects = [...new Set(state.rows.flatMap(row => row.projects?.length ? row.projects : [row.project]).filter(Boolean))].sort((a, b) => a.localeCompare(b));
   if (state.project && !projects.includes(state.project)) state.project = '';
   $('project-filter').hidden = false;
@@ -43,7 +65,7 @@ function render() {
     counts[Object.hasOwn(labels, status) ? status : 'unknown']++;
     if (statusCategory(row) === 'other') counts.other++;
   }
-  $('status-tabs').innerHTML = Object.entries(labels).filter(([key]) => ['all', 'needs', 'working', 'quiet', 'ready', 'checked'].includes(key) || key === state.filter || (key !== 'other' && counts[key])).map(([key, label]) => `<button type="button" class="status-tab" data-filter="${key}" aria-pressed="${state.filter === key}">${label}<span class="tab-count${state.previousCounts[key] != null && state.previousCounts[key] !== counts[key] ? ' changed' : ''}">${counts[key]}</span></button>`).join('');
+  $('status-tabs').innerHTML = Object.entries(labels).filter(([key]) => key === 'all' || (state.loaded && (key === state.filter || (key !== 'other' && counts[key] > 0)))).map(([key, label]) => `<button type="button" class="status-tab" data-filter="${key}" aria-pressed="${state.filter === key}">${label}<span class="tab-count${state.previousCounts[key] != null && state.previousCounts[key] !== counts[key] ? ' changed' : ''}">${counts[key]}</span></button>`).join('');
   state.previousCounts = counts;
   const rows = visibleRows();
   $('work-heading').textContent = state.filter === 'all' ? 'All work' : labels[state.filter];
@@ -53,11 +75,6 @@ function render() {
   const detail = state.view === 'request';
   $('work-heading').parentElement.hidden = detail;
   $('personal-heading').hidden = detail;
-  const goals = goalsPanel(state.snapshot?.goals, { history: state.snapshot?.goalHistory, selected: state.goalsMonth, askFilter: state.goalsAskFilter });
-  $('goals').hidden = detail || !goals;
-  if (!detail) $('goals').innerHTML = goals;
-  for (const element of $('goals').querySelectorAll('details[data-goal]')) if (openGoals.has(element.dataset.goal)) element.open = true;
-  if (goalFocus && !detail) $('goals').querySelector(goalFocus)?.focus({ preventScroll: true });
   $('personal-toolbar').hidden = detail;
   $('status-tabs').hidden = detail;
   $('unlinked-work').hidden = detail || !state.unlinked.length;
@@ -104,27 +121,34 @@ const positions = new Map();
 function syncControls() {
   $('search').value = state.query; $('time-range').value = state.range; $('sort').value = state.sort;
 }
+function restorePosition(route) {
+  const position = positions.get(route);
+  const restore = position?.focus && [...document.querySelectorAll('[href]')].find(element => element.getAttribute('href') === position.focus);
+  (restore || (state.view === 'goals' ? $('goals-heading') : state.view === 'teambrain' ? $('team-heading') : document.querySelector('#work-grid h1') || $('work-heading')))?.focus({ preventScroll: true });
+  window.scrollTo(0, position?.scroll || 0);
+}
 function navigate(route, replace = false) {
+  if (route === location.hash) return;
   positions.set(location.hash, { scroll: window.scrollY, focus: document.activeElement?.closest('[href]')?.getAttribute('href') });
   if (replace) history.replaceState(null, '', route); else history.pushState(null, '', route);
+  renderedHash = location.hash;
   Object.assign(state, parsePersonalRoute(route)); syncControls();
   if (state.requestId) markRead(state.requestId);
   render();
-  const position = positions.get(route);
-  const restore = position?.focus && [...document.querySelectorAll('[href]')].find(element => element.getAttribute('href') === position.focus);
-  (restore || document.querySelector('#work-grid h1') || $('work-heading')).focus({ preventScroll: true });
-  window.scrollTo(0, position?.scroll || 0);
+  restorePosition(route);
 }
 function saveScope() {
   history.replaceState(null, '', personalRoute(state.view, state));
+  renderedHash = location.hash;
 }
-window.addEventListener('popstate', () => {
-  if (location.hash === '#teambrain') return;
+function readLocation() {
+  if (location.hash === renderedHash) return;
+  renderedHash = location.hash;
   Object.assign(state, parsePersonalRoute(location.hash)); syncControls(); render();
-  const position = positions.get(location.hash);
-  const restore = position?.focus && [...document.querySelectorAll('[href]')].find(element => element.getAttribute('href') === position.focus);
-  restore?.focus({ preventScroll: true }); window.scrollTo(0, position?.scroll || 0);
-});
+  restorePosition(location.hash);
+}
+window.addEventListener('popstate', readLocation);
+window.addEventListener('hashchange', readLocation);
 function toast(message, undo = null) {
   clearTimeout(state.toastTimer); $('toast').hidden = false;
   $('toast').innerHTML = `<span>${esc(message)}</span>${undo ? '<button type="button" id="undo-check">Undo</button>' : ''}<button class="toast-dismiss" type="button" id="dismiss-toast" aria-label="Dismiss notification">×</button>`;
@@ -157,11 +181,20 @@ function openConnection(service) {
   const name = service === 'ChatGPT' ? 'ChatGPT' : 'Claude.ai';
   dialog('connect-dialog', 'connect-content', `<div class="dialog-body"><div class="dialog-top"><span class="dialog-eyebrow">Optional CMEM Cloud setup</span>${closeButton}</div><h2 id="connection-title">Bring your memory to ${name}.</h2><p class="dialog-intro">Continue to the existing CMEM connection setup, sign in, and choose ${name}. The setup explains how to connect your chat app and local memory.</p><p class="dialog-note">Cloud sync can upload your saved prompts and observation narratives. Review the setup and sharing scope before enabling it. This local panel stays available without connecting.</p><div class="dialog-actions"><button type="button" class="button-secondary" data-close>Keep working locally</button><a class="button-primary" href="https://cmem.ai/connect?from=local-work" target="_blank" rel="noopener noreferrer">Continue to connection setup ↗</a></div></div>`);
 }
-function isReading() { return state.view === 'request' || state.busy || window.scrollY > 220 || !!document.querySelector('dialog[open], .work-card details[open]') || !!document.activeElement?.closest('#work-grid, .search-field, .status-tabs, #personal-toolbar, .view-switch'); }
+function isReading() { return state.view === 'request' || state.busy || window.scrollY > 220 || !!document.querySelector('dialog[open], .work-card details[open], #goals details[open]') || !!document.activeElement?.closest('#work-grid, .search-field, .status-tabs, #personal-toolbar, .view-switch, #goals'); }
 function apply(snapshot, force = false) {
   if (!force && state.rows.length && isReading()) {
+    pendingGoalFocus = focusedGoalSelector() || pendingGoalFocus;
     state.pending = snapshot; $('updates-banner').innerHTML = '<div class="updates-banner"><span><strong>New work updates are ready.</strong> Your place is saved.</span><button type="button" id="apply-updates">Show updates</button></div>';
-    $('apply-updates').onclick = () => { if (state.pending) apply(state.pending, true); focusCurrentWork(state.requestId); announce('New work updates applied.'); };
+    $('apply-updates').onclick = () => {
+      const goalFocus = focusedGoalSelector() || pendingGoalFocus, scroll = window.scrollY;
+      if (state.pending) apply(state.pending, true);
+      if (state.view === 'goals') {
+        ((goalFocus && $('goals').querySelector(goalFocus)) || $('goals-heading'))?.focus({ preventScroll: true });
+        window.scrollTo(0, scroll);
+      } else focusCurrentWork(state.requestId);
+      announce('New work updates applied.');
+    };
     return;
   }
   const previous = new Map(state.rows.map(row => [row.id, contentSignature(row)]));
@@ -171,7 +204,7 @@ function apply(snapshot, force = false) {
     if (state.rows.length && (!content.has(row.id) || content.get(row.id) !== row.contentFingerprint)) state.unread.add(row.id);
     if (state.rows.length) state.changed.add(row.id);
   }
-  state.rows = result.rows; state.unlinked = result.unlinked; state.pending = null; $('updates-banner').replaceChildren(); render();
+  state.rows = result.rows; state.unlinked = result.unlinked; state.pending = null; pendingGoalFocus = null; $('updates-banner').replaceChildren(); render();
 }
 function renderConnection() {
   const status = getConnectionStatus({ ...connection, now: performance.now(), wallNow: Date.now() });
@@ -216,7 +249,6 @@ document.addEventListener('click', async event => {
   const route = event.target.closest('a[data-route]');
   if (route && event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey) {
     event.preventDefault();
-    if (route.classList.contains('brand') && $('personal-workspace').hidden) $('workspace-personal').click();
     navigate(route.getAttribute('href')); return;
   }
   const target = event.target.closest('button'); if (!target) return;
@@ -263,9 +295,15 @@ $('search').addEventListener('input', event => { state.query = event.target.valu
 $('time-range').addEventListener('change', event => { state.range = event.target.value; saveScope(); render(); });
 $('project-filter').addEventListener('change', event => { state.project = event.target.value; saveScope(); render(); $('project-filter').focus({ preventScroll: true }); });
 $('sort').addEventListener('change', event => { state.sort = event.target.value; saveScope(); render(); });
+$('skip-to-content').addEventListener('click', event => { event.preventDefault(); $('main').focus(); });
 for (const item of document.querySelectorAll('dialog')) item.addEventListener('click', event => { if (event.target === item) { const rect = item.getBoundingClientRect(); if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) item.close(); } });
 Object.assign(state, parsePersonalRoute(location.hash)); syncControls();
-if (location.hash !== '#teambrain') history.replaceState(null, '', personalRoute(state.view, state));
+history.replaceState(null, '', personalRoute(state.view, state));
+renderedHash = location.hash;
+teamView = setupTeamView({ managedNavigation: true });
+$('workspace-personal').onclick = () => navigate(lastWorkRoute);
+$('workspace-goals').onclick = () => navigate('#goals');
+$('workspace-team').onclick = () => navigate('#teambrain');
 render();
 refresh().catch(() => { state.failed = true; renderConnection(); render(); });
 const stream = new EventSource('/api/work-view/events');
@@ -301,6 +339,3 @@ const ageTimer = setInterval(() => {
 fetch('/api/sync/status', { cache: 'no-store' }).then(response => response.ok ? response.json() : Promise.reject()).then(sync => { $('sync-state').textContent = sync.configured ? 'Cloud sync configured · local viewing remains independent' : 'Cloud sync not connected · optional'; }).catch(() => { $('sync-state').textContent = 'Cloud sync status unavailable · local viewing remains independent'; });
 window.addEventListener('pagehide', () => { stream.close(); clearInterval(timer); clearInterval(ageTimer); });
 window.addEventListener('pageshow', event => { if (event.persisted) location.reload(); });
-
-setupTeamView();
-$('workspace-personal').addEventListener('click', () => { history.replaceState(null, '', personalRoute(state.view, state)); });

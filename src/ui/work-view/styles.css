@@ -257,7 +257,7 @@ a.back-button { font-size: 14px; text-decoration: none; }
 .goals { --metadata: #5f6b82; margin-bottom: 30px; padding: 26px 30px 28px; border: 1px solid var(--line); border-radius: 13px; background: var(--surface); box-shadow: 0 2px 7px #38447a03; }
 .goals-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 20px; margin-bottom: 10px; }
 .goals-heading .eyebrow { margin-bottom: 6px; }
-.goals-heading h2 { font-size: 30px; letter-spacing: -.035em; }
+.goals-heading :is(h1, h2) { font-size: 30px; line-height: 1.2; letter-spacing: -.035em; }
 .goals-summary { color: var(--muted); font-size: 16px; line-height: 1.55; max-width: 110ch; overflow-wrap: anywhere; }
 .goals-overview { display: grid; gap: 24px; margin-top: 24px; }
 .goals-overview-split { grid-template-columns: minmax(0, 2.2fr) minmax(240px, 1fr); gap: 32px; align-items: start; }
@@ -848,3 +848,55 @@ dialog::backdrop{backdrop-filter:none}
 /* Lifecycle color belongs to the indicator, never the request title. */
 .request-card,.agent-card,.request-card-open,.agent-open { color:var(--ink); }
 .request-card h2,.agent-card h2,.request-title { color:var(--ink); }
+
+/* Request, update, then next step: each card keeps one reading order. */
+.card-update { margin-top: 18px; }
+.card-update-label { display: block; color: var(--metadata); font-size: 13px; line-height: 1.4; }
+.card-update .request-card-summary { margin-top: 5px; }
+.card-next { padding: 12px 14px; margin: 0 0 18px; background: #f6f4fb; border-radius: 8px; }
+.card-next p { color: var(--muted); font-size: 15px; line-height: 1.5; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; overflow-wrap: anywhere; }
+.card-next-label { color: #62547f; font-size: 13px; line-height: 1.4; margin-bottom: 5px; }
+.request-card h2 { font-size: 22px; line-height: 1.32; letter-spacing: -.025em; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.request-card-summary { font-size: 16px; line-height: 1.55; -webkit-line-clamp: 3; }
+.request-card-meta time, .request-card-context .card-project { font-size: 13px; }
+.request-card-meta .status { font-size: 13px; }
+.request-grid { gap: 20px; }
+.request-card-open { padding: 22px 24px 16px; }
+.request-card-body { margin-bottom: 18px; }
+.request-card-footer { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 18px; padding-top: 12px; }
+.request-card-footer .open-label { min-height: 44px; font-size: 14px; font-weight: 600; }
+.request-card-context { display: grid; gap: 4px; margin: 0; }
+.request-card-context .card-project { max-width: 100%; }
+.request-card-context .request-contributors { gap: 6px 14px; }
+.request-card-meta > .status { color: #5f6b82; }
+.request-card-meta > .status-working { color: #6341ca; }
+.request-card-meta > .status-needs { color: #974d30; }
+.request-card-meta > .status-ready { color: var(--violet-ink); }
+.request-card-meta > .status-checked { color: #14734c; }
+.request-card .status-working .status-icon:after { animation: none; opacity: 0; }
+.request-card:has(.request-card-open:hover) { border-color: #b8a8d9; box-shadow: 0 3px 12px #34244f08; }
+.request-card-open:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+#updates-banner { position: sticky; top: 12px; z-index: 5; }
+.updates-banner { font-size: 14px; box-shadow: 0 3px 12px #34244f0a; }
+.updates-banner button { min-height: 44px; padding: 8px 14px; font-size: 14px; }
+#goals-workspace > .goals { margin-bottom: 0; }
+@media (max-width: 760px) {
+  .app-header { gap: 6px 16px; }
+  .app-header .brand { order: 0; }
+  .app-header .local-state { order: 1; width: auto; margin-left: auto; }
+  .app-header nav { order: 2; width: 100%; display: grid; grid-template-columns: auto auto auto minmax(0, 1fr); gap: 4px 10px; }
+  .app-header nav a, .app-header .workspace-link { font-size: 13px; min-height: 44px; }
+  .app-header nav a { min-width: 0; white-space: normal; line-height: 1.25; justify-self: end; }
+}
+@media (max-width: 720px) {
+  .request-grid { gap: 16px; }
+  .request-card-open { padding: 20px 18px 14px; }
+  .request-card-footer { gap: 8px 14px; }
+  .request-card-context { gap: 6px; }
+  .card-next { padding: 12px; }
+  .request-card h2 { font-size: 21px; }
+}
+@media (max-width: 420px) {
+  .request-card-footer { grid-template-columns: 1fr; gap: 4px; }
+  .request-card-footer .open-label { justify-self: start; margin-left: 0; }
+}

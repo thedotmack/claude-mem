@@ -11,15 +11,16 @@
   <script type="module" src="/work-view/app.js"></script>
 </head>
 <body data-mode="live">
-  <a class="skip" href="#main">Skip to my work</a>
+  <a class="skip" id="skip-to-content" href="#main">Skip to content</a>
   <header class="app-header">
     <a class="brand" href="#cards" data-route aria-label="Claude-Mem My Work"><img src="/work-view/assets/cmem-mark.svg" width="35" height="35" alt=""></a>
-    <nav aria-label="Main"><button type="button" class="workspace-link" id="workspace-personal" aria-pressed="true">My Work</button><button type="button" class="workspace-link" id="workspace-team" aria-pressed="false">TeamBrain</button><a href="/viewer">Memory &amp; settings</a></nav>
+    <nav aria-label="Main"><button type="button" class="workspace-link" id="workspace-personal" aria-pressed="true">My Work</button><button type="button" class="workspace-link" id="workspace-goals" aria-pressed="false">Goals</button><button type="button" class="workspace-link" id="workspace-team" aria-pressed="false">TeamBrain</button><a href="/viewer">Memory &amp; settings</a></nav>
     <div class="local-state"><span class="connection" id="connection" data-state="connecting" role="status"><span class="connection-dot" aria-hidden="true"></span><span id="connection-label">Connecting locally…</span></span></div>
 
   </header>
 
   <main id="main" class="page" tabindex="-1">
+    <div id="updates-banner"></div>
     <div id="personal-workspace">
     <div class="page-heading" id="personal-heading">
       <div><p class="eyebrow">Your workspace, at a glance</p><h1>My Work</h1><p class="subtitle">Your requests. What landed. What needs you.</p></div>
@@ -32,7 +33,7 @@
       <label class="sort-field"><span>Sort</span><select id="sort" aria-label="Sort requests"><option value="attention">Attention first</option><option value="latest">Latest update</option><option value="oldest">Oldest update</option><option value="title">Request A–Z</option></select></label>
     </div>
     <nav class="status-tabs" aria-label="Filter work" id="status-tabs"></nav>
-    <div id="updates-banner"></div><div id="scope-trail"></div>
+    <div id="scope-trail"></div>
     <section class="work-section" aria-labelledby="work-heading">
       <div class="section-heading sr-only"><h2 id="work-heading" tabindex="-1">All work</h2><span id="view-count"></span></div>
       <div id="work-grid" class="work-grid"></div>
@@ -40,9 +41,12 @@
     </section>
     <footer class="page-footer"><div><p id="source-note">Reading saved requests from this computer…</p><p id="reading-note">Working, reported complete, and human checked are separate states.</p><p><span id="sync-state">Cloud sync: checking configuration…</span> · <span id="received-time">Waiting for the local connection…</span></p></div><div class="connect-options" aria-label="Optional connections"><button type="button" data-connect="Claude.ai">Connect Claude.ai ↗</button><button type="button" data-connect="ChatGPT">Connect ChatGPT ↗</button></div></footer>
     </div>
+    <div id="goals-workspace" hidden>
+      <section id="goals" class="goals" aria-labelledby="goals-heading"></section>
+    </div>
     <section id="team-workspace" class="team-view" hidden aria-labelledby="team-heading">
       <header class="team-page-heading">
-        <div><p class="team-kicker">Optional shared workspace</p><h1 id="team-heading">TeamBrain</h1><p class="team-intro">See the work your team chose to share, and the next step you can help with.</p></div>
+        <div><p class="team-kicker">Optional shared workspace</p><h1 id="team-heading" tabindex="-1">TeamBrain</h1><p class="team-intro">See the work your team chose to share, and the next step you can help with.</p></div>
         <span class="team-local-note">Your personal work stays separate.</span>
       </header>
       <div class="team-connection">

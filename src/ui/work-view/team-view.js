@@ -86,7 +86,7 @@ export async function readTeamResource(path, signal, { timeoutMs = 15000, fetche
   } finally { clearTimeout(timeout); signal?.removeEventListener('abort', cancel); }
 }
 
-export function setupTeamView() {
+export function setupTeamView({ managedNavigation = false } = {}) {
   const state = { active: false, teams: [], selected: '', appUrl: 'https://cmem.ai/teambrain/app', board: null, pending: null, signature: '', search: '', project: '', controller: null, serial: 0, lastReceived: 0, receivedAt: null, lastError: null, currentError: '', loading: false, inFlight: false };
   let timer = null;
   let personalHash = location.hash === '#teambrain' ? '#cards' : location.hash || '#cards';
@@ -204,8 +204,10 @@ export function setupTeamView() {
     $('team-cards').innerHTML = lists.length ? lists.map(list => teamCardHtml(list, findings, members, open.has(JSON.stringify([list.user_id, list.project, list.name])))).join('') : '<div class="team-empty"><h3>No shared work in this view</h3><p>Only work your teammates chose to share appears here. Try another project or search.</p></div>';
     for (const element of document.querySelectorAll('.team-finding')) if (expandedFindings.has(element.dataset.finding)) element.open = true;
   }
-  $('workspace-personal').onclick = () => show(false);
-  $('workspace-team').onclick = () => show(true);
+  if (!managedNavigation) {
+    $('workspace-personal').onclick = () => show(false);
+    $('workspace-team').onclick = () => show(true);
+  }
   $('team-refresh').onclick = () => { state.signature = ''; void loadTeams(); };
   $('team-refresh-connected').onclick = () => { state.signature = ''; void loadTeams(); };
   $('team-select').onchange = event => { stop(); state.selected = event.target.value; state.lastReceived = 0; state.receivedAt = null; state.lastError = null; state.currentError = ''; state.board = null; state.pending = null; state.signature = ''; $('team-updates').replaceChildren(); renderBoard(); state.controller = new AbortController(); paintHealth(); void loadBoard(); startPolling(); };
@@ -217,9 +219,12 @@ export function setupTeamView() {
     if (state.selected) void loadBoard();
   });
   window.addEventListener('pagehide', stop);
-  window.addEventListener('popstate', () => {
-    const active = location.hash === '#teambrain';
-    if (active !== state.active) show(active, false);
-  });
-  if (location.hash === '#teambrain') show(true);
+  if (!managedNavigation) {
+    window.addEventListener('popstate', () => {
+      const active = location.hash === '#teambrain';
+      if (active !== state.active) show(active, false);
+    });
+    if (location.hash === '#teambrain') show(true);
+  }
+  return { setActive(active) { if (active !== state.active) show(active, false); } };
 }

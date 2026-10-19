@@ -38,7 +38,7 @@ describe('owner goals in My Work', () => {
 
   it('renders priorities and open asks with expandable, escaped evidence', () => {
     const html = goalsPanel(viewFor(snapshot).goals);
-    expect(html).toContain('<h2 id="goals-heading">Goals</h2>');
+    expect(html).toContain('<h1 id="goals-heading" tabindex="-1">Goals</h1>');
     expect(html).toContain('Last 31 days · 823 prompts you typed');
     expect(html).toContain('Top priorities');
     expect(html).toContain('Open asks');
