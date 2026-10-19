@@ -17,6 +17,7 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { logger } from '../../utils/logger.js';
 import { loadFromFileOnce } from '../../shared/hook-settings.js';
 import { shouldTrackProject } from '../../shared/should-track-project.js';
+import { isProjectExcluded } from '../../utils/project-filter.js';
 import { readStaleMarker } from '../../shared/oauth-token.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { proTrialLine } from '../../shared/pro-promo.js';
@@ -120,6 +121,44 @@ async function renderSessionStartFromServer(
   return { model, terminal: terminal ?? model };
 }
 
+/**
+ * The projects SessionStart reads. By default only this checkout's keys.
+ * With CLAUDE_MEM_CONTEXT_PROJECTS=all, every project in the local catalog
+ * (minus excluded ones), sorted so the context cache keys stay stable, with
+ * this checkout's keys last because the last key titles the rendered block.
+ * Any catalog failure falls back to this checkout. The server runtime has no
+ * local catalog, so it keeps this checkout.
+ */
+export async function resolveSessionStartProjects(
+  settings: { CLAUDE_MEM_CONTEXT_PROJECTS?: string; CLAUDE_MEM_EXCLUDED_PROJECTS?: string },
+  checkoutProjects: string[],
+  runtime: 'worker' | 'server',
+): Promise<string[]> {
+  if (settings.CLAUDE_MEM_CONTEXT_PROJECTS !== 'all') return checkoutProjects;
+  if (runtime === 'server') {
+    logger.debug('HOOK', 'CLAUDE_MEM_CONTEXT_PROJECTS=all is not supported in server runtime');
+    return checkoutProjects;
+  }
+  try {
+    const catalog = await executeWithWorkerFallback<{ projects?: unknown }>('/api/projects', 'GET', undefined, {
+      workerStartupTimeoutMs: HOOK_TIMEOUTS.POST_SPAWN_WAIT,
+      timeoutMs: 2_000,
+    });
+    if (isWorkerFallback(catalog) || !Array.isArray(catalog?.projects)) return checkoutProjects;
+    const excludedPatterns = settings.CLAUDE_MEM_EXCLUDED_PROJECTS ?? '';
+    const otherProjects = catalog.projects
+      .filter((project): project is string => typeof project === 'string' && project.length > 0)
+      .filter(project => !checkoutProjects.includes(project) && !isProjectExcluded(project, excludedPatterns))
+      .sort();
+    return [...otherProjects, ...checkoutProjects];
+  } catch (error) {
+    logger.debug('HOOK', 'Project catalog unavailable; SessionStart reads this checkout only', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return checkoutProjects;
+  }
+}
+
 export const contextHandler: EventHandler = {
   async execute(input: NormalizedHookInput): Promise<HookResult> {
     const emptyResult: HookResult = {
@@ -174,15 +213,13 @@ export const contextHandler: EventHandler = {
       settings.CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT === 'true'
       && input.platform !== 'codex';
 
-    // Opt-in: read every project's memory at startup. This checkout's keys stay
-    // last, because the last key titles the rendered block.
-    let scopeProjects = context.allProjects;
-    if (settings.CLAUDE_MEM_CONTEXT_PROJECTS === 'all') {
-      const catalog = await executeWithWorkerFallback<{ projects?: string[] }>('/api/projects', 'GET');
-      if (!isWorkerFallback(catalog) && Array.isArray(catalog?.projects)) {
-        scopeProjects = [...catalog.projects.filter(p => !context.allProjects.includes(p)), ...context.allProjects];
-      }
-    }
+    // Server runtime reads the shared server (plan-24 step 4). When the server
+    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
+    // exactly as the write hooks do, so reads and writes stay on one corpus.
+    const runtime = resolveRuntimeContext();
+    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
+
+    const scopeProjects = await resolveSessionStartProjects(settings, context.allProjects, runtime.runtime);
     const projectsParam = scopeProjects.join(',');
     const normalizedPlatformSource = input.platform
       ? normalizePlatformSource(input.platform)
@@ -199,11 +236,6 @@ export const contextHandler: EventHandler = {
     const apiPath = `/api/context/inject?projects=${encodeURIComponent(projectsParam)}${platformSourceParam}&cwd=${encodeURIComponent(cwd)}${sessionParam}`;
     const colorApiPath = input.platform === 'claude-code' ? `${apiPath}&colors=true` : apiPath;
 
-    // Server runtime reads the shared server (plan-24 step 4). When the server
-    // settings are incomplete, resolveRuntimeContext() falls back to the worker,
-    // exactly as the write hooks do, so reads and writes stay on one corpus.
-    const runtime = resolveRuntimeContext();
-    const serverRuntime = runtime.runtime === 'server' ? runtime : null;
     const serverRender = serverRuntime
       ? await renderSessionStartFromServer(
           serverRuntime,
