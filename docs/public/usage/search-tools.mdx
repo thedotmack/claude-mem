@@ -183,8 +183,11 @@ Step 3: get_observations(ids=[312, 489])
 Step 1: search(query="authentication", type="decision", limit=5)
   → Find decision observations
 
-Step 2: get_observations(ids=[<relevant_ids>])
-  → Get full decision rationale, trade-offs, facts
+Step 2: timeline(anchor=<relevant_id>, depth_before=3, depth_after=3)
+  → Review what led to and followed the decision
+
+Step 3: get_observations(ids=[<selected_ids>])
+  → Read the selected decision rationale, trade-offs, and facts
 ```
 
 ### Code Archaeology
@@ -225,8 +228,11 @@ Step 3: get_observations(ids=[<key_milestones>])
 Step 1: search(type="refactor", limit=10, orderBy="date_desc")
   → Recent refactoring work
 
-Step 2: get_observations(ids=[<interesting_ids>])
-  → Study the patterns and approaches used
+Step 2: timeline(anchor=<interesting_id>, depth_before=3, depth_after=3)
+  → Review the surrounding changes before selecting records
+
+Step 3: get_observations(ids=[<selected_ids>])
+  → Study the selected patterns and approaches
 ```
 
 ### Context Recovery
