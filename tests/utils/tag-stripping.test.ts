@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt, isGrokSubAgentBrief } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt, isGrokPlatformSource, isGrokSubAgentBrief } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -678,6 +678,22 @@ after`;
       expect(isGrokSubAgentBrief('Verify every candidate claim in the JSON packet below, please')).toBe(false);
       expect(isGrokSubAgentBrief('Investigate the question in the JSON file I attached')).toBe(false);
       expect(isGrokSubAgentBrief('Rewrite the research findings to be shorter')).toBe(false);
+    });
+  });
+
+  describe('isGrokPlatformSource', () => {
+    it('matches the platform tokens grok hosts report', () => {
+      expect(isGrokPlatformSource('grok')).toBe(true);
+      // The installed Grok Bot integration reports 'grok-bot' (#4811).
+      expect(isGrokPlatformSource('grok-bot')).toBe(true);
+    });
+
+    it('does not match other hosts or near-miss tokens', () => {
+      expect(isGrokPlatformSource('claude')).toBe(false);
+      expect(isGrokPlatformSource('codex')).toBe(false);
+      expect(isGrokPlatformSource('grokbot')).toBe(false);
+      expect(isGrokPlatformSource('my-grok-bot')).toBe(false);
+      expect(isGrokPlatformSource('')).toBe(false);
     });
   });
 

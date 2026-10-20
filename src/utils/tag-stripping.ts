@@ -243,10 +243,28 @@ const GROK_SUBAGENT_BRIEF_OPENINGS: readonly RegExp[] = [
 
 /**
  * Whether a prompt is one of grok's generated research sub-agent briefs.
- * Callers apply it only to platformSource 'grok': the same text from any
- * other host is a person's prompt.
+ * Callers apply it only to grok's platform sources (see
+ * isGrokPlatformSource): the same text from any other host is a person's
+ * prompt.
  */
 export function isGrokSubAgentBrief(text: string): boolean {
   const opening = text.trimStart();
   return GROK_SUBAGENT_BRIEF_OPENINGS.some(pattern => pattern.test(opening));
+}
+
+/**
+ * The platformSource tokens grok's hosts report. The grok CLI reports
+ * 'grok'; the installed Grok Bot integration reports 'grok-bot' (its
+ * installer name), and normalizePlatformSource passes both through
+ * unchanged. Exact tokens only: a substring match would catch unrelated
+ * host names.
+ */
+const GROK_PLATFORM_SOURCES: readonly string[] = ['grok', 'grok-bot'];
+
+/**
+ * Whether a normalized platformSource is one of grok's hosts, for gating
+ * grok-only prompt checks like isGrokSubAgentBrief.
+ */
+export function isGrokPlatformSource(platformSource: string): boolean {
+  return GROK_PLATFORM_SOURCES.includes(platformSource);
 }
