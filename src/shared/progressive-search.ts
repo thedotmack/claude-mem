@@ -1,5 +1,4 @@
-/** Portable mem-search contract. Keep the worker copy byte-for-byte identical. */
-import { createHmac, randomBytes } from "node:crypto";
+/** Portable dumb-search contract. Keep the worker copy byte-for-byte identical. */
 
 export interface MemoryIndexRow {
   id: string;
@@ -14,15 +13,12 @@ export interface MemoryDetail extends MemoryIndexRow {
   truncated: boolean;
 }
 export interface ProgressiveSearchInput {
-  mode?: "guided" | "auto";
   query?: string;
   project?: string;
   limit?: number;
   maxDetails?: number;
   depthBefore?: number;
   depthAfter?: number;
-  continuation?: string;
-  selectedIds?: (string | number)[];
 }
 export interface ProgressiveBackend {
   search(input: { query: string; project?: string; limit: number }): Promise<MemoryIndexRow[]>;
@@ -45,63 +41,19 @@ export interface SearchTrace {
   count: number;
   query?: string;
 }
-export interface ProgressiveContinuationState {
-  version: "2";
-  scope: string;
-  expiresAt: number;
-  step: 2 | 3;
-  options: SearchOptions;
-  eligible: MemoryIndexRow[];
-  trace: SearchTrace[];
-}
-export interface ProgressiveCursorStore {
-  put(key: string, state: ProgressiveContinuationState): Promise<void>;
-  get(key: string, scope: string): Promise<ProgressiveContinuationState | null>;
-}
-/** Worker-local state is bounded by entries, bytes and the search expiration. */
-export class MemoryProgressiveCursorStore implements ProgressiveCursorStore {
-  private readonly entries = new Map<string, { state: ProgressiveContinuationState; bytes: number }>();
-  private bytes = 0;
-  constructor(private readonly options: { now?: () => number; maxEntries?: number; maxBytes?: number } = {}) {}
-  private remove(key: string): void {
-    const entry = this.entries.get(key);
-    if (entry) this.bytes -= entry.bytes;
-    this.entries.delete(key);
-  }
-  async put(key: string, state: ProgressiveContinuationState): Promise<void> {
-    const now = (this.options.now ?? Date.now)();
-    for (const [id, entry] of this.entries) if (entry.state.expiresAt <= now) this.remove(id);
-    const bytes = utf8Length(JSON.stringify(state));
-    const maxBytes = this.options.maxBytes ?? 8 * 1024 * 1024;
-    if (bytes > maxBytes) fail("response_too_large", "The search context exceeds its state budget. Narrow the query.");
-    this.remove(key);
-    this.entries.set(key, { state: structuredClone(state), bytes });
-    this.bytes += bytes;
-    while (this.entries.size > (this.options.maxEntries ?? 1024) || this.bytes > maxBytes) {
-      this.remove(this.entries.keys().next().value!);
-    }
-  }
-  async get(key: string, scope: string): Promise<ProgressiveContinuationState | null> {
-    const entry = this.entries.get(key);
-    if (!entry || entry.state.scope !== scope) return null;
-    return structuredClone(entry.state);
-  }
-}
+/**
+ * dumb_search is the shallow, one-call memory lookup: it ranks titles by query
+ * word overlap without reasoning about results. Smart search is the default:
+ * the mem-search skill (search → timeline → selected get_observations).
+ */
 export interface ProgressiveSearchResult {
-  version: "1";
-  mode: "guided" | "auto";
-  strategy: "caller-selected" | "ranked-lexical";
   step: 1 | 2 | 3;
-  label: string;
   query: string;
   project: string | null;
-  complete: boolean;
   reason: string | null;
   guidance: string | null;
   index: MemoryIndexRow[];
   observations: MemoryDetail[];
-  continuation: string | null;
-  next: { tool: "mem_search"; arguments: ProgressiveSearchInput; instruction: string } | null;
   trace: SearchTrace[];
 }
 export class ProgressiveSearchError extends Error {
@@ -110,10 +62,7 @@ export class ProgressiveSearchError extends Error {
     this.name = "ProgressiveSearchError";
   }
 }
-const TTL_MS = 15 * 60 * 1000;
 export const PROGRESSIVE_RESPONSE_BYTES = 64 * 1024;
-const STATE_BYTES = 48 * 1024;
-const CURSOR_PATTERN = /^ms_[A-Za-z0-9_-]{24}$/;
 const utf8Length = (text: string) => Buffer.byteLength(text, "utf8");
 
 function shortText(value: string, bytes: number): string {
@@ -138,7 +87,7 @@ function integer(value: unknown, fallback: number, maximum: number, name: string
   return value;
 }
 function queryOptions(input: ProgressiveSearchInput): SearchOptions {
-  if (typeof input.query !== "string") fail("invalid_input", "Start mem_search with a query.");
+  if (typeof input.query !== "string") fail("invalid_input", "Start dumb_search with a query.");
   const query = input.query.trim();
   if (!query || query.length > 500 || utf8Length(query) > 1024) {
     fail("invalid_input", "query must contain 1–500 characters and at most 1024 UTF-8 bytes.");
@@ -178,22 +127,6 @@ function indexRows(rows: MemoryIndexRow[], maximum: number): MemoryIndexRow[] {
   }
   return result;
 }
-function selectedRows(input: ProgressiveSearchInput, eligible: MemoryIndexRow[], maximum: number): MemoryIndexRow[] {
-  if (!Array.isArray(input.selectedIds) || input.selectedIds.length > maximum) {
-    fail("selection_required", `Choose selectedIds from the last index (at most ${maximum}); [] ends the search.`);
-  }
-  const lookup = new Map(eligible.map(row => [row.id, row]));
-  const rows: MemoryIndexRow[] = [];
-  for (const value of input.selectedIds) {
-    if ((typeof value !== "string" && typeof value !== "number") || (typeof value === "number" && !Number.isSafeInteger(value))) {
-      fail("invalid_selection", "selectedIds must contain string IDs or safe integer IDs from the last index.");
-    }
-    const row = lookup.get(String(value));
-    if (!row) fail("invalid_selection", "An ID was not disclosed by the preceding mem-search step.");
-    if (!rows.some(item => item.id === row.id)) rows.push(row);
-  }
-  return rows;
-}
 const STOP_WORDS = new Set("a an and are as at be been by can did do for from had has have how i in is it last me memory my of on or our previous search session sessions that the their this to was we were what when where which who why with work you your".split(" "));
 function terms(query: string): string[] {
   return [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])].filter(word => !STOP_WORDS.has(word));
@@ -211,62 +144,18 @@ function ranked(rows: MemoryIndexRow[], query: string, maximum: number): MemoryI
     .slice(0, maximum).map(item => item.row);
 }
 
+
 export class ProgressiveSearch {
-  private readonly now: () => number;
-  constructor(private readonly backend: ProgressiveBackend, private readonly options: {
-    secret: string | Uint8Array; scope: string; cursorStore: ProgressiveCursorStore;
-    now?: () => number; newCursor?: () => string;
-  }) {
-    if (options.secret.length < 32 || !options.scope || utf8Length(options.scope) > 2048) {
-      throw new Error("Progressive search requires a signing secret and a bounded nonempty scope.");
-    }
-    this.now = options.now ?? Date.now;
-  }
-  private cursorKey(cursor: string): string {
-    return createHmac("sha256", this.options.secret).update("cmem:mem-search:v2\0")
-      .update(this.options.scope).update("\0").update(cursor).digest("hex");
-  }
-  private async decode(token: unknown): Promise<ProgressiveContinuationState> {
-    if (typeof token !== "string" || !CURSOR_PATTERN.test(token)) {
-      fail("invalid_continuation", "Invalid mem-search continuation. Restart with a query.");
-    }
-    const state = await this.options.cursorStore.get(this.cursorKey(token), this.options.scope);
-    if (!state) fail("invalid_continuation", "This search continuation expired, is unavailable, or belongs to a different memory scope. Restart with a query.");
-    if (state.version !== "2" || state.scope !== this.options.scope || ![2, 3].includes(state.step)) {
-      fail("invalid_continuation", "This continuation belongs to a different memory scope. Restart with a query.");
-    }
-    if (!Number.isFinite(state.expiresAt) || state.expiresAt <= this.now()) fail("expired_continuation", "Mem-search continuation expired. Restart with a query.");
-    return state;
-  }
-  private async result(mode: "guided" | "auto", step: 1 | 2 | 3, options: SearchOptions, index: MemoryIndexRow[], trace: SearchTrace[], state?: ProgressiveContinuationState, observations: MemoryDetail[] = [], reason: string | null = null, guidance: string | null = null): Promise<ProgressiveSearchResult> {
-    // The model gets a short opaque cursor. Scope, options and membership stay
-    // server-side; retained state must match every identity in the visible index.
-    const continuation = state ? (this.options.newCursor?.() ?? `ms_${randomBytes(18).toString("base64url")}`) : null;
-    if (continuation && !CURSOR_PATTERN.test(continuation)) throw new Error("Invalid internal search cursor.");
-    while (state && utf8Length(JSON.stringify(state)) > STATE_BYTES) {
-      if (index.length <= 1) fail("response_too_large", "The search context exceeds its state budget. Narrow the query.");
-      index.pop();
-      state.eligible = index;
-      reason = "index_truncated";
-    }
-    const next = state ? {
-      tool: "mem_search" as const,
-      arguments: { mode: "guided" as const },
-      instruction: state.step === 2
-        ? `mem-search step 2 of 3: choose up to ${options.maxDetails} relevant IDs, then call mem_search with continuation and selectedIds to inspect nearby context. Use mode="guided". Stop if these titles answer the question.`
-        : `mem-search step 3 of 3: discard unrelated context, then call mem_search with continuation and up to ${options.maxDetails} selectedIds for one detail batch. Use mode="guided". Prompts supply context only; stop if no details are needed.`,
-    } : null;
+  constructor(private readonly backend: ProgressiveBackend) {}
+  private result(step: 1 | 2 | 3, options: SearchOptions, index: MemoryIndexRow[], trace: SearchTrace[], observations: MemoryDetail[] = [], reason: string | null = null, guidance: string | null = null): ProgressiveSearchResult {
     const result: ProgressiveSearchResult = {
-      version: "1", mode, strategy: mode === "auto" ? "ranked-lexical" : "caller-selected",
-      step, label: `mem-search step ${step} of 3`, query: options.query,
-      project: options.project ?? null, complete: !state, reason, guidance, index, observations, continuation, next, trace,
+      step, query: options.query, project: options.project ?? null, reason, guidance, index, observations, trace,
     };
     // Bound the internal data too. The selective text projection below is the
-    // only model-facing result, so protocol state never consumes model context.
+    // only model-facing result.
     while (utf8Length(JSON.stringify(result)) > PROGRESSIVE_RESPONSE_BYTES) {
-      if (state && index.length > 1) {
+      if (!observations.length && index.length > 1) {
         index.pop();
-        state.eligible = index;
         result.reason = "index_truncated";
         continue;
       }
@@ -275,7 +164,6 @@ export class ProgressiveSearch {
       largest.content = shortText(largest.content, Math.max(0, Math.floor(utf8Length(largest.content) / 2)));
       largest.truncated = true;
     }
-    if (state && continuation) await this.options.cursorStore.put(this.cursorKey(continuation), state);
     return result;
   }
   private async noResultsGuidance(): Promise<string | null> {
@@ -311,36 +199,11 @@ export class ProgressiveSearch {
     });
   }
   async run(input: ProgressiveSearchInput): Promise<ProgressiveSearchResult> {
-    if (!input || typeof input !== "object" || Array.isArray(input)) fail("invalid_input", "mem_search requires an object input.");
-    if (input.mode !== undefined && input.mode !== "guided" && input.mode !== "auto") fail("invalid_input", "mode must be guided or auto.");
-    const mode = input.mode ?? "guided";
-    if (input.continuation !== undefined) {
-      if (mode !== "guided") fail("invalid_input", "Continuations use guided mode.");
-      const state = await this.decode(input.continuation);
-      for (const key of ["query", "project", "limit", "maxDetails", "depthBefore", "depthAfter"] as const) {
-        if (input[key] !== undefined && input[key] !== state.options[key]) fail("scope_changed", "Keep the original search options when continuing, or restart with a query.");
-      }
-      const refs = selectedRows(input, state.eligible, state.options.maxDetails);
-      if (!refs.length) return this.result(mode, state.step, state.options, [], state.trace, undefined, [], "caller_stopped");
-      if (state.step === 2) {
-        const context = await this.context(refs, state.options);
-        const trace = [...state.trace, { step: 2 as const, operation: "timeline" as const, count: context.length }];
-        return this.result(mode, 2, state.options, context, trace, context.length ? { ...state, step: 3, eligible: context, trace } : undefined, [], context.length ? null : "context_not_found");
-      }
-      if (refs.some(row => row.kind === "prompt")) fail("invalid_selection", "Prompts supply timeline context; select observation or summary IDs for details.");
-      const observations = await this.details(refs);
-      return this.result(mode, 3, state.options, refs, [...state.trace, { step: 3, operation: "fetch", count: observations.length }], undefined, observations, observations.length ? null : "details_not_found");
-    }
-    if (input.selectedIds !== undefined) fail("invalid_input", "selectedIds requires the preceding step's continuation.");
+    if (!input || typeof input !== "object" || Array.isArray(input)) fail("invalid_input", "dumb_search requires an object input.");
+    if (Object.hasOwn(input, "mode") || Object.hasOwn(input, "continuation")) fail("invalid_input", "Dumb search does not accept modes or continuations. Use Smart search for the three-step mem-search workflow.");
     const options = queryOptions(input);
     let index = indexRows(await this.backend.search(options), options.limit);
     const trace: SearchTrace[] = [{ step: 1, operation: "search", count: index.length, query: options.query }];
-    if (mode === "guided") {
-      return this.result(mode, 1, options, index, trace, index.length ? {
-        version: "2", scope: this.options.scope, expiresAt: this.now() + TTL_MS,
-        step: 2, options, eligible: index, trace,
-      } : undefined, [], index.length ? null : "no_results", index.length ? null : await this.noResultsGuidance());
-    }
     let anchors = ranked(index, options.query, options.maxDetails);
     // One bounded query refinement; no hidden model call or unbounded retries.
     const refined = terms(options.query).join(" ");
@@ -352,17 +215,16 @@ export class ProgressiveSearch {
       // query refinement cannot select them automatically.
       index = indexRows(anchors.length ? [...refinedIndex, ...index] : [...index, ...refinedIndex], options.limit);
     }
-    if (!anchors.length) return this.result(mode, 1, options, index, trace, index.length ? {
-      version: "2", scope: this.options.scope, expiresAt: this.now() + TTL_MS,
-      step: 2, options, eligible: index, trace,
-    } : undefined, [], index.length ? "no_relevant_candidates" : "no_results", index.length ? null : await this.noResultsGuidance());
+    if (!anchors.length) {
+      return this.result(1, options, index, trace, [], index.length ? "no_relevant_candidates" : "no_results", index.length ? null : await this.noResultsGuidance());
+    }
     const context = await this.context(anchors, options);
     trace.push({ step: 2, operation: "timeline", count: context.length });
     const selected = ranked(context, options.query, options.maxDetails);
-    if (!selected.length) return this.result(mode, 2, options, context, trace, undefined, [], "no_relevant_context");
+    if (!selected.length) return this.result(2, options, context, trace, [], "no_relevant_context");
     const observations = await this.details(selected);
     trace.push({ step: 3, operation: "fetch", count: observations.length });
-    return this.result(mode, 3, options, selected, trace, undefined, observations, observations.length ? null : "details_not_found");
+    return this.result(3, options, selected, trace, observations, observations.length ? null : "details_not_found");
   }
 }
 
@@ -400,8 +262,7 @@ export function projectMemoryContent(payload: unknown): { text: string; truncate
   }
   if (Array.isArray(facts)) {
     const strings = facts.filter((item): item is string => typeof item === "string");
-    if (strings.length > 12) truncated = true;
-    const selected = strings.slice(0, 12).map(item => read(item, 1600)).filter(Boolean);
+    const selected = strings.map(item => read(item, 1600)).filter(Boolean);
     if (selected.length) sections.push(selected.map(item => `- ${item}`).join("\n"));
   }
   for (const [key, label] of [
@@ -411,15 +272,14 @@ export function projectMemoryContent(payload: unknown): { text: string; truncate
     const text = read(data[key]);
     if (text) sections.push(`${label}: ${text}`);
   }
-  for (const [key, label] of [["files_modified", "Files changed"], ["files_edited", "Files changed"], ["files_read", "Files read"]] as const) {
+  for (const [key, label] of [["files_modified", "Files changed"], ["files_edited", "Files changed"], ["files_read", "Files read"], ["concepts", "Concepts"]] as const) {
     let files = data[key];
     if (typeof files === "string") {
       try { files = JSON.parse(files); } catch { files = [files]; }
     }
     if (Array.isArray(files)) {
       const strings = files.filter((item): item is string => typeof item === "string");
-      if (strings.length > 12) truncated = true;
-      const selected = strings.slice(0, 12).map(item => oneLine(read(item, 240))).filter(Boolean);
+      const selected = strings.map(item => oneLine(read(item, 240))).filter(Boolean);
       if (selected.length) sections.push(`${label}: ${selected.join(", ")}`);
     }
   }
@@ -435,20 +295,16 @@ function indexLine(row: MemoryIndexRow, includeProject: boolean): string {
     + (includeProject ? ` · ${oneLine(row.project) || "No project"}` : "")
     + (when ? ` · ${when}` : "");
 }
+const MEM_SEARCH_WORKFLOW = "Smart search (default mem-search workflow: index → timeline context → selected details)";
 export function renderProgressiveSearchResult(result: ProgressiveSearchResult): string {
   const phase = result.step === 1 ? "index" : result.step === 2 ? "context" : "selected details";
-  const lines = [`${result.label} — ${phase}`];
-  if (result.mode === "auto") {
-    const performed = [...new Set(result.trace.map(item => item.operation === "search" ? "index" : item.operation === "timeline" ? "context" : "selected details"))];
-    lines.push(`Automatic search: ${performed.join(" → ")}.`);
-  }
+  const performed = [...new Set(result.trace.map(item => item.operation === "search" ? "index" : item.operation === "timeline" ? "context" : "selected details"))];
+  const lines = [`dumb-search — ${phase}`, "Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.", `Ran ${performed.join(" → ")}, choosing records by title word overlap.`];
   const reasons: Record<string, string> = {
     no_results: "No matching memories found.",
-    no_relevant_candidates: "These candidates need your relevance judgment. Choose a useful title or refine the query.",
-    context_not_found: "Nearby context is no longer available. Start a new search.",
-    no_relevant_context: "No relevant details were selected from this context. Refine the query.",
+    no_relevant_candidates: `No title matched the query words. Judge these candidates with ${MEM_SEARCH_WORKFLOW}, or refine the query.`,
+    no_relevant_context: `No title in the nearby context matched the query words. Use ${MEM_SEARCH_WORKFLOW}, or refine the query.`,
     details_not_found: "Selected memory details are no longer available. Start a new search.",
-    caller_stopped: "Search stopped at your request.",
     index_truncated: "Showing a bounded portion of the matching context. Narrow the query for more focused results.",
   };
   if (result.reason && reasons[result.reason]) lines.push(reasons[result.reason]);
@@ -464,10 +320,8 @@ export function renderProgressiveSearchResult(result: ProgressiveSearchResult): 
   } else if (result.index.length) {
     lines.push("", ...result.index.map(row => indexLine(row, !result.project || row.project !== result.project)));
   }
-  if (result.continuation && result.next) {
-    lines.push(`\nContinue with: ${result.continuation}`, `Next: ${result.next.instruction}`);
-  } else if (!result.reason) {
-    lines.push("\nSearch complete. Use only the evidence needed to answer the question.");
+  if (!result.reason) {
+    lines.push(`\nDumb search is shallow by design: matching titles can come from unrelated projects, and conflicting records are not reconciled. If this evidence is thin, off-topic or contradictory, use ${MEM_SEARCH_WORKFLOW}.`);
   }
   return lines.join("\n");
 }
@@ -479,6 +333,6 @@ export function progressiveSearchToolError(error: unknown) {
   // Backend exceptions may contain credentials or SQL. Only contract errors are
   // safe to disclose; adapters log backend errors through their own safe logger.
   const message = error instanceof ProgressiveSearchError ? error.message : "Memory retrieval failed. Retry the query.";
-  const text = `Memory search could not continue.\n${message}\nNext: restart mem_search with a query and mode="guided"; follow index → context → selected details.`;
+  const text = `Memory search could not continue.\n${message}\nNext: retry dumb_search with a query, or use ${MEM_SEARCH_WORKFLOW}.`;
   return { content: [{ type: "text" as const, text }], isError: true as const };
 }

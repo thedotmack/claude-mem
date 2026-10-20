@@ -12,6 +12,7 @@
 
 import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { formatWorkerMcpResponse } from '../../servers/mcp-text-format.js';
 import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
@@ -304,6 +305,8 @@ export interface ClaudeMemCore {
   memoryContext(sessionID: string): Promise<string | null>;
   /** The `claude_mem_search` tool body. */
   search(query: string): Promise<string>;
+  timeline(anchor: number): Promise<string>;
+  getObservations(ids: number[]): Promise<string>;
 }
 
 export function createCore(ctx: CoreContext): ClaudeMemCore {
@@ -408,6 +411,25 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
 
     memoryContext(sessionID) {
       return memoryContextFor(sessionID, ctx.directory);
+    },
+
+    async timeline(anchor) {
+      const text = await workerGetText(`/api/timeline?anchor=${encodeURIComponent(anchor)}`);
+      if (!text) return 'claude-mem worker is not running. Start it with: npx claude-mem start';
+      try { return formatWorkerMcpResponse('search', JSON.parse(text)).content[0].text; }
+      catch { return 'Failed to parse memory timeline.'; }
+    },
+
+    async getObservations(ids) {
+      if (!ids.length) return 'Select observation IDs from the search index and timeline first.';
+      try {
+        const response = await fetch(`${WORKER_BASE_URL}/api/observations/batch`, {
+          method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }),
+          signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+        });
+        if (!response.ok) return 'The worker could not fetch the selected observations.';
+        return formatWorkerMcpResponse('observations', await response.json()).content[0].text;
+      } catch { return 'claude-mem worker is not running. Start it with: npx claude-mem start'; }
     },
 
     async search(query) {

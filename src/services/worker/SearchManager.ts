@@ -1274,7 +1274,7 @@ export class SearchManager {
 
   async getTimelineByQuery(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { query, mode = 'auto', limit = 5, project, platformSource } = normalized;
+    const { query, mode, limit = 5, project, platformSource } = normalized;
 
     if (mode !== 'interactive') {
       return this.timeline(args);

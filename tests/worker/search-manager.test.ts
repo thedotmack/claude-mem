@@ -554,7 +554,6 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
 
     await manager.getTimelineByQuery({
       query: 'timeline',
-      mode: 'auto',
       project: 'search-project',
       platform_source: 'cursor',
     });
