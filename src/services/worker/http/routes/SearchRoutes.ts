@@ -226,7 +226,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
-    app.post('/api/flash-search', this.handleFlashSearch.bind(this));
+    app.post('/api/dumb-search', this.handleDumbSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -252,7 +252,7 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json(result);
   });
 
-  private handleFlashSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+  private handleDumbSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
     const { projects, ...input } = req.body ?? {};
     try {

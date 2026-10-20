@@ -1,11 +1,11 @@
 ---
-title: "Memory Search"
+title: "Smart Memory Search"
 description: "Search your project history with MCP tools"
 ---
 
-# Memory Search with MCP Tools
+# Smart Search (Default)
 
-Claude-mem provides persistent memory across sessions through **4 MCP tools** that follow a token-efficient **3-layer workflow pattern**.
+Use Smart search by default: the original `mem-search` skill follows a token-efficient **three-step workflow**. The agent reviews results at each step before deciding what to read next. There are no auto or guided modes.
 
 ## Overview
 
@@ -73,6 +73,18 @@ get_observations(ids=[123, 456, 789])
 - Timeline context: 500 tokens (around 2 key results)
 - Fetch details: 1,500 tokens (3 observations)
 - **Total: 3,000 tokens, 100% relevant**
+
+## Dumb Search (Optional)
+
+**Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.**
+
+```
+dumb_search(query="authentication token expiry", project="my-project")
+```
+
+Dumb search is a one-call lookup that chooses records by matching words in titles.
+It can miss relevant records and does not reconcile conflicting evidence.
+Use Smart search for the full three-step review.
 
 ## Available Tools
 

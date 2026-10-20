@@ -245,6 +245,32 @@ describe('server beta postgres observation storage', () => {
     })).resolves.toHaveLength(1);
   });
 
+  it('anchors context and selected details within both team and project scope', async () => {
+    const own = await createFixtureScope(storage);
+    const foreign = await createFixtureScope(storage);
+    const sibling = await storage.projects.create({ teamId: own.project.teamId, name: 'sibling' });
+    const created = [];
+    for (const [index, scope] of [own.project, own.project, own.project, sibling, foreign.project].entries()) {
+      const row = await storage.observations.create({ projectId: scope.id, teamId: scope.teamId, content: `record ${index}` });
+      await client.query('UPDATE observations SET created_at = to_timestamp($2) WHERE id = $1', [row.id, 1000 + index]);
+      created.push(row);
+    }
+    const scope = { projectId: own.project.id, teamId: own.project.teamId };
+    expect((await storage.observations.timelineAround({ ...scope, anchorId: created[1].id, depthBefore: 1, depthAfter: 1 })).map(row => row.id))
+      .toEqual(created.slice(0, 3).map(row => row.id));
+    expect((await storage.observations.timelineAround({ ...scope, anchorId: created[1].id, depthBefore: 0, depthAfter: 0 })).map(row => row.id))
+      .toEqual([created[1].id]);
+    for (const anchorId of [created[3].id, created[4].id, 'missing']) {
+      expect(await storage.observations.timelineAround({ ...scope, anchorId })).toEqual([]);
+    }
+    expect(await storage.observations.timelineAround({ ...scope, teamId: foreign.project.teamId, anchorId: created[1].id })).toEqual([]);
+    expect((await storage.observations.getManyForScope({ ...scope, ids: [created[2].id, created[4].id, 'missing', created[0].id, created[2].id] })).map(row => row.id))
+      .toEqual([created[2].id, created[0].id]);
+    expect(await storage.observations.getManyForScope({ ...scope, teamId: foreign.project.teamId, ids: [created[1].id] })).toEqual([]);
+    expect(await storage.observations.getManyForScope({ ...scope, ids: [] })).toEqual([]);
+    await expect(storage.observations.timelineAround({ ...scope, anchorId: created[1].id, depthBefore: 21 })).rejects.toThrow('depth');
+  });
+
   it('scopes observation generation_key idempotency to project and team', async () => {
     const firstScope = await createFixtureScope(storage);
     const secondScope = await createFixtureScope(storage);

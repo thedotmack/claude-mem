@@ -1,11 +1,28 @@
 ---
 name: mem-search
-description: Search claude-mem's persistent cross-session memory database. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
+description: Smart search (default). Search claude-mem's persistent cross-session memory database in three steps: search, timeline, then selected get_observations. Use when user asks "did we already solve this?", "how did we do X last time?", or needs work from previous sessions.
 ---
 
-# Memory Search
+# Smart Search (Default)
 
-Search past work across all sessions. Simple workflow: search -> filter -> fetch -> (rarely) disclose raw tool I/O.
+Search past work across all sessions. Use the original three-step mem-search workflow by default: search → timeline → selected get_observations. Reason about the index and context before choosing details. Do not use auto or guided modes.
+
+## Runtime and Tool Names
+
+The examples below use the local worker tools. Native Pi and DSH integrations
+name the same three steps `mem_search`, `mem_timeline`, and
+`mem_get_observations`. Native OpenCode uses `claude_mem_search`,
+`claude_mem_timeline`, and `claude_mem_get_observations`. CMEM Pro uses `memory_search`, `timeline`, and
+`get_observations`; use the parameter names advertised by that connection.
+
+A self-hosted server runtime uses the same three steps: `search`, `timeline`,
+and `get_observations`, scoped to the configured server project. Server
+observation IDs are strings. Set `projectId` only when selecting another
+authorized server project. Dumb search is unavailable in server runtime. A direct self-hosted `/v1/mcp`
+connection instead requires `projectId` on each call and `anchorId` for its
+timeline. CMEM Pro also uses `anchorId` for timeline context, and uses
+`get_summaries` when the selected index rows are session summaries. Follow the
+active connection’s advertised schema.
 
 ## When to Use
 
@@ -93,7 +110,7 @@ get_observations(ids=[11131, 10942])
 
 **Returns:** Complete observation objects with title, subtitle, narrative, facts, concepts, files (~500-1000 tokens each)
 
-### Step 4: Disclose Raw Tool I/O - Only When Step 3 Was Not Enough
+### Exceptional Follow-up: Raw Tool I/O - Only When Step 3 Was Not Enough
 
 Observations are *summaries*. When the answer needs the literal bytes a tool
 returned — the exact diff, the exact command output, the exact API response —
@@ -149,6 +166,7 @@ get_observations(ids=[11131, 10942, 10855], orderBy="date_desc")
 
 ```
 search(query="migration failed", limit=20, project="my-project")
+timeline(anchor=11131, project="my-project")
 get_observations(ids=[11131])            # read the summary first
 get_tool_uses(ids=["toolu_01ABC..."])    # only if the summary omitted the detail
 ```
@@ -165,21 +183,19 @@ get_tool_uses(ids=["toolu_01ABC..."])    # only if the summary omitted the detai
 
 Want synthesized answers instead of raw records? Use `/knowledge-agent` to build a queryable corpus from your observation history. The knowledge agent reads all matching observations and answers questions conversationally.
 
-## Flash Search: The Fast, Shallow Alternative
+## Dumb Search (Optional)
 
-`flash_search` runs a one-call version of this workflow without reasoning:
+**Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.**
 
 ```
-flash_search(query="authentication token expiry", project="my-project")
+dumb_search(query="authentication token expiry", project="my-project")
 ```
 
-It picks records whose **titles share the most query words**, adds nearby
-context, and returns up to `maxDetails` (default 3, max 5) records. Like a
-"flash" model, it trades depth for speed: same-word titles from unrelated
-projects can crowd out the answer, and conflicting records are not reconciled.
-Use it for quick, direct lookups such as checking for a duplicate before saving
-a note. When the result is thin, off-topic, or contradictory, use the layered
-workflow above.
+This one-call lookup picks records whose titles share the most query words,
+adds nearby context, and returns up to `maxDetails` (default 3, max 5) records.
+Matching words from unrelated projects can crowd out useful results, and
+conflicting records are not reconciled. Use only for a quick, direct lookup;
+use Smart search by default.
 
 ## Durable Note Taking
 

@@ -217,7 +217,7 @@ The installer handles dependencies, plugin setup, AI provider configuration, wor
 
 - 🧠 **Persistent Memory** - Context survives across sessions
 - 📊 **Progressive Disclosure** - Layered memory retrieval with token cost visibility
-- 🔍 **Skill-Based Search** - Query your project history with mem-search skill
+- 🔍 **Smart Search (Default)** - Query your project history with the three-step mem-search skill
 - 🖥️ **Local My Work** - Live requests, progress, human handoffs and a saved review queue at the worker URL printed on startup. [Guide](https://docs.claude-mem.ai/usage/my-work). Memory, sessions and settings remain at `/viewer`.
 - 👥 **TeamBrain** - An optional shared workspace beside My Work, with real team work lists, member attribution and linked findings. Each person chooses what to share; personal requests and review notes stay separate. [Set up a team](https://cmem.ai/teambrain/start).
 - 💻 **Claude Desktop Skill** - Search memory from Claude Desktop conversations

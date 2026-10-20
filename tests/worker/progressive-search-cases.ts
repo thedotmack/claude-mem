@@ -16,7 +16,7 @@ function fixture(Implementation: Engine, overrides: Partial<ProgressiveBackend> 
   return { engine: new Implementation(backend), backend, calls };
 }
 
-/** Shared flash-search cases used by cloud and worker; no live memory or network. */
+/** Shared dumb-search cases used by cloud and worker; no live memory or network. */
 export async function runProgressiveSearchCases(Implementation: Engine): Promise<{ count: number; flash: ProgressiveSearchResult | undefined }> {
   let count = 0;
   const check = async (body: () => void | Promise<void>) => { await body(); count++; };
@@ -31,12 +31,14 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     assert(flash.observations.every(item => item.project === 'fixture'));
     assert(!JSON.stringify(flash).includes('NEVER_UNSELECTED'));
     const text = progressiveSearchToolResult(flash).content[0].text;
-    assert.match(text, /^flash-search — selected details/);
-    assert.match(text, /title word overlap without reasoning/);
-    assert.match(text, /search → timeline → get_observations/);
+    assert.match(text, /^dumb-search — selected details/);
+    assert.match(text, /Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall./);
+    assert.match(text, /index → timeline context → selected details/);
   });
   for (const input of [
     { query: '' }, { query: 'x'.repeat(501) }, { query: '😀'.repeat(300) },
+    { query: 'authentication', mode: 'auto' }, { query: 'authentication', mode: 'guided' },
+    { query: 'authentication', continuation: 'old-cursor' },
     { query: 'authentication', limit: 0 }, { query: 'authentication', limit: 21 },
     { query: 'authentication', limit: 1.5 }, { query: 'authentication', maxDetails: 6 },
     { query: 'authentication', depthBefore: -1 }, { query: 'authentication', depthAfter: 4 },
@@ -48,8 +50,8 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     assert.equal(response.observations.length, 0);
     assert.equal(response.index[0].id, 'semantic');
     const visible = progressiveSearchToolResult(response).content[0].text;
-    assert.match(visible, /Flash search ran index,/);
-    assert.match(visible, /search → timeline → get_observations/);
+    assert.match(visible, /Ran index,/);
+    assert.match(visible, /index → timeline context → selected details/);
     assert(!f.calls.some(item => item.operation === 'fetch'));
   });
   await check(async () => {
@@ -128,7 +130,7 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     assert.equal(result.isError, true);
     assert.throws(() => JSON.parse(result.content[0].text));
     assert.match(result.content[0].text, /Memory retrieval failed/);
-    assert.match(result.content[0].text, /Next: retry flash_search/);
+    assert.match(result.content[0].text, /Next: retry dumb_search/);
     assert(!result.content[0].text.includes('PRIVATE_'));
   });
   await check(async () => {

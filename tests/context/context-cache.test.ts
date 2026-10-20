@@ -33,7 +33,8 @@ import { emitContextInvalidation } from '../../src/shared/context-invalidation.j
 import { formatHeaderDateTime } from '../../src/shared/timeline-formatting.js';
 import { describeDuration, recordObserverFailure, recordObserverSuccess } from '../../src/shared/observer-health.js';
 import { writeSyncHealth } from '../../src/shared/sync-health.js';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
+import { memoryInstructionsForRuntime } from '../../src/shared/memory-instructions.js';
+const MEMORY_PLUGIN_INSTRUCTIONS = memoryInstructionsForRuntime('worker');
 import { ContextCacheService, type ContextVariantRender } from '../../src/services/worker/ContextCacheService.js';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { SyncApply, type SyncOp } from '../../src/services/sync/SyncApply.js';

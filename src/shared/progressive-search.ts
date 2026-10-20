@@ -1,4 +1,4 @@
-/** Portable flash-search contract. Keep the worker copy byte-for-byte identical. */
+/** Portable dumb-search contract. Keep the worker copy byte-for-byte identical. */
 
 export interface MemoryIndexRow {
   id: string;
@@ -42,10 +42,9 @@ export interface SearchTrace {
   query?: string;
 }
 /**
- * flash_search is the shallow, one-call memory lookup: it ranks titles by query
- * word overlap instead of reasoning about relevance, the way a "flash" model
- * trades depth for speed. The mem-search skill (search → timeline →
- * get_observations) is the reasoned path.
+ * dumb_search is the shallow, one-call memory lookup: it ranks titles by query
+ * word overlap without reasoning about results. Smart search is the default:
+ * the mem-search skill (search → timeline → selected get_observations).
  */
 export interface ProgressiveSearchResult {
   step: 1 | 2 | 3;
@@ -88,7 +87,7 @@ function integer(value: unknown, fallback: number, maximum: number, name: string
   return value;
 }
 function queryOptions(input: ProgressiveSearchInput): SearchOptions {
-  if (typeof input.query !== "string") fail("invalid_input", "Start flash_search with a query.");
+  if (typeof input.query !== "string") fail("invalid_input", "Start dumb_search with a query.");
   const query = input.query.trim();
   if (!query || query.length > 500 || utf8Length(query) > 1024) {
     fail("invalid_input", "query must contain 1–500 characters and at most 1024 UTF-8 bytes.");
@@ -200,7 +199,8 @@ export class ProgressiveSearch {
     });
   }
   async run(input: ProgressiveSearchInput): Promise<ProgressiveSearchResult> {
-    if (!input || typeof input !== "object" || Array.isArray(input)) fail("invalid_input", "flash_search requires an object input.");
+    if (!input || typeof input !== "object" || Array.isArray(input)) fail("invalid_input", "dumb_search requires an object input.");
+    if (Object.hasOwn(input, "mode") || Object.hasOwn(input, "continuation")) fail("invalid_input", "Dumb search does not accept modes or continuations. Use Smart search for the three-step mem-search workflow.");
     const options = queryOptions(input);
     let index = indexRows(await this.backend.search(options), options.limit);
     const trace: SearchTrace[] = [{ step: 1, operation: "search", count: index.length, query: options.query }];
@@ -295,11 +295,11 @@ function indexLine(row: MemoryIndexRow, includeProject: boolean): string {
     + (includeProject ? ` · ${oneLine(row.project) || "No project"}` : "")
     + (when ? ` · ${when}` : "");
 }
-const MEM_SEARCH_WORKFLOW = "the mem-search workflow (index search → timeline → get_observations)";
+const MEM_SEARCH_WORKFLOW = "Smart search (default mem-search workflow: index → timeline context → selected details)";
 export function renderProgressiveSearchResult(result: ProgressiveSearchResult): string {
   const phase = result.step === 1 ? "index" : result.step === 2 ? "context" : "selected details";
   const performed = [...new Set(result.trace.map(item => item.operation === "search" ? "index" : item.operation === "timeline" ? "context" : "selected details"))];
-  const lines = [`flash-search — ${phase}`, `Flash search ran ${performed.join(" → ")}, choosing records by title word overlap without reasoning.`];
+  const lines = [`dumb-search — ${phase}`, "Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.", `Ran ${performed.join(" → ")}, choosing records by title word overlap.`];
   const reasons: Record<string, string> = {
     no_results: "No matching memories found.",
     no_relevant_candidates: `No title matched the query words. Judge these candidates with ${MEM_SEARCH_WORKFLOW}, or refine the query.`,
@@ -321,7 +321,7 @@ export function renderProgressiveSearchResult(result: ProgressiveSearchResult): 
     lines.push("", ...result.index.map(row => indexLine(row, !result.project || row.project !== result.project)));
   }
   if (!result.reason) {
-    lines.push(`\nFlash search is shallow by design: matching titles can come from unrelated projects, and conflicting records are not reconciled. If this evidence is thin, off-topic or contradictory, use ${MEM_SEARCH_WORKFLOW}.`);
+    lines.push(`\nDumb search is shallow by design: matching titles can come from unrelated projects, and conflicting records are not reconciled. If this evidence is thin, off-topic or contradictory, use ${MEM_SEARCH_WORKFLOW}.`);
   }
   return lines.join("\n");
 }
@@ -333,6 +333,6 @@ export function progressiveSearchToolError(error: unknown) {
   // Backend exceptions may contain credentials or SQL. Only contract errors are
   // safe to disclose; adapters log backend errors through their own safe logger.
   const message = error instanceof ProgressiveSearchError ? error.message : "Memory retrieval failed. Retry the query.";
-  const text = `Memory search could not continue.\n${message}\nNext: retry flash_search with a query, or use ${MEM_SEARCH_WORKFLOW}.`;
+  const text = `Memory search could not continue.\n${message}\nNext: retry dumb_search with a query, or use ${MEM_SEARCH_WORKFLOW}.`;
   return { content: [{ type: "text" as const, text }], isError: true as const };
 }

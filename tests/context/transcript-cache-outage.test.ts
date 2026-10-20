@@ -2,7 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { MEMORY_PLUGIN_INSTRUCTIONS } from '../../src/shared/memory-instructions.js';
+import { memoryInstructionsForRuntime } from '../../src/shared/memory-instructions.js';
+const MEMORY_PLUGIN_INSTRUCTIONS = memoryInstructionsForRuntime('worker');
 
 // Real handler/worker HTTP/cache files. Autostart is disabled before imports;
 // the only listening endpoint is this child-owned loopback Express fixture.

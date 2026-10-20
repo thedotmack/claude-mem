@@ -10,7 +10,7 @@ import { ProgressiveMemorySearch } from '../../src/services/worker/ProgressiveMe
 import { SearchRoutes } from '../../src/services/worker/http/routes/SearchRoutes.js';
 import { progressiveSearchToolResult, PROGRESSIVE_RESPONSE_BYTES } from '../../src/shared/progressive-search.js';
 
-describe('worker flash search with real SQLite fixtures', () => {
+describe('worker Dumb search with real SQLite fixtures', () => {
   let db: Database;
   let store: SessionStore;
   let manager: SearchManager;
@@ -69,9 +69,9 @@ describe('worker flash search with real SQLite fixtures', () => {
     const summaryRow = store.getSessionSummariesByIds([summary])[0];
     const adapterManager = { search: async () => ({ observations: weak, sessions: [summaryRow], prompts: [] }) } as unknown as SearchManager;
     const adapter = new ProgressiveMemorySearch(adapterManager, store);
-    const auto = await adapter.run({ query: 'Authentication token expiry', project, limit: 20, maxDetails: 1 });
-    expect(auto.observations[0].id).toBe(`S${summary}`);
-    expect(auto.observations[0].content).toContain('SUMMARY_DETAIL');
+    const result = await adapter.run({ query: 'Authentication token expiry', project, limit: 20, maxDetails: 1 });
+    expect(result.observations[0].id).toBe(`S${summary}`);
+    expect(result.observations[0].content).toContain('SUMMARY_DETAIL');
   });
 
   it('reranks semantic candidates beyond the requested limit before cutting the index (#4865)', async () => {
@@ -92,11 +92,10 @@ describe('worker flash search with real SQLite fixtures', () => {
       new SearchManager(new SessionSearch(db), store, chroma as any, new FormattingService(), new TimelineService()),
       store,
     );
-    const guided = await semantic.run({ query, project: target, mode: 'guided', limit: 5 });
-    expect(guided.index).toHaveLength(5);
-    expect(guided.index[0].id).toBe(exactId);
-    const auto = await semantic.run({ query, project: target, mode: 'auto', limit: 5, maxDetails: 1, depthBefore: 0, depthAfter: 0 });
-    expect(auto.observations[0].id).toBe(exactId);
+    const result = await semantic.run({ query, project: target, limit: 5, maxDetails: 1, depthBefore: 0, depthAfter: 0 });
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].id).toBe(exactId);
+    expect(result.observations[0].id).toBe(exactId);
   });
 
   it('returns the same curated text from the HTTP worker route without duplicate internal state', async () => {
@@ -107,15 +106,15 @@ describe('worker flash search with real SQLite fixtures', () => {
     await new Promise<void>(resolve => server.once('listening', resolve));
     try {
       const address = server.address() as { port: number };
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/flash-search`, {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', project }),
       });
       const payload = await response.json() as any;
       const expected = await progressive.run({ query: 'authentication', project });
       expect(payload).toEqual(progressiveSearchToolResult(expected));
       expect(payload.structuredContent).toBeUndefined();
-      expect(payload.content[0].text).toStartWith('flash-search — selected details');
-      const invalid = await fetch(`http://127.0.0.1:${address.port}/api/flash-search`, {
+      expect(payload.content[0].text).toStartWith('dumb-search — selected details');
+      const invalid = await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', limit: 1000 }),
       });
       const error = await invalid.json() as any;
@@ -141,7 +140,7 @@ describe('worker flash search with real SQLite fixtures', () => {
     await new Promise<void>(resolve => server.once('listening', resolve));
     try {
       const address = server.address() as { port: number };
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/flash-search`, {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: 'Literal JSON', project: target, maxDetails: 2 }),
       });

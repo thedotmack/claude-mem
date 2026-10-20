@@ -995,6 +995,40 @@ export class ServerV1PostgresRoutes implements RouteHandler {
       },
     ));
 
+    app.post('/v1/timeline', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().trim().min(1),
+        anchorId: z.string().trim().min(1).max(256),
+        depthBefore: z.number().int().min(0).max(20).optional(),
+        depthAfter: z.number().int().min(0).max(20).optional(),
+      }).strict(),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId || !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const rows = await new PostgresObservationRepository(this.options.pool).timelineAround({ ...body, teamId });
+        await this.auditWrite(req, 'observation.read', body.anchorId, body.projectId, {
+          mode: 'timeline', resultCount: rows.length,
+        });
+        res.json({ observations: rows.map(serializeObservation) });
+      },
+    ));
+
+    app.post('/v1/observations/batch', readAuth, this.handleCreate(
+      z.object({
+        projectId: z.string().trim().min(1),
+        ids: z.array(z.string().trim().min(1).max(256)).min(1).max(100),
+      }).strict(),
+      async (req, res, body) => {
+        const teamId = this.requireTeamId(req, res);
+        if (!teamId || !this.ensureProjectAllowed(req, res, body.projectId)) return;
+        const rows = await new PostgresObservationRepository(this.options.pool).getManyForScope({ ...body, teamId });
+        await this.auditWrite(req, 'observation.read', null, body.projectId, {
+          mode: 'selected', resultCount: rows.length, observationIds: rows.map(row => row.id),
+        });
+        res.json({ observations: rows.map(serializeObservation) });
+      },
+    ));
+
     // Phase 8 — context pack: same FTS path as `/v1/search`, but also returns
     // a concatenated context string for direct prompt injection. The MCP
     // `observation_context` tool calls this so MCP and any future REST
@@ -1113,6 +1147,22 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           await this.auditWrite(req, 'observation.read', null, projectId, {
             mode: 'search', via: 'mcp', query, limit,
             resultCount: rows.length, observationIds: rows.map(o => o.id),
+          });
+          return rows.map(serializeObservation);
+        },
+        timeline: async ({ projectId, anchorId, depthBefore, depthAfter }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.timelineAround({ projectId, teamId, anchorId, depthBefore, depthAfter });
+          await this.auditWrite(req, 'observation.read', anchorId, projectId, {
+            mode: 'timeline', via: 'mcp', resultCount: rows.length,
+          });
+          return rows.map(serializeObservation);
+        },
+        getObservations: async ({ projectId, ids }) => {
+          assertProjectAllowed(projectId);
+          const rows = await repo.getManyForScope({ projectId, teamId, ids });
+          await this.auditWrite(req, 'observation.read', null, projectId, {
+            mode: 'selected', via: 'mcp', resultCount: rows.length, observationIds: rows.map(row => row.id),
           });
           return rows.map(serializeObservation);
         },

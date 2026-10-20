@@ -23,7 +23,7 @@ function indexRow(row: StoredRow, kind: MemoryIndexRow['kind']): MemoryIndexRow 
   };
 }
 
-/** The worker runs the same flash_search pipeline as remote MCP. */
+/** The worker runs the same dumb_search pipeline as remote MCP. */
 export class ProgressiveMemorySearch {
   constructor(private readonly searchManager: SearchManager, private readonly store: SessionStore) {}
 
@@ -52,7 +52,7 @@ export class ProgressiveMemorySearch {
       timeline: async ({ anchor, depthBefore, depthAfter }) => this.timeline(anchor, depthBefore, depthAfter),
       fetch: async refs => this.fetch(refs),
     }).run(input);
-    logger.debug('SEARCH', 'Flash search completed', {
+    logger.debug('SEARCH', 'Dumb search completed', {
       step: result.step, indexCount: result.index.length, detailCount: result.observations.length,
     });
     return result;
