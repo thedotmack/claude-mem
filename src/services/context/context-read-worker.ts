@@ -7,6 +7,7 @@ import { resolveRuntimeContext } from '../hooks/runtime-selector.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 import { getWorkStateEntries, scopeWorkStateEntries } from '../sqlite/work-state.js';
+import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { countObservationsByProjects } from './ObservationCompiler.js';
 import { generateContextWithStats } from './ContextBuilder.js';
 import type { ContextReadReply, ContextReadRequest } from './ContextReadProtocol.js';
@@ -42,6 +43,12 @@ async function execute(request: ContextReadRequest): Promise<unknown> {
       return readDatabase(db => countObservationsByProjects({ db }, request.input.projects, request.input.platformSource) > 0);
     case 'projectsForCwd':
       return getProjectContext(request.input.cwd).allProjects;
+    case 'searchObservations':
+      return readDatabase(db => new SessionSearch(db).searchObservations(request.input.query, request.input.options));
+    case 'searchSessions':
+      return readDatabase(db => new SessionSearch(db).searchSessions(request.input.query, request.input.options));
+    case 'searchUserPrompts':
+      return readDatabase(db => new SessionSearch(db).searchUserPrompts(request.input.query, request.input.options));
   }
 }
 

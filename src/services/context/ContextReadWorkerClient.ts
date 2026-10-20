@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { Worker } from 'node:worker_threads';
 import type { ContextReadMethods, ContextReadReply, ContextReadRequest, ContextReadResult, ContextRenderRequest } from './ContextReadProtocol.js';
 import type { WorkStateEntry } from '../sqlite/work-state.js';
+import type { ObservationSearchResult, SearchOptions, SessionSummarySearchResult, UserPromptSearchResult } from '../sqlite/types.js';
 import { CONTEXT_PLACEHOLDER_NONCE } from '../../shared/context-cache.js';
 
 const MAX_PENDING_READS = 64;
@@ -32,6 +33,18 @@ export class ContextReadWorkerClient {
 
   async projectsForCwd(cwd: string): Promise<string[]> {
     return this.request('projectsForCwd', { cwd });
+  }
+
+  async searchObservations(query: string | undefined, options: SearchOptions): Promise<ObservationSearchResult[]> {
+    return this.request('searchObservations', { query, options });
+  }
+
+  async searchSessions(query: string | undefined, options: SearchOptions): Promise<SessionSummarySearchResult[]> {
+    return this.request('searchSessions', { query, options });
+  }
+
+  async searchUserPrompts(query: string | undefined, options: SearchOptions): Promise<UserPromptSearchResult[]> {
+    return this.request('searchUserPrompts', { query, options });
   }
 
   async close(): Promise<void> {
