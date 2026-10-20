@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { closeSync, existsSync, fstatSync, openSync, readSync } from 'fs';
-import { SYSTEM_REMINDER_REGEX } from '../utils/tag-stripping.js';
+import { stripSystemReminderBlocks } from '../utils/tag-stripping.js';
 
 /**
  * Extraction of `advisor` tool calls from a Claude Code transcript.
@@ -164,8 +164,7 @@ export function extractAdvisorCallsFromJsonl(
     const msgContent = entry?.message?.content;
 
     if (entryType === 'user') {
-      const text = textFromContent(msgContent)
-        .replace(SYSTEM_REMINDER_REGEX, '')
+      const text = stripSystemReminderBlocks(textFromContent(msgContent))
         .replace(/\n{3,}/g, '\n\n')
         .trim();
       // Tool results are user-role records too, but do not start a turn.

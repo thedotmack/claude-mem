@@ -16,7 +16,12 @@ import { redactForLog } from '../../../utils/redaction.js';
 export function createMiddleware(): RequestHandler[] {
   const middlewares: RequestHandler[] = [];
 
-  middlewares.push(express.json({ limit: '5mb' }));
+  const parseJson = express.json({ limit: '5mb' });
+  middlewares.push((req: Request, res: Response, next: NextFunction) => {
+    // Spool ingestion authenticates before applying its own body limit.
+    if (req.method === 'POST' && /^\/api\/spool\/ingest\/?$/i.test(req.path)) return next();
+    parseJson(req, res, next);
+  });
 
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
     const staticExtensions = ['.html', '.js', '.css', '.svg', '.png', '.jpg', '.jpeg', '.webp', '.woff', '.woff2', '.ttf', '.eot'];

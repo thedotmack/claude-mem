@@ -6,15 +6,20 @@ import { isPluginDisabledInClaudeSettings } from '../../src/shared/plugin-state.
 
 let tempDir: string;
 let originalClaudeConfigDir: string | undefined;
+let originalQoderHookMarker: string | undefined;
 
 beforeEach(() => {
   tempDir = join(tmpdir(), `plugin-disabled-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
   mkdirSync(tempDir, { recursive: true });
   originalClaudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
   process.env.CLAUDE_CONFIG_DIR = tempDir;
+  originalQoderHookMarker = process.env.CLAUDE_MEM_QODER_HOOK;
+  delete process.env.CLAUDE_MEM_QODER_HOOK;
 });
 
 afterEach(() => {
+  if (originalQoderHookMarker !== undefined) process.env.CLAUDE_MEM_QODER_HOOK = originalQoderHookMarker;
+  else delete process.env.CLAUDE_MEM_QODER_HOOK;
   if (originalClaudeConfigDir !== undefined) {
     process.env.CLAUDE_CONFIG_DIR = originalClaudeConfigDir;
   } else {
@@ -50,6 +55,12 @@ describe('isPluginDisabledInClaudeSettings (#781)', () => {
     };
     writeFileSync(join(tempDir, 'settings.json'), JSON.stringify(settings));
     expect(isPluginDisabledInClaudeSettings()).toBe(true);
+  });
+
+  it('ignores the Claude Code toggle for a Qoder hook', () => {
+    writeFileSync(join(tempDir, 'settings.json'), JSON.stringify({ enabledPlugins: { 'claude-mem@thedotmack': false } }));
+    process.env.CLAUDE_MEM_QODER_HOOK = '1';
+    expect(isPluginDisabledInClaudeSettings()).toBe(false);
   });
 
   it('should return false when enabledPlugins key is missing', () => {

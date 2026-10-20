@@ -132,6 +132,10 @@ describe('GracefulShutdown', () => {
         })
       };
 
+      const mockContextReader: CloseableClient = {
+        close: mock(async () => { callOrder.push('contextReader.close'); })
+      };
+
       writePidFile({ pid: 12345, port: 37777, startedAt: new Date().toISOString() });
       expect(existsSync(PID_FILE)).toBe(true);
 
@@ -140,6 +144,7 @@ describe('GracefulShutdown', () => {
         sessionManager: mockSessionManager,
         mcpClient: mockMcpClient,
         dbManager: mockDbManager,
+        contextReader: mockContextReader,
         chromaMcpManager: mockChromaMcpManager
       };
 
@@ -151,6 +156,9 @@ describe('GracefulShutdown', () => {
       expect(callOrder).toContain('mcpClient.close');
       expect(callOrder).toContain('chromaMcpManager.stop');
       expect(callOrder).toContain('dbManager.close');
+      expect(callOrder).toContain('contextReader.close');
+      expect(callOrder.indexOf('serverClose')).toBeLessThan(callOrder.indexOf('contextReader.close'));
+      expect(callOrder.indexOf('contextReader.close')).toBeLessThan(callOrder.indexOf('dbManager.close'));
 
       expect(callOrder.indexOf('serverClose')).toBeLessThan(callOrder.indexOf('sessionManager.shutdownAll'));
 

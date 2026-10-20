@@ -18,6 +18,9 @@ const realWorkerUtilsSnapshot = { ...realWorkerUtils };
 
 const calls: unknown[][] = [];
 let includeAllSources = false;
+let contextProjects = 'current';
+let excludedProjects = '';
+let projectCatalog: string[] | 'reject' = ['other-project', 'repo-project', 'third-project'];
 let showTerminalOutput = false;
 let workerUnreachable = false;
 let provider = 'claude';
@@ -32,6 +35,8 @@ mock.module('../../../src/shared/hook-settings.js', () => ({
   loadFromFileOnce: () => ({
     CLAUDE_MEM_CONTEXT_SHOW_TERMINAL_OUTPUT: String(showTerminalOutput),
     CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: String(includeAllSources),
+    CLAUDE_MEM_CONTEXT_PROJECTS: contextProjects,
+    CLAUDE_MEM_EXCLUDED_PROJECTS: excludedProjects,
     CLAUDE_MEM_PROVIDER: provider,
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: quotaFallbackProvider,
     CLAUDE_MEM_PRO_FALLBACK_AT: proFallbackAt,
@@ -54,6 +59,10 @@ mock.module('../../../src/utils/project-name.js', () => ({
 mock.module('../../../src/shared/worker-utils.js', () => ({
   executeWithWorkerFallback: async (...args: unknown[]) => {
     calls.push(args);
+    if (args[0] === '/api/projects') {
+      if (projectCatalog === 'reject') throw new Error('catalog unavailable');
+      return { projects: projectCatalog };
+    }
     return 'context from worker';
   },
   getWorkerPort: () => 37777,
@@ -81,6 +90,79 @@ beforeEach(() => {
 });
 
 describe('contextHandler SessionStart path', () => {
+  it('reads only this checkout by default and every project, this checkout last, when CLAUDE_MEM_CONTEXT_PROJECTS is all', async () => {
+    const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+    const injectUrl = () => String(calls.filter(call => String(call[0]).startsWith('/api/context/inject')).at(-1)?.[0]);
+    const projectsOf = (url: string) => decodeURIComponent(new URL(url, 'http://x').searchParams.get('projects') ?? '');
+
+    calls.length = 0;
+    await contextHandler.execute({ sessionId: 'projects-current', cwd: '/tmp/repo', platform: 'claude-code' });
+    expect(projectsOf(injectUrl())).toBe('parent-project,repo-project');
+    expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
+
+    contextProjects = 'all';
+    try {
+      calls.length = 0;
+      await contextHandler.execute({ sessionId: 'projects-all', cwd: '/tmp/repo', platform: 'claude-code' });
+      expect(projectsOf(injectUrl())).toBe('other-project,third-project,parent-project,repo-project');
+    } finally { contextProjects = 'current'; }
+  });
+  describe('CLAUDE_MEM_CONTEXT_PROJECTS=all', () => {
+    const injectedProjects = () => {
+      const url = String(calls.filter(call => String(call[0]).startsWith('/api/context/inject')).at(-1)?.[0]);
+      return decodeURIComponent(new URL(url, 'http://x').searchParams.get('projects') ?? '');
+    };
+    const runAll = async (sessionId: string) => {
+      const { contextHandler } = await import('../../../src/cli/handlers/context.js');
+      calls.length = 0;
+      return contextHandler.execute({ sessionId, cwd: '/tmp/repo', platform: 'claude-code' });
+    };
+    beforeEach(() => { contextProjects = 'all'; });
+    afterAll(() => {
+      contextProjects = 'current';
+      excludedProjects = '';
+      projectCatalog = ['other-project', 'repo-project', 'third-project'];
+    });
+
+    it('asks the catalog with a bounded timeout and falls back to this checkout when it rejects', async () => {
+      projectCatalog = 'reject';
+      await runAll('catalog-rejects');
+      expect(injectedProjects()).toBe('parent-project,repo-project');
+      const catalogCall = calls.find(call => call[0] === '/api/projects');
+      expect(catalogCall?.[3]).toMatchObject({ timeoutMs: 2_000 });
+    });
+
+    it('keeps the projects param stable whatever order the catalog returns', async () => {
+      projectCatalog = ['zeta', 'alpha'];
+      await runAll('catalog-order-1');
+      const first = injectedProjects();
+      projectCatalog = ['alpha', 'zeta'];
+      await runAll('catalog-order-2');
+      expect(injectedProjects()).toBe(first);
+      expect(first).toBe('alpha,zeta,parent-project,repo-project');
+    });
+
+    it('drops catalog projects matched by CLAUDE_MEM_EXCLUDED_PROJECTS', async () => {
+      projectCatalog = ['alpha', 'secret-client', 'zeta'];
+      excludedProjects = 'secret-*';
+      try {
+        await runAll('catalog-excluded');
+        expect(injectedProjects()).toBe('alpha,zeta,parent-project,repo-project');
+      } finally { excludedProjects = ''; }
+    });
+
+    it('does not ask the local catalog in server runtime', async () => {
+      const { resolveSessionStartProjects } = await import('../../../src/cli/handlers/context.js');
+      calls.length = 0;
+      const projects = await resolveSessionStartProjects(
+        { CLAUDE_MEM_CONTEXT_PROJECTS: 'all', CLAUDE_MEM_EXCLUDED_PROJECTS: '' },
+        ['parent-project', 'repo-project'],
+        'server',
+      );
+      expect(projects).toEqual(['parent-project', 'repo-project']);
+      expect(calls.some(call => call[0] === '/api/projects')).toBe(false);
+    });
+  });
   it('steers note-taking to available plugin tools by default and still injects instructions during a worker outage', async () => {
     memoryInstructions = undefined;
     const { contextHandler } = await import('../../../src/cli/handlers/context.js');

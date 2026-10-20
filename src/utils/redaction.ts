@@ -63,14 +63,19 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // because the lookbehind expects `=`/`:` directly after the key name.
   // Whitespace is bounded for the same reason as BOUNDED_SPACE.
   { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/g },
-  { name: 'github_pat',      regex: /\bgh[oprs]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
-  { name: 'openai_key',      regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\b/g },
-  { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}\b/g },
-  { name: 'slack_token',     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g },
-  { name: 'jwt',             regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b/g },
+  { name: 'github_pat',      regex: /\bgh[oprsu]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
+  // openai_key, anthropic_key, slack_token, jwt and google_api_key end in a
+  // class that includes `-`. A closing `\b` after a `-` needs a word character
+  // to follow, so a Google key ending in `-` was not redacted at all and the
+  // others left their final `-` in the stored text. `(?!\w)` is the same
+  // "the token ends here" check without that gap.
+  { name: 'openai_key',      regex: /\bsk-(?!ant-)[A-Za-z0-9_-]{20,}(?!\w)/g },
+  { name: 'anthropic_key',   regex: /\bsk-ant-[A-Za-z0-9_-]{20,}(?!\w)/g },
+  { name: 'slack_token',     regex: /\bxox[baprs]-[A-Za-z0-9-]{10,}(?!\w)/g },
+  { name: 'jwt',             regex: /\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+(?!\w)/g },
   { name: 'private_key_pem', regex: /-----BEGIN (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |DSA |EC |OPENSSH |PGP )?PRIVATE KEY-----/g },
   { name: 'stripe_key',      regex: /\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{24,}\b/g },
-  { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}\b/g },
+  { name: 'google_api_key',  regex: /\bAIza[0-9A-Za-z_-]{35}(?!\w)/g },
   // claude-mem's own credentials: server API keys (`cmem_` + 43 base64url
   // chars, server-bootstrap.ts createRawApiKey) and cmem.ai Pro memory keys.
   { name: 'claude_mem_key',  regex: /\bcmem_[A-Za-z0-9_-]{32,}|\bcm_pro_[A-Za-z0-9_-]{8,}/g },

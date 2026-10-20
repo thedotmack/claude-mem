@@ -13,7 +13,7 @@ import { SettingsDefaultsManager, type SettingsDefaults } from '../../shared/Set
 import { resolveDbPath, USER_SETTINGS_PATH } from '../../shared/paths.js';
 import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { loadClaudeMemEnv, saveClaudeMemEnv } from '../../shared/EnvManager.js';
-import { ensureWorkerStarted, type WorkerStartResult } from '../../services/worker-spawner.js';
+import { ensureWorkerStarted, getLastWorkerBootFailure, type WorkerStartResult } from '../../services/worker-spawner.js';
 import { formatHostForUrl } from '../../shared/worker-utils.js';
 import {
   ensureBun,
@@ -418,6 +418,23 @@ export function makeIDETask(ideId: string, summary: InstallSummary, dshProfile?:
       };
     }
 
+    case 'hermes': {
+      return {
+        title: 'Hermes Agent: installing memory provider',
+        task: async (message) => {
+          message('Loading Hermes installer…');
+          const { installHermesIntegration } = await import('../../services/integrations/HermesInstaller.js');
+          message('Installing the memory provider plugin…');
+          const { result, output } = await bufferConsole(async () => installHermesIntegration());
+          if (result !== 0) {
+            recordFailure('Hermes Agent: memory provider installation failed', output);
+            return `Hermes Agent: memory provider installation failed ${styleText('red', 'FAIL')}`;
+          }
+          return `Hermes Agent: memory provider installed ${styleText('green', 'OK')}`;
+        },
+      };
+    }
+
     case 'pi': {
       return {
         title: 'Pi: installing memory extension',
@@ -739,6 +756,7 @@ function copyPluginToMarketplace(): void {
     'package-lock.json',
     'openclaw',
     'omp',
+    'hermes',
     'pi',
     'dsh',
     'dist',
@@ -2580,6 +2598,24 @@ function placeHookLauncherOnPath(pluginRoot: string, summary: InstallSummary): s
   }
 }
 
+/**
+ * Whether the installer leaves the worker for the user to start. A fresh
+ * non-interactive install skips it, but an update or reinstall must not: the
+ * overwrite already stopped the old worker, so skipping would leave none
+ * running. Exported for tests.
+ */
+export function shouldSkipWorkerAutostart(input: {
+  interactive: boolean;
+  noAutoStart?: boolean;
+  runtime: RuntimeId;
+  alreadyInstalled: boolean;
+}): boolean {
+  // The server runtime is brought up via its own stack (Docker pg+redis +
+  // `claude-mem server start`), never the worker-service spawner (#2543).
+  if (input.noAutoStart || input.runtime === 'server') return true;
+  return !input.interactive && !input.alreadyInstalled;
+}
+
 export async function runInstallCommand(options: InstallOptions = {}): Promise<void> {
   const summary = createInstallSummary();
   try {
@@ -2917,11 +2953,17 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     await promptClaudeModel(options);
   }
 
-  // The server runtime is brought up via its own stack (Docker pg+redis +
-  // `claude-mem server start`), NOT the worker-service spawner. Skip the
-  // worker-only autostart entirely so the server runtime never invokes the
-  // worker path (#2543).
-  const autoStartSkipped = !isInteractive || options.noAutoStart || selectedRuntime === 'server';
+  const autoStartSkipped = shouldSkipWorkerAutostart({
+    interactive: isInteractive,
+    noAutoStart: options.noAutoStart,
+    runtime: selectedRuntime,
+    alreadyInstalled,
+  });
+  // CLAUDE_MEM_WORKER_AUTOSTART=false: its own manager runs the worker, so a
+  // worker that is not up yet is that manager's to start, not an install failure.
+  const workerManagedExternally = isWorkerAutostartDisabled({
+    CLAUDE_MEM_WORKER_AUTOSTART: getSetting('CLAUDE_MEM_WORKER_AUTOSTART'),
+  });
 
   await runTasks([
     {
@@ -2931,7 +2973,7 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
           return `Server runtime selected — start it with ${styleText('bold', 'npx claude-mem server start')} ${styleText('dim', '(or via Docker compose)')}`;
         }
         if (autoStartSkipped) {
-          return isInteractive
+          return options.noAutoStart
             ? `Skipped (--no-auto-start)`
             : `Skipped (non-TTY)`;
         }
@@ -2952,8 +2994,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             return `Worker ready at http://localhost:${port} ${styleText('green', 'OK')}`;
           case 'warming':
             return `Worker starting on port ${port} — finishing in background ${styleText('yellow', '⏳')}`;
-          case 'dead':
-            return `Worker did not start — try \`npx claude-mem start\` manually ${styleText('yellow', '!')}`;
+          case 'dead': {
+            const startFailure = getLastWorkerBootFailure()?.split('\n')[0];
+            return `Worker did not start${startFailure ? ` (${startFailure})` : ''} ${styleText('red', '✗')}`;
+          }
         }
       },
     },
@@ -3071,6 +3115,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
 
   const finalWorkerState = workerStartResult as WorkerStartResult;
   const workerAlive = finalWorkerState !== 'dead' || workerReady;
+  const workerFailedToStart = !autoStartSkipped && !workerManagedExternally && !workerAlive;
+  const workerBootFailure = workerFailedToStart ? getLastWorkerBootFailure() : undefined;
   const runtimeLabel = selectedRuntime === 'server' ? 'Server' : 'Worker';
   const runtimeStartCommand = selectedRuntime === 'server' ? 'npx claude-mem server start' : 'npx claude-mem start';
   const workerBaseUrl = `http://${workerUrlHost}:${actualPort}`;
@@ -3080,9 +3126,11 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     : workerReady || finalWorkerState === 'ready'
       ? `${styleText('green', '✓')} ${runtimeLabel} running at ${styleText('underline', workerBaseUrl)}`
       : `${styleText('yellow', '⏳')} ${runtimeLabel} starting at ${styleText('underline', workerBaseUrl)} — give it ~30s, then refresh`;
-  const nextStepsHeadline = autoStartSkipped || workerAlive
-    ? workerHeadline
-    : `${styleText('yellow', '!')} Worker not yet ready on port ${styleText('cyan', String(workerPort))} -- still starting up; check ${styleText('bold', 'claude-mem status')} later, or start manually: ${styleText('bold', 'npx claude-mem start')}`;
+  const nextStepsHeadline = workerFailedToStart
+    ? `${styleText('red', '✗')} Worker did not start on port ${styleText('cyan', String(workerPort))}${workerBootFailure ? `: ${workerBootFailure}` : ''} — run ${styleText('bold', 'npx claude-mem doctor')}, then ${styleText('bold', 'npx claude-mem start')}`
+    : autoStartSkipped || workerAlive
+      ? workerHeadline
+      : `${styleText('yellow', '!')} Worker not yet ready on port ${styleText('cyan', String(workerPort))} -- still starting up; check ${styleText('bold', 'claude-mem status')} later, or start manually: ${styleText('bold', 'npx claude-mem start')}`;
   const firstSuccessOpener = autoStartSkipped
     ? `once the worker is running, keep ${styleText('underline', configuredWorkerBaseUrl)} open in a browser`
     : workerAlive
@@ -3115,7 +3163,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     // Deliberately the last interaction of the flow: consent is asked after
     // the product is installed and working, never as a gate in front of it.
     await promptTelemetryOptIn();
-    if (failedIDEs.length > 0) {
+    if (workerFailedToStart) {
+      p.outro(styleText('red', 'claude-mem installed, but the worker did not start.'));
+      process.exitCode = 1;
+    } else if (failedIDEs.length > 0) {
       p.outro(styleText('yellow', 'claude-mem installed with some IDE setup failures.'));
     } else {
       p.outro(styleText('green', 'claude-mem installed successfully!'));
@@ -3123,7 +3174,10 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   } else {
     console.log('\n  Next Steps');
     nextSteps.forEach(l => console.log(`  ${l}`));
-    if (failedIDEs.length > 0) {
+    if (workerFailedToStart) {
+      console.error('\nclaude-mem installed, but the worker did not start.');
+      process.exitCode = 1;
+    } else if (failedIDEs.length > 0) {
       console.log('\nclaude-mem installed with some IDE setup failures.');
       process.exitCode = 1;
     } else {

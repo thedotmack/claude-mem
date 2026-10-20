@@ -51,7 +51,7 @@ describe('DELETE /api/sessions/:platformSource/:contentSessionId', () => {
     broadcasts = [];
     const routes = new DataRoutes(
       {} as any,
-      { getSessionStore: () => store, getCloudSync: () => cloudSync } as any,
+      { getSessionStore: () => store, getCloudSync: () => cloudSync, getChromaSync: () => null } as any,
       { getSession: (sessionDbId: number) => (activeSessionIds.has(sessionDbId) ? {} : undefined) } as any,
       { broadcast: (event: Record<string, unknown>) => { broadcasts.push(event); } } as any,
       {} as any,

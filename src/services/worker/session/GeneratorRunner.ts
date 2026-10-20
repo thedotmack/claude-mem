@@ -15,7 +15,7 @@ import {
   type SelectableProvider,
 } from '../provider-dispatch.js';
 import { handleGeneratorExit } from './GeneratorExitHandler.js';
-import { normalizeAbortReason } from './abort-reason.js';
+import { normalizeAbortReason, PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './abort-reason.js';
 import {
   MAX_CONSECUTIVE_STALL_RESUMES,
   RESPONSE_STALL_RESUME_DELAY_MS,
@@ -158,6 +158,7 @@ export async function startGeneratorWithProvider(
   // too, its exit records a fresh reason. Without this, one auth pause would
   // keep the session out of every automatic sweep for good.
   session.pausedReason = null;
+  session.providerSwitchPending = false;
 
   if (session.abortController.signal.aborted) {
     logger.debug('SESSION', 'Resetting aborted AbortController before starting generator', {
@@ -537,6 +538,11 @@ export async function startGeneratorWithProvider(
       // after its batches were stored; buffered work continues in a fresh one.
       if (normalizedReason === 'drift') {
         resumeGeneratorLater(session, 0, 'schema-drift', ensureGeneratorRunning);
+      }
+      // A generator ended at a message boundary to change providers resumes
+      // on the provider dispatch selects now. A parked switch starts its own.
+      if (reason === PROVIDER_SWITCH_BOUNDARY_ABORT_REASON) {
+        resumeGeneratorLater(session, 0, 'provider-switch', ensureGeneratorRunning);
       }
 
       // A response stall preserved its claimed batch but, like a recycle, has

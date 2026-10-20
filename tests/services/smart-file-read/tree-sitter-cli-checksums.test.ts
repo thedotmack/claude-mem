@@ -2,6 +2,8 @@ import { describe, it, expect } from 'bun:test';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import {
+  GLIBC_COMPATIBLE_TREE_SITTER_BUILDS,
+  glibcCompatibleTreeSitterBuild,
   pinnedTreeSitterExecutableSha256,
   TREE_SITTER_EXECUTABLE_SHA256,
 } from '../../../src/services/smart-file-read/tree-sitter-cli-checksums.js';
@@ -36,4 +38,25 @@ describe('pinned tree-sitter executable digests', () => {
     expect(pinnedTreeSitterExecutableSha256('0.26.9', 'linux', 'ia32')).toBeUndefined();
     expect(pinnedTreeSitterExecutableSha256('0.0.0', 'linux', 'x64')).toBeUndefined();
   });
+
+  // #4758: the fallback for glibc older than the release assets need. Only the
+  // glibc Linux targets conda-forge builds, each pinned twice.
+  it('pins each glibc-compatible build by package and executable digest, for released versions only', () => {
+    for (const [version, builds] of Object.entries(GLIBC_COMPATIBLE_TREE_SITTER_BUILDS)) {
+      expect(TREE_SITTER_EXECUTABLE_SHA256[version]).toBeDefined();
+      expect(Object.keys(builds).every((target) => ['linux-arm64', 'linux-x64'].includes(target))).toBe(true);
+      for (const build of Object.values(builds)) {
+        expect(build.url).toMatch(new RegExp(`^https://conda\\.anaconda\\.org/conda-forge/linux-(64|aarch64)/tree-sitter-cli-${version.replace(/\./g, '\\.')}-[a-z0-9]+_\\d+\\.conda$`));
+        expect(build.archiveSha256).toMatch(/^[0-9a-f]{64}$/);
+        expect(build.executableSha256).toMatch(/^[0-9a-f]{64}$/);
+      }
+    }
+  });
+
+  it('looks the glibc-compatible build up by version, platform and arch', () => {
+    expect(glibcCompatibleTreeSitterBuild('0.26.9', 'linux', 'x64')).toBe(GLIBC_COMPATIBLE_TREE_SITTER_BUILDS['0.26.9']['linux-x64']);
+    expect(glibcCompatibleTreeSitterBuild('0.26.9', 'darwin', 'arm64')).toBeUndefined();
+    expect(glibcCompatibleTreeSitterBuild('0.0.0', 'linux', 'x64')).toBeUndefined();
+  });
 });
+

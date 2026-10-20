@@ -3,7 +3,7 @@ import path from 'path';
 import { existsSync, readFileSync } from 'fs';
 import type { Database } from 'bun:sqlite';
 import { logger } from '../../utils/logger.js';
-import { SYSTEM_REMINDER_REGEX } from '../../utils/tag-stripping.js';
+import { stripSystemReminderBlocks } from '../../utils/tag-stripping.js';
 import { CLAUDE_CONFIG_DIR } from '../../shared/paths.js';
 import { mainAgentRowSql } from '../../shared/subagent-predicate.js';
 import { poolSize, rankByStrength } from '../reinforcement/rank.js';
@@ -146,12 +146,14 @@ export function queryObservationsNewest(
 
   const reinforcementColumn = options.withReinforcementDates ? ',\n      o.reinforcement_dates' : '';
 
+  // json_each throws on a non-JSON concepts value, which would fail the whole
+  // query and drop all context. Such a row cannot match a concept, so skip it.
   const filterSql = `(? IS NULL OR s.platform_source = ?)
       ${agentFilter}
       AND (${manualClause} (
         type IN (${typePlaceholders})
         AND EXISTS (
-          SELECT 1 FROM json_each(o.concepts)
+          SELECT 1 FROM json_each(CASE WHEN json_valid(o.concepts) THEN o.concepts ELSE '[]' END)
           WHERE value IN (${conceptPlaceholders})
         )
       ))`;
@@ -207,15 +209,20 @@ export function queryObservationsNewest(
 export function countObservationsByProjects(db: DatabaseOwner, projects: string[], platformSource?: string): number {
   if (projects.length === 0) return 0;
   const projectPlaceholders = projects.map(() => '?').join(',');
-  const row = db.db.prepare(`
+  const statement = db.db.prepare(`
     SELECT COUNT(*) as count
     FROM observations o
     LEFT JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE (o.project COLLATE NOCASE IN (${projectPlaceholders})
        OR o.merged_into_project COLLATE NOCASE IN (${projectPlaceholders}))
       AND (? IS NULL OR s.platform_source = ?)
-  `).get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
-  return row?.count ?? 0;
+  `);
+  try {
+    const row = statement.get(...projects, ...projects, platformSource ?? null, platformSource ?? null) as { count: number } | undefined;
+    return row?.count ?? 0;
+  } finally {
+    statement.finalize();
+  }
 }
 
 export function querySummariesMulti(
@@ -307,7 +314,7 @@ function parseAssistantTextFromLine(line: string): string | null {
     for (const block of entry.message.content) {
       if (block.type === 'text') text += block.text;
     }
-    text = text.replace(SYSTEM_REMINDER_REGEX, '').trim();
+    text = stripSystemReminderBlocks(text).trim();
     if (text) return text;
   }
   return null;

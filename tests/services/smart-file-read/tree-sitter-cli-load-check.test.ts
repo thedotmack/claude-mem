@@ -3,7 +3,7 @@ import { chmodSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } 
 import { delimiter, isAbsolute, join } from 'node:path';
 import { resolveDataDir } from '../../../src/shared/paths.js';
 import { treeSitterBinaryName } from '../../../src/services/smart-file-read/tree-sitter-bin-name.js';
-import { checkTreeSitterCliLoadable, pickTreeSitterBinPath } from '../../../src/services/smart-file-read/tree-sitter-bin-path.js';
+import { checkTreeSitterCliLoadable, pickTreeSitterBinPath, treeSitterCliUnavailableMessage } from '../../../src/services/smart-file-read/tree-sitter-bin-path.js';
 
 // #4758: existsSync is not enough — a tree-sitter CLI binary can be present
 // yet unable to run (e.g. linked against GLIBC_2.39 on Ubuntu 22.04's glibc
@@ -88,6 +88,19 @@ describe.skipIf(process.platform === 'win32')('checkTreeSitterCliLoadable with e
     chmodSync(binPath, 0o755);
     return binPath;
   }
+
+  it.each(['0.24.4', '0.25.10'])('rejects tree-sitter %s, which lacks required query options', (version) => {
+    const binPath = writeExecutable(join(scratchRoot, `old-${version}`), binaryName, `echo "tree-sitter ${version}"`);
+    const check = checkTreeSitterCliLoadable(binPath);
+    expect(check.present).toBe(true);
+    expect(check.loadable).toBe(false);
+    expect(check.reason).toContain('0.26.0');
+  });
+
+  it('accepts the minimum compatible tree-sitter version', () => {
+    const binPath = writeExecutable(join(scratchRoot, 'minimum-version'), binaryName, 'echo "tree-sitter 0.26.0"');
+    expect(checkTreeSitterCliLoadable(binPath).loadable).toBe(true);
+  });
 
   it('is loadable for a binary that answers --version as tree-sitter', () => {
     const binPath = writeExecutable(join(scratchRoot, 'working'), binaryName, 'echo "tree-sitter 0.26.9"');
@@ -233,5 +246,29 @@ describe.skipIf(process.platform === 'win32')('pickTreeSitterBinPath', () => {
     const mtime = new Date(Date.now() + 5000);
     utimesSync(local, mtime, mtime);
     expect(pickTreeSitterBinPath(local, binaryName, pathDir)).toBe(local);
+  });
+});
+
+// #4858: on musl the release executable never lands, so the CLI is missing,
+// not broken. The smart tools must still say so instead of "unsupported language".
+describe('treeSitterCliUnavailableMessage', () => {
+  it('is null when the CLI runs', () => {
+    expect(treeSitterCliUnavailableMessage({ present: true, loadable: true })).toBeNull();
+  });
+
+  it('reports a missing CLI as missing, with the repair and PATH fixes', () => {
+    const message = treeSitterCliUnavailableMessage(
+      checkTreeSitterCliLoadable(binaryName, join(scratchRoot, 'no-such-path')),
+    );
+    expect(message).toContain('not installed');
+    expect(message).toContain('not an unsupported language');
+    expect(message).toContain('npx claude-mem repair');
+    expect(message).toContain('on PATH');
+  });
+
+  it('reports a present CLI that cannot run with its reason', () => {
+    const message = treeSitterCliUnavailableMessage({ present: true, loadable: false, reason: 'GLIBC_2.39 not found' });
+    expect(message).toContain('cannot run on this system (GLIBC_2.39 not found)');
+    expect(message).toContain('not an unsupported language');
   });
 });

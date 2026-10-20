@@ -38,6 +38,12 @@ jobs:
 
       - run: npm run build
 
+      - name: Context reader responsiveness and packaging
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/context/context-read-responsiveness.test.ts tests/context/context-read-results.test.ts tests/context/context-read-worker-lifecycle.test.ts tests/context/context-read-routes.test.ts tests/context/context-work-state-order.test.ts tests/infrastructure/context-reader-packaging.test.ts --timeout 60000
+
       # Covers the Windows-only bun resolver path that Linux CI skips, plus the
       # scripts that replaced rsync and tail: mirror pattern matching, --delete
       # protection and -a metadata reconciliation against real NTFS paths, and

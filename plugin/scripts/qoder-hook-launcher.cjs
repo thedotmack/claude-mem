@@ -17,6 +17,7 @@ const childEnv = {
   ...process.env,
   CLAUDE_PLUGIN_ROOT: pluginRoot,
   CLAUDE_MEM_CODEX_HOOK: '1',
+  CLAUDE_MEM_QODER_HOOK: '1',
 };
 
 function dependencyClosureComplete(root) {

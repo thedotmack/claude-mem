@@ -320,7 +320,7 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
   it('runs the package install script when the executable is missing', async () => {
     const cliDir = writeCliPackage(materializingInstallScript());
 
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).resolves.toBeUndefined();
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, pinRepoBinary)).resolves.toBe('release');
     expect(existsSync(treeSitterCliBinaryPath(tempDir))).toBe(true);
     expect(readdirSync(cliDir).filter(entry => entry.startsWith('.provision-'))).toEqual([]);
   });
@@ -345,7 +345,7 @@ describe('tree-sitter CLI provisioning (#2910)', () => {
     const cliDir = writeCliPackage(partialDownloadScript(''));
 
     await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS, () => sha256('half a download')))
-      .rejects.toThrow('without creating a working executable');
+      .rejects.toThrow('matches the pinned SHA-256 but cannot run on this system');
     expectNothingLeftInPlace(cliDir);
   });
 
@@ -385,7 +385,7 @@ echo 'tree-sitter 0.26.9'
     chmodSync(binaryPath, 0o755);
 
     const startedAt = Date.now();
-    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBeUndefined();
+    await expect(ensureTreeSitterCliBinary(tempDir, TREE_SITTER_INSTALL_TIMEOUT_MS)).resolves.toBe('already-usable');
     expect(Date.now() - startedAt).toBeLessThan(2000);
   });
 

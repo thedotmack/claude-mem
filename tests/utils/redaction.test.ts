@@ -26,6 +26,7 @@ describe('redactSensitive built-in patterns', () => {
     ['github_pat',      'token: ghp_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 trailing',                  "<redacted type='github_pat'/>"],
     ['github_pat',      'oauth: gho_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                      "<redacted type='github_pat'/>"],
     ['github_pat',      'refresh: ghr_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                    "<redacted type='github_pat'/>"],
+    ['github_pat',      'app user: ghu_aBcDeFgHiJkLmNoPqRsTuVwXyZ0123456789 tail',                   "<redacted type='github_pat'/>"],
     ['openai_key',      'Authorization: Bearer sk-ABCDEFGHIJ1234567890abcdef',                        "<redacted type='openai_key'/>"],
     ['anthropic_key',   'key=sk-ant-api03-abcdef1234567890ABCDEF',                                    "<redacted type='anthropic_key'/>"],
     // Split string literals here and below so GitHub's secret-push-protection
@@ -38,6 +39,28 @@ describe('redactSensitive built-in patterns', () => {
     const result = redactSensitive(input, cfg);
     expect(result.redacted).toContain(marker);
     expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  // A closing `\b` after a trailing `-` needs a word character to follow, so
+  // these keys were missed entirely (Google) or kept their final `-`.
+  it.each([
+    ['google_api_key', 'key=AIzaSyA-0123456789abcdefghijklmnopqrst- tail', "<redacted type='google_api_key'/>"],
+    ['google_api_key', '"AIzaSyA-0123456789abcdefghijklmnopqrst-"', "<redacted type='google_api_key'/>"],
+    ['openai_key', 'key=sk-ABCDEFGHIJ1234567890abcdef- tail', "<redacted type='openai_key'/>"],
+    ['anthropic_key', 'key=sk-ant-api03-abcdef1234567890ABCDEF- tail', "<redacted type='anthropic_key'/>"],
+    ['slack_token', 'Slack: ' + 'xox' + 'b-1234567890-0987654321-abcdefghijklmnop- tail', "<redacted type='slack_token'/>"],
+    ['jwt', 'auth: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ4In0.AbCdEf0123456789- tail', "<redacted type='jwt'/>"],
+  ])('redacts a %s whose last character is a dash', (name, input, marker) => {
+    const result = redactSensitive(input, cfg);
+    expect(result.redacted).toContain(marker);
+    expect(result.redacted).not.toContain('-' + ' tail');
+    expect(result.redacted).not.toMatch(/'\/>-/);
+    expect(Object.keys(result.counts)).toEqual([name]);
+  });
+
+  it('still requires a Google key to end after its 35 characters', () => {
+    const result = redactSensitive('AIzaSyA-0123456789abcdefghijklmnopqrstuv', cfg);
+    expect(result.counts.google_api_key).toBeUndefined();
   });
 
   it('redacts a full PEM private key block', () => {

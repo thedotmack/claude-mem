@@ -118,14 +118,14 @@ describe('POST /api/sessions/init: Codex internal helper prompts', () => {
   });
 });
 
-// Grok fires UserPromptSubmit inside its research sub-agent sessions too
+// Grok Bot fires UserPromptSubmit inside its research sub-agent sessions too
 // (#4811): the first "prompt" is a generated brief of 10–28k characters, not
 // a person typing. It became a stored user prompt and spent a semantic
-// search. The skip applies to grok only: the same text from another host is
-// a person's prompt.
+// search. The skip applies to grok-bot only: the same text from another host
+// is a person's prompt.
 const GROK_BRIEF = 'Independently verify every candidate claim in the JSON packet below against the cited sources.\n\n{"claims": []}';
 
-describe('session-init hook: grok sub-agent briefs', () => {
+describe('session-init hook: grok-bot sub-agent briefs', () => {
   const cwd = join(tmpdir(), 'claude-mem-grok-subagent-brief-test');
   let workerCalls: string[] = [];
 
@@ -147,15 +147,7 @@ describe('session-init hook: grok sub-agent briefs', () => {
     setSessionInitDependenciesForTesting();
   });
 
-  it('does not start a session for a grok sub-agent brief', async () => {
-    const result = await sessionInitHandler.execute({ sessionId: 'grok-subagent', cwd, platform: 'grok', prompt: GROK_BRIEF });
-    expect(result.continue).toBe(true);
-    expect(workerCalls).toEqual([]);
-  });
-
   it('does not start a session for a grok-bot sub-agent brief', async () => {
-    // The installed Grok Bot integration reports platform 'grok-bot', not
-    // 'grok' — the brief filter has to catch that token too (#4811).
     const result = await sessionInitHandler.execute({ sessionId: 'grok-bot-subagent', cwd, platform: 'grok-bot', prompt: GROK_BRIEF });
     expect(result.continue).toBe(true);
     expect(workerCalls).toEqual([]);
@@ -170,14 +162,9 @@ describe('session-init hook: grok sub-agent briefs', () => {
     await sessionInitHandler.execute({ sessionId: 'claude-user', cwd, platform: 'claude-code', prompt: GROK_BRIEF });
     expect(workerCalls).toEqual(['/api/sessions/init']);
   });
-
-  it('still records an ordinary grok prompt', async () => {
-    await sessionInitHandler.execute({ sessionId: 'grok-user', cwd, platform: 'grok', prompt: 'fix the flaky test' });
-    expect(workerCalls).toEqual(['/api/sessions/init']);
-  });
 });
 
-describe('POST /api/sessions/init: grok sub-agent briefs', () => {
+describe('POST /api/sessions/init: grok-bot sub-agent briefs', () => {
   let server: Server | undefined;
   let store: SessionStore;
   let port = 0;
@@ -222,13 +209,8 @@ describe('POST /api/sessions/init: grok sub-agent briefs', () => {
     return await response.json() as Record<string, unknown>;
   }
 
-  it('skips a grok sub-agent brief before creating a session, with its own reason', async () => {
-    expect(await init('grok', GROK_BRIEF)).toEqual({ skipped: true, reason: 'subagent_brief' });
-    expect(store.findSessionDbIdByContentSessionId('grok-session', 'grok')).toBeNull();
-  });
-
-  it('skips a grok-bot sub-agent brief before creating a session, with its own reason', async () => {
-    expect(await init('grok-bot', GROK_BRIEF)).toEqual({ skipped: true, reason: 'subagent_brief' });
+  it('skips a grok-bot sub-agent brief before creating a session', async () => {
+    expect(await init('grok-bot', GROK_BRIEF)).toEqual({ skipped: true, reason: 'internal_system_prompt' });
     expect(store.findSessionDbIdByContentSessionId('grok-bot-session', 'grok-bot')).toBeNull();
   });
 

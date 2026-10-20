@@ -227,6 +227,84 @@ describe('ChromaSync watermark gap persistence', () => {
     expect(ChromaSyncState.getPending(project, 'observations')).toEqual([2]);
   });
 
+  it('rebuilds a project from zero when bootstrap finds an empty collection (#4818)', async () => {
+    // The v12.4.3 cleanup wiped the collection: bootstrap finds nothing indexed.
+    existingObservationIds = new Set<number>();
+    const sync = new ChromaSync(project);
+
+    await sync.bootstrapWatermarksFromChroma(project, makeStore(project, [1, 2, 3]));
+
+    // Pre-fix this was watermark 0 with nothing pending and no rebuild flag,
+    // so a live bump before this project's backfill turn hid every row.
+    expect(ChromaSyncState.isRebuildPending(project)).toBe(true);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+
+    // Live syncs write new rows while this project waits in the backfill
+    // queue, advancing the watermark past the bootstrap rows.
+    ChromaSyncState.bump(project, 'observations', 10);
+    ChromaSyncState.bump(project, 'observations', 11);
+    expect(ChromaSyncState.get(project).observations).toBe(11);
+
+    // At its turn the rebuild resets the watermark to zero and visits rows 1-3.
+    const outcome = await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 10, 11]));
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(outcome).toBe('completed');
+    expect(writtenIds).toContain('obs_1_narrative');
+    expect(writtenIds).toContain('obs_2_narrative');
+    expect(writtenIds).toContain('obs_3_narrative');
+    expect(ChromaSyncState.isRebuildPending(project)).toBe(false);
+    expect(ChromaSyncState.get(project).observations).toBe(11);
+  });
+
+  it('keeps unindexed rows above the indexed max pending through a live bump (#4818)', async () => {
+    // A partially filled collection: rows 3-5 were never indexed.
+    existingObservationIds = new Set([1, 2]);
+    const sync = new ChromaSync(project);
+
+    await sync.bootstrapWatermarksFromChroma(project, makeStore(project, [1, 2, 3, 4, 5]));
+
+    expect(ChromaSyncState.isRebuildPending(project)).toBe(false);
+    expect(ChromaSyncState.get(project).observations).toBe(2);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([3, 4, 5]);
+
+    // A live write lands before this project's backfill turn.
+    ChromaSyncState.bump(project, 'observations', 10);
+
+    await sync.ensureBackfilled(project, makeStore(project, [1, 2, 3, 4, 5, 10]));
+
+    const writtenIds = addDocumentCalls.flat();
+    expect(writtenIds).toContain('obs_3_narrative');
+    expect(writtenIds).toContain('obs_4_narrative');
+    expect(writtenIds).toContain('obs_5_narrative');
+    expect(writtenIds).not.toContain('obs_1_narrative');
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
+  it('reads a large pending list in bounded IN queries (#4818)', async () => {
+    const ids = Array.from({ length: 1200 }, (_, index) => index + 1);
+    ChromaSyncState.replace(project, {
+      observations: 1200, summaries: 0, prompts: 0,
+      pending: { observations: ids },
+    });
+    const store = makeStore(project, ids);
+    const prepare = store.db.prepare.bind(store.db);
+    const inQueryParameterCounts: number[] = [];
+    store.db.prepare = (query: string) => {
+      if (query.includes('IN (')) {
+        inQueryParameterCounts.push((query.match(/\?/g) ?? []).length);
+      }
+      return prepare(query);
+    };
+
+    await new ChromaSync(project).ensureBackfilled(project, store as any);
+
+    expect(inQueryParameterCounts.length).toBeGreaterThan(1);
+    expect(Math.max(...inQueryParameterCounts)).toBeLessThanOrEqual(501);
+    expect(new Set(addDocumentCalls.flat()).size).toBe(1200);
+    expect(ChromaSyncState.getPending(project, 'observations')).toEqual([]);
+  });
+
   it('marks a failed live observation write pending so a later write cannot orphan it (#3917)', async () => {
     ChromaSyncState.replace(project, {
       observations: 4,
