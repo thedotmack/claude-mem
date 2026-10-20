@@ -309,9 +309,10 @@ Waste: 18,000 tokens on irrelevant context
 **3-Layer Workflow:**
 ```
 Step 1: search (20 results)        ~1,000-2,000 tokens
-Step 2: Review index, filter to 3 relevant IDs
+Step 2: timeline around relevant IDs ~300-600 tokens
+        Review context, select 3 relevant IDs
 Step 3: get_observations (3 IDs)   ~1,500-3,000 tokens
-Total: 2,500-5,000 tokens (50-75% savings)
+Total: ~2,800-5,600 tokens
 ```
 
 **10x Savings:** By filtering at index level before fetching full details
