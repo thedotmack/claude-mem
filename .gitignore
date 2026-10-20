@@ -30,6 +30,7 @@ Auto Run Docs/
 src/ui/viewer.html
 
 .mcp.json
+modeld-out/
 .cursor/
 
 .idea/
