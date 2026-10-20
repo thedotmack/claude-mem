@@ -529,6 +529,7 @@ const tools = [
           ...(result.isError ? { isError: true } : {}),
         };
       } catch (error) {
+        logger.warn('SYSTEM', 'mem_search failed', undefined, error instanceof Error ? error : new Error(String(error)));
         return progressiveSearchToolError(error);
       }
     },

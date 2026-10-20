@@ -478,7 +478,12 @@ export function progressiveSearchToolResult(result: ProgressiveSearchResult) {
 export function progressiveSearchToolError(error: unknown) {
   // Backend exceptions may contain credentials or SQL. Only contract errors are
   // safe to disclose; adapters log backend errors through their own safe logger.
-  const message = error instanceof ProgressiveSearchError ? error.message : "Memory retrieval failed. Retry the query.";
+  const isTimeout = error instanceof Error && error.message.toLowerCase().includes('timed out');
+  const message = error instanceof ProgressiveSearchError
+    ? error.message
+    : isTimeout
+      ? error.message
+      : "Memory retrieval failed. Retry the query.";
   const text = `Memory search could not continue.\n${message}\nNext: restart mem_search with a query and mode="guided"; follow index → context → selected details.`;
   return { content: [{ type: "text" as const, text }], isError: true as const };
 }

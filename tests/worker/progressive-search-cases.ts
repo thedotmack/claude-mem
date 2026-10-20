@@ -256,6 +256,11 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     assert.match(result.content[0].text, /Memory retrieval failed/);
     assert.match(result.content[0].text, /Next: restart mem_search/);
     assert(!result.content[0].text.includes('PRIVATE_'));
+
+    const timeoutResult = progressiveSearchToolError(new Error('Request timed out after 30000ms'));
+    assert.equal(timeoutResult.isError, true);
+    assert.match(timeoutResult.content[0].text, /Request timed out after 30000ms/);
+    assert.match(timeoutResult.content[0].text, /Next: restart mem_search/);
   });
   await check(async () => {
     const projected = projectMemoryContent({ narrative: 'x'.repeat(40000), facts: Array.from({ length: 13 }, (_, i) => `Fact ${i}`) });
