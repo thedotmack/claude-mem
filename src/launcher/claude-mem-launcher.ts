@@ -26,6 +26,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statS
 import { homedir, tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
+import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -276,14 +277,16 @@ interface BunRuntimeSelection {
 /**
  * findBun is primary so the worker and its daemon keep the user's real `bun`
  * as process.execPath and track its version (SPIKE Decision 3). BUN_BE_BUN on
- * our own executable is the fallback for machines where Bun was removed.
+ * our own executable is the fallback for machines where Bun was removed, and
+ * only when the embedded runtime honours it (Bun 1.2.16+): an older one would
+ * run this launcher again instead of the worker, forever (#4933).
  */
 function selectBunRuntime(): BunRuntimeSelection | null {
   const discoveredBunPath = findBun();
   if (discoveredBunPath) {
     return { bunExecutablePath: discoveredBunPath, extraEnvironment: {} };
   }
-  if (isRunningAsCompiledBunExecutable()) {
+  if (isRunningAsCompiledBunExecutable() && bunVersionHonoursBunBeBun(process.versions.bun)) {
     // BUN_BE_BUN rides in the child's env, so the worker (and any daemon it
     // spawns via process.execPath) inherits it — only on this fallback path.
     return { bunExecutablePath: process.execPath, extraEnvironment: { BUN_BE_BUN: '1' } };
@@ -450,6 +453,15 @@ async function main(): Promise<void> {
   if (launcherArguments[0] === '--version') {
     process.stdout.write(`${LAUNCHER_PROTOCOL}\n`);
     process.exit(0);
+  }
+
+  // Re-entry guard (#4933): BUN_BE_BUN=1 is only ever set for a child that
+  // should be the bun CLI. Reaching launcher code with it set means the
+  // runtime ignored it, and spawning again would start an endless chain.
+  // Exit 1 (never 2, which blocks in Claude Code); the parent fails open.
+  if (process.env.BUN_BE_BUN === '1') {
+    process.stderr.write(`claude-mem: started with BUN_BE_BUN=1 but Bun ${process.versions.bun ?? 'unknown'} ignored it; not starting the worker again (upgrade Bun to 1.2.16+ and run \`npx claude-mem install\`)\n`);
+    process.exit(1);
   }
 
   await runThroughWorker(launcherArguments);
