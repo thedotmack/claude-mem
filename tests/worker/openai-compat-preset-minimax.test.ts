@@ -23,17 +23,17 @@ const ENV_KEYS = [
 ] as const;
 
 describe('MiniMax presets', () => {
-  it('points the global preset at api.minimax.io with MiniMax-M3.1-Flash', () => {
+  it('points the global preset at api.minimax.io with MiniMax-M3', () => {
     const preset = resolveOpenAICompatPreset('minimax');
     expect(preset.baseUrl).toBe('https://api.minimax.io/v1');
-    expect(preset.defaultModel).toBe('MiniMax-M3.1-Flash');
+    expect(preset.defaultModel).toBe('MiniMax-M3');
     expect(preset.requiresApiKey).toBe(true);
   });
 
   it('points the China preset at api.minimaxi.com', () => {
     const preset = resolveOpenAICompatPreset('minimax-cn');
     expect(preset.baseUrl).toBe('https://api.minimaxi.com/v1');
-    expect(preset.defaultModel).toBe('MiniMax-M3.1-Flash');
+    expect(preset.defaultModel).toBe('MiniMax-M3');
     expect(preset.requiresApiKey).toBe(true);
   });
 
@@ -56,8 +56,8 @@ describe('MiniMax presets', () => {
     });
 
     for (const preset of ['minimax', 'minimax-cn']) {
-      for (const model of ['', 'MiniMax-M3', 'MiniMax-M2.7', 'account-custom-model']) {
-        it(`sends ${preset} with ${model || 'the Flash default'} from saved settings`, async () => {
+      for (const model of ['', 'MiniMax-M3', 'MiniMax-M3.1-Flash', 'MiniMax-M2.7', 'account-custom-model']) {
+        it(`sends ${preset} with ${model || 'the M3 default'} from saved settings`, async () => {
           for (const key of ENV_KEYS) delete process.env[key];
           const directory = mkdtempSync(join(tmpdir(), 'minimax-preset-'));
           const settingsPath = join(directory, 'settings.json');
@@ -87,11 +87,11 @@ describe('MiniMax presets', () => {
             expect(url).toBe(`${resolveOpenAICompatPreset(preset).baseUrl}/chat/completions`);
             expect((init.headers as Record<string, string>).Authorization).toBe('Bearer fixture-minimax-key');
             const body = JSON.parse(String(init.body));
-            expect(body.model).toBe(model || 'MiniMax-M3.1-Flash');
+            expect(body.model).toBe(model || 'MiniMax-M3');
             expect(body.messages).toEqual(history);
             expect(body.stream).toBe(true);
             expect(body.stream_options).toEqual({ include_usage: true });
-            // Omission uses the API's adaptive thinking and default max effort.
+            // Omission leaves thinking and effort at the API's defaults (max effort for Flash).
             // This observer has no tool-execution or multimodal request interface.
             for (const key of ['thinking', 'reasoning_effort', 'reasoning_split', 'service_tier', 'tools']) {
               expect(body).not.toHaveProperty(key);
