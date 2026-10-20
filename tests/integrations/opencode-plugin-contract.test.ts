@@ -191,9 +191,20 @@ describe("OpenCode plugin event contract", () => {
   });
 
   it("scopes injected context to OpenCode's own memory by default", async () => {
-    // The worker filters observations to the platform that recorded them, so
+    // The worker filters observations by the platform that recorded them, so
     // the source parameter decides what a session can see. OpenCode must ask
     // for its own source unless the user opted into every source.
+    //
+    // A temp data dir with an explicit settings file keeps this independent
+    // of the developer's own settings, and the env var is cleared so a
+    // developer who enabled the switch locally does not fail this test.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-scope-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify({}));
+
     const originalFetch = globalThis.fetch;
     const seenUrls: string[] = [];
     globalThis.fetch = (async (url: string | URL | Request) => {
@@ -213,6 +224,11 @@ describe("OpenCode plugin event contract", () => {
       expect(new URL(inject!).searchParams.get("platformSource")).toBe("opencode");
     } finally {
       globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
     }
   });
 
@@ -223,7 +239,11 @@ describe("OpenCode plugin event contract", () => {
     // silently does nothing for OpenCode.
     const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-all-sources-"));
     const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    // The file is the switch under test; clear the env var so a developer
+    // who set it locally does not decide this test's outcome.
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
     writeFileSync(
       join(dataDir, "settings.json"),
       JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
@@ -254,6 +274,55 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
       if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
       else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("picks up a source-scope change between sessions without a restart", async () => {
+    // The switch is read per request so that changing it does not require an
+    // OpenCode restart. Two different session IDs on the same core instance
+    // prove the read is not frozen at module load; the per-session context
+    // cache is a separate contract and is left alone.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-live-switch-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-live-switch-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      await core.memoryContext("ses_live_before");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+      );
+      await core.memoryContext("ses_live_after");
+
+      const injects = seenUrls.filter((url) => url.includes("/api/context/inject"));
+      expect(injects).toHaveLength(2);
+      expect(new URL(injects[0]).searchParams.get("platformSource")).toBe("opencode");
+      expect(new URL(injects[1]).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
@@ -269,7 +338,9 @@ describe("OpenCode plugin event contract", () => {
     // the per-request read: it must not change the file again.
     const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-readonly-"));
     const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
     process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
     const settingsPath = join(dataDir, "settings.json");
     const original = JSON.stringify({
       CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true",
@@ -301,6 +372,8 @@ describe("OpenCode plugin event contract", () => {
       globalThis.fetch = originalFetch;
       if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
       else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
       rmSync(dataDir, { recursive: true, force: true });
     }
   });
