@@ -30,10 +30,8 @@ const EMBED_CHUNK_CHARS = 256 * 1024;
  * #3012 reports it respawning continuously and crashing in bulk, and every
  * Windows-specific workaround in the old ChromaMcpManager existed to babysit it.
  *
- * onnxruntime-node MUST stay pinned to 1.21.0. From 1.24 they stopped shipping a
- * darwin/x64 binary, which would silently strand every Intel Mac user — and Intel
- * Macs are exactly where the #3012 reports came from. 1.21.0 ships all six
- * targets: {linux,darwin,win32} x {x64,arm64}.
+ * onnxruntime-node is pinned below 1.24 for Intel Macs; see the plugin
+ * `overrides` in scripts/build-hooks.js.
  */
 export class LocalEmbedder implements Embedder {
   readonly modelId = 'Xenova/all-MiniLM-L6-v2/fp32/mean/l2';

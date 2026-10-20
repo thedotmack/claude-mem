@@ -517,12 +517,14 @@ async function buildHooks() {
         // `overrides` ONLY in the project being installed, so the root override is
         // invisible to users; plugin/ is its own install root (own package.json +
         // own bun.lock, installed by setup-runtime.ts), so this one DOES apply.
-        // Without it, @huggingface/transformers' EXACT transitive pin
-        // "onnxruntime-node": "1.24.3" wins — and 1.24.x ships
-        // bin/napi-v6/{linux/x64,linux/arm64,darwin/arm64,win32/x64,win32/arm64}
-        // with NO darwin/x64, stranding every Intel Mac (the exact cohort the
-        // vector index exists to help). 1.21.0 ships all six targets.
-        'onnxruntime-node': '1.21.0'
+        // Without it, @huggingface/transformers' EXACT transitive pin wins
+        // ("onnxruntime-node": "1.30.0" in transformers 4.3.1), and ONNX Runtime
+        // ships no macOS x86_64 binary from 1.24 on (v1.24.1 release notes), so
+        // every Intel Mac would lose search by meaning, as in #3199. 1.23.2 is
+        // the last release with all six targets, {linux,darwin,win32} x
+        // {x64,arm64}, and the version uv resolves Chroma's `onnxruntime>=1.20`
+        // to on an Intel Mac. Its vectors are bit-identical to 1.21.0's.
+        'onnxruntime-node': '1.23.2'
       },
       trustedDependencies: [
         'tree-sitter-cli'
@@ -738,8 +740,8 @@ async function buildHooks() {
         // external, so the lazy path dies on a real install with
         // "Cannot find module 'onnxruntime-node'". Keeping the whole trio external
         // makes the dynamic import resolve against plugin/node_modules, where
-        // plugin/package.json ships them (and pins onnxruntime-node to 1.21.0 —
-        // 1.24.x dropped the darwin/x64 prebuilt, stranding Intel Macs).
+        // plugin/package.json ships them (and pins onnxruntime-node; see its
+        // overrides above).
         'onnxruntime-node',
         '@huggingface/transformers',
         'sharp',
