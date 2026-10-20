@@ -13,6 +13,7 @@ import type { ServerGenerationProvider } from '../../../src/server/generation/pr
 import type { Job } from 'bullmq';
 import type { GenerateObservationsForEventJob } from '../../../src/server/jobs/types.js';
 import { createIsolatedSchema, poolForSchema, quoteIdentifier } from '../../sdk/pg-isolation.js';
+import { ModeManager } from '../../../src/services/domain/ModeManager.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -45,6 +46,9 @@ describe('ProviderObservationGenerator', () => {
   let jobId: string;
 
   beforeEach(async () => {
+    // The generation path reads the active ModeManager mode; load it so this
+    // file runs standalone instead of relying on another test file's side effect.
+    ModeManager.getInstance().loadMode('code');
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_phase5_gen');
     pool = poolForSchema(testDatabaseUrl!, schemaName);
     client = await pool.connect();
