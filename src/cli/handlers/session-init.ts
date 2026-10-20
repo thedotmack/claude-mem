@@ -16,6 +16,7 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { SEMANTIC_CONTEXT_MIN_QUERY_CHARS } from '../../shared/semantic-context.js';
 import { workStatePlatform } from '../../shared/work-state-telemetry.js';
 import { isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import {
@@ -246,7 +247,7 @@ const sessionInit = {
             Math.floor(sessionInitTimeoutMs / SESSION_INIT_SERVER_TIMEOUT_DIVISOR),
           ),
         );
-        if (semanticInject && prompt.length >= 20 && prompt !== '[media prompt]') {
+        if (semanticInject && prompt.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS && prompt !== '[media prompt]') {
           const additionalContext = await fetchServerSemanticContext(
             runtime,
             prompt,
@@ -353,7 +354,7 @@ const sessionInit = {
 
     let additionalContext = '';
 
-    if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+    if (semanticInject && prompt && prompt.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
       const semanticTimeoutMs = remainingSessionInitTimeoutMs(sessionInitStartedAt, sessionInitTimeoutMs);
       if (semanticTimeoutMs < SESSION_INIT_MIN_REMAINING_TIMEOUT_MS) {
@@ -444,7 +445,7 @@ async function fetchServerSemanticContext(
     const result = await runtime.client.semanticContext({
       projectId: runtime.projectId,
       query: prompt,
-      limit: Math.min(parseSemanticInjectLimit(limit), 20),
+      limit: parseSemanticInjectLimit(limit),
       platformSource,
       folderProjects,
     }, { timeoutMs });

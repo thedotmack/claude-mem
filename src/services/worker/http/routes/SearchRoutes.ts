@@ -12,7 +12,11 @@ import { scopedProjects } from '../../../sqlite/project-read-keys.js';
 import { validateBody } from '../middleware/validateBody.js';
 import { logger } from '../../../../utils/logger.js';
 import { groupByDate } from '../../../../shared/timeline-formatting.js';
-import { renderSemanticContext } from '../../../../shared/semantic-context.js';
+import {
+  SEMANTIC_CONTEXT_MAX_LIMIT,
+  SEMANTIC_CONTEXT_MIN_QUERY_CHARS,
+  renderSemanticContext,
+} from '../../../../shared/semantic-context.js';
 import { countObservationsByProjects } from '../../../context/ObservationCompiler.js';
 import { observerHealthWarning, withObserverHealthWarning } from '../../../context/ContextBuilder.js';
 import type { ContextInjectStats } from '../../../context/ContextBuilder.js';
@@ -602,10 +606,10 @@ export class SearchRoutes extends BaseRouteHandler {
     const query = SearchRoutes.firstString(req.body?.q) ?? SearchRoutes.firstString(req.query.q) ?? '';
     let project = SearchRoutes.firstString(req.body?.project) ?? SearchRoutes.firstString(req.query.project);
     let projects = SearchRoutes.parseProjectsParam(req.body?.projects ?? req.query.projects);
-    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), 20);
+    const limit = Math.min(Math.max(parseInt(String(req.body?.limit || req.query.limit || '5'), 10) || 5, 1), SEMANTIC_CONTEXT_MAX_LIMIT);
     const platformSource = this.getOptionalPlatformSourceFromRequest(req);
 
-    if (!query || query.length < 20) {
+    if (!query || query.length < SEMANTIC_CONTEXT_MIN_QUERY_CHARS) {
       res.json({ context: '', count: 0 });
       return;
     }

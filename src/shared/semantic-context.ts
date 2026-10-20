@@ -1,3 +1,8 @@
+/** Prompts shorter than this get no injection: too little to search on. */
+export const SEMANTIC_CONTEXT_MIN_QUERY_CHARS = 20;
+/** Most observations one prompt's injection returns. */
+export const SEMANTIC_CONTEXT_MAX_LIMIT = 20;
+
 /** One observation as per-prompt semantic injection shows it. */
 export interface SemanticContextItem {
   title?: string | null;
