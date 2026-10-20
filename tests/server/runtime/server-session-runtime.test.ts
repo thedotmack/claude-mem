@@ -181,6 +181,12 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
       teamId,
       status: 'processing',
     });
+    // The response belongs to the processing attempt it was generated for.
+    const processing = (await storage.observationGenerationJobs.getByIdForScope({
+      id: job.id,
+      projectId,
+      teamId,
+    }))!;
 
     const summaryXml = `<summary>
       <request>investigate session</request>
@@ -193,7 +199,7 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
 
     const outcome1 = await processSessionSummaryResponse({
       pool,
-      job,
+      job: processing,
       rawText: summaryXml,
       providerLabel: 'claude',
     });
@@ -207,7 +213,7 @@ describe('PostgresServerSessionsRepository + Postgres', () => {
     // job is already in completed state.
     const outcome2 = await processSessionSummaryResponse({
       pool,
-      job,
+      job: processing,
       rawText: summaryXml,
       providerLabel: 'claude',
     });
