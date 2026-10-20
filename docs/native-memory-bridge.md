@@ -13,7 +13,7 @@ agents to use only tools actually available. To-do lists remain in
 The existing `PreToolUse` file-context hook recognizes `memory_search`, a local
 `memory` tool's read commands, and Read/Grep/Glob/Bash reads scoped to Claude
 native memory folders, Codex's memory folder, or configured note roots. It
-calls `/api/search` for a compact index using the checkout's project scope. It never calls Dumb search or automatically fetches full records. The agent continues with timeline context, then fetches only the selected observation IDs.
+calls `/api/search` with `type=observations` for a compact observation index using the checkout's project scope. It never calls Dumb search or automatically fetches full records. Session and prompt rows are excluded so their numeric IDs cannot be mistaken for observation IDs. The agent continues with timeline context, then fetches only the selected observation IDs.
 An explicitly mapped note folder uses its own project instead, even when another
 checkout reads it. The internal HTTP transport carries a `content` envelope,
 while the model sees only its concise, selected readable text. Structured

@@ -134,13 +134,22 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
     case 'server-search':
     case 'server-timeline': {
       const server = purpose === 'server-search' || purpose === 'server-timeline';
-      const results = [...rows(payload, 'observations'), ...rows(payload, 'sessions'), ...rows(payload, 'prompts')];
+      const results = [
+        ...rows(payload, 'observations').map(value => ({ value, prefix: '' })),
+        ...rows(payload, 'sessions').map(value => ({ value, prefix: server ? '' : 'S' })),
+        ...rows(payload, 'prompts').map(value => ({ value, prefix: server ? '' : 'P' })),
+      ];
+      const hasTypedIds = results.some(result => result.prefix);
       const next = server
         ? (purpose === 'server-timeline' ? 'Next: get_observations(ids=[...]) for only the relevant server records you choose.' : 'Next: timeline(anchor=ID) for server context, then get_observations(ids=[...]) for only the records you choose.')
-        : 'Next: timeline(anchor=ID) for context around relevant results, then get_observations(ids=[...]) for full details of the IDs you choose.';
-      const entries = results.map(value => {
+        : hasTypedIds
+          ? 'Next: timeline(anchor=ID) for a numeric observation ID or an S-prefixed session ID. For P-prefixed prompts, use timeline(query=...) to find a relevant observation. Then get_observations(ids=[...]) for selected numeric observation IDs only; never pass S/P IDs.'
+          : 'Next: timeline(anchor=ID) for context around relevant results, then get_observations(ids=[...]) for full details of the IDs you choose.';
+      const entries = results.map(({ value, prefix }) => {
         const row = record(value);
         const metadata = record(row.metadata);
+        const rawId = line(row.id, '?', 100);
+        const id = prefix && !rawId.startsWith(prefix) ? `${prefix}${rawId}` : row.id;
         let title = [row.title, row.request, row.prompt_text, metadata.title, ...(server ? [metadata.request] : [])]
           .find(value => typeof value === 'string' && value.trim());
         const prose = server ? projectMemoryContent(row.content ?? row).text : '';
@@ -150,7 +159,7 @@ export function formatMcpPayload(purpose: McpTextPurpose, payload: unknown): Mcp
         }
         const context = purpose === 'server-timeline'
           ? [recordedAt(row), line(prose, '', 160).trim()].filter(Boolean).join(' · ') : '';
-        return `- ${identity({ ...row, title: title ?? 'Untitled memory' })}${context ? `\n  ${context}` : ''}`;
+        return `- ${identity({ ...row, id, title: title ?? 'Untitled memory' })}${context ? `\n  ${context}` : ''}`;
       });
       const included: string[] = [];
       let bytes = Buffer.byteLength(next, 'utf8') + 300;

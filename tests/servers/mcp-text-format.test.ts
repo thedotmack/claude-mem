@@ -34,6 +34,29 @@ describe('purpose-specific model responses', () => {
     expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(256 * 1024);
     expect(text).not.toContain('\ufffd');
   });
+  it('preserves colliding local record kinds and gives supported follow-up routes', () => {
+    const payload = {
+      observations: [{ id: 7, title: 'Observation seven', narrative: 'PRIVATE_OBSERVATION_BODY' }],
+      sessions: [{ id: 7, request: 'Session seven', summary: 'PRIVATE_SESSION_BODY' }],
+      prompts: [{ id: 7, prompt_text: 'Prompt seven', metadata: 'PRIVATE_PROMPT_METADATA' }],
+    };
+    for (const result of [
+      formatMcpPayload('search', payload),
+      formatWorkerMcpResponse('search', { content: [{ type: 'text', text: JSON.stringify(payload) }] }),
+    ]) {
+      const text = result.content[0].text;
+      expect(text).toContain('#7 — Observation seven');
+      expect(text).toContain('#S7 — Session seven');
+      expect(text).toContain('#P7 — Prompt seven');
+      expect(text).toContain('S-prefixed session ID');
+      expect(text).toContain('For P-prefixed prompts, use timeline(query=...)');
+      expect(text).toContain('selected numeric observation IDs only; never pass S/P IDs');
+      expect(text).not.toContain('PRIVATE_');
+    }
+    const typed = formatMcpPayload('search', { sessions: [{ id: 'S7', request: 'Already typed' }] });
+    expect(typed.content[0].text).toContain('#S7 — Already typed');
+    expect(typed.content[0].text).not.toContain('#SS7');
+  });
   it('renders requested indexes beyond twenty and provides compact dated server context', () => {
     const rows = Array.from({ length: 35 }, (_, i) => ({ id: i + 1, title: `Memory ${i + 1}`, narrative: 'PRIVATE_INDEX_BODY' }));
     const index = formatMcpPayload('search', { observations: rows }).content[0].text;

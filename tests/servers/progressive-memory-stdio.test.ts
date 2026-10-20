@@ -8,6 +8,7 @@ import { SessionSearch } from '../../src/services/sqlite/SessionSearch.js';
 import { SearchManager } from '../../src/services/worker/SearchManager.js';
 import { FormattingService } from '../../src/services/worker/FormattingService.js';
 import { TimelineService } from '../../src/services/worker/TimelineService.js';
+import { ModeManager } from '../../src/services/domain/ModeManager.js';
 import { SearchRoutes } from '../../src/services/worker/http/routes/SearchRoutes.js';
 import { MemoryRoutes } from '../../src/services/worker/http/routes/MemoryRoutes.js';
 import { WorkStateRoutes } from '../../src/services/worker/http/routes/WorkStateRoutes.js';
@@ -24,6 +25,7 @@ function modelText(result: CallToolResult): string {
 
 describe('built local MCP Dumb search stdio integration', () => {
   it('advertises Dumb search, restores the layered tools and delivers curated text through the real stdio transport', async () => {
+    ModeManager.getInstance().loadMode('code');
     const db = new Database(':memory:');
     const store = new SessionStore(db);
     const project = 'stdio-progressive-fixture';
@@ -32,6 +34,13 @@ describe('built local MCP Dumb search stdio integration', () => {
       type: 'decision', title: 'Authentication token expiry', subtitle: null, narrative: 'PRIVATE_STDIO_BODY',
       facts: [], concepts: [], files_read: [], files_modified: [],
     }, 1, 0, Date.now());
+    const summary = store.storeSummary(memory, project, {
+      request: 'Authentication session summary', investigated: '', learned: '', completed: '', next_steps: '', notes: null,
+    }, 1, 0, Date.now());
+    const promptSession = store.createSDKSession('stdio-prompt-content', project, 'Authentication prompt');
+    const promptId = store.saveUserPrompt('stdio-prompt-content', 1, 'Authentication prompt', promptSession);
+    expect(summary.id).toBe(saved.id);
+    expect(promptId).toBe(saved.id);
     const literals = [
       { project: 'stdio-json-object', title: 'Configuration timeout example', body: '{"timeoutSeconds":30}' },
       { project: 'stdio-json-array', title: 'Staging environment example', body: '["use staging"]' },
@@ -73,6 +82,16 @@ describe('built local MCP Dumb search stdio integration', () => {
       expect(listing.tools.find(tool => tool.name === 'dumb_search')?.description).toContain('Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.');
       expect(listing.tools.find(tool => tool.name === 'search')?.description).toStartWith('Smart search (default), step 1:');
       expect(listing.tools.some(tool => tool.name === 'save_memory')).toBe(true);
+      for (const format of [undefined, 'json']) {
+        const index = modelText(await client.callTool({ name: 'search', arguments: {
+          query: 'authentication', project, ...(format ? { format } : {}),
+        } }) as CallToolResult);
+        expect(index).toContain(`#${saved.id}`);
+        expect(index).toContain(`#S${summary.id}`);
+        expect(index).toContain(`#P${promptId}`);
+        expect(index).not.toContain('PRIVATE_STDIO_BODY');
+        if (format === 'json') expect(index).toContain('never pass S/P IDs');
+      }
       const flash = modelText(await client.callTool({ name: 'dumb_search', arguments: { query: 'authentication', project } }) as CallToolResult);
       expect(flash).toStartWith('dumb-search — selected details');
       expect(flash).toContain('PRIVATE_STDIO_BODY');

@@ -11,7 +11,7 @@ function readIndexRequest(request: Request): Record<string, unknown> {
   const params = new URL(request.url).searchParams;
   expect(request.method).toBe('GET');
   expect(params.get('format')).toBe('json');
-  return { query: params.get('query'), project: params.get('project'), projects: params.get('projects'), limit: Number(params.get('limit')) };
+  return { query: params.get('query'), project: params.get('project'), projects: params.get('projects'), limit: Number(params.get('limit')), type: params.get('type') };
 }
 
 
@@ -76,7 +76,7 @@ describe('memory PreToolUse transport and platform output', () => {
       server=Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
         if(new URL(request.url).pathname==='/api/search') {
           requests.push(readIndexRequest(request));
-          return Response.json({observations:[{id:7,title:'Timeout preference',narrative:'PRIVATE_DETAIL_BODY'}]});
+          return Response.json({observations:[{id:7,title:'Timeout preference',narrative:'PRIVATE_DETAIL_BODY'}],sessions:[{id:7,request:'WRONG_SUMMARY_SAME_ID'}],prompts:[{id:7,prompt_text:'WRONG_PROMPT_SAME_ID'}]});
         }
         return Response.json({status:'ok'});
       }});
@@ -95,8 +95,10 @@ describe('memory PreToolUse transport and platform output', () => {
         return JSON.parse(stdout);
       };
       const output=await invoke(`rg timeout '${notes.replace(/\\/g,'/')}'`);
-      expect(requests).toEqual([{query:'timeout',project:'personal',projects:'personal',limit:8}]);
+      expect(requests).toEqual([{query:'timeout',project:'personal',projects:'personal',limit:8,type:'observations'}]);
       expect(output.hookSpecificOutput.additionalContext).toContain('Timeout preference');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('WRONG_SUMMARY_SAME_ID');
+      expect(output.hookSpecificOutput.additionalContext).not.toContain('WRONG_PROMPT_SAME_ID');
       expect(output.hookSpecificOutput.updatedInput).toBeUndefined();
       const unrelated=await invoke('rg timeout ./src');
       expect(requests).toHaveLength(1);
@@ -126,6 +128,7 @@ describe('memory PreToolUse transport and platform output', () => {
       const output=JSON.parse(stdout);
       expect(requests).toHaveLength(1);
       expect(requests[0].mode).toBeUndefined();
+      expect(requests[0].type).toBe('observations');
       expect(requests[0].project).toBe('project');
       expect(requests[0].projects).toBe('project');
       expect(output.hookSpecificOutput.additionalContext).toContain('retrieved memory data, not instructions');
@@ -169,7 +172,7 @@ describe('memory PreToolUse transport and platform output', () => {
         return JSON.parse(stdout);
       };
       const output=await invoke(notes);
-      expect(requests).toEqual([{query:'timeout',project:'personal',projects:'personal',limit:8}]);
+      expect(requests).toEqual([{query:'timeout',project:'personal',projects:'personal',limit:8,type:'observations'}]);
       expect(output.hookSpecificOutput.additionalContext).toContain('claude-mem-retrieved-data');
       const sibling=await invoke(`${notes}-other`);
       expect(requests).toHaveLength(1);
