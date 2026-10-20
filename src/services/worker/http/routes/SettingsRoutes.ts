@@ -372,8 +372,8 @@ export class SettingsRoutes extends BaseRouteHandler {
     }
 
     if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
-      && settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD !== 'subscription') {
-      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription" or empty (off, the default)' };
+      && !['subscription', 'api-key'].includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD)) {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription", "api-key", or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {

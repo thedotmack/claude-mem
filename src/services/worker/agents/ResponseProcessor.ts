@@ -794,8 +794,8 @@ export async function processAgentResponse(
   // here must not erase a newer failure from a concurrent pool slot.
   if (result.observationIds.length > 0 || result.summaryId !== null) {
     recordObserverSuccess();
-    // A subscription stand-in proves the login works, not the spent API key.
-    if (session.currentProvider && session.currentProvider !== 'codex' && session.claudeAuthOverride !== 'oauth') {
+    // A quota-fallback run proves its own credential works, not the spent primary one.
+    if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
       clearQuotaCooldown(session.currentProvider);
     }
   }

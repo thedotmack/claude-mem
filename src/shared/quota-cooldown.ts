@@ -48,6 +48,9 @@ import {
 
 export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'cmem-gateway';
 
+/** The credential a Claude run billed: an ANTHROPIC_API_KEY, or the Claude Code login. */
+export type ClaudeCredential = 'api-key' | 'subscription';
+
 export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
 
 /**
@@ -60,7 +63,7 @@ interface PersistedQuotaCooldown {
   profile?: string;
   armedAtMs: number;
   cause?: 'auth';
-  auth?: 'api-key';
+  auth?: ClaudeCredential;
 }
 
 /**
@@ -127,7 +130,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         ...(entry.window ? { window: entry.window } : {}),
         ...(entry.profile ? { profile: entry.profile } : {}),
         ...(entry.cause === 'auth' ? { cause: 'auth' as const } : {}),
-        ...(entry.auth === 'api-key' ? { auth: 'api-key' as const } : {}),
+        ...(entry.auth === 'api-key' || entry.auth === 'subscription' ? { auth: entry.auth } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -249,11 +252,12 @@ export interface QuotaCooldownState {
    */
   cause?: 'auth';
   /**
-   * 'claude' only: 'api-key' when an ANTHROPIC_API_KEY run spent its allowance.
-   * With CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=subscription, such a breaker
-   * lets runs go on the Claude Code login instead (canSubscriptionStandInForApiKey).
+   * 'claude' only: the credential whose run spent its allowance (or was paused
+   * by the quota guard). CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD names the other
+   * credential to run on while this breaker holds (claudeQuotaStandIn). Absent
+   * when a quota-fallback run was refused too: both are spent.
    */
-  auth?: 'api-key';
+  auth?: ClaudeCredential;
   /**
    * When the single post-expiry probe was claimed, or null when none is in
    * flight. Without this the expiry check is a bare read: every concurrent
@@ -312,7 +316,7 @@ export function recordQuotaExhausted(
    */
   profile?: string,
   /** 'claude' only: the credential the refused generator billed (QuotaCooldownState.auth). */
-  auth?: 'api-key',
+  auth?: ClaudeCredential,
 ): QuotaCooldownState {
   return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile, ...(auth ? { auth } : {}) });
 }
@@ -650,6 +654,7 @@ export function syncObserverHealthQuotaCooldown(
       armedAt: latest.armedAtMs,
       until: latestUntil,
       ...(latest.window ? { window: latest.window } : {}),
+      ...(latest.auth ? { auth: latest.auth } : {}),
       message: latest.message,
       ...(servingProvider ? { servingProvider } : {}),
     });

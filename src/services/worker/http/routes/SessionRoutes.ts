@@ -14,7 +14,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
-import { canSubscriptionStandInForApiKey } from '../../../../shared/claude-fallback-readiness.js';
+import { claudeQuotaStandIn } from '../../../../shared/claude-fallback-readiness.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -196,9 +196,9 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
       const cooldown = getQuotaCooldown(provider);
-      // A subscription stand-in serves while the API key's breaker holds, so it paces nothing.
+      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
       if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
-        && !(provider === 'claude' && canSubscriptionStandInForApiKey())) {
+        && !(provider === 'claude' && claudeQuotaStandIn())) {
         if (isQuotaCooldownActive(provider)) return 0;
         sessionIds = sessionIds.slice(0, 1);
       }
@@ -492,18 +492,12 @@ export class SessionRoutes extends BaseRouteHandler {
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
-      // The API key spent its allowance: run on the Claude Code login instead.
-      // No probe claim is taken; the key's own probe still runs when its window elapses.
-      const isSubscriptionStandIn = !admission.admitted && selectedProvider === 'claude'
-        && canSubscriptionStandInForApiKey();
-      if (isSubscriptionStandIn && session.claudeAuthOverride !== 'oauth') {
-        logger.warn('SESSION', 'API key quota exhausted; running the Claude observer on the subscription login until the key recovers', {
-          sessionId: sessionDbId,
-          source,
-        });
-      }
-      session.claudeAuthOverride = isSubscriptionStandIn ? 'oauth' : null;
-      if (!admission.admitted && !isSubscriptionStandIn) {
+      // The primary Claude credential is held: run on the quota-fallback one
+      // (dispatch logs the switch). No probe claim is taken; the primary's own
+      // probe still runs when its window elapses.
+      const standIn = !admission.admitted && selectedProvider === 'claude' ? claudeQuotaStandIn() : null;
+      session.claudeAuthOverride = standIn;
+      if (!admission.admitted && !standIn) {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);

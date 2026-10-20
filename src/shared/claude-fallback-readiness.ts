@@ -18,7 +18,7 @@ import { paths } from './paths.js';
 import { parseJsonWithBom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
 import { getCredential, hasAnthropicApiKey, hasAnthropicAuthToken } from './EnvManager.js';
-import { cooldownAppliesToCurrentAccount, getQuotaCooldown } from './quota-cooldown.js';
+import { cooldownAppliesToCurrentAccount, getQuotaCooldown, type ClaudeCredential } from './quota-cooldown.js';
 import { resolveClaudeCredentialProfile } from './oauth-token.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -62,19 +62,27 @@ export function hasClaudeSubscriptionLogin(): boolean {
 }
 
 /**
- * Whether a Claude run held by its API key's quota breaker may go on the
- * Claude Code login instead (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=subscription).
- * Only a breaker an API-key run armed qualifies: once the login's own run is
- * refused (quota or signed out), it re-arms without `auth` and capture pauses.
- * A gateway (ANTHROPIC_BASE_URL) never gets the OAuth token, so it never qualifies.
+ * The credential a Claude run held by its quota breaker may go on instead
+ * (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD), or null to wait as before.
+ *
+ * Only a breaker the OTHER credential armed qualifies: 'subscription' stands in
+ * for a spent API key, 'api-key' (ANTHROPIC_FALLBACK_API_KEY) for a login that
+ * is spent or paused by the quota guard. Once the stand-in's own run is refused,
+ * the breaker re-arms untagged and this returns null: both are spent. A gateway
+ * (ANTHROPIC_BASE_URL) never qualifies, so observer traffic is never routed
+ * around it (nor the OAuth token sent to it).
  */
-export function canSubscriptionStandInForApiKey(): boolean {
+export function claudeQuotaStandIn(): ClaudeCredential | null {
   const settings = SettingsDefaultsManager.loadFromFile(paths.settings());
-  if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD !== 'subscription') return false;
+  const target = settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD;
+  if (target !== 'subscription' && target !== 'api-key') return null;
   const cooldown = getQuotaCooldown('claude');
-  if (!cooldown || cooldown.auth !== 'api-key' || !cooldownAppliesToCurrentAccount(cooldown)) return false;
-  if (getCredential('ANTHROPIC_BASE_URL')) return false;
-  return hasClaudeSubscriptionLogin();
+  if (!cooldown?.auth || cooldown.auth === target || !cooldownAppliesToCurrentAccount(cooldown)) return null;
+  if (getCredential('ANTHROPIC_BASE_URL')) return null;
+  const isTargetReady = target === 'subscription'
+    ? hasClaudeSubscriptionLogin()
+    : Boolean(getCredential('ANTHROPIC_FALLBACK_API_KEY'));
+  return isTargetReady ? target : null;
 }
 
 function detectClaudeFallbackReadiness(): boolean {

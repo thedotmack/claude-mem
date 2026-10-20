@@ -304,16 +304,19 @@ describe('ResponseProcessor', () => {
     }
   });
 
-  it("keeps the API key's breaker when a subscription stand-in stores memory", async () => {
+  it.each([
+    ['subscription', 'api-key'],
+    ['api-key', 'subscription'],
+  ] as const)("keeps the primary credential's breaker when a quota-fallback run on %s stores memory", async (standIn, held) => {
     const store = new SessionStore(':memory:');
-    const sessionDbId = store.createSDKSession('stand-in-session', 'test-project', 'prompt');
-    store.ensureMemorySessionIdRegistered(sessionDbId, 'stand-in-memory');
+    const sessionDbId = store.createSDKSession(`stand-in-${standIn}`, 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, `stand-in-memory-${standIn}`);
     mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
     const session = createMockSession({
-      sessionDbId, contentSessionId: 'stand-in-session', memorySessionId: 'stand-in-memory',
-      currentProvider: 'claude', claudeAuthOverride: 'oauth',
+      sessionDbId, contentSessionId: `stand-in-${standIn}`, memorySessionId: `stand-in-memory-${standIn}`,
+      currentProvider: 'claude', claudeAuthOverride: standIn,
     });
-    const cooldown = recordQuotaExhausted('claude', 'Credit balance is too low', undefined, undefined, undefined, 'api-key');
+    const cooldown = recordQuotaExhausted('claude', 'allowance spent', undefined, undefined, undefined, held);
     try {
       const result = await processAgentResponse(
         '<observation><type>discovery</type><title>Useful result</title><narrative>Real finding</narrative></observation>',

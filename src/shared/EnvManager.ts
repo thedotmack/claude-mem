@@ -7,6 +7,7 @@ import { logger } from '../utils/logger.js';
 import { paths } from './paths.js';
 import { stripUtf8Bom } from './atomic-json.js';
 import { SettingsDefaultsManager } from './SettingsDefaultsManager.js';
+import type { ClaudeCredential } from './quota-cooldown.js';
 import {
   readClaudeOAuthToken,
   writeStaleMarker,
@@ -82,6 +83,8 @@ const BLOCKED_ENV_VARS = [
 
 export interface ClaudeMemEnv {
   ANTHROPIC_API_KEY?: string;
+  /** Read by claude-mem only, never passed to the CLI: the key a quota-fallback run uses (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=api-key). */
+  ANTHROPIC_FALLBACK_API_KEY?: string;
   ANTHROPIC_BASE_URL?: string;
   ANTHROPIC_AUTH_TOKEN?: string;
   GEMINI_API_KEY?: string;
@@ -107,6 +110,7 @@ export interface ClaudeMemEnv {
  */
 const CREDENTIAL_KEYS = [
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_FALLBACK_API_KEY',
   'ANTHROPIC_BASE_URL',
   'ANTHROPIC_AUTH_TOKEN',
   'GEMINI_API_KEY',
@@ -297,7 +301,8 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 
     for (const key of CREDENTIAL_KEYS) {
       const value = credentials[key];
-      if (value) isolatedEnv[key] = value;
+      // Injected as ANTHROPIC_API_KEY only on a quota-fallback run (buildIsolatedEnvWithFreshOAuth).
+      if (value && key !== 'ANTHROPIC_FALLBACK_API_KEY') isolatedEnv[key] = value;
     }
 
     // Note: CLAUDE_CODE_OAUTH_TOKEN is intentionally NOT copied from
@@ -328,11 +333,13 @@ export function buildIsolatedEnv(includeCredentials: boolean = true): Record<str
 export async function buildIsolatedEnvWithFreshOAuth(
   includeCredentials: boolean = true,
   /**
-   * Bill the Claude Code login even though .env holds a key: the subscription
-   * stand-in for an API key in its quota cooldown. Falls back to the key when
-   * no usable token is found. Ignored under ANTHROPIC_BASE_URL.
+   * The credential a quota-fallback run bills instead of the primary one
+   * (ActiveSession.claudeAuthOverride): 'subscription' bills the Claude Code
+   * login even though .env holds a key; 'api-key' bills ANTHROPIC_FALLBACK_API_KEY.
+   * Either keeps the primary credential when the other one is missing, and
+   * both are ignored under ANTHROPIC_BASE_URL.
    */
-  { preferOAuth = false }: { preferOAuth?: boolean } = {},
+  { standIn }: { standIn?: ClaudeCredential } = {},
 ): Promise<Record<string, string>> {
   const isolatedEnv = buildIsolatedEnv(includeCredentials);
 
@@ -360,6 +367,16 @@ export async function buildIsolatedEnvWithFreshOAuth(
     clearStaleMarker();
     return isolatedEnv;
   }
+  if (standIn === 'api-key') {
+    const fallbackKey = loadClaudeMemEnv().ANTHROPIC_FALLBACK_API_KEY;
+    if (fallbackKey) {
+      delete isolatedEnv.ANTHROPIC_AUTH_TOKEN;
+      isolatedEnv.ANTHROPIC_API_KEY = fallbackKey;
+      return isolatedEnv;
+    }
+    logger.warn('OAUTH', 'Quota fallback API key unavailable (ANTHROPIC_FALLBACK_API_KEY is not set); using the primary credential');
+  }
+  const preferOAuth = standIn === 'subscription';
   const explicitCredentials = {
     ...(isolatedEnv.ANTHROPIC_API_KEY ? { ANTHROPIC_API_KEY: isolatedEnv.ANTHROPIC_API_KEY } : {}),
     ...(isolatedEnv.ANTHROPIC_AUTH_TOKEN ? { ANTHROPIC_AUTH_TOKEN: isolatedEnv.ANTHROPIC_AUTH_TOKEN } : {}),

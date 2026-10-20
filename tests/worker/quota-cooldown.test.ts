@@ -390,17 +390,17 @@ describe('quota cooldown breaker (#3634)', () => {
     expect(readObserverHealth(healthPath)!.quotaCooldown!.until).toBe(armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS);
   });
 
-  it('keeps the API-key credential tag across a restart', () => {
+  it.each(['api-key', 'subscription'] as const)('keeps the %s credential tag across a restart', (auth) => {
     const ledgerPath = join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
-    recordQuotaExhausted('claude', 'Credit balance is too low', undefined, undefined, undefined, 'api-key');
+    recordQuotaExhausted('claude', 'Allowance spent', undefined, undefined, undefined, auth);
     const ledger = readFileSync(ledgerPath, 'utf-8');
-    expect(JSON.parse(ledger)[0].auth).toBe('api-key');
+    expect(JSON.parse(ledger)[0].auth).toBe(auth);
 
     resetQuotaCooldownsForTesting();
     writeFileSync(ledgerPath, ledger);
-    expect(getQuotaCooldown('claude')?.auth).toBe('api-key');
+    expect(getQuotaCooldown('claude')?.auth).toBe(auth);
 
-    // Re-arming without a tag (the login's own run was refused) drops it.
+    // Re-arming without a tag (the quota-fallback run was refused too) drops it.
     recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
     expect(getQuotaCooldown('claude')?.auth).toBeUndefined();
   });

@@ -1,6 +1,7 @@
 
 import type { Response } from 'express';
 import type { PaidSendBudget } from './worker/paid-send-budget.js';
+import type { ClaudeCredential } from '../shared/quota-cooldown.js';
 
 export interface ConversationMessage {
   role: 'user' | 'assistant';
@@ -36,14 +37,17 @@ export interface ActiveSession {
    * changed while it ran.
    */
   observerProfile?: string;
-  /** The credential the latest Claude generator was spawned with; fixed at spawn like observerProfile. */
-  observerAuth?: 'api-key' | 'oauth';
   /**
-   * 'oauth' while admission runs this session on the Claude Code login because
-   * the API key's quota breaker holds (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD).
-   * Cleared on every normal admission, so a recovered key is used again.
+   * The credential the latest Claude generator was spawned with; fixed at spawn
+   * like observerProfile. Unset for a gateway token, which is neither.
    */
-  claudeAuthOverride?: 'oauth' | null;
+  observerAuth?: ClaudeCredential;
+  /**
+   * The credential admission runs this session on while the primary one's
+   * quota breaker holds (CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD), else null.
+   * Cleared on every normal admission, so a recovered primary is used again.
+   */
+  claudeAuthOverride?: ClaudeCredential | null;
   /**
    * The provider the current run stands in for when dispatch routed around it
    * (the provider fallback), else null/undefined. A stand-in that is refused

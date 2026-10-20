@@ -47,6 +47,7 @@ import { resolveContextWindowTokens, observationFieldMaxChars } from './context-
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
 import { recordObserverFailure } from '../../shared/observer-health.js';
+import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
@@ -415,14 +416,17 @@ export class ClaudeProvider {
     // it in observer health.
     let responseProcessingThrew = false;
     try {
-      const isSubscriptionStandIn = session.claudeAuthOverride === 'oauth';
-      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: isSubscriptionStandIn }));
-      session.observerAuth = isolatedEnv.ANTHROPIC_API_KEY ? 'api-key' : 'oauth';
-      // A stand-in bills the subscription, so the quota guard must not read
-      // "API key" and wave it through the user's interactive plan.
-      const authMethod = isSubscriptionStandIn && session.observerAuth === 'oauth'
-        ? 'Claude Code OAuth token (subscription stand-in for an exhausted API key)'
-        : getAuthMethodDescription();
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, {
+        standIn: session.claudeAuthOverride ?? undefined,
+      }));
+      session.observerAuth = isolatedEnv.ANTHROPIC_API_KEY ? 'api-key'
+        : isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN ? 'subscription'
+          : undefined;
+      // A quota-fallback run is labelled by what it actually bills: the quota
+      // guard protects a login it runs on, and never pauses a key.
+      const authMethod = !session.claudeAuthOverride ? getAuthMethodDescription()
+        : session.observerAuth === 'api-key' ? 'API key (quota fallback run)'
+          : 'Claude Code OAuth token (quota fallback run)';
       // The account this generator bills for its whole life: its env (and so
       // its OAuth identity) is fixed at spawn, even if the setting changes
       // while it runs. Quota snapshots are tagged with it and checked against
@@ -1024,13 +1028,13 @@ export class ClaudeProvider {
       signals?: AbortSignal[];
       /** Set when the session's gateway already refused the thinking param (#4732). */
       thinkingStripped?: boolean;
-      /** The session's subscription stand-in (ActiveSession.claudeAuthOverride). */
-      preferOAuth?: boolean;
+      /** The session's quota-fallback credential (ActiveSession.claudeAuthOverride). */
+      standIn?: ClaudeCredential;
     },
     modelId: string,
     claudePath: string,
   ): Promise<string | null> {
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { preferOAuth: context.preferOAuth }));
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -1097,7 +1101,7 @@ export class ClaudeProvider {
         project: session.project,
         signals: [signal, session.abortController.signal],
         thinkingStripped: session.observerThinkingStripped,
-        preferOAuth: session.claudeAuthOverride === 'oauth',
+        standIn: session.claudeAuthOverride ?? undefined,
       },
       modelId,
       claudePath,
