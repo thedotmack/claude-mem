@@ -509,7 +509,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
     expect(result.prompts).toEqual([prompt]);
   });
 
-  it('passes platformSource into getTimelineByQuery auto-mode hydration', async () => {
+  it('passes platformSource and project scope through query-selected timeline hydration', async () => {
     const observation = {
       id: 8,
       memory_session_id: 'cursor-memory-id',
@@ -560,6 +560,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
 
     expect(searchObservations).toHaveBeenCalledWith('timeline', {
       project: 'search-project',
+      projects: ['search-project'],
       platformSource: 'cursor',
       limit: 1,
     });
@@ -570,6 +571,7 @@ describe('SearchManager platform-scoped Chroma hydration', () => {
       10,
       'search-project',
       'cursor',
+      ['search-project'],
     );
   });
 

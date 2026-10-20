@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.0.1] - 2026-10-20
+
+# Keep Smart recall consistent across merged projects
+
+Smart search, timeline context, and selected observation details now use the same checkout project scope. An observation found through a merged project alias remains available in the next two steps, instead of incorrectly returning “not found.”
+
+- Resolves the same project read keys for search results, explicit timeline anchors, query-selected timeline anchors, and selected observation reads.
+- Keeps adopted records visible while excluding unrelated or unadopted records and respecting platform-source filters.
+- Preserves the Smart default three-step workflow and the optional `dumb_search` alternative introduced in 15.0.0. No API or schema migration is required.
+
+Regression coverage includes real HTTP/SQLite cases that fail on 15.0.0 and pass with this repair, plus related scope-isolation checks.
+
 ## [15.0.0] - 2026-10-20
 
 # Smart memory search by default

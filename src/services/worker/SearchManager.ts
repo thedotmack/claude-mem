@@ -170,9 +170,10 @@ export class SearchManager {
     }
   }
 
-  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string): Promise<ObservationSearchResult[]> {
-    return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids) =>
-      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, platformSource })
+  private async searchChromaForTimeline(query: string, project?: string, platformSource?: string, projects?: string[]): Promise<ObservationSearchResult[]> {
+    return this.hybridSemanticHydrate(query, 'observation', project, platformSource, (ids, readKeys) =>
+      this.sessionStore.getObservationsByIds(ids, { orderBy: 'relevance', limit: 1, project, projects: readKeys, platformSource }),
+      projects,
     );
   }
 
@@ -884,7 +885,9 @@ export class SearchManager {
 
   async timeline(args: any): Promise<any> {
     const normalized = this.normalizeParams(args);
-    const { anchor, query, depth_before, depth_after, project, platformSource } = normalized;
+    const { anchor, query, depth_before, depth_after, project, projects, platformSource } = normalized;
+    const readKeys = projectReadKeysFor(this.sessionStore, project, projects);
+    const scope = { project, projects: readKeys, platformSource };
     // HTTP query strings and MCP numbers must describe whole, bounded SQL LIMITs.
     const parseDepth = (value: unknown): number => value == null ? 10
       : typeof value === 'number' || (typeof value === 'string' && value.trim() !== '')
@@ -931,7 +934,7 @@ export class SearchManager {
       if (this.chromaSync) {
         logger.debug('SEARCH', 'Using hybrid semantic search for timeline query', {});
         try {
-          results = await this.searchChromaForTimeline(query, project, platformSource);
+          results = await this.searchChromaForTimeline(query, project, platformSource, projects);
         } catch (chromaError) {
           const errorObject = chromaError instanceof Error ? chromaError : new Error(String(chromaError));
           logger.error('WORKER', 'Chroma search failed for timeline, continuing without semantic results', {}, errorObject);
@@ -940,7 +943,7 @@ export class SearchManager {
 
       if (results.length === 0) {
         try {
-          const ftsResults = this.sessionSearch.searchObservations(query, { project, platformSource, limit: 1 });
+          const ftsResults = this.sessionSearch.searchObservations(query, { ...scope, limit: 1 });
           if (ftsResults.length > 0) {
             results = ftsResults;
           }
@@ -962,11 +965,11 @@ export class SearchManager {
       anchorId = topResult.id;
       anchorEpoch = topResult.created_at_epoch;
       logger.debug('SEARCH', 'Query mode: Using observation as timeline anchor', { observationId: topResult.id });
-      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource);
+      timelineData = this.sessionStore.getTimelineAroundObservation(topResult.id, topResult.created_at_epoch, depthBefore, depthAfter, project, platformSource, readKeys);
     }
     // MODE 2: Anchor-based timeline
     else if (anchorAsNumber !== null) {
-      const obs = this.sessionStore.getObservationsByIds([anchorAsNumber], { project, platformSource, limit: 1 })[0] ?? null;
+      const obs = this.sessionStore.getObservationsByIds([anchorAsNumber], { ...scope, limit: 1 })[0] ?? null;
       if (!obs) {
         return {
           content: [{
@@ -978,7 +981,7 @@ export class SearchManager {
       }
       anchorId = anchorAsNumber;
       anchorEpoch = obs.created_at_epoch;
-      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource);
+      timelineData = this.sessionStore.getTimelineAroundObservation(anchorAsNumber, anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeys);
     } else if (typeof anchor === 'string') {
       if (anchor.startsWith('S') || anchor.startsWith('#S')) {
         const sessionMatch = /^#?S(\d+)$/.exec(anchor);
@@ -986,7 +989,7 @@ export class SearchManager {
         if (!Number.isSafeInteger(sessionNum) || sessionNum <= 0) {
           return { content: [{ type: 'text' as const, text: 'Invalid session anchor: must be S followed by a positive safe integer' }], isError: true };
         }
-        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], { project, platformSource });
+        const sessions = this.sessionStore.getSessionSummariesByIds([sessionNum], scope);
         if (sessions.length === 0) {
           return {
             content: [{
@@ -998,7 +1001,7 @@ export class SearchManager {
         }
         anchorEpoch = sessions[0].created_at_epoch;
         anchorId = `S${sessionNum}`;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeys);
       } else {
         const date = new Date(anchor);
         if (isNaN(date.getTime())) {
@@ -1012,7 +1015,7 @@ export class SearchManager {
         }
         anchorEpoch = date.getTime();
         anchorId = anchor;
-        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource);
+        timelineData = this.sessionStore.getTimelineAroundTimestamp(anchorEpoch, depthBefore, depthAfter, project, platformSource, readKeys);
       }
     } else {
       return {

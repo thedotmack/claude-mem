@@ -660,7 +660,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
           ...(args.depth_after !== undefined ? { depthAfter: args.depth_after } : {}),
         }));
       }
-      return await callWorker('/api/timeline', { query: args });
+      return await callWorker('/api/timeline', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
@@ -687,7 +687,7 @@ Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about 
         if (args?.project !== undefined || args?.orderBy !== undefined || args?.limit !== undefined) return mcpTextResult('Server get_observations uses ids and optional projectId; local filters are unsupported.', true);
         return formatMcpPayload('observations', await ctx.client.selectedObservations({ projectId: args.projectId || ctx.projectId, ids: args.ids.map(String) }));
       }
-      return await callWorker('/api/observations/batch', { body: args });
+      return await callWorker('/api/observations/batch', { body: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
