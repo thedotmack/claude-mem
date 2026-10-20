@@ -536,7 +536,12 @@ export class ChromaMcpManager {
     const transportChild = (this.transport as unknown as { _process?: ChildProcess })._process;
     const currentTracked = transportChild ? trackChild(transportChild) : null;
     const currentTrackedPid = currentTracked?.pid;
+    // client.connect() installed the SDK's own close handler, which rejects
+    // in-flight requests with ConnectionClosed. Replacing it would leave a
+    // pending write waiting out the full mutation timeout after a crash.
+    const sdkOnClose = this.transport.onclose;
     this.transport.onclose = () => {
+      sdkOnClose?.();
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
         return;
@@ -558,12 +563,14 @@ export class ChromaMcpManager {
         code: transportChild?.exitCode ?? null,
         signal: transportChild?.signalCode ?? null,
       };
+      const stderrTail = transportStderrTail();
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
         count: this.chromaCrashCount,
         exitCode: this.chromaLastExit.code,
         signalCode: this.chromaLastExit.signal,
         chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
         dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+        ...(stderrTail ? { stderrTail } : {}),
       });
       this.connected = false;
       if (currentTrackedPid) getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, currentTrackedPid);

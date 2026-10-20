@@ -177,6 +177,7 @@ import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import type { Database } from 'bun:sqlite';
 import type { CurrentRow, StoredObservation, StoredSummary, StoredUserPrompt } from './ChromaSync.js';
 import { logger } from '../../utils/logger.js';
+import { logChromaWriteFailure } from '../worker/search/errors.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
 import { parseFileList } from '../sqlite/observations/files.js';
 import {
@@ -616,7 +617,7 @@ export class SyncApply {
       job().then(() => {
         logger.debug('SYNC_APPLY', 'Applied row forwarded to Chroma');
       }).catch((error) => {
-        logger.error('SYNC_APPLY', 'Chroma forward of applied row failed, continuing without vector search', {},
+        logChromaWriteFailure('SYNC_APPLY', 'Chroma forward of applied row failed, continuing without vector search', {},
           error instanceof Error ? error : new Error(String(error)));
       });
     }

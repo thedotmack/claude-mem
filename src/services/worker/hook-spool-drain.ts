@@ -41,10 +41,16 @@ async function ingestHookSpoolEntry(entry: HookSpoolEntry, markHandedOff: () => 
       }
       return true;
     }
-    case 'summarize':
+    case 'summarize': {
       // unknown_session: init may not have landed yet (it raced the same
-      // outage) — keep the entry, exactly like the old SessionEnd replay.
-      return (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status !== 'unknown_session';
+      // outage), so keep it through the grace window. Past it the session
+      // never registered — the drain already holds a summarize behind any
+      // retained observation of its session — and it would only be retried
+      // until the retry window expires it, like session_end (#4629).
+      const outcome = (await ingestSummarize({ ...entry.payload, enqueuedAtEpochMs: entry.enqueuedAtEpochMs }, undefined, { markHandedOff })).status;
+      if (outcome !== 'unknown_session') return true;
+      return Date.now() - entry.enqueuedAtEpochMs > HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS ? 'expired' : false;
+    }
     case 'session_end': {
       // unknown_session here means the worker is up and its DB has no such
       // session: a session registers within moments of starting or never, so

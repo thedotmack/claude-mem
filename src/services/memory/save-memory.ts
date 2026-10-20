@@ -1,5 +1,6 @@
 import type { DatabaseManager } from '../worker/DatabaseManager.js';
 import { logger } from '../../utils/logger.js';
+import { logChromaWriteFailure } from '../worker/search/errors.js';
 import { notifyGrokBotIndex } from '../integrations/GrokBotIndexWriter.js';
 
 export interface SaveMemoryInput {
@@ -48,7 +49,7 @@ function persistMemory(dbManager: DatabaseManager, defaultProject: string, input
   // A merged row keeps its original text and vector; never index the proposed
   // replacement content under the existing id.
   if (!result.mergedIntoExisting) dbManager.getChromaSync()?.syncObservation(result.id, sessionId, project, observation, 0, result.createdAtEpoch, platformSource).catch(error => {
-      logger.error('CHROMA', 'Manual memory sync failed', { id: result.id }, error as Error);
+      logChromaWriteFailure('CHROMA', 'Manual memory sync failed', { id: result.id }, error);
     });
   return { success: true, id: result.id, title: observation.title, project,
     message: result.mergedIntoExisting ? `Memory matches existing observation #${result.id} (counted as a repeat)` : `Memory saved as observation #${result.id}` };

@@ -128,14 +128,14 @@ Claude-mem registers the five lifecycle hooks Antigravity CLI (`agy` 1.2.1) actu
 
 | Hook | Internal event | Purpose |
 |------|-----------------|---------|
-| **PreInvocation** | `context` | Injects memory context (via `injectSteps`) before the agent runs |
+| **SessionStart** | `context` | Injects memory context (via `injectSteps`) once when a session starts, so the prompt prefix stays cacheable |
 | **PreToolUse** | `observation` | Records tool intent, returns `{"decision":"allow"}` so the call proceeds |
 | **PostToolUse** | `observation` | Captures tool results after execution |
 | **PostInvocation** | `observation` | Records the agent's response (from the transcript's `PLANNER_RESPONSE` node) |
 | **Stop** | `summarize` | Captures the session summary at turn/session end |
 
 <Note>
-These are the real `agy` 1.2.1 event names. Earlier releases mistakenly registered Gemini CLI names (`SessionStart`, `BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`) into `~/.gemini/settings.json` — none of which exist in the `agy` binary, so hooks never fired and no observations were recorded (issue [#4057](https://github.com/thedotmack/claude-mem/issues/4057)).
+These are the event names `agy` reads from `hooks.json`. Earlier releases mistakenly registered Gemini CLI names (`BeforeAgent`, `AfterAgent`, `BeforeTool`, `AfterTool`) into `~/.gemini/settings.json`, where `agy` never reads them, so hooks never fired and no observations were recorded (issue [#4057](https://github.com/thedotmack/claude-mem/issues/4057)). Installs before [#4911](https://github.com/thedotmack/claude-mem/issues/4911) injected context on `PreInvocation`, before every model call, which broke prompt caching; re-run `claude-mem install --ide antigravity` to move it to `SessionStart`.
 </Note>
 
 ## MCP registration
@@ -162,11 +162,11 @@ Antigravity CLI ships a first-class plugin-marketplace subcommand system: `agy p
    Each top-level key is a **hook name**. claude-mem writes a single
    `"claude-mem"` key wrapping the event keys, with `PreToolUse`/`PostToolUse`
    using the grouped `{ "matcher", "hooks" }` shape and
-   `PreInvocation`/`PostInvocation`/`Stop` using a flat array of handlers:
+   `SessionStart`/`PostInvocation`/`Stop` using a flat array of handlers:
    ```json
    {
      "claude-mem": {
-       "PreInvocation": [ { "type": "command", "command": "...", "timeout": 30 } ],
+       "SessionStart": [ { "type": "command", "command": "...", "timeout": 30 } ],
        "PreToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ],
        "PostToolUse": [ { "matcher": "*", "hooks": [ { "type": "command", "command": "...", "timeout": 30 } ] } ],
        "PostInvocation": [ { "type": "command", "command": "...", "timeout": 30 } ],
