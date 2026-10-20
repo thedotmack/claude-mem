@@ -1,12 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Embeddings for search by meaning. Everything here degrades to "no vectors":
-// a database without pgvector, a model that fails to load, or an embed error
-// leaves search keyword-only and observation writes untouched. Rows written
+// CLAUDE_MEM_SERVER_VECTOR_SEARCH off, a database without pgvector, a model
+// that fails to load, or an embed error leaves search keyword-only and
+// observation writes untouched. Rows written
 // without vectors are picked up by backfillMissingEmbeddings, which the
 // generation worker runs at startup.
 
 import type { PostgresQueryable } from '../../storage/postgres/utils.js';
+import type { VectorSchemaMode } from '../../storage/postgres/schema.js';
 import {
   PostgresObservationEmbeddingsRepository,
   observationEmbeddingParts,
@@ -16,6 +18,7 @@ import {
 import { LocalEmbedder } from '../../services/vector/LocalEmbedder.js';
 import type { Embedder } from '../../services/vector/types.js';
 import { logger } from '../../utils/logger.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 
 let sharedEmbedder: Embedder | null = null;
 // The most recent embed failure, cleared by the next success, so /v1/info can
@@ -27,6 +30,18 @@ export function getSharedEmbedder(): Embedder {
   return sharedEmbedder;
 }
 
+/** CLAUDE_MEM_SERVER_VECTOR_SEARCH: 'true' is on, 'false' off, anything else auto. */
+export function vectorSearchMode(): VectorSchemaMode {
+  const value = SettingsDefaultsManager.get('CLAUDE_MEM_SERVER_VECTOR_SEARCH').toLowerCase();
+  return value === 'true' ? 'on' : value === 'false' ? 'off' : 'auto';
+}
+
+// Unless the setting is off, the embeddings table decides: the schema
+// bootstrap created it or left it out.
+async function vectorSearchOn(client: PostgresQueryable): Promise<boolean> {
+  return vectorSearchMode() !== 'off' && vectorSearchAvailable(client);
+}
+
 function recordEmbedError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   lastEmbedError = { message, at: new Date().toISOString() };
@@ -34,7 +49,7 @@ function recordEmbedError(error: unknown): string {
 }
 
 export interface VectorSearchStatus {
-  /** pgvector 0.8+ was installable and the embeddings table exists. */
+  /** The setting is on, pgvector 0.8+ was installable and the embeddings table exists. */
   available: boolean;
   model: string;
   /** Observations a search by meaning cannot find yet; null when unavailable. */
@@ -46,7 +61,7 @@ export async function getVectorSearchStatus(
   client: PostgresQueryable,
   embedder: Embedder = getSharedEmbedder(),
 ): Promise<VectorSearchStatus> {
-  const available = await vectorSearchAvailable(client);
+  const available = await vectorSearchOn(client);
   return {
     available,
     model: embedder.modelId,
@@ -65,7 +80,7 @@ export async function embedSearchQuery(
 ): Promise<Float32Array | null> {
   if (!query || query.trim().length === 0) return null;
   try {
-    if (!(await vectorSearchAvailable(client))) return null;
+    if (!(await vectorSearchOn(client))) return null;
     const [vector] = await embedder.embed([query]);
     lastEmbedError = null;
     return vector ?? null;
@@ -94,7 +109,7 @@ export async function embedObservationRows(
 ): Promise<EmbeddedParts[] | null> {
   if (rows.length === 0) return [];
   try {
-    if (!(await vectorSearchAvailable(client))) return null;
+    if (!(await vectorSearchOn(client))) return null;
     const partsPerRow = rows.map(row => observationEmbeddingParts(row.kind, row.metadata, row.content));
     const vectors = await embedder.embed(partsPerRow.flat().map(p => p.text));
     lastEmbedError = null;
@@ -124,7 +139,7 @@ export async function backfillMissingEmbeddings(
   const embedder = options.embedder ?? getSharedEmbedder();
   const batchSize = options.batchSize ?? 64;
   const totals = { observations: 0, parts: 0 };
-  if (!(await vectorSearchAvailable(client))) return totals;
+  if (!(await vectorSearchOn(client))) return totals;
 
   const repo = new PostgresObservationEmbeddingsRepository(client);
   let after: { createdAt: Date; id: string } | null = null;

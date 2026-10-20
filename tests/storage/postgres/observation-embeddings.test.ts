@@ -70,6 +70,7 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   const ids: Record<string, string> = {};
 
   beforeAll(async () => {
+    process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH = 'true';
     // The extension lives in public, so each test schema reaches it through
     // its search_path, the way a deployment with the default path does.
     const admin = new pg.Client({ connectionString: testDatabaseUrl });
@@ -121,6 +122,7 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   afterAll(() => {
+    delete process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH;
     if (!vectorAvailable) console.warn('pgvector not installed in the test database; hybrid search tests did nothing');
   });
 
@@ -212,6 +214,80 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     expect(await embedSearchQuery(pool, 'a query', working)).not.toBeNull();
     expect((await getVectorSearchStatus(pool, working)).lastEmbedError).toBeNull();
   });
+
+  it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {
+    if (!vectorAvailable) return;
+    const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+    process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH = 'false';
+    try {
+      expect(await embedSearchQuery(pool, 'a query', working)).toBeNull();
+      expect((await getVectorSearchStatus(pool, working)).available).toBe(false);
+    } finally {
+      process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH = 'true';
+    }
+  });
+
+  it('creates the vector table on a new database only, unless told to', async () => {
+    if (!vectorAvailable) return;
+    const hasTable = async (client: pg.Pool, schema: string) =>
+      (await client.query(`SELECT to_regclass($1) IS NOT NULL AS present`, [`${schema}.observation_embeddings`])).rows[0].present;
+    const fresh = await createIsolatedSchema(testDatabaseUrl!, 'cm_vec_auto');
+    const freshPool = new pg.Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${fresh},public` });
+    const existing = await createIsolatedSchema(testDatabaseUrl!, 'cm_vec_old');
+    const existingPool = new pg.Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${existing},public` });
+    try {
+      await bootstrapServerPostgresSchema(freshPool, 'auto');
+      expect(await hasTable(freshPool, fresh)).toBe(true);
+
+      // A deployment bootstrapped before search by meaning.
+      await bootstrapServerPostgresSchema(existingPool, 'off');
+      expect(await hasTable(existingPool, existing)).toBe(false);
+      await bootstrapServerPostgresSchema(existingPool, 'auto');
+      expect(await hasTable(existingPool, existing)).toBe(false);
+      await bootstrapServerPostgresSchema(existingPool, 'on');
+      expect(await hasTable(existingPool, existing)).toBe(true);
+      await bootstrapServerPostgresSchema(existingPool, 'auto');
+      expect(await hasTable(existingPool, existing)).toBe(true);
+    } finally {
+      await freshPool.end();
+      await existingPool.end();
+      await dropSchema(testDatabaseUrl!, fresh);
+      await dropSchema(testDatabaseUrl!, existing);
+    }
+  });
+
+  it('boots keyword-only when the role cannot create pgvector', async () => {
+    if (!vectorAvailable) return;
+    const admin = new pg.Client({ connectionString: testDatabaseUrl });
+    await admin.connect();
+    const superuser = (await admin.query(`SELECT rolsuper FROM pg_roles WHERE rolname = current_user`)).rows[0]?.rolsuper;
+    if (!superuser) return void (await admin.end());
+    const role = 'cm_vec_noext';
+    const database = 'cm_vec_noext';
+    await admin.query(`DROP DATABASE IF EXISTS ${database}`);
+    await admin.query(`DROP ROLE IF EXISTS ${role}`);
+    await admin.query(`CREATE ROLE ${role} LOGIN PASSWORD 'x'`);
+    await admin.query(`CREATE DATABASE ${database} OWNER ${role}`);
+    const url = new URL(testDatabaseUrl!);
+    url.username = role;
+    url.password = 'x';
+    url.pathname = `/${database}`;
+    const ownerPool = new pg.Pool({ connectionString: url.toString() });
+    try {
+      await bootstrapServerPostgresSchema(ownerPool, 'on');
+      const tables = await ownerPool.query(
+        `SELECT to_regclass('observations') IS NOT NULL AS observations,
+                to_regclass('observation_embeddings') IS NOT NULL AS embeddings`
+      );
+      expect(tables.rows[0]).toEqual({ observations: true, embeddings: false });
+    } finally {
+      await ownerPool.end();
+      await admin.query(`DROP DATABASE IF EXISTS ${database}`);
+      await admin.query(`DROP ROLE IF EXISTS ${role}`);
+      await admin.end();
+    }
+    // DROP DATABASE forces a checkpoint, which takes seconds after a busy run.
+  }, 30_000);
 
   it('deletes an observation\'s vectors with it', async () => {
     if (!vectorAvailable) return;

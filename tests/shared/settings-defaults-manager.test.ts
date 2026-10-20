@@ -1317,3 +1317,9 @@ describe('Chroma embedding function default', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION).toBe('default');
   });
 });
+
+describe('server search by meaning default', () => {
+  it('decides the server\'s search by meaning by whether the database is new', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_SERVER_VECTOR_SEARCH).toBe('auto');
+  });
+});

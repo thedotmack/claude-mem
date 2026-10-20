@@ -12,7 +12,7 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
-import { backfillMissingEmbeddings } from '../services/ObservationEmbeddingService.js';
+import { backfillMissingEmbeddings, vectorSearchMode } from '../services/ObservationEmbeddingService.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
@@ -451,7 +451,7 @@ async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean):
     return { initialized: false, schemaVersion: null, appliedAt: null };
   }
 
-  await bootstrapServerPostgresSchema(pool);
+  await bootstrapServerPostgresSchema(pool, vectorSearchMode());
   const result = await pool.query(
     `
       SELECT version, applied_at

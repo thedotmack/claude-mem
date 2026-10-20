@@ -25,11 +25,21 @@ export const SERVER_POSTGRES_TABLES = [
   'rate_limit_counters'
 ] as const;
 
-export async function bootstrapServerPostgresSchema(client: PostgresQueryable): Promise<void> {
+/**
+ * 'on' creates the vector table where pgvector is installable and 'off' leaves
+ * it out. 'auto' creates it on a new database and keeps one already there, so
+ * a deployment from before search by meaning stays keyword-only.
+ */
+export type VectorSchemaMode = 'on' | 'off' | 'auto';
+
+export async function bootstrapServerPostgresSchema(
+  client: PostgresQueryable,
+  vectors: VectorSchemaMode = 'on',
+): Promise<void> {
   if (isPostgresPool(client)) {
     const poolClient = await client.connect();
     try {
-      await bootstrapServerPostgresSchema(poolClient);
+      await bootstrapServerPostgresSchema(poolClient, vectors);
       bm25InUse.set(client, usesBm25Index(poolClient));
     } finally {
       poolClient.release();
@@ -39,9 +49,10 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
 
   await client.query('BEGIN');
   try {
+    const createVectors = vectors === 'on' || (vectors === 'auto' && await isNewOrVectorDatabase(client));
     await applyPhase1Migration(client);
     await applyBm25Index(client);
-    await applyVectorSchema(client);
+    if (createVectors) await applyVectorSchema(client);
     await client.query('COMMIT');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -49,6 +60,16 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
     await client.query('ROLLBACK');
     throw error;
   }
+}
+
+// Checked before the migration runs: no migrations table means a new database.
+// Looked up in the schema the tables are created in, not the whole search_path.
+async function isNewOrVectorDatabase(client: PostgresQueryable): Promise<boolean> {
+  const result = await client.query<{ create: boolean }>(
+    `SELECT to_regclass(format('%I.server_beta_schema_migrations', current_schema())) IS NULL
+         OR to_regclass(format('%I.observation_embeddings', current_schema())) IS NOT NULL AS create`
+  );
+  return result.rows[0]?.create === true;
 }
 
 async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
@@ -117,7 +138,23 @@ async function applyVectorSchema(client: PostgresQueryable): Promise<void> {
     logger.info('SYSTEM', 'pgvector is not installed in this Postgres; search stays keyword-only');
     return;
   }
-  await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+  // pgvector is not a trusted extension: only a superuser can create it. It
+  // is created only where it is missing, under a savepoint, so a role that
+  // may not create it boots keyword-only instead of failing the bootstrap.
+  const installed = await client.query(`SELECT 1 FROM pg_extension WHERE extname = 'vector'`);
+  if (installed.rows.length === 0) {
+    await client.query('SAVEPOINT create_vector');
+    try {
+      await client.query('CREATE EXTENSION IF NOT EXISTS vector');
+      await client.query('RELEASE SAVEPOINT create_vector');
+    } catch (error) {
+      await client.query('ROLLBACK TO SAVEPOINT create_vector');
+      logger.warn('SYSTEM', 'this role cannot create the pgvector extension; search stays keyword-only until an administrator runs CREATE EXTENSION vector', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+  }
   // An extension lives in one schema per database. Installed earlier into a
   // schema outside this connection's search_path, its type cannot be named
   // here, so this schema goes without vectors rather than failing to boot.
