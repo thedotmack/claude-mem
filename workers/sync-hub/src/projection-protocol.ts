@@ -43,3 +43,31 @@ export function serializeProjectionRequest(input: ProjectionRequestInput): strin
 export function projectionRequestBytes(input: ProjectionRequestInput): number {
 	return encoder.encode(serializeProjectionRequest(input)).length;
 }
+
+/**
+ * Exact projectionRequestBytes while growing a page one op at a time, without
+ * re-serializing the prefix (the old per-op re-serialization was O(n²) on the
+ * event loop). JSON arrays have no whitespace, so the full request is the
+ * empty-ops envelope plus each op's JSON plus one comma between ops.
+ */
+export class ProjectionPageByteCounter {
+	private opsBytes = 0;
+	private opCount = 0;
+
+	constructor(private readonly envelope: Omit<ProjectionRequestInput, "ops" | "throughSeq">) {}
+
+	/** Count `op` as the page's next op; returns the page's request bytes through it. */
+	add(op: ProjectionWireOp): number {
+		this.opsBytes += (this.opCount > 0 ? 1 : 0) + projectionOpBytes(op);
+		this.opCount++;
+		return projectionRequestBytes({ ...this.envelope, throughSeq: op.seq, ops: [] }) + this.opsBytes;
+	}
+}
+
+function projectionOpBytes(op: ProjectionWireOp): number {
+	return encoder.encode(JSON.stringify({
+		seq: op.seq,
+		body: op.body,
+		operation_sha256: op.operation_sha256,
+	})).length;
+}

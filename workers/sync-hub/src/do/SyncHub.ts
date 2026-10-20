@@ -18,7 +18,7 @@ import {
 import {
 	PROJECTION_PAGE_MAX_BYTES,
 	PROJECTION_PAGE_MAX_OPS,
-	projectionRequestBytes,
+	ProjectionPageByteCounter,
 } from "../projection-protocol";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -690,17 +690,14 @@ export class SyncHub extends DurableObject<Env> {
 				limit,
 			).toArray();
 		const ops: ChangeOp[] = [];
+		const pageBytes = new ProjectionPageByteCounter({
+			userId,
+			epoch,
+			fromSeqExclusive: projected,
+		});
 		for (const row of rows) {
 			const op = toChange(row);
-			const candidate = [...ops, op];
-			const bytes = projectionRequestBytes({
-				userId,
-				epoch,
-				fromSeqExclusive: projected,
-				throughSeq: op.seq,
-				ops: candidate,
-			});
-			if (bytes > byteLimit) {
+			if (pageBytes.add(op) > byteLimit) {
 				if (ops.length === 0) throw projectionError("one operation exceeds projection request byte budget");
 				break;
 			}
