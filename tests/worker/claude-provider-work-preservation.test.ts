@@ -198,6 +198,7 @@ const { SessionManager } = await import('../../src/services/worker/SessionManage
 const { SessionStore } = await import('../../src/services/sqlite/SessionStore.js');
 const { handleGeneratorExit } = await import('../../src/services/worker/session/GeneratorExitHandler.js');
 const { PRESERVED_ABORT_CATEGORIES, abortCategoryOf } = await import('../../src/services/worker/session/abort-reason.js');
+const { isClassified } = await import('../../src/services/worker/provider-errors.js');
 const { globalRateLimitStore } = await import('../../src/services/worker/RateLimitStore.js');
 const { SessionRoutes } = await import('../../src/services/worker/http/routes/SessionRoutes.js');
 const { resetQuotaCooldownsForTesting } = await import('../../src/shared/quota-cooldown.js');
@@ -457,6 +458,25 @@ describe('work preservation — the SDK stream ends or breaks', () => {
       expect(h.session.consecutiveSdkStreamExits ?? 0).toBe(0);
     });
   }
+
+  it('a spent API key thrown mid-batch pauses on quota and preserves the batch', async () => {
+    const h = createHarness(1);
+    liveSessions.push(h.session);
+    const { run } = await claimFirstObservation(h);
+
+    sdk().fail(new Error(
+      'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+    ));
+    const thrown = await withTimeout(run, 'startSession after spent key').then(() => null, (error: unknown) => error);
+
+    expect(isClassified(thrown) && thrown.kind).toBe('quota_exhausted');
+    expect(abortCategoryOf(h.session.abortReason)).toBe('quota');
+    expect(h.session.consecutiveSdkStreamExits ?? 0).toBe(0);
+    expect(h.pending()).toBe(1);
+    expect(h.session.claimedMessageIds).toEqual([]);
+    const outcome = await h.exit();
+    expect(outcome).toEqual({ finalized: 0, sessionKept: true, pending: 1 });
+  });
 
   it('books observer health once when the stream keeps exiting without answering', async () => {
     const h = createHarness(1);
