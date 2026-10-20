@@ -286,6 +286,18 @@ export function computeFullContextTokens(
   );
 }
 
+/**
+ * The credential a Claude spawn bills, from the env it is spawned with. With no
+ * key, no gateway token and no gateway URL the CLI runs on the Claude Code
+ * login, whether a fresh token was injected or the CLI uses its own stored one
+ * (the token read came back expired or absent). A gateway run is neither.
+ */
+export function observerCredentialOf(spawnEnv: Record<string, string | undefined>): ClaudeCredential | undefined {
+  if (spawnEnv.ANTHROPIC_API_KEY) return 'api-key';
+  if (spawnEnv.ANTHROPIC_AUTH_TOKEN || spawnEnv.ANTHROPIC_BASE_URL) return undefined;
+  return 'subscription';
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -424,9 +436,7 @@ export class ClaudeProvider {
       const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, {
         standIn: session.claudeAuthOverride ?? undefined,
       }));
-      session.observerAuth = isolatedEnv.ANTHROPIC_API_KEY ? 'api-key'
-        : isolatedEnv.CLAUDE_CODE_OAUTH_TOKEN ? 'subscription'
-          : undefined;
+      session.observerAuth = observerCredentialOf(isolatedEnv);
       // A quota-fallback run is labelled by what it actually bills: the quota
       // guard protects a login it runs on, and never pauses a key.
       const authMethod = !session.claudeAuthOverride ? getAuthMethodDescription()

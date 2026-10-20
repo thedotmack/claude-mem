@@ -64,6 +64,8 @@ const BLOCKED_ENV_VARS = [
                              // alone (no token) was enough to trigger the OAuth-skip path,
                              // sending the subprocess to a proxy with no credentials.
                              // Re-injected from ~/.claude-mem/.env when configured.
+  'ANTHROPIC_FALLBACK_API_KEY', // Read by claude-mem only: a shell-exported copy never reaches
+                             // the CLI. A quota-fallback run injects it as ANTHROPIC_API_KEY.
   'CLAUDECODE',              // Prevent "cannot be launched inside another Claude Code session" error
   'CLAUDE_CODE_OAUTH_TOKEN', // Issue #2215: prevent stale parent-process token from leaking into
                              // isolated env. The fresh token is read from the keychain at spawn

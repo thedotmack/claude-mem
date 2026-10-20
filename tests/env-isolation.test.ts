@@ -251,6 +251,21 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
       }
     });
 
+    it('never passes a shell-exported fallback key to the CLI without standIn', async () => {
+      const previous = process.env.ANTHROPIC_FALLBACK_API_KEY;
+      process.env.ANTHROPIC_FALLBACK_API_KEY = 'sk-ant-shell-fallback';
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth();
+        expect(result.ANTHROPIC_FALLBACK_API_KEY).toBeUndefined();
+        expect(result.ANTHROPIC_API_KEY).not.toBe('sk-ant-shell-fallback');
+      } finally {
+        oauthSpy.mockRestore();
+        if (previous === undefined) delete process.env.ANTHROPIC_FALLBACK_API_KEY;
+        else process.env.ANTHROPIC_FALLBACK_API_KEY = previous;
+      }
+    });
+
     it("'api-key' runs a login primary on the fallback key, without reading the login", async () => {
       fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_FALLBACK_API_KEY=sk-ant-fallback\n', { mode: 0o600 });
       const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);

@@ -6,12 +6,15 @@ import type { ActiveSession } from '../../src/services/worker-types.js';
 import { logger } from '../../src/utils/logger.js';
 import {
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
+  clearQuotaCooldown,
   getQuotaCooldown,
   recordQuotaExhausted,
   resetQuotaCooldownsForTesting,
 } from '../../src/shared/quota-cooldown.js';
 import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-health.js';
 import { claudeQuotaStandIn, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
+import { SessionManager } from '../../src/services/worker/SessionManager.js';
+import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
 import { readObserverHealth, renderObserverQuotaCooldownNotice } from '../../src/shared/observer-health.js';
 import {
   quotaServingProvider,
@@ -39,6 +42,7 @@ const ENV_KEYS = [
   'CLAUDE_MEM_ENV_FILE',
   'CLAUDE_MEM_GEMINI_API_KEY',
   'CLAUDE_MEM_TIER_ROUTING_ENABLED',
+  'CLAUDE_CODE_OAUTH_TOKEN',
 ] as const;
 
 const SPENT_KEY = 'Your credit balance is too low to access the Anthropic API.';
@@ -283,5 +287,90 @@ describe('Claude credential fallback: order and booking', () => {
     recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
     expect(claudeQuotaStandIn()).toBeNull();
     expect(quotaServingProvider('claude')).toBeNull();
+  });
+});
+
+describe('Claude credential fallback: readiness', () => {
+  beforeEach(setUp);
+  afterEach(tearDown);
+  afterAll(() => resetQuotaCooldownsForTesting());
+
+  it('counts a headless login (CLAUDE_CODE_OAUTH_TOKEN, no login files) as a subscription that can stand in', () => {
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = 'oauth-from-env';
+    recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
+    expect(claudeQuotaStandIn()).toBe('subscription');
+  });
+});
+
+describe('Claude credential fallback: a running stand-in hands back to the primary', () => {
+  beforeEach(setUp);
+  afterEach(tearDown);
+  afterAll(() => resetQuotaCooldownsForTesting());
+
+  function makeSessionManager(): SessionManager {
+    return new SessionManager({
+      getSessionById: () => ({
+        content_session_id: 'content-handback',
+        project: 'proj',
+        platform_source: 'claude',
+        user_prompt: 'prompt',
+        memory_session_id: null,
+      }),
+      getSessionStore: () => ({ getPromptNumberFromUserPrompts: () => 1 }),
+      getChromaSync: () => undefined,
+    } as unknown as DatabaseManager);
+  }
+
+  /** A stand-in run on the subscription login, one batch answered, one more queued. */
+  async function standInBetweenBatches(sessionDbId: number) {
+    signIn();
+    recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined, 'api-key');
+    const sm = makeSessionManager();
+    const session = sm.initializeSession(sessionDbId, 'prompt', 1);
+    for (const toolUseId of [`tu-${sessionDbId}-a`, `tu-${sessionDbId}-b`]) {
+      sm.queueObservation(sessionDbId, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId });
+    }
+    session.claudeAuthOverride = 'subscription';
+    const iterator = sm.getMessageIterator(sessionDbId);
+    expect((await iterator.next()).done).toBe(false);
+    await sm.confirmClaimedMessages(sessionDbId);
+    return { sm, session, iterator };
+  }
+
+  it('keeps the stand-in running while the primary is still held', async () => {
+    const { session, iterator } = await standInBetweenBatches(301);
+    const second = await iterator.next();
+    expect(second.done).toBe(false);
+    expect(session.abortReason ?? null).toBeNull();
+    session.abortController.abort();
+    await iterator.return?.(undefined);
+  });
+
+  it("ends at the next batch once another session's success clears the breaker, and the next run is on the primary", async () => {
+    const { sm, session, iterator } = await standInBetweenBatches(302);
+    clearQuotaCooldown('claude');
+
+    const second = await iterator.next();
+    expect(second.done).toBe(true);
+    expect(session.abortReason).toBe('provider_switch:boundary');
+    expect(sm.getMessageBuffer().getPendingCount(302)).toBe(1);
+
+    expect(await startOnce(makeSession())).toEqual([null]);
+  });
+
+  it('ends at the next batch once the primary window elapses, and exactly one run probes the primary', async () => {
+    const { sm, session, iterator } = await standInBetweenBatches(303);
+    getQuotaCooldown('claude')!.armedAtMs -= QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+
+    const second = await iterator.next();
+    expect(second.done).toBe(true);
+    expect(session.abortReason).toBe('provider_switch:boundary');
+    expect(sm.getMessageBuffer().getPendingCount(303)).toBe(1);
+
+    // The first admission takes the single probe on the primary; any other
+    // session meanwhile re-enters the stand-in instead of a second probe.
+    expect(await startOnce(makeSession())).toEqual([null]);
+    expect(getQuotaCooldown('claude')?.probeInFlightSinceMs).not.toBeNull();
+    expect(await startOnce(makeSession())).toEqual(['subscription']);
   });
 });
