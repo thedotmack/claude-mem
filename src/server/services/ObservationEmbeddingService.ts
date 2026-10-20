@@ -7,6 +7,7 @@
 // without vectors are picked up by backfillMissingEmbeddings, which the
 // generation worker runs at startup.
 
+import { availableParallelism } from 'os';
 import type { PostgresQueryable } from '../../storage/postgres/utils.js';
 import type { VectorSchemaMode } from '../../storage/postgres/schema.js';
 import {
@@ -25,9 +26,50 @@ let sharedEmbedder: Embedder | null = null;
 // say why search is keyword-only instead of leaving it to the log.
 let lastEmbedError: { message: string; at: string } | null = null;
 
+function newSharedEmbedder(threads?: number): LocalEmbedder {
+  return new LocalEmbedder(threads);
+}
+
 export function getSharedEmbedder(): Embedder {
-  sharedEmbedder ??= new LocalEmbedder();
+  sharedEmbedder ??= newSharedEmbedder();
   return sharedEmbedder;
+}
+
+/**
+ * CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: a number, 0 for no cap, empty for
+ * half the CPU threads. A value that is not a number of threads takes the
+ * default rather than every thread.
+ */
+function backfillThreads(): number {
+  const half = Math.max(1, Math.floor(availableParallelism() / 2));
+  const value = SettingsDefaultsManager.get('CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS').trim();
+  const threads = Number(value);
+  return value === '' || !Number.isFinite(threads) || threads < 0 ? half : Math.floor(threads);
+}
+
+/**
+ * At startup, before anything embeds: when stored rows have no vectors from
+ * the current model (search by meaning just turned on, or the model changed),
+ * warn that the backfill may take hours and cap the shared embedder's threads
+ * until the next restart, so catching up does not take every core. The model's
+ * thread count is fixed when it loads, which is why this must run first; the
+ * embedder it replaces has not loaded. Returns the cap applied, or null.
+ */
+export async function capEmbedderThreadsForBackfill(client: PostgresQueryable): Promise<number | null> {
+  if (!(await vectorSearchOn(client))) return null;
+  const model = getSharedEmbedder().modelId;
+  const backlog = await new PostgresObservationEmbeddingsRepository(client).countMissing(model);
+  if (backlog === 0) return null;
+  const threads = backfillThreads();
+  if (threads > 0) sharedEmbedder = newSharedEmbedder(threads);
+  logger.warn('SYSTEM', 'embedding stored observations for search by meaning; this may take hours', {
+    observations: backlog,
+    model,
+    threads: threads > 0 ? `${threads} of ${availableParallelism()}, until the next restart` : 'all',
+    progress: '/v1/info vectorSearch.observationsWithoutVectors',
+    settings: 'CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS=0 uses every thread; CLAUDE_MEM_SERVER_VECTOR_SEARCH=false stops it',
+  });
+  return threads > 0 ? threads : null;
 }
 
 /** CLAUDE_MEM_SERVER_VECTOR_SEARCH: 'true' is on, 'false' off, anything else auto. */
@@ -149,10 +191,19 @@ export async function backfillMissingEmbeddings(
     const last = rows[rows.length - 1]!;
     after = { createdAt: last.createdAt, id: last.id };
 
-    const embedded = await embedObservationRows(client, rows, embedder);
-    if (!embedded) break;
+    let embedded: Array<EmbeddedParts | null> | null = await embedObservationRows(client, rows, embedder);
+    if (!embedded) {
+      // Retry a failed batch a row at a time, so a row the model cannot embed
+      // is skipped instead of stopping every row after it at each start. If
+      // every row fails, the fault is not the rows'; stop until the next start.
+      embedded = [];
+      for (const row of rows) embedded.push((await embedObservationRows(client, [row], embedder))?.[0] ?? null);
+      if (embedded.every(parts => parts === null)) break;
+    }
     for (let i = 0; i < rows.length; i++) {
-      const { parts, vectors } = embedded[i]!;
+      const row = embedded[i];
+      if (!row) continue;
+      const { parts, vectors } = row;
       await repo.upsert({ observationId: rows[i]!.id, model: embedder.modelId, parts, vectors });
       totals.observations++;
       totals.parts += parts.length;

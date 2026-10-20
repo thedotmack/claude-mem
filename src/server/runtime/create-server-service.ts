@@ -12,7 +12,11 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
-import { backfillMissingEmbeddings, vectorSearchMode } from '../services/ObservationEmbeddingService.js';
+import {
+  backfillMissingEmbeddings,
+  capEmbedderThreadsForBackfill,
+  vectorSearchMode,
+} from '../services/ObservationEmbeddingService.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
@@ -219,6 +223,11 @@ export async function createServerService(
   };
 
   if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
+    await capEmbedderThreadsForBackfill(pool).catch((error: unknown) => {
+      logger.warn('SYSTEM', 'could not size the embedding backfill; it runs uncapped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
     generationWorkerManager.start();
     // Rows written while vectors were unavailable (pgvector just installed,
     // the model failed to load, or the rows predate this feature) get them

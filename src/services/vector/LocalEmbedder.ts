@@ -41,6 +41,12 @@ export class LocalEmbedder implements Embedder {
   private loading: Promise<unknown> | null = null;
 
   /**
+   * `threads` caps onnxruntime's intra-op threads; unset, it takes every CPU
+   * thread. Fixed when the model loads.
+   */
+  constructor(readonly threads?: number) {}
+
+  /**
    * Model init costs ~3s, so it is deferred until something is actually
    * embedded — a worker that only reads never pays it. Concurrent callers
    * share one in-flight load rather than racing to initialise twice.
@@ -52,6 +58,7 @@ export class LocalEmbedder implements Embedder {
         const { pipeline } = await import('@huggingface/transformers');
         this.extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
           dtype: 'fp32',
+          ...(this.threads ? { session_options: { intraOpNumThreads: this.threads } } : {}),
         });
         return this.extractor;
       })();

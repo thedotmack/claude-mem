@@ -1,4 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { availableParallelism } from 'os';
 import pg from 'pg';
 import {
   bootstrapServerPostgresSchema,
@@ -9,7 +10,14 @@ import {
   observationEmbeddingParts,
   PostgresObservationEmbeddingsRepository,
 } from '../../../src/storage/postgres/observation-embeddings.js';
-import { embedSearchQuery, getVectorSearchStatus } from '../../../src/server/services/ObservationEmbeddingService.js';
+import {
+  backfillMissingEmbeddings,
+  capEmbedderThreadsForBackfill,
+  embedSearchQuery,
+  getSharedEmbedder,
+  getVectorSearchStatus,
+} from '../../../src/server/services/ObservationEmbeddingService.js';
+import type { LocalEmbedder } from '../../../src/services/vector/LocalEmbedder.js';
 import type { Embedder } from '../../../src/services/vector/types.js';
 import { createIsolatedSchema, dropSchema } from '../../sdk/pg-isolation.js';
 
@@ -215,6 +223,25 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     expect((await getVectorSearchStatus(pool, working)).lastEmbedError).toBeNull();
   });
 
+  it('skips a row the model cannot embed and backfills the rest', async () => {
+    if (!vectorAvailable) return;
+    const embedder: Embedder = {
+      modelId: 'next',
+      dims: 384,
+      embed: async texts => {
+        if (texts.some(text => text.includes('gateway'))) throw new Error('cannot embed');
+        return texts.map(() => axis(1));
+      },
+    };
+    expect(await backfillMissingEmbeddings(pool, { embedder })).toEqual({ observations: 2, parts: 2 });
+    const missing = await new PostgresObservationEmbeddingsRepository(pool).listMissing({ model: 'next', limit: 10 });
+    expect(missing.map(row => row.id)).toEqual([ids.gateway]);
+
+    // A failure every row shares stops the backfill instead of paging through all of them.
+    const failing: Embedder = { modelId: 'other', dims: 384, embed: async () => { throw new Error('model download failed'); } };
+    expect(await backfillMissingEmbeddings(pool, { embedder: failing, batchSize: 1 })).toEqual({ observations: 0, parts: 0 });
+  });
+
   it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {
     if (!vectorAvailable) return;
     const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
@@ -224,6 +251,32 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
       expect((await getVectorSearchStatus(pool, working)).available).toBe(false);
     } finally {
       process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH = 'true';
+    }
+  });
+
+  it('caps the shared embedder\'s threads only while stored rows need vectors', async () => {
+    if (!vectorAvailable) return;
+    // The rows above carry 'test' vectors, so the configured model has a backlog.
+    process.env.CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS = '3';
+    try {
+      expect(await capEmbedderThreadsForBackfill(pool)).toBe(3);
+      expect((getSharedEmbedder() as LocalEmbedder).threads).toBe(3);
+
+      process.env.CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS = '0';
+      expect(await capEmbedderThreadsForBackfill(pool)).toBeNull();
+
+      // An unreadable value takes the default, half the threads, not all.
+      process.env.CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS = 'four';
+      expect(await capEmbedderThreadsForBackfill(pool)).toBe(Math.max(1, Math.floor(availableParallelism() / 2)));
+
+      process.env.CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS = '3';
+      const embeddings = new PostgresObservationEmbeddingsRepository(pool);
+      for (const id of Object.values(ids)) {
+        await embeddings.upsert({ observationId: id, model: getSharedEmbedder().modelId, parts: [{ part: 'narrative', text: 'x' }], vectors: [axis(1)] });
+      }
+      expect(await capEmbedderThreadsForBackfill(pool)).toBeNull();
+    } finally {
+      delete process.env.CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS;
     }
   });
 
