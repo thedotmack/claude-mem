@@ -14,6 +14,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
+import { claudeQuotaStandIn } from '../../../../shared/claude-fallback-readiness.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -195,7 +196,9 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
       const cooldown = getQuotaCooldown(provider);
-      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
+        && !(provider === 'claude' && claudeQuotaStandIn())) {
         if (isQuotaCooldownActive(provider)) return 0;
         sessionIds = sessionIds.slice(0, 1);
       }
@@ -489,7 +492,12 @@ export class SessionRoutes extends BaseRouteHandler {
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
+      // The primary Claude credential is held: run on the quota-fallback one
+      // (dispatch logs the switch). No probe claim is taken; the primary's own
+      // probe still runs when its window elapses.
+      const standIn = !admission.admitted && selectedProvider === 'claude' ? claudeQuotaStandIn() : null;
+      session.claudeAuthOverride = standIn;
+      if (!admission.admitted && !standIn) {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);

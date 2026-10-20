@@ -47,6 +47,7 @@ import { resolveContextWindowTokens, observationFieldMaxChars } from './context-
 import { recycleObserverConversation, loadSessionStartContext, openObserverGeneration, observesBarePrompts } from './session/recycle-conversation.js';
 import { MAX_CONSECUTIVE_SDK_STREAM_EXITS, ObserverResponsePacer } from './session/response-pacer.js';
 import { recordObserverFailure } from '../../shared/observer-health.js';
+import type { ClaudeCredential } from '../../shared/quota-cooldown.js';
 import { IDLE_TIMEOUT_MS } from './SessionMessageBuffer.js';
 import { optimizeObservationFields, buildFieldCompressionPrompt, type CompressedField, type FieldCompressor } from './field-optimizer.js';
 import { resolveFieldOptimizeTimeoutMs } from './retry.js';
@@ -285,6 +286,18 @@ export function computeFullContextTokens(
   );
 }
 
+/**
+ * The credential a Claude spawn bills, from the env it is spawned with. With no
+ * key, no gateway token and no gateway URL the CLI runs on the Claude Code
+ * login, whether a fresh token was injected or the CLI uses its own stored one
+ * (the token read came back expired or absent). A gateway run is neither.
+ */
+export function observerCredentialOf(spawnEnv: Record<string, string | undefined>): ClaudeCredential | undefined {
+  if (spawnEnv.ANTHROPIC_API_KEY) return 'api-key';
+  if (spawnEnv.ANTHROPIC_AUTH_TOKEN || spawnEnv.ANTHROPIC_BASE_URL) return undefined;
+  return 'subscription';
+}
+
 export class ClaudeProvider {
   private dbManager: DatabaseManager;
   private sessionManager: SessionManager;
@@ -420,8 +433,15 @@ export class ClaudeProvider {
     // it in observer health.
     let responseProcessingThrew = false;
     try {
-      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
-      const authMethod = getAuthMethodDescription();
+      const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, {
+        standIn: session.claudeAuthOverride ?? undefined,
+      }));
+      session.observerAuth = observerCredentialOf(isolatedEnv);
+      // A quota-fallback run is labelled by what it actually bills: the quota
+      // guard protects a login it runs on, and never pauses a key.
+      const authMethod = !session.claudeAuthOverride ? getAuthMethodDescription()
+        : session.observerAuth === 'api-key' ? 'API key (quota fallback run)'
+          : 'Claude Code OAuth token (quota fallback run)';
       // The account this generator bills for its whole life: its env (and so
       // its OAuth identity) is fixed at spawn, even if the setting changes
       // while it runs. Quota snapshots are tagged with it and checked against
@@ -1040,11 +1060,13 @@ export class ClaudeProvider {
       signals?: AbortSignal[];
       /** Set when the session's gateway already refused the thinking param (#4732). */
       thinkingStripped?: boolean;
+      /** The session's quota-fallback credential (ActiveSession.claudeAuthOverride). */
+      standIn?: ClaudeCredential;
     },
     modelId: string,
     claudePath: string,
   ): Promise<string | null> {
-    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth());
+    const isolatedEnv = sanitizeEnv(await buildIsolatedEnvWithFreshOAuth(true, { standIn: context.standIn }));
     const controller = new AbortController();
     const abort = () => controller.abort();
     const signals = context.signals ?? [];
@@ -1111,6 +1133,7 @@ export class ClaudeProvider {
         project: session.project,
         signals: [signal, session.abortController.signal],
         thinkingStripped: session.observerThinkingStripped,
+        standIn: session.claudeAuthOverride ?? undefined,
       },
       modelId,
       claudePath,

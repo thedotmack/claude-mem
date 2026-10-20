@@ -218,6 +218,7 @@ export interface SettingsDefaults {
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
+  CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: string;
   // Quota guard: per-window utilization (0–1) at which a subscription observer stops (#4230).
   CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR: string;
   CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY: string;
@@ -480,6 +481,7 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
+    CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: '', // '' (off) | 'subscription' | 'api-key': the Claude credential to run on while the primary one is held for quota. 'subscription': the Claude Code login, for a spent ANTHROPIC_API_KEY. 'api-key': ANTHROPIC_FALLBACK_API_KEY from .env, for a login that is spent or paused by the quota guard. Tried before CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER
     CLAUDE_MEM_QUOTA_THRESHOLD_FIVE_HOUR: '0.95',          // Quota guard (#4230): subscription observer stops at this utilization of the window. A provider rejection always stops it
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY: '0.93',
     CLAUDE_MEM_QUOTA_THRESHOLD_SEVEN_DAY_OPUS: '0.93',

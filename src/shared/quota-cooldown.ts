@@ -48,6 +48,9 @@ import {
 
 export type QuotaProvider = 'claude' | 'gemini' | 'openrouter' | 'codex' | 'openai-compatible' | 'cmem-gateway';
 
+/** The credential a Claude run billed: an ANTHROPIC_API_KEY, or the Claude Code login. */
+export type ClaudeCredential = 'api-key' | 'subscription';
+
 export const QUOTA_COOLDOWN_FILENAME = 'quota-cooldown.json';
 
 /**
@@ -60,6 +63,7 @@ interface PersistedQuotaCooldown {
   profile?: string;
   armedAtMs: number;
   cause?: 'auth';
+  auth?: ClaudeCredential;
 }
 
 /**
@@ -126,6 +130,7 @@ function hydrateFromDisk(filePath: string = defaultCooldownFilePath()): void {
         ...(entry.window ? { window: entry.window } : {}),
         ...(entry.profile ? { profile: entry.profile } : {}),
         ...(entry.cause === 'auth' ? { cause: 'auth' as const } : {}),
+        ...(entry.auth === 'api-key' || entry.auth === 'subscription' ? { auth: entry.auth } : {}),
         armedAtMs: entry.armedAtMs,
         // Never restored: the process that could have held this is gone.
         probeInFlightSinceMs: null,
@@ -157,6 +162,7 @@ function persistToDisk(filePath: string = defaultCooldownFilePath()): void {
         ...(state.profile ? { profile: state.profile } : {}),
         armedAtMs: state.armedAtMs,
         ...(state.cause ? { cause: state.cause } : {}),
+        ...(state.auth ? { auth: state.auth } : {}),
       }));
     if (rows.length === 0) {
       if (existsSync(filePath)) unlinkSync(filePath);
@@ -246,6 +252,13 @@ export interface QuotaCooldownState {
    */
   cause?: 'auth';
   /**
+   * 'claude' only: the credential whose run spent its allowance (or was paused
+   * by the quota guard). CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD names the other
+   * credential to run on while this breaker holds (claudeQuotaStandIn). Absent
+   * when a quota-fallback run was refused too: both are spent.
+   */
+  auth?: ClaudeCredential;
+  /**
    * When the single post-expiry probe was claimed, or null when none is in
    * flight. Without this the expiry check is a bare read: every concurrent
    * session passes it at once and they all hit the provider together, which on
@@ -302,8 +315,10 @@ export function recordQuotaExhausted(
    * to that account, not the one selected now. Defaults to the current one.
    */
   profile?: string,
+  /** 'claude' only: the credential the refused generator billed (QuotaCooldownState.auth). */
+  auth?: ClaudeCredential,
 ): QuotaCooldownState {
-  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile });
+  return armCooldown({ provider, message, ...(window ? { window } : {}), armedAtMs, profile, ...(auth ? { auth } : {}) });
 }
 
 /**
@@ -321,7 +336,7 @@ export function recordAuthCooldown(
 }
 
 function armCooldown(
-  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause'>,
+  armed: Pick<QuotaCooldownState, 'provider' | 'message' | 'window' | 'armedAtMs' | 'profile' | 'cause' | 'auth'>,
 ): QuotaCooldownState {
   hydrateFromDisk();
   const { profile, ...rest } = armed;
@@ -639,6 +654,7 @@ export function syncObserverHealthQuotaCooldown(
       armedAt: latest.armedAtMs,
       until: latestUntil,
       ...(latest.window ? { window: latest.window } : {}),
+      ...(latest.auth ? { auth: latest.auth } : {}),
       message: latest.message,
       ...(servingProvider ? { servingProvider } : {}),
     });

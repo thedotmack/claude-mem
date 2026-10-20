@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, afterAll } from 'bun:test';
-import { mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import {
   isQuotaCooldownActive,
@@ -388,6 +388,21 @@ describe('quota cooldown breaker (#3634)', () => {
     // First read in this "process" hydrates from disk.
     expect(getQuotaCooldown('gemini')?.window).toBe('rate_limit');
     expect(readObserverHealth(healthPath)!.quotaCooldown!.until).toBe(armedAt + RATE_LIMIT_RECHECK_COOLDOWN_MS);
+  });
+
+  it.each(['api-key', 'subscription'] as const)('keeps the %s credential tag across a restart', (auth) => {
+    const ledgerPath = join(paths.dataDir(), QUOTA_COOLDOWN_FILENAME);
+    recordQuotaExhausted('claude', 'Allowance spent', undefined, undefined, undefined, auth);
+    const ledger = readFileSync(ledgerPath, 'utf-8');
+    expect(JSON.parse(ledger)[0].auth).toBe(auth);
+
+    resetQuotaCooldownsForTesting();
+    writeFileSync(ledgerPath, ledger);
+    expect(getQuotaCooldown('claude')?.auth).toBe(auth);
+
+    // Re-arming without a tag (the quota-fallback run was refused too) drops it.
+    recordQuotaExhausted('claude', 'Weekly limit reached', 'weekly');
+    expect(getQuotaCooldown('claude')?.auth).toBeUndefined();
   });
 
   it('mirrors the armed window into observer-health.json and clears it on success', () => {
