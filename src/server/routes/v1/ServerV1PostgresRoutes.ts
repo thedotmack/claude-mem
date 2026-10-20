@@ -25,6 +25,7 @@ import {
 import { PostgresObservationEmbeddingsRepository } from '../../../storage/postgres/observation-embeddings.js';
 import { PostgresProjectsRepository } from '../../../storage/postgres/projects.js';
 import { logger } from '../../../utils/logger.js';
+import { renderSemanticContext } from '../../../shared/semantic-context.js';
 import { requirePostgresServerAuth } from '../../middleware/postgres-auth.js';
 import { PostgresDataDeletionRepository } from '../../../storage/postgres/data-deletion.js';
 import { requestIdMiddleware } from '../../middleware/request-id.js';
@@ -1195,14 +1196,11 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // Always the worker's 'narrative' format. Its 'index' format lists ids
         // for get_observations to expand, and that tool reads the worker by
         // numeric id; a server id is a UUID nothing here can expand.
-        const lines: string[] = results.length > 0 ? ['## Relevant Past Work (semantic match)\n'] : [];
-        for (const observation of results) {
-          const title = typeof observation.metadata.title === 'string' ? observation.metadata.title : 'Observation';
-          const narrative = typeof observation.metadata.narrative === 'string' ? observation.metadata.narrative : '';
-          lines.push(`### ${title} (${new Date(observation.createdAtEpoch).toISOString().slice(0, 10)})`);
-          if (narrative) lines.push(narrative);
-          lines.push('');
-        }
+        const context = renderSemanticContext(results.map(observation => ({
+          title: typeof observation.metadata.title === 'string' ? observation.metadata.title : null,
+          narrative: typeof observation.metadata.narrative === 'string' ? observation.metadata.narrative : null,
+          date: new Date(observation.createdAtEpoch).toISOString().slice(0, 10),
+        })));
         await this.auditWrite(req, 'observation.read', null, body.projectId, {
           mode: 'semantic_context',
           limit,
@@ -1213,7 +1211,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         });
         res.status(200).json({
           observations: results.map(serializeObservation),
-          context: lines.join('\n'),
+          context,
           count: results.length,
         });
       },
