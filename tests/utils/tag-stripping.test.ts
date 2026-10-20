@@ -654,6 +654,22 @@ after`;
       expect(isGrokBotInternalPrompt('')).toBe(false);
     });
 
+    it('returns false for general user queries', () => {
+      expect(isGrokBotInternalPrompt('How do I run a backup?')).toBe(false);
+      expect(isGrokBotInternalPrompt('Investigate why the tests fail on CI')).toBe(false);
+      expect(isGrokBotInternalPrompt('Break the build into smaller modules')).toBe(false);
+    });
+
+    it('does not match a person paraphrasing a brief opening', () => {
+      expect(isGrokBotInternalPrompt('Verify every candidate claim in the JSON packet below, please')).toBe(false);
+      expect(isGrokBotInternalPrompt('Investigate the question in the JSON file I attached')).toBe(false);
+      expect(isGrokBotInternalPrompt('Rewrite the research findings to be shorter')).toBe(false);
+    });
+
+    it('matches a brief with leading whitespace', () => {
+      expect(isGrokBotInternalPrompt('  Independently verify every candidate claim in the JSON packet below')).toBe(true);
+    });
+
     it('returns false for non-matching user queries and incomplete openings', () => {
       expect(isGrokBotInternalPrompt('Independently verify this claim? I typed it myself.')).toBe(false);
       expect(isGrokBotInternalPrompt('Please break the JSON-encoded research query for me')).toBe(false);
