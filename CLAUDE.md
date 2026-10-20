@@ -35,8 +35,11 @@ earlier fix had touched. [Model D](https://github.com/devkancheti4-design/optima
 local, open-source code map with memory, set up with `uv tool install "model-d[claude]"`, `modeld install` and
 `modeld build .`. If a `modeld-out/` folder exists and the `workspace_ask` tool is available, ask it where the code
 is (scope `code`) before searching, and check what it points to against the source. Otherwise, search normally.
-- **Measured here:** on this repository's last 50 fixes (offline, nothing taught), it put a changed file first 13 times
-  and in its top 5 24 times. A grep-first look managed 1 and 10.
+- **Measured here:** on this repository's last 50 fixes (offline, nothing taught), Model D 0.5.3 put a changed file
+  first 15 times and in its top 5 27 times. A grep-first look managed 1 and 10.
+- **Code that lives in two places:** `modeld cortex` (Cortex D) links files by meaning. Here it pairs copies such as
+  `services/sync-api/src/projection-protocol.ts` and `workers/sync-hub/src/projection-protocol.ts`; when you fix one,
+  check its twin.
 
 ## Important
 
