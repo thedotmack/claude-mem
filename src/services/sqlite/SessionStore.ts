@@ -4233,13 +4233,14 @@ export class SessionStore {
     depthBefore: number = 10,
     depthAfter: number = 10,
     project?: string,
-    platformSource?: string
+    platformSource?: string,
+    projects?: string[]
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
-    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource);
+    return this.getTimelineAroundObservation(null, anchorEpoch, depthBefore, depthAfter, project, platformSource, projects);
   }
 
   getTimelineAroundObservation(
@@ -4248,25 +4249,23 @@ export class SessionStore {
     depthBefore: number = 10,
     depthAfter: number = 10,
     project?: string,
-    platformSource?: string
+    platformSource?: string,
+    projects?: string[]
   ): {
     observations: any[];
     sessions: any[];
     prompts: any[];
   } {
     const normalizedPlatformSource = platformSource ? normalizePlatformSource(platformSource) : undefined;
+    const readProjects = scopedProjects({ project, projects });
     const buildScope = (rowAlias: string, sessionAlias: string, includeMergedProject: boolean = false): { clause: string; params: any[] } => {
       const conditions: string[] = [];
       const params: any[] = [];
 
-      if (project) {
-        if (includeMergedProject) {
-          conditions.push(`(${rowAlias}.project COLLATE NOCASE = ? OR ${rowAlias}.merged_into_project COLLATE NOCASE = ?)`);
-          params.push(project, project);
-        } else {
-          conditions.push(`${rowAlias}.project COLLATE NOCASE = ?`);
-          params.push(project);
-        }
+      if (readProjects.length > 0) {
+        const scope = projectScopeSql(rowAlias, readProjects, { includeMerged: includeMergedProject });
+        conditions.push(scope.sql);
+        params.push(...scope.params);
       }
 
       if (normalizedPlatformSource) {
