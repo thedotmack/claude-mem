@@ -191,8 +191,13 @@ export function classifyClaudeError(err: unknown): ClassifiedProviderError {
     return new ClassifiedProviderError(message, { kind: 'rate_limit', cause: err });
   }
 
-  // Quota.
-  if (message.toLowerCase().includes('quota exceeded')) {
+  // Quota. A spent API key's credit balance comes back as a 400
+  // invalid_request_error ("API Error: 400 {…credit balance is too low…}"),
+  // so it is matched here, before the 400 branches call it unrecoverable.
+  if (
+    message.toLowerCase().includes('quota exceeded') ||
+    /\bcredit balance is too low\b/i.test(describeErrorFeedbackText(err))
+  ) {
     return new ClassifiedProviderError(message, { kind: 'quota_exhausted', cause: err });
   }
 
@@ -938,10 +943,27 @@ export class ClaudeProvider {
         });
         await this.releaseClaimedBatchForTransportExit(session, 'transport:thinking_rejected');
       }
+      // A spent allowance thrown by the CLI (a spent API key's credit balance
+      // arrives as a 400) pauses like the quota prose path: the claimed batch
+      // goes back to pending, and the classified error tells the runner to
+      // book a quota pause instead of a generic failure.
+      if (!session.abortReason && !responseProcessingThrew && !isClassified(error)) {
+        const classified = classifyClaudeError(error);
+        if (classified.kind === 'quota_exhausted') {
+          session.abortReason = 'quota:unknown:quota_exhausted';
+          try {
+            session.abortController.abort();
+          } catch {
+            // best-effort
+          }
+          await this.sessionManager.resetProcessingToPending(session.sessionDbId);
+          throw classified;
+        }
+      }
       // The stream broke with the batch still claimed. Only a transient fault
       // of the stream itself is released for the transport resume. Anything
       // classifyClaudeError calls non-transient (a refused credential, a 400,
-      // "Prompt is too long", a quota) and any throw from processAgentResponse
+      // "Prompt is too long") and any throw from processAgentResponse
       // (storage) is rethrown untouched, so the runner books it in observer
       // health exactly as before instead of resending it on the backoff.
       if (
