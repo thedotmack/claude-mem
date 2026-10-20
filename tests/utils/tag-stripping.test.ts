@@ -1,6 +1,6 @@
 
 import { describe, it, expect, beforeEach, afterEach, spyOn, mock } from 'bun:test';
-import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt } from '../../src/utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings, isInternalProtocolPayload, isCodexInternalPrompt, isGrokSubAgentBrief } from '../../src/utils/tag-stripping.js';
 import { logger } from '../../src/utils/logger.js';
 
 let loggerSpies: ReturnType<typeof spyOn>[] = [];
@@ -646,6 +646,38 @@ after`;
     it('does not match a person asking about suggestions or rollout summaries', () => {
       expect(isCodexInternalPrompt('This is an app-generated request? I did not expect that.')).toBe(false);
       expect(isCodexInternalPrompt('Consolidate the supplied rollout summaries please')).toBe(false);
+    });
+  });
+
+  describe('isGrokSubAgentBrief', () => {
+    it('returns false for empty input', () => {
+      expect(isGrokSubAgentBrief('')).toBe(false);
+    });
+
+    it('returns false for general user queries', () => {
+      expect(isGrokSubAgentBrief('How do I run a backup?')).toBe(false);
+      expect(isGrokSubAgentBrief('Investigate why the tests fail on CI')).toBe(false);
+      expect(isGrokSubAgentBrief('Break the build into smaller modules')).toBe(false);
+    });
+
+    it('returns true for the claim-verification brief (#4811)', () => {
+      expect(isGrokSubAgentBrief('Independently verify every candidate claim in the JSON packet below against the cited sources.\n\n{"claims": []}')).toBe(true);
+      expect(isGrokSubAgentBrief('  Independently verify every candidate claim in the JSON packet below')).toBe(true);
+    });
+
+    it('returns true for the findings-rewrite brief (#4811)', () => {
+      expect(isGrokSubAgentBrief('Rewrite the verified research findings as a concise summary for the user.')).toBe(true);
+    });
+
+    it('returns true for the JSON-question and JSON-query briefs (#4811)', () => {
+      expect(isGrokSubAgentBrief('Investigate the JSON-encoded question and answer with evidence.\n\n{"question": "..."}')).toBe(true);
+      expect(isGrokSubAgentBrief('Break the JSON-encoded research query into sub-questions and research each one.')).toBe(true);
+    });
+
+    it('does not match a person paraphrasing a brief opening', () => {
+      expect(isGrokSubAgentBrief('Verify every candidate claim in the JSON packet below, please')).toBe(false);
+      expect(isGrokSubAgentBrief('Investigate the question in the JSON file I attached')).toBe(false);
+      expect(isGrokSubAgentBrief('Rewrite the research findings to be shorter')).toBe(false);
     });
   });
 

@@ -17,7 +17,7 @@ import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/sh
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { workStatePlatform } from '../../shared/work-state-telemetry.js';
-import { isCodexInternalPrompt, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { isCodexInternalPrompt, isGrokSubAgentBrief, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
@@ -165,6 +165,17 @@ const sessionInit = {
     if (rawPrompt && normalizePlatformSource(input.platform) === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HOOK', 'session-init: skipping a Codex internal helper prompt', {
         reason: 'internal_system_prompt',
+        preview: rawPrompt.slice(0, 80),
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Grok fires this hook inside its research sub-agent sessions too, whose
+    // first "prompt" is a generated brief (#4811). Grok only: the same text
+    // from another host is a person's prompt.
+    if (rawPrompt && normalizePlatformSource(input.platform) === 'grok' && isGrokSubAgentBrief(rawPrompt)) {
+      logger.debug('HOOK', 'session-init: skipping a grok sub-agent brief', {
+        reason: 'subagent_brief',
         preview: rawPrompt.slice(0, 80),
       });
       return { continue: true, suppressOutput: true };

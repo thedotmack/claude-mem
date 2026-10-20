@@ -226,3 +226,27 @@ export function isCodexInternalPrompt(text: string): boolean {
   const opening = text.trimStart();
   return CODEX_INTERNAL_PROMPT_OPENINGS.some(pattern => pattern.test(opening));
 }
+
+/**
+ * The openings of the briefs grok's research sub-agents start with (#4811).
+ * Grok fires UserPromptSubmit inside sub-agent sessions too, so each brief —
+ * a generated instruction packet of 10–28k characters, not a person typing —
+ * became a stored user prompt and spent a semantic search. Each pattern is
+ * the brief's own opening line, never a phrase a person would type.
+ */
+const GROK_SUBAGENT_BRIEF_OPENINGS: readonly RegExp[] = [
+  /^Independently verify every candidate claim in the JSON packet below/,
+  /^Rewrite the verified research findings/,
+  /^Investigate the JSON-encoded question/,
+  /^Break the JSON-encoded research query/,
+];
+
+/**
+ * Whether a prompt is one of grok's generated research sub-agent briefs.
+ * Callers apply it only to platformSource 'grok': the same text from any
+ * other host is a person's prompt.
+ */
+export function isGrokSubAgentBrief(text: string): boolean {
+  const opening = text.trimStart();
+  return GROK_SUBAGENT_BRIEF_OPENINGS.some(pattern => pattern.test(opening));
+}

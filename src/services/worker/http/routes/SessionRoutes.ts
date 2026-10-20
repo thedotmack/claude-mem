@@ -5,7 +5,7 @@ import { ingestObservation, ingestSummarize, ingestSessionEnd, type IngestContex
 import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
-import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isGrokSubAgentBrief, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -768,6 +768,14 @@ export class SessionRoutes extends BaseRouteHandler {
     if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
+    // Grok's research sub-agents open with a generated brief, not a user
+    // turn; grok only (see the hook handler) (#4811).
+    if (rawPrompt && platformSource === 'grok' && isGrokSubAgentBrief(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a grok sub-agent brief before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'subagent_brief' });
       return;
     }
 
