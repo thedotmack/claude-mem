@@ -399,7 +399,11 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
   parts.push(command);
 
-  return parts.join(' ');
+  command = parts.join(' ');
+  // Codex may launch hooks through Fish; parse the POSIX prelude inside sh.
+  return options.host === 'codex-cli'
+    ? `/bin/sh -c '${command.replace(/'/g, `'"'"'`)}'`
+    : command;
 }
 
 /**

@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { parse as parseShellCommand } from 'shell-quote';
 import {
   buildCodexWindowsCommand,
   buildEnsureLauncherExecHook,
@@ -822,6 +823,9 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
   // Replace the trailing exec with `echo "_P=$_P"` so we observe the resolved
   // root without launching node.
   function instrument(command: string): string {
+    if (command.startsWith('/bin/sh -c ')) {
+      command = parseShellCommand(command)[2] as string;
+    }
     // Strip everything from the resolved-root guard onward, keep the resolution
     // pipeline, then print _P. We cut at the cygpath clause / trailing command
     // by replacing the not-found guard's exit with a print of _P.

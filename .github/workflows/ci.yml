@@ -29,6 +29,9 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Install Fish for Codex hook regression tests
+        run: sudo apt-get update && sudo apt-get install -y fish
+
       # Plugin installations execute the committed bundles directly. Check
       # them before rebuilding, which would hide a stale published worker or
       # a bundle committed with merge-conflict markers (#4728).
