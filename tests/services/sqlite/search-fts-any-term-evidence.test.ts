@@ -60,6 +60,19 @@ describe('short any-term questions retain bounded matching evidence', () => {
       expect(results()).toContain(decision);
       expect(results()).toHaveLength(2);
     });
+
+    it(`preserves an existing non-ASCII ${summary ? 'summary' : 'observation'} match when admitting another term`, () => {
+      seed('Αθήνα', 'billing-api', summary);
+      seed('Αθήνα', 'billing-api', summary);
+      seed('salvage', 'billing-api', summary);
+      seed('salvage', 'billing-api', summary);
+      const query = 'missing Αθήνα salvage';
+      const results = summary
+        ? search.searchSessions(query).map(row => row.request)
+        : search.searchObservations(query).map(row => row.title);
+      expect(results.filter(text => text === 'Αθήνα')).toHaveLength(2);
+      expect(results.filter(text => text === 'salvage')).toHaveLength(2);
+    });
   }
 
   it('retrieves the decision from 40 same-topic observations among 100 rows, with filters and pagination', () => {
@@ -87,12 +100,12 @@ describe('short any-term questions retain bounded matching evidence', () => {
       seed(['ubiquitous', index < 400 ? 'scarce' : '', index < 600 ? 'shared' : ''].join(' '));
     }
     // All three indexed words exceed the 30% rule. 400 + 600 fits; adding 1000 does not.
-    expect(build('missing ubiquitous shared scarce')).toBe('"scarce" OR "shared"');
+    expect(build('missing ubiquitous shared scarce')).toBe('"missing" OR "scarce" OR "shared"');
   });
 
   it('admits a term at the exact candidate-document boundary', () => {
     for (let index = 0; index < 1024; index++) seed('Redis connection pool limit');
-    expect(build(question)).toBe('"Redis"');
+    expect(build(question)).toBe('"What" OR "was" OR "our" OR "Redis"');
     expect(search.searchObservations(question, { limit: 1 })).toHaveLength(1);
   });
 
@@ -112,7 +125,7 @@ describe('short any-term questions retain bounded matching evidence', () => {
       .get('"Αθήνα"')).toEqual({ n: 2000 });
     expect(build('missing absent Αθήνα')).toBe('"missing" OR "absent"');
     // A rejected non-ASCII term must not prevent a later affordable ASCII term from being admitted.
-    expect(build('missing absent Αθήνα salvage')).toBe('"salvage"');
+    expect(build('missing absent Αθήνα salvage')).toBe('"missing" OR "absent" OR "salvage"');
   });
 
   it('still admits non-ASCII evidence when the entire store fits within the candidate budget', () => {
@@ -120,9 +133,34 @@ describe('short any-term questions retain bounded matching evidence', () => {
     seed('αθηνα');
     seed('αθήνα');
     seed('αθήνα');
-    expect(build('missing absent Αθήνα')).toBe('"Αθήνα"');
+    expect(build('missing absent Αθήνα')).toBe('"missing" OR "absent" OR "Αθήνα"');
     expect(search.searchObservations('missing absent Αθήνα').map(row => row.title)).toEqual(['αθήνα', 'αθήνα']);
   });
+
+  it('charges only new candidates while retaining an existing non-ASCII match above the budget', () => {
+    seed('Αθήνα');
+    seed('Αθήνα');
+    for (let index = 0; index < 1024; index++) seed('salvage');
+    expect(build('missing Αθήνα salvage')).toBe('"missing" OR "Αθήνα" OR "salvage"');
+    const results = search.searchObservations('missing Αθήνα salvage', { limit: 2000 });
+    expect(results.filter(row => row.title === 'Αθήνα')).toHaveLength(2);
+    expect(results.filter(row => row.title === 'salvage')).toHaveLength(1024);
+  });
+
+  for (const [cap, medium] of [[40, false], [60, true]] as const) {
+    it(`retains a full ${cap}-term baseline selection instead of replacing it with admitted terms`, () => {
+      const tokens = Array.from({ length: cap }, (_, index) => `ά${String(index).padStart(medium ? 3 : 1, '0')}`);
+      seed(tokens.join(' '));
+      seed(tokens.join(' '));
+      seed('salvage');
+      seed('salvage');
+      const query = `${tokens.join(' ')} salvage`;
+      expect(query.length >= 200).toBe(medium);
+      expect(query.length).toBeLessThan(600);
+      expect(build(query)?.split(' OR ')).toEqual(tokens.map(token => `"${token}"`));
+      expect(search.searchObservations(query).map(row => row.title)).toEqual([tokens.join(' '), tokens.join(' ')]);
+    });
+  }
 
   it('leaves a selection with an indexed rare term unchanged', () => {
     seed('raremarker Redis connection pool limit');

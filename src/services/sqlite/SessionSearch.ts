@@ -489,7 +489,7 @@ export class SessionSearch {
    *   200..600     | the same, at most 60
    *   >= 600       | the first 40 distinct words of >= 3 characters that are in at least one row and in < 2% of rows
    *
-   * If the short/medium selection has no indexed token, admit the least frequent excluded tokens within a
+   * If the short/medium selection has no positive-frequency token, admit the least frequent excluded tokens within a
    * fixed candidate-document budget. Relative frequency alone can otherwise exclude every matching word in a
    * small or topic-focused store, leaving only absent question words.
    *
@@ -530,7 +530,7 @@ export class SessionSearch {
   private static readonly ANY_TERM_LONG_PROMPT_CAP = 40;
   /** Short and medium prompts drop a token whose rarest word is in this share of rows or more. */
   private static readonly ANY_TERM_COMMON_SHARE = 0.30;
-  /** Candidate-document upper bound admitted when a short/medium selection has no indexed token. */
+  /** Candidate-document upper bound for new terms admitted when the short/medium selection has no positive frequency. */
   private static readonly ANY_TERM_MATCHING_DOCUMENT_BUDGET = 1024;
   /** Long prompts keep only words in less than this share of rows. */
   private static readonly ANY_TERM_LONG_PROMPT_MAX_SHARE = 0.02;
@@ -623,7 +623,9 @@ export class SessionSearch {
       return picked;
     }
 
-    const matching: string[] = [];
+    // Zero estimated frequency does not prove a Unicode token cannot match. Preserve the original selection;
+    // only its remaining term slots and the new-candidate budget are available for excluded terms.
+    const matching = [...picked];
     let documents = 0;
     const excluded = distinct
       .map(token => ({ token, rows: SessionSearch.tokenRows(token, docFrequency) }))
@@ -638,7 +640,7 @@ export class SessionSearch {
       matching.push(token);
       documents += candidates;
     }
-    return matching.length > 0 ? matching : picked;
+    return matching;
   }
 
   private static pickRareWords(query: string, docFrequency: DocFrequency): string[] {
