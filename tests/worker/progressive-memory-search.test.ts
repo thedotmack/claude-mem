@@ -10,7 +10,7 @@ import { ProgressiveMemorySearch } from '../../src/services/worker/ProgressiveMe
 import { SearchRoutes } from '../../src/services/worker/http/routes/SearchRoutes.js';
 import { progressiveSearchToolResult, PROGRESSIVE_RESPONSE_BYTES } from '../../src/shared/progressive-search.js';
 
-describe('progressive worker search with real SQLite fixtures', () => {
+describe('worker Dumb search with real SQLite fixtures', () => {
   let db: Database;
   let store: SessionStore;
   let manager: SearchManager;
@@ -41,38 +41,9 @@ describe('progressive worker search with real SQLite fixtures', () => {
 
   afterEach(() => db.close());
 
-  it('discloses no narratives until selected context reaches step 3', async () => {
-    const first = await progressive.run({ query: 'authentication', project, mode: 'guided' });
-    expect(first.step).toBe(1);
-    expect(first.continuation).toMatch(/^ms_[A-Za-z0-9_-]{24}$/);
-    expect(first.index.some(row => row.id === authId)).toBe(true);
-    expect(first.index.some(row => row.id === unrelatedId)).toBe(false);
-    expect(JSON.stringify(first)).not.toContain('PRIVATE_');
-    expect(first.next?.instruction).toContain('step 2 of 3');
-    const second = await progressive.run({ continuation: first.continuation!, selectedIds: [authId] });
-    expect(second.step).toBe(2);
-    expect(second.index.some(row => row.title === 'Authentication tied sibling')).toBe(true);
-    expect(JSON.stringify(second)).not.toContain('PRIVATE_');
-    const third = await progressive.run({ continuation: second.continuation!, selectedIds: [authId] });
-    expect(third.step).toBe(3);
-    expect(third.observations).toHaveLength(1);
-    expect(third.observations[0].content).toContain('PRIVATE_AUTH_BODY');
-    expect(third.observations[0].truncated).toBe(true);
-    expect(Buffer.byteLength(JSON.stringify(third))).toBeLessThanOrEqual(PROGRESSIVE_RESPONSE_BYTES);
-  });
-
-  it('rejects skipped steps, undisclosed IDs, changed scope and tampered tokens', async () => {
-    await expect(progressive.run({ query: 'authentication', selectedIds: [authId] })).rejects.toThrow('preceding step');
-    const first = await progressive.run({ query: 'authentication', project });
-    await expect(progressive.run({ continuation: first.continuation!, selectedIds: [unrelatedId] })).rejects.toThrow('not disclosed');
-    await expect(progressive.run({ continuation: first.continuation!, selectedIds: [authId] }, 'different-scope')).rejects.toThrow('different memory scope');
-    await expect(progressive.run({ continuation: first.continuation!.slice(0, -5) + 'AAAAA', selectedIds: [authId] })).rejects.toMatchObject({ code: 'invalid_continuation' });
-    await expect(progressive.run({ continuation: first.continuation!, selectedIds: [authId], project: 'another-project' })).rejects.toThrow('original search options');
-  });
-
-  it('auto mode performs bounded index, context and a selected fetch', async () => {
-    const response = await progressive.run({ query: 'authentication', project, mode: 'auto', limit: 8, maxDetails: 2 });
-    expect(response.complete).toBe(true);
+  it('performs bounded index, context and a selected fetch in one call', async () => {
+    const response = await progressive.run({ query: 'authentication', project, limit: 8, maxDetails: 2 });
+    expect(response.step).toBe(3);
     expect(response.trace.map(row => row.operation)).toEqual(['search', 'timeline', 'fetch']);
     expect(response.observations.length).toBeLessThanOrEqual(2);
     expect(response.observations.every(row => row.project === project)).toBe(true);
@@ -80,11 +51,10 @@ describe('progressive worker search with real SQLite fixtures', () => {
   });
 
   it('uses the stored matching project for timeline context across checkout aliases', async () => {
-    const first = await progressive.run({ query: 'authentication', project: 'checkout-new' }, 'checkout-scope', ['checkout-new', project]);
-    expect(first.index.some(row => row.id === authId)).toBe(true);
-    const second = await progressive.run({ continuation: first.continuation!, selectedIds: [authId] }, 'checkout-scope');
-    expect(second.index.some(row => row.title === 'Authentication tied sibling')).toBe(true);
-    expect(second.index.every(row => row.project === project)).toBe(true);
+    const response = await progressive.run({ query: 'authentication', project: 'checkout-new' }, ['checkout-new', project]);
+    expect(response.trace.map(row => row.operation)).toEqual(['search', 'timeline', 'fetch']);
+    expect(response.observations.length).toBeGreaterThan(0);
+    expect(response.observations.every(row => row.project === project)).toBe(true);
   });
 
   it('keeps a strongly matching summary when observations fill their entire candidate budget', async () => {
@@ -99,12 +69,9 @@ describe('progressive worker search with real SQLite fixtures', () => {
     const summaryRow = store.getSessionSummariesByIds([summary])[0];
     const adapterManager = { search: async () => ({ observations: weak, sessions: [summaryRow], prompts: [] }) } as unknown as SearchManager;
     const adapter = new ProgressiveMemorySearch(adapterManager, store);
-    const first = await adapter.run({ query: 'Authentication token expiry', project, limit: 20 });
-    expect(first.index).toHaveLength(20);
-    expect(first.index[0].id).toBe(`S${summary}`);
-    const auto = await adapter.run({ query: 'Authentication token expiry', project, limit: 20, mode: 'auto', maxDetails: 1 });
-    expect(auto.observations[0].id).toBe(`S${summary}`);
-    expect(auto.observations[0].content).toContain('SUMMARY_DETAIL');
+    const result = await adapter.run({ query: 'Authentication token expiry', project, limit: 20, maxDetails: 1 });
+    expect(result.observations[0].id).toBe(`S${summary}`);
+    expect(result.observations[0].content).toContain('SUMMARY_DETAIL');
   });
 
   it('reranks semantic candidates beyond the requested limit before cutting the index (#4865)', async () => {
@@ -125,11 +92,10 @@ describe('progressive worker search with real SQLite fixtures', () => {
       new SearchManager(new SessionSearch(db), store, chroma as any, new FormattingService(), new TimelineService()),
       store,
     );
-    const guided = await semantic.run({ query, project: target, mode: 'guided', limit: 5 });
-    expect(guided.index).toHaveLength(5);
-    expect(guided.index[0].id).toBe(exactId);
-    const auto = await semantic.run({ query, project: target, mode: 'auto', limit: 5, maxDetails: 1, depthBefore: 0, depthAfter: 0 });
-    expect(auto.observations[0].id).toBe(exactId);
+    const result = await semantic.run({ query, project: target, limit: 5, maxDetails: 1, depthBefore: 0, depthAfter: 0 });
+    expect(result.index).toHaveLength(1);
+    expect(result.index[0].id).toBe(exactId);
+    expect(result.observations[0].id).toBe(exactId);
   });
 
   it('returns the same curated text from the HTTP worker route without duplicate internal state', async () => {
@@ -140,15 +106,15 @@ describe('progressive worker search with real SQLite fixtures', () => {
     await new Promise<void>(resolve => server.once('listening', resolve));
     try {
       const address = server.address() as { port: number };
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', project, mode: 'auto' }),
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', project }),
       });
       const payload = await response.json() as any;
-      const expected = await progressive.run({ query: 'authentication', project, mode: 'auto' });
+      const expected = await progressive.run({ query: 'authentication', project });
       expect(payload).toEqual(progressiveSearchToolResult(expected));
       expect(payload.structuredContent).toBeUndefined();
-      expect(payload.content[0].text).toStartWith('mem-search step 3 of 3');
-      const invalid = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
+      expect(payload.content[0].text).toStartWith('dumb-search — selected details');
+      const invalid = await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ query: 'authentication', limit: 1000 }),
       });
       const error = await invalid.json() as any;
@@ -164,10 +130,9 @@ describe('progressive worker search with real SQLite fixtures', () => {
     const target = 'literal-json-fixture';
     const bodies = ['{"timeoutSeconds":30}', '["use staging"]'];
     const ids = bodies.map((body, index) => seed(target, `Literal JSON example ${index}`, body, epoch + index));
-    const first = await progressive.run({ query: 'Literal JSON', project: target });
-    const second = await progressive.run({ continuation: first.continuation!, selectedIds: ids });
-    const third = await progressive.run({ continuation: second.continuation!, selectedIds: ids });
-    const selected = progressiveSearchToolResult(third).content[0].text;
+    const response = await progressive.run({ query: 'Literal JSON', project: target, maxDetails: 2 });
+    expect(response.observations.map(row => row.id).sort()).toEqual([...ids].sort());
+    const selected = progressiveSearchToolResult(response).content[0].text;
     for (const body of bodies) expect(selected).toContain(body);
     expect(selected).not.toContain('No readable memory details');
     const app = express(); app.use(express.json()); new SearchRoutes(manager).setupRoutes(app);
@@ -175,9 +140,9 @@ describe('progressive worker search with real SQLite fixtures', () => {
     await new Promise<void>(resolve => server.once('listening', resolve));
     try {
       const address = server.address() as { port: number };
-      const response = await fetch(`http://127.0.0.1:${address.port}/api/mem-search`, {
+      const response = await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ query: 'Literal JSON', project: target, mode: 'auto', maxDetails: 2 }),
+        body: JSON.stringify({ query: 'Literal JSON', project: target, maxDetails: 2 }),
       });
       const payload = await response.json() as { content: Array<{ type: string; text: string }>; structuredContent?: unknown };
       expect(response.status).toBe(200);

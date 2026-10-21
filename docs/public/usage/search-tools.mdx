@@ -1,11 +1,11 @@
 ---
-title: "Memory Search"
+title: "Smart Memory Search"
 description: "Search your project history with MCP tools"
 ---
 
-# Memory Search with MCP Tools
+# Smart Search (Default)
 
-Claude-mem provides persistent memory across sessions through **4 MCP tools** that follow a token-efficient **3-layer workflow pattern**.
+Use Smart search by default: the original `mem-search` skill follows a token-efficient **three-step workflow**. The agent reviews results at each step before deciding what to read next. There are no auto or guided modes.
 
 ## Overview
 
@@ -73,6 +73,18 @@ get_observations(ids=[123, 456, 789])
 - Timeline context: 500 tokens (around 2 key results)
 - Fetch details: 1,500 tokens (3 observations)
 - **Total: 3,000 tokens, 100% relevant**
+
+## Dumb Search (Optional)
+
+**Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.**
+
+```
+dumb_search(query="authentication token expiry", project="my-project")
+```
+
+Dumb search is a one-call lookup that chooses records by matching words in titles.
+It can miss relevant records and does not reconcile conflicting evidence.
+Use Smart search for the full three-step review.
 
 ## Available Tools
 
@@ -171,8 +183,11 @@ Step 3: get_observations(ids=[312, 489])
 Step 1: search(query="authentication", type="decision", limit=5)
   → Find decision observations
 
-Step 2: get_observations(ids=[<relevant_ids>])
-  → Get full decision rationale, trade-offs, facts
+Step 2: timeline(anchor=<relevant_id>, depth_before=3, depth_after=3)
+  → Review what led to and followed the decision
+
+Step 3: get_observations(ids=[<selected_ids>])
+  → Read the selected decision rationale, trade-offs, and facts
 ```
 
 ### Code Archaeology
@@ -213,8 +228,11 @@ Step 3: get_observations(ids=[<key_milestones>])
 Step 1: search(type="refactor", limit=10, orderBy="date_desc")
   → Recent refactoring work
 
-Step 2: get_observations(ids=[<interesting_ids>])
-  → Study the patterns and approaches used
+Step 2: timeline(anchor=<interesting_id>, depth_before=3, depth_after=3)
+  → Review the surrounding changes before selecting records
+
+Step 3: get_observations(ids=[<selected_ids>])
+  → Study the selected patterns and approaches
 ```
 
 ### Context Recovery
@@ -261,7 +279,7 @@ The [hosted server runtime](/hosted-server) searches observations with PostgreSQ
 2. **Use small limits** - Start with 3-5 results, increase if needed
 3. **Filter before fetching** - Use type, date, project filters
 4. **Batch get_observations** - Always group multiple IDs in one call
-5. **Use timeline strategically** - Get context only when narrative matters
+5. **Inspect timeline before details** - Review the context around relevant results before choosing full records
 
 ### Token Cost Estimates
 
@@ -286,10 +304,14 @@ search(query="bug fix", limit=20)
 
 # Review IDs, identify 3 relevant observations
 
+# Inspect nearby context: ~300-600 tokens
+timeline(anchor=12, depth_before=1, depth_after=1)
+# Review the timeline and keep only the relevant IDs
+
 # Fetch only relevant: ~1,500-3,000 tokens
 get_observations(ids=[5, 12, 18])
 
-# Total: 2,500-4,000 tokens (vs 10,000-20,000)
+# Total: ~2,800-4,600 tokens (vs 10,000-20,000)
 ```
 
 ## Advanced Filtering
@@ -382,10 +404,13 @@ All observations include rich metadata:
 
 **Solution:**
 ```
-# Verify IDs exist
-search(query="<related-search>")
+# Verify IDs exist in the intended project
+search(query="<related-search>", project="correct-project-name")
 
-# Use correct project filter
+# Inspect context around an ID returned by that search
+timeline(anchor=<returned_id>, project="correct-project-name")
+
+# Read only the verified, relevant IDs
 get_observations(ids=[123, 456], project="correct-project-name")
 ```
 
@@ -401,9 +426,11 @@ get_observations(ids=[123, 456], project="correct-project-name")
 
 # Do this:
 search(query="<your-query>", limit=50)  # ~2,500-5,000 tokens
-# Review index, identify 5 relevant observations
+# Review the index and inspect context around a relevant result
+timeline(anchor=<relevant_id>, depth_before=2, depth_after=2)
+# Review context, then select the 5 observations needed
 get_observations(ids=[<5-most-relevant>])  # ~2,500-5,000 tokens
-# Total: 5,000-10,000 tokens (50-80% savings)
+# Add only the timeline context needed to select those details
 ```
 
 ### Search Performance
@@ -419,7 +446,7 @@ If searches seem slow:
 1. **Index First, Details Later** - Always start with search to survey options
 2. **Filter Before Fetching** - Use search parameters to narrow results
 3. **Batch ID Fetches** - Group multiple IDs in one get_observations call
-4. **Use Timeline for Context** - When narrative matters, timeline shows the story
+4. **Use Timeline Before Details** - Check surrounding events and later corrections before selecting full records
 5. **Specific Queries** - More specific = better relevance
 6. **Small Limits Initially** - Start with 3-5 results, expand if needed
 7. **Review Before Deep Dive** - Check index before fetching full details

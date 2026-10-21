@@ -4,6 +4,52 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.0.1] - 2026-10-20
+
+# Keep Smart recall consistent across merged projects
+
+Smart search, timeline context, and selected observation details now use the same checkout project scope. An observation found through a merged project alias remains available in the next two steps, instead of incorrectly returning “not found.”
+
+- Resolves the same project read keys for search results, explicit timeline anchors, query-selected timeline anchors, and selected observation reads.
+- Keeps adopted records visible while excluding unrelated or unadopted records and respecting platform-source filters.
+- Preserves the Smart default three-step workflow and the optional `dumb_search` alternative introduced in 15.0.0. No API or schema migration is required.
+
+Regression coverage includes real HTTP/SQLite cases that fail on 15.0.0 and pass with this repair, plus related scope-isolation checks.
+
+## [15.0.0] - 2026-10-20
+
+# Smart memory search by default
+
+Memory recall now defaults to Smart: search the compact index, inspect context around relevant results, then fetch only the selected details. The agent reasons about relevance between these three steps. Local, cloud/Pro, and standalone-server instructions describe the tools available in that runtime.
+
+The optional one-call lookup is now `dumb_search`. Its description is explicit: “Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.” It performs deterministic title matching and does not reason about relevance.
+
+## Migration
+
+- Use the `mem-search` skill for default Smart recall. Local tools are `search` → `timeline` → `get_observations`; Cloud/Pro starts with `memory_search` and can fetch selected summaries with `get_summaries`.
+- Replace calls to the old `mem_search` guided/auto API and `flash_search` with the Smart workflow, or explicitly choose `dumb_search` for a shallow lookup. Auto/guided modes and continuation cursors are removed.
+- Refresh existing MCP connections so clients load the new tool catalog and descriptions.
+
+## Correctness
+
+- Cloud timeline supports context anchored to a selected search result.
+- Standalone-server recall stays scoped to its configured server project rather than reading a local worker's memory.
+- Selected-detail output reports its bounds honestly and preserves selected record identities when long content must be shortened.
+- Native memory lookup uses observation-only indexes, and mixed local indexes retain session/prompt ID prefixes so follow-up reads cannot select a different record kind with the same number.
+- Installer prompts, public documentation, integration instructions, and generated memory guidance use the same Smart-first policy.
+
+## Other changes since v14.0.1
+
+- Added Hermes Agent memory support and installation, including safe handling of existing YAML configuration.
+- Added fallback between an Anthropic API key and the Claude subscription, with quota classification and recovery back to the primary provider at a message boundary.
+- Kept worker HTTP requests responsive during local context reads, bounded broad full-text fallback searches, and removed quadratic tag-stripping stalls.
+- Improved memory correctness: `type="all"` searches every category, deleted observations remove their Chroma documents, unexpected Chroma exits reject pending requests, and failed Windows checkpoint renames preserve the previous checkpoint.
+- Tightened privacy and request handling: fully private prompts no longer become stored user requests; key redaction handles trailing dashes; internal Grok research briefs do not become user work; multilingual work requests are recognized; and OpenRouter field condensation avoids unnecessary reasoning.
+- Improved installation and runtime reliability across Windows, macOS, Conda, Qoder, Goose, OpenCode, Antigravity, Codex, and TeamBrain. Fixes include launcher self-recursion and working-directory handling, stale temporary-directory cleanup, actionable authentication and missing-runtime errors, and correct host hook registration.
+- Added optional cross-project context with `CLAUDE_MEM_CONTEXT_PROJECTS=all`, corrected folder context ordering and glob matching, expired orphaned summary spool entries, and improved effective-data-directory log lookup and cloud authentication telemetry.
+
+Validation and delivery identities are recorded separately in the release receipt after the final builds, deployment, and package checks complete.
+
 ## [14.0.1] - 2026-10-17
 
 Cards keep the agent who did the work when new updates arrive, instead of showing Unassigned work.

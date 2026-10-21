@@ -108,12 +108,18 @@ describe('Hermes installer', () => {
 
   it('installs the plugin, selects it and adds the MCP server, then uninstall puts the config back byte for byte', () => {
     writeFileSync(configPath(), HERMES_CONFIG);
-    expect(installHermesIntegration()).toBe(0);
+    // Resolve in an isolated config root so a maintainer's installed marketplace
+    // version cannot replace the checkout fixture this assertion exercises.
+    const installed = Bun.spawnSync([process.execPath, '-e',
+      "import { installHermesIntegration } from './src/services/integrations/HermesInstaller.ts'; process.exit(installHermesIntegration());",
+    ], { cwd: process.cwd(), env: { ...process.env, CLAUDE_CONFIG_DIR: join(home, 'isolated-claude') }, stdout: 'pipe', stderr: 'pipe' });
+    expect(installed.exitCode).toBe(0);
+    const source = join(process.cwd(), 'hermes', 'claude-mem');
 
     const plugin = hermesPluginDirectory();
     expect(plugin).toBe(join(home, 'plugins', 'claude-mem'));
     for (const name of ['__init__.py', 'client.py', 'plugin.yaml', 'README.md']) {
-      expect(readFileSync(join(plugin, name))).toEqual(readFileSync(join(process.cwd(), 'hermes', 'claude-mem', name)));
+      expect(readFileSync(join(plugin, name))).toEqual(readFileSync(join(source, name)));
     }
 
     const parsed = parseYaml(config());

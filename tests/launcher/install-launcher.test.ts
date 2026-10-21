@@ -284,6 +284,27 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult.status).toBe('bun-not-found');
   });
 
+  // #4933: Bun < 1.2.16 ignores BUN_BE_BUN, so a launcher compiled with it
+  // re-execs itself forever when no `bun` is on the hook PATH.
+  it('refuses to compile with a Bun older than 1.2.16, naming the version and the upgrade (#4933)', () => {
+    const host = posixHost(makeScratchHome());
+    expect(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => '1.2.4', logger: recordingLogger(),
+      host, runCompile: compileMustNotRun, runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    })).toThrow('Bun 1.2.4 at /fake/bun is older than 1.2.16');
+    expect(existsSync(resolveLauncherBinaryPath(host))).toBe(false);
+  });
+
+  it('compiles with Bun 1.2.16 or newer', () => {
+    for (const bunVersion of ['1.2.16', '1.3.0', '1.4.3']) {
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', readBunVersion: () => bunVersion, logger: recordingLogger(),
+        host: posixHost(makeScratchHome()), runCompile: fakeCompile(), runCodesign: codesignNoop, invocationContext: 'npx-installer',
+      });
+      expect(ensureResult.status).toBe('installed');
+    }
+  });
+
   it('throws on a failed compile and leaves no temp file', () => {
     const scratchHome = makeScratchHome();
     const failingCompile: LauncherCompileRunner = () => ({ status: 1, stderr: 'error: boom\n' });

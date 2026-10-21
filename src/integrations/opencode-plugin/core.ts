@@ -12,6 +12,7 @@
 
 import { join } from "node:path";
 import { SettingsDefaultsManager } from "../../shared/SettingsDefaultsManager.js";
+import { formatWorkerMcpResponse } from '../../servers/mcp-text-format.js';
 import { parseSearchResponse } from "./contract.js";
 import { normalizePlatformSource } from "../../shared/platform-source.js";
 import { isConnectionRefusedError } from "../../shared/connection-errors.js";
@@ -53,6 +54,29 @@ function resolveWorkerBaseUrl(): string {
 
 const WORKER_BASE_URL = resolveWorkerBaseUrl();
 const MAX_TOOL_RESPONSE_LENGTH = 1000;
+
+// SessionStart context is source-scoped by default: the worker filters
+// observations to the platform that recorded them, so a session started by one
+// harness only sees that harness's memory. The Claude Code hook path honors
+// CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES to opt out of that (#4251).
+// The OpenCode plugin must honor the same switch, or a user who moves between
+// harnesses sees their earlier memories disappear, and the setting silently
+// does nothing for OpenCode.
+//
+// Read per request, not at module load: the worker URL is frozen at import,
+// but this decides which memories a session can see, and the file is the
+// user's own switch. A settings change should not need an OpenCode restart.
+function includeAllSources(): boolean {
+  const settingsPath = join(
+    SettingsDefaultsManager.get("CLAUDE_MEM_DATA_DIR"),
+    "settings.json",
+  );
+  // readOnly: the plugin only reads the switch. loadFromFile would otherwise
+  // rewrite the settings file to migrate defaults, and the plugin must not
+  // mutate user settings as a side effect of rendering context.
+  const settings = SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true });
+  return settings.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES === "true";
+}
 
 // Identifies these POSTs as coming from OpenCode. Without it the worker
 // attributes OpenCode sessions to its default platform source ("claude"), so
@@ -281,6 +305,8 @@ export interface ClaudeMemCore {
   memoryContext(sessionID: string): Promise<string | null>;
   /** The `claude_mem_search` tool body. */
   search(query: string): Promise<string>;
+  timeline(anchor: number): Promise<string>;
+  getObservations(ids: number[]): Promise<string>;
 }
 
 export function createCore(ctx: CoreContext): ClaudeMemCore {
@@ -297,9 +323,13 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
       contextByOpenCodeSessionId.delete(oldestKey);
     }
     // The worker resolves the project keys from the checkout, as it does for init.
+    // platformSource scopes the injected context to this harness's own
+    // observations; omitting it lets the worker return every source, which is
+    // what CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES asks for.
+    const platformSourceParam = includeAllSources() ? "" : `&platformSource=${PLATFORM_SOURCE}`;
     const entry: CachedMemoryContext = {
       request: workerGetText(
-        `/api/context/inject?cwd=${encodeURIComponent(cwd)}&platformSource=${PLATFORM_SOURCE}`,
+        `/api/context/inject?cwd=${encodeURIComponent(cwd)}${platformSourceParam}`,
       ),
     };
     contextByOpenCodeSessionId.set(openCodeSessionId, entry);
@@ -381,6 +411,25 @@ export function createCore(ctx: CoreContext): ClaudeMemCore {
 
     memoryContext(sessionID) {
       return memoryContextFor(sessionID, ctx.directory);
+    },
+
+    async timeline(anchor) {
+      const text = await workerGetText(`/api/timeline?anchor=${encodeURIComponent(anchor)}`);
+      if (!text) return 'claude-mem worker is not running. Start it with: npx claude-mem start';
+      try { return formatWorkerMcpResponse('search', JSON.parse(text)).content[0].text; }
+      catch { return 'Failed to parse memory timeline.'; }
+    },
+
+    async getObservations(ids) {
+      if (!ids.length) return 'Select observation IDs from the search index and timeline first.';
+      try {
+        const response = await fetch(`${WORKER_BASE_URL}/api/observations/batch`, {
+          method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ ids }),
+          signal: AbortSignal.timeout(WORKER_REQUEST_TIMEOUT_MS),
+        });
+        if (!response.ok) return 'The worker could not fetch the selected observations.';
+        return formatWorkerMcpResponse('observations', await response.json()).content[0].text;
+      } catch { return 'claude-mem worker is not running. Start it with: npx claude-mem start'; }
     },
 
     async search(query) {

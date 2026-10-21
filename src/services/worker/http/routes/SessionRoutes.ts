@@ -6,7 +6,7 @@ import { validateBody } from '../middleware/validateBody.js';
 import { requireLocalhost } from '../middleware.js';
 import { logger } from '../../../../utils/logger.js';
 import { logChromaWriteFailure } from '../../search/errors.js';
-import { stripMemoryTags, isCodexInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
+import { stripMemoryTags, isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../../../utils/tag-stripping.js';
 import { SessionManager } from '../../SessionManager.js';
 import { DatabaseManager } from '../../DatabaseManager.js';
 import { ClaudeProvider } from '../../ClaudeProvider.js';
@@ -14,6 +14,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
+import { claudeQuotaStandIn } from '../../../../shared/claude-fallback-readiness.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -195,7 +196,9 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
       const cooldown = getQuotaCooldown(provider);
-      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
+        && !(provider === 'claude' && claudeQuotaStandIn())) {
         if (isQuotaCooldownActive(provider)) return 0;
         sessionIds = sessionIds.slice(0, 1);
       }
@@ -489,7 +492,12 @@ export class SessionRoutes extends BaseRouteHandler {
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
+      // The primary Claude credential is held: run on the quota-fallback one
+      // (dispatch logs the switch). No probe claim is taken; the primary's own
+      // probe still runs when its window elapses.
+      const standIn = !admission.admitted && selectedProvider === 'claude' ? claudeQuotaStandIn() : null;
+      session.claudeAuthOverride = standIn;
+      if (!admission.admitted && !standIn) {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
@@ -773,6 +781,14 @@ export class SessionRoutes extends BaseRouteHandler {
     // suggestions) arrive like a user turn; Codex only (see the hook handler).
     if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+      res.json({ skipped: true, reason: 'internal_system_prompt' });
+      return;
+    }
+
+    // Grok Bot's own research sub-agent briefings arrive like a user turn;
+    // Grok Bot only (see the hook handler, #4811).
+    if (rawPrompt && platformSource === 'grok-bot' && isGrokBotInternalPrompt(rawPrompt)) {
+      logger.debug('HTTP', 'session-init: skipping a Grok Bot internal helper prompt before session creation', { contentSessionId });
       res.json({ skipped: true, reason: 'internal_system_prompt' });
       return;
     }

@@ -1,6 +1,6 @@
 /** Lightweight classifiers shared by hooks, ingestion and raw tool storage. */
 const RETRIEVAL_TOOLS = new Set([
-  'mem_search', 'search', 'timeline', 'get_observations', 'get_summaries',
+  'dumb_search', 'claude_mem_search', 'claude_mem_timeline', 'claude_mem_get_observations', 'mem_search', 'search', 'timeline', 'get_observations', 'get_summaries',
   'get_tool_uses', 'session_start_context', 'observation_search', 'observation_context',
   'memory_search', 'memory_context',
 ]);
@@ -19,7 +19,8 @@ export function isRecursiveMemoryTool(toolName: string): boolean {
   if (!toolName) return false;
   // Preserve the OpenClaw adapter's existing native memory_* recursion gate.
   if (toolName.startsWith('memory_')) return true;
-  if (toolName === 'mem_search' || toolName === 'get_summaries') return true;
+  if (toolName === 'claude_mem_search' || toolName === 'claude_mem_timeline' || toolName === 'claude_mem_get_observations') return true;
+  if (toolName === 'dumb_search' || toolName === 'mem_search' || toolName === 'get_summaries') return true;
   const tool = claudeMemToolName(toolName);
   return tool !== null && RETRIEVAL_TOOLS.has(tool);
 }

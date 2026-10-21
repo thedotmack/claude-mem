@@ -1,6 +1,11 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it, mock } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, mock } from 'bun:test';
+import { rmSync } from 'fs';
+import { join } from 'path';
 
 import * as realRuntimeSelector from '../../src/services/hooks/runtime-selector.js';
+import { OBSERVER_HEALTH_FILENAME } from '../../src/shared/observer-health.js';
+import { paths } from '../../src/shared/paths.js';
+import { SYNC_HEALTH_FILENAME } from '../../src/shared/sync-health.js';
 
 /**
  * In `server` runtime the session-start block must be built from the SHARED store.
@@ -76,6 +81,19 @@ function observationRow(index: number, extra: Record<string, unknown> = {}) {
 
 beforeAll(() => {
   ModeManager.getInstance().loadMode('code');
+});
+
+// Every rendered block ends with the observer/sync health banner, read from
+// observer-health.json and sync-health.json in the data dir. The preload pins
+// ONE data dir for the whole run, and any earlier file whose generator exits on
+// a quota or auth error books a failure there (GeneratorRunner ->
+// recordObserverFailure). Left in place, that banner turns the empty answer
+// below into a "memory capture is paused" block -- only when the earlier file
+// ran recently enough for the record to still be fresh, which is why CI failed
+// on some runs and not others. Start every test from a healthy ledger.
+beforeEach(() => {
+  rmSync(join(paths.dataDir(), OBSERVER_HEALTH_FILENAME), { force: true });
+  rmSync(join(paths.dataDir(), SYNC_HEALTH_FILENAME), { force: true });
 });
 
 afterEach(() => {
