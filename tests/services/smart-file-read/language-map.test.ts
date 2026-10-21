@@ -6,6 +6,8 @@ describe('language-map', () => {
     expect(detectLanguage('/repo/src/handler.ts')).toBe('typescript');
     expect(detectLanguage('/repo/docs/guide.md')).toBe('markdown');
     expect(LANG_MAP['.yaml']).toBe('yaml');
+    expect(detectLanguage('/repo/src/Counter.pas')).toBe('pascal');
+    expect(detectLanguage('/repo/src/App.dpr')).toBe('pascal');
   });
 
   it('answers unknown for an extension it has no grammar for', () => {
