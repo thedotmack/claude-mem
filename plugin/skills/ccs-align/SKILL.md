@@ -50,7 +50,7 @@ Defaults live in `SettingsDefaultsManager.ts`; override in `~/.claude-mem/settin
 
 | Key | Default | Meaning |
 |---|---|---|
-| `CLAUDE_MEM_CCS_ALIGN_ENABLED` | `true` | Master switch for the seat. |
+| `CLAUDE_MEM_CCS_ALIGN_ENABLED` | `false` | Master switch for the seat. |
 | `CLAUDE_MEM_CCS_ALIGN_VIEWER_IDS` | `ccs-align` | Comma-separated viewer ids the seat maintains a cache for. |
 | `CLAUDE_MEM_CCS_ALIGN_TRIGGER_TYPES` | `decision,bugfix,security_alert,sensitive` | Needle observation types to pull (copied from #3931's list, D6). |
 | `CLAUDE_MEM_CCS_ALIGN_PATCH_SHADOWS` | `false` | Phase 2 rules-shadow patch gate. When `true`, the rules walker removes `SHADOW_HOUSE` duplicate lines from leaf files (atomic temp+rename). Default **off** — report-only. |
