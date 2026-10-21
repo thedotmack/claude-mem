@@ -52,8 +52,12 @@
 #     auth contract (bearer API keys) is unchanged.
 
 services:
+  # Postgres 17 with pgvector and pg_textsearch (docker/postgres/Dockerfile).
+  # Debian, not Alpine: a volume created by postgres:17-alpine has its text
+  # indexes rebuilt once by postgres-collation below.
   postgres:
-    image: postgres:17-alpine
+    image: ghcr.io/rich-murphey/postgres-pgvector-textsearch:17
+    build: docker/postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
@@ -67,6 +71,23 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+
+  # Rebuilds text indexes whose order depends on the C library, once, after
+  # the postgres image's C library changed (musl to glibc, or a glibc
+  # upgrade); a second start finds nothing to do. The server and worker wait
+  # for it, so they never read an index in the wrong order.
+  postgres-collation:
+    image: ghcr.io/rich-murphey/postgres-pgvector-textsearch:17
+    build: docker/postgres
+    command: ["reindex-collation"]
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
+      PGPASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   valkey:
     image: valkey/valkey:8-alpine
@@ -96,6 +117,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-collation:
+        condition: service_completed_successfully
       valkey:
         condition: service_healthy
     environment:
@@ -146,6 +169,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-collation:
+        condition: service_completed_successfully
       valkey:
         condition: service_healthy
       claude-mem-server:
