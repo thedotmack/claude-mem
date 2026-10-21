@@ -399,11 +399,9 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
   parts.push(command);
 
-  command = parts.join(' ');
-  // Codex may launch hooks through Fish; parse the POSIX prelude inside sh.
-  return options.host === 'codex-cli'
-    ? `/bin/sh -c '${command.replace(/'/g, `'"'"'`)}'`
-    : command;
+  // Fish also interprets backslashes in single quotes; escape them outside the quoted segments.
+  const quotedCommand = parts.join(' ').replace(/['\\]/g, char => `'\\${char}'`);
+  return `/bin/sh -c '${quotedCommand}'`;
 }
 
 /**
