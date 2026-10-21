@@ -16,6 +16,18 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
 
+// A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
+// Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
+const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
+  'done', 'completed', 'complete', 'shipped', 'delivered',
+  'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
+];
+function isReportedReadyForCheck(lifecycle: { explicit?: boolean; complete?: boolean | null; status?: string | null } | null | undefined): boolean {
+  if (!lifecycle?.explicit) return false;
+  const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
+  return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
+}
+
 const reviewBody = z.object({
   requestId: z.string().min(1).max(2000),
   expectedFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
@@ -162,9 +174,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(409).json({ error: 'This work changed. Read the latest result before checking it.', snapshot });
       return;
     }
-    const lifecycle = request.lifecycle;
-    const complete = lifecycle?.explicit && (lifecycle.complete === true || ['done', 'completed', 'complete', 'shipped', 'delivered'].includes(String(lifecycle.status).toLowerCase()));
-    if (checked && !complete) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
+    if (checked && !isReportedReadyForCheck(request.lifecycle)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
     this.reviews.set(requestId, expectedFingerprint, checked);
     logger.debug('HTTP', 'Local work review updated', { checked });
     const updated = this.snapshot();

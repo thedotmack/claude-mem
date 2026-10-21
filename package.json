@@ -105,7 +105,7 @@
     "typecheck": "tsc --noEmit && tsc --noEmit -p src/ui/viewer/tsconfig.json",
     "typecheck:root": "tsc --noEmit",
     "typecheck:viewer": "tsc --noEmit -p src/ui/viewer/tsconfig.json",
-    "test": "bun test tests",
+    "test": "bun test tests src/ui/my-work/src/live",
     "test:sqlite": "bun test tests/sqlite/",
     "test:agents": "bun test tests/worker/agents/",
     "test:search": "bun test tests/worker/search/",

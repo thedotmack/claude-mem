@@ -5,8 +5,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { applyGroupDecisions, groupIdFor, linkBackwards, readCandidates, readLedger, runCli, validateProgress } from '../../src/services/work-view/request-groups.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
-import { progressMeter, velocity } from '../../src/ui/work-view/view-model.js';
-import { meter, parsePersonalRoute, personalRoute, storyPanel } from '../../src/ui/work-view/request-views.js';
 
 const ledgerDir = () => mkdtempSync(join(tmpdir(), 'request-groups-test-'));
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
@@ -134,32 +132,4 @@ describe('overall requests and progress reviews', () => {
   expect(ungrouped.humanRequests.length).toBe(2);
 });
 
-  it('meter labels and velocity come from reviews, never from recorded status', () => {
-  expect(progressMeter(null)).toBe(null);
-  expect(progressMeter({ state: 'shipped', percent: 100, startedAt: '2026-10-01T00:00:00Z', shippedAt: '2026-10-03T06:00:00Z' }).label).toMatch(/^Shipped .* · took 2d 6h$/);
-  expect(progressMeter({ state: 'in-progress', percent: 40, startedAt: '2026-10-01T00:00:00Z' }).label).toMatch(/^40% · started /);
-  const now = Date.parse('2026-10-19T00:00:00Z');
-  const stats = velocity([
-    { state: 'shipped', percent: 100, startedAt: '2026-10-15T00:00:00Z', shippedAt: '2026-10-16T00:00:00Z' },
-    { state: 'shipped', percent: 100, startedAt: '2026-09-20T00:00:00Z', shippedAt: '2026-09-23T00:00:00Z' },
-    { state: 'in-progress', percent: 50 }, { state: 'stalled', percent: 30 },
-  ], now);
-  expect(stats.shipped7).toBe(1);
-  expect(stats.shipped30).toBe(2);
-  expect(stats.medianCycleMs).toBe(2 * DAY);
-  expect(stats.inProgress).toBe(1);
-  expect(stats.weekly.at(-1).count).toBe(1);
-});
-
-  it('renders the meter and the Story view from reviews, with an empty state', () => {
-    expect(meter({ progress: null })).toBe('');
-    expect(meter({ progress: { state: 'in-progress', percent: 40 } })).toContain('aria-valuenow="40"');
-    expect(parsePersonalRoute('#story').view).toBe('story');
-    expect(personalRoute('story')).toBe('#story');
-    expect(storyPanel(null)).toContain('No build story yet');
-    const html = storyPanel({ groups: 2, reviews: [{ title: 'Cards <b>', summary: 'Merged.', state: 'shipped', percent: 100, startedAt: '2026-10-01T00:00:00Z', shippedAt: '2026-10-02T00:00:00Z' }], story: { narrative: '## Week one\n\nShipped cards.', preferences: [{ preference: 'Execute clear asks.', kind: 'directive', supportCount: 2, quotes: [{ quote: 'just do it', at: null }] }] } });
-    expect(html).toContain('<h3>Week one</h3>');
-    expect(html).toContain('Cards &lt;b&gt;');
-    expect(html).toContain('seen 2×');
-  });
 });

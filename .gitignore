@@ -24,6 +24,7 @@ bun.lock
 !plugin/bun.lock
 !workers/sync-hub/bun.lock
 !services/sync-api/bun.lock
+!src/ui/my-work/package-lock.json
 private/
 Auto Run Docs/
 

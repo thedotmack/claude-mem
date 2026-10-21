@@ -175,6 +175,16 @@ describe('local work view', () => {
     expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
   });
 
+  it('lets a request waiting for review be checked and unchecked', async () => {
+    append({ task: 'Build the local viewer', request_status: 'needs_review' });
+    const request = (await snapshot()).humanRequests[0];
+    expect(request.lifecycle.status).toBe('needs_review');
+    expect((await review(request)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(true);
+    expect((await review(request, false)).status).toBe(200);
+    expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
   it('rejects foreign pages, proxy requests, rebound hosts and non-JSON writes', async () => {
     const request = (await snapshot()).humanRequests[0];
     for (const headers of [{ Origin: 'https://evil.example' }, { Origin: 'null' }, { Origin: 'http://127.0.0.1:3' }, { 'Sec-Fetch-Site': 'cross-site' }, { 'X-Forwarded-For': '127.0.0.1' }]) {
