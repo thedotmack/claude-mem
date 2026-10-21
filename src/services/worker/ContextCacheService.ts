@@ -74,6 +74,12 @@ interface KnownVariant {
   learnedAtEpochMs: number;
   /** Lower-cased projectReadKeys of keys.projects, refreshed on every render. */
   readKeys: Set<string>;
+  /**
+   * beginRenderSequence() of the last render whose result reached this
+   * variant's file. A render that started earlier (lower sequence) finishing
+   * later is dropped, so an older body never replaces a newer one.
+   */
+  lastPersistedRenderSequence: number;
 }
 
 interface PersistedVariantIndex {
@@ -91,6 +97,13 @@ export class ContextCacheService {
   /** Bumped by every 'removal' invalidation; a render that saw it change mid-flight is not persisted. */
   private removalGeneration = 0;
   private invalidationGeneration = 0;
+  /**
+   * Monotonic render-start ticket. Ordering by start rather than by completion
+   * is what makes the two races symmetric: a removal that lands mid-render is
+   * caught by removalGeneration, and a render that another render overtook is
+   * caught here.
+   */
+  private renderSequence = 0;
   private servable: boolean;
   private readonly debounceMs: number;
   private readonly maxVariants: number;
@@ -110,6 +123,7 @@ export class ContextCacheService {
         keys: entry.keys,
         learnedAtEpochMs: entry.learnedAtEpochMs,
         readKeys: new Set(),
+        lastPersistedRenderSequence: 0,
       });
     }
     this.removeOrphanedFiles();
@@ -148,11 +162,13 @@ export class ContextCacheService {
     renderedAtEpochMs: number,
     /** removalGenerationNow() taken before the render began; omitted = no removal check. */
     removalGenerationAtRenderStart?: number,
+    /** beginRenderSequence() taken before the render began; omitted = no ordering check. */
+    renderSequenceAtStart?: number,
   ): void | Promise<void> {
     if (this.stopped) return;
     const variantId = contextCacheVariantId(keys);
     if (!this.variants.has(variantId)) {
-      this.variants.set(variantId, { keys, learnedAtEpochMs: this.now(), readKeys: new Set() });
+      this.variants.set(variantId, { keys, learnedAtEpochMs: this.now(), readKeys: new Set(), lastPersistedRenderSequence: 0 });
       this.evictOldestVariants();
       this.writeIndex();
       logger.debug('CONTEXT_CACHE', 'Learned a SessionStart context variant', { variantId, keys });
@@ -165,7 +181,7 @@ export class ContextCacheService {
         this.requeueAfterRemoval(variantId);
         return;
       }
-      this.persistRender(keys, render, renderedAtEpochMs);
+      this.persistRender(variant, keys, render, renderedAtEpochMs, renderSequenceAtStart);
       if (render.invalidationGenerationAtStart !== undefined && render.invalidationGenerationAtStart !== this.invalidationGeneration) {
         this.pendingVariantIds.add(variantId);
         this.scheduleRender();
@@ -207,6 +223,15 @@ export class ContextCacheService {
 
   invalidationGenerationNow(): number {
     return this.invalidationGeneration;
+  }
+
+  /**
+   * Take the next render-start ticket. The live route calls this before it
+   * renders and passes the ticket back to recordLiveRender, so a render that
+   * started earlier cannot overwrite the file a later render already wrote.
+   */
+  beginRenderSequence(): number {
+    return ++this.renderSequence;
   }
 
   /** Render everything pending now (tests, shutdown). */
@@ -301,6 +326,7 @@ export class ContextCacheService {
       }
       const renderedAtEpochMs = this.now();
       const removalGenerationAtStart = this.removalGeneration;
+      const renderSequenceAtStart = this.beginRenderSequence();
       this.activeVariantIds.add(variantId);
       try {
         await this.refreshReadKeys(variantId);
@@ -314,7 +340,7 @@ export class ContextCacheService {
           this.requeueAfterRemoval(variantId);
           continue;
         }
-        this.persistRender(variant.keys, render, renderedAtEpochMs);
+        this.persistRender(variant, variant.keys, render, renderedAtEpochMs, renderSequenceAtStart);
       } catch (error) {
         // The old file would now be wrong; remove it so the hook takes the live path.
         logger.error('CONTEXT_CACHE', 'Context re-render failed; removing the cached block', { variantId, keys: variant.keys },
@@ -326,7 +352,28 @@ export class ContextCacheService {
     }
   }
 
-  private persistRender(keys: ContextCacheKeys, render: ContextVariantRender, renderedAtEpochMs: number): void {
+  private persistRender(
+    variant: KnownVariant,
+    keys: ContextCacheKeys,
+    render: ContextVariantRender,
+    renderedAtEpochMs: number,
+    renderSequenceAtStart?: number,
+  ): void {
+    // Order by render start, not completion: a render that began before the one
+    // already on disk carries an older body, so neither its write nor its
+    // removal may land. Authoritative removals (an invalidation, eviction,
+    // teardown, setServable(false)) call removeFile directly and are not gated.
+    if (renderSequenceAtStart !== undefined) {
+      if (renderSequenceAtStart < variant.lastPersistedRenderSequence) {
+        logger.debug('CONTEXT_CACHE', 'Dropped a render a newer render overtook', {
+          variantId: contextCacheVariantId(keys),
+          renderSequenceAtStart,
+          lastPersistedRenderSequence: variant.lastPersistedRenderSequence,
+        });
+        return;
+      }
+      variant.lastPersistedRenderSequence = renderSequenceAtStart;
+    }
     if (!render.cacheable || !this.servable) {
       this.removeFile(keys);
       return;
