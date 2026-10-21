@@ -133,8 +133,12 @@ export class ChromaSearchStrategy {
         prompts: this.hydrateCandidates(categorized.promptIds, promptCache, ids =>
           this.sessionStore.getUserPromptsByIds(ids, sqlOptions), options.orderBy),
       };
-      const count = results.observations.length + results.sessions.length + results.prompts.length;
-      if (count >= requiredResults || progress.exhausted
+      // Each requested category is paged independently. A full prompt page
+      // cannot make a partial observation or summary page sufficient.
+      const enoughResults = (!options.searchObservations || results.observations.length >= requiredResults)
+        && (!options.searchSessions || results.sessions.length >= requiredResults)
+        && (!options.searchPrompts || results.prompts.length >= requiredResults);
+      if (enoughResults || progress.exhausted
         || (progress.exhausted === undefined && chromaResults.ids.length < candidateLimit)) break;
       if (candidateLimit >= maxCandidates) {
         budgetReached = true;
