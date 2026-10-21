@@ -193,6 +193,115 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
       oauthSpy.mockRestore();
     }
   });
+
+  describe('standIn (the quota-fallback credential)', () => {
+    const presentToken: oauthToken.OAuthTokenResult = { kind: 'present', token: 'oauth-token', source: 'keychain' };
+
+    it("'subscription' drops the .env key and injects the login token", async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-spent\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'subscription' });
+        expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-token');
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it("'subscription' keeps the .env key when no login token is available", async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-spent\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken')
+        .mockResolvedValue({ kind: 'absent', reason: 'no login' });
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'subscription' });
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-ant-spent');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it('is ignored under a gateway ANTHROPIC_BASE_URL', async () => {
+      fs.writeFileSync(
+        TEST_ENV_FILE,
+        'ANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_API_KEY=sk-gateway\n',
+        { mode: 0o600 },
+      );
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'subscription' });
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-gateway');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it('leaves the key alone, and never passes the fallback key, without standIn', async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-live\nANTHROPIC_FALLBACK_API_KEY=sk-ant-fallback\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth();
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-ant-live');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+        expect(result.ANTHROPIC_FALLBACK_API_KEY).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it('never passes a shell-exported fallback key to the CLI without standIn', async () => {
+      const previous = process.env.ANTHROPIC_FALLBACK_API_KEY;
+      process.env.ANTHROPIC_FALLBACK_API_KEY = 'sk-ant-shell-fallback';
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth();
+        expect(result.ANTHROPIC_FALLBACK_API_KEY).toBeUndefined();
+        expect(result.ANTHROPIC_API_KEY).not.toBe('sk-ant-shell-fallback');
+      } finally {
+        oauthSpy.mockRestore();
+        if (previous === undefined) delete process.env.ANTHROPIC_FALLBACK_API_KEY;
+        else process.env.ANTHROPIC_FALLBACK_API_KEY = previous;
+      }
+    });
+
+    it("'api-key' runs a login primary on the fallback key, without reading the login", async () => {
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_FALLBACK_API_KEY=sk-ant-fallback\n', { mode: 0o600 });
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'api-key' });
+        expect(result.ANTHROPIC_API_KEY).toBe('sk-ant-fallback');
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+        expect(result.ANTHROPIC_FALLBACK_API_KEY).toBeUndefined();
+        expect(oauthSpy).not.toHaveBeenCalled();
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it("'api-key' keeps the login when no fallback key is set", async () => {
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(presentToken);
+      try {
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'api-key' });
+        expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBe('oauth-token');
+      } finally {
+        oauthSpy.mockRestore();
+      }
+    });
+
+    it("'api-key' is ignored under a gateway ANTHROPIC_BASE_URL", async () => {
+      fs.writeFileSync(
+        TEST_ENV_FILE,
+        'ANTHROPIC_BASE_URL=https://gateway.example\nANTHROPIC_AUTH_TOKEN=gw-token\nANTHROPIC_FALLBACK_API_KEY=sk-ant-fallback\n',
+        { mode: 0o600 },
+      );
+      const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'api-key' });
+      expect(result.ANTHROPIC_AUTH_TOKEN).toBe('gw-token');
+      expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+    });
+  });
 });
 
 /**

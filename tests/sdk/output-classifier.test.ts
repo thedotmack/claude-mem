@@ -96,6 +96,14 @@ describe('isQuotaLimitedObserverOutput', () => {
     ).toBe(true);
   });
 
+  it('detects the credit-balance notice inside the CLI 400 envelope', () => {
+    expect(
+      isQuotaLimitedObserverOutput(
+        'API Error: 400 {"error":{"type":"invalid_request_error","message":"Your credit balance is too low to access the Anthropic API."}}',
+      ),
+    ).toBe(true);
+  });
+
   it('does not treat prose that merely narrates a low credit balance as quota prose', () => {
     expect(
       isQuotaLimitedObserverOutput(

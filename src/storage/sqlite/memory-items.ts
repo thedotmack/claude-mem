@@ -197,6 +197,32 @@ export class MemoryItemsRepository {
     return row ? mapMemoryItemRow(row) : null;
   }
 
+  getManyForProject(projectId: string, selectedIds: string[]): MemoryItem[] {
+    const ids = [...new Set(selectedIds)];
+    if (ids.length === 0) return [];
+    const rows = this.db.prepare(`SELECT * FROM memory_items
+      WHERE project_id = ? AND id IN (${ids.map(() => '?').join(',')})`)
+      .all(projectId, ...ids) as MemoryItemRow[];
+    const byId = new Map(rows.map(row => [row.id, row]));
+    return ids.flatMap(id => byId.has(id) ? [mapMemoryItemRow(byId.get(id)!)] : []);
+  }
+
+  timelineAround(projectId: string, anchorId: string, depthBefore = 3, depthAfter = 3): MemoryItem[] {
+    for (const depth of [depthBefore, depthAfter]) {
+      if (!Number.isInteger(depth) || depth < 0 || depth > 20) throw new Error('Timeline depth must be an integer from 0 to 20');
+    }
+    const anchor = this.db.prepare('SELECT * FROM memory_items WHERE id = ? AND project_id = ?')
+      .get(anchorId, projectId) as MemoryItemRow | null;
+    if (!anchor) return [];
+    const preceding = this.db.prepare(`SELECT * FROM memory_items WHERE project_id = ?
+      AND (created_at_epoch, id) < (?, ?) ORDER BY created_at_epoch DESC, id DESC LIMIT ?`)
+      .all(projectId, anchor.created_at_epoch, anchor.id, depthBefore) as MemoryItemRow[];
+    const following = this.db.prepare(`SELECT * FROM memory_items WHERE project_id = ?
+      AND (created_at_epoch, id) > (?, ?) ORDER BY created_at_epoch, id LIMIT ?`)
+      .all(projectId, anchor.created_at_epoch, anchor.id, depthAfter) as MemoryItemRow[];
+    return [...preceding.reverse(), anchor, ...following].map(mapMemoryItemRow);
+  }
+
   update(id: string, input: Partial<CreateMemoryItem>): MemoryItem | null {
     const existing = this.getById(id);
     if (!existing) {

@@ -190,6 +190,194 @@ describe("OpenCode plugin event contract", () => {
     }
   });
 
+  it("scopes injected context to OpenCode's own memory by default", async () => {
+    // The worker filters observations by the platform that recorded them, so
+    // the source parameter decides what a session can see. OpenCode must ask
+    // for its own source unless the user opted into every source.
+    //
+    // A temp data dir with an explicit settings file keeps this independent
+    // of the developer's own settings, and the env var is cleared so a
+    // developer who enabled the switch locally does not fail this test.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-scope-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(join(dataDir, "settings.json"), JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-source-scope-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.memoryContext("ses_scope_default");
+
+      const inject = seenUrls.find((url) => url.includes("/api/context/inject"));
+      expect(inject).toBeDefined();
+      expect(new URL(inject!).searchParams.get("platformSource")).toBe("opencode");
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("injects context from every source when CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES is true", async () => {
+    // The Claude Code hook path honors this switch (#4251); the OpenCode
+    // plugin must honor it too. Without it, a user who moves between
+    // harnesses sees their earlier memories disappear and the setting
+    // silently does nothing for OpenCode.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-all-sources-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    // The file is the switch under test; clear the env var so a developer
+    // who set it locally does not decide this test's outcome.
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    writeFileSync(
+      join(dataDir, "settings.json"),
+      JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+    );
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      // core.ts is imported with a cache-buster so it re-reads the settings
+      // file for the data dir set above.
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-all-sources-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+      await core.memoryContext("ses_all_sources");
+
+      const inject = seenUrls.find((url) => url.includes("/api/context/inject"));
+      expect(inject).toBeDefined();
+      // No source parameter at all: the worker then returns every source,
+      // which is how the Claude Code hook path asks for it too.
+      expect(new URL(inject!).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("picks up a source-scope change between sessions without a restart", async () => {
+    // The switch is read per request so that changing it does not require an
+    // OpenCode restart. Two different session IDs on the same core instance
+    // prove the read is not frozen at module load; the per-session context
+    // cache is a separate contract and is left alone.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-live-switch-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    writeFileSync(settingsPath, JSON.stringify({}));
+
+    const originalFetch = globalThis.fetch;
+    const seenUrls: string[] = [];
+    globalThis.fetch = (async (url: string | URL | Request) => {
+      seenUrls.push(String(url));
+      return new Response("# memory context", { status: 200 });
+    }) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-live-switch-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      await core.memoryContext("ses_live_before");
+      writeFileSync(
+        settingsPath,
+        JSON.stringify({ CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true" }),
+      );
+      await core.memoryContext("ses_live_after");
+
+      const injects = seenUrls.filter((url) => url.includes("/api/context/inject"));
+      expect(injects).toHaveLength(2);
+      expect(new URL(injects[0]).searchParams.get("platformSource")).toBe("opencode");
+      expect(new URL(injects[1]).searchParams.get("platformSource")).toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reads the source scope without writing to the settings file", async () => {
+    // The plugin READS this switch on every context request. loadFromFile
+    // migrates a retired default in place, so the per-request read must be
+    // readOnly: rendering context must never rewrite the user's settings.
+    //
+    // The snapshot is taken AFTER the import because core.ts already reads
+    // the file (writably) when it resolves the worker URL, which is
+    // pre-existing behavior this test does not cover. What is guarded here is
+    // the per-request read: it must not change the file again.
+    const dataDir = mkdtempSync(join(tmpdir(), "claude-mem-opencode-readonly-"));
+    const originalDataDir = process.env.CLAUDE_MEM_DATA_DIR;
+    const originalAllSources = process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    process.env.CLAUDE_MEM_DATA_DIR = dataDir;
+    delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+    const settingsPath = join(dataDir, "settings.json");
+    const original = JSON.stringify({
+      CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES: "true",
+      CLAUDE_MEM_OPENROUTER_MODEL: "xiaomi/mimo-v2-flash:free",
+    });
+    writeFileSync(settingsPath, original);
+
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async () => new Response("# memory context", { status: 200 })) as typeof fetch;
+
+    try {
+      const { createCore } = await import(
+        `../../src/integrations/opencode-plugin/core.ts?opencode-readonly-${Date.now()}`
+      );
+      const core = createCore({ directory: "/tmp/x" });
+
+      // Re-seed the retired default AFTER the import: core.ts already reads
+      // the file (writably) when it resolves the worker URL, which is
+      // pre-existing behavior this test does not cover. What is guarded here
+      // is the per-request read, so the file is put back into a
+      // migration-triggering state right before the context request.
+      writeFileSync(settingsPath, original);
+      await core.memoryContext("ses_readonly");
+
+      // Rendering context must not have rewritten the file: a writable read
+      // would have migrated the retired default away.
+      expect(readFileSync(settingsPath, "utf8")).toBe(original);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalDataDir === undefined) delete process.env.CLAUDE_MEM_DATA_DIR;
+      else process.env.CLAUDE_MEM_DATA_DIR = originalDataDir;
+      if (originalAllSources === undefined) delete process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES;
+      else process.env.CLAUDE_MEM_SESSION_START_INCLUDE_ALL_SOURCES = originalAllSources;
+      rmSync(dataDir, { recursive: true, force: true });
+    }
+  });
+
   it("only registers hooks that are part of OpenCode's real contract", async () => {
     const plugin = await ClaudeMemPlugin.server(pluginCtx);
     const hookKeys = Object.keys(plugin);

@@ -251,6 +251,29 @@ export class ServerV1Routes implements RouteHandler {
       res.json({ memories });
     }));
 
+    app.post('/v1/timeline', readAuth, this.handleCreate(z.object({
+      projectId: z.string().trim().min(1),
+      anchorId: z.string().trim().min(1).max(256),
+      depthBefore: z.number().int().min(0).max(20).optional(),
+      depthAfter: z.number().int().min(0).max(20).optional(),
+    }).strict(), (req, res, body) => {
+      if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+      const memories = new MemoryItemsRepository(this.options.getDatabase())
+        .timelineAround(body.projectId, body.anchorId, body.depthBefore, body.depthAfter);
+      this.audit(req, 'memory.timeline', body.anchorId, body.projectId);
+      res.json({ observations: memories });
+    }));
+
+    app.post('/v1/observations/batch', readAuth, this.handleCreate(z.object({
+      projectId: z.string().trim().min(1),
+      ids: z.array(z.string().trim().min(1).max(256)).min(1).max(100),
+    }).strict(), (req, res, body) => {
+      if (!this.ensureProjectAllowed(req, res, body.projectId)) return;
+      const memories = new MemoryItemsRepository(this.options.getDatabase()).getManyForProject(body.projectId, body.ids);
+      this.audit(req, 'memory.selected', null, body.projectId);
+      res.json({ observations: memories });
+    }));
+
     app.post('/v1/context', readAuth, this.handleCreate(z.object({
       projectId: z.string().min(1),
       // Optional: a context request with no query asks for the most RECENT

@@ -20,6 +20,7 @@ import { posix as posixPath, win32 as windowsPath } from 'path';
 import { buildSpawnSyncInvocation } from '../shared/spawn.js';
 import { sanitizeEnv } from '../supervisor/env-sanitizer.js';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
+import { MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN, bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
 
 const LAUNCHER_VERSION_PROBE_TIMEOUT_MS = 10_000;
 // Antivirus scans a new .exe on its first launch, which can take longer than
@@ -454,6 +455,19 @@ const runBunCompile: LauncherCompileRunner = (bunPath, compileArguments, working
   };
 };
 
+/** `<bun> --version`, or null when it does not run (the compile then reports the failure). */
+export type LauncherBunVersionReader = (bunPath: string) => string | null;
+
+const readBunVersionFromExecutable: LauncherBunVersionReader = (bunPath) => {
+  const invocation = buildSpawnSyncInvocation(bunPath, ['--version'], {
+    encoding: 'utf-8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeout: LAUNCHER_COMPILE_TIMEOUT_MS,
+  });
+  const versionResult = spawnSync(invocation.command, invocation.args, invocation.options);
+  return versionResult.status === 0 && versionResult.stdout ? String(versionResult.stdout).trim() : null;
+};
+
 export type LauncherCodesignRunner = (binaryPath: string) => {
   status: number | null;
   stderr: string;
@@ -603,7 +617,8 @@ function moveCompiledLauncherIntoPlace(
  * LauncherEnsureInvocationContext) nothing is compiled, but the cheap PATH
  * step still runs. `resolveBunPath` runs only when a compile is needed.
  * A foreign `claude-mem` at the launcher path is never replaced.
- * Throws on a missing bundle, a failed compile or an unusable result.
+ * Throws on a missing bundle, a Bun older than 1.2.16 (#4933), a failed
+ * compile or an unusable result.
  */
 export function ensureLauncherOnPath(options: {
   pluginRoot: string;
@@ -612,6 +627,7 @@ export function ensureLauncherOnPath(options: {
   invocationContext: LauncherEnsureInvocationContext;
   host?: LauncherHostEnvironment;
   runCompile?: LauncherCompileRunner;
+  readBunVersion?: LauncherBunVersionReader;
   runCodesign?: LauncherCodesignRunner;
   runPowerShell?: PowerShellRunner;
 }): LauncherEnsureResult {
@@ -651,6 +667,12 @@ export function ensureLauncherOnPath(options: {
   const bunPath = options.resolveBunPath();
   if (!bunPath) {
     return { status: 'bun-not-found', binaryPath, pathSetupOutcome: null };
+  }
+  // A launcher compiled with Bun < 1.2.16 ignores BUN_BE_BUN, so its
+  // no-bun-on-PATH fallback would re-exec itself forever (#4933).
+  const bunVersion = (options.readBunVersion ?? readBunVersionFromExecutable)(bunPath);
+  if (bunVersion !== null && !bunVersionHonoursBunBeBun(bunVersion)) {
+    throw new Error(`Bun ${bunVersion} at ${bunPath} is older than ${MINIMUM_BUN_VERSION_FOR_BUN_BE_BUN}, which the claude-mem launcher needs; run \`bun upgrade\` (or update Bun with your version manager), then \`npx claude-mem install\``);
   }
 
   mkdirSync(binDirectory, { recursive: true });

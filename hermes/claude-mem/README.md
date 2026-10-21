@@ -47,7 +47,7 @@ mcp_servers:
     enabled: true
 ```
 
-The MCP entry gives Hermes claude-mem's search tools (`mem_search`, `search`,
+The MCP entry gives Hermes claude-mem's search tools (`dumb_search`, `search`,
 `timeline`, `get_observations`, `save_memory`). An existing `mcp_servers.claude-mem`
 entry you wrote yourself is left alone.
 

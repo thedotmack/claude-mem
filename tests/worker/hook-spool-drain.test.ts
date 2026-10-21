@@ -127,26 +127,41 @@ describe('drainHookSpool', () => {
     expect(sessionManager.requestSessionWrapup).toHaveBeenCalledTimes(1);
   });
 
-  it('retires a session_end whose session never registered once it passes the grace window; summarize keeps waiting', async () => {
+  it('retires summarize and session_end entries whose session never registered once they pass the grace window', async () => {
     const spool = new HookSpool(join(spoolDir, 'spool'));
     // Both entries are past the unknown-session grace window: the drain asked
-    // the worker (up, DB queried) and the session never registered, so the
-    // end can never succeed. The summarize's keep is load-bearing — it also
-    // waits for an observation to create the session — so it is untouched.
+    // the worker (up, DB queried) and the session never registered, so
+    // neither can ever succeed.
     const staleEpochMs = Date.now() - HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS - 60_000;
     spool.enqueue('session_end', { contentSessionId: 'never-registered', platformSource: 'claude' }, staleEpochMs);
     spool.enqueue('summarize', { contentSessionId: 'never-registered', platformSource: 'claude', lastAssistantMessage: 'hello' }, staleEpochMs);
 
-    expect(await drainHookSpool(spool)).toEqual({ drained: 0, retained: 1, quarantined: 0, expired: 1 });
-    expect(spoolFiles(spool)).toEqual([expect.stringMatching(/^summarize-/)]);
-    expect(readdirSync(spool.expiredDirectory)).toHaveLength(1);
+    expect(await drainHookSpool(spool)).toEqual({ drained: 0, retained: 0, quarantined: 0, expired: 2 });
+    expect(spoolFiles(spool)).toHaveLength(0);
+    expect(readdirSync(spool.expiredDirectory)).toHaveLength(2);
+    expect(sessionManager.queueSummarize).not.toHaveBeenCalled();
     expect(sessionManager.requestSessionWrapup).not.toHaveBeenCalled();
 
-    // Inside the grace window the session_end still waits out the init race.
+    // Inside the grace window both still wait out the init race.
     const fresh = new HookSpool(join(spoolDir, 'spool-fresh'));
     fresh.enqueue('session_end', { contentSessionId: 'another-never-registered', platformSource: 'claude' });
-    expect(await drainHookSpool(fresh)).toEqual({ drained: 0, retained: 1, quarantined: 0, expired: 0 });
-    expect(spoolFiles(fresh)).toHaveLength(1);
+    fresh.enqueue('summarize', { contentSessionId: 'another-never-registered', platformSource: 'claude', lastAssistantMessage: 'hello' });
+    expect(await drainHookSpool(fresh)).toEqual({ drained: 0, retained: 2, quarantined: 0, expired: 0 });
+    expect(spoolFiles(fresh)).toHaveLength(2);
+  });
+
+  it('keeps a stale summarize behind a retained observation of its session instead of expiring it', async () => {
+    const spool = new HookSpool(join(spoolDir, 'spool'));
+    const staleEpochMs = Date.now() - HOOK_SPOOL_SESSION_END_UNKNOWN_GRACE_MS - 60_000;
+    spool.enqueue('observation', { contentSessionId: 'held', platformSource: 'claude', toolName: 'Bash', toolInput: {}, toolResponse: {}, cwd: '/tmp' }, staleEpochMs);
+    spool.enqueue('summarize', { contentSessionId: 'held', platformSource: 'claude', lastAssistantMessage: 'hello' }, staleEpochMs);
+    const ingestSpy = spyOn(ingestShared, 'ingestObservation').mockResolvedValue({ ok: false, reason: 'test_outage' } as never);
+
+    const result = await drainHookSpool(spool);
+    expect(result.expired).toBe(0);
+    expect(spoolFiles(spool)).toHaveLength(2);
+
+    ingestSpy.mockRestore();
   });
 
   it('attributes a late-drained observation to the prompt current when the hook saw it, not at drain time', async () => {

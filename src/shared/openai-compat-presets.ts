@@ -151,7 +151,7 @@ export const OPENAI_COMPAT_PRESETS: readonly OpenAICompatPreset[] = [
     baseUrl: 'https://api.minimax.io/v1',
     defaultModel: 'MiniMax-M3',
     requiresApiKey: true,
-    hint: 'Key from platform.minimax.io; the model id is passed verbatim (e.g. MiniMax-M2.7).',
+    hint: 'Key from platform.minimax.io; defaults to MiniMax-M3. Set MiniMax-M3.1-Flash (or any model id your account serves) to use Flash.',
   },
   {
     id: 'minimax-cn',

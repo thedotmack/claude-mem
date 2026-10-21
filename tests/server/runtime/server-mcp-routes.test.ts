@@ -229,6 +229,31 @@ describe('Phase 8 MCP-backing REST endpoints (/v1/memories, /v1/search, /v1/cont
     expect(found.observations.some(observation => observation.id === inserted.memory.id)).toBe(true);
   });
 
+  it('Smart REST stages keep anchors and selected IDs scoped and validate inputs', async () => {
+    const own = await storage.observations.create({ projectId, teamId, content: 'Smart recall own observation' });
+    const foreignTeam = await storage.teams.create({ name: 'foreign Smart team' });
+    const foreignProject = await storage.projects.create({ teamId: foreignTeam.id, name: 'foreign Smart project' });
+    const foreign = await storage.observations.create({ projectId: foreignProject.id, teamId: foreignTeam.id, content: 'private foreign record' });
+    const request = (path: string, body: unknown) => fetch(`http://127.0.0.1:${port}${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKeyRaw}` }, body: JSON.stringify(body),
+    });
+    const context = await request('/v1/timeline', { projectId, anchorId: own.id, depthBefore: 0, depthAfter: 0 });
+    expect(context.status).toBe(200);
+    expect((await context.json()).observations.map((row: { id: string }) => row.id)).toEqual([own.id]);
+    const selected = await request('/v1/observations/batch', { projectId, ids: [own.id, foreign.id, 'missing'] });
+    expect((await selected.json()).observations.map((row: { id: string }) => row.id)).toEqual([own.id]);
+    for (const anchorId of [foreign.id, 'missing']) {
+      expect((await (await request('/v1/timeline', { projectId, anchorId })).json()).observations).toEqual([]);
+    }
+    expect((await request('/v1/timeline', { projectId: foreignProject.id, anchorId: foreign.id })).status).toBe(403);
+    expect((await request('/v1/observations/batch', { projectId: foreignProject.id, ids: [foreign.id] })).status).toBe(403);
+    expect((await request('/v1/timeline', { projectId, anchorId: own.id, depthBefore: 21 })).status).toBe(400);
+    expect((await request('/v1/timeline', { projectId })).status).toBe(400);
+    expect((await request('/v1/observations/batch', { projectId, ids: [] })).status).toBe(400);
+    const unauthenticated = await fetch(`http://127.0.0.1:${port}/v1/timeline`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ projectId, anchorId: own.id }) });
+    expect(unauthenticated.status).toBe(401);
+  });
+
   it('cross-tenant request to /v1/search is rejected', async () => {
     // Create a foreign project under a different team.
     const otherTeam = await storage.teams.create({ name: 'foreign' });

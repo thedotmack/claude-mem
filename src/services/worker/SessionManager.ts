@@ -11,6 +11,7 @@ import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
 import { canCmemGatewayServe } from '../../shared/cmem-gateway.js';
 import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
+import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
 
@@ -842,10 +843,18 @@ export class SessionManager {
       // The previous request is answered, so nothing is in flight: end this
       // generator before it sends on the old provider. The next generator
       // releases this claim when it starts.
-      if (session.providerSwitchPending) {
-        logger.info('SESSION', 'Ending generator at a message boundary to switch providers', {
+      // A Claude quota-fallback run (claudeAuthOverride) hands back the same
+      // way once the primary credential's window elapses or its breaker clears:
+      // the next admission probes the primary through the single probe claim.
+      const standInLapsed = Boolean(session.claudeAuthOverride)
+        && !claudeStandInStillServes(session.claudeAuthOverride!);
+      if (session.providerSwitchPending || standInLapsed) {
+        logger.info('SESSION', standInLapsed
+          ? 'Primary Claude credential may serve again; ending the quota-fallback run at a message boundary'
+          : 'Ending generator at a message boundary to switch providers', {
           sessionDbId,
           currentProvider: session.currentProvider,
+          ...(standInLapsed ? { credential: session.claudeAuthOverride } : {}),
         });
         session.abortReason = PROVIDER_SWITCH_BOUNDARY_ABORT_REASON;
         session.abortController.abort();

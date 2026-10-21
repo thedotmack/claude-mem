@@ -157,6 +157,7 @@ See [OpenAI-Compatible Provider](usage/openai-compatible-provider) for presets a
 |---------|---------|-------------|
 | `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` | Where observer work goes while the selected provider can't serve (a spent allowance, rate limits or over-capacity refusals past their retries, an outage, repeated unusable replies), until it recovers: `claude` (your Anthropic plan, used only when a Claude login or key exists), `gemini`, `openrouter`, `openai-compatible`, or `off` to wait instead. Empty (from older settings files) = `claude`. See [Quota Fallback](/usage/quota-fallback) |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | — | Claude model for a Claude fallback run. Empty = `CLAUDE_MEM_MODEL` and tier routing. Ignored for other fallbacks |
+| `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | — | The Claude credential to run on while the primary one is held for quota: `subscription` (the Claude Code login, for a spent `ANTHROPIC_API_KEY`) or `api-key` (`ANTHROPIC_FALLBACK_API_KEY`, for a spent or guard-paused login). Tried before `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`. Empty = off. See [Quota Fallback](usage/quota-fallback#claude-credential-fallback) |
 
 See [Quota Fallback](usage/quota-fallback) for how the fallback starts and ends.
 
@@ -198,6 +199,7 @@ Gateway credentials live in `~/.claude-mem/.env`, not `settings.json`.
 | `ANTHROPIC_BASE_URL` | none | LiteLLM or Anthropic-compatible gateway URL for the Claude Agent SDK path |
 | `ANTHROPIC_AUTH_TOKEN` | none | Optional LiteLLM master key or virtual key |
 | `ANTHROPIC_API_KEY` | none | Direct Anthropic API key; normally omit this in LiteLLM gateway mode |
+| `ANTHROPIC_FALLBACK_API_KEY` | none | Anthropic API key used only while the Claude Code login is held for quota (`CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD=api-key`). Never passed to the CLI otherwise |
 
 Use [LiteLLM Gateway](configuration/litellm-gateway) when you want `CLAUDE_MEM_PROVIDER=claude` to route through LiteLLM while preserving the Claude Agent SDK worker path.
 

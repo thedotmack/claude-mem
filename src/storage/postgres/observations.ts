@@ -133,6 +133,57 @@ export class PostgresObservationRepository {
     return row ? mapObservationRow(row) : null;
   }
 
+  async getManyForScope(input: {
+    ids: string[];
+    projectId: string;
+    teamId: string;
+  }): Promise<PostgresObservation[]> {
+    const ids = [...new Set(input.ids)];
+    if (ids.length === 0) return [];
+    const result = await this.client.query<ObservationRow>(
+      `SELECT * FROM observations
+       WHERE id = ANY($1::text[]) AND project_id = $2 AND team_id = $3
+       ORDER BY array_position($1::text[], id)`,
+      [ids, input.projectId, input.teamId],
+    );
+    return result.rows.map(mapObservationRow);
+  }
+
+  /** Resolve the anchor inside the caller's scope before reading its neighbors. */
+  async timelineAround(input: {
+    anchorId: string;
+    projectId: string;
+    teamId: string;
+    depthBefore?: number;
+    depthAfter?: number;
+  }): Promise<PostgresObservation[]> {
+    const depthBefore = input.depthBefore ?? 3;
+    const depthAfter = input.depthAfter ?? 3;
+    for (const depth of [depthBefore, depthAfter]) {
+      if (!Number.isInteger(depth) || depth < 0 || depth > 20) throw new Error('Timeline depth must be an integer from 0 to 20');
+    }
+    const result = await this.client.query<ObservationRow>(
+      `WITH anchor AS (
+         SELECT * FROM observations WHERE id = $1 AND project_id = $2 AND team_id = $3
+       ), preceding AS (
+         SELECT o.* FROM observations o, anchor a
+         WHERE o.project_id = $2 AND o.team_id = $3
+           AND (o.created_at, o.id) < (a.created_at, a.id)
+         ORDER BY o.created_at DESC, o.id DESC LIMIT $4
+       ), following AS (
+         SELECT o.* FROM observations o, anchor a
+         WHERE o.project_id = $2 AND o.team_id = $3
+           AND (o.created_at, o.id) > (a.created_at, a.id)
+         ORDER BY o.created_at, o.id LIMIT $5
+       )
+       SELECT * FROM (
+         SELECT * FROM preceding UNION ALL SELECT * FROM anchor UNION ALL SELECT * FROM following
+       ) context ORDER BY created_at, id`,
+      [input.anchorId, input.projectId, input.teamId, depthBefore, depthAfter],
+    );
+    return result.rows.map(mapObservationRow);
+  }
+
   async listByProject(input: {
     projectId: string;
     teamId: string;

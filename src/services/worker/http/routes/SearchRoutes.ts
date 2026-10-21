@@ -226,7 +226,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
-    app.post('/api/mem-search', this.handleProgressiveSearch.bind(this));
+    app.post('/api/dumb-search', this.handleDumbSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -252,12 +252,11 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json(result);
   });
 
-  private handleProgressiveSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+  private handleDumbSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
-    const { searchScope, projects, ...input } = req.body ?? {};
-    const scope = typeof searchScope === 'string' ? `worker/${searchScope}` : 'worker/global';
+    const { projects, ...input } = req.body ?? {};
     try {
-      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope, projects)));
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, projects)));
     } catch (error) {
       logger.warn('HTTP', 'Progressive memory search failed', { scope, projects }, error instanceof Error ? error : new Error(String(error)));
       res.json(progressiveSearchToolError(error));

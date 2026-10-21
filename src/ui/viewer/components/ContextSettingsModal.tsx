@@ -638,6 +638,20 @@ export function ContextSettingsModal({
               )}
 
               <FormField
+                label="Claude Credential Fallback"
+                tooltip="For a Claude observer: the other credential to run on while the primary one is held for quota, tried before the Quota Fallback provider. Subscription: a spent ANTHROPIC_API_KEY (e.g. credit balance too low) hands over to your Claude Code login, still protected by the quota guard. API key: a login that is spent or paused by the quota guard hands over to ANTHROPIC_FALLBACK_API_KEY in ~/.claude-mem/.env, billed per request. Either returns to the primary once it recovers; neither applies under ANTHROPIC_BASE_URL."
+              >
+                <select
+                  value={formState.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD || ''}
+                  onChange={(e) => updateSetting('CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD', e.target.value)}
+                >
+                  <option value="">Off (wait for the primary credential)</option>
+                  <option value="subscription">Subscription (Claude Code login)</option>
+                  <option value="api-key">API key (ANTHROPIC_FALLBACK_API_KEY)</option>
+                </select>
+              </FormField>
+
+              <FormField
                 label="Claude Code CLI path"
                 tooltip="Executable path for the Claude Code CLI. File/env only — edit ~/.claude-mem/settings.json or set CLAUDE_CODE_PATH in the environment, then restart the worker."
               >

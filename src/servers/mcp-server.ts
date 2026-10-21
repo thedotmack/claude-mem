@@ -251,7 +251,7 @@ function requireServerForObservationTool(toolName: string): ServerAvailable {
   if (!resolution) {
     throw new ServerClientError(
       'transport',
-      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use mem_search for worker-mode memory access.`,
+      `${toolName} requires CLAUDE_MEM_RUNTIME=server. Current runtime is "worker"; use the existing search/timeline/get_observations tools for worker-mode memory access.`,
     );
   }
   if (!resolution.available) {
@@ -494,32 +494,29 @@ const READ_ONLY_TOOL_ANNOTATIONS = { readOnlyHint: true } as const;
 
 const tools = [
   {
-    name: 'mem_search',
-    description: 'Search memory through enforced progressive disclosure. Guided mode returns readable mem-search step 1 of 3 (index), a short continuation for step 2 (context), then step 3 (selected details). Follow the next-call instructions and choose only IDs shown in the previous result. Auto mode completes the same bounded pipeline in one call. Use this tool for every memory search.',
+    name: 'dumb_search',
+    description: 'Dumb search (optional): Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall. This one-call lookup picks records by title word overlap, adds nearby context, and returns up to maxDetails records. Smart search is the default mem-search workflow: search → timeline → selected get_observations.',
     inputSchema: {
       type: 'object',
       properties: {
-        mode: { type: 'string', enum: ['guided', 'auto'], description: 'Guided by default; auto completes index, context and filtered details in one call.' },
-        query: { type: 'string', description: 'Search query; required for a new search, up to 500 characters.' },
+        query: { type: 'string', description: 'Search query, up to 500 characters.' },
         project: { type: 'string', description: 'Optional project filter.' },
         limit: { type: 'integer', minimum: 1, maximum: 20, description: 'Index result count, default 20.' },
         maxDetails: { type: 'integer', minimum: 1, maximum: 5, description: 'Maximum full details, default 3.' },
         depthBefore: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows before each selected anchor, default 2.' },
         depthAfter: { type: 'integer', minimum: 0, maximum: 3, description: 'Context rows after each selected anchor, default 2.' },
-        continuation: { type: 'string', minLength: 27, maxLength: 27, pattern: '^ms_[A-Za-z0-9_-]{24}$', description: 'Short opaque continuation from the previous mem_search response.' },
-        selectedIds: { type: 'array', items: { type: ['string', 'number'] }, description: 'Only relevant IDs from the previous response.' },
       },
+      required: ['query'],
       additionalProperties: false,
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
       try {
         if (selectRuntime() === 'server') {
-          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local mem_search.');
+          throw new ProgressiveSearchError('unsupported_runtime', 'Use the hosted claude-mem MCP connection for server memory, or select worker runtime for local dumb_search.');
         }
-        const checkout = currentCheckout();
-        const body = { ...withCheckoutProjects(args ?? {}, checkout), searchScope: checkout.allProjects.join(',') };
-        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/mem-search', {
+        const body = withCheckoutProjects(args ?? {}, currentCheckout());
+        const response = await withWorkerRestartOnRefusedConnection(() => workerHttpRequest('/api/dumb-search', {
           method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         }), startWorkerAfterRefusedConnection);
         if (!response.ok) throw new Error(`Worker API error (${response.status})`);
@@ -536,7 +533,7 @@ const tools = [
   },
   {
     name: 'save_memory',
-    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching with mem_search for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
+    description: 'Save an explicit durable note, decision, correction or handoff into worker-mode claude-mem. Use this for your own note taking after searching memory for duplicates. Include project when the note belongs to a specific project. Server runtime uses observation_add to write to the selected server.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -555,25 +552,25 @@ const tools = [
   },
   {
     name: 'important_workflow',
-    description: `Use mem_search for all memory search. Guided mode enforces index -> context -> selected details with short opaque continuations. Auto mode performs the same bounded pipeline. Legacy layered workflow:
+    description: `SMART SEARCH (DEFAULT): Use the mem-search skill in three steps; no auto or guided modes. In server runtime, search, timeline, and get_observations use the configured server project.
 1. search(query) → Get index with IDs (~50-100 tokens/result)
 2. timeline(anchor=ID) → Get context around interesting results
-3. get_observations([IDs]) → Fetch full details ONLY for filtered IDs
-4. get_tool_uses([IDs]) → Raw tool_input/tool_response, ONLY when the summary is not enough
+3. get_observations([IDs]) → Fetch selected details ONLY for filtered IDs
+Exceptional follow-up: get_tool_uses([IDs]) for raw tool_input/tool_response, ONLY when the summary is not enough
 NEVER fetch full details without filtering first. 10x token savings.`,
     inputSchema: {
       type: 'object',
       properties: {}
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
-    handler: async () => ({
+    handler: async () => selectRuntime() === 'server' ? mcpTextResult('Smart search (default): 1. search({query}) for the server index. 2. timeline({anchor: ID}) for context around interesting results. 3. get_observations({ids}) for only records selected after reviewing the index and timeline. These tools use the configured server project; optional projectId selects another authorized server project. No auto or guided modes. Dumb search is unavailable in this runtime.') : ({
       content: [{
         type: 'text' as const,
-        text: `# Memory Search Workflow
+        text: `# Smart Search (Default)
 
-Use mem_search for every memory search. Guided mode returns readable mem-search step 1 of 3 (index), step 2 of 3 (context), then step 3 of 3 (filtered details). Follow the next-call instructions with the short continuation and only relevant selectedIds shown in the previous response. Auto mode performs that same bounded progression in one call. Local and remote MCP share this contract.
+Use the original three-step mem-search workflow. Reason about the index and timeline before selecting full details. No auto or guided modes.
 
-**Compatibility pattern for older clients or advanced filters:**
+**3-Layer Pattern (ALWAYS follow this):**
 
 1. **Search** - Get index of results with IDs
    \`search(query="...", limit=20, project="...")\`
@@ -583,27 +580,30 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
    \`timeline(anchor=<ID>, depth_before=3, depth_after=3)\`
    Returns: Chronological context showing what was happening
 
-3. **Fetch** - Get full details ONLY for relevant IDs
+3. **Fetch** - Get selected details ONLY for relevant IDs
    \`get_observations(ids=[...])\`  # ALWAYS batch for 2+ items
-   Returns: Complete details (~500-1000 tokens/result)
+   Returns: Selected useful fields, with any shortening marked (~500-1000 tokens/result)
 
-4. **Disclose raw tool I/O** - Last resort, when the observation summary does not answer the question
+**Exceptional follow-up: raw tool I/O** - Last resort, when the observation summary does not answer the question
    \`get_tool_uses(ids=[...])\`
    Returns: The original tool_input / tool_response bodies (UNSUMMARIZED — can be thousands of tokens each)
 
-**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for layer 4 before layer 3 answered.`
+**Why:** 10x token savings. Never fetch full details without filtering first, and never reach for raw tool I/O before the three-step workflow.
+
+Optional Dumb search: \`dumb_search({query, project})\`. Doesn’t reason about the results. Fast, but shallow. Use Smart for reliable recall.`
       }]
     })
   },
   {
     name: 'search',
-    description: 'Legacy index search for advanced filters. Prefer mem_search for enforced progressive disclosure and guided next steps. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
+    description: 'Smart search (default), step 1: search memory for an index with IDs. Review it, use timeline for context, then get_observations only for selected IDs. Params: query, limit, project, platformSource, type, obs_type, dateStart, dateEnd, offset, orderBy',
     inputSchema: {
       type: 'object',
       properties: {
         query: { type: 'string', description: 'Search query' },
         limit: { type: 'number', description: 'Max results (default 20)' },
-        project: { type: 'string', description: 'Filter by project name' },
+        project: { type: 'string', description: 'Worker project name' },
+        projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' },
         platformSource: { type: 'string', description: "Filter by platform source (e.g. claude, codex, cursor) — restricts results to that agent's own memory" },
         type: { type: 'string', description: "Document category to search: 'observations', 'sessions', or 'prompts' (default: all). Any other value is treated as an observation-type filter (alias for obs_type)." },
         obs_type: { type: 'string', description: 'Filter observations by their type (e.g. bugfix, feature). Comma-separated for multiple.' },
@@ -616,79 +616,84 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      // In server-beta runtime the local worker /api/search reads the local SQLite via
-      // the Chroma-backed SearchOrchestrator. When the install runs server-beta (where
-      // generated observations live in Postgres, not local SQLite) and Chroma is not
-      // configured, observation text queries return empty — so `search` silently yields
-      // 0 observations even though the data is in PG.
-      //
-      // Route to the PG-backed /v1/search (same path as observation_search) ONLY when it
-      // can serve the request faithfully: server-beta is available, there is a text query,
-      // the result type is observations (or unspecified), and no filter /v1/search cannot
-      // honor is set. /v1/search is observations-only and takes only { projectId, query,
-      // limit } — so prompt/session-typed queries and platformSource/project/obs_type/date/
-      // offset/orderBy filters must keep the worker path (which applies them), otherwise we
-      // would silently drop the filter or mis-route the query.
-      const sb = resolveServerToolContext();
-      const hasText = typeof args?.query === 'string' && args.query.trim().length > 0;
-      const typeIsObservations = args?.type === undefined || args?.type === 'observations';
-      const hasUnsupportedFilter =
-        args?.platformSource !== undefined || args?.project !== undefined ||
-        args?.obs_type !== undefined || args?.dateStart !== undefined ||
-        args?.dateEnd !== undefined || args?.offset !== undefined || args?.orderBy !== undefined;
-      if (sb && sb.available && hasText && typeIsObservations && !hasUnsupportedFilter) {
-        const request: ServerSearchObservationsRequest = {
-          projectId: sb.projectId,
+      if (selectRuntime() === 'server') {
+        const ctx = requireServerForObservationTool('search');
+        const unsupported = ['project', 'obs_type', 'dateStart', 'dateEnd', 'offset', 'orderBy']
+          .filter(key => args?.[key] !== undefined);
+        if (unsupported.length || (args?.type !== undefined && args.type !== 'observations')) {
+          return mcpTextResult('Server search supports query, projectId, limit, and platformSource. Remove unsupported local filters; this request was not sent to the local worker.', true);
+        }
+        if (typeof args?.query !== 'string' || !args.query.trim()) return mcpTextResult('Server search requires a nonempty query.', true);
+        return formatMcpPayload('server-search', await ctx.client.searchObservations({
+          projectId: args.projectId || ctx.projectId,
           query: args.query,
           ...(args.limit !== undefined ? { limit: args.limit } : {}),
-        };
-        return formatMcpPayload('server-search', await sb.client.searchObservations(request));
+          ...(args.platformSource !== undefined ? { platformSource: normalizeMcpPlatformSource(args.platformSource) } : {}),
+        }));
       }
       return await callWorker('/api/search', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
     name: 'timeline',
-    description: 'Legacy context lookup. Prefer mem_search continuations for enforced progressive disclosure. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
+    description: 'Step 2: Get context around results. Params: anchor (observation ID) OR query (finds anchor automatically), depth_before, depth_after, project',
     inputSchema: {
       type: 'object',
       properties: {
-        anchor: { type: 'number', description: 'Observation ID to center the timeline around' },
+        anchor: { type: ['number', 'string'], description: 'Observation ID to center the timeline around (string ID in server runtime)' },
         query: { type: 'string', description: 'Query to find anchor automatically' },
         depth_before: { type: 'number', description: 'Items before anchor (default 3)' },
         depth_after: { type: 'number', description: 'Items after anchor (default 3)' },
-        project: { type: 'string', description: 'Filter by project name' }
+        project: { type: 'string', description: 'Worker project name' },
+        projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
       additionalProperties: true
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      return await callWorker('/api/timeline', { query: args });
+      if (selectRuntime() === 'server') {
+        const ctx = requireServerForObservationTool('timeline');
+        if ((typeof args?.anchor !== 'string' && typeof args?.anchor !== 'number') || !String(args.anchor).trim()) return mcpTextResult('Server timeline requires an anchor ID from search.', true);
+        if (args?.project !== undefined || args?.query !== undefined) return mcpTextResult('Server timeline uses anchor and optional projectId; local project and query arguments are unsupported.', true);
+        return formatMcpPayload('server-timeline', await ctx.client.timelineObservations({
+          projectId: args.projectId || ctx.projectId, anchorId: String(args.anchor),
+          ...(args.depth_before !== undefined ? { depthBefore: args.depth_before } : {}),
+          ...(args.depth_after !== undefined ? { depthAfter: args.depth_after } : {}),
+        }));
+      }
+      return await callWorker('/api/timeline', { query: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
     name: 'get_observations',
-    description: 'Legacy detail lookup for IDs already filtered through memory search or the injected session index. Prefer mem_search continuations for enforced progressive disclosure. Params: ids (array of observation IDs, required), orderBy, limit, project',
+    description: 'Step 3: Fetch selected useful details for the IDs chosen after reviewing the index and timeline. Any shortening is marked. Params: ids (required), orderBy, limit, project (worker) or projectId (server)',
     inputSchema: {
       type: 'object',
       properties: {
         ids: {
           type: 'array',
-          items: { type: 'number' },
-          description: 'Array of observation IDs to fetch (required)'
-        }
+          items: { type: ['number', 'string'] },
+          description: 'Array of selected observation IDs to fetch (string IDs in server runtime)'
+        },
+        projectId: { type: 'string', description: 'Server project ID; defaults to the configured server project' }
       },
       required: ['ids'],
       additionalProperties: true
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
-      return await callWorker('/api/observations/batch', { body: args });
+      if (selectRuntime() === 'server') {
+        const ctx = requireServerForObservationTool('get_observations');
+        if (!Array.isArray(args?.ids) || !args.ids.length || args.ids.some((id: unknown) => (typeof id !== 'string' && typeof id !== 'number') || !String(id).trim())) return mcpTextResult('Select nonempty observation IDs from search and timeline.', true);
+        if (args?.project !== undefined || args?.orderBy !== undefined || args?.limit !== undefined) return mcpTextResult('Server get_observations uses ids and optional projectId; local filters are unsupported.', true);
+        return formatMcpPayload('observations', await ctx.client.selectedObservations({ projectId: args.projectId || ctx.projectId, ids: args.ids.map(String) }));
+      }
+      return await callWorker('/api/observations/batch', { body: withCheckoutProjects(args ?? {}, currentCheckout()) });
     }
   },
   {
     name: 'get_tool_uses',
-    description: 'Step 4 (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
+    description: 'Exceptional follow-up (raw tool I/O, rarely needed): fetch the ORIGINAL tool_input/tool_response for tool calls you already identified. Requires ids — run search/timeline/get_observations first and pass only the ids you actually need; these payloads are large and unsummarized. ids accept numeric tool_uses ids or tool_use_id strings. Params: ids (required), limit, project, contentSessionId.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -706,6 +711,7 @@ Use mem_search for every memory search. Guided mode returns readable mem-search 
     },
     annotations: READ_ONLY_TOOL_ANNOTATIONS,
     handler: async (args: any) => {
+      if (selectRuntime() === 'server') return mcpTextResult('Raw tool I/O is unavailable in server runtime. Use selected server observations; no local worker request was made.', true);
       return await callWorker('/api/tool-uses/batch', { body: args });
     }
   },

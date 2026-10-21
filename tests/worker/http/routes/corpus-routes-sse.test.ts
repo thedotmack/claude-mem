@@ -310,7 +310,14 @@ describe('CorpusRoutes query on a corpus that was never primed', () => {
 
     expect(res.statusCode).toBe(409);
     expect(res.jsonBodies).toEqual([{ error: 'Corpus "alpha" has no session — call prime first', code: 'CORPUS_NOT_PRIMED' }]);
-    expect(warnSpy).toHaveBeenCalledTimes(1);
+    // `logger` is one object for the whole single-process suite, so the spy also
+    // sees warnings from timers and promises earlier files left running. CI hit
+    // that: a second, unrelated warn landed inside this test's few milliseconds
+    // ("Expected number of calls: 1, Received: 2") on some file orders only.
+    // Count the warnings THIS rejection produced, not every warn in the process.
+    const rejectionWarnings = warnSpy.mock.calls.filter(([, , context]) =>
+      (context as { statusCode?: number } | undefined)?.statusCode === 409);
+    expect(rejectionWarnings).toEqual([['WORKER', 'Request rejected', { statusCode: 409 }, expect.any(Error)]]);
     expect(errorSink).not.toHaveBeenCalled();
   });
 

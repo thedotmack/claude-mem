@@ -518,7 +518,11 @@ export function buildOpenRouterRequestBody(input: {
   // openrouter.ai itself, or the cmem gateway, which forwards the body there.
   const reachesOpenRouter = isOpenRouter || isCmemGatewayUrl(input.apiUrl);
   const useFallbacks = isOpenRouter && input.fallbackModels.length > 0;
-  const typedReasoning = isOpenRouter && !input.plainText && input.reasoningEffort !== undefined;
+  // A field condensation is a short rewrite like a wrap-up: a reasoning model
+  // otherwise spends the whole output cap thinking and the pass is discarded
+  // as cut off (#2995).
+  const answerOnly = input.plainText || input.label?.kind === 'field_compression';
+  const typedReasoning = isOpenRouter && !answerOnly && input.reasoningEffort !== undefined;
   return withOpenRouterExtraBody({
     ...(useFallbacks
       ? { models: [input.model, ...input.fallbackModels] }
@@ -535,7 +539,7 @@ export function buildOpenRouterRequestBody(input: {
     // Keep the same model, but ask for an answer instead of spending this
     // short rewrite's budget on reasoning. Only known OpenRouter endpoints
     // accept the vendor-specific reasoning control (cmem forwards it).
-    ...(input.plainText && reachesOpenRouter ? {
+    ...(answerOnly && reachesOpenRouter ? {
       response_format: { type: 'text' },
       reasoning: { enabled: false },
     } : {}),
@@ -553,7 +557,9 @@ export function buildOpenRouterRequestBody(input: {
     // OpenRouter. A custom gateway gets neither: strict ones 400 on unknown
     // body fields.
     ...(input.label && reachesOpenRouter ? openRouterRequestLabels(input.label) : {}),
-  }, typedReasoning ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl, input.plainText);
+  }, typedReasoning ? withoutReasoning(input.extraBody) : input.extraBody, input.apiUrl,
+  // A custom gateway gets no reasoning control above, so its extra body keeps its own.
+  input.plainText || (answerOnly && reachesOpenRouter));
 }
 
 /**
