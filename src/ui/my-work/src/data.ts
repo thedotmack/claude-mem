@@ -78,6 +78,27 @@ export interface Goal {
   quotes: Quote[]
 }
 
+/** A goal plus how the owner-goals run linked it to work. Priorities link through request.goalId (decision 1). */
+export interface GoalItem extends Goal {
+  /** Open asks only: requests the run matched to this ask, since a request has one goal but can answer an ask. */
+  servedBy?: string[]
+}
+
+/** The current owner-goals run. */
+export interface CurrentPeriod { label: string; windowDays: number; promptCount: number }
+
+/** One saved past month (owner-goals/<start>). Its asks are archived with the month. */
+export interface PastPeriod {
+  id: string
+  label: string
+  promptCount: number
+  headline: string
+  priorities: { title: string; product: string; timesAsked: number; quote: Quote | null }[]
+}
+
+/** When and where a skill last ran. Real timestamps only; no cost (owner, Oct 20, 2026). */
+export interface SkillRun { label: string; lastRunAt: string; deviceName: string }
+
 export interface Run { label: string; lastRunAt: string; deviceId: string; state: 'idle' | 'running' | 'queued'; progress?: number }
 
 export const SAMPLE_DEVICES: Device[] = [
@@ -94,15 +115,6 @@ export const SAMPLE_AGENTS: Agent[] = [
 ]
 
 export const SAMPLE_PEOPLE = ['Alex', 'Sam', 'Priya']
-
-export const GOALS: Goal[] = [
-  { id: 'g1', kind: 'Priority', rank: 1, title: 'Ship My Work LIVE as claude-mem 14', product: 'claude-mem', latestAt: '10-20 13:24', timesAsked: 14,
-    quotes: [{ at: '10-17 00:51', quote: 'release this tonight as the next full release' }, { at: '10-17 00:49', quote: 'replace the local viewer with this, fully local and live' }] },
-  { id: 'g2', kind: 'Priority', rank: 2, title: 'Make cloud sync dependable', product: 'Cloud sync', latestAt: '10-15 20:49', timesAsked: 9,
-    quotes: [{ at: '10-15 20:49', quote: 'what i need to know is whether sync is healthy for everyone' }] },
-  { id: 'g3', kind: 'Open ask', rank: 1, title: 'A real live indicator on cards', product: 'claude-mem', latestAt: '10-17 06:40', timesAsked: 3,
-    quotes: [{ at: '10-17 06:40', quote: 'i still cannot tell which cards are live right now' }] },
-]
 
 const PULL_REQUEST = 'https://example.com/pull/'
 const emptyRequest = { activityWord: '', workstreams: [], granular: [], conversations: [], prompts: [], workProduct: [], followUps: [], story: [], evidence: [], terminal: [] }
@@ -363,17 +375,14 @@ export const SAMPLE_RUNS: Record<'goals' | 'rules' | 'progress', Run> = {
   progress: { label: 'request-progress', lastRunAt: 'Today, 1:50 pm', deviceId: 'studio', state: 'idle' },
 }
 
-// Goals and Rules still show fixture requests in live mode (each page carries a "Sample data" badge), so a lookup
-// that misses the active model falls back to the fixtures. Fixture ids never collide with recorded ids.
-// Remove the fallback when Goals goes live (plan Phase 7).
+/** Looks up an agent in the active model. Fails fast: every request's agent is in its model. */
 export function agentById(id: string): Agent {
-  const agent = currentWorkModel().agents.find((entry) => entry.id === id) ?? SAMPLE_AGENTS.find((entry) => entry.id === id)
+  const agent = currentWorkModel().agents.find((entry) => entry.id === id)
   if (!agent) throw new Error(`No agent ${id}`)
   return agent
 }
 export function deviceById(id: string): Device {
-  const device = currentWorkModel().devices.find((entry) => entry.id === id) ?? SAMPLE_DEVICES.find((entry) => entry.id === id)
+  const device = currentWorkModel().devices.find((entry) => entry.id === id)
   if (!device) throw new Error(`No device ${id}`)
   return device
 }
-export const goalById = (id: string | null | undefined) => (id ? GOALS.find((goal) => goal.id === id) ?? null : null)

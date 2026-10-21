@@ -1,5 +1,6 @@
 // The wireframe fixtures as a data source, for design review (`?source=sample`). Nothing here is real.
-import { assertConsistentRequest, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, type Request } from '../data.ts'
+import { assertConsistentRequest, SAMPLE_AGENTS, SAMPLE_DEVICES, SAMPLE_PEOPLE, SAMPLE_REQUESTS, SAMPLE_RUNS, type Request } from '../data.ts'
+import { SAMPLE_CURRENT_PERIOD, SAMPLE_GOAL_ONLY_REQUESTS, SAMPLE_OPEN_ASKS, SAMPLE_PAST_PERIODS, SAMPLE_PRIORITIES } from '../data-goals.ts'
 import { getConnectionStatus } from './connection-status.ts'
 import type { WorkDataSource, WorkModel } from './work-data-source.ts'
 
@@ -14,6 +15,13 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   devices: SAMPLE_DEVICES,
   people: SAMPLE_PEOPLE,
   unlinkedWorkCount: 0,
+  priorities: SAMPLE_PRIORITIES,
+  openAsks: SAMPLE_OPEN_ASKS,
+  currentPeriod: SAMPLE_CURRENT_PERIOD,
+  pastPeriods: SAMPLE_PAST_PERIODS,
+  goalsReadError: null,
+  goalOnlyRequests: SAMPLE_GOAL_ONLY_REQUESTS,
+  lastRuns: { goals: { label: SAMPLE_RUNS.goals.label, lastRunAt: SAMPLE_RUNS.goals.lastRunAt, deviceName: SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.goals.deviceId)!.name } },
   sourceHealth: { connected: true, error: null },
   // Sample mode demonstrates the indicator (LiveIndicator labels it a demonstration); nothing streams.
   connection: getConnectionStatus({ now: 0 }),

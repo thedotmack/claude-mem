@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CheckIcon, CopyIcon, CornerLeftUpIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -8,7 +8,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { agentById, applyPendingWorkModel, deviceById, goalById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useHasPendingWorkModel, useWorkModel, type Device, type LiveState, type Request, type Run } from '@/data'
+import { agentById, applyPendingWorkModel, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useHasPendingWorkModel, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
 import { AgentMark } from './brand'
 
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
@@ -72,7 +72,9 @@ export function StateBadge({ state }: { state: LiveState }) {
  * A quiet link, not a colored pill: color is reserved for state. Opens My Goals on that goal.
  */
 export function GoalChip({ goalId, onOpen }: { goalId?: string | null; onOpen?: (goalId: string) => void }) {
-  const goal = goalById(goalId)
+  const { priorities, openAsks } = useWorkModel()
+  // Resolved through the loaded goals only: a goal id the model doesn't have reads "Goal not linked yet".
+  const goal = goalId ? [...priorities, ...openAsks].find((entry) => entry.id === goalId) ?? null : null
   return (
     <Req ids={['D1']}>
       {goal ? (
@@ -82,7 +84,7 @@ export function GoalChip({ goalId, onOpen }: { goalId?: string | null; onOpen?: 
         </button>
       ) : (
         // Not linked yet is not the same claim as "serves no goal".
-        <span className="inline-flex min-h-6 items-center gap-1.5 self-start text-xs text-muted-foreground/80 italic">{goalId === undefined ? 'Goal not linked yet' : 'No goal'}</span>
+        <span className="inline-flex min-h-6 items-center gap-1.5 self-start text-xs text-muted-foreground/80 italic">{goalId === null ? 'No goal' : 'Goal not linked yet'}</span>
       )}
     </Req>
   )
@@ -222,6 +224,8 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
   const { mode } = useWorkspace()
   const [state, setState] = useState(run.state)
   const nextMachine = SAMPLE_DEVICES.find((device) => device.online)!
+  const runMachine = SAMPLE_DEVICES.find((device) => device.id === run.deviceId)
+  if (!runMachine) throw new Error(`Sample run ${run.label} names no sample device ${run.deviceId}`)
   const start = () => {
     setState(mode === 'web' ? 'queued' : 'running')
     setTimeout(() => setState('idle'), 2400)
@@ -231,13 +235,43 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
       <div className="flex w-full items-center gap-3 sm:w-auto">
         <span className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground sm:text-right" aria-live="polite">
           {state === 'queued' && <>Queued for {nextMachine.name}</>}
-          {state === 'running' && <>Running {run.label} on {deviceById(run.deviceId).name}…</>}
-          {state === 'idle' && <>Last run {run.lastRunAt}<br />on {deviceById(run.deviceId).name}</>}
+          {state === 'running' && <>Running {run.label} on {runMachine.name}…</>}
+          {state === 'idle' && <>Last run {run.lastRunAt}<br />on {runMachine.name}</>}
         </span>
         <Button variant="outline" size="sm" className="h-11 min-w-11 md:h-8 md:min-w-0" onClick={start} disabled={state !== 'idle'} aria-label={`Refresh ${run.label}`}>
           {state === 'idle' ? <RefreshCwIcon /> : <Spinner />}
           Refresh
         </Button>
+      </div>
+    </Req>
+  )
+}
+
+/** Copies a Claude Code command. The page can't run a skill yet (plan risk R6), so it hands you the exact command instead. */
+export function CopyCommandButton({ command, className }: { command: string; className?: string }) {
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    await navigator.clipboard.writeText(command)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <Button variant="outline" size="sm" className={cn('h-11 min-w-11 md:h-8 md:min-w-0', className)} onClick={copy} aria-label={`Copy ${command}`}>
+      {copied ? <CheckIcon /> : <CopyIcon />}
+      {copied ? 'Copied' : 'Copy'}
+    </Button>
+  )
+}
+
+/** A live skill's real last run, plus the command that runs it again in Claude Code. Never a fake run. */
+export function SkillLastRun({ run, command, ids }: { run: SkillRun; command: string; ids: string[] }) {
+  return (
+    <Req ids={[...ids, 'R14.10']}>
+      <div className="flex w-full items-center gap-3 sm:w-auto">
+        <span className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground sm:text-right">
+          Last run {run.lastRunAt}<br />on {run.deviceName} · run again with <code className="font-mono">{command}</code>
+        </span>
+        <CopyCommandButton command={command} />
       </div>
     </Req>
   )

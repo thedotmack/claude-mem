@@ -30,7 +30,7 @@ const connectionEvidence = {
 let latestSnapshot: WorkViewSnapshot | null = null
 /** The content of the last model handed to the screens, so an unchanged snapshot or a quiet minute is not sent again. */
 let lastDeliveredSignature: string | null = null
-const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth])
+const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.priorities, model.openAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns])
 
 const currentConnectionStatus = (): ConnectionStatus =>
   getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now() })

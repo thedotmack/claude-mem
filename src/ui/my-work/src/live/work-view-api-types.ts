@@ -92,6 +92,39 @@ export interface WorkViewSource {
   lastCheckedAt: string | null
 }
 
+/** One owner-goals item. The worker already parsed `evidence` into quotes; `at` is `YYYY-MM-DD HH:MM`, a bare day, or null. */
+export interface WorkViewGoalItem {
+  id: string
+  task: string
+  kind: 'priority' | 'open-ask'
+  rank: number | null
+  title: string
+  product: string | null
+  latestAt: string | null
+  timesAsked: number | null
+  status: string
+  evidence: { at: string | null; quote: string }[]
+}
+
+/** One owner-goals list: the current month (`history: false`) or a saved past month (`owner-goals/<start>`). */
+export interface WorkViewGoalList {
+  listId: string
+  listName: string
+  history: boolean
+  project: string
+  updatedAt: string
+  periodStart: string | null
+  /** Exclusive: the next month starts on this day. */
+  periodEnd: string | null
+  summary: string | null
+  generatedAt: string | null
+  windowDays: number | null
+  sourcePromptCount: number | null
+  mapPath: string | null
+  priorities: WorkViewGoalItem[]
+  openAsks: WorkViewGoalItem[]
+}
+
 export interface WorkViewSnapshot {
   version: number
   generatedAt: string
@@ -100,4 +133,8 @@ export interface WorkViewSnapshot {
   unlinkedWork: unknown[]
   source: WorkViewSource
   revision: string
+  /** The current owner-goals run; null until the owner-goals skill has run. Older workers leave it out. */
+  goals?: WorkViewGoalList | null
+  /** Saved past months, newest first. */
+  goalHistory?: WorkViewGoalList[]
 }

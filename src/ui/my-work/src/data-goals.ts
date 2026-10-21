@@ -1,6 +1,6 @@
-// Sample data for the My Goals page only. The shape, counts and states follow a real owner-goals run;
+// Sample data for the My Goals page only (`?source=sample`; the sample source puts it in the WorkModel). The shape, counts and states follow a real owner-goals run;
 // titles, quotes and links are neutral placeholders, so no one's real prompts ship in the sample.
-import { GOALS, SAMPLE_REQUESTS, goalById, isSampleHref, type Goal, type Request } from '@/data'
+import { isSampleHref, SAMPLE_REQUESTS, type CurrentPeriod, type GoalItem, type PastPeriod, type Request } from './data.ts'
 
 /** Work product with no real target yet. The page shows these as sample, never as a link that looks real. */
 
@@ -28,7 +28,7 @@ if (r1 && !r1.workProduct.some((product) => product.href === WIREFRAME_PAGE)) r1
 const emptyRequest = { activityWord: '', workstreams: [], granular: [], conversations: [], prompts: [], workProduct: [], followUps: [], story: [], evidence: [], terminal: [] }
 
 /** Overall requests that serve goals but are not in today's My Work inbox (older, shipped or stalled). */
-const GOAL_REQUESTS: Request[] = [
+export const SAMPLE_GOAL_ONLY_REQUESTS: Request[] = [
   {
     ...emptyRequest,
     id: 'r6', title: 'Three-step search: stress test, ship and restore', summary: 'Bring back the three-step search and give the quick mode a clearer name.',
@@ -96,27 +96,13 @@ const GOAL_REQUESTS: Request[] = [
   },
 ]
 
-/** Every overall request the goals page can link to: today's inbox (read live from data.ts on each call) plus the older ones above. */
-export const allRequests = (): Request[] => [...SAMPLE_REQUESTS, ...GOAL_REQUESTS.filter((request) => !SAMPLE_REQUESTS.some((inbox) => inbox.id === request.id))]
-/** Look a request up by id, data.ts first, so its state, stage, progress and next step match My Work. */
-export const requestById = (id: string) => SAMPLE_REQUESTS.find((request) => request.id === id) ?? GOAL_REQUESTS.find((request) => request.id === id)
-
-/** A goal plus how the owner-goals run linked it to work. Priorities link through request.goalId (decision 1). */
-export interface GoalItem extends Goal {
-  /** Open asks only: requests the run matched to this ask, since a request has one goal but can answer an ask. */
-  servedBy?: string[]
-}
-
-/** Goals that already exist in data.ts are updated in place, so GoalChip on My Work and this page read one object. */
-const shared = (id: string, page: Partial<Goal>): GoalItem => Object.assign(goalById(id)!, page)
-
-export const PRIORITIES: GoalItem[] = [
-  shared('g1', { rank: 1, product: 'My Work', latestAt: '10-18 22:11', timesAsked: 4,
+export const SAMPLE_PRIORITIES: GoalItem[] = [
+  { id: 'g1', kind: 'Priority', title: 'Ship My Work LIVE as claude-mem 14', rank: 1, product: 'My Work', latestAt: '10-18 22:11', timesAsked: 4,
     quotes: [
       { at: '10-18 22:11', quote: 'this is the most important thing right now, please get it shipped' },
       { at: '10-17 00:51', quote: 'release this tonight as the next full release' },
       { at: '10-16 09:39', quote: 'i love the card view, lets keep it + the list view too with sorting added' },
-    ] }),
+    ] },
   { id: 'g-search', kind: 'Priority', rank: 2, title: 'Restore the three-step search and ship the quick mode', product: 'Search', latestAt: '10-18 22:09', timesAsked: 3,
     quotes: [
       { at: '10-18 22:09', quote: 'why is the quick mode still not shipped?' },
@@ -135,12 +121,12 @@ export const PRIORITIES: GoalItem[] = [
       { at: '10-17 01:01', quote: 'self serve where you can sign up on the site as a team ... get checkout ready' },
       { at: '10-15 21:29', quote: 'keep the team version private for now' },
     ] },
-  shared('g2', { rank: 5, product: 'Cloud sync', latestAt: '10-15 22:51', timesAsked: 3,
+  { id: 'g2', kind: 'Priority', title: 'Make cloud sync dependable', rank: 5, product: 'Cloud sync', latestAt: '10-15 22:51', timesAsked: 3,
     quotes: [
       { at: '10-15 22:51', quote: 'use the real rollup data we already have, not a simulated forecast' },
       { at: '10-15 20:49', quote: 'what i need to know is whether sync is healthy for everyone' },
       { at: '10-04 15:51', quote: 'sync is what lets people keep a fast local copy' },
-    ] }),
+    ] },
   { id: 'g-cost', kind: 'Priority', rank: 6, title: 'Keep running costs low without hardcoded workarounds', product: 'Running costs', latestAt: '10-06 15:22', timesAsked: 3,
     quotes: [{ at: '10-06 15:22', quote: 'which change caused the spike?' }, { at: '10-03 22:32', quote: 'that setting belongs in the provider dashboard' }] },
   { id: 'g-auto', kind: 'Priority', rank: 7, title: 'Full autonomy: agents use the tools they have, the browser and subagents, and do releases', product: 'Agent behavior', latestAt: '10-16 18:22', timesAsked: 4,
@@ -153,10 +139,11 @@ export const PRIORITIES: GoalItem[] = [
     quotes: [{ at: '10-18 21:54', quote: 'any new stars, issues or PRs?' }, { at: '10-14 19:56', quote: 'the invite should say come see the demo live' }] },
 ]
 
-export const OPEN_ASKS: GoalItem[] = [
+export const SAMPLE_OPEN_ASKS: GoalItem[] = [
   { id: 'a-wooow', kind: 'Open ask', rank: 1, title: 'Slide decks: drop the upload, download and waiting', product: 'Reports & decks', latestAt: '10-17 09:40', timesAsked: 5,
     quotes: [{ at: '10-17 09:40', quote: "remove the upload step ... and just have it make the deck and that's it" }, { at: '10-17 09:38', quote: "i've asked before" }, { at: '10-02 09:47', quote: 'does nothing after creating the deck' }] },
-  shared('g3', { rank: 2, product: 'My Work', latestAt: '10-17 06:40', timesAsked: 2 }),
+  { id: 'g3', kind: 'Open ask', title: 'A real live indicator on cards', rank: 2, product: 'My Work', latestAt: '10-17 06:40', timesAsked: 2,
+    quotes: [{ at: '10-17 06:40', quote: 'i still cannot tell which cards are live right now' }] },
   { id: 'a-dario', kind: 'Open ask', rank: 3, title: 'Side project traction', product: 'Side project', latestAt: '10-18 21:54', timesAsked: 2,
     quotes: [{ at: '10-18 21:54', quote: 'any new stars, issues or PRs?' }, { at: '10-16 18:05', quote: 'by end of night we should have 10 stars' }] },
   { id: 'a-hook', kind: 'Open ask', rank: 4, title: 'Hook timeout fix (UserPromptSubmit 8s)', product: 'Plugin', latestAt: '10-16 19:17', timesAsked: 3, servedBy: ['r12'],
@@ -169,22 +156,11 @@ export const OPEN_ASKS: GoalItem[] = [
     quotes: [{ at: '10-18 22:06', quote: 'if i change my mind later, a permanent rule means you will never listen to me' }] },
 ]
 
-// GoalChip resolves titles through data.ts, so register the goals this page adds (no edit to the shared file).
-for (const goal of [...PRIORITIES, ...OPEN_ASKS]) if (!GOALS.some((existing) => existing.id === goal.id)) GOALS.push(goal)
-
-/** The current owner-goals run (the Refresh button shows its time, machine and cost from RUNS.goals). */
-export const CURRENT_PERIOD = { label: 'Sep 18 – Oct 18', windowDays: 31, promptCount: 823, priorityCount: 10, openAskCount: 26 }
-
-export interface PastPeriod {
-  id: string
-  label: string
-  promptCount: number
-  headline: string
-  priorities: { title: string; product: string; timesAsked: number; quote: { at: string; quote: string } }[]
-}
+/** The current owner-goals run (the Refresh button shows its time and machine from SAMPLE_RUNS.goals). */
+export const SAMPLE_CURRENT_PERIOD: CurrentPeriod = { label: 'Sep 18 – Oct 18', windowDays: 31, promptCount: 823 }
 
 /** Saved past months (owner-goals/<start>), newest first. Their asks are archived with the month. */
-export const PAST_PERIODS: PastPeriod[] = [
+export const SAMPLE_PAST_PERIODS: PastPeriod[] = [
   { id: '2026-08-18', label: 'Aug 18 – Sep 17', promptCount: 541,
     headline: 'You kept the plugin shipping, finished the paid plan and held running costs down.',
     priorities: [
@@ -228,11 +204,3 @@ export const PAST_PERIODS: PastPeriod[] = [
       { title: 'Root-cause minimal fixes; revert overengineering', product: 'Agent behavior', timesAsked: 3, quote: { at: '04-16 14:25', quote: 'fix the root cause and keep the change small' } },
     ] },
 ]
-
-const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
-/** Prompt headers are `MM-DD HH:MM`; show them as "Oct 18, 22:11" (exact minute kept, no invented timezone). */
-export const formatPromptTime = (at: string) => `${MONTHS[Number(at.slice(0, 2)) - 1]} ${Number(at.slice(3, 5))}, ${at.slice(6)}`
-export const formatPromptDay = (at: string) => `${MONTHS[Number(at.slice(0, 2)) - 1]} ${Number(at.slice(3, 5))}`
-/** Day-of-year-ish key so an ask's latest prompt can be compared with a ship date like "Oct 15". */
-export const promptDayKey = (at: string) => Number(at.slice(0, 2)) * 100 + Number(at.slice(3, 5))
-export const shipDayKey = (day: string) => (MONTHS.indexOf(day.slice(0, 3)) + 1) * 100 + Number(day.slice(4))

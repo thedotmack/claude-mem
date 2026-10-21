@@ -5,16 +5,24 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Progress } from '@/components/ui/progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { AgentIcon, NextMove, ProgressMeter, RefreshButton, StateBadge, useWorkspace } from '@/components/bits'
+import { AgentIcon, CopyCommandButton, NextMove, ProgressMeter, RefreshButton, SkillLastRun, StateBadge, useWorkspace } from '@/components/bits'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { deviceById, isSampleHref, SAMPLE_RUNS, type LiveState, type Quote, type Request } from '@/data'
-import { allRequests, CURRENT_PERIOD, formatPromptDay, formatPromptTime, OPEN_ASKS, PAST_PERIODS, PRIORITIES, promptDayKey, requestById, shipDayKey, type GoalItem } from '@/data-goals'
+import { isSampleHref, SAMPLE_RUNS, useWorkModel, type GoalItem, type LiveState, type Quote, type Request } from '@/data'
+import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 
 const PRODUCT_ICON = { PR: GitPullRequestIcon, Commit: GitPullRequestIcon, Page: FileTextIcon, Deck: PresentationIcon }
 const TOP_COUNT = 5
 const goalAnchor = (goalId: string) => `goal-${goalId}`
 const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
+const OWNER_GOALS_COMMAND = '/claude-mem:owner-goals'
+
+/** Every request a goal can link to: the active model's requests (plus, in sample mode only, older fixture requests). */
+function useGoalRequests(): Request[] {
+  const { requests, goalOnlyRequests } = useWorkModel()
+  return [...requests, ...goalOnlyRequests.filter((older) => !requests.some((request) => request.id === older.id))]
+}
 
 /** Where a goal stands, from the requests serving it. The dot uses the same state tokens as My Work; the text stays plain. */
 type GoalStatus = 'nothing' | 'your-move' | 'moving' | 'asked-again' | 'shipped' | 'stalled'
@@ -27,10 +35,10 @@ const GOAL_STATUS: Record<GoalStatus, { label: string; dot: string; text: string
   stalled: { label: 'Stalled', dot: 'bg-idle-foreground', text: 'text-muted-foreground', meter: '[&_[data-slot=progress-indicator]]:bg-idle-foreground/75' },
 }
 
-/** Requests are read from data.ts by id at render time, so a request's state here always matches My Work. */
-const servingRequests = (goal: GoalItem): Request[] => goal.servedBy
-  ? goal.servedBy.map(requestById).filter((request): request is Request => Boolean(request))
-  : allRequests().filter((request) => request.goalId === goal.id)
+/** Requests come from the active model, so a request's state here always matches My Work. An id the model lacks links to nothing. */
+const servingRequests = (goal: GoalItem, goalRequests: Request[]): Request[] => goal.servedBy
+  ? goal.servedBy.map((id) => goalRequests.find((request) => request.id === id)).filter((request): request is Request => Boolean(request))
+  : goalRequests.filter((request) => request.goalId === goal.id)
 const lastShip = (requests: Request[]) => requests.map((request) => request.progress.completedAt).filter(Boolean).sort((a, b) => shipDayKey(b!) - shipDayKey(a!))[0]
 /** You asked for it again after the latest ship: what shipped didn't cover it. */
 const askedAgainAfter = (goal: GoalItem, requests: Request[]) => {
@@ -173,7 +181,7 @@ function WorkProduct({ requests }: { requests: Request[] }) {
 
 /** A priority: one summary row, then on open the requests serving it, what came out, and the quotes behind a disclosure (§3). */
 function PriorityItem({ goal, highlighted, onOpen }: { goal: GoalItem; highlighted: boolean; onOpen: (request: Request) => void }) {
-  const requests = servingRequests(goal)
+  const requests = servingRequests(goal, useGoalRequests())
   const status = statusOf(goal, requests)
   const shippedBefore = askedAgainAfter(goal, requests)
   return (
@@ -219,7 +227,7 @@ function PriorityItem({ goal, highlighted, onOpen }: { goal: GoalItem; highlight
 
 /** An open ask: one line, its count, the requests answering it (if any), quotes on demand. */
 function AskRow({ ask, highlighted, onOpen }: { ask: GoalItem; highlighted: boolean; onOpen: (request: Request) => void }) {
-  const requests = servingRequests(ask)
+  const requests = servingRequests(ask, useGoalRequests())
   const shippedBefore = askedAgainAfter(ask, requests)
   return (
     <Req ids={['R3.8']}>
@@ -242,16 +250,17 @@ function AskRow({ ask, highlighted, onOpen }: { ask: GoalItem; highlighted: bool
 }
 
 function OpenAsks({ highlighted, onOpen }: { highlighted: string | null; onOpen: (request: Request) => void }) {
-  const unserved = OPEN_ASKS.filter((ask) => !ask.servedBy?.length)
-  const served = OPEN_ASKS.filter((ask) => ask.servedBy?.length)
-  const repeated = OPEN_ASKS.filter((ask) => ask.timesAsked > 1).length
+  const { openAsks } = useWorkModel()
+  const unserved = openAsks.filter((ask) => !ask.servedBy?.length)
+  const served = openAsks.filter((ask) => ask.servedBy?.length)
+  const repeated = openAsks.filter((ask) => ask.timesAsked > 1).length
   return (
     <Req ids={['R3.8', 'R6.3', 'R5.8']}>
       <section id="open-asks" className="scroll-mt-24 space-y-4 rounded-xl border bg-card p-4">
         <div className="space-y-0.5">
           <h2 className="text-base font-semibold">Open asks</h2>
           <Req ids={['R12.2']}>
-            <p className="text-xs text-muted-foreground">{repeated} of {OPEN_ASKS.length} came up more than once. Repetition shows what keeps coming back, not what’s finished.</p>
+            <p className="text-xs text-muted-foreground">{repeated} of {openAsks.length} came up more than once. Repetition shows what keeps coming back, not what’s finished.</p>
           </Req>
         </div>
 
@@ -276,7 +285,7 @@ function OpenAsks({ highlighted, onOpen }: { highlighted: string | null; onOpen:
 
 /** Work happening outside what you said you want (decision 1). */
 function NoGoal({ onOpen }: { onOpen: (request: Request) => void }) {
-  const unlinked = allRequests().filter((request) => request.goalId === null)
+  const unlinked = useGoalRequests().filter((request) => request.goalId === null)
   return (
     <Req ids={['D1']}>
       <section id="no-goal" className="scroll-mt-24 space-y-2">
@@ -296,12 +305,13 @@ const STATE_DOT: Record<LiveState, string> = { 'your-move': 'bg-attention-foregr
 
 /** Every request this month by state, as one quiet line: color only on the dot that encodes the state. */
 function RequestStateLine({ className }: { className?: string }) {
+  const goalRequests = useGoalRequests()
   return (
     <Req ids={['R7.1', 'R6.2']} className={className}>
       <p className={cn('flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground', className)}>
-        <span>{allRequests().length} requests:</span>
+        <span>{goalRequests.length} requests:</span>
         {STATE_ORDER.map((state) => {
-          const total = allRequests().filter((request) => request.state === state).length
+          const total = goalRequests.filter((request) => request.state === state).length
           return total ? (
             <span key={state} className="inline-flex items-center gap-1 whitespace-nowrap">
               <span className={cn('size-1.5 rounded-full', STATE_DOT[state])} /><span className="font-medium text-foreground tabular-nums">{total}</span> {STATE_SHORT[state]}
@@ -315,11 +325,13 @@ function RequestStateLine({ className }: { className?: string }) {
 
 /** The bottom line first: is your work moving what you want (§12)? Computed from the sample, never typed in. */
 function Lead() {
-  const top = PRIORITIES.slice(0, TOP_COUNT).map((goal) => statusOf(goal, servingRequests(goal)))
+  const { priorities, openAsks } = useWorkModel()
+  const goalRequests = useGoalRequests()
+  const top = priorities.slice(0, TOP_COUNT).map((goal) => statusOf(goal, servingRequests(goal, goalRequests)))
   const count = (status: GoalStatus) => top.filter((entry) => entry === status).length
-  const unserved = OPEN_ASKS.filter((ask) => !ask.servedBy?.length)
+  const unserved = openAsks.filter((ask) => !ask.servedBy?.length)
   const mostAsked = [...unserved].sort((a, b) => b.timesAsked - a.timesAsked)[0]
-  const noGoal = allRequests().filter((request) => request.goalId === null).length
+  const noGoal = goalRequests.filter((request) => request.goalId === null).length
   const jump = (id: string) => document.getElementById(id)?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' })
   return (
     <Req ids={['R12.3', 'R12.2', 'R3.9']}>
@@ -328,7 +340,7 @@ function Lead() {
           Your work is moving {count('moving')} of your top {TOP_COUNT} priorities. {count('your-move')} is waiting on you, and {count('nothing')} has nothing working on it.
         </p>
         <p className="hidden text-sm text-muted-foreground lg:block">
-          {unserved.length} open asks have no request yet. The one you’ve asked for most is “{mostAsked.title}”, {mostAsked.timesAsked} times.
+          {unserved.length} open asks have no request yet.{mostAsked && <> The one you’ve asked for most is “{mostAsked.title}”, {mostAsked.timesAsked} times.</>}
         </p>
         <RequestStateLine className="hidden sm:flex" />
         <Req ids={['R11.1', 'R6.3', 'D1']} className="lg:hidden">
@@ -345,13 +357,15 @@ function Lead() {
 /** Which machine mapped this and when; on the web, a Refresh is queued for a machine that has the transcripts (§13, §14). */
 function RunSource() {
   const { mode } = useWorkspace()
-  const run = SAMPLE_RUNS.goals
-  const device = deviceById(run.deviceId)
+  const { lastRuns, currentPeriod } = useWorkModel()
+  const run = lastRuns.goals
+  if (!run || !currentPeriod) throw new Error('RunSource needs a goals run')
+  const device = { name: run.deviceName }
   return (
     <Req ids={['R13.1', 'R13.8', 'R14.11', 'R14.10']}>
       <p className="text-xs text-muted-foreground">
         <span className="sm:hidden">Mapped {run.lastRunAt.toLowerCase()} on {device.name} · </span>
-        {CURRENT_PERIOD.promptCount} prompts you typed in the last {CURRENT_PERIOD.windowDays} days.{' '}
+        {currentPeriod.promptCount} prompts you typed in the last {currentPeriod.windowDays} days.{' '}
         <span className="hidden sm:inline">
           {mode === 'home'
             ? 'Mapped on this machine from your local transcripts.'
@@ -366,6 +380,7 @@ function RunSource() {
 interface FocusState { openGoals: string[]; setOpenGoals: (open: string[]) => void; moreOpen: boolean; setMoreOpen: (open: boolean) => void; highlighted: string | null }
 
 function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus: FocusState }) {
+  const { priorities } = useWorkModel()
   return (
     <div className="space-y-6">
       <Lead />
@@ -380,17 +395,17 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
               </div>
               <div className="overflow-hidden rounded-xl border bg-card">
                 <Accordion type="multiple" value={focus.openGoals} onValueChange={focus.setOpenGoals}>
-                  {PRIORITIES.slice(0, TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
+                  {priorities.slice(0, TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
                 </Accordion>
               </div>
               <Collapsible open={focus.moreOpen} onOpenChange={focus.setMoreOpen}>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
-                  <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />{PRIORITIES.length - TOP_COUNT} more priorities
+                  <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />{priorities.length - TOP_COUNT} more priorities
                 </CollapsibleTrigger>
                 <CollapsibleContent>
                   <div className="overflow-hidden rounded-xl border bg-card">
                     <Accordion type="multiple" value={focus.openGoals} onValueChange={focus.setOpenGoals}>
-                      {PRIORITIES.slice(TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
+                      {priorities.slice(TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
                     </Accordion>
                   </div>
                 </CollapsibleContent>
@@ -408,6 +423,8 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
 
 /** Month by month: a history of what you asked for, one row per saved run (§4). Archived is not the same as done. */
 function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
+  const { priorities, currentPeriod, pastPeriods } = useWorkModel()
+  if (!currentPeriod) throw new Error('MonthByMonth needs a goals run')
   return (
     <Req ids={['R4.5', 'R12.1']}>
       <div className="space-y-3">
@@ -421,19 +438,19 @@ function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
           </div>
           <button type="button" onClick={onOpenCurrent} className="grid min-h-16 w-full grid-cols-[minmax(0,1fr)_1rem] items-center gap-3 border-b px-4 py-3 text-left hover:bg-surface-cool sm:grid-cols-[12rem_minmax(0,1fr)_7rem_1rem]">
             <span className="contents max-sm:flex max-sm:min-w-0 max-sm:flex-col max-sm:gap-0.5">
-              <span className="text-sm font-semibold whitespace-nowrap">{CURRENT_PERIOD.label} <span className="ml-1 text-xs font-medium text-muted-foreground">Current</span></span>
-              <span className="line-clamp-2 text-sm sm:truncate">{PRIORITIES[0].title}</span>
-              <span className="text-xs text-muted-foreground sm:text-right sm:text-sm">{CURRENT_PERIOD.promptCount}<span className="sm:hidden"> prompts · open this month</span></span>
+              <span className="text-sm font-semibold whitespace-nowrap">{currentPeriod.label} <span className="ml-1 text-xs font-medium text-muted-foreground">Current</span></span>
+              <span className="line-clamp-2 text-sm sm:truncate">{priorities[0]?.title ?? 'No priorities recorded'}</span>
+              <span className="text-xs text-muted-foreground sm:text-right sm:text-sm">{currentPeriod.promptCount}<span className="sm:hidden"> prompts · open this month</span></span>
             </span>
             <ChevronRightIcon className="size-4 text-muted-foreground" />
           </button>
           <Accordion type="single" collapsible>
-            {PAST_PERIODS.map((period) => (
+            {pastPeriods.map((period) => (
               <AccordionItem key={period.id} value={period.id} className="px-4">
                 <AccordionTrigger className="min-h-16 items-center gap-3 py-3 hover:no-underline">
                   <span className="flex min-w-0 flex-1 flex-col gap-0.5 sm:grid sm:grid-cols-[12rem_minmax(0,1fr)_7rem] sm:items-center sm:gap-3">
                     <span className="text-sm font-semibold whitespace-nowrap">{period.label} <span className="ml-1 text-xs font-normal text-muted-foreground">Archived</span></span>
-                    <span className="line-clamp-2 text-sm font-normal sm:truncate">{period.priorities[0].title}</span>
+                    <span className="line-clamp-2 text-sm font-normal sm:truncate">{period.priorities[0]?.title ?? 'No priorities saved'}</span>
                     <span className="text-xs font-normal text-muted-foreground sm:text-right sm:text-sm">{period.promptCount}<span className="sm:hidden"> prompts · {period.priorities.length} priorities</span></span>
                   </span>
                 </AccordionTrigger>
@@ -445,7 +462,7 @@ function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
                         <span className="flex size-6 items-center justify-center rounded-md bg-muted text-xs text-muted-foreground tabular-nums">{index + 1}</span>
                         <p className="text-sm font-medium">{priority.title}</p>
                         <p className="col-start-2 text-xs text-muted-foreground">{priority.product} · {timesLabel(priority.timesAsked)}</p>
-                        <div className="col-start-2"><Quotes quotes={[priority.quote]} /></div>
+                        {priority.quote && <div className="col-start-2"><Quotes quotes={[priority.quote]} /></div>}
                       </li>
                     ))}
                   </ol>
@@ -460,8 +477,6 @@ function MonthByMonth({ onOpenCurrent }: { onOpenCurrent: () => void }) {
   )
 }
 
-const KNOWN_GOAL_IDS = new Set([...PRIORITIES, ...OPEN_ASKS].map((goal) => goal.id))
-const isHiddenPriority = (goalId: string) => PRIORITIES.findIndex((goal) => goal.id === goalId) >= TOP_COUNT
 /** Deep link fallback: `?goal=<id>` opens that goal when the shell doesn't pass focusGoalId. */
 const goalFromUrl = () => new URLSearchParams(window.location.search).get('goal') ?? undefined
 
@@ -470,25 +485,57 @@ const goalFromUrl = () => new URLSearchParams(window.location.search).get('goal'
  * Smooth scrolling and the fade are skipped under prefers-reduced-motion.
  */
 export function MyGoals({ onOpen, focusGoalId }: { onOpen: (request: Request) => void; focusGoalId?: string }) {
+  const { currentPeriod, goalsReadError } = useWorkModel()
+  if (!currentPeriod) return <NoGoalsYet readError={goalsReadError} />
+  return <GoalsForPeriod onOpen={onOpen} focusGoalId={focusGoalId} />
+}
+
+/** No owner-goals run on this computer yet, or one that couldn't be read: say so, and hand over the command that makes one. */
+function NoGoalsYet({ readError }: { readError: string | null }) {
+  return (
+    <Req ids={['R12.1', 'R3.8']}>
+      <Empty className="border bg-card/60">
+        <EmptyHeader>
+          <EmptyTitle>{readError ? 'Can’t read your goals right now' : 'No goals yet'}</EmptyTitle>
+          <EmptyDescription>
+            {readError ? <>{readError}. Run the owner-goals skill in Claude Code again to rewrite them.</> : <>No goals yet. Run the owner-goals skill in Claude Code to read your recent prompts.</>}
+          </EmptyDescription>
+        </EmptyHeader>
+        <EmptyContent>
+          <div className="flex items-center gap-2">
+            <code className="rounded-md border bg-muted px-2 py-1 font-mono text-sm">{OWNER_GOALS_COMMAND}</code>
+            <CopyCommandButton command={OWNER_GOALS_COMMAND} />
+          </div>
+        </EmptyContent>
+      </Empty>
+    </Req>
+  )
+}
+
+function GoalsForPeriod({ onOpen, focusGoalId }: { onOpen: (request: Request) => void; focusGoalId?: string }) {
+  const { sourceKind, priorities, openAsks, currentPeriod, lastRuns } = useWorkModel()
+  const knownGoalIds = new Set([...priorities, ...openAsks].map((goal) => goal.id))
+  const isHiddenPriority = (goalId: string) => priorities.findIndex((goal) => goal.id === goalId) >= TOP_COUNT
   const [urlGoal] = useState(goalFromUrl)
   const focusId = focusGoalId ?? urlGoal
-  const target = focusId && KNOWN_GOAL_IDS.has(focusId) ? focusId : undefined
+  const target = focusId && knownGoalIds.has(focusId) ? focusId : undefined
+  const targetIsHiddenPriority = Boolean(target && isHiddenPriority(target))
   const [tab, setTab] = useState<'now' | 'months'>('now')
-  const [openGoals, setOpenGoals] = useState<string[]>(() => [PRIORITIES[0].id, ...(target && target !== PRIORITIES[0].id ? [target] : [])])
-  const [moreOpen, setMoreOpen] = useState(() => Boolean(target && isHiddenPriority(target)))
+  const [openGoals, setOpenGoals] = useState<string[]>(() => [...(priorities[0] ? [priorities[0].id] : []), ...(target && target !== priorities[0]?.id ? [target] : [])])
+  const [moreOpen, setMoreOpen] = useState(targetIsHiddenPriority)
   const [highlighted, setHighlighted] = useState<string | null>(null)
 
   useEffect(() => {
     if (!target) return
     setTab('now')
     setOpenGoals((open) => open.includes(target) ? open : [...open, target])
-    if (isHiddenPriority(target)) setMoreOpen(true)
+    if (targetIsHiddenPriority) setMoreOpen(true)
     setHighlighted(target)
     // Wait one tick so the tab, the "more" disclosure and the accordion have rendered before scrolling.
     const scroll = setTimeout(() => document.getElementById(goalAnchor(target))?.scrollIntoView({ behavior: prefersReducedMotion() ? 'auto' : 'smooth', block: 'start' }), 60)
     const fade = setTimeout(() => setHighlighted(null), 2200)
     return () => { clearTimeout(scroll); clearTimeout(fade) }
-  }, [target])
+  }, [target, targetIsHiddenPriority])
 
   return (
     <Req ids={['R3.7', 'R4.5', 'R10.2']}>
@@ -496,10 +543,10 @@ export function MyGoals({ onOpen, focusGoalId }: { onOpen: (request: Request) =>
         <div className="space-y-2">
           <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
             <TabsList variant="line" className="p-0 group-data-horizontal/tabs:h-11">
-              <TabsTrigger value="now" className="h-11 px-3">This month<span className="hidden sm:inline">· {CURRENT_PERIOD.label}</span></TabsTrigger>
+              <TabsTrigger value="now" className="h-11 px-3">This month<span className="hidden sm:inline">· {currentPeriod!.label}</span></TabsTrigger>
               <TabsTrigger value="months" className="h-11 px-3">Month by month</TabsTrigger>
             </TabsList>
-            <RefreshButton run={SAMPLE_RUNS.goals} ids={['R3.8']} />
+            {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R3.8']} /> : <SkillLastRun run={lastRuns.goals!} command={OWNER_GOALS_COMMAND} ids={['R3.8']} />}
           </div>
           <RunSource />
         </div>

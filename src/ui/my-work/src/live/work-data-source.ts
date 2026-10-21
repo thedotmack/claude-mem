@@ -1,7 +1,7 @@
 // The one boundary between the screens and where work comes from (plan: "The adapter decision").
 // Screens consume a WorkModel and never see API shapes. Implementations: sampleSource (fixtures) and
 // localSource (the worker at localhost:37777); cloudSource (cmem.ai) comes later.
-import type { Agent, Device, Request } from '../data.ts'
+import type { Agent, CurrentPeriod, Device, GoalItem, PastPeriod, Request, SkillRun } from '../data.ts'
 import type { ConnectionStatus } from './connection-status.ts'
 import type { ReviewResult } from './review-response.ts'
 
@@ -19,6 +19,20 @@ export interface WorkModel {
   /** Who asked, for the Team board. Solo mode: only you. */
   people: string[]
   unlinkedWorkCount: number
+  /** The owner-goals run, as recorded; never re-ranked or re-counted here. */
+  priorities: GoalItem[]
+  openAsks: GoalItem[]
+  /** Null when owner-goals has not run (or could not be read: see goalsReadError). */
+  currentPeriod: CurrentPeriod | null
+  pastPeriods: PastPeriod[]
+  /** Why the recorded goals could not be read. My Goals says so instead of showing anything made up. */
+  goalsReadError: string | null
+  /**
+   * Sample fixtures only: older requests that serve goals but are not in today's inbox. Live sources leave it
+   * empty, since every recorded request is already in `requests`.
+   */
+  goalOnlyRequests: Request[]
+  lastRuns: { goals: SkillRun | null }
   /** The backend's own health. `connected: false` means it answered but could not read saved work. */
   sourceHealth: { connected: boolean; error: string | null }
   /** The live feed's health (getConnectionStatus). Only SSE messages renew "live"; an HTTP read never does. */

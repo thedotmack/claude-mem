@@ -1,10 +1,10 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type Agent, type AgentTool, type Device, type Request } from '../data.ts'
+import { assertConsistentRequest, type Agent, type AgentTool, type CurrentPeriod, type Device, type Goal, type GoalItem, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
-import type { WorkViewAgent, WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
+import type { WorkViewAgent, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
@@ -153,6 +153,109 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   })
 }
 
+// ---- My Goals: the owner-goals run, as recorded (plan Phase 7). Ranks and times-asked come from the run; nothing is recounted here.
+const GOAL_KIND: Record<WorkViewGoalItem['kind'], Goal['kind']> = { priority: 'Priority', 'open-ask': 'Open ask' }
+const OWNER_GOALS_SKILL = 'owner-goals'
+const RECORDED_PROMPT_TIME = /^\d{4}-(\d{2}-\d{2})(?: (\d{2}:\d{2}))?$/
+const RECORDED_DAY = /^(\d{4})-(\d{2})-(\d{2})$/
+const MONTH_LABELS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+/** `YYYY-MM-DD HH:MM` → the `MM-DD HH:MM` stamp goals use; a bare day → `MM-DD`; nothing recorded → ''. */
+function toGoalPromptStamp(recordedAt: string | null, whatIsDated: string): string {
+  if (recordedAt === null || recordedAt === '') return ''
+  const match = RECORDED_PROMPT_TIME.exec(recordedAt)
+  if (!match) throw new Error(`${whatIsDated} has an unreadable time: ${recordedAt}`)
+  return match[2] ? `${match[1]} ${match[2]}` : match[1]
+}
+
+function requireRecordedCount(value: number | null | undefined, whatIsCounted: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${whatIsCounted} is not recorded`)
+  return value
+}
+
+export function toGoalItem(item: WorkViewGoalItem): GoalItem {
+  const kind = GOAL_KIND[item.kind]
+  if (!kind) throw new Error(`Goal "${item.title}" has an unknown kind: ${item.kind}`)
+  return {
+    id: item.id,
+    kind,
+    rank: requireRecordedCount(item.rank, `The rank of goal "${item.title}"`),
+    title: item.title,
+    product: item.product ?? 'Product not recorded',
+    latestAt: toGoalPromptStamp(item.latestAt, `Goal "${item.title}"`),
+    timesAsked: requireRecordedCount(item.timesAsked, `How often goal "${item.title}" was asked`),
+    quotes: item.evidence.map((evidence) => ({ at: toGoalPromptStamp(evidence.at, `A quote under goal "${item.title}"`), quote: evidence.quote })),
+  }
+}
+
+/** "Aug 18 – Sep 17" from an exclusive end day; the year is added when the month is not in `currentYear`. */
+function periodLabel(periodStart: string, periodEndExclusive: string | null, currentYear: number): string {
+  const start = RECORDED_DAY.exec(periodStart)
+  if (!start) throw new Error(`A saved goals month has an unreadable start day: ${periodStart}`)
+  const startText = `${MONTH_LABELS[Number(start[2]) - 1]} ${Number(start[3])}`
+  if (!periodEndExclusive) return Number(start[1]) === currentYear ? `From ${startText}` : `From ${startText}, ${start[1]}`
+  if (!RECORDED_DAY.test(periodEndExclusive)) throw new Error(`A saved goals month has an unreadable end day: ${periodEndExclusive}`)
+  const lastDay = new Date(`${periodEndExclusive}T12:00:00Z`)
+  lastDay.setUTCDate(lastDay.getUTCDate() - 1)
+  const endText = `${MONTH_LABELS[lastDay.getUTCMonth()]} ${lastDay.getUTCDate()}`
+  const startYear = Number(start[1])
+  const endYear = lastDay.getUTCFullYear()
+  if (startYear === currentYear && endYear === currentYear) return `${startText} – ${endText}`
+  return startYear === endYear ? `${startText} – ${endText}, ${endYear}` : `${startText}, ${startYear} – ${endText}, ${endYear}`
+}
+
+function toPastPeriod(list: WorkViewGoalList, currentYear: number): PastPeriod {
+  const periodStart = list.periodStart ?? list.listName
+  return {
+    id: list.listName,
+    label: periodLabel(periodStart, list.periodEnd, currentYear),
+    promptCount: requireRecordedCount(list.sourcePromptCount, `The prompt count for ${list.listName}`),
+    headline: list.summary ?? 'No summary recorded for this month.',
+    priorities: list.priorities.map(toGoalItem).map((goal) => ({ title: goal.title, product: goal.product, timesAsked: goal.timesAsked, quote: goal.quotes[0] ?? null })),
+  }
+}
+
+/** "Oct 18": the day as the run wrote it (its own timezone), not converted to the viewer's. */
+function recordedDayLabel(generatedAt: string): string {
+  const day = RECORDED_DAY.exec(generatedAt.slice(0, 10))
+  if (!day) throw new Error(`The ${OWNER_GOALS_SKILL} run has no readable day in generated_at (${generatedAt})`)
+  return `${MONTH_LABELS[Number(day[2]) - 1]} ${Number(day[3])}`
+}
+
+function generatedAtEpoch(list: WorkViewGoalList): number {
+  const epoch = Date.parse(list.generatedAt ?? '')
+  if (!Number.isFinite(epoch)) throw new Error(`The ${OWNER_GOALS_SKILL} run has no readable generated_at (${list.generatedAt ?? 'missing'})`)
+  return epoch
+}
+
+type MappedGoals = Pick<MappedWorkModel, 'priorities' | 'openAsks' | 'currentPeriod' | 'pastPeriods' | 'goalsReadError'> & { lastRuns: { goals: SkillRun | null } }
+const NO_GOALS: MappedGoals = { priorities: [], openAsks: [], currentPeriod: null, pastPeriods: [], goalsReadError: null, lastRuns: { goals: null } }
+
+/** The owner-goals run → My Goals. A run that can't be read leaves My Goals empty with the reason, and My Work unaffected. */
+export function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHistory: WorkViewGoalList[] | undefined): MappedGoals {
+  if (!goals) return NO_GOALS
+  try {
+    const generatedAt = generatedAtEpoch(goals)
+    const windowDays = requireRecordedCount(goals.windowDays, `The ${OWNER_GOALS_SKILL} window`)
+    const generatedYear = new Date(generatedAt).getFullYear()
+    const currentPeriod: CurrentPeriod = {
+      label: goals.periodStart ? periodLabel(goals.periodStart, goals.periodEnd, generatedYear) : `${windowDays} days to ${recordedDayLabel(goals.generatedAt!)}`,
+      windowDays,
+      promptCount: requireRecordedCount(goals.sourcePromptCount, `The ${OWNER_GOALS_SKILL} prompt count`),
+    }
+    return {
+      priorities: goals.priorities.map(toGoalItem),
+      openAsks: goals.openAsks.map(toGoalItem),
+      currentPeriod,
+      pastPeriods: (goalHistory ?? []).map((list) => toPastPeriod(list, generatedYear)),
+      goalsReadError: null,
+      lastRuns: { goals: { label: OWNER_GOALS_SKILL, lastRunAt: formatDateTime(generatedAt), deviceName: THIS_COMPUTER.name.toLowerCase() } },
+    }
+  } catch (error) {
+    return { ...NO_GOALS, goalsReadError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWorkModel {
   if (!Array.isArray(snapshot?.humanRequests) || typeof snapshot.source?.connected !== 'boolean') {
     throw new Error('The work view has no humanRequests list or no source health')
@@ -182,5 +285,7 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     people: [...new Set(requests.map((request) => request.askedBy))],
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
+    ...toGoalsModel(snapshot.goals, snapshot.goalHistory),
+    goalOnlyRequests: [],
   }
 }
