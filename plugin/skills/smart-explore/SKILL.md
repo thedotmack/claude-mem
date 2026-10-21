@@ -165,23 +165,13 @@ Smart-explore uses **tree-sitter AST parsing** for structural analysis. Unsuppor
 
 Files with unrecognized extensions are parsed as plain text — `smart_search` still works (grep-style), but `smart_outline` and `smart_unfold` will not extract structured symbols.
 
-### Custom Grammars (`.claude-mem.json`)
+### Additional languages
 
-You can register additional tree-sitter grammars for file types not in the bundled list. Create or update `.claude-mem.json` in your project root:
-
-```json
-{
-  "grammars": {
-    "solidity": {
-      "package": "tree-sitter-solidity",
-      "extensions": [".sol"],
-      "query": "solidity-query.scm"
-    }
-  }
-}
-```
-
-Each key is a language name. `package` is the npm package of the tree-sitter grammar and `extensions` lists the file extensions it covers; the package must be installed in the project's `node_modules` (`npm install tree-sitter-solidity`). `query` (optional) is a path, relative to the config file, to a tree-sitter query whose captures (`@func`, `@cls`, `@method`, `@iface`, `@enm`, `@struct_def`, `@imp`) extract symbols. Without `query`, a minimal generic pattern is used — it only matches grammars that define `function_declaration`/`class_declaration` node types, and query compilation fails silently (0 symbols) for grammars that lack them, so a custom query is effectively required for most languages. Once registered, `smart_outline` and `smart_unfold` parse those extensions structurally instead of falling back to plain text.
+Custom tree-sitter grammars cannot currently be registered through `.claude-mem.json`.
+Installing a grammar in a project's `node_modules` does not enable structural
+parsing for its extensions. Support must be added to the shipped language map,
+grammar packages and symbol queries before `smart_outline` and `smart_unfold`
+can use it. For unsupported extensions, use `smart_search` for text-based search.
 
 ### Markdown Special Support
 
