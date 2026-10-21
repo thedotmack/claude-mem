@@ -146,7 +146,8 @@ Use smart_* tools for code exploration, Read for non-code files. Mix freely.
 
 ## Language Support
 
-Smart-explore uses **tree-sitter AST parsing** for structural analysis. Unsupported file types fall back to text-based search.
+Smart-explore uses **tree-sitter AST parsing** for structural analysis. For file
+contents outside its language support, use a text-search tool such as `rg`.
 
 ### Bundled Languages
 
@@ -163,7 +164,11 @@ Smart-explore uses **tree-sitter AST parsing** for structural analysis. Unsuppor
 | C | `.c`, `.h` |
 | C++ | `.cpp`, `.cc`, `.cxx`, `.hpp`, `.hh` |
 
-Files with unrecognized extensions are parsed as plain text — `smart_search` still works (grep-style), but `smart_outline` and `smart_unfold` will not extract structured symbols.
+Files with unrecognized extensions do not produce structured symbols for
+`smart_outline` or `smart_unfold`. `smart_search` is not a general file-content
+search: its extension filter can exclude unsupported files, and files without
+symbols can match only by path. Use `rg` or another text-search tool to search
+their contents.
 
 ### Additional languages
 
@@ -171,7 +176,7 @@ Custom tree-sitter grammars cannot currently be registered through `.claude-mem.
 Installing a grammar in a project's `node_modules` does not enable structural
 parsing for its extensions. Support must be added to the shipped language map,
 grammar packages and symbol queries before `smart_outline` and `smart_unfold`
-can use it. For unsupported extensions, use `smart_search` for text-based search.
+can use it.
 
 ### Markdown Special Support
 
