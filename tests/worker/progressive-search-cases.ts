@@ -136,7 +136,7 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     const timeoutResult = progressiveSearchToolError(new Error('Request timed out after 30000ms'));
     assert.equal(timeoutResult.isError, true);
     assert.match(timeoutResult.content[0].text, /Request timed out after 30000ms/);
-    assert.match(timeoutResult.content[0].text, /Next: restart mem_search/);
+    assert.match(timeoutResult.content[0].text, /Next: retry dumb_search/);
   });
   await check(async () => {
     const projected = projectMemoryContent({ narrative: 'x'.repeat(40000) });

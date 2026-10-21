@@ -258,7 +258,7 @@ export class SearchRoutes extends BaseRouteHandler {
     try {
       res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, projects)));
     } catch (error) {
-      logger.warn('HTTP', 'Progressive memory search failed', { scope, projects }, error instanceof Error ? error : new Error(String(error)));
+      logger.warn('HTTP', 'Progressive memory search failed', { projects }, error instanceof Error ? error : new Error(String(error)));
       res.json(progressiveSearchToolError(error));
     }
   });
