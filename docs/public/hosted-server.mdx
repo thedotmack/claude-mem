@@ -256,9 +256,11 @@ by keyword: `/v1/search`, `/v1/context` and the MCP `search` and `context`
 tools fuse a keyword ranking with the observations nearest the query's vector,
 so a query finds a memory that shares none of its words. The server embeds
 queries and the generation worker embeds the observations it writes, in-process
-with the model `CLAUDE_MEM_EMBEDDING_MODEL` names; the Docker image includes the
-default one, and another downloads at its first use. Without pgvector, or while
-the model cannot load, search is keyword-only.
+with the model `CLAUDE_MEM_EMBEDDING_MODEL` names. The Docker image includes the
+default one; build it with `--build-arg EMBEDDING_REPO=<repo>`, the model's
+repository in `src/services/vector/models.ts`, to include another, which would
+otherwise download at its first use. Without pgvector, or while the model cannot
+load, search is keyword-only.
 
 | Env var | Effect |
 |---------|--------|
