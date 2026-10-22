@@ -4,6 +4,7 @@ import { useSyncExternalStore } from 'react'
 import type { ConnectionStatus } from './live/connection-status.ts'
 import { freshlyUpdatedRequestIds, shouldHoldWorkModelUpdate, type ReadingSignals } from './live/update-queue.ts'
 import type { ReviewResult } from './live/review-response.ts'
+import type { RuleChange } from './data-rules.ts'
 import type { WorkDataSource, WorkModel } from './live/work-data-source.ts'
 
 export interface Device { id: string; name: string; syncedMinutesAgo: number; online: boolean }
@@ -353,6 +354,20 @@ export async function setRequestChecked(requestId: string, checked: boolean): Pr
   const result = await activeWorkDataSource.setRequestChecked(requestId, request.contentFingerprint ?? '', checked)
   if ('model' in result) applyWorkModel(result.model)
   return result
+}
+
+/** Saves one change to My Rules through the active source and shows the model it answers with. Rejects with the reason. */
+export async function saveRuleChange(change: RuleChange): Promise<WorkModel> {
+  if (!activeWorkDataSource) throw new Error('No data source to save the rule change to')
+  const model = await activeWorkDataSource.saveRuleChange(change)
+  applyWorkModel(model)
+  return model
+}
+
+/** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md through the active source. */
+export async function loadRulesInClaudeCode(): Promise<void> {
+  if (!activeWorkDataSource) throw new Error('No data source to load the rules from')
+  applyWorkModel(await activeWorkDataSource.loadRulesInClaudeCode())
 }
 
 /** The ship estimate only from measured pace: two or more readings, the latest moving forward (decision 3). */

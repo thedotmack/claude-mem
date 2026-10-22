@@ -125,6 +125,37 @@ export interface WorkViewGoalList {
   openAsks: WorkViewGoalItem[]
 }
 
+/** One rule: a story suggestion, laid over by its saved my-rules row, or one the owner wrote. */
+export interface WorkViewRule {
+  ruleId: string
+  scopeId: string
+  scopeTier: 'everywhere' | 'project' | 'situation'
+  scopeName: string
+  /** Empty when the rule is one sentence (learned preferences are). */
+  when: string
+  then: string
+  setBy: 'owner' | 'approved' | 'learned'
+  status: 'on' | 'off' | 'suggested' | 'replaced' | 'dismissed'
+  kind: string
+  source: string
+  timesSeen: number
+  /** ISO time of the latest quote or save; null when not recorded. */
+  latestAt: string | null
+  /** `at` is ISO or null. */
+  quotes: { at: string | null; quote: string; kind: string }[]
+  replacedBy: string | null
+  replacedAt: string | null
+  savedAt: string | null
+}
+
+export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' | 'situation'; name: string }
+
+/** What the last request-progress story found; null when it has not run. */
+export interface WorkViewRulesLearning { preferencesFound: number; newSuggestions: number; reviewsRead: number; writtenAt: string | null }
+
+/** ~/.claude-mem/MY-RULES.md, and whether ~/.claude/CLAUDE.md imports it. */
+export interface WorkViewRulesFile { path: string; approvedCount: number; loadedInClaudeCode: boolean }
+
 export interface WorkViewSnapshot {
   version: number
   generatedAt: string
@@ -137,4 +168,9 @@ export interface WorkViewSnapshot {
   goals?: WorkViewGoalList | null
   /** Saved past months, newest first. */
   goalHistory?: WorkViewGoalList[]
+  /** My Rules. Older workers leave these out. */
+  rules?: WorkViewRule[]
+  ruleScopes?: WorkViewRuleScope[]
+  rulesLearning?: WorkViewRulesLearning | null
+  rulesFile?: WorkViewRulesFile
 }

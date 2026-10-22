@@ -15,7 +15,6 @@ import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { deviceById, SAMPLE_RUNS, startedTimestamp, useWorkModel, type LiveState, type Request } from '@/data'
 import type { RequestReadError } from '@/live/work-data-source'
-import { OWNER_RULES } from '@/data-rules'
 
 type View = 'cards' | 'list' | 'agents' | 'team'
 type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
@@ -109,7 +108,8 @@ function TodayPanel({ requests, onOpenStory }: { requests: Request[]; onOpenStor
 function StorySheet({ open, requests, onClose, onOpenRules }: { open: boolean; requests: Request[]; onClose: () => void; onOpenRules: () => void }) {
   const shipped = requests.filter((request) => request.state === 'shipped').length
   const waiting = requests.filter(needsYou).length
-  const learned = OWNER_RULES.filter((rule) => rule.source === 'request-progress' && (rule.status === 'on' || rule.status === 'suggested')).slice(0, 4)
+  const { rules } = useWorkModel()
+  const learned = rules.filter((rule) => rule.source === 'request-progress' && (rule.status === 'on' || rule.status === 'suggested')).slice(0, 4)
   return (
     <Sheet open={open} onOpenChange={(next) => { if (!next) onClose() }}>
       <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
@@ -130,7 +130,7 @@ function StorySheet({ open, requests, onClose, onOpenRules }: { open: boolean; r
               <ul className="space-y-2">
                 {learned.map((rule) => (
                   <li key={rule.id} className="text-sm">
-                    When {rule.when}: {rule.then}
+                    {rule.when ? <>When {rule.when}: {rule.then}</> : rule.then}
                     {rule.status === 'suggested' && <span className="ml-1.5 text-xs text-muted-foreground">· suggested, not approved yet</span>}
                   </li>
                 ))}

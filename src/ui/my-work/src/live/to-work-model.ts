@@ -4,7 +4,8 @@
 import { assertConsistentRequest, type Agent, type AgentTool, type CurrentPeriod, type Device, type Goal, type GoalItem, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
-import type { WorkViewAgent, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewSnapshot } from './work-view-api-types.ts'
+import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
+import type { WorkViewAgent, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
@@ -228,8 +229,8 @@ function generatedAtEpoch(list: WorkViewGoalList): number {
   return epoch
 }
 
-type MappedGoals = Pick<MappedWorkModel, 'priorities' | 'openAsks' | 'currentPeriod' | 'pastPeriods' | 'goalsReadError'> & { lastRuns: { goals: SkillRun | null } }
-const NO_GOALS: MappedGoals = { priorities: [], openAsks: [], currentPeriod: null, pastPeriods: [], goalsReadError: null, lastRuns: { goals: null } }
+type MappedGoals = Pick<MappedWorkModel, 'priorities' | 'openAsks' | 'currentPeriod' | 'pastPeriods' | 'goalsReadError'> & { goalsRun: SkillRun | null }
+const NO_GOALS: MappedGoals = { priorities: [], openAsks: [], currentPeriod: null, pastPeriods: [], goalsReadError: null, goalsRun: null }
 
 /** The owner-goals run → My Goals. A run that can't be read leaves My Goals empty with the reason, and My Work unaffected. */
 export function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHistory: WorkViewGoalList[] | undefined): MappedGoals {
@@ -249,10 +250,73 @@ export function toGoalsModel(goals: WorkViewGoalList | null | undefined, goalHis
       currentPeriod,
       pastPeriods: (goalHistory ?? []).map((list) => toPastPeriod(list, generatedYear)),
       goalsReadError: null,
-      lastRuns: { goals: { label: OWNER_GOALS_SKILL, lastRunAt: formatDateTime(generatedAt), deviceName: THIS_COMPUTER.name.toLowerCase() } },
+      goalsRun: { label: OWNER_GOALS_SKILL, lastRunAt: formatDateTime(generatedAt), deviceName: THIS_COMPUTER.name.toLowerCase() },
     }
   } catch (error) {
     return { ...NO_GOALS, goalsReadError: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+// ---- My Rules: story suggestions with the owner's saved decisions (plan Phase 8). Nothing is re-scored here.
+const REQUEST_PROGRESS_SKILL = 'request-progress'
+const RULE_SOURCES: Record<string, OwnerRule['source']> = { 'request-progress': 'request-progress', 'owner-goals': 'owner-goals', you: 'you' }
+const QUOTE_KINDS: RuleQuote['kind'][] = ['directive', 'correction', 'praise', 'frustration']
+const DAY_MS = 86_400_000
+
+/** One saved or suggested rule → the OwnerRule My Rules shows. Throws on a value it can't read honestly. */
+export function toOwnerRule(rule: WorkViewRule, now: number): OwnerRule {
+  const source = RULE_SOURCES[rule.source]
+  if (!source) throw new Error(`Rule "${rule.then}" has an unknown source: ${rule.source}`)
+  const latest = Date.parse(rule.latestAt ?? '')
+  const quotes = rule.quotes.map((quote): RuleQuote => {
+    const at = Date.parse(quote.at ?? '')
+    return { at: Number.isFinite(at) ? formatDateTime(at) : 'Time not recorded', quote: quote.quote, kind: QUOTE_KINDS.includes(quote.kind as RuleQuote['kind']) ? quote.kind as RuleQuote['kind'] : 'directive', where: 'prompt' }
+  })
+  const savedAt = Date.parse(rule.savedAt ?? '')
+  const records: RuleRecord[] = [
+    ...quotes.map((quote) => ({ kind: 'Prompt' as const, label: `Your prompt: “${cleanText(quote.quote, 60)}”`, at: quote.at })),
+    ...(source === 'request-progress' ? [{ kind: 'Review' as const, label: 'request-progress · build story', at: Number.isFinite(latest) ? formatDateTime(latest) : 'Time not recorded' }] : []),
+    ...(Number.isFinite(savedAt) ? [{ kind: 'Instructions' as const, label: source === 'you' ? 'Written in My Rules on this computer' : 'Saved in My Rules on this computer', at: formatDateTime(savedAt) }] : []),
+  ]
+  const replacedAt = Date.parse(rule.replacedAt ?? '')
+  return {
+    id: rule.ruleId,
+    scopeId: rule.scopeId,
+    setBy: rule.setBy,
+    when: rule.when,
+    then: rule.then,
+    quotes,
+    timesSeen: rule.timesSeen,
+    latestAt: Number.isFinite(latest) ? formatRecordTime(latest, now) : 'not recorded',
+    // Only orders rules by strength; an unrecorded date counts as a year old rather than as recent.
+    latestDaysAgo: Number.isFinite(latest) ? Math.max(0, Math.floor((now - latest) / DAY_MS)) : 365,
+    source,
+    status: rule.status,
+    replacedBy: rule.replacedBy ? { ruleId: rule.replacedBy, at: Number.isFinite(replacedAt) ? formatRecordTime(replacedAt, now) : 'a date not recorded' } : undefined,
+    records,
+  }
+}
+
+type MappedRules = Pick<MappedWorkModel, 'rules' | 'ruleScopes' | 'rulesLearning' | 'rulesFile' | 'rulesReadError'> & { progressRun: SkillRun | null }
+
+/** The saved rules and the build story's suggestions → My Rules. Unreadable rules empty My Rules with the reason. */
+export function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleScopes' | 'rulesLearning' | 'rulesFile'>, now: number): MappedRules {
+  const learning = snapshot.rulesLearning ?? null
+  const writtenAt = Date.parse(learning?.writtenAt ?? '')
+  const progressRun = Number.isFinite(writtenAt) ? { label: REQUEST_PROGRESS_SKILL, lastRunAt: formatDateTime(writtenAt), deviceName: THIS_COMPUTER.name.toLowerCase() } : null
+  const base = {
+    ruleScopes: snapshot.ruleScopes ?? [],
+    rulesLearning: learning ? { preferencesFound: learning.preferencesFound, newSuggestions: learning.newSuggestions, reviewsRead: learning.reviewsRead } : null,
+    rulesFile: snapshot.rulesFile ?? null,
+    progressRun,
+  }
+  try {
+    const rules = (snapshot.rules ?? []).map((rule) => toOwnerRule(rule, now))
+    const missingScope = rules.find((rule) => !base.ruleScopes.some((scope) => scope.id === rule.scopeId))
+    if (missingScope) throw new Error(`Rule "${missingScope.then}" is in a scope the worker did not list: ${missingScope.scopeId}`)
+    return { ...base, rules, rulesReadError: null }
+  } catch (error) {
+    return { ...base, rules: [], rulesReadError: error instanceof Error ? error.message : String(error) }
   }
 }
 
@@ -274,6 +338,8 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
       })
     }
   }
+  const { goalsRun, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
+  const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
   const agents = snapshot.agents.map(toAgent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
   return {
@@ -285,7 +351,9 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     people: [...new Set(requests.map((request) => request.askedBy))],
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
-    ...toGoalsModel(snapshot.goals, snapshot.goalHistory),
+    ...goalsModel,
+    ...rulesModel,
+    lastRuns: { goals: goalsRun, progress: progressRun },
     goalOnlyRequests: [],
   }
 }

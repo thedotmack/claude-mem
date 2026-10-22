@@ -11,6 +11,8 @@ import type { WorkViewSnapshot, WorkViewSource } from './work-view-api-types.ts'
 const WORK_VIEW_URL = '/api/work-view'
 const WORK_VIEW_EVENTS_URL = '/api/work-view/events'
 const WORK_VIEW_REVIEW_URL = '/api/work-view/review'
+const WORK_VIEW_RULES_URL = '/api/work-view/rules'
+const WORK_VIEW_LOAD_RULES_URL = '/api/work-view/rules/load-in-claude-code'
 const CONTENT_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const CONNECTION_TICK_MS = 1000
 const AGING_TICK_MS = 60_000
@@ -30,7 +32,7 @@ const connectionEvidence = {
 let latestSnapshot: WorkViewSnapshot | null = null
 /** The content of the last model handed to the screens, so an unchanged snapshot or a quiet minute is not sent again. */
 let lastDeliveredSignature: string | null = null
-const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.priorities, model.openAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns])
+const modelSignature = (model: MappedWorkModel) => JSON.stringify([model.requests, model.requestReadErrors, model.unlinkedWorkCount, model.sourceHealth, model.priorities, model.openAsks, model.currentPeriod, model.pastPeriods, model.goalsReadError, model.lastRuns, model.rules, model.ruleScopes, model.rulesLearning, model.rulesFile, model.rulesReadError])
 
 const currentConnectionStatus = (): ConnectionStatus =>
   getConnectionStatus({ ...connectionEvidence, now: performance.now(), wallNow: Date.now() })
@@ -56,6 +58,21 @@ function acceptSnapshot(snapshot: WorkViewSnapshot, fromEvent: boolean): WorkMod
 const isWorkViewSnapshot = (value: unknown): value is WorkViewSnapshot => {
   const snapshot = value as WorkViewSnapshot | null
   return !!snapshot && Array.isArray(snapshot.humanRequests) && typeof snapshot.source?.connected === 'boolean'
+}
+
+/** POSTs to an origin-guarded work-view route that answers with the snapshot after the change. Anything else throws its reason. */
+async function postForWorkModel(url: string, body: unknown, whatWasSaved: string): Promise<WorkModel> {
+  const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+  let answer: unknown = null
+  try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
+  if (!response.ok) {
+    const reason = (answer as { error?: unknown } | null)?.error
+    throw new Error(`${whatWasSaved} was not saved: ${typeof reason === 'string' ? reason : `the worker answered ${response.status}`}`)
+  }
+  if (!isWorkViewSnapshot(answer)) throw new Error(`${whatWasSaved} was saved, but the worker sent back something that is not a work snapshot. Reload to see it.`)
+  const model = acceptSnapshot(answer, false)
+  lastDeliveredSignature = modelSignature(model)
+  return model
 }
 
 export const localSource: WorkDataSource = {
@@ -101,6 +118,9 @@ export const localSource: WorkDataSource = {
     lastDeliveredSignature = modelSignature(model)
     return { outcome: 'saved', model }
   },
+
+  saveRuleChange: (change) => postForWorkModel(WORK_VIEW_RULES_URL, change, 'The rule change'),
+  loadRulesInClaudeCode: () => postForWorkModel(WORK_VIEW_LOAD_RULES_URL, {}, 'Loading your rules into Claude Code'),
 
   subscribeToLiveUpdates(onWorkModel, onConnectionChange) {
     const reportConnection = () => onConnectionChange(currentConnectionStatus())

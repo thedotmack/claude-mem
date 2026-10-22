@@ -11,15 +11,22 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { RefreshButton, StateBadge, useWorkspace } from '@/components/bits'
+import { CopyCommandButton, RefreshButton, SkillLastRun, StateBadge, useWorkspace } from '@/components/bits'
+import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { SAMPLE_DEVICES, SAMPLE_RUNS } from '@/data'
-import { OWNER_RULES, RULE_SCOPES, RULE_TIERS, RULES_LEARNING, type OwnerRule, type RuleQuote, type RuleScope } from '@/data-rules'
+import { loadRulesInClaudeCode, SAMPLE_DEVICES, SAMPLE_RUNS, saveRuleChange, useWorkModel } from '@/data'
+import { RULE_TIERS, type OwnerRule, type RuleChange, type RuleQuote, type RuleScope, type RuleTier } from '@/data-rules'
 
 // ---------- Derived facts ----------
 
-const scopeById = (id: string) => RULE_SCOPES.find((scope) => scope.id === id)!
+/** A rule's scope from the loaded scopes. Fails fast: the mapper only lets through rules whose scope is listed. */
+function useRuleScope(scopeId: string): RuleScope {
+  const scope = useWorkModel().ruleScopes.find((entry) => entry.id === scopeId)
+  if (!scope) throw new Error(`No rule scope ${scopeId}`)
+  return scope
+}
+const REQUEST_PROGRESS_COMMAND = '/claude-mem:request-progress'
 const scopeHeading = (scope: RuleScope) => scope.tier === 'project' ? `In ${scope.name}` : scope.name
 
 /** Strength (§14): times seen × how recent. Shown in words, never as a raw score. */
@@ -39,10 +46,16 @@ function RuleSentence({ rule, struck = false, large = false }: { rule: OwnerRule
   return (
     <Req ids={['R14.3', 'R10.5']}>
       <dl className={cn('grid grid-cols-[2.75rem_1fr] gap-x-2 gap-y-0.5', large ? 'text-[15px]' : 'text-sm', struck && 'line-through decoration-idle-foreground/50')}>
-        <dt className="pt-px text-xs font-medium text-muted-foreground">When</dt>
-        <dd className="text-muted-foreground">{rule.when}</dd>
-        <dt className="pt-px text-xs font-medium text-muted-foreground">Then</dt>
-        <dd className="leading-snug font-medium">{lowerFirst(rule.then)}</dd>
+        {rule.when ? <>
+          <dt className="pt-px text-xs font-medium text-muted-foreground">When</dt>
+          <dd className="text-muted-foreground">{rule.when}</dd>
+          <dt className="pt-px text-xs font-medium text-muted-foreground">Then</dt>
+          <dd className="leading-snug font-medium">{lowerFirst(rule.then)}</dd>
+        </> : <>
+          {/* A learned preference is one sentence: no "when" was recorded, and none is made up. */}
+          <dt className="pt-px text-xs font-medium text-muted-foreground">Always</dt>
+          <dd className="leading-snug font-medium">{rule.then}</dd>
+        </>}
       </dl>
     </Req>
   )
@@ -118,11 +131,12 @@ function SourceRecords({ rule }: { rule: OwnerRule }) {
 
 const HERE = SAMPLE_DEVICES.find((device) => device.syncedMinutesAgo === 0)!
 const OTHER_MACHINES = SAMPLE_DEVICES.filter((device) => device.id !== HERE.id).map((device) => device.name).join(' and ')
-const RULES_FILE = '~/.claude-mem/MY-RULES.md'
 /** Says where a change is written and how it reaches the other machines. Never claims more than that. */
-const savedWhere = (mode: 'home' | 'web') => mode === 'web'
-  ? `Saved from the web as a “web” device record. ${SAMPLE_DEVICES.map((device) => device.name).join(', ')} pull it on their next sync and rebuild MY-RULES.md`
-  : `Saved on ${HERE.name}. MY-RULES.md is rebuilt here, and the change syncs to ${OTHER_MACHINES}`
+const savedWhere = (mode: 'home' | 'web', sample: boolean) => !sample
+  ? 'Saved on this computer as a work-state record. MY-RULES.md is rebuilt here, and the record syncs with the rest of your work state'
+  : mode === 'web'
+    ? `Saved from the web as a “web” device record. ${SAMPLE_DEVICES.map((device) => device.name).join(', ')} pull it on their next sync and rebuild MY-RULES.md`
+    : `Saved on ${HERE.name}. MY-RULES.md is rebuilt here, and the change syncs to ${OTHER_MACHINES}`
 
 // ---------- Rule blocks ----------
 
@@ -239,7 +253,7 @@ type Decision = 'approved' | 'rejected'
 
 /** One suggestion: the rule and Approve / Edit / Reject first, then strength and one quote, the rest on demand. */
 function SuggestionCard({ rule, decision, onDecide, onEdit, onUndo, onShow }: { rule: OwnerRule; decision: Decision | undefined; onDecide: (decision: Decision) => void; onEdit: () => void; onUndo: () => void; onShow: () => void }) {
-  const scope = scopeById(rule.scopeId)
+  const scope = useRuleScope(rule.scopeId)
   const approval = (decision ? { id: rule.id, approved: decision === 'approved' } : { id: rule.id }) as ConfirmationProps['approval']
   const [first, ...more] = rule.quotes
   return (
@@ -382,6 +396,7 @@ function chainReaches(rules: OwnerRule[], rule: OwnerRule, targetId: string): bo
 // ---------- Side rail: jump between scopes, the file agents load, where edits go, the last learning run ----------
 
 function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, ScopeCounts>; waiting: number }) {
+  const { ruleScopes } = useWorkModel()
   return (
     <Req ids={['R14.5']}>
       <nav className="space-y-3 text-sm" aria-label="Scopes">
@@ -389,10 +404,10 @@ function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, Scope
           <span className="font-medium">Needs your decision</span>
           {waiting > 0 && <span className="rounded-full bg-attention px-1.5 text-[11px] font-medium text-attention-foreground">{waiting}</span>}
         </button>
-        {RULE_TIERS.map(({ tier, label }) => (
+        {RULE_TIERS.filter(({ tier }) => ruleScopes.some((scope) => scope.tier === tier)).map(({ tier, label }) => (
           <div key={tier} className="space-y-0.5">
             {tier !== 'everywhere' && <p className="px-2 text-xs text-muted-foreground">{label}</p>}
-            {RULE_SCOPES.filter((scope) => scope.tier === tier).map((scope) => {
+            {ruleScopes.filter((scope) => scope.tier === tier).map((scope) => {
               const counts = countsByScope.get(scope.id)!
               return (
                 <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left hover:bg-muted">
@@ -413,11 +428,12 @@ function ScopeNav({ countsByScope, waiting }: { countsByScope: Map<string, Scope
 
 /** Mobile: the same jump list as a sticky, thumb-sized chip row under the app header (§11). */
 function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, ScopeCounts>; waiting: number }) {
+  const { ruleScopes } = useWorkModel()
   return (
     <Req ids={['R14.5', 'R11.1']} className="lg:hidden">
       <nav aria-label="Scopes" className="sticky top-16 z-20 -mx-4 flex gap-2 overflow-x-auto border-b bg-background/95 px-4 py-2 backdrop-blur [scrollbar-width:none] lg:hidden">
         {waiting > 0 && <button type="button" onClick={() => scrollToId('decide')} className="h-11 shrink-0 rounded-full border border-attention-border px-4 text-sm font-medium text-attention-foreground">Decide · {waiting}</button>}
-        {RULE_SCOPES.map((scope) => (
+        {ruleScopes.map((scope) => (
           <button key={scope.id} type="button" onClick={() => scrollToId(`scope-${scope.id}`)} className="h-11 shrink-0 rounded-full border bg-card px-4 text-sm">
             {scope.name} <span className="text-muted-foreground">{countsByScope.get(scope.id)!.on}</span>
           </button>
@@ -427,35 +443,49 @@ function ScopeChips({ countsByScope, waiting }: { countsByScope: Map<string, Sco
   )
 }
 
-/** The rules file as claude-mem would write it: approved rules only, grouped by the §14 hierarchy. */
-function rulesFileLines(rules: OwnerRule[]) {
-  const loaded = rules.filter((rule) => rule.status === 'on')
-  return [{ text: '# My Rules', ruleId: null as string | null }, ...RULE_SCOPES.flatMap((scope) => {
-    const inScope = loaded.filter((rule) => rule.scopeId === scope.id).sort(byStrength)
-    return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${scopeHeading(scope)}`, ruleId: null }, ...inScope.map((rule) => ({ text: `- When ${rule.when}: ${lowerFirst(rule.then)}`, ruleId: rule.id }))] : []
+const SET_BY_ORDER: Record<OwnerRule['setBy'], number> = { owner: 0, approved: 1, learned: 2 }
+
+/** The rules file as claude-mem writes it (my-rules.mjs renderRulesFile): approved rules that are on, by scope, set by you first, then strength. */
+function rulesFileLines(rules: OwnerRule[], scopes: RuleScope[]) {
+  const loaded = rules.filter((rule) => rule.status === 'on' && rule.setBy !== 'learned')
+  return [{ text: '# My Rules', ruleId: null as string | null }, ...scopes.flatMap((scope) => {
+    const inScope = loaded.filter((rule) => rule.scopeId === scope.id).sort((a, b) => SET_BY_ORDER[a.setBy] - SET_BY_ORDER[b.setBy] || byStrength(a, b))
+    return inScope.length ? [{ text: '', ruleId: null }, { text: `## ${scopeHeading(scope)}`, ruleId: null }, ...inScope.map((rule) => ({ text: rule.when ? `- When ${rule.when}: ${lowerFirst(rule.then)}` : `- ${rule.then}`, ruleId: rule.id }))] : []
   })]
 }
 
 /** The Markdown file agents load (decision 7): approved rules only, user-level files only. Changes this session are marked. */
 function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[]; changed: Set<string>; open: boolean; onOpenChange: (open: boolean) => void }) {
   const { mode } = useWorkspace()
-  const loaded = rules.filter((rule) => rule.status === 'on').length
-  const lines = rulesFileLines(rules)
+  const { sourceKind, ruleScopes, rulesFile } = useWorkModel()
+  const [loadError, setLoadError] = useState<string | null>(null)
+  const loaded = rules.filter((rule) => rule.status === 'on' && rule.setBy !== 'learned').length
+  const lines = rulesFileLines(rules, ruleScopes)
+  const path = rulesFile?.path ?? '~/.claude-mem/MY-RULES.md'
+  const load = () => { setLoadError(null); loadRulesInClaudeCode().catch((error: unknown) => setLoadError(error instanceof Error ? error.message : String(error))) }
   return (
     <Req ids={['D7']}>
       <Artifact className="shadow-none">
         <ArtifactHeader className="flex-col items-start gap-2 bg-card">
-          <ArtifactTitle className="flex items-center gap-1.5 font-mono text-xs"><FileTextIcon className="size-3.5" />{RULES_FILE}</ArtifactTitle>
-          <ArtifactDescription className="text-xs">{loaded} rules you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.</ArtifactDescription>
+          <ArtifactTitle className="flex items-center gap-1.5 font-mono text-xs"><FileTextIcon className="size-3.5" />{path}</ArtifactTitle>
+          <ArtifactDescription className="text-xs">{loaded} {loaded === 1 ? 'rule' : 'rules'} you set or approved. claude-mem writes this file and loads it with your user-level instructions, never a project’s files.</ArtifactDescription>
           <Button variant="outline" size="sm" className="h-11 text-xs sm:h-8" onClick={() => onOpenChange(true)}>Preview file{changed.size > 0 && ` · ${changed.size} changed`}</Button>
+          {rulesFile && !rulesFile.loadedInClaudeCode && (
+            <div className="space-y-1.5 border-t pt-2">
+              <Button size="sm" className="h-11 text-xs sm:h-8" onClick={load}>Load my rules into Claude Code</Button>
+              <p className="text-xs text-muted-foreground">Only rules you approved are loaded. Adds one line to ~/.claude/CLAUDE.md.</p>
+              {loadError && <p role="alert" className="text-xs text-attention-foreground">{loadError}</p>}
+            </div>
+          )}
+          {rulesFile?.loadedInClaudeCode && sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">Loaded in Claude Code from ~/.claude/CLAUDE.md.</p>}
         </ArtifactHeader>
       </Artifact>
       <Dialog open={open} onOpenChange={onOpenChange}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle className="font-mono text-sm">{RULES_FILE}</DialogTitle>
+            <DialogTitle className="font-mono text-sm">{path}</DialogTitle>
             <DialogDescription>
-              Rebuilt from the synced rule records, so every machine gets the same file{mode === 'web' ? ' once it pulls your web changes' : ''}. Claude Code imports it from ~/.claude/CLAUDE.md; Codex and Gemini get a marked block in ~/.codex/AGENTS.md and ~/.gemini/GEMINI.md. Suggested rules are not in it until you approve them.
+              Rebuilt from the synced rule records, so every machine gets the same file{mode === 'web' ? ' once it pulls your web changes' : ''}. Claude Code imports it from ~/.claude/CLAUDE.md. Suggested rules are not in it until you approve them.
             </DialogDescription>
           </DialogHeader>
           <pre className="max-h-[60svh] overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-terminal-foreground">
@@ -463,7 +493,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
               <span key={index} className={cn('block', line.ruleId && changed.has(line.ruleId) && 'bg-shipped/30')}>{line.text || ' '}{line.ruleId && changed.has(line.ruleId) && <span className="opacity-60">  ← changed just now</span>}</span>
             ))}
           </pre>
-          <p className="text-xs text-muted-foreground">Wireframe: this preview is built from the page’s sample state; nothing is written to disk.</p>
+          {sourceKind === 'sample' && <p className="text-xs text-muted-foreground">Wireframe: this preview is built from the page’s sample state; nothing is written to disk.</p>}
         </DialogContent>
       </Dialog>
     </Req>
@@ -473,6 +503,17 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
 /** Where an edit is saved from and how fresh every machine is (§13.5, §13.6). */
 function WhereEditsGo() {
   const { mode } = useWorkspace()
+  const { sourceKind } = useWorkModel()
+  if (sourceKind !== 'sample') {
+    return (
+      <Req ids={['R13.7', 'R13.8', 'R13.1']}>
+        <div className="space-y-1.5 text-xs">
+          <p className="font-medium">Your edits save on this computer</p>
+          <p className="text-muted-foreground">Each change is a work-state record, so it syncs like the rest of your work state. MY-RULES.md is rebuilt here after every change.</p>
+        </div>
+      </Req>
+    )
+  }
   return (
     <Req ids={['R13.7', 'R13.8', 'R13.1']}>
       <div className="space-y-1.5 text-xs">
@@ -491,15 +532,18 @@ function WhereEditsGo() {
   )
 }
 
-/** What the last learning run read and found, where it ran, and how Refresh works here (§14). */
+/** What the last learning run (request-progress) read and found, and where it ran (§14). Hidden until it has run. */
 function LearningRun() {
   const { mode } = useWorkspace()
+  const { sourceKind, rulesLearning, lastRuns } = useWorkModel()
+  const run = lastRuns.progress
+  if (!rulesLearning || !run) return null
   return (
     <Req ids={['R14.10', 'R14.13', 'R7.3']}>
       <div className="space-y-1.5 text-xs">
         <p className="flex items-center gap-1.5 font-medium"><SparklesIcon className="size-3.5" />Last learning run</p>
-        <p className="text-muted-foreground">{SAMPLE_RUNS.rules.lastRunAt} on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}. Read {RULES_LEARNING.reviewsRead} request reviews and your latest goals run, found {RULES_LEARNING.newSuggestions} new suggestions.</p>
-        <p className="text-muted-foreground">{mode === 'web' ? 'From the web, Refresh queues the run for the next machine online; it needs your local transcripts.' : 'Refresh runs on this machine’s worker, which reads your Claude Code and Codex transcripts.'}</p>
+        <p className="text-muted-foreground">{run.lastRunAt} on {run.deviceName}. Read {rulesLearning.reviewsRead} request reviews and found {rulesLearning.preferencesFound} preferences; {rulesLearning.newSuggestions} {rulesLearning.newSuggestions === 1 ? 'waits' : 'wait'} for your decision.</p>
+        <p className="text-muted-foreground">{sourceKind !== 'sample' ? <>Run <code className="font-mono">{REQUEST_PROGRESS_COMMAND}</code> in Claude Code to learn again; it reads your transcripts on this computer.</> : mode === 'web' ? 'From the web, Refresh queues the run for the next machine online; it needs your local transcripts.' : 'Refresh runs on this machine’s worker, which reads your Claude Code and Codex transcripts.'}</p>
       </div>
     </Req>
   )
@@ -507,11 +551,23 @@ function LearningRun() {
 
 // ---------- Editor ----------
 
-interface Draft { id: string | null; scopeId: string; when: string; then: string; approving: boolean }
+/** `scopeId` is a loaded scope's id, or NEW_PROJECT / NEW_SITUATION with `newScopeName`. */
+interface Draft { id: string | null; scopeId: string; newScopeName: string; when: string; then: string; approving: boolean }
+const NEW_SCOPE: Record<string, RuleTier> = { 'new:project': 'project', 'new:situation': 'situation' }
+
+function draftToRule(draft: Draft, scopes: RuleScope[]): NonNullable<RuleChange['rule']> {
+  const newTier = NEW_SCOPE[draft.scopeId]
+  if (newTier) return { scopeTier: newTier, scopeName: draft.newScopeName.trim(), when: draft.when.trim(), then: draft.then.trim() }
+  const scope = scopes.find((entry) => entry.id === draft.scopeId)
+  if (!scope) throw new Error(`No rule scope ${draft.scopeId}`)
+  return { scopeTier: scope.tier, scopeName: scope.name, when: draft.when.trim(), then: draft.then.trim() }
+}
 
 /** Add, edit, or edit-then-approve a rule (§14: people set rules too). */
-function RuleEditor({ draft, onChange, onClose, onSave }: { draft: Draft | null; onChange: (draft: Draft) => void; onClose: () => void; onSave: () => void }) {
+function RuleEditor({ draft, error, onChange, onClose, onSave }: { draft: Draft | null; error: string | null; onChange: (draft: Draft) => void; onClose: () => void; onSave: () => void }) {
   const { mode } = useWorkspace()
+  const { sourceKind, ruleScopes } = useWorkModel()
+  const newTier = draft ? NEW_SCOPE[draft.scopeId] : undefined
   return (
     <Req ids={['R14.9', 'R13.7']}>
       <Dialog open={draft !== null} onOpenChange={(open) => { if (!open) onClose() }}>
@@ -529,18 +585,21 @@ function RuleEditor({ draft, onChange, onClose, onSave }: { draft: Draft | null;
                     {RULE_TIERS.map(({ tier, label }) => (
                       <SelectGroup key={tier}>
                         <SelectLabel>{label}</SelectLabel>
-                        {RULE_SCOPES.filter((scope) => scope.tier === tier).map((scope) => <SelectItem key={scope.id} value={scope.id}>{scope.name}</SelectItem>)}
+                        {ruleScopes.filter((scope) => scope.tier === tier).map((scope) => <SelectItem key={scope.id} value={scope.id}>{scope.name}</SelectItem>)}
+                        {tier !== 'everywhere' && <SelectItem value={`new:${tier}`}>{tier === 'project' ? 'A new product or project…' : 'A new situation…'}</SelectItem>}
                       </SelectGroup>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
-              <div className="grid gap-1.5"><Label htmlFor="rule-when">When</Label><Input id="rule-when" value={draft.when} placeholder="you open a pull request" onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
+              {newTier && <div className="grid gap-1.5"><Label htmlFor="rule-scope-name">{newTier === 'project' ? 'Product or project' : 'Situation'}</Label><Input id="rule-scope-name" value={draft.newScopeName} placeholder={newTier === 'project' ? 'claude-mem' : 'When I’m frustrated'} onChange={(event) => onChange({ ...draft, newScopeName: event.target.value })} /></div>}
+              <div className="grid gap-1.5"><Label htmlFor="rule-when">When <span className="font-normal text-muted-foreground">(optional)</span></Label><Input id="rule-when" value={draft.when} placeholder="you open a pull request" onChange={(event) => onChange({ ...draft, when: event.target.value })} /></div>
               <div className="grid gap-1.5"><Label htmlFor="rule-then">Then</Label><Textarea id="rule-then" value={draft.then} placeholder="Never open it as a draft." onChange={(event) => onChange({ ...draft, then: event.target.value })} /></div>
+              {error && <p role="alert" className="text-xs text-attention-foreground">{error}</p>}
             </div>
             <DialogFooter className="items-center gap-3 sm:justify-between">
-              <p className="text-xs text-muted-foreground">{mode === 'web' ? 'Saves from the web; every machine pulls it down.' : `Saves on ${HERE.name} and syncs to your other machines.`}</p>
-              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!draft.when.trim() || !draft.then.trim()}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
+              <p className="text-xs text-muted-foreground">{sourceKind !== 'sample' ? 'Saves on this computer as a work-state record.' : mode === 'web' ? 'Saves from the web; every machine pulls it down.' : `Saves on ${HERE.name} and syncs to your other machines.`}</p>
+              <Button className="h-11 sm:h-9" onClick={onSave} disabled={!draft.then.trim() || (!!newTier && !draft.newScopeName.trim())}>{draft.approving ? 'Save and approve' : 'Save rule'}</Button>
             </DialogFooter>
           </DialogContent>
         )}
@@ -551,91 +610,140 @@ function RuleEditor({ draft, onChange, onClose, onSave }: { draft: Draft | null;
 
 // ---------- Page ----------
 
-interface RulesState {
-  decisions: Record<string, Decision>
-  toggles: Record<string, boolean>
-  edits: Record<string, { scopeId: string; when: string; then: string }>
-  added: OwnerRule[]
+/** One saved change, with the change that reverses it (null when it can't be reversed from here). */
+interface Change { text: string; ruleId: string; undo: RuleChange | null }
+
+/** No story and no saved rules yet: say so, and how to get learned rules, instead of showing anything made up. */
+function NoRulesYet({ onAdd, readError }: { onAdd: () => void; readError: string | null }) {
+  return (
+    <Req ids={['R12.1']}>
+      <Empty className="border bg-card/60">
+        <EmptyHeader>
+          <EmptyTitle>{readError ? 'Can’t read your rules right now' : 'No rules yet'}</EmptyTitle>
+          <EmptyDescription>{readError ?? <>Run request-progress (<code className="font-mono">{REQUEST_PROGRESS_COMMAND}</code>) in Claude Code to learn how you like to work, or add one.</>}</EmptyDescription>
+        </EmptyHeader>
+        {!readError && (
+          <EmptyContent className="flex-row justify-center gap-2">
+            <CopyCommandButton command={REQUEST_PROGRESS_COMMAND} />
+            <Button size="sm" className="h-11 md:h-8" onClick={onAdd}><PlusIcon />Add rule</Button>
+          </EmptyContent>
+        )}
+      </Empty>
+    </Req>
+  )
 }
-const EMPTY_STATE: RulesState = { decisions: {}, toggles: {}, edits: {}, added: [] }
-interface Change { text: string; ruleId: string }
 
 export function MyRules() {
   const { mode } = useWorkspace()
-  const [state, setState] = useState<RulesState>(EMPTY_STATE)
-  // Every change pushes the previous state, so the saved note's Undo reverses exactly the last change.
-  const [history, setHistory] = useState<{ state: RulesState; change: Change | null }[]>([])
-  const [lastChange, setLastChange] = useState<Change | null>(null)
+  const { sourceKind, rules, ruleScopes, rulesLearning, rulesReadError, lastRuns } = useWorkModel()
+  const sample = sourceKind === 'sample'
+  // Decisions made on this page stay in the queue (with Undo) until you leave; the saved records are the truth.
+  const [decisions, setDecisions] = useState<Record<string, Decision>>({})
+  // Every change pushes the previous one, so the saved note's Undo reverses exactly the last change.
+  const [history, setHistory] = useState<Change[]>([])
+  const [changedIds, setChangedIds] = useState<Set<string>>(new Set())
   const [draft, setDraft] = useState<Draft | null>(null)
+  const [draftError, setDraftError] = useState<string | null>(null)
+  const [saveError, setSaveError] = useState<string | null>(null)
   const [highlighted, setHighlighted] = useState<string | null>(null)
   const [fileOpen, setFileOpen] = useState(false)
+  const lastChange = history.at(-1) ?? null
 
-  // The queue keeps its original learned rules so a decision can be undone in place.
-  const suggestions = useMemo(() => OWNER_RULES.filter((rule) => rule.status === 'suggested').sort(byStrength), [])
-  const rules = useMemo(() => [...OWNER_RULES, ...state.added].map((rule): OwnerRule => {
-    const edited = state.edits[rule.id] ? { ...rule, ...state.edits[rule.id] } : rule
-    const decision = state.decisions[rule.id]
-    if (decision === 'approved') return { ...edited, setBy: 'approved', status: rule.id in state.toggles && !state.toggles[rule.id] ? 'off' : 'on' }
-    if (decision === 'rejected') return { ...edited, status: 'dismissed' }
-    if (rule.id in state.toggles) return { ...edited, status: state.toggles[rule.id] ? 'on' : 'off' }
-    return edited
-  }), [state])
-  const waiting = suggestions.filter((rule) => !state.decisions[rule.id]).length
-  const approvedNow = new Set(Object.entries(state.decisions).filter(([, decision]) => decision === 'approved').map(([id]) => id))
-  const changed = new Set([
-    ...approvedNow,
-    ...Object.keys(state.edits), ...Object.keys(state.toggles), ...state.added.map((rule) => rule.id),
-  ])
+  const suggestions = useMemo(() => rules.filter((rule) => rule.status === 'suggested' || rule.id in decisions).sort(byStrength), [rules, decisions])
+  const waiting = suggestions.filter((rule) => !decisions[rule.id]).length
+  const approvedNow = new Set(Object.entries(decisions).filter(([, decision]) => decision === 'approved').map(([id]) => id))
 
-  const countsByScope = new Map(RULE_SCOPES.map((scope) => {
+  const countsByScope = new Map(ruleScopes.map((scope) => {
     const inScope = rules.filter((rule) => rule.scopeId === scope.id)
     const count = (status: OwnerRule['status']) => inScope.filter((rule) => rule.status === status).length
     return [scope.id, { on: count('on'), off: count('off'), suggested: count('suggested'), replaced: count('replaced') }]
   }))
   const onCount = rules.filter((rule) => rule.status === 'on').length
 
-  const commit = (next: RulesState, change: Change) => {
-    setHistory([...history, { state, change: lastChange }])
-    setState(next)
-    setLastChange(change)
+  /** Saves one change; on success records it for the note and Undo. Returns the saved model's rules, or null when it failed. */
+  const save = async (change: RuleChange, describe: (savedRules: OwnerRule[]) => Change | null) => {
+    setSaveError(null)
+    try {
+      const model = await saveRuleChange(change)
+      const done = describe(model.rules)
+      if (done) {
+        setHistory((previous) => [...previous, done])
+        setChangedIds((previous) => new Set(previous).add(done.ruleId))
+      }
+      return model.rules
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error))
+      return null
+    }
   }
-  const undoLast = () => {
-    const previous = history.at(-1)
-    if (!previous) return
-    setState(previous.state)
-    setHistory(history.slice(0, -1))
-    setLastChange(previous.change)
+  const undoLast = async () => {
+    if (!lastChange?.undo) return
+    setSaveError(null)
+    try {
+      await saveRuleChange(lastChange.undo)
+      if (lastChange.undo.action === 'restore-suggestion') setDecisions(({ [lastChange.ruleId]: _undone, ...rest }) => rest)
+      setHistory((previous) => previous.slice(0, -1))
+    } catch (error) {
+      setSaveError(error instanceof Error ? error.message : String(error))
+    }
   }
   const jump = (ruleId: string) => {
     scrollToId(`rule-${ruleId}`)
     setHighlighted(ruleId)
     setTimeout(() => setHighlighted(null), 1800)
   }
-  const ruleName = (rule: OwnerRule) => `“${lowerFirst(rule.then).replace(/\.$/, '')}”`
+  const ruleName = (rule: Pick<OwnerRule, 'then'>) => `“${lowerFirst(rule.then).replace(/\.$/, '')}”`
+  const headingFor = (scopeId: string) => { const scope = ruleScopes.find((entry) => entry.id === scopeId); return scope ? scopeHeading(scope) : 'its scope' }
 
-  const decide = (rule: OwnerRule, decision: Decision) => commit({ ...state, decisions: { ...state.decisions, [rule.id]: decision } },
-    { text: decision === 'approved' ? `Approved ${ruleName(rule)} under ${scopeHeading(scopeById(rule.scopeId))}` : `Rejected ${ruleName(rule)}`, ruleId: rule.id })
-  const undoDecision = (rule: OwnerRule) => {
-    const decisions = { ...state.decisions }
-    delete decisions[rule.id]
-    commit({ ...state, decisions }, { text: `Put ${ruleName(rule)} back in Needs your decision`, ruleId: rule.id })
-  }
+  const decide = (rule: OwnerRule, decision: Decision) => save({ action: decision === 'approved' ? 'approve' : 'dismiss', ruleId: rule.id }, () => {
+    setDecisions((previous) => ({ ...previous, [rule.id]: decision }))
+    return { text: decision === 'approved' ? `Approved ${ruleName(rule)} under ${headingFor(rule.scopeId)}` : `Rejected ${ruleName(rule)}`, ruleId: rule.id, undo: { action: 'restore-suggestion', ruleId: rule.id } }
+  })
+  const undoDecision = (rule: OwnerRule) => save({ action: 'restore-suggestion', ruleId: rule.id }, () => {
+    setDecisions(({ [rule.id]: _undone, ...rest }) => rest)
+    return { text: `Put ${ruleName(rule)} back in Needs your decision`, ruleId: rule.id, undo: null }
+  })
   const actions: RuleActions = {
-    onToggle: (rule, on) => commit({ ...state, toggles: { ...state.toggles, [rule.id]: on } }, { text: `Turned ${on ? 'on' : 'off'} ${ruleName(rule)}`, ruleId: rule.id }),
-    onEdit: (rule) => setDraft({ id: rule.id, scopeId: rule.scopeId, when: rule.when, then: rule.then, approving: false }),
+    onToggle: (rule, on) => save({ action: on ? 'turn-on' : 'turn-off', ruleId: rule.id },
+      () => ({ text: `Turned ${on ? 'on' : 'off'} ${ruleName(rule)}`, ruleId: rule.id, undo: { action: on ? 'turn-off' : 'turn-on', ruleId: rule.id } })),
+    onEdit: (rule) => { setDraftError(null); setDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: false }) },
     onJump: jump,
   }
-  const saveDraft = () => {
+  const saveDraft = async () => {
     if (!draft) return
-    if (draft.id) {
-      const edits = { ...state.edits, [draft.id]: { scopeId: draft.scopeId, when: draft.when, then: draft.then } }
-      const decisions = draft.approving ? { ...state.decisions, [draft.id]: 'approved' as const } : state.decisions
-      commit({ ...state, edits, decisions }, { text: `${draft.approving ? 'Edited and approved' : 'Edited'} “${lowerFirst(draft.then).replace(/\.$/, '')}”`, ruleId: draft.id })
-    } else {
-      const rule: OwnerRule = { id: `added-${state.added.length}`, scopeId: draft.scopeId, setBy: 'owner', when: draft.when, then: draft.then, quotes: [], timesSeen: 1, latestAt: 'today', latestDaysAgo: 0, source: 'you', status: 'on', records: [{ kind: 'Instructions', label: `Written in My Rules${mode === 'web' ? ' on the web' : ` on ${HERE.name}`}`, at: 'today' }] }
-      commit({ ...state, added: [...state.added, rule] }, { text: `Added ${ruleName(rule)} under ${scopeHeading(scopeById(rule.scopeId))}`, ruleId: rule.id })
+    setDraftError(null)
+    let rule: NonNullable<RuleChange['rule']>
+    try { rule = draftToRule(draft, ruleScopes) } catch (error) { setDraftError(error instanceof Error ? error.message : String(error)); return }
+    const before = draft.id ? rules.find((entry) => entry.id === draft.id) : undefined
+    const previousRule = before && { ...draftToRule({ ...draft, scopeId: before.scopeId, when: before.when, then: before.then }, ruleScopes) }
+    const change: RuleChange = draft.id ? { action: draft.approving ? 'approve' : 'edit', ruleId: draft.id, rule } : { action: 'add', rule }
+    try {
+      const savedRules = await saveRuleChange(change).then((model) => model.rules)
+      let done: Change
+      if (draft.id) {
+        if (draft.approving) setDecisions((previous) => ({ ...previous, [draft.id!]: 'approved' }))
+        done = { text: `${draft.approving ? 'Edited and approved' : 'Edited'} ${ruleName(rule)}`, ruleId: draft.id, undo: draft.approving ? { action: 'restore-suggestion', ruleId: draft.id } : { action: 'edit', ruleId: draft.id, rule: previousRule } }
+      } else {
+        const added = savedRules.find((entry) => !rules.some((existing) => existing.id === entry.id))
+        if (!added) throw new Error('The rule was saved, but it is not in the rules the worker sent back. Reload to see it.')
+        done = { text: `Added ${ruleName(added)} under ${headingFor(added.scopeId)}`, ruleId: added.id, undo: { action: 'dismiss', ruleId: added.id } }
+      }
+      setHistory((previous) => [...previous, done])
+      setChangedIds((previous) => new Set(previous).add(done.ruleId))
+      setDraft(null)
+    } catch (error) {
+      setDraftError(error instanceof Error ? error.message : String(error))
     }
-    setDraft(null)
+  }
+  const startAdding = () => { setDraftError(null); setDraft({ id: null, scopeId: 'everywhere', newScopeName: '', when: '', then: '', approving: false }) }
+
+  if (!sample && (rulesReadError || (rules.length === 0 && !rulesLearning))) {
+    return (
+      <div className="space-y-5">
+        <NoRulesYet onAdd={startAdding} readError={rulesReadError} />
+        <RuleEditor draft={draft} error={draftError} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
+      </div>
+    )
   }
 
   return (
@@ -646,27 +754,30 @@ export function MyRules() {
             <div className="max-w-2xl space-y-1">
               <p className="text-base leading-snug font-medium">
                 {waiting > 0 ? <>{waiting} learned {waiting === 1 ? 'rule is' : 'rules are'} waiting for you. </> : <>Nothing is waiting for you. </>}
-                {onCount} rules are on.
+                {onCount} {onCount === 1 ? 'rule is' : 'rules are'} on.
               </p>
               <p className="text-sm text-muted-foreground"><span className="hidden sm:inline">How you like to work, as if-then rules. </span>Rules you set or approve go in MY-RULES.md, loaded with your user-level instructions. Learned ones wait here until you decide.</p>
             </div>
           </Req>
-          <div className="flex items-center gap-2">
-            <Req ids={['R14.9']}><Button className="h-11 sm:h-8" size="sm" onClick={() => setDraft({ id: null, scopeId: 'everywhere', when: '', then: '', approving: false })}><PlusIcon />Add rule</Button></Req>
-            <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13']} />
-            <Req ids={['R14.10', 'R11.1']}><span className="text-xs leading-tight text-muted-foreground sm:hidden">Last run {SAMPLE_RUNS.rules.lastRunAt.replace('Today, ', '')}<br />on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}</span></Req>
+          <div className="flex flex-wrap items-center gap-2">
+            <Req ids={['R14.9']}><Button className="h-11 sm:h-8" size="sm" onClick={startAdding}><PlusIcon />Add rule</Button></Req>
+            {sample ? <>
+              <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13']} />
+              <Req ids={['R14.10', 'R11.1']}><span className="text-xs leading-tight text-muted-foreground sm:hidden">Last run {SAMPLE_RUNS.rules.lastRunAt.replace('Today, ', '')}<br />on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}</span></Req>
+            </> : lastRuns.progress && <SkillLastRun run={lastRuns.progress} command={REQUEST_PROGRESS_COMMAND} ids={['R14.13']} />}
           </div>
         </div>
 
+        {saveError && <p role="alert" className="border-l-2 border-attention-border py-1 pl-3 text-xs text-attention-foreground">{saveError}</p>}
         {lastChange && (
           <Req ids={['R13.7', 'D7']}>
             <div role="status" className="space-y-1 border-l-2 border-shipped-border py-1 pl-3 text-xs">
               <p className="flex items-start gap-1.5 font-medium text-shipped-foreground"><CheckIcon className="mt-px size-3.5 shrink-0" />{lastChange.text}.</p>
-              <p className="text-muted-foreground">{savedWhere(mode)}. <span className="italic">Wireframe: not actually written.</span></p>
+              <p className="text-muted-foreground">{savedWhere(mode, sample)}.{sample && <span className="italic"> Wireframe: not actually written.</span>}</p>
               <div className="-ml-2 flex flex-wrap">
                 <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => setFileOpen(true)}>View in MY-RULES.md</Button>
                 {rules.some((rule) => rule.id === lastChange.ruleId && (rule.status === 'on' || rule.status === 'off')) && <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={() => jump(lastChange.ruleId)}>Show the rule</Button>}
-                <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={history.length === 0}>Undo</Button>
+                <Button variant="ghost" size="sm" className="h-11 text-xs sm:h-8" onClick={undoLast} disabled={!lastChange.undo}>Undo</Button>
               </div>
             </div>
           </Req>
@@ -676,9 +787,9 @@ export function MyRules() {
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_15rem]">
           <div className="min-w-0 space-y-10">
-            <DecisionQueue suggestions={suggestions} decisions={state.decisions} onDecide={decide} onUndo={undoDecision} onShow={(rule) => jump(rule.id)}
-              onEdit={(rule) => setDraft({ id: rule.id, scopeId: rule.scopeId, when: rule.when, then: rule.then, approving: true })} />
-            {RULE_SCOPES.map((scope) => (
+            <DecisionQueue suggestions={suggestions} decisions={decisions} onDecide={decide} onUndo={undoDecision} onShow={(rule) => jump(rule.id)}
+              onEdit={(rule) => { setDraftError(null); setDraft({ id: rule.id, scopeId: rule.scopeId, newScopeName: '', when: rule.when, then: rule.then, approving: true }) }} />
+            {ruleScopes.map((scope) => (
               <ScopeSection key={scope.id} scope={scope} rules={rules.filter((rule) => rule.scopeId === scope.id)} counts={countsByScope.get(scope.id)!}
                 approvedNow={approvedNow} highlighted={highlighted} actions={actions} />
             ))}
@@ -686,7 +797,7 @@ export function MyRules() {
 
           <aside className="space-y-6 lg:sticky lg:top-20 lg:self-start">
             <div className="hidden lg:block"><ScopeNav countsByScope={countsByScope} waiting={waiting} /></div>
-            <AgentFile rules={rules} changed={changed} open={fileOpen} onOpenChange={setFileOpen} />
+            <AgentFile rules={rules} changed={changedIds} open={fileOpen} onOpenChange={setFileOpen} />
             <div className="space-y-6 rounded-xl border bg-card p-4">
               <WhereEditsGo />
               <LearningRun />
@@ -694,7 +805,7 @@ export function MyRules() {
           </aside>
         </div>
 
-        <RuleEditor draft={draft} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
+        <RuleEditor draft={draft} error={draftError} onChange={setDraft} onClose={() => setDraft(null)} onSave={saveDraft} />
       </div>
     </Req>
   )

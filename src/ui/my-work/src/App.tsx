@@ -197,8 +197,6 @@ function LoadedApp() {
                 </Req>
 
                 <main className="min-w-0">
-                  {/* Rules still read fixtures in this phase; outside sample mode they say so. */}
-                  {!sample && page === 'rules' && <Badge variant="outline" className="mb-3 font-normal">Sample data</Badge>}
                   {page === 'work' && <MyWork onOpen={setOpenRequest} onOpenGoal={goToGoal} onOpenRules={() => goToPage('rules')} />}
                   {page === 'goals' && <MyGoals onOpen={setOpenRequest} focusGoalId={focusGoalId} />}
                   {page === 'rules' && <MyRules />}

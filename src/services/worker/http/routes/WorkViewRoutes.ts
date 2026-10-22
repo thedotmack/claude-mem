@@ -1,7 +1,9 @@
 import type express from 'express';
 import type { Request, Response, NextFunction } from 'express';
-import { createHash } from 'node:crypto';
-import { extname, join } from 'node:path';
+import { createHash, randomBytes } from 'node:crypto';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, extname, join } from 'node:path';
 import { z } from 'zod';
 import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
@@ -12,6 +14,8 @@ import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '.
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
 import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-store.js';
+import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
+import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { validateBody } from '../middleware/validateBody.js';
@@ -65,6 +69,22 @@ export function requireWorkViewOrigin(req: Request, res: Response, next: NextFun
   next();
 }
 
+const ruleBody = z.object({
+  action: z.enum(['approve', 'edit', 'turn-off', 'turn-on', 'dismiss', 'add', 'replace', 'restore-suggestion']),
+  ruleId: z.string().min(1).max(80).optional(),
+  rule: z.object({
+    scopeTier: z.enum(['everywhere', 'project', 'situation']),
+    scopeName: z.string().max(80),
+    when: z.string().max(300),
+    then: z.string().trim().min(1).max(600),
+  }).strict().optional(),
+}).strict();
+
+/** The line that makes Claude Code load the approved rules with the owner's user-level instructions. */
+export const MY_RULES_IMPORT_LINE = '@~/.claude-mem/MY-RULES.md';
+
+interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
+
 interface WorkViewOptions {
   databasePath?: string;
   reviewPath?: string;
@@ -73,6 +93,14 @@ interface WorkViewOptions {
   humanCopy?: HumanCopyWorker | null;
   /** Overall-request ledger written by the request-progress skill; null disables it. */
   ledgerDir?: string | null;
+  /** Saves one work-state row (rule changes). Without it, rules are read-only. */
+  appendWorkStateEntry?: ((entry: WorkStateWrite) => void) | null;
+  /** The project rule rows are saved under: the home folder's, like owner-goals. */
+  homeProject?: string;
+  /** ~/.claude-mem/MY-RULES.md: approved rules, rebuilt after every rule change. */
+  rulesFilePath?: string;
+  /** ~/.claude/CLAUDE.md: the user-level file that imports MY-RULES.md. Never a project's file. */
+  claudeInstructionsPath?: string;
 }
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
@@ -101,6 +129,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private pollIntervalMs: number;
   private getLocalDeviceId: () => string;
   private humanCopy: HumanCopyWorker | null;
+  private appendWorkStateEntry: ((entry: WorkStateWrite) => void) | null;
+  private homeProject: string | undefined;
+  private rulesFilePath: string;
+  private claudeInstructionsPath: string;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -116,6 +148,10 @@ export class WorkViewRoutes extends BaseRouteHandler {
       ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })
       : options.humanCopy;
     if (this.humanCopy) void this.humanCopy.load().then(() => this.humanCopy?.start());
+    this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
+    this.homeProject = options.homeProject;
+    this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
+    this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(homedir(), '.claude', 'CLAUDE.md');
   }
 
   setupRoutes(app: express.Application): void {
@@ -148,6 +184,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.sendFile(path, { dotfiles: 'allow' });
     }));
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
+    app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
+    app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
   }
 
   private snapshot(): WorkViewSnapshot {
@@ -160,8 +198,90 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    return { ...view, rulesFile: this.rulesFileStatus(snapshot), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
   }
+
+  private rulesFileStatus(snapshot: WorkViewSnapshot) {
+    const rules = (snapshot.rules ?? []) as SavedRule[];
+    let instructions = '';
+    try { instructions = readFileSync(this.claudeInstructionsPath, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    return {
+      path: this.rulesFilePath.startsWith(homedir()) ? `~${this.rulesFilePath.slice(homedir().length)}` : this.rulesFilePath,
+      approvedCount: renderRulesFile(rules).approvedCount,
+      loadedInClaudeCode: instructions.split('\n').some(line => line.trim() === MY_RULES_IMPORT_LINE),
+    };
+  }
+
+  /** Rewrites MY-RULES.md through a temp file beside it, so a reader never sees half a file. */
+  private writeRulesFile(rules: SavedRule[]): void {
+    const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${process.pid}.tmp`);
+    writeFileSync(temp, renderRulesFile(rules).markdown, { mode: 0o644 });
+    renameSync(temp, this.rulesFilePath);
+  }
+
+  private saveRule = (req: Request, res: Response): void => {
+    const { action, ruleId, rule } = req.body as z.infer<typeof ruleBody>;
+    if (!this.appendWorkStateEntry) { res.status(503).json({ error: 'Saving rules is unavailable on this worker.' }); return; }
+    const snapshot = this.snapshot();
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before changing rules.' }); return; }
+    const rules = (snapshot.rules ?? []) as SavedRule[];
+    const current = ruleId ? rules.find(entry => entry.ruleId === ruleId) : undefined;
+    if (action !== 'add' && !current) { this.notFound(res, 'That rule is not in your rules.'); return; }
+    if (['edit', 'add', 'replace'].includes(action) && !rule) { this.badRequest(res, 'Write the rule before saving it.'); return; }
+    if (rule && rule.scopeTier !== 'everywhere' && !rule.scopeName.trim()) { this.badRequest(res, 'Name the project or situation this rule is for.'); return; }
+    const written = rule ? {
+      scopeTier: rule.scopeTier, scopeName: rule.scopeTier === 'everywhere' ? 'Everywhere' : rule.scopeName.trim(),
+      when: rule.when.trim(), then: rule.then.trim(),
+    } : {};
+    const now = new Date().toISOString();
+    const ownRule = (): SavedRule => ({
+      ruleId: `own_${randomBytes(6).toString('hex')}`, scopeId: '', scopeTier: 'everywhere', scopeName: 'Everywhere', when: '', then: '',
+      ...written, setBy: 'owner', status: 'on', kind: 'directive', source: 'you', timesSeen: 1, latestAt: now,
+      quotes: [], replacedBy: null, replacedAt: null, savedAt: null,
+    });
+    const rows: Record<string, string | number | boolean | null>[] = [];
+    if (action === 'add') rows.push(ruleRowFields(ownRule()));
+    else if (action === 'replace') {
+      const replacement = ownRule();
+      rows.push(ruleRowFields(replacement), ruleRowFields({ ...current!, status: 'replaced', replacedBy: replacement.ruleId, replacedAt: now }));
+    } else if (action === 'approve') rows.push(ruleRowFields({ ...current!, ...written, setBy: current!.setBy === 'learned' ? 'approved' : current!.setBy, status: 'on' }));
+    else if (action === 'edit') rows.push(ruleRowFields({ ...current!, ...written }));
+    else if (action === 'turn-on' || action === 'turn-off') {
+      if (current!.status !== 'on' && current!.status !== 'off') { res.status(409).json({ error: 'Only a rule you set or approved can be turned on or off.', snapshot }); return; }
+      rows.push(ruleRowFields({ ...current!, status: action === 'turn-on' ? 'on' : 'off' }));
+    } else if (action === 'dismiss') rows.push(ruleRowFields({ ...current!, status: 'dismissed' }));
+    else {
+      // Back to the learned suggestion: clearing every saved field lets the story's version show again.
+      if (!current!.ruleId.startsWith('pref_')) { res.status(409).json({ error: 'Only a learned rule can go back to being a suggestion.', snapshot }); return; }
+      rows.push({ task: `Rule: ${current!.ruleId}`, rule_id: current!.ruleId, scope_tier: null, scope_name: null, when: null, then: null, set_by: null, status: null, source: null, replaced_by: null, replaced_at: null, quotes: null, times_seen: null, latest_at: null });
+    }
+    const project = this.homeProject ?? getProjectContext(homedir()).primary;
+    for (const fields of rows) this.appendWorkStateEntry({ project, listName: MY_RULES_LIST, fields });
+    const updated = this.snapshot();
+    this.writeRulesFile((updated.rules ?? []) as SavedRule[]);
+    logger.debug('HTTP', 'My Rules updated', { action });
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(updated);
+    this.publish(updated);
+  };
+
+  /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md once. Never touches a project's CLAUDE.md or AGENTS.md. */
+  private loadRulesInClaudeCode = (_req: Request, res: Response): void => {
+    const snapshot = this.snapshot();
+    if (!existsSync(this.rulesFilePath)) this.writeRulesFile((snapshot.rules ?? []) as SavedRule[]);
+    if (!(snapshot.rulesFile as { loadedInClaudeCode: boolean }).loadedInClaudeCode) {
+      let instructions = '';
+      try { instructions = readFileSync(this.claudeInstructionsPath, 'utf8'); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      const separator = instructions === '' || instructions.endsWith('\n') ? '' : '\n';
+      mkdirSync(dirname(this.claudeInstructionsPath), { recursive: true });
+      appendFileSync(this.claudeInstructionsPath, `${separator}${MY_RULES_IMPORT_LINE}\n`);
+    }
+    const updated = this.snapshot();
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(updated);
+  };
 
   private review = (req: Request, res: Response): void => {
     const { requestId, expectedFingerprint, checked } = req.body as z.infer<typeof reviewBody>;

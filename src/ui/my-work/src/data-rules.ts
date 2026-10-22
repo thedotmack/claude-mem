@@ -11,7 +11,7 @@ export const RULE_TIERS: { tier: RuleTier; label: string }[] = [
   { tier: 'situation', label: 'In a situation' },
 ]
 
-export const RULE_SCOPES: RuleScope[] = [
+export const SAMPLE_RULE_SCOPES: RuleScope[] = [
   { id: 'everywhere', tier: 'everywhere', name: 'Everywhere' },
   { id: 'cmem-cloud', tier: 'project', name: 'Hosted app' },
   { id: 'claude-mem', tier: 'project', name: 'claude-mem' },
@@ -43,7 +43,7 @@ export interface OwnerRule {
   records: RuleRecord[]
 }
 
-export const OWNER_RULES: OwnerRule[] = [
+export const SAMPLE_OWNER_RULES: OwnerRule[] = [
   // Everywhere
   { id: 'autonomy', scopeId: 'everywhere', setBy: 'owner', when: 'my directive is clear', then: 'Execute it. Don’t follow up with a question.', timesSeen: 11, latestAt: 'Oct 20', latestDaysAgo: 0, source: 'you', status: 'on',
     quotes: [
@@ -125,5 +125,17 @@ export const OWNER_RULES: OwnerRule[] = [
     records: [{ kind: 'Review', label: 'request-progress · “Work monitor cards” review', at: 'Oct 16' }] },
 ]
 
-/** What the last learning run read and found. */
-export const RULES_LEARNING = { preferencesFound: 14, newSuggestions: 3, reviewsRead: 23 }
+/** What the last learning run (request-progress) read and found. */
+export interface RulesLearning { preferencesFound: number; newSuggestions: number; reviewsRead: number }
+export const SAMPLE_RULES_LEARNING: RulesLearning = { preferencesFound: 14, newSuggestions: 3, reviewsRead: 23 }
+
+/** The file agents load: approved rules only. `loadedInClaudeCode`: ~/.claude/CLAUDE.md imports it. */
+export interface RulesFile { path: string; approvedCount: number; loadedInClaudeCode: boolean }
+
+/** One saved change to My Rules (POST /api/work-view/rules). */
+export interface RuleDraft { scopeTier: RuleTier; scopeName: string; when: string; then: string }
+export interface RuleChange {
+  action: 'approve' | 'edit' | 'turn-off' | 'turn-on' | 'dismiss' | 'add' | 'replace' | 'restore-suggestion'
+  ruleId?: string
+  rule?: RuleDraft
+}
