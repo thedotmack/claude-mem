@@ -58,6 +58,9 @@ const fixture = String.raw`
     wanted[category].push(id);
     return id;
   };
+  // Just past the 1600-candidate semantic work cap: enough to reach the cap, small
+  // enough that three cap-scenario fixtures stay well inside the default test timeout.
+  const excludedCount = cap ? 2048 : 140;
   let first, second, third;
   if (sparseCategory) {
     // Each table starts at ID 1. Full categories must not hide the sparse
@@ -66,13 +69,13 @@ const fixture = String.raw`
     for (let n = 1; n < Number(process.env.FULL_CATEGORY_COUNT || 25); n++) {
       for (const category of categories) if (category !== sparseCategory) makeCategory(category);
     }
-    for (let n = 0; n < (cap ? 8192 : 140); n++) make('Excluded ' + n, false, false, true);
+    for (let n = 0; n < excludedCount; n++) make('Excluded ' + n, false, false, true);
     for (let n = 1; n < 25; n++) makeCategory(sparseCategory, cap);
   } else {
     // The partial-page fallback must not reintroduce an expired keyword match.
     if (cap) make('Expired keyword match', true, true, true);
     first = make('First semantic match', true, process.env.DUPLICATE_KEYWORD === '1');
-    for (let i = 0; i < (cap ? 8192 : 140); i++) make('Excluded ' + i, false);
+    for (let i = 0; i < excludedCount; i++) make('Excluded ' + i, false);
     second = make('Second matching memory', true, cap);
     third = make('Third matching memory', true, cap);
   }
@@ -142,6 +145,10 @@ function runFixture(extraEnv: Record<string, string> = {}) {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 }
 
+// Work-cap tests spawn several fixtures that each seed past the 1600-candidate cap;
+// slower CI runners need more than bun's 5s default.
+const WORK_CAP_TEST_TIMEOUT_MS = 20_000;
+
 describe('unified semantic candidates after row filtering', () => {
   for (const sparseCategory of ['observations', 'sessions', 'prompts']) {
     it(`fills all-category pages when ${sparseCategory} are sparse in the initial prefix`, () => {
@@ -178,7 +185,7 @@ describe('unified semantic candidates after row filtering', () => {
         expect(row.calls.reduce((total: number, call: { n_results: number }) => total + call.n_results, 0)).toBeLessThanOrEqual(13100);
       }
     }
-  });
+  }, WORK_CAP_TEST_TIMEOUT_MS);
 
   it('ignores unrequested categories when their selected pages are full', () => {
     const result = runFixture({ SPARSE_CATEGORY: 'sessions', SEARCH_TYPE: 'observations,prompts', FULL_CATEGORY_COUNT: '200' });
@@ -240,5 +247,5 @@ describe('unified semantic candidates after row filtering', () => {
         expect(new Set(row.hydrated).size).toBe(row.hydrated.length);
       }
     }
-  });
+  }, WORK_CAP_TEST_TIMEOUT_MS);
 });
