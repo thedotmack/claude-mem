@@ -3,7 +3,7 @@ import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
 import {
   detectUsableAgents,
-  runCommandWithTimeout,
+  runCommand,
   type AgentDetectionDependencies,
   type UsableAgent,
 } from '../../../src/services/agent-runner/detect.js';
@@ -11,7 +11,7 @@ import type { OAuthTokenResult } from '../../../src/shared/oauth-token.js';
 
 type ScriptedOutcome =
   | { exitCode: number; stdout?: string; stderr?: string }
-  | { hang: true }
+  | { exitCode: number; stdout?: string; stderr?: string; delayMs: number }
   | { spawnError: string };
 
 class FakeStream extends EventEmitter {
@@ -23,13 +23,6 @@ class FakeStream extends EventEmitter {
 class FakeChild extends EventEmitter {
   stdout = new FakeStream();
   stderr = new FakeStream();
-  killedWith: string[] = [];
-  kill(signal: string): boolean {
-    this.killedWith.push(signal);
-    // A real child exits on SIGTERM; emit close like Node does.
-    queueMicrotask(() => this.emit('close', null));
-    return true;
-  }
 }
 
 /** A fake `spawn` that answers from a script keyed by "command arg arg". */
@@ -39,8 +32,7 @@ function fakeSpawn(script: Record<string, ScriptedOutcome>, calls: string[] = []
     calls.push(key);
     const child = new FakeChild();
     const outcome = script[key] ?? { exitCode: 1, stderr: '' };
-    queueMicrotask(() => {
-      if ('hang' in outcome) return;
+    const answer = () => {
       if ('spawnError' in outcome) {
         child.emit('error', Object.assign(new Error(outcome.spawnError), { code: 'ENOENT' }));
         return;
@@ -48,7 +40,9 @@ function fakeSpawn(script: Record<string, ScriptedOutcome>, calls: string[] = []
       if (outcome.stdout) child.stdout.emit('data', outcome.stdout);
       if (outcome.stderr) child.stderr.emit('data', outcome.stderr);
       child.emit('close', outcome.exitCode);
-    });
+    };
+    if ('delayMs' in outcome) setTimeout(answer, outcome.delayMs);
+    else queueMicrotask(answer);
     return child;
   }) as unknown as typeof spawn;
 }
@@ -77,7 +71,6 @@ function dependencies(overrides: Partial<AgentDetectionDependencies>): Partial<A
     environment: {},
     homeDirectory: () => HOME,
     platform: () => 'darwin',
-    timeoutMs: 50,
     now: () => 1_000_000,
     ...overrides,
   };
@@ -149,23 +142,17 @@ describe('detectUsableAgents', () => {
       expect(agent.reason).toContain('claude.ai');
     });
 
-    it('timeout', async () => {
+    it('a slow `claude auth status` is waited for and still reports logged in', async () => {
       const agent = await detectOne('claude-code', {
         ...installed,
-        spawn: fakeSpawn({ [`${CLAUDE_PATH} auth status --json`]: { hang: true } }),
+        readClaudeOAuthToken: async () => ({ kind: 'absent', reason: 'no keychain access' }),
+        spawn: fakeSpawn({
+          [`${CLAUDE_PATH} auth status --json`]: { exitCode: 0, stdout: '{"loggedIn": true, "authMethod": "claude.ai"}', delayMs: 3_500 },
+        }),
       });
-      expect(agent.authenticated).toBe(false);
-      expect(agent.reason).toContain('timed out');
-    });
-
-    it('a hanging token read is bounded by the check timeout', async () => {
-      const agent = await detectOne('claude-code', {
-        ...installed,
-        readClaudeOAuthToken: () => new Promise<OAuthTokenResult>(() => {}),
-      });
-      expect(agent.authenticated).toBe(false);
-      expect(agent.reason).toContain('timed out');
-    });
+      expect(agent).toMatchObject({ authenticated: true });
+      expect(agent.reason).toContain('claude.ai');
+    }, 10_000);
   });
 
   describe('Codex', () => {
@@ -190,13 +177,15 @@ describe('detectUsableAgents', () => {
       expect(agent).toMatchObject({ path: CODEX_PATH, authenticated: true, reason: 'Logged in using ChatGPT' });
     });
 
-    it('timeout', async () => {
+    it('a slow `codex login status` is waited for and still reports logged in', async () => {
       const agent = await detectOne('codex', {
-        spawn: fakeSpawn({ ...WHICH_CODEX, [`${CODEX_PATH} login status`]: { hang: true } }),
+        spawn: fakeSpawn({
+          ...WHICH_CODEX,
+          [`${CODEX_PATH} login status`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n', delayMs: 3_500 },
+        }),
       });
-      expect(agent.authenticated).toBe(false);
-      expect(agent.reason).toContain('timed out');
-    });
+      expect(agent).toMatchObject({ path: CODEX_PATH, authenticated: true, reason: 'Logged in using ChatGPT' });
+    }, 10_000);
 
     it('uses where.exe on Windows', async () => {
       const calls: string[] = [];
@@ -244,11 +233,13 @@ describe('detectUsableAgents', () => {
       expect(agent).toMatchObject({ authenticated: true, reason: 'GEMINI_API_KEY is set' });
     });
 
-    it('timeout', async () => {
-      const agent = await detectOne('gemini', { spawn: fakeSpawn({ 'which gemini': { hang: true } }) });
-      expect(agent.authenticated).toBe(false);
-      expect(agent.reason).toContain('timed out');
-    });
+    it('a slow `which gemini` is waited for and still reports logged in', async () => {
+      const agent = await detectOne('gemini', {
+        spawn: fakeSpawn({ 'which gemini': { exitCode: 0, stdout: `${GEMINI_PATH}\n`, delayMs: 3_500 } }),
+        environment: { GEMINI_API_KEY: 'key' },
+      });
+      expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: true });
+    }, 10_000);
 
     it('unreadable settings.json is reported, not thrown', async () => {
       const agent = await detectOne('gemini', {
@@ -262,22 +253,14 @@ describe('detectUsableAgents', () => {
   });
 });
 
-describe('runCommandWithTimeout', () => {
-  it('kills a hung child and reports timedOut', async () => {
-    const children: FakeChild[] = [];
-    const spawnImplementation = (() => {
-      const child = new FakeChild();
-      children.push(child);
-      return child;
-    }) as unknown as typeof spawn;
-    const result = await runCommandWithTimeout(spawnImplementation, 'codex', ['login', 'status'], 20);
-    expect(result.timedOut).toBe(true);
-    expect(result.exitCode).toBeNull();
-    expect(children[0].killedWith).toContain('SIGTERM');
-  });
+describe('runCommand', () => {
+  it('waits for a slow command to finish instead of giving up', async () => {
+    const result = await runCommand(fakeSpawn({ 'codex login status': { exitCode: 0, stderr: 'Logged in', delayMs: 3_500 } }), 'codex', ['login', 'status']);
+    expect(result).toMatchObject({ exitCode: 0, stderr: 'Logged in' });
+  }, 10_000);
 
   it('reports a spawn error instead of rejecting', async () => {
-    const result = await runCommandWithTimeout(fakeSpawn({ 'nope': { spawnError: 'spawn nope ENOENT' } }), 'nope', [], 50);
+    const result = await runCommand(fakeSpawn({ 'nope': { spawnError: 'spawn nope ENOENT' } }), 'nope', []);
     expect(result.spawnError?.message).toContain('ENOENT');
     expect(result.exitCode).toBeNull();
   });
@@ -286,7 +269,7 @@ describe('runCommandWithTimeout', () => {
     const throwingSpawn = (() => {
       throw new Error('EINVAL');
     }) as unknown as typeof spawn;
-    const result = await runCommandWithTimeout(throwingSpawn, 'x', [], 50);
+    const result = await runCommand(throwingSpawn, 'x', []);
     expect(result.spawnError?.message).toBe('EINVAL');
   });
 });

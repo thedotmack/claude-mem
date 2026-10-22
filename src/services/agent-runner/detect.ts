@@ -5,9 +5,11 @@
  * The install funnel extracts Work, Goals and Rules with whatever agent the
  * user already has and is already logged in to, so the user never logs in to
  * anything extra. This module only looks: it never starts a login, never
- * writes agent config, and makes no network call of its own. Every check is
- * bounded by a timeout, runs commands with `spawn` (argv, never a shell) and
- * never throws — a failure is recorded as `{ authenticated: false, reason }`.
+ * writes agent config, and makes no network call of its own. Every check runs
+ * commands with `spawn` (argv, never a shell), waits as long as the CLI takes
+ * (owner rule, Oct 22: no time limits or skip-if-slow fallbacks), and never
+ * throws. An agent is "not usable" only when its CLI is not installed, says it
+ * is logged out, or exits with an error: `{ authenticated: false, reason }`.
  *
  * Priority order (the first authenticated agent wins downstream):
  * Claude Code → Codex → Gemini.
@@ -40,28 +42,22 @@ export interface UsableAgent {
 }
 
 export interface CommandResult {
-  /** Exit code, or null when the process never started or was killed. */
+  /** Exit code, or null when the process never started. */
   exitCode: number | null;
   stdout: string;
   stderr: string;
-  timedOut: boolean;
   /** Set when the process could not be started (e.g. ENOENT). */
   spawnError?: Error;
 }
 
-export const AGENT_CHECK_TIMEOUT_MS = 3_000;
-/** Extra wait for a killed child to exit after SIGTERM, before we stop waiting. */
-const KILL_GRACE_MS = 500;
-
 /**
- * Run a command with argv (no shell) and a hard timeout. Never rejects.
- * Same shape as `spawnGit` in WorktreeAdoption.ts.
+ * Run a command with argv (no shell) and wait for it to exit, however long
+ * that takes. Never rejects. Same shape as `spawnGit` in WorktreeAdoption.ts.
  */
-export function runCommandWithTimeout(
+export function runCommand(
   spawnImplementation: typeof spawn,
   command: string,
   args: string[],
-  timeoutMs: number,
 ): Promise<CommandResult> {
   return new Promise<CommandResult>(resolve => {
     const child = spawnImplementation(command, args, {
@@ -73,31 +69,16 @@ export function runCommandWithTimeout(
     let stdout = '';
     let stderr = '';
     let spawnError: Error | undefined;
-    let timedOut = false;
     let settled = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-
     const settle = (result: CommandResult) => {
       if (settled) return;
       settled = true;
-      clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
       resolve(result);
     };
-
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill('SIGTERM');
-      killTimer = setTimeout(() => {
-        child.kill('SIGKILL');
-        settle({ exitCode: null, stdout, stderr, timedOut: true });
-      }, KILL_GRACE_MS);
-    }, timeoutMs);
-
     child.on('error', error => {
       spawnError = error;
       // A child that never started may not emit 'close' on every runtime.
-      settle({ exitCode: null, stdout, stderr, timedOut, spawnError });
+      settle({ exitCode: null, stdout, stderr, spawnError });
     });
     child.stdout?.on('data', (chunk: string) => {
       stdout += chunk;
@@ -106,13 +87,12 @@ export function runCommandWithTimeout(
       stderr += chunk;
     });
     child.on('close', code => {
-      settle({ exitCode: timedOut ? null : code, stdout, stderr, timedOut, spawnError });
+      settle({ exitCode: code, stdout, stderr, spawnError });
     });
   }).catch((error: unknown) => ({
     exitCode: null,
     stdout: '',
     stderr: '',
-    timedOut: false,
     spawnError: error instanceof Error ? error : new Error(String(error)),
   }));
 }
@@ -128,8 +108,6 @@ export interface AgentDetectionDependencies {
   environment: NodeJS.ProcessEnv;
   homeDirectory: () => string;
   platform: () => NodeJS.Platform;
-  /** Per-agent check budget. */
-  timeoutMs: number;
   /** Wall clock, for token expiry. */
   now: () => number;
 }
@@ -145,7 +123,6 @@ const defaultDependencies: AgentDetectionDependencies = {
   environment: process.env,
   homeDirectory: homedir,
   platform: () => process.platform,
-  timeoutMs: AGENT_CHECK_TIMEOUT_MS,
   now: Date.now,
 };
 
@@ -154,31 +131,13 @@ function describeError(error: unknown): string {
   return message.split('\n')[0].trim() || 'unknown error';
 }
 
-class CheckTimeoutError extends Error {}
-
-/** Bound a whole check, including steps that are not a single spawn (token reads). */
-async function withTimeout<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new CheckTimeoutError(`timed out after ${timeoutMs} ms`)), timeoutMs);
-  });
-  try {
-    return await Promise.race([work, timeout]);
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 /** Resolve a command on PATH the way ide-detection.ts does (`which` / `where.exe`). */
 async function resolveOnPath(
   dependencies: AgentDetectionDependencies,
   command: string,
 ): Promise<{ path: string } | { path: null; reason: string }> {
   const lookup = dependencies.platform() === 'win32' ? 'where.exe' : 'which';
-  const result = await runCommandWithTimeout(dependencies.spawn, lookup, [command], dependencies.timeoutMs);
-  if (result.timedOut) {
-    return { path: null, reason: commandFailureReason(`${lookup} ${command}`, result, dependencies.timeoutMs) };
-  }
+  const result = await runCommand(dependencies.spawn, lookup, [command]);
   const firstLine = result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
   if (result.exitCode !== 0 || !firstLine) {
     return { path: null, reason: `not installed: \`${command}\` is not on PATH` };
@@ -186,8 +145,7 @@ async function resolveOnPath(
   return { path: firstLine };
 }
 
-function commandFailureReason(command: string, result: CommandResult, timeoutMs: number): string {
-  if (result.timedOut) return `\`${command}\` timed out after ${timeoutMs} ms`;
+function commandFailureReason(command: string, result: CommandResult): string {
   if (result.spawnError) return `\`${command}\` could not start: ${describeError(result.spawnError)}`;
   const output = `${result.stdout}\n${result.stderr}`.trim().split('\n')[0]?.trim();
   return `\`${command}\` exited ${result.exitCode}${output ? `: ${output}` : ''}`;
@@ -217,13 +175,13 @@ async function detectClaudeCode(dependencies: AgentDetectionDependencies): Promi
   // refreshed by the CLI itself, and an absent read can be a keychain the
   // worker cannot see. Ask the CLI.
   const tokenSummary = token.kind === 'present' ? 'stored token expired' : `token ${token.kind}: ${token.reason}`;
-  const status = await runCommandWithTimeout(dependencies.spawn, path, ['auth', 'status', '--json'], dependencies.timeoutMs);
+  const status = await runCommand(dependencies.spawn, path, ['auth', 'status', '--json']);
   if (status.exitCode !== 0 && !status.stdout.trim()) {
     return {
       id: 'claude-code',
       path,
       authenticated: false,
-      reason: `${tokenSummary}; ${commandFailureReason('claude auth status --json', status, dependencies.timeoutMs)}`,
+      reason: `${tokenSummary}; ${commandFailureReason('claude auth status --json', status)}`,
     };
   }
   let parsed: { loggedIn?: unknown; authMethod?: unknown };
@@ -249,7 +207,7 @@ async function detectCodex(dependencies: AgentDetectionDependencies): Promise<Us
   if (resolved.path === null) return { id: 'codex', path: null, authenticated: false, reason: resolved.reason };
   const path = resolved.path;
 
-  const status = await runCommandWithTimeout(dependencies.spawn, path, ['login', 'status'], dependencies.timeoutMs);
+  const status = await runCommand(dependencies.spawn, path, ['login', 'status']);
   // codex-cli prints the status line to stderr.
   const output = `${status.stdout}\n${status.stderr}`;
   if (status.exitCode === 0 && /Logged in/.test(output)) {
@@ -260,7 +218,7 @@ async function detectCodex(dependencies: AgentDetectionDependencies): Promise<Us
     id: 'codex',
     path,
     authenticated: false,
-    reason: commandFailureReason('codex login status', status, dependencies.timeoutMs),
+    reason: commandFailureReason('codex login status', status),
   };
 }
 
@@ -301,7 +259,7 @@ async function runCheck(
   dependencies: AgentDetectionDependencies,
 ): Promise<UsableAgent> {
   try {
-    return await withTimeout(check(dependencies), dependencies.timeoutMs);
+    return await check(dependencies);
   } catch (error) {
     return { id, path: null, authenticated: false, reason: `check failed: ${describeError(error)}` };
   }
