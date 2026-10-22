@@ -15,8 +15,9 @@
  * resolver or of plugin/scripts/bun-runner.js — no handlers, no HTTP, and no
  * imports from the worker, hook handlers or shared worker helpers (Phase 6
  * sweep greps this directory for those paths).
- * Bump LAUNCHER_PROTOCOL (src/launcher/launcher-protocol.ts) only when the
- * launcher's contract with hooks.json or the installer changes.
+ * Bump LAUNCHER_PROTOCOL (src/launcher/launcher-protocol.ts) when the
+ * launcher's contract with hooks.json or the installer changes, or when a fix
+ * here must reach launchers already compiled onto PATH.
  *
  * Runs as `bun`/`node plugin/scripts/claude-mem-launcher.cjs` and as a
  * `bun build --compile` binary (process.argv[0..1] is runtime + entry in both).

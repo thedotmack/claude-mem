@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { EventEmitter } from "node:events";
+import { join } from "node:path";
 import type { ChildProcess } from "node:child_process";
 import { findBun } from "../../src/launcher/bun-runtime.js";
 
@@ -37,6 +38,39 @@ describe("findBun Windows discovery", () => {
 
     expect(result).toBe("C:\\tools\\bun.exe");
     expect(lookupStarted).toBe(false);
+  });
+
+  // Windows precedence is deliberate (#4934): BUN, BUN_PATH, BUN_INSTALL, then
+  // ~/.bun win over PATH, so a Bun reported by where.exe is never consulted
+  // while any of them exists.
+  it("pins Windows precedence: explicit and known paths before PATH, in order", async () => {
+    const env = {
+      BUN: "C:\\explicit\\bun.exe",
+      BUN_PATH: "C:\\bun-path\\bun.exe",
+      BUN_INSTALL: "C:\\bun-install",
+    };
+    const ordered = [
+      "C:\\explicit\\bun.exe",
+      "C:\\bun-path\\bun.exe",
+      join("C:\\bun-install", "bin", "bun.exe"),
+      join("C:\\Users\\test", ".bun", "bin", "bun.exe"),
+    ];
+    for (let index = 0; index < ordered.length; index++) {
+      const present = new Set(ordered.slice(index));
+      let lookupStarted = false;
+      const result = await findBun({
+        platform: "win32",
+        env,
+        homeDirectory: "C:\\Users\\test",
+        exists: (candidate) => present.has(candidate),
+        spawnProcess: (() => {
+          lookupStarted = true;
+          return pendingChildProcess();
+        }) as never,
+      });
+      expect(result).toBe(ordered[index]);
+      expect(lookupStarted).toBe(false);
+    }
   });
 
   it("kills a stalled where.exe lookup at the deadline", async () => {
