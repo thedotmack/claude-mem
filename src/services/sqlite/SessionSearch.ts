@@ -103,7 +103,14 @@ interface DocFrequency {
 export class SessionSearch {
   private db: Database;
 
-  constructor(dbPathOrDb: string | Database = DB_PATH) {
+  /**
+   * `readOnly`: the caller opened `db` read-only and owns its pragmas (the
+   * context read worker). Skip the connection pragmas, which include a
+   * journal-mode switch, and the FTS table/trigger repair: both write, and the
+   * writer connection owns them. Temp-schema tables (the FTS5 probe and the
+   * fts5vocab term-frequency tables) still work on a read-only open.
+   */
+  constructor(dbPathOrDb: string | Database = DB_PATH, options: { readOnly?: boolean } = {}) {
     if (dbPathOrDb instanceof Database) {
       this.db = dbPathOrDb;
     } else {
@@ -115,11 +122,11 @@ export class SessionSearch {
     // binary's chain (#3609 step 2); a refused open touches nothing.
     assertSchemaWriterCompatible(this.db, LATEST_SCHEMA_VERSION);
 
-    applySqliteConnectionPragmas(this.db);
+    if (!options.readOnly) applySqliteConnectionPragmas(this.db);
 
     this._fts5Available = this.isFts5Available();
 
-    this.ensureFTSTables();
+    if (!options.readOnly) this.ensureFTSTables();
   }
 
   private _fts5Available: boolean;
