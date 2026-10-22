@@ -107,7 +107,7 @@ export function detectWorktree(cwd: string): WorktreeInfo {
  * The project a bare repository stands for: `app.git` is `app`, and a hidden
  * bare directory such as `app/.bare` is named after the folder holding it.
  */
-function bareRepositoryProjectName(bareRepoPath: string): string | null {
+export function bareRepositoryProjectName(bareRepoPath: string): string | null {
   const name = path.basename(bareRepoPath).replace(/\.git$/, '');
   if (name && !name.startsWith('.')) return name;
   return path.basename(path.dirname(bareRepoPath)) || null;
