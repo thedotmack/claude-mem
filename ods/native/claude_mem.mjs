@@ -18,6 +18,22 @@ function bounded(value, limit = MAX_EVENT_BYTES) {
     .decode(bytes.subarray(0, limit)).replace(/\uFFFD$/, '') + '\n[truncated]';
 }
 
+/** Strip private blocks before any byte limit can remove their closing tag.
+ * Nested blocks are supported; an unfinished block hides the remaining text.
+ * This boundary is deliberately conservative, including for malformed input.
+ */
+function publicText(value) {
+  const tags = /<(\/?)private(?=[\s/>]|$)[^>]*(?:>|$)/gi;
+  let result = '', cursor = 0, depth = 0;
+  for (const match of value.matchAll(tags)) {
+    if (!depth) result += value.slice(cursor, match.index);
+    if (!match[1]) depth++;
+    else if (depth) depth--;
+    cursor = match.index + match[0].length;
+  }
+  return result + (depth ? '' : value.slice(cursor));
+}
+
 function escapeContext(value) {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
@@ -143,7 +159,10 @@ export function createOdsMemory({
       if (typeof requestId !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(requestId)) {
         throw new Error('Invalid ODS request identity');
       }
-      const prompt = bounded(text([...(messages || [])].reverse().find(message => message.role === 'user')?.content));
+      const rawPrompt = text([...(messages || [])].reverse().find(message => message.role === 'user')?.content);
+      const cleanPrompt = publicText(rawPrompt);
+      if (rawPrompt.trim() && !cleanPrompt.trim()) return null;
+      const prompt = bounded(cleanPrompt);
       const project = scope === 'installation' ? 'ods' : `ods/${sessionId.slice(4)}`;
       const contentSessionId = sessionId;
       const base = { contentSessionId, platformSource: 'ods' };
@@ -167,7 +186,7 @@ export function createOdsMemory({
           tool_use_id: `ods:${requestId}:${id}`,
           tool_name: toolName,
           tool_input: input,
-          tool_response: bounded(typeof output === 'string' ? output : JSON.stringify(output)),
+          tool_response: bounded(publicText(typeof output === 'string' ? output : JSON.stringify(output))),
         });
       }
 
@@ -220,7 +239,7 @@ export function createOdsMemory({
         /** Receives ODS's final verified delivery, with its evidence kept separate. */
         complete(completion, verification) {
           if (!initialized || finished) return;
-          const answer = text(completion?.choices?.[0]?.message?.content);
+          const answer = publicText(text(completion?.choices?.[0]?.message?.content));
           observe('answer', 'ODSConversation', { requestId, prompt }, answer);
           if (verification) observe('verification', 'ODSVerification', { requestId }, verification);
           finished = true;

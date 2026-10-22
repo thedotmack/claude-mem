@@ -90,6 +90,44 @@ test('privacy skip records neither a response nor a context lookup', async () =>
   assert.equal(requests, 1, 'only the privacy check is submitted');
 });
 
+test('private blocks are removed before truncating every captured payload', async () => {
+  const { memory, calls } = fixture();
+  const secret = '<private>' + 'SECRET'.repeat(14000) + '</private>';
+  const turn = memory.turn({ sessionId, requestId: 'private-boundary', messages: [
+    { role: 'user', content: `Public prompt. ${secret} Safe suffix.` },
+  ] });
+  await turn.prepare();
+  turn.activity({ runId: 'run-private', events: [{ sequence: 1, state: 'completed', kind: 'edit',
+    display: { label: `Public activity. ${secret} Safe activity suffix.` } }] });
+  turn.complete({ choices: [{ message: { content: `Public answer. ${secret} Safe answer suffix.` } }] },
+    { status: 'none', detail: secret });
+  await memory.flush();
+  assert.doesNotMatch(JSON.stringify(calls), /SECRET|<\/?private>/);
+  assert.equal(calls[0].body.prompt, 'Public prompt.  Safe suffix.');
+  const writes = calls.filter(call => call.body?.tool_name);
+  assert.match(writes.find(call => call.body.tool_name === 'ODSActivity').body.tool_response, /Safe activity suffix/);
+  assert.equal(writes.find(call => call.body.tool_name === 'ODSConversation').body.tool_response,
+    'Public answer.  Safe answer suffix.');
+  assert.equal(calls.at(-1).body.last_assistant_message, 'Public answer.  Safe answer suffix.');
+});
+
+test('nested and unfinished private blocks cannot escape capture filtering', async () => {
+  const { memory, calls } = fixture();
+  const turn = memory.turn({ sessionId, messages: [{ role: 'user',
+    content: 'Public. <PRIVATE>SECRET<private>SECRET</private>SECRET</PRIVATE> Safe. <private>SECRET' }] });
+  await turn.prepare();
+  turn.complete({ choices: [{ message: { content: 'Public answer. <private unfinished SECRET' } }] });
+  await memory.flush();
+  assert.equal(calls[0].body.prompt, 'Public.  Safe. ');
+  assert.doesNotMatch(JSON.stringify(calls), /SECRET/);
+});
+
+test('an entirely private prompt skips the whole turn before any I/O', () => {
+  const { memory, calls } = fixture();
+  assert.equal(memory.turn({ sessionId, messages: [{ role: 'user', content: '<private>SECRET</private>' }] }), null);
+  assert.equal(calls.length, 0);
+});
+
 test('recall and network failures fail softly without logging conversation contents', async () => {
   const { memory, turn, warnings } = fixture({ fetchImpl: async () => { throw new Error('secret prompt, API key'); } });
   assert.equal(await turn.prepare(), null);

@@ -14,7 +14,8 @@ const runId = 'chatcmpl_11111111-2222-4333-8444-555555555555';
 const listen = server => new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
 
 for (const stream of [false, true]) {
-  test(`native ODS request captures and recalls without an agent plugin (stream=${stream})`, { skip: !root, timeout: 10000 }, async t => {
+  for (const pollWhileRunning of [false, true]) {
+  test(`native ODS capture, recall and final activity (stream=${stream}, polling=${pollWhileRunning})`, { skip: !root, timeout: 10000 }, async t => {
     const { createIngressServer } = await import(pathToFileURL(path.join(host, 'pixel_ingress.mjs')));
     const { createChatHistoryLedger } = await import(pathToFileURL(path.join(host, 'chat_history_ledger.mjs')));
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'ods-native-test-'));
@@ -25,6 +26,7 @@ for (const stream of [false, true]) {
         ? Response.json({ items: [{ title: 'Prior blue accent decision', narrative: 'Keep the accent blue.' }] })
         : Response.json({});
     } });
+    let startedAt, finishedAt;
     const deps = { setTimeout, clearTimeout, fetch: async (url, init) => {
       const route = new URL(url).pathname;
       const body = init.body && JSON.parse(init.body);
@@ -35,8 +37,23 @@ for (const stream of [false, true]) {
         compaction: { status: 'idle', requestId: null, tokensBefore: null, tokensAfter: null, reason: null, count: 0 } });
       if (route === '/pixel-ods/verification') return Response.json({ status: 'none' });
       if (route === '/pixel-ods/subagent-delivery') return Response.json({ schemaVersion: 1, kind: 'ods-subagent-delivery', runId, status: 'not-delegated' });
-      if (route === '/v1/chat/completions') return Response.json({ id: runId,
-        choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'The accent stays blue.' } }] });
+      if (route === '/pixel-ods/activity') return Response.json({ task: {
+        schemaVersion: 3, runId, startedAt, finishedAt: finishedAt ?? null,
+        state: finishedAt ? 'completed' : 'running', calls: 2, failures: 0, blocked: 0, truncated: false,
+        activities: [{ kind: 'read', calls: 1, failures: 0, blocked: 0 }, { kind: 'edit', calls: 1, failures: 0, blocked: 0 }],
+        events: [
+          { sequence: 1, kind: 'read', state: 'completed', startedAt, finishedAt: startedAt, display: null },
+          { sequence: 2, kind: 'edit', state: finishedAt ? 'completed' : 'running', startedAt,
+            finishedAt: finishedAt ?? null, display: null },
+        ], context: null, goal: null,
+      } });
+      if (route === '/v1/chat/completions') {
+        startedAt = new Date().toISOString();
+        if (pollWhileRunning) await new Promise(resolve => setTimeout(resolve, 400));
+        finishedAt = new Date().toISOString();
+        return Response.json({ id: runId,
+          choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'The accent stays blue.' } }] });
+      }
       return new Response('{}', { status: 404 });
     } };
     const server = createIngressServer({ token: 'test-gateway-token', gatewayPort: 1, deps, historyLedger: ledger, memory });
@@ -60,10 +77,17 @@ for (const stream of [false, true]) {
     assert.equal(init.platformSource, 'ods');
     assert.equal(init.nativePromptId, 'native-turn-1');
     assert.ok(memoryCalls.some(call => call.body?.tool_name === 'ODSConversation'));
+    const activity = memoryCalls.filter(call => call.body?.tool_name === 'ODSActivity');
+    assert.deepEqual(activity.map(call => call.body.tool_input.sequence), [1, 2], 'running and terminal snapshots are deduplicated');
+    assert.ok(activity.every(call => JSON.parse(call.body.tool_response).state === 'completed'));
+    const pollCalls = gatewayCalls.filter(call => call.route === '/pixel-ods/activity');
+    assert.equal(pollCalls.length, pollWhileRunning ? 2 : 1, 'final snapshot is collected even before the first timer fires');
+    assert.ok(memoryCalls.indexOf(activity.at(-1)) < memoryCalls.findIndex(call => call.body?.tool_name === 'ODSConversation'));
     const count = memoryCalls.length;
     assert.match(await send(), /accent stays blue/);
     assert.equal(gatewayCalls.filter(call => call.route === '/v1/chat/completions').length, 1, 'cached replay never repeats work');
     assert.equal(memoryCalls.length, count, 'cached replay never captures twice');
     assert.deepEqual(ledger.read(init.contentSessionId).messages, [user], 'recalled context stays out of visible history');
   });
+  }
 }

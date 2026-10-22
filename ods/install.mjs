@@ -88,10 +88,22 @@ function verifyReceipt(root, receipt) {
   }
   const expected = [...patchedPaths, nativePath, ...serviceFiles.map(file => `${servicePath}/${file}`)].sort();
   if (JSON.stringify(Object.keys(receipt.files || {}).sort()) !== JSON.stringify(expected)) throw new Error('Invalid receipt paths');
+  if (receipt.phase !== undefined && receipt.phase !== 'removing') throw new Error('Invalid receipt phase');
   for (const relative of expected) {
     const alternative = relative.endsWith('/compose.yaml.disabled') ? relative.replace(/\.disabled$/, '') : null;
     const file = fs.existsSync(path.join(root, relative)) ? safePath(root, relative) : alternative && safePath(root, alternative);
-    if (!file || sha(read(file)) !== receipt.files[relative].sha256) throw new Error(`Locally modified integration: ${relative}`);
+    const item = receipt.files[relative];
+    // Once removal starts, each path may contain the installed bytes or the
+    // exact original bytes (or be absent if this installer created it).
+    // This makes a failed rename/unlink resumable without accepting local edits.
+    if (receipt.phase === 'removing') {
+      safePath(root, relative);
+      if (alternative) safePath(root, alternative);
+      if ((!file || !fs.existsSync(file)) && !patchedPaths.includes(relative)) continue;
+      if (file && fs.existsSync(file) && item.original
+          && sha(read(file)) === sha(Buffer.from(item.original, 'base64'))) continue;
+    }
+    if (!file || !fs.existsSync(file) || sha(read(file)) !== item.sha256) throw new Error(`Locally modified integration: ${relative}`);
   }
   const names = fs.readdirSync(path.join(root, servicePath)).sort();
   const allowed = new Set([...serviceFiles, 'compose.yaml', receiptName]);
@@ -105,16 +117,29 @@ export function install(directory, { check = false, uninstall = false } = {}) {
   if (fs.existsSync(receiptPath)) {
     const receipt = JSON.parse(read(receiptPath));
     verifyReceipt(root, receipt);
-    if (!uninstall) return { status: 'already-installed', root };
+    if (!uninstall) {
+      if (receipt.phase === 'removing') throw new Error('Removal in progress; run --uninstall again to finish');
+      return { status: 'already-installed', root };
+    }
     if (fs.existsSync(path.join(service, 'compose.yaml'))) throw new Error('Run ods disable claude-mem before removing the integration');
     if (check) return { status: 'ready-to-remove', root };
+    // Persist intent before the first restore. Keep this receipt until all
+    // owned files have reached their removed state, even if a later step fails.
+    receipt.phase = 'removing';
+    replace(receiptPath, JSON.stringify(receipt, null, 2) + '\n', 0o600);
     for (const relative of patchedPaths) {
       const item = receipt.files[relative];
       replace(safePath(root, relative), Buffer.from(item.original, 'base64'), item.mode);
     }
-    fs.unlinkSync(safePath(root, nativePath));
-    for (const file of [...serviceFiles, receiptName]) fs.unlinkSync(path.join(service, file));
-    fs.rmdirSync(service);
+    fs.rmSync(safePath(root, nativePath), { force: true });
+    for (const file of serviceFiles) fs.rmSync(path.join(service, file), { force: true });
+    fs.unlinkSync(receiptPath);
+    try { fs.rmdirSync(service); }
+    catch (error) {
+      // A parent-directory permission failure must not discard recovery state.
+      replace(receiptPath, JSON.stringify(receipt, null, 2) + '\n', 0o600);
+      throw error;
+    }
     return { status: 'removed', root, dataPreserved: true };
   }
   if (uninstall) throw new Error('No native Claude-Mem installation receipt was found');

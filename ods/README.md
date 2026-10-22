@@ -76,6 +76,9 @@ The integration captures ODS's **public activity projection**, not raw tools
 hidden inside an agent runtime. Activity records are labeled as observations,
 not independent proof of success. Final messages use ODS's verified delivery.
 Streaming and non-streaming requests use the same native boundary.
+Both modes collect a final activity snapshot before the final answer is stored.
+Private blocks are removed before capture size limits are applied; nested and
+unfinished private blocks stay private. An entirely private prompt skips capture.
 
 Memory reads and writes have short timeouts. Unavailable memory leaves chat
 usable and emits a sanitized warning. Failed writes stop that turn's write
@@ -117,3 +120,5 @@ Redeploy ODS's restored ingress source and remove the three optional settings
 from `.env`. The installer restores only source files it owns and verifies that
 they have not changed. `data/claude-mem` remains available for backup or a later
 reinstall. Delete that directory separately only when you intend to erase it.
+If removal is interrupted by a filesystem error, fix the error and repeat
+`--uninstall`. Its receipt tracks removal intent and still protects local edits.
