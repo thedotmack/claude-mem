@@ -33,12 +33,20 @@ const EMBED_CHUNK_CHARS = 256 * 1024;
  * onnxruntime-node is pinned below 1.24 for Intel Macs; see the plugin
  * `overrides` in scripts/build-hooks.js.
  */
+/**
+ * The length all-MiniLM-L6-v2 was trained at, and where Chroma truncates.
+ * The tokenizer's model_max_length says 512.
+ */
+const MAX_TOKENS = 256;
+
 export class LocalEmbedder implements Embedder {
-  readonly modelId = 'Xenova/all-MiniLM-L6-v2/fp32/mean/l2';
+  // The token limit is part of the identity: the same model truncated
+  // elsewhere produces different vectors for long texts.
+  readonly modelId = `Xenova/all-MiniLM-L6-v2/fp32/mean/l2/${MAX_TOKENS}`;
   readonly dims = 384;
 
-  private extractor: unknown = null;
-  private loading: Promise<unknown> | null = null;
+  private extractor: { tokenizer: any; model: any } | null = null;
+  private loading: Promise<{ tokenizer: any; model: any }> | null = null;
 
   /**
    * `threads` caps onnxruntime's intra-op threads; unset, it takes every CPU
@@ -51,15 +59,18 @@ export class LocalEmbedder implements Embedder {
    * embedded — a worker that only reads never pays it. Concurrent callers
    * share one in-flight load rather than racing to initialise twice.
    */
-  private async ready(): Promise<any> {
+  private async ready(): Promise<{ tokenizer: any; model: any }> {
     if (this.extractor) return this.extractor;
     if (!this.loading) {
       this.loading = (async () => {
-        const { pipeline } = await import('@huggingface/transformers');
-        this.extractor = await pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', {
-          dtype: 'fp32',
-          ...(this.threads ? { session_options: { intraOpNumThreads: this.threads } } : {}),
-        });
+        const { AutoModel, AutoTokenizer } = await import('@huggingface/transformers');
+        this.extractor = {
+          tokenizer: await AutoTokenizer.from_pretrained('Xenova/all-MiniLM-L6-v2'),
+          model: await AutoModel.from_pretrained('Xenova/all-MiniLM-L6-v2', {
+            dtype: 'fp32',
+            ...(this.threads ? { session_options: { intraOpNumThreads: this.threads } } : {}),
+          }),
+        };
         return this.extractor;
       })().catch((error: unknown) => {
         // A failed load (a download error, say) is retried by the next call
@@ -98,16 +109,50 @@ export class LocalEmbedder implements Embedder {
     return end;
   }
 
+  /**
+   * The tokenizer and model are called directly, not through the
+   * feature-extraction pipeline, which truncates at the tokenizer's
+   * model_max_length (512) rather than the length the model was trained at:
+   * for all-MiniLM-L6-v2 that is 256, which Chroma uses, and a text of 936 to
+   * 1,716 tokens embedded at 512 came out at cosine 0.79 to 0.83 from Chroma's
+   * vector. Truncation also drops the closing [SEP], which transformers.js
+   * 4.3.1 adds before cutting (huggingface/tokenizers.js#41); it is restored
+   * here. With both, vectors match Chroma's to cosine 0.9999995.
+   */
   protected async encode(texts: string[]): Promise<Float32Array[]> {
-    const extractor = await this.ready();
-    // pooling+normalize are done in the model graph, so vectors come back
-    // unit-length and cosine reduces to a dot product at query time.
-    const out = await extractor(texts, { pooling: 'mean', normalize: true });
-    const flat = out.data as Float32Array;
-    return texts.map((_, i) => {
-      const slice = new Float32Array(this.dims);
-      slice.set(flat.subarray(i * this.dims, (i + 1) * this.dims));
-      return slice;
+    const { tokenizer, model } = await this.ready();
+    const inputs = tokenizer(texts, { padding: true, truncation: true, max_length: MAX_TOKENS });
+    const [rows, width] = inputs.input_ids.dims as number[];
+    const ids = inputs.input_ids.data as BigInt64Array;
+    const mask = inputs.attention_mask.data as BigInt64Array;
+    const sep = BigInt(tokenizer.sep_token_id);
+    if (width === MAX_TOKENS) {
+      for (let r = 0; r < rows; r++) {
+        const last = r * width + MAX_TOKENS - 1;
+        if (mask[last] === 1n && ids[last] !== sep) ids[last] = sep;
+      }
+    }
+    const { last_hidden_state: hidden } = await model(inputs);
+    const h = hidden.data as Float32Array;
+    // Mean over the real tokens, then unit length, so cosine reduces to a dot
+    // product at query time.
+    return texts.map((_, r) => {
+      const v = new Float32Array(this.dims);
+      let n = 0;
+      for (let t = 0; t < width; t++) {
+        if (mask[r * width + t] !== 1n) continue;
+        n++;
+        const base = (r * width + t) * this.dims;
+        for (let d = 0; d < this.dims; d++) v[d] += h[base + d];
+      }
+      let norm = 0;
+      for (let d = 0; d < this.dims; d++) {
+        v[d] /= n;
+        norm += v[d] * v[d];
+      }
+      norm = Math.sqrt(norm);
+      for (let d = 0; d < this.dims; d++) v[d] /= norm;
+      return v;
     });
   }
 }

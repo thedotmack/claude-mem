@@ -1,11 +1,13 @@
 import { describe, expect, it, mock } from 'bun:test';
 
 let loads = 0;
+const failingLoad = async () => {
+  loads += 1;
+  throw new Error(`model download failed (${loads})`);
+};
 mock.module('@huggingface/transformers', () => ({
-  pipeline: async () => {
-    loads += 1;
-    throw new Error(`model download failed (${loads})`);
-  },
+  AutoTokenizer: { from_pretrained: failingLoad },
+  AutoModel: { from_pretrained: failingLoad },
 }));
 
 const { LocalEmbedder } = await import('../../../src/services/vector/LocalEmbedder.js');
