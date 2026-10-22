@@ -193,7 +193,7 @@ export async function embedObservationRows(
  */
 export async function backfillMissingEmbeddings(
   client: PostgresQueryable,
-  options: { batchSize?: number; embedder?: Embedder } = {},
+  options: { batchSize?: number; embedder?: Embedder; signal?: AbortSignal } = {},
 ): Promise<{ observations: number; parts: number }> {
   if (!(await vectorSearchOn(client))) return { observations: 0, parts: 0 };
   // One process backfills at a time: generation workers can run as several
@@ -231,7 +231,7 @@ const BACKFILL_LOCK_KEY = `hashtext('claude-mem observation embedding backfill')
 
 async function embedMissingObservations(
   client: PostgresQueryable,
-  options: { batchSize?: number; embedder?: Embedder },
+  options: { batchSize?: number; embedder?: Embedder; signal?: AbortSignal },
 ): Promise<{ observations: number; parts: number }> {
   const embedder = options.embedder ?? getSharedEmbedder();
   const batchSize = options.batchSize ?? 64;
@@ -239,7 +239,9 @@ async function embedMissingObservations(
 
   const repo = new PostgresObservationEmbeddingsRepository(client);
   let after: { createdAt: string; id: string } | null = null;
-  for (;;) {
+  // A stop (the server shutting down) ends the backfill between batches, so
+  // its connection is released before the pool closes; the next start resumes.
+  while (!options.signal?.aborted) {
     const rows = await repo.listMissing({ model: embedder.modelId, limit: batchSize, after });
     if (rows.length === 0) break;
     const last = rows[rows.length - 1]!;
@@ -254,6 +256,7 @@ async function embedMissingObservations(
       for (const row of rows) embedded.push((await embedObservationRows(client, [row], embedder))?.[0] ?? null);
       if (embedded.every(parts => parts === null)) break;
     }
+    if (options.signal?.aborted) break;
     for (let i = 0; i < rows.length; i++) {
       const row = embedded[i];
       if (!row) continue;

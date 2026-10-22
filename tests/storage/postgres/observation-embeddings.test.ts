@@ -349,6 +349,23 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     }
   }, 10_000);
 
+  it('stops between batches when signalled, releasing its lock for the next start', async () => {
+    if (!vectorAvailable) return;
+    const stop = new AbortController();
+    const stopping: Embedder = {
+      modelId: 'next',
+      dims: 384,
+      embed: async texts => {
+        stop.abort(); // the server is stopping while the first batch embeds
+        return texts.map(() => axis(1));
+      },
+    };
+    expect(await backfillMissingEmbeddings(pool, { embedder: stopping, batchSize: 1, signal: stop.signal }))
+      .toEqual({ observations: 0, parts: 0 });
+    const resumed: Embedder = { modelId: 'next', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+    expect(await backfillMissingEmbeddings(pool, { embedder: resumed })).toEqual({ observations: 3, parts: 3 });
+  });
+
   it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {
     if (!vectorAvailable) return;
     const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };

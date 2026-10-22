@@ -252,6 +252,7 @@ export class ServerService {
       await Promise.all([
         this.graph.queueManager.close(),
         this.graph.generationWorkerManager.close(),
+        this.graph.stopBackgroundWork?.(),
       ]);
       await this.graph.postgres.pool.end();
     } finally {

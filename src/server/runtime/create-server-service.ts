@@ -238,11 +238,16 @@ export async function createServerService(
       });
     });
     if (active) generationWorkerManager.start();
-    void backfillMissingEmbeddings(pool).catch((error: unknown) => {
+    const stop = new AbortController();
+    const backfill = backfillMissingEmbeddings(pool, { signal: stop.signal }).then(() => {}, (error: unknown) => {
       logger.warn('SYSTEM', 'embedding backfill stopped; it resumes at the next start', {
         error: error instanceof Error ? error.message : String(error),
       });
     });
+    graph.stopBackgroundWork = async () => {
+      stop.abort();
+      await backfill;
+    };
   }
 
   return new ServerService({ graph });
