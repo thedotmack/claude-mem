@@ -6,20 +6,23 @@ import type { Embedder } from './types.js';
  * A batch is padded to its longest member and run as one graph execution, so
  * activation memory grows with the batch. The caller's array length is
  * whatever a row set happened to render to, which is not a size to hand a
- * model unchecked.
+ * model unchecked. onnxruntime-node runs a pass on the event loop's thread, so
+ * a pass also blocks every request in the process for its length: on 256
+ * observation texts, 32 per pass blocked for up to 750 ms, 4 per pass for
+ * about 110 ms, and 4 per pass was no slower overall, padding less.
  */
-const EMBED_CHUNK_SIZE = 32;
+const EMBED_CHUNK_SIZE = 4;
 
 /**
- * Characters per forward pass.
+ * Characters of a text handed to the tokenizer.
  *
- * A document count is not a size. 32 documents is a few kilobytes of ordinary
- * narrative and 12MB of 400KB facts, and the tokenizer walks every character
- * of both before the model truncates anything. Whichever cap binds first,
- * binds — and a chunk is never empty, so one document longer than the whole
- * budget still goes through on its own rather than wedging the loop.
+ * The tokenizer walks every character before the model truncates to its token
+ * limit, so a megabyte of text costs a quarter of a second on the event loop
+ * for the same vector as its first few kilobytes. 32 KB holds far more than
+ * the token limit of ordinary text; the longest observation in a 39k-row
+ * store is 8 KB.
  */
-const EMBED_CHUNK_CHARS = 256 * 1024;
+const MAX_TEXT_CHARS = 32 * 1024;
 
 /** How long a failed model load fails every call before the next attempt. */
 export const LOAD_RETRY_MS = 5 * 60_000;
@@ -93,28 +96,11 @@ export class LocalEmbedder implements Embedder {
   async embed(texts: string[]): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
     const vectors: Float32Array[] = [];
-    let start = 0;
-    while (start < texts.length) {
-      const end = this.chunkEnd(texts, start);
-      const chunk = await this.encode(texts.slice(start, end));
-      for (const vector of chunk) vectors.push(vector);
-      start = end;
+    for (let start = 0; start < texts.length; start += EMBED_CHUNK_SIZE) {
+      const chunk = texts.slice(start, start + EMBED_CHUNK_SIZE).map(text => text.slice(0, MAX_TEXT_CHARS));
+      for (const vector of await this.encode(chunk)) vectors.push(vector);
     }
     return vectors;
-  }
-
-  /** Exclusive end of the chunk beginning at `start`; always past `start`. */
-  private chunkEnd(texts: string[], start: number): number {
-    let end = start;
-    let chars = 0;
-    while (end < texts.length) {
-      if (end > start && (end - start >= EMBED_CHUNK_SIZE || chars + texts[end].length > EMBED_CHUNK_CHARS)) {
-        break;
-      }
-      chars += texts[end].length;
-      end++;
-    }
-    return end;
   }
 
   /**
