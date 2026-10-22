@@ -87,13 +87,15 @@ claude mcp add --transport http claude-mem <server-base>/v1/mcp \
   --header "Authorization: Bearer cm_..."
 ```
 
-Three tools are exposed, each mirroring an existing REST path:
+Smart search is the default three-step workflow. Review the index, inspect timeline context, then fetch only the selected records. There are no auto or guided modes. Each tool uses the authenticated team and requested project:
 
 | Tool      | Arguments                          | Returns |
 |-----------|------------------------------------|---------|
-| `search`  | `{ projectId, query, limit? }`     | Matching observations (full-text search). |
-| `context` | `{ projectId, query, limit? }`     | Observations **plus** a concatenated `context` string ready for prompt injection. |
-| `recent`  | `{ projectId, limit? }`            | The newest observations for a project. |
+| `search` | `{ projectId, query, limit? }` | Compact index with IDs from full-text search. |
+| `timeline` | `{ projectId, anchorId, depthBefore?, depthAfter? }` | Chronological context around a selected ID. |
+| `get_observations` | `{ projectId, ids }` | Useful details for only the selected IDs, with shortening marked. |
+| `context` | `{ projectId, query, limit? }` | Legacy focused context lookup; prefer the Smart workflow. |
+| `recent` | `{ projectId, limit? }` | Compact index of the newest observations for a project. |
 
 <Note>
 The transport is **stateless** — one MCP server + transport per request — so it
@@ -269,6 +271,8 @@ PATCH  /v1/memories/:id
 DELETE /v1/memories/:id           # forget one observation
 POST   /v1/search
 POST   /v1/context
+POST   /v1/timeline
+POST   /v1/observations/batch
 ALL    /v1/mcp                    # remote authenticated MCP recall
 POST   /v1/keys                   # mint a read-only key (write scope)
 GET    /v1/connect                # connect command with key placeholder

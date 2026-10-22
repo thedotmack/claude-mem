@@ -1094,7 +1094,6 @@ export default function claudeMemPlugin(api: OpenClawPluginApi): void {
       const query = parts.join(" ");
       const params = new URLSearchParams({
         query,
-        mode: "auto",
         depth_before: String(depthBefore),
         depth_after: String(depthAfter),
       });
