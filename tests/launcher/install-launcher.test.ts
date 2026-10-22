@@ -451,6 +451,25 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     ]);
   });
 
+  it('reports the signing failure, not the successful clear, when only signing fails', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 0, stderr: 'replacing existing signature\n' }
+        : { status: 3, stderr: 'sign step failed\n' });
+
+    // Returning the clear's result would hide the failure that matters.
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 3, stderr: 'sign step failed\n' });
+  });
+
+  it('reports the signing failure when both steps fail', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'clear step failed\n' }
+        : { status: 2, stderr: 'sign step failed\n' });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 2, stderr: 'sign step failed\n' });
+  });
+
   it.skipIf(process.platform !== 'darwin')('installs a real build whose signature codesign --force cannot replace (Bun 1.3.12, #4947)', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
@@ -503,6 +522,31 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     // ... and the actionable half names the signing failure, last stderr line only.
     expect(message).toContain('codesign --force --sign - failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
     expect(message).not.toContain('warning: first line');
+  });
+
+  it('does not blame signing when signing succeeded but the probe still failed', () => {
+    const scratchHome = makeScratchHome();
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: fakeCompile('garbage'), runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
+  });
+
+  it('does not mention signing on a host where codesign never runs', () => {
+    const scratchHome = makeScratchHome();
+    const linuxHost: LauncherHostEnvironment = {
+      homeDirectory: scratchHome, platform: 'linux', environmentVariables: { PATH: '/usr/bin', SHELL: '/bin/bash' },
+    };
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: linuxHost,
+      runCompile: fakeCompile('garbage'), runCodesign: codesignMustNotRun, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
   });
 
   it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {
