@@ -1,0 +1,42 @@
+import { CheckIcon } from 'lucide-react'
+import { AgentMark } from '@/components/brand'
+import { agentToolFor, type SetupScanPhase, type SetupScanView } from '../setup-data'
+import { PageHeading } from './shared'
+
+/** PROTO savings.js status phrases, one per scan phase. */
+const STATUS: Record<SetupScanPhase, string> = {
+  idle: 'Looking for usage history.',
+  reading: 'Looking for usage history.',
+  checking: 'Checking repeated context.',
+  saving: 'Preparing your usage summary.',
+  done: 'Preparing your usage summary.',
+  failed: 'Preparing your usage summary.',
+}
+
+/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
+export function ScanScreen({ scan }: { scan: SetupScanView }) {
+  const detected = scan.agents.filter((agent) => agent.detected)
+  return (
+    <section aria-labelledby="scan-title">
+      <PageHeading id="scan-title" title="Checking your AI usage." lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
+      <div className="panel is-memory scan-panel">
+        <ul className="scan-agents" aria-label="Agents found on this computer">
+          {detected.map((agent) => (
+            <li key={agent.id}>
+              <span className="check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
+              <AgentMark tool={agentToolFor(agent.id)} className="mark" />
+              <span>{agent.label} <span className="detected">(detected)</span></span>
+              <span className="count">{agent.prompts.toLocaleString('en-US')} prompts</span>
+            </li>
+          ))}
+        </ul>
+        <div className="scan-meter">
+          <progress max={100} value={scan.percent} aria-label="Scan progress">{scan.percent}%</progress>
+          <span className="scan-percent" aria-hidden="true">{scan.percent}%</span>
+        </div>
+        <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>
+        {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}
+      </div>
+    </section>
+  )
+}
