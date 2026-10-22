@@ -50,8 +50,12 @@ function run(shell: string, command: string, extraEnv: NodeJS.ProcessEnv = {}) {
   };
   for (const flag of optOutFlags) delete env[flag];
   delete env.CLAUDE_MEM_CODEX_HOOK;
+  for (const [name, value] of Object.entries(extraEnv)) {
+    if (value === undefined) delete env[name];
+    else env[name] = value;
+  }
   return spawnSync(shell, [...(shell.endsWith('fish') ? ['--no-config'] : []), '-c', command], {
-    env: { ...env, ...extraEnv }, input, encoding: 'utf8', timeout: 10000,
+    env, input, encoding: 'utf8', timeout: 10000,
   });
 }
 
@@ -65,8 +69,23 @@ for (const { name, executable: shell } of shells) {
       expect(JSON.parse(result.stdout)).toEqual({ input, args: [], codex: null });
     });
 
+    test('Setup falls back to the plugin cache when no plugin root is set', () => {
+      const cacheRoot = join(fixture, 'config', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
+      mkdirSync(join(cacheRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(cacheRoot, 'scripts', 'version-check.js'), readFileSync(join(fixture, 'scripts', 'version-check.js')));
+      const result = run(shell!, setup, { CLAUDE_PLUGIN_ROOT: undefined, PLUGIN_ROOT: undefined });
+      expect(result.error).toBeUndefined();
+      expect(result.stderr).toBe('');
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({ input, args: [], codex: null });
+    });
+
+    // Git Bash's runtime re-parses its Windows command line and collapses `\\`
+    // to `\` inside quotes, so a backslash pair cannot survive `bash -c` on
+    // Windows whatever the generator emits. The generated hooks contain none
+    // (asserted below); this quoting check runs on the POSIX shells, Fish included.
     for (const host of ['claude-code-setup', 'codex-cli'] as const) {
-      test(`${host} preserves literal apostrophes, backslashes and metacharacters in the hook body`, () => {
+      test.skipIf(process.platform === 'win32')(`${host} preserves literal apostrophes, backslashes and metacharacters in the hook body`, () => {
         const payload = String.raw`a 'quote', two\\backslashes, four\\\\backslashes, $PATH and $(echo unchanged)`;
         const command = buildShellCommand({
           host, requireFile: 'version-check.js', notFoundMessage: 'missing fixture',
@@ -126,3 +145,27 @@ for (const { name, executable: shell } of shells) {
     });
   });
 }
+
+// Escaping every backslash put `\\` pairs into the hooks (from the cache
+// scan's printf `\n`), and Git Bash collapses those to `\` on Windows, which
+// broke the cache-scan fallback there. Only a backslash before a backslash or
+// a quote needs escaping, and no generated hook has one.
+test('generated shell-form hooks contain no backslash pairs', () => {
+  const commands: string[] = [setup];
+  for (const entries of Object.values(hooks) as Array<Array<{ hooks: Array<{ command: string }> }>>) {
+    for (const entry of entries) commands.push(...entry.hooks.map(hook => hook.command));
+  }
+  expect(commands.length).toBe(7);
+  for (const command of commands) {
+    expect(command.startsWith("/bin/sh -c '")).toBe(true);
+    expect(command).not.toContain('\\\\');
+  }
+});
+
+test('escapes a backslash only before a backslash, a quote or the end', () => {
+  const command = buildShellCommand({
+    host: 'codex-cli', requireFile: 'version-check.js', notFoundMessage: 'missing fixture',
+    trailingCommand: ['printf', String.raw`'a\nb'`, String.raw`c\\d`, String.raw`e\'`, String.raw`f\ `],
+  });
+  expect(command.endsWith(String.raw`printf '\''a\nb'\'' c'\\'\d e'\\''\'' f\ '`)).toBe(true);
+});

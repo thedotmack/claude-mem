@@ -399,8 +399,13 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
   }
   parts.push(command);
 
-  // Fish also interprets backslashes in single quotes; escape them outside the quoted segments.
-  const quotedCommand = parts.join(' ').replace(/['\\]/g, char => `'\\${char}'`);
+  // Inside single quotes Fish treats only `\\` and `\'` as escapes, so a
+  // backslash is moved outside the quotes only when the next character is a
+  // backslash or a quote (or it ends the body). Every other backslash, like
+  // the `\n` in the cache scan's printf formats, stays inside the quotes as
+  // is: Git Bash's runtime collapses `\\` to `\` when it re-parses its Windows
+  // command line, so a hook body must not contain backslash pairs it can avoid.
+  const quotedCommand = parts.join(' ').replace(/'|\\(?=[\\']|$)/g, char => `'\\${char}'`);
   return `/bin/sh -c '${quotedCommand}'`;
 }
 
