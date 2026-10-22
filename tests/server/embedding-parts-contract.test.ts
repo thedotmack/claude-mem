@@ -60,7 +60,9 @@ function serverParts(fixture: ObservationFixture): Array<{ part: string; text: s
     ...(fixture.facts ? { facts: fixture.facts } : {}),
     ...(fixture.title != null ? { title: fixture.title } : {}),
     ...(fixture.subtitle != null ? { subtitle: fixture.subtitle } : {}),
-  }, 'rendered content');
+    // Chroma's documents carry only the structured fields, so the server's
+    // extra content part (for rows without narrative or facts) is left out.
+  }, '');
 }
 
 describe('worker and server embed the same parts', () => {

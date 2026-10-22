@@ -17,7 +17,9 @@ const SUMMARY_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next
  * names equal the Chroma document id suffixes and vectors carried over from a
  * Chroma collection line up: narrative, text (legacy rows only), fact_<n>, and
  * title when none of those exist; for summaries one part per summary field.
- * A row with none of these (a manual /v1/memories write) embeds its content.
+ * Without narrative, legacy text or facts (a manual /v1/memories write, say)
+ * the content is embedded too, beside any title; Chroma's documents have no
+ * such body, so this part has no Chroma counterpart.
  */
 export function observationEmbeddingParts(
   kind: string,
@@ -44,7 +46,11 @@ export function observationEmbeddingParts(
         ? metadata.title.trim()
         : '';
       const subtitle = typeof metadata.subtitle === 'string' ? metadata.subtitle.trim() : '';
-      add('title', [title, subtitle].filter(text => text.length > 0).join('\n'));
+      const heading = [title, subtitle].filter(text => text.length > 0).join('\n');
+      add('title', heading);
+      // A titled manual memory keeps its text in content; a title alone would
+      // leave the body unsearchable by meaning.
+      if (content.trim() !== heading) add('content', content);
     }
   }
   if (parts.length === 0) add('content', content);

@@ -37,11 +37,16 @@ describe('observationEmbeddingParts', () => {
     ]);
   });
 
-  it('falls back to title and subtitle, ignoring the Untitled placeholder', () => {
-    expect(observationEmbeddingParts('change', { title: 'A title', subtitle: 'sub' }, 'c'))
+  it('falls back to title and subtitle, ignoring the Untitled placeholder, and adds the content', () => {
+    expect(observationEmbeddingParts('change', { title: 'A title', subtitle: 'sub' }, 'A title\nsub'))
       .toEqual([{ part: 'title', text: 'A title\nsub' }]);
-    expect(observationEmbeddingParts('change', { title: 'Untitled', subtitle: 'sub' }, 'c'))
+    expect(observationEmbeddingParts('change', { title: 'Untitled', subtitle: 'sub' }, ''))
       .toEqual([{ part: 'title', text: 'sub' }]);
+    expect(observationEmbeddingParts('manual', { title: 'Operations' }, 'Backups run nightly to object storage.'))
+      .toEqual([
+        { part: 'title', text: 'Operations' },
+        { part: 'content', text: 'Backups run nightly to object storage.' },
+      ]);
   });
 
   it('embeds one part per summary field', () => {
