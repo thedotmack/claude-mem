@@ -151,6 +151,7 @@ const QUERIES: Record<string, string> = {
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
 (impl_item type: (_) @name) @impl_def
+(mod_item name: (identifier) @name) @namespace_def
 (use_declaration) @imp
 `,
 
