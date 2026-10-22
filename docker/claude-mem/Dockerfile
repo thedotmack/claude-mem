@@ -49,6 +49,13 @@ RUN cd /opt/claude-mem \
  && ONNXRUNTIME_NODE_INSTALL_CUDA=skip npm install --omit=dev --legacy-peer-deps \
  && npm cache clean --force
 
+# The embedding model search by meaning uses (LocalEmbedder), fetched into
+# transformers.js's cache inside the image; otherwise every new container
+# downloads it at its first embed, and one without network access searches by
+# keyword only.
+RUN cd /opt/claude-mem \
+ && node -e "import('@huggingface/transformers').then(t => t.pipeline('feature-extraction', 'Xenova/all-MiniLM-L6-v2', { dtype: 'fp32' }))"
+
 USER root
 RUN mkdir -p /home/node/.claude /home/node/.claude-mem /data/claude-mem \
  && chown -R node:node /home/node/.claude /home/node/.claude-mem /data/claude-mem
