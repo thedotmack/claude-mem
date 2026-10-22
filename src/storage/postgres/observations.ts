@@ -486,7 +486,8 @@ export class PostgresObservationRepository {
     // filtering the nearest parts of every project down to few or none.
     // SET LOCAL needs a transaction, hence a dedicated connection from a pool.
     const run = async (client: PostgresQueryable) => {
-      await client.query(`SET LOCAL hnsw.ef_search = ${Number(params[10])}`);
+      // pgvector rejects a value above 1000, which a limit above 250 would ask for.
+      await client.query(`SET LOCAL hnsw.ef_search = ${Math.min(1000, Number(params[10]))}`);
       await client.query(`SET LOCAL hnsw.iterative_scan = strict_order`);
       return client.query<ObservationRow>(sql, params);
     };

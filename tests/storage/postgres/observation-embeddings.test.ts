@@ -251,6 +251,13 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     expect(results.length).toBe(150);
   });
 
+  it('searches with a limit whose nearest-part count exceeds pgvector\'s ef_search maximum', async () => {
+    // 4 x 300 nearest parts would ask for ef_search 1200; pgvector allows 1000.
+    const results = await new PostgresObservationRepository(pool)
+      .search({ projectId, teamId, query: 'gateway', limit: 300, queryEmbedding: axis(1) });
+    expect(results.map(row => row.id)).toContain(ids.gateway);
+  });
+
   it('counts rows without vectors from the current model as missing', async () => {
     const embedder = (modelId: string): Embedder => ({ modelId, dims: 384, embed: async texts => texts.map(() => axis(1)) });
     const current = await getVectorSearchStatus(pool, embedder('test'));
