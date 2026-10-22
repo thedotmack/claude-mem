@@ -68,4 +68,40 @@ describe('signatures of languages without braced bodies', () => {
       one: 'def one(self)',
     });
   }, 120000);
+
+  test('Python triple-quoted defaults do not end a signature, even over rows', () => {
+    const source = [
+      'def quote(x="""say "): hello"""):',
+      '    pass',
+      '',
+      'def long_default(',
+      '    text="""first row (',
+      'still in the string: done""",',
+      '    flag=True,',
+      '):',
+      '    pass',
+    ].join('\n');
+    expect(signatures(source, 'quote.py')).toEqual({
+      quote: 'def quote(x="""say "): hello""")',
+      long_default: 'def long_default( text="""first row ( still in the string: done""", flag=True, )',
+    });
+  }, 120000);
+
+  test('a Ruby regexp bracket keeps the body out of the signature', () => {
+    const source = [
+      'def match(pattern = /\\(/)',
+      '  puts pattern',
+      'end',
+      '',
+      'def bracket(pattern = /[(]/)',
+      '  puts pattern',
+      'end',
+    ].join('\n');
+    // An escaped `\\(` is no bracket. An unescaped one leaves the brackets open, so
+    // the first row stands, as before.
+    expect(signatures(source, 'match.rb')).toEqual({
+      match: 'def match(pattern = /\\(/)',
+      bracket: 'def bracket(pattern = /[(]/)',
+    });
+  }, 120000);
 });

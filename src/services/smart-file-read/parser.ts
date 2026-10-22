@@ -588,15 +588,30 @@ const UNBRACED_BODY_LANGUAGES = new Set(["python", "ruby", "lua"]);
 function extractUnbracedSignature(lines: string[], startRow: number, endRow: number, firstLine: string, language: string): string {
   const rows: string[] = [];
   let depth = 0;
+  // A Python triple-quoted string can hold quotes, brackets and colons, and it
+  // can run over several rows.
+  let tripleQuote = "";
   for (let row = startRow; row <= Math.min(startRow + 9, endRow); row++) {
     const text = row === startRow ? firstLine : lines[row] ?? "";
     let end = text.length;
     let quote = "";
+    let closed = false;
     for (let i = 0; i < text.length; i++) {
       const ch = text[i];
-      if (quote) {
+      if (tripleQuote) {
+        if (text.startsWith(tripleQuote, i)) {
+          tripleQuote = "";
+          i += 2;
+        }
+      } else if (quote) {
         if (ch === "\\") i++;
         else if (ch === quote) quote = "";
+      } else if (ch === "\\") {
+        // An escaped character, such as the `\(` of a Ruby regexp, is no bracket.
+        i++;
+      } else if (language === "python" && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
+        tripleQuote = text.slice(i, i + 3);
+        i += 2;
       } else if (ch === '"' || ch === "'") {
         quote = ch;
       } else if (language === "lua" ? text.startsWith("--", i) : ch === "#") {
@@ -608,14 +623,17 @@ function extractUnbracedSignature(lines: string[], startRow: number, endRow: num
         depth--;
       } else if (ch === ":" && depth <= 0 && language === "python") {
         end = i;
-        depth = -1;
+        closed = true;
         break;
       }
     }
     rows.push(text.slice(0, end));
-    if (depth < 0 || (depth === 0 && language !== "python")) break;
+    if (language !== "python" && depth <= 0) closed = true;
+    if (closed) return rows.length > 1 ? rows.join(" ").replace(/\s+/g, " ") : rows[0];
   }
-  return rows.length > 1 ? rows.join(" ").replace(/\s+/g, " ") : rows[0] ?? firstLine;
+  // The brackets did not close within the rows read, as when a regexp holds an
+  // unescaped `(`: keep the first row, as for any other language.
+  return firstLine;
 }
 
 function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0, language: string = ""): string {
