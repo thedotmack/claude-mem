@@ -1,5 +1,5 @@
 
-import express, { Request, Response } from 'express';
+import express, { NextFunction, Request, Response } from 'express';
 import path from 'path';
 import { readFileSync, existsSync } from 'fs';
 import { logger } from '../../../../utils/logger.js';
@@ -48,6 +48,20 @@ export function lazyUiHtml(
 const getViewerHtmlBytes = lazyUiHtml('viewer.html');
 const getWorkViewHtmlBytes = lazyUiHtml('work-view/index.html');
 const getTvHtmlBytes = lazyUiHtml('tv.html');
+
+/**
+ * The built viewer is also reachable as `/viewer.html` through the static
+ * mount, before the `/viewer` handler runs. That URL serves the same
+ * destructive page, so it needs the same refusal. Registered immediately
+ * before `express.static` so no file can go out without the headers.
+ */
+export function refuseViewerHtmlFraming(req: Request, res: Response, next: NextFunction): void {
+  if (req.path === '/viewer.html') {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
+  next();
+}
 
 /**
  * Served with a 503 when a UI file is missing from the install. This is an
@@ -212,6 +226,7 @@ export class ViewerRoutes extends BaseRouteHandler {
       res.setHeader('X-Frame-Options', 'DENY');
       next();
     });
+    app.use(refuseViewerHtmlFraming);
     app.use(express.static(path.join(packageRoot, 'ui')));
 
     app.get('/health', this.handleHealth.bind(this));
@@ -237,6 +252,11 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    // The viewer can delete observations and save settings, and its requests
+    // are same-origin, so the worker's foreign-page guards treat them as its
+    // own. Refuse framing here like the work-view and restart routes do.
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
     const viewerHtmlBytes = getViewerHtmlBytes();
     if (!viewerHtmlBytes) {
       sendUiMissingPage(res, 'Viewer');
