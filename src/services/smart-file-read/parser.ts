@@ -1162,6 +1162,19 @@ function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): n
   return bestLevel;
 }
 
+// The first line of text in a symbol's comment or docstring, without its markers:
+// `/** Returns the id. */` and `"""Returns the id."""` both read `Returns the id.`.
+export function docCommentSummary(comment: string): string | undefined {
+  // Only a block comment has a closer; a line comment can end in `*/` as text.
+  const blockComment = comment.trimStart().startsWith("/*");
+  for (const line of comment.split("\n")) {
+    let text = line.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").replace(/['"`]{3}$/, "").trim();
+    if (blockComment) text = text.replace(/\s*\*+\/$/, "");
+    if (text) return text;
+  }
+  return undefined;
+}
+
 function formatSymbol(sym: CodeSymbol, indent: string): string {
   const parts: string[] = [];
 
@@ -1174,18 +1187,9 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
   parts.push(`${indent}${icon} ${sym.name}${exportTag} (${lineRange})`);
   parts.push(`${indent}  ${sym.signature}`);
 
-  if (sym.jsdoc) {
-    const jsdocLines = sym.jsdoc.split("\n");
-    const firstLine = jsdocLines.find(l => {
-      const t = l.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").trim();
-      return t.length > 0 && !t.startsWith("/**");
-    });
-    if (firstLine) {
-      const cleaned = firstLine.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").replace(/['"`]{3}$/, "").trim();
-      if (cleaned) {
-        parts.push(`${indent}  💬 ${cleaned}`);
-      }
-    }
+  const summary = sym.jsdoc && docCommentSummary(sym.jsdoc);
+  if (summary) {
+    parts.push(`${indent}  💬 ${summary}`);
   }
 
   if (sym.children && sym.children.length > 0) {
