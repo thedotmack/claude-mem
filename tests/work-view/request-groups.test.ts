@@ -41,7 +41,7 @@ describe('overall requests and progress reviews', () => {
   const { proposedGroups } = linkBackwards(candidates);
   const linked = proposedGroups.find((group) => group.conversations.length === 2);
   expect(linked.conversations).toEqual([key('a'), key('b')]);
-  expect(linked.links[0].evidence).toBe('work list "release-cards"');
+  expect(linked.links[0].evidence).toBe('work list "release-cards" in repo/tree');
   expect(proposedGroups.length).toBe(2);
 });
 
@@ -58,17 +58,18 @@ describe('overall requests and progress reviews', () => {
 
   it('progress reviews are validated: shipped needs a date and 100%', () => {
   const groups = { g_000000000001: { title: 'Cards' } };
-  const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, startedAt: '2026-10-01T00:00:00Z', shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.' };
+  const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, startedAt: '2026-10-01T00:00:00Z', shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
   expect(validateProgress(base, groups).state).toBe('shipped');
   expect(() => validateProgress({ ...base, percent: 90 }, groups)).toThrow(/percent 100/);
   expect(() => validateProgress({ ...base, state: 'in-progress', percent: 50 }, groups)).toThrow(/Only a shipped/);
   expect(() => validateProgress({ ...base, groupId: 'g_ffffffffffff' }, groups)).toThrow(/Unknown group/);
   expect(() => validateProgress({ ...base, preferences: [{ kind: 'vibe', preference: 'x', quote: 'y' }] }, groups)).toThrow(/kind/);
+  expect(() => validateProgress({ ...base, reviewBasis: undefined }, groups)).toThrow(/reviewBasis/);
 });
 
   it('a review records how released work landed, with evidence and the why of each change', () => {
   const groups = { g_000000000001: { title: 'Cards' } };
-  const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.' };
+  const base = { groupId: 'g_000000000001', state: 'shipped', percent: 100, shippedAt: '2026-10-03T00:00:00Z', summary: 'Cards merged and released.', reviewBasis: { checkedThrough: '2026-10-04T00:00:00Z', conversations: [key('a')] } };
   const outcome = {
     landed: { text: 'Released in v14.0.0 on Oct 3.', at: '2026-10-03T00:00:00Z', evidence: ['PR #4845'] },
     usage: { level: 'in-use', text: 'Owner opened My Work daily since.', evidence: ['obs 101'] },
@@ -100,7 +101,8 @@ describe('overall requests and progress reviews', () => {
     expect(pending.ungroupedConversations).toBe(0);
     const groupId = groupIdFor(key('a'));
     const review = join(dir, 'review.json');
-    writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 70, startedAt: new Date(NOW - 3 * DAY).toISOString(), summary: 'Cards built; spacing fix in review.', preferences: [{ kind: 'directive', preference: 'Execute clear asks without asking.', quote: 'just do it', at: null }] }));
+    const { reviewBasis } = run(['show', groupId]);
+    writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 70, startedAt: new Date(NOW - 3 * DAY).toISOString(), summary: 'Cards built; spacing fix in review.', preferences: [{ kind: 'directive', preference: 'Execute clear asks without asking.', quote: 'just do it', at: null }], reviewBasis }));
     expect(run(['record-progress', review]).percent).toBe(70);
     expect(readLedger(dir).progress[groupId].title).toBe('Release cards');
     expect(run(['pending', '--days', '14']).groups.map((group) => group.title)).toEqual(['Pricing page']);
@@ -130,6 +132,90 @@ describe('overall requests and progress reviews', () => {
   expect(new Set(humanRequests[0].conversationKeys)).toEqual(new Set([key('a'), key('b')]));
   const ungrouped = buildHumanRequests(view, { sessions, prompts });
   expect(ungrouped.humanRequests.length).toBe(2);
+});
+
+  it('a work list name links conversations only within one project', () => {
+  const candidate = (id: string, project: string) => ({ conversationKey: key(id), project, workLists: ['release'], requestIds: [] });
+  const { proposedGroups } = linkBackwards([candidate('a', 'repo-one'), candidate('b', 'repo-two'), candidate('c', 'repo-one')]);
+  expect(proposedGroups.map((group) => group.conversations)).toEqual([[key('a'), key('c')], [key('b')]]);
+});
+
+  it('every joined conversation needs a link back to the anchor', () => {
+  const link = (conversations: string[]) => ({ kind: 'agent-judgment', conversations, evidence: 'continues the card work' });
+  expect(() => applyGroupDecisions(null, { groups: [{ title: 'Cards', conversations: [key('a'), key('b'), key('c')], links: [link([key('a'), key('b')])] }] })).toThrow(/without evidence linking/);
+  expect(() => applyGroupDecisions(null, { groups: [{ title: 'Cards', conversations: [key('a'), key('b')], links: [link([key('a'), key('z')])] }] })).toThrow(/group's own conversations/);
+  expect(() => applyGroupDecisions(null, { groups: [{ title: 'Cards', conversations: [key('a'), key('b'), key('c')], links: [link([key('a'), key('b')]), link([key('b'), key('c')])] }] })).not.toThrow();
+});
+
+  it('a review goes stale when membership changes or unseen activity exists', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Spacing', conversations: [key('b')] }, { title: 'Pricing page', conversations: [key('c')] }] }));
+    run(['apply', decisions]);
+    const groupId = groupIdFor(key('a'));
+    // The reviewer read `show` before the latest activity (NOW - DAY) and saves later.
+    const { reviewBasis, conversations } = run(['show', groupId], NOW - 2 * DAY);
+    expect(conversations[0].asks[0].text).toBe('Build the release cards');
+    const review = join(dir, 'review.json');
+    writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 50, summary: 'Cards started.', reviewBasis }));
+    run(['record-progress', review]);
+    const due = () => run(['pending', '--days', '14']).groups.map((group: { groupId: string }) => group.groupId);
+    // Nothing happened in that conversation after show.
+    expect(due()).not.toContain(groupId);
+    // Merge spacing in: old activity, new membership, so it is due again.
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] }));
+    run(['apply', decisions]);
+    expect(due()).toContain(groupId);
+    // Reviewed with the new membership, but the observation at NOW - DAY came after the reviewer's show.
+    writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 60, summary: 'Cards and spacing.', reviewBasis: run(['show', groupId], NOW - 1.5 * DAY).reviewBasis }));
+    run(['record-progress', review]);
+    // Activity after checkedThrough stays due even though the save came later.
+    expect(due()).toContain(groupId);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('recent observations and work-state writes bring older conversations into the window', () => {
+  const database = fixtureDatabase();
+  database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(4, 'claude', 'd', 'm4', 'repo/tree', 'Build the old dashboard', NOW - 40 * DAY);
+  database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(4, 1, 'Build the old dashboard', NOW - 40 * DAY);
+  const inWindow = () => readCandidates(database, { sinceEpoch: NOW - 14 * DAY }).some((candidate) => candidate.conversationKey === key('d'));
+  expect(inWindow()).toBe(false);
+  database.prepare('INSERT INTO observations (memory_session_id, created_at_epoch) VALUES (?, ?)').run('m4', NOW - DAY);
+  expect(inWindow()).toBe(true);
+});
+
+  it('show returns every ask in full', () => {
+  const database = fixtureDatabase();
+  const prompt = database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
+  for (let number = 2; number <= 13; number += 1) prompt.run(1, number, `Fix card detail ${number} ${'x'.repeat(400)}`, NOW - 3 * DAY + number);
+  const [listed] = readCandidates(database, { conversationKeys: [key('a')] });
+  const [full] = readCandidates(database, { conversationKeys: [key('a')], fullAsks: true });
+  expect(listed.asks.length).toBe(10);
+  expect(full.asks.length).toBe(13);
+  expect(full.asks.at(-1).text.length).toBeGreaterThan(400);
+});
+
+  it('projection hides ignored conversations and keeps the stored anchor ask as the start', () => {
+  const groupId = groupIdFor(key('a'));
+  const anchorAsk = { text: 'Build the release cards', source: 'user-prompt', sourceId: 11, url: '/api/work-view/evidence/prompt/11', promptNumber: 1, atEpoch: 10 };
+  const ledger = { groups: { conversations: { [key('a')]: groupId, [key('b')]: groupId }, groups: { [groupId]: { title: 'Release cards', anchorAsk } }, ignored: { [key('c')]: 'Automated naming prompt' } }, progress: {} };
+  // Only the later conversation and an ignored one are loaded; the anchor aged out.
+  const sessions = [
+    { id: 2, platform_source: 'claude', content_session_id: 'b', user_prompt: 'Fix the card spacing', started_at_epoch: 20 },
+    { id: 3, platform_source: 'claude', content_session_id: 'c', user_prompt: 'Generate a short name for this workspace', started_at_epoch: 30 },
+  ];
+  const prompts = [{ id: 21, session_db_id: 2, prompt_number: 1, prompt_text: 'Fix the card spacing', created_at_epoch: 20 }];
+  const item = (id: number) => ({ id, title: `work ${id}`, kind: 'work-state', listId: 'cards', project: 'repo/tree', lastUpdateEpoch: id });
+  const view = { agents: [{ id: 'later', label: 'Claude Code', sessionId: 2, work: [item(2)] }, { id: 'bot', label: 'Codex', sessionId: 3, work: [item(3)] }] };
+  const { humanRequests, unlinkedWork } = buildHumanRequests(view, { sessions, prompts }, { ledger });
+  expect(humanRequests.length).toBe(1);
+  expect(humanRequests[0].original.sourceId).toBe(11);
+  expect(humanRequests[0].startedAtEpoch).toBe(10);
+  expect(unlinkedWork.find((work: { agentId: string }) => work.agentId === 'bot').reason).toBe('ignored-by-request-grouping');
 });
 
 });

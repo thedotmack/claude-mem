@@ -35,15 +35,20 @@ export const groupIdFor = (anchorConversationKey) => `g_${createHash('sha256').u
 function placeholders(values) { return values.map(() => '?').join(','); }
 
 // Pass sinceEpoch for a time window, or conversationKeys for specific conversations.
-export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null }) {
+// fullAsks returns every qualifying ask untruncated (for `show`); listings stay short.
+export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false }) {
   const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const sessions = pairs
     ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => '(?, ?)').join(',')})`).all(...pairs.flat()) : []
-    : database.prepare(`${columns} WHERE started_at_epoch >= ? OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch);
+    // Any recent activity counts: a new start, prompt, observation or work-state write.
+    : database.prepare(`${columns} WHERE started_at_epoch >= ?
+        OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
+        OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE tool_name LIKE '%work_state_write%' AND created_at_epoch >= ?)
+        OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
   if (!sessions.length) return [];
   const ids = sessions.map((session) => session.id);
-  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, substr(prompt_text, 1, 1200) AS prompt_text, created_at_epoch
+  const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
   const writes = database.prepare(`SELECT session_db_id, tool_input, created_at_epoch FROM tool_uses
     WHERE tool_name LIKE '%work_state_write%' AND session_db_id IN (${placeholders(ids)})`).all(...ids);
@@ -65,12 +70,12 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
     own.sort((a, b) => a.created_at_epoch - b.created_at_epoch || a.id - b.id);
     const lastPrompt = own.at(-1)?.created_at_epoch ?? 0;
     const asks = own.filter((prompt) => isHumanActionRequest(prompt.prompt_text))
-      .map((prompt) => ({ promptId: prompt.id, at: iso(prompt.created_at_epoch), text: requestText(prompt.prompt_text, 280) }));
+      .map((prompt) => ({ promptId: prompt.id, at: iso(prompt.created_at_epoch), text: requestText(prompt.prompt_text, fullAsks ? Infinity : 280) }));
     candidates.set(key, {
       conversationKey: key, platform: session.platform_source, project: session.project,
       startedAt: iso(original.atEpoch ?? session.started_at_epoch), startedAtEpoch: original.atEpoch ?? session.started_at_epoch,
       lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, session.started_at_epoch ?? 0),
-      firstAsk: requestText(original.text, 600), asks: asks.slice(0, 10), askCount: asks.length,
+      firstAsk: requestText(original.text, 600), asks: fullAsks ? asks : asks.slice(0, 10), askCount: asks.length, original,
       workLists: [], requestIds: [], observationCount: observationsBySession.get(session.id)?.count ?? 0,
       sessionDbId: session.id,
     });
@@ -90,7 +95,8 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
     .map(({ sessionDbId, lastActivityEpoch, ...candidate }) => ({ ...candidate, lastActivityAt: iso(lastActivityEpoch), lastActivityEpoch }));
 }
 
-/** Union conversations that recorded into the same work list or request id. */
+/** Union conversations that recorded into the same work list or request id.
+ * Work lists are stored per project, so a list name only links within one project. */
 export function linkBackwards(candidates) {
   const parent = new Map(candidates.map((candidate) => [candidate.conversationKey, candidate.conversationKey]));
   const find = (key) => { while (parent.get(key) !== key) { parent.set(key, parent.get(parent.get(key))); key = parent.get(key); } return key; };
@@ -99,14 +105,15 @@ export function linkBackwards(candidates) {
   const shared = (kind, field) => {
     const owners = new Map();
     for (const candidate of candidates) for (const value of candidate[field]) {
-      if (!owners.has(value)) owners.set(value, []);
-      owners.get(value).push(candidate.conversationKey);
+      const scope = kind === 'shared-work-list' ? JSON.stringify([candidate.project, value]) : value;
+      if (!owners.has(scope)) owners.set(scope, { value, project: candidate.project, keys: [] });
+      owners.get(scope).keys.push(candidate.conversationKey);
     }
-    for (const [value, keys] of owners) {
+    for (const { value, project, keys } of owners.values()) {
       if (keys.length < 2) continue;
-      if (kind === 'shared-work-list' && keys.length > MAX_CONVERSATIONS_PER_LINKING_LIST) { skippedLists.push({ list: value, conversations: keys.length }); continue; }
+      if (kind === 'shared-work-list' && keys.length > MAX_CONVERSATIONS_PER_LINKING_LIST) { skippedLists.push({ list: value, project, conversations: keys.length }); continue; }
       for (const key of keys.slice(1)) parent.set(find(key), find(keys[0]));
-      links.push({ kind, conversations: keys, evidence: `${kind === 'shared-work-list' ? 'work list' : 'request_id'} "${value}"` });
+      links.push({ kind, conversations: keys, evidence: kind === 'shared-work-list' ? `work list "${value}" in ${project}` : `request_id "${value}"` });
     }
   };
   shared('shared-request-id', 'requestIds');
@@ -146,14 +153,21 @@ export function applyGroupDecisions(stored, decisions, now = Date.now()) {
     if (typeof decision.title !== 'string' || !decision.title.trim() || decision.title.length > 120) throw new TypeError(`${label}.title must be 1–120 characters.`);
     if (!Array.isArray(decision.conversations) || !decision.conversations.length || !decision.conversations.every(isConversationKey)) throw new TypeError(`${label}.conversations must list conversation keys, earliest first.`);
     const links = decision.links ?? [];
+    const members = new Set(decision.conversations);
+    const parent = new Map(decision.conversations.map((key) => [key, key]));
+    const find = (key) => { while (parent.get(key) !== key) key = parent.get(key); return key; };
     for (const link of links) {
       if (!LINK_KINDS.includes(link.kind)) throw new TypeError(`${label} has unknown link kind ${link.kind}.`);
       if (typeof link.evidence !== 'string' || !link.evidence.trim()) throw new TypeError(`${label} has a link without evidence.`);
+      if (!Array.isArray(link.conversations) || link.conversations.length < 2 || !link.conversations.every((key) => members.has(key))) throw new TypeError(`${label} has a link that must name 2+ of the group's own conversations.`);
+      for (const key of link.conversations.slice(1)) parent.set(find(key), find(link.conversations[0]));
     }
     if (decision.conversations.length > 1 && !links.length) throw new TypeError(`${label} joins conversations without a recorded link.`);
+    const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
+    if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(', ')} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
     for (const key of decision.conversations) next.conversations[key] = id;
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], links, decidedAt: iso(now) };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
@@ -210,6 +224,10 @@ export function validateOutcome(outcome) {
 export function validateProgress(entry, knownGroups) {
   if (!entry || typeof entry !== 'object') throw new TypeError('Progress must be an object.');
   if (!knownGroups[entry.groupId]) throw new TypeError(`Unknown group ${entry.groupId}.`);
+  const basis = entry.reviewBasis;
+  if (!basis || typeof basis.checkedThrough !== 'string' || !Number.isFinite(Date.parse(basis.checkedThrough)) || !Array.isArray(basis.conversations) || !basis.conversations.length || !basis.conversations.every(isConversationKey)) {
+    throw new TypeError('reviewBasis must be copied verbatim from `show` (checkedThrough and conversations).');
+  }
   if (!PROGRESS_STATES.includes(entry.state)) throw new TypeError(`state must be one of ${PROGRESS_STATES.join(', ')}.`);
   if (!Number.isInteger(entry.percent) || entry.percent < 0 || entry.percent > 100) throw new TypeError('percent must be an integer 0–100.');
   for (const field of ['startedAt', 'shippedAt', 'lastActivityAt']) if (!isIsoOrNull(entry[field] ?? null)) throw new TypeError(`${field} must be an ISO date or null.`);
@@ -234,7 +252,18 @@ export function validateProgress(entry, knownGroups) {
     }),
     outcome: validateOutcome(entry.outcome),
     evidence: (entry.evidence ?? []).map(String).slice(0, 20),
+    // What the reviewer actually saw: later activity or membership changes make it due again.
+    reviewedThrough: new Date(Date.parse(basis.checkedThrough)).toISOString(),
+    reviewedConversations: [...new Set(basis.conversations)].sort(),
   };
+}
+
+/** A review is current only for the membership it covered and the activity it saw. */
+export function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
+  if (!review?.reviewedThrough || !Array.isArray(review.reviewedConversations)) return false;
+  const current = [...new Set(conversationKeys)].sort();
+  if (current.length !== review.reviewedConversations.length || current.some((key, index) => key !== review.reviewedConversations[index])) return false;
+  return Date.parse(review.reviewedThrough) >= lastActivityEpoch;
 }
 
 export function validateStory(story) {
@@ -278,14 +307,26 @@ function groupDetails(groupId, ledger, candidatesByKey) {
   const conversations = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => candidatesByKey.get(key) ?? { conversationKey: key, outsideWindow: true });
   const loaded = conversations.filter((conversation) => !conversation.outsideWindow);
   return {
-    groupId, title: group.title, links: group.links,
+    groupId, title: group.title, links: group.links, anchorAsk: group.anchorAsk ?? null,
     startedAt: iso(Math.min(...loaded.map((conversation) => conversation.startedAtEpoch ?? Infinity))),
     lastActivityAt: iso(Math.max(0, ...loaded.map((conversation) => conversation.lastActivityEpoch ?? 0))),
     lastActivityEpoch: Math.max(0, ...loaded.map((conversation) => conversation.lastActivityEpoch ?? 0)),
     projects: [...new Set(loaded.map((conversation) => conversation.project))],
-    conversations: conversations.map(({ lastActivityEpoch, startedAtEpoch, ...conversation }) => conversation),
+    conversations: conversations.map(({ lastActivityEpoch, startedAtEpoch, original, ...conversation }) => conversation),
     previousReview: ledger.progress[groupId] ?? null,
   };
+}
+
+// Re-review only groups with activity after their last review; finished
+// groups stay finished unless new work arrives.
+function pendingReviews(ledger, database, sinceEpoch) {
+  const candidates = new Map(readCandidates(database, { sinceEpoch }).map((candidate) => [candidate.conversationKey, candidate]));
+  const ungrouped = [...candidates.keys()].filter((key) => !ledger.groups.conversations[key] && !ledger.groups.ignored?.[key]).length;
+  const ids = [...new Set([...candidates.keys()].map((key) => ledger.groups.conversations[key]).filter(Boolean))];
+  const due = ids.map((id) => groupDetails(id, ledger, candidates))
+    .filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch))
+    .sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
+  return { due, ungrouped };
 }
 
 function readInput(source) {
@@ -324,7 +365,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
       .filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (!projectRoot || candidate.project.split('/')[0] === projectRoot));
     const { proposedGroups, skippedLists } = linkBackwards(candidates);
     const brief = args.includes('--brief');
-    const shown = candidates.map(({ lastActivityEpoch, startedAtEpoch, ...candidate }) => {
+    const shown = candidates.map(({ lastActivityEpoch, startedAtEpoch, original, ...candidate }) => {
       const currentGroup = stored.conversations[candidate.conversationKey] ?? null;
       return brief
         ? { conversationKey: candidate.conversationKey, project: candidate.project, startedAt: candidate.startedAt, lastActivityAt: candidate.lastActivityAt, firstAsk: candidate.firstAsk.slice(0, 200), laterAsks: candidate.asks.slice(1, 4).map((ask) => ask.text.slice(0, 120)), workLists: candidate.workLists, currentGroup }
@@ -334,6 +375,11 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   }
   if (command === 'apply') {
     const next = applyGroupDecisions(readLedger(dir).groups, readInput(args[0] ?? '-'), now);
+    // Keep each group's first ask in the ledger so a card's start never moves
+    // forward when the anchor conversation ages out of My Work's reads.
+    const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
+    const anchors = new Map(readCandidates(db(), { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
+    for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
     writeJsonAtomic(join(dir, 'request-groups.json'), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
@@ -342,18 +388,11 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     if (command === 'show') {
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
-      const candidates = new Map(readCandidates(db(), { conversationKeys: keys }).map((candidate) => [candidate.conversationKey, candidate]));
-      return print(groupDetails(args[0], ledger, candidates));
+      const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true }).map((candidate) => [candidate.conversationKey, candidate]));
+      // The reviewer passes reviewBasis back to record-progress unchanged.
+      return print({ ...groupDetails(args[0], ledger, candidates), reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
-    const candidates = new Map(readCandidates(db(), { sinceEpoch: since() }).map((candidate) => [candidate.conversationKey, candidate]));
-    const ungrouped = [...candidates.keys()].filter((key) => !ledger.groups.conversations[key] && !ledger.groups.ignored?.[key]).length;
-    const ids = [...new Set([...candidates.keys()].map((key) => ledger.groups.conversations[key]).filter(Boolean))];
-    // Re-review only groups with activity after their last review; finished
-    // groups stay finished unless new work arrives.
-    const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => {
-      const review = group.previousReview;
-      return !review || Date.parse(review.checkedAt) < group.lastActivityEpoch;
-    }).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
+    const { due, ungrouped } = pendingReviews(ledger, db(), since());
     const limit = option(args, 'limit', 48);
     return print({ due: due.length, groups: due.slice(0, limit).map((group) => ({ groupId: group.groupId, title: group.title, lastActivityAt: group.lastActivityAt, conversations: group.conversations.length })), deferred: Math.max(0, due.length - limit), ungroupedConversations: ungrouped });
   }

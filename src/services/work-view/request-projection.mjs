@@ -120,9 +120,19 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       unlinkedWork.push({ ...item, reason: key ? 'no-substantive-human-request' : 'no-confirmed-conversation-or-explicit-request' });
       continue;
     }
+    // The grouping agent ruled this conversation out as a human goal; an
+    // explicit request_id recorded by the producer still stands on its own.
+    if (!explicit && key && ledger?.groups?.ignored?.[key]) {
+      unlinkedWork.push({ ...item, reason: 'ignored-by-request-grouping' });
+      continue;
+    }
     const groupId = !explicit && key ? ledger?.groups?.conversations?.[key] ?? null : null;
     const id = explicit ? JSON.stringify(['explicit-request', explicit]) : groupId ? JSON.stringify(['overall-request', groupId]) : key;
     let request = requests.get(id);
+    // A group keeps its first ask in the ledger, so the start holds even when
+    // the anchor conversation is outside the loaded work.
+    const anchorAsk = groupId ? ledger?.groups?.groups?.[groupId]?.anchorAsk ?? null : null;
+    if (anchorAsk && (anchorAsk.atEpoch ?? Infinity) < (original.atEpoch ?? Infinity)) original = anchorAsk;
     if (!request) {
       request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit, groupId };
       requests.set(id, request);

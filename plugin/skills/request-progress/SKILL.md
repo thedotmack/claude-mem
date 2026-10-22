@@ -77,7 +77,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 > Review the progress of these overall requests from claude-mem memory. For EACH groupId:
 >
-> 1. Run `<CLI> show <groupId>` for its conversations, every human ask with times, work lists, dates and any previous review.
+> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), work lists, dates, any previous review and a `reviewBasis`.
 > 2. Search memory (`mem_search`, `timeline`, `get_observations`) for the outcome: merged PRs, releases, deploys, work-state items marked done, the owner confirming or rejecting the result, or work that stopped. Search for the named artifacts in the asks, not generic words. Fetch the observations you rely on.
 > 3. Decide from the evidence only:
 >    - `state`: `shipped` (merged and released or deployed, or the owner confirmed it done) | `in-progress` | `stalled` (no activity for 3+ days and not finished) | `abandoned` (explicitly dropped or replaced) | `unknown` (memory has too little).
@@ -91,7 +91,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >      - `regressions` (≤10): `{text, at, fixedBy, evidence}` for anything it broke: later fix PRs or commits that name it, reverts, bug reports, the owner's corrections. `fixedBy` is null while unfixed.
 >      - `changes` (≤12): `{what, why, at, evidence}` for each meaningful change, with the WHY from the owner's own ask (quote it), the commit or PR message, or the incident that caused it. Never write a why you cannot cite.
 >    - `preferences` (≤10): how the owner likes to work with agents, taken ONLY from the owner's own asks shown by `show`. `quote` is verbatim; `kind` is `directive` | `correction` | `praise` | `frustration`. Skip pasted agent text, secrets, keys and tokens.
-> 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `outcome`, `preferences` and `evidence`. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
+> 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `outcome`, `preferences`, `evidence` and `reviewBasis` copied verbatim from that group's `show` output (it marks which conversations and activity you reviewed). Pass the JSON through the heredoc; never write review files to disk, because other reviewers run at the same time. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
 >
 > Return the groups you recorded and any you could not, with the reason.
 
