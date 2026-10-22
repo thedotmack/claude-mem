@@ -3,13 +3,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { isConnectionRefusedError } from '../shared/connection-errors.js';
-import { expandHome } from '../shared/expand-home.js';
+import { resolveDataDir } from '../shared/data-dir.js';
 
 const TIMEOUT_MS = 5_000;
 
 /** Resolve the same per-user address as the worker, including persisted settings. */
 export function resolveHarnessWorkerUrl(): string {
-  const dataDir = expandHome(process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem'));
+  const dataDir = resolveDataDir();
   let settings: Record<string, unknown> = {};
   try {
     const document = JSON.parse(readFileSync(join(dataDir, 'settings.json'), 'utf8').replace(/^\uFEFF/, ''));
