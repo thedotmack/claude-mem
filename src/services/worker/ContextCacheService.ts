@@ -181,7 +181,9 @@ export class ContextCacheService {
         this.requeueAfterRemoval(variantId);
         return;
       }
-      this.persistRender(variant, keys, render, renderedAtEpochMs, renderSequenceAtStart);
+      // A render a newer one overtook needs no heal: that newer render started
+      // after this one, and any write since it started queued its own render.
+      if (!this.persistRender(variant, keys, render, renderedAtEpochMs, renderSequenceAtStart)) return;
       if (render.invalidationGenerationAtStart !== undefined && render.invalidationGenerationAtStart !== this.invalidationGeneration) {
         this.pendingVariantIds.add(variantId);
         this.scheduleRender();
@@ -345,7 +347,11 @@ export class ContextCacheService {
         // The old file would now be wrong; remove it so the hook takes the live path.
         logger.error('CONTEXT_CACHE', 'Context re-render failed; removing the cached block', { variantId, keys: variant.keys },
           error instanceof Error ? error : new Error(String(error)));
-        if (this.variants.get(variantId) === variant) this.removeFile(variant.keys);
+        // A newer render may already have written a good file; the failed one
+        // removes it only when nothing that started later reached the file.
+        if (this.variants.get(variantId) === variant && this.claimRenderSequence(variant, renderSequenceAtStart)) {
+          this.removeFile(variant.keys);
+        }
       } finally {
         this.activeVariantIds.delete(variantId);
       }
@@ -358,25 +364,11 @@ export class ContextCacheService {
     render: ContextVariantRender,
     renderedAtEpochMs: number,
     renderSequenceAtStart?: number,
-  ): void {
-    // Order by render start, not completion: a render that began before the one
-    // already on disk carries an older body, so neither its write nor its
-    // removal may land. Authoritative removals (an invalidation, eviction,
-    // teardown, setServable(false)) call removeFile directly and are not gated.
-    if (renderSequenceAtStart !== undefined) {
-      if (renderSequenceAtStart < variant.lastPersistedRenderSequence) {
-        logger.debug('CONTEXT_CACHE', 'Dropped a render a newer render overtook', {
-          variantId: contextCacheVariantId(keys),
-          renderSequenceAtStart,
-          lastPersistedRenderSequence: variant.lastPersistedRenderSequence,
-        });
-        return;
-      }
-      variant.lastPersistedRenderSequence = renderSequenceAtStart;
-    }
+  ): boolean {
+    if (!this.claimRenderSequence(variant, renderSequenceAtStart)) return false;
     if (!render.cacheable || !this.servable) {
       this.removeFile(keys);
-      return;
+      return true;
     }
     try {
       writeContextCache(keys, render.body, renderedAtEpochMs);
@@ -385,6 +377,29 @@ export class ContextCacheService {
         error instanceof Error ? error : new Error(String(error)));
       this.removeFile(keys);
     }
+    return true;
+  }
+
+  /**
+   * Order render results by render start, not completion: a render that began
+   * before the one already on disk carries an older body, so neither its write
+   * nor its removal may land. Returns false for such a render; otherwise records
+   * its ticket as the variant's latest. An untickted render (undefined) is not
+   * ordered. Authoritative removals (an invalidation, eviction, teardown,
+   * setServable(false)) call removeFile directly and are not gated.
+   */
+  private claimRenderSequence(variant: KnownVariant, renderSequenceAtStart: number | undefined): boolean {
+    if (renderSequenceAtStart === undefined) return true;
+    if (renderSequenceAtStart < variant.lastPersistedRenderSequence) {
+      logger.debug('CONTEXT_CACHE', 'Dropped a render a newer render overtook', {
+        variantId: contextCacheVariantId(variant.keys),
+        renderSequenceAtStart,
+        lastPersistedRenderSequence: variant.lastPersistedRenderSequence,
+      });
+      return false;
+    }
+    variant.lastPersistedRenderSequence = renderSequenceAtStart;
+    return true;
   }
 
   private removeFile(keys: ContextCacheKeys): void {

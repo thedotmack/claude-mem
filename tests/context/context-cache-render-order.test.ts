@@ -4,10 +4,13 @@
  *
  * Two renders can be in flight for one variant at once — the live route renders
  * on a SessionStart request, and the debounced queue re-renders after a write.
- * Whichever finishes last used to win the file, so a render that began before a
- * write could overwrite the queued render that had already read that write. The
- * cache then served pre-write content with nothing pending, until the next
- * write or the 24h expiry. A per-variant start sequence keeps the newer render.
+ * Whichever finished last used to win the file. A live render that began before
+ * a write could overwrite the queued render that had already read that write.
+ * Since #4830 the live route passes invalidationGenerationAtStart, so the cache
+ * re-queued and healed one debounce later, but it served the pre-write body
+ * until then and paid for a redundant re-render. A queued render that failed
+ * after a newer live render had written could also delete that good file.
+ * A per-variant start sequence keeps the newer render's result in every case.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { mkdtempSync, rmSync } from 'fs';
@@ -35,10 +38,28 @@ describe('ContextCacheService render ordering', () => {
   let queuedRenderCount: number;
   /** When set, each queued render waits on it (an in-flight render others can overtake). */
   let renderGate: Promise<void> | null;
+  /** Resolved when a queued render has taken its ticket and reached the gate. */
+  let signalQueuedRenderEntered: () => void;
+  let queuedRenderEntered: Promise<void>;
+  /** When set, the next queued render throws after the gate instead of returning. */
+  let failNextQueuedRender: boolean;
 
   const waitPastDebounce = async () => {
     await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS * 4));
     await service.flushPendingRenders();
+  };
+
+  /** Queue a re-render with a write and wait until it is in flight, blocked on the gate. */
+  const startBlockedQueuedRender = async (): Promise<() => void> => {
+    let releaseGate = () => {};
+    renderGate = new Promise<void>(resolve => { releaseGate = resolve; });
+    queuedRenderEntered = new Promise<void>(resolve => { signalQueuedRenderEntered = resolve; });
+    emitContextInvalidation('all', 'store-observation', 'write');
+    await queuedRenderEntered;
+    return () => {
+      renderGate = null;
+      releaseGate();
+    };
   };
 
   beforeEach(async () => {
@@ -47,10 +68,17 @@ describe('ContextCacheService render ordering', () => {
     process.env.CLAUDE_MEM_DATA_DIR = tempDir;
     queuedRenderCount = 0;
     renderGate = null;
+    failNextQueuedRender = false;
+    signalQueuedRenderEntered = () => {};
     service = new ContextCacheService({
       debounceMs: DEBOUNCE_MS,
       renderVariant: async (): Promise<ContextVariantRender> => {
+        signalQueuedRenderEntered();
         if (renderGate) await renderGate;
+        if (failNextQueuedRender) {
+          failNextQueuedRender = false;
+          throw new Error('queued render failed');
+        }
         queuedRenderCount++;
         return { body: `queued render #${queuedRenderCount}`, cacheable: true };
       },
@@ -91,32 +119,81 @@ describe('ContextCacheService render ordering', () => {
     expect(readContextCache(keys, Date.now())?.body).toBe(queuedBody);
   });
 
-  it('a queued render does not overwrite a live render that started after it', async () => {
-    let releaseGate = () => {};
-    renderGate = new Promise<void>(resolve => { releaseGate = resolve; });
+  it('a live render carrying invalidationGenerationAtStart is dropped without a redundant re-render', async () => {
+    // What the live SessionStart route does: read both generations, then take a ticket.
+    const removalGenerationAtRenderStart = service.removalGenerationNow();
+    const invalidationGenerationAtStart = service.invalidationGenerationNow();
+    const liveSequence = service.beginRenderSequence();
 
-    // A write queues a re-render, which starts and then blocks on the gate.
     emitContextInvalidation('all', 'store-observation', 'write');
-    await new Promise(resolve => setTimeout(resolve, DEBOUNCE_MS * 4));
+    await waitPastDebounce();
+    expect(readContextCache(keys, Date.now())?.body).toBe('queued render #1');
+
+    await service.recordLiveRender(
+      keys,
+      { body: 'live body rendered before the write', cacheable: true, invalidationGenerationAtStart },
+      Date.now(),
+      removalGenerationAtRenderStart,
+      liveSequence,
+    );
+
+    // The stale body never reaches the file, not even for one debounce interval.
+    expect(readContextCache(keys, Date.now())?.body).toBe('queued render #1');
+    // The queued render that overtook it already read the write, so no heal is queued.
+    await waitPastDebounce();
+    expect(queuedRenderCount).toBe(1);
+    expect(readContextCache(keys, Date.now())?.body).toBe('queued render #1');
+  });
+
+  it('a queued render does not overwrite a live render that started after it', async () => {
+    // A write queues a re-render, which takes its ticket and then blocks on the gate.
+    const releaseQueuedRender = await startBlockedQueuedRender();
 
     // A SessionStart request renders after that queued render began, so it sees
     // at least as much as the queued one, and it records first.
-    const liveSequence = service.beginRenderSequence();
-    service.recordLiveRender(
+    await service.recordLiveRender(
       keys,
       { body: 'newer live render', cacheable: true },
       Date.now(),
       undefined,
-      liveSequence,
+      service.beginRenderSequence(),
     );
     expect(readContextCache(keys, Date.now())?.body).toBe('newer live render');
 
     // The queued render finishes last; its older body must not land.
-    renderGate = null;
-    releaseGate();
+    releaseQueuedRender();
     await service.flushPendingRenders();
 
     expect(readContextCache(keys, Date.now())?.body).toBe('newer live render');
+  });
+
+  it('a queued render that fails does not remove a live render that started after it', async () => {
+    failNextQueuedRender = true;
+    const releaseQueuedRender = await startBlockedQueuedRender();
+
+    await service.recordLiveRender(
+      keys,
+      { body: 'newer live render', cacheable: true },
+      Date.now(),
+      undefined,
+      service.beginRenderSequence(),
+    );
+    expect(readContextCache(keys, Date.now())?.body).toBe('newer live render');
+
+    // The queued render rejects; the newer live file is still correct, so it stays.
+    releaseQueuedRender();
+    await service.flushPendingRenders();
+
+    expect(readContextCache(keys, Date.now())?.body).toBe('newer live render');
+  });
+
+  it('a queued render that fails with nothing newer on disk still removes the file', async () => {
+    failNextQueuedRender = true;
+    emitContextInvalidation('all', 'store-observation', 'write');
+    await waitPastDebounce();
+
+    // The pre-write file would now be wrong; the hook must take the live path.
+    expect(readContextCache(keys, Date.now())).toBeNull();
   });
 
   it('a later render still replaces the file', async () => {
@@ -125,7 +202,7 @@ describe('ContextCacheService render ordering', () => {
     expect(readContextCache(keys, Date.now())?.body).toBe('queued render #1');
 
     // A live render that started after that queued render is the newest body.
-    service.recordLiveRender(
+    await service.recordLiveRender(
       keys,
       { body: 'newest live render', cacheable: true },
       Date.now(),
