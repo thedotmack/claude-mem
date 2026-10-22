@@ -9,17 +9,22 @@ import { tmpdir } from 'node:os';
 if (process.env.CLAUDE_MEM_INSTALLER_FIXTURE_CHILD !== import.meta.path) {
   describe('isolated installer fixture', () => {
     it('passes every case in a fresh Bun process', () => {
+      // The full-flow cases pay real environment probes on every run —
+      // where.exe IDE detection (~6s over a long Windows PATH), claude
+      // --version, the Git Bash preflight — so a per-test cap sized for the
+      // refusal cases turns a slow machine into a red suite. 30s covers the
+      // measured ~10s worst case; the child budget holds every case serially.
       const child = Bun.spawnSync({
-        cmd: [process.execPath, 'test', '--timeout', '10000', import.meta.path],
+        cmd: [process.execPath, 'test', '--timeout', '30000', import.meta.path],
         cwd: join(import.meta.dir, '..', '..'),
         env: { ...process.env, CLAUDE_MEM_INSTALLER_FIXTURE_CHILD: import.meta.path },
-        stdout: 'pipe', stderr: 'pipe', timeout: 45_000,
+        stdout: 'pipe', stderr: 'pipe', timeout: 180_000,
       });
       if (child.stdout) process.stdout.write(child.stdout);
       if (child.stderr) process.stderr.write(child.stderr);
       expect(child.exitCode).toBe(0);
       expect(child.success).toBe(true);
-    }, 50_000);
+    }, 210_000);
   });
 } else {
 // Run this file as its own Bun invocation. Real packaged PTY coverage is
@@ -134,6 +139,10 @@ const { detectInstalledIDEs, initialIDESelection } = await import('../../src/npx
 const loadSettings = spyOn(SettingsDefaultsManager, 'loadFromFile');
 const settingsPath = join(data, 'settings.json');
 let original: Buffer;
+// The mode the fixture provisions, captured after setup: Windows cannot
+// express POSIX owner-only bits, so the boundary check asserts the installer
+// left the mode untouched rather than a hardcoded 0o600.
+let provisionedMode: number;
 beforeEach(() => {
   for (const root of [piDir, dshDir]) { rmSync(root, { recursive: true, force: true }); mkdirSync(root, { recursive: true }); }
   rmSync(join(bin, 'claude'), { force: true });
@@ -157,6 +166,7 @@ beforeEach(() => {
   }, null, 2) + '\n');
   writeFileSync(settingsPath, original, { mode: 0o600 });
   chmodSync(settingsPath, 0o600);
+  provisionedMode = statSync(settingsPath).mode & 0o7777;
 });
 afterAll(() => {
   commandEnvironment.mockRestore();
@@ -178,7 +188,7 @@ afterAll(() => {
 });
 function expectUnchangedServerBoundary(): void {
   expect(readFileSync(settingsPath)).toEqual(original);
-  expect(statSync(settingsPath).mode & 0o7777).toBe(0o600);
+  expect(statSync(settingsPath).mode & 0o7777).toBe(provisionedMode);
   expect(bootstrapCalls).toBe(0);
   expect(httpCalls).toBe(0);
   expect(taskBatches).toBe(0);
