@@ -114,7 +114,7 @@ test('private blocks are removed before truncating every captured payload', asyn
 test('nested and unfinished private blocks cannot escape capture filtering', async () => {
   const { memory, calls } = fixture();
   const turn = memory.turn({ sessionId, messages: [{ role: 'user',
-    content: 'Public. <PRIVATE>SECRET<private>SECRET</private>SECRET</PRIVATE> Safe. <private>SECRET' }] });
+    content: 'Public. <PRIVATE>SECRET<private>SECRET</private>SECRET</private invalid>SECRET</PRIVATE> Safe. <private>SECRET' }] });
   await turn.prepare();
   turn.complete({ choices: [{ message: { content: 'Public answer. <private unfinished SECRET' } }] });
   await memory.flush();

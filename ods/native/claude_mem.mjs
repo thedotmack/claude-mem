@@ -28,7 +28,7 @@ function publicText(value) {
   for (const match of value.matchAll(tags)) {
     if (!depth) result += value.slice(cursor, match.index);
     if (!match[1]) depth++;
-    else if (depth) depth--;
+    else if (depth && /^<\/private\s*>$/i.test(match[0])) depth--;
     cursor = match.index + match[0].length;
   }
   return result + (depth ? '' : value.slice(cursor));
