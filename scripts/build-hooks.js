@@ -469,18 +469,6 @@ async function buildHooks() {
       type: 'module',
       dependencies: {
         'zod': '^4.4.3',
-        // The embedded vector index. LocalEmbedder reaches these through a
-        // request-time `await import('@huggingface/transformers')`, and they are
-        // kept EXTERNAL from the bundles below — so they must be present in
-        // the plugin's own runtime closure or the lazy path dies on a real
-        // install with "Cannot find module 'onnxruntime-node'".
-        // sharp is deliberately NOT declared here: it is a hard dependency of
-        // @huggingface/transformers, so it installs and hoists into
-        // plugin/node_modules regardless — and declaring it directly would trip
-        // scripts/check-postinstall-allowlist.js (sharp carries an `install`
-        // script), which prepublishOnly enforces. It is still marked external in
-        // the bundles below so the trio resolves at runtime, never at build time.
-        '@huggingface/transformers': '^4.2.0',
         // Exact, not a range: the worker only installs a tree-sitter executable
         // whose SHA-256 is pinned for this version
         // (src/services/smart-file-read/tree-sitter-cli-checksums.ts), and an
@@ -511,6 +499,24 @@ async function buildHooks() {
         '@derekstride/tree-sitter-sql': '^0.3.11',
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
         'shell-quote': '1.9.0',
+      },
+      // The server's embedder, about 300 MB, which only server mode runs. The
+      // plugin install omits optional dependencies (installPluginDependencies),
+      // and `npx claude-mem server start` installs them before it starts a
+      // server; the Docker image's npm install includes them. LocalEmbedder
+      // reaches these through a request-time
+      // `await import('@huggingface/transformers')`, and they are kept EXTERNAL
+      // from the bundles below — so a server needs them in the plugin's own
+      // runtime closure or the lazy path dies with "Cannot find module
+      // 'onnxruntime-node'".
+      // sharp is deliberately NOT declared here: it is a hard dependency of
+      // @huggingface/transformers, so it installs and hoists into
+      // plugin/node_modules with it — and declaring it directly would trip
+      // scripts/check-postinstall-allowlist.js (sharp carries an `install`
+      // script), which prepublishOnly enforces. It is still marked external in
+      // the bundles below so the trio resolves at runtime, never at build time.
+      optionalDependencies: {
+        '@huggingface/transformers': '^4.2.0',
       },
       overrides: {
         'tree-sitter': '^0.25.0',

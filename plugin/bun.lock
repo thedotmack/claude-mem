@@ -6,7 +6,6 @@
       "name": "claude-mem-plugin",
       "dependencies": {
         "@derekstride/tree-sitter-sql": "^0.3.11",
-        "@huggingface/transformers": "^4.2.0",
         "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
         "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
         "@tree-sitter-grammars/tree-sitter-toml": "^0.7.0",
@@ -32,6 +31,9 @@
         "tree-sitter-swift": "^0.7.1",
         "tree-sitter-typescript": "^0.23.2",
         "zod": "^4.4.3",
+      },
+      "optionalDependencies": {
+        "@huggingface/transformers": "^4.2.0",
       },
     },
   },

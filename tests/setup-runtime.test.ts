@@ -13,6 +13,7 @@ import {
   bunCommonPaths,
   uvCommonPaths,
   installPluginDependencies,
+  ensureServerEmbedder,
   provisionTreeSitterCli,
 } from '../src/npx-cli/install/setup-runtime';
 import { ensureTreeSitterCliBinary, treeSitterCliBinaryPath } from '../src/services/smart-file-read/tree-sitter-cli-provision';
@@ -217,13 +218,50 @@ describe('installPluginDependencies passes the bun path as an argument, not thro
     try {
       await installPluginDependencies(targetDir, fakeBun);
       const recorded = readFileSync(argsFile, 'utf-8').trim().split('\n');
-      expect(recorded).toEqual(['install', '--frozen-lockfile', '--ignore-scripts']);
+      expect(recorded).toEqual(['install', '--frozen-lockfile', '--ignore-scripts', '--omit=optional']);
       // The $(touch ...) in the path must NOT have executed.
       expect(existsSync(marker)).toBe(false);
     } finally {
       rmSync(base, { recursive: true, force: true });
       rmSync(marker, { force: true });
       rmSync(argsFile, { force: true });
+    }
+  });
+});
+
+describe('ensureServerEmbedder', () => {
+  // The plugin install omits the optional embedder; a server start installs it.
+  function fakePluginRoot() {
+    const root = mkdtempSync(join(tmpdir(), 'cm-embedder-'));
+    const argsFile = join(root, 'args.txt');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ dependencies: {} }));
+    const fakeBun = join(root, 'bun');
+    writeFileSync(fakeBun, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`);
+    chmodSync(fakeBun, 0o755);
+    return { root, argsFile, fakeBun };
+  }
+
+  it('installs optional dependencies when the embedder is missing', async () => {
+    if (IS_WINDOWS) return; // POSIX fake-bin shell script
+    const { root, argsFile, fakeBun } = fakePluginRoot();
+    try {
+      await ensureServerEmbedder(root, fakeBun);
+      expect(readFileSync(argsFile, 'utf-8').trim().split('\n')).toEqual(['install', '--frozen-lockfile', '--ignore-scripts']);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('runs no install when the embedder is present', async () => {
+    if (IS_WINDOWS) return;
+    const { root, argsFile, fakeBun } = fakePluginRoot();
+    try {
+      mkdirSync(join(root, 'node_modules', '@huggingface', 'transformers'), { recursive: true });
+      writeFileSync(join(root, 'node_modules', '@huggingface', 'transformers', 'package.json'), '{}');
+      await ensureServerEmbedder(root, fakeBun);
+      expect(existsSync(argsFile)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 });
