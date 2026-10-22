@@ -24,6 +24,14 @@ describe('resolveDateBound', () => {
     expect(end).toBeGreaterThanOrEqual(midday);
   });
 
+  it('rejects a date that is not on the calendar instead of rolling it over', () => {
+    for (const value of ['2025-02-29', '2025-02-30', '2025-04-31', '2025-02-30T08:00:00Z']) {
+      expect(() => resolveDateBound(value, 'start')).toThrow('Invalid date');
+      expect(() => resolveDateBound(value, 'end')).toThrow('Invalid date');
+    }
+    expect(resolveDateBound('2024-02-29', 'end')).toBe(Date.parse('2024-02-29T23:59:59.999Z'));
+  });
+
   it('leaves an end bound with an explicit time untouched', () => {
     const value = '2025-01-01T08:30:00.000Z';
     expect(resolveDateBound(value, 'end')).toBe(Date.parse(value));
