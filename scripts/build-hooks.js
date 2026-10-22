@@ -460,6 +460,7 @@ async function buildHooks() {
     console.log('✓ Output directories ready');
 
     console.log('\n📦 Generating plugin package.json...');
+    const onnxruntimeNode = '1.23.2';
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
       version: version,
@@ -524,7 +525,14 @@ async function buildHooks() {
         // the last release with all six targets, {linux,darwin,win32} x
         // {x64,arm64}, and the version uv resolves Chroma's `onnxruntime>=1.20`
         // to on an Intel Mac. Its vectors are bit-identical to 1.21.0's.
-        'onnxruntime-node': '1.23.2'
+        'onnxruntime-node': onnxruntimeNode,
+        // A workaround, not a real package: transformers lists onnxruntime-web
+        // (a 141 MB nightly) as a hard dependency, but its Node build runs on
+        // onnxruntime-node and never loads it. This points the name at
+        // onnxruntime-common, which onnxruntime-node already installs, so it
+        // downloads nothing. Remove it once transformers.js stops requiring
+        // onnxruntime-web under Node.
+        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`
       },
       trustedDependencies: [
         'tree-sitter-cli'

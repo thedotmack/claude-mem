@@ -35,7 +35,8 @@
   },
   "overrides": {
     "tree-sitter": "^0.25.0",
-    "onnxruntime-node": "1.23.2"
+    "onnxruntime-node": "1.23.2",
+    "onnxruntime-web": "npm:onnxruntime-common@1.23.2"
   },
   "trustedDependencies": [
     "tree-sitter-cli"
