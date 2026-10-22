@@ -28,23 +28,19 @@ const MAX_TEXT_CHARS = 32 * 1024;
 export const LOAD_RETRY_MS = 5 * 60_000;
 
 /**
- * all-MiniLM-L6-v2 via transformers.js, in-process.
- *
- * Same model and dimensionality Chroma used (its default embedding function),
- * so retrieval behaviour is unchanged — but produced in-process instead of by a
- * Python subprocess spawned through uvx. That subprocess is what actually broke:
- * #3012 reports it respawning continuously and crashing in bulk, and every
- * Windows-specific workaround in the old ChromaMcpManager existed to babysit it.
- *
- * onnxruntime-node is pinned below 1.24 for Intel Macs; see the plugin
- * `overrides` in scripts/build-hooks.js.
- */
-/**
  * The length all-MiniLM-L6-v2 was trained at, and where Chroma truncates.
  * The tokenizer's model_max_length says 512.
  */
 const MAX_TOKENS = 256;
 
+/**
+ * all-MiniLM-L6-v2 via transformers.js, in-process: the model and
+ * dimensionality of Chroma's default embedding function, which the worker's
+ * search uses, so the server's vectors match the worker's.
+ *
+ * onnxruntime-node is pinned below 1.24 for Intel Macs; see the plugin
+ * `overrides` in scripts/build-hooks.js.
+ */
 export class LocalEmbedder implements Embedder {
   // The token limit is part of the identity: the same model truncated
   // elsewhere produces different vectors for long texts.

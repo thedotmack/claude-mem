@@ -565,7 +565,7 @@ export class SettingsDefaultsManager {
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
     // The server's search by meaning (pgvector): it embeds every observation
-    // in process, existing rows in the background at worker start. 'true'
+    // in process, existing rows in the background at startup. 'true'
     // turns it on and 'false' off. 'auto' turns it on for a new database and
     // leaves a database from before it keyword-only, so an upgrade adds no
     // embedding work until that deployment sets 'true'.

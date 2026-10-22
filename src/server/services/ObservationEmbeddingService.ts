@@ -4,8 +4,8 @@
 // CLAUDE_MEM_SERVER_VECTOR_SEARCH off, a database without pgvector, a model
 // that fails to load, or an embed error leaves search keyword-only and
 // observation writes untouched. Rows written
-// without vectors are picked up by backfillMissingEmbeddings, which the
-// generation worker runs at startup.
+// without vectors are picked up by backfillMissingEmbeddings, which runs at
+// startup in the generation worker, or in a server that has none.
 
 import { availableParallelism } from 'os';
 import type { PostgresQueryable } from '../../storage/postgres/utils.js';

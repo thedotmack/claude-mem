@@ -300,8 +300,8 @@ async function persistGeneratedObservations(
 
   // Vectors for search by meaning, computed before the transaction opens so
   // the model never holds it, and written beside each row inside it. Null when
-  // unavailable: the rows are written anyway and the worker's startup
-  // backfill embeds them later.
+  // unavailable: the rows are written anyway and the backfill at the next
+  // start embeds them.
   const embedded = await embedObservationRows(
     input.pool,
     rendered.map(({ kind, content, metadata }) => ({

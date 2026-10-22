@@ -943,7 +943,7 @@ export class ServerV1PostgresRoutes implements RouteHandler {
                 parts: vectors.parts,
                 vectors: vectors.vectors,
               }).catch((error: unknown) => {
-                logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next worker start', {
+                logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next start', {
                   observationId: observation.id,
                   error: error instanceof Error ? error.message : String(error),
                 });
