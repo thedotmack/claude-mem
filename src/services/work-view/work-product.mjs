@@ -79,21 +79,153 @@ function urlsIn(value, found = []) {
   return found;
 }
 
+// A command runs a git subcommand itself only at the start of a shell
+// statement (`git`, `rtk git`, `/usr/bin/git`, with any -C/-c options). A
+// command that only mentions it (a search, a quoted string) made nothing.
+const GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
+const gitPattern = (subcommand, flags = '') => new RegExp(GIT_PREFIX + subcommand, flags);
+const GITHUB_REMOTE = /^(?:https:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([\w.-]+)\/([\w.-]+?)(?:\.git)?\/?$/;
+const SHA = '[0-9a-f]{7,40}';
+const unquote = (token) => token.replace(/^(["'])(.*)\1$/, '$2');
+
+/** The GitHub `owner/repo` a remote URL names, or null for any other host. */
+export function githubRepo(remote) {
+  const match = typeof remote === 'string' ? remote.trim().match(GITHUB_REMOTE) : null;
+  return match ? `${match[1]}/${match[2]}` : null;
+}
+
+function gitUrl(product) {
+  if (!product.repo) return undefined;
+  return product.kind === 'commit' ? `https://github.com/${product.repo}/commit/${product.sha}` : `https://github.com/${product.repo}/tree/${product.branch}`;
+}
+
+function outputText(call, response) {
+  if (typeof response === 'string') return response;
+  if (response && typeof response === 'object') return [response.stdout, response.stderr].filter((part) => typeof part === 'string').join('\n');
+  return typeof call.tool_response === 'string' ? call.tool_response : '';
+}
+
+// The subject line of the message each `git commit` in a command passes with
+// -m or a heredoc, in order; null where the message comes from elsewhere.
+function commitSubjects(command) {
+  const starts = [...command.matchAll(gitPattern(String.raw`commit\b`, 'g'))].map((match) => match.index);
+  return starts.map((start, index) => {
+    const invocation = command.slice(start, starts[index + 1]);
+    const inline = invocation.match(/\s-[a-zA-Z]*m\s+(?:"((?:[^"\\]|\\.)*)"|'([^']*)')/);
+    const heredoc = invocation.match(/\s-F\s+-\s*<<-?\s*['"]?\w+['"]?\n([^\n]*)/);
+    const text = inline ? (inline[1] ?? inline[2]).replace(/\\(.)/g, '$1') : heredoc?.[1];
+    return short(text?.split('\n')[0]);
+  });
+}
+
+/** Commits a recorded command made, from git's `[<branch> <sha>] <subject>` line,
+ * Claude Code's gitOperation, or (for quiet commits) the commit's own subject
+ * printed back by a following `git log --oneline`. */
+function commitsFrom(command, response, out) {
+  const commits = new Map();
+  const add = (sha, branch, subject) => {
+    const key = sha.slice(0, 7);
+    const known = commits.get(key);
+    commits.set(key, { sha: known?.sha.length > sha.length ? known.sha : sha, branch: branch ?? known?.branch ?? null, subject: subject ?? known?.subject ?? null });
+  };
+  const recorded = response?.gitOperation?.commit;
+  const subjects = commitSubjects(command);
+  if (!subjects.length && !recorded?.sha) return [];
+  for (const [, ref, sha, subject] of out.matchAll(new RegExp(String.raw`^\[(.+?)(?: \(root-commit\))? (${SHA})\] (.+)$`, 'gm'))) {
+    add(sha, ref.startsWith('detached HEAD') ? null : ref, short(subject));
+  }
+  if (typeof recorded?.sha === 'string' && new RegExp(`^${SHA}$`).test(recorded.sha)) add(recorded.sha, typeof recorded.branch === 'string' ? recorded.branch : null, null);
+  if (!commits.size) {
+    // Quiet commits (-q) print nothing; rtk prints `ok <sha>` for a single one.
+    const rtkSha = subjects.length === 1 ? out.match(new RegExp(`^ok (${SHA})$`, 'm'))?.[1] : null;
+    if (rtkSha) add(rtkSha, null, subjects[0]);
+    else {
+      const printed = [...out.matchAll(new RegExp(`^(${SHA}) (.+)$`, 'gm'))].map(([, sha, subject]) => [sha, short(subject)]);
+      for (const subject of subjects) {
+        const match = subject && printed.find(([, printedSubject]) => printedSubject === subject);
+        if (match) add(match[0], null, subject);
+      }
+    }
+  }
+  return [...commits.values()];
+}
+
+// The remote and branch a `git push` command names (`git push -u origin <branch>`,
+// `git push <url> HEAD:<branch>`); null for a push that deletes or sends tags.
+function pushTarget(command) {
+  const args = command.match(gitPattern(String.raw`push((?:[ \t]+(?:"[^"]*"|'[^']*'|[^\s;&|)]+))*)`))?.[1];
+  const tokens = (args ?? '').trim().split(/\s+/).filter(Boolean).map(unquote);
+  if (tokens.some((token) => ['-d', '--delete', '--tags', '--mirror', '--all'].includes(token))) return null;
+  const [remote, refspec] = tokens.filter((token) => !token.startsWith('-'));
+  const branch = refspec && !refspec.startsWith(':') ? refspec.replace(/^\+/, '').split(':').at(-1).replace(/^refs\/heads\//, '') : null;
+  return { repo: githubRepo(remote), branch: branch && branch !== 'HEAD' ? branch : null };
+}
+
+/** Branches a recorded `git push` updated, each with the GitHub repo it went to
+ * (from git's `To <remote>` line or the remote URL in the command) and the
+ * commit the push left it at. */
+function pushesFrom(command, response, out) {
+  const runs = gitPattern(String.raw`push\b`).test(command);
+  const recorded = typeof response?.gitOperation?.push?.branch === 'string' ? response.gitOperation.push.branch : null;
+  if (!runs && !recorded) return [];
+  const target = runs ? pushTarget(command) : null;
+  const pushes = new Map();
+  let repo = null;
+  for (const line of out.split('\n')) {
+    const remote = line.match(/^To (\S+)$/);
+    if (remote) { repo = githubRepo(remote[1]); continue; }
+    const ref = line.match(new RegExp(String.raw`^\s*[ +*=]?\s*(?:${SHA}\.\.\.?(${SHA})|\[new branch\])\s+(\S+)\s+->\s+(\S+)`));
+    if (!ref) continue;
+    const branch = ref[3].replace(/^refs\/heads\//, '');
+    pushes.set(branch, { branch, repo: repo ?? target?.repo ?? null, heads: ref[1] ? [ref[1]] : [] });
+  }
+  // A quiet push prints no ref line: use the branch gitOperation or the command names.
+  const branch = recorded ?? target?.branch;
+  if (!pushes.size && branch && !/\[rejected\]|failed to push|^fatal:/m.test(out)) pushes.set(branch, { branch, repo: target?.repo ?? null, heads: [] });
+  return [...pushes.values()];
+}
+
+/** Branches a recorded `git checkout -b` / `git switch -c` created. */
+function createdBranchesFrom(command, out) {
+  if (/^fatal:/m.test(out)) return [];
+  return [...command.matchAll(gitPattern(String.raw`(?:checkout\s+-[bB]|switch\s+-[cC])\s+("[^"]+"|'[^']+'|[^\s;&|)]+)`, 'g'))].map((match) => ({ branch: unquote(match[1]), repo: null, heads: [] }));
+}
+
+function pullRequestFrom(command, response, out, { atEpoch, sourceRef }) {
+  // The command must run `gh pr create` itself. A command that only mentions
+  // it (a search, a quoted string) made nothing — Claude Code's recorded
+  // gitOperation.pr can name a PR merely printed by such a command.
+  if (!/(?:^|[;&|(\n])\s*(?:rtk\s+)?gh\s+pr\s+create\b/.test(command)) return [];
+  const printed = out.match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
+  const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
+  if (!url) return [];
+  const title = command.match(/--title\s+(?:"([^"]+)"|'([^']+)')/);
+  return [{ kind: 'pull-request', title: short(title?.[1] ?? title?.[2]) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
+}
+
+/** Commits and branches one recorded Bash command made. */
+export function gitProductsFromCommand(command, response, out, { atEpoch = null, sourceRef = null } = {}) {
+  const pushes = pushesFrom(command, response, out);
+  const branches = new Map([...createdBranchesFrom(command, out), ...pushes].map((branch) => [branch.branch, branch]));
+  const products = [];
+  for (const commit of commitsFrom(command, response, out)) {
+    const pushed = (commit.branch && pushes.find((push) => push.branch === commit.branch)) || pushes.find((push) => push.heads.some((head) => head.startsWith(commit.sha.slice(0, 7))))
+      // A quiet commit pushed by the same command went to the one branch it pushed.
+      || (!commit.branch && pushes.length === 1 ? pushes[0] : null);
+    products.push({ kind: 'commit', title: commit.subject ? `${commit.sha.slice(0, 7)} ${commit.subject}` : commit.sha.slice(0, 7), sha: commit.sha, branch: commit.branch ?? pushed?.branch ?? null, repo: pushed?.repo ?? null, atEpoch, sourceRef });
+  }
+  for (const branch of branches.values()) products.push({ kind: 'branch', title: branch.branch, branch: branch.branch, repo: branch.repo, heads: branch.heads, atEpoch, sourceRef });
+  return products.map((product) => ({ ...product, url: gitUrl(product) }));
+}
+
 /** Work product recorded by one captured tool call. */
 export function productsFromToolUse(call) {
   const input = parse(call.tool_input) ?? {}, response = parse(call.tool_response);
   const sourceRef = { kind: 'tool-use', id: call.id };
   const atEpoch = call.created_at_epoch ?? null;
   if (call.tool_name === 'Bash' && typeof input.command === 'string') {
-    // The command must run `gh pr create` itself. A command that only mentions
-    // it (a search, a quoted string) made nothing — Claude Code's recorded
-    // gitOperation.pr can name a PR merely printed by such a command.
-    if (!/(?:^|[;&|(\n])\s*(?:rtk\s+)?gh\s+pr\s+create\b/.test(input.command)) return [];
-    const printed = String(response?.stdout ?? (typeof call.tool_response === 'string' ? call.tool_response : '')).match(/^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+$/m)?.[0];
-    const url = safeWebUrl(response?.gitOperation?.pr?.url ?? printed);
-    if (!url) return [];
-    const title = input.command.match(/--title\s+(?:"([^"]+)"|'([^']+)')/);
-    return [{ kind: 'pull-request', title: short(title?.[1] ?? title?.[2]) ?? `PR #${url.split('/').at(-1)}`, url, atEpoch, sourceRef }];
+    const out = outputText(call, response);
+    return [...pullRequestFrom(input.command, response, out, { atEpoch, sourceRef }), ...gitProductsFromCommand(input.command, response, out, { atEpoch, sourceRef })];
   }
   const publisher = PUBLISHING_TOOLS.find((tool) => tool.match.test(call.tool_name));
   if (!publisher || !response) return [];
@@ -142,12 +274,33 @@ export function productsFromFields(fields, { atEpoch = null, sourceRef = null } 
   return products;
 }
 
-/** Newest first, one entry per link or file. */
+// A commit is one entry per sha, a branch one per name, anything else one per link or file.
+const productKey = (product) => product.kind === 'commit' && product.sha ? `commit:${product.sha.slice(0, 7)}`
+  : product.kind === 'branch' && product.branch ? `branch:${product.branch}` : product.url ?? product.path;
+
+/** Newest first, one entry per commit, branch, link or file. A commit or
+ * branch links to GitHub when a push in the same lists sent it there: its
+ * branch was pushed at or after it was made, the push left the branch at that
+ * commit, or another commit made by the same command was. */
 export function mergeProducts(lists, limit = 60) {
+  const products = lists.flat();
+  const pushesByBranch = new Map(), repoByHead = new Map(), repoBySource = new Map();
+  for (const product of products) if (product.kind === 'branch' && product.repo) {
+    if (!pushesByBranch.has(product.branch)) pushesByBranch.set(product.branch, []);
+    pushesByBranch.get(product.branch).push(product);
+    for (const head of product.heads ?? []) repoByHead.set(head.slice(0, 7), product.repo);
+  }
+  const sourceKey = (product) => product.sourceRef ? `${product.sourceRef.kind}:${product.sourceRef.id}` : null;
+  const pushedAfter = (product) => pushesByBranch.get(product.branch)?.find((push) => product.kind === 'branch' || (push.atEpoch ?? 0) >= (product.atEpoch ?? 0))?.repo;
+  const repoOf = (product) => product.repo ?? pushedAfter(product) ?? (product.sha ? repoByHead.get(product.sha.slice(0, 7)) : undefined) ?? null;
+  for (const product of products) if (product.kind === 'commit' && repoOf(product) && sourceKey(product)) repoBySource.set(sourceKey(product), repoOf(product));
   const unique = new Map();
-  for (const product of lists.flat().sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
-    const key = product.url ?? product.path;
-    if (!unique.has(key)) unique.set(key, product);
+  for (const product of products.sort((a, b) => (b.atEpoch ?? 0) - (a.atEpoch ?? 0))) {
+    const key = productKey(product);
+    if (unique.has(key)) continue;
+    const isGit = product.kind === 'commit' || product.kind === 'branch';
+    const repo = isGit && !product.repo ? repoOf(product) ?? (product.kind === 'commit' ? repoBySource.get(sourceKey(product)) : null) : null;
+    unique.set(key, repo ? { ...product, repo, url: gitUrl({ ...product, repo }) } : product);
   }
   return [...unique.values()].slice(0, limit);
 }
@@ -168,13 +321,19 @@ export function fileUrl(product) {
 
 const FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(' OR ');
 
-/** Recorded calls and observations that may hold work product since `sinceEpoch`. */
+/** Recorded calls and observations that may hold work product since `sinceEpoch`.
+ * Git commands are read separately so their volume never crowds out publishers. */
 export function readProductRecords(read, sinceEpoch, limit = 2000) {
-  const productCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
+  const publishingCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
     WHERE created_at_epoch >= ? AND (tool_name IN ('Artifact', 'mcp__claude_ai_Notion__notion-create-pages', 'mcp__claude_ai_Claude_Docs__batch', 'mcp__claude_ai_Claude_Docs__create')
       OR tool_name LIKE '%chatgpt_space__create_page' OR tool_name LIKE '%sites__save_version_and_deploy%'
       OR (tool_name = 'Bash' AND tool_input LIKE '%gh pr create%'))
     ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  const gitCalls = read(`SELECT id, session_db_id, prompt_number, tool_name, tool_input, tool_response, created_at_epoch FROM tool_uses
+    WHERE created_at_epoch >= ? AND tool_name = 'Bash' AND tool_input LIKE '%git%' AND tool_input NOT LIKE '%gh pr create%'
+      AND (tool_input LIKE '%commit%' OR tool_input LIKE '%push%' OR tool_input LIKE '%checkout -b%' OR tool_input LIKE '%switch -c%')
+    ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
+  const productCalls = [...publishingCalls, ...gitCalls];
   const productObservations = read(`SELECT id, memory_session_id, prompt_number, files_modified, created_at_epoch FROM observations
     WHERE created_at_epoch >= ? AND (${FILE_EXTENSION_PATTERN}) ORDER BY id DESC LIMIT ?`, [sinceEpoch, limit]);
   return { productCalls, productObservations };

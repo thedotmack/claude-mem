@@ -155,3 +155,24 @@ test('the build story recap is its first paragraph; no story hides it', () => {
   assert.deepEqual(model.buildStory?.paragraphs, ['Velocity', 'First part.', 'Second part.'])
   assert.equal(toWorkModel(snapshotWith([]), now).buildStory, null)
 })
+
+test('recorded work product maps onto the drawer kinds; a missing local file is dropped and a commit without a GitHub remote has no link', () => {
+  const { request } = mapOne({ workProduct: [
+    { kind: 'commit', title: 'bc8cd09 feat(work-view): progress readings', url: 'https://github.com/thedotmack/claude-mem/commit/bc8cd096b', sha: 'bc8cd096b', branch: 'feat/my-work-react-viewer' },
+    { kind: 'commit', title: '1e89284 fix(agent-runner): wait for each agent CLI', sha: '1e8928441', branch: null },
+    { kind: 'branch', title: 'feat/my-work-react-viewer', url: 'https://github.com/thedotmack/claude-mem/tree/feat/my-work-react-viewer', branch: 'feat/my-work-react-viewer' },
+    { kind: 'pull-request', title: 'Add work product', url: 'https://github.com/o/r/pull/42' },
+    { kind: 'image', title: 'shot.png', fileUrl: '/api/work-view/file/observation/3/0', available: true },
+    { kind: 'image', title: 'gone.png', fileUrl: '/api/work-view/file/observation/4/0', available: false },
+    { kind: 'something-new', title: 'Release notes', url: 'https://example.com/notes' },
+  ] })
+  assert.deepEqual(request.workProduct, [
+    { kind: 'Commit', label: 'bc8cd09 feat(work-view): progress readings', href: 'https://github.com/thedotmack/claude-mem/commit/bc8cd096b' },
+    { kind: 'Commit', label: '1e89284 fix(agent-runner): wait for each agent CLI', href: undefined },
+    { kind: 'Branch', label: 'feat/my-work-react-viewer', href: 'https://github.com/thedotmack/claude-mem/tree/feat/my-work-react-viewer' },
+    { kind: 'PR', label: 'Add work product', href: 'https://github.com/o/r/pull/42' },
+    { kind: 'File', label: 'shot.png', href: '/api/work-view/file/observation/3/0' },
+    { kind: 'Link', label: 'Release notes', href: 'https://example.com/notes' },
+  ])
+  assert.deepEqual(mapOne({ workProduct: undefined }).request.workProduct, [])
+})

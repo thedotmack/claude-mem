@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { CheckIcon, ChevronDownIcon, FileTextIcon, GitPullRequestIcon, PresentationIcon, Undo2Icon } from 'lucide-react'
+import { CheckIcon, ChevronDownIcon, FileTextIcon, Undo2Icon } from 'lucide-react'
 import { ChainOfThought, ChainOfThoughtContent, ChainOfThoughtHeader, ChainOfThoughtStep } from '@/components/ai-elements/chain-of-thought'
 import { QueueItem, QueueItemContent, QueueItemIndicator, QueueList } from '@/components/ai-elements/queue'
 import { Task, TaskContent, TaskItem, TaskTrigger } from '@/components/ai-elements/task'
@@ -10,11 +10,11 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '
 import { Req } from '@/spec/req'
 import { setRequestChecked, useWorkModel, type Request } from '@/data'
 import { CHANGED_WHILE_READING_MESSAGE, CHECK_UNDONE_MESSAGE, CHECKED_LOCALLY_MESSAGE, type ReviewResult } from '@/live/review-response'
+import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { AgentIcon, GoalChip, NextMove, ProductLink, ProgressMeter, ShowUpdatesButton, StateBadge, useWorkspace } from './bits'
 import { OpenFollowUps } from './request-card'
 
-const PRODUCT_ICON = { PR: GitPullRequestIcon, Commit: GitPullRequestIcon, Page: FileTextIcon, Deck: PresentationIcon }
 const RECENT_RECORDS = 5
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -147,10 +147,10 @@ export function RequestDetail({ request, onClose, onOpenGoal }: { request: Reque
             <Section title="What came out of it">
               {request.workProduct.length === 0 ? <p className="text-sm text-muted-foreground">Nothing attached yet.</p> : (
                 <div className="-mx-3 flex flex-col">
-                  {request.workProduct.map((product) => {
+                  {request.workProduct.map((product, index) => {
                     const Icon = PRODUCT_ICON[product.kind]
                     return (
-                      <ProductLink key={product.label} href={product.href} className="flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm hover:bg-surface">
+                      <ProductLink key={`${index}-${product.label}`} href={product.href} className="flex min-h-11 items-center gap-3 rounded-lg px-3 text-sm hover:bg-surface">
                         <Icon className="size-4 shrink-0 text-muted-foreground" />
                         <span className="min-w-0 truncate">{product.label}</span>
                         <Badge variant="outline" className="ml-auto shrink-0 font-normal">{product.kind}</Badge>

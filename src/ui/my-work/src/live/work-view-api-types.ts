@@ -72,6 +72,18 @@ export interface WorkViewProgress {
 /** An owner goal the request-progress alignment linked to this request. */
 export interface WorkViewRequestGoal { goalId: string; goal: string; title: string; kind: 'priority' | 'open-ask'; evidence: string }
 
+/** One thing a request produced (work-product.mjs). Git kinds carry the sha or branch; `url` is absent when there is
+ * nothing to open, and `available` is false for a recorded local file that no longer exists. */
+export interface WorkViewWorkProduct {
+  kind: string
+  title: string
+  url?: string
+  fileUrl?: string | null
+  available?: boolean
+  sha?: string
+  branch?: string | null
+}
+
 /** The build story request-progress last wrote. */
 export interface WorkViewBuildStory { narrative: string; writtenAt: string | null }
 
@@ -97,6 +109,8 @@ export interface WorkViewHumanRequest {
   progress?: WorkViewProgress | null
   /** Absent: not aligned yet ("Goal not linked yet"). Empty: aligned to no goal ("No goal"). */
   goals?: WorkViewRequestGoal[]
+  /** Newest first. Older workers leave it out. */
+  workProduct?: WorkViewWorkProduct[]
 }
 
 export interface WorkViewAgent {
