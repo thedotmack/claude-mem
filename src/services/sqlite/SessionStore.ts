@@ -18,7 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
-import { parseIndexedFilePaths } from './observations/files.js';
+import { replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -4709,27 +4709,34 @@ export class SessionStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-      obs.memory_session_id,
-      obs.project,
-      coerceBindValue(obs.text),
-      obs.type,
-      coerceBindValue(obs.title),
-      coerceBindValue(obs.subtitle),
-      coerceBindValue(obs.facts),
-      coerceBindValue(obs.narrative),
-      coerceBindValue(obs.concepts),
-      coerceBindValue(obs.files_read),
-      coerceBindValue(obs.files_modified),
-      obs.prompt_number,
-      obs.discovery_tokens || 0,
-      obs.agent_type ?? null,
-      obs.agent_id ?? null,
-      obs.created_at,
-      obs.created_at_epoch
-    );
-    const importedId = result.lastInsertRowid as number;
-    this.indexObservationFiles(importedId, parseIndexedFilePaths(obs.files_read), parseIndexedFilePaths(obs.files_modified));
+    // The row and its observation_files mappings commit together: an import
+    // interrupted between the two writes leaves an observation permanently
+    // unsearchable by file — the replay match skips the existing row and the
+    // v68 migration is already stamped, so neither repairs the gap.
+    const importedId = this.db.transaction(() => {
+      const result = stmt.run(
+        obs.memory_session_id,
+        obs.project,
+        coerceBindValue(obs.text),
+        obs.type,
+        coerceBindValue(obs.title),
+        coerceBindValue(obs.subtitle),
+        coerceBindValue(obs.facts),
+        coerceBindValue(obs.narrative),
+        coerceBindValue(obs.concepts),
+        coerceBindValue(obs.files_read),
+        coerceBindValue(obs.files_modified),
+        obs.prompt_number,
+        obs.discovery_tokens || 0,
+        obs.agent_type ?? null,
+        obs.agent_id ?? null,
+        obs.created_at,
+        obs.created_at_epoch
+      );
+      const id = result.lastInsertRowid as number;
+      replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
+      return id;
+    })();
     emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
     return { imported: true, id: importedId };

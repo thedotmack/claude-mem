@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
+import { Database } from 'bun:sqlite';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SessionStore } from '../../src/services/sqlite/SessionStore.js';
 import { getObservationsByFilePath } from '../../src/services/sqlite/observations/get.js';
+import { SyncApply, type SyncOp } from '../../src/services/sync/SyncApply.js';
 
 // file-context's by-file lookup used to json_each every observation's
 // files_read/files_modified on the one shared connection. These tests pin the
@@ -86,5 +88,66 @@ describe('observation file path index', () => {
     const found = getObservationsByFilePath(reopened.db, 'src/legacy.go');
     expect(found.map(row => row.id)).toEqual([id]);
     reopened.db.close();
+  });
+
+  it('rolls the observation back when its path mappings cannot be written', () => {
+    // A crash between the row insert and the mapping inserts must not leave a
+    // permanently unsearchable observation: the import replay match skips the
+    // existing row and the v68 migration is already stamped, so nothing repairs it.
+    store.db.run('DROP TABLE observation_files');
+    expect(() => store.importObservation({
+      memory_session_id: 's1', project: 'proj', text: null, type: 'discovery',
+      title: 'atomic', subtitle: null, facts: null, narrative: 'n', concepts: null,
+      files_read: '["src/atomic.go"]', files_modified: null,
+      prompt_number: 1, discovery_tokens: 0,
+      created_at: '2026-06-17T00:00:00.000Z', created_at_epoch: 1750000001,
+    })).toThrow();
+    const rows = store.db.prepare("SELECT COUNT(*) c FROM observations WHERE title = 'atomic'").get() as { c: number };
+    expect(rows.c).toBe(0);
+  });
+});
+
+// CloudSync writes observations through SyncApply's own SQL, not SessionStore,
+// so the mapping has to be maintained on both of its branches: an insert makes
+// a pulled observation searchable and a revision must not leave the previous
+// revision's paths behind.
+describe('observation file path index under SyncApply', () => {
+  let db: Database;
+  let apply: SyncApply;
+
+  const body = (over: Record<string, unknown> = {}) => ({
+    memory_session_id: 'mem-remote', project: 'remote-proj', text: null, type: 'discovery',
+    title: 'Remote', subtitle: null, facts: '[]', narrative: 'n', concepts: '[]',
+    files_read: '["src/synced.go"]', files_modified: '[]',
+    prompt_number: 1, discovery_tokens: 0, content_hash: 'hash-1', generated_by_model: null,
+    agent_type: null, agent_id: null, metadata: null, merged_into_project: null,
+    created_at: '2026-06-17T00:00:00.000Z', created_at_epoch: 1750000000,
+    ...over,
+  });
+  const op = (seq: string, rev: string, b: Record<string, unknown>): SyncOp => ({
+    seq, kind: 'observation', origin_device: 'device-remote', origin_id: '11', rev,
+    body: JSON.stringify(b), server_ts: 1750000000,
+  });
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    new SessionStore(db);
+    apply = new SyncApply(db, { deviceId: 'device-self', now: () => 1750000000 });
+  });
+  afterEach(() => db.close());
+
+  it('makes a pulled observation searchable by file path', () => {
+    expect(apply.applyOps([op('1', '1', body())]).applied).toBe(1);
+    expect(getObservationsByFilePath(db, 'src/synced.go').length).toBe(1);
+  });
+
+  it('replaces the previous revision\'s paths on an updated observation', () => {
+    expect(apply.applyOps([op('1', '1', body())]).applied).toBe(1);
+    const revision = apply.applyOps([op('2', '2', body({
+      files_read: '["src/renamed.go"]', content_hash: 'hash-2',
+    }))]);
+    expect(revision.applied).toBe(1);
+    expect(getObservationsByFilePath(db, 'src/renamed.go').length).toBe(1);
+    expect(getObservationsByFilePath(db, 'src/synced.go')).toEqual([]);
   });
 });

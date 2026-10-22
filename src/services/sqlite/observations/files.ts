@@ -1,4 +1,5 @@
 
+import type { Database } from 'bun:sqlite';
 import { logger } from '../../../utils/logger.js';
 
 export function parseFileList(value: string | null | undefined): string[] {
@@ -24,4 +25,25 @@ export function parseIndexedFilePaths(value: string | null | undefined): string[
   } catch {
     return [];
   }
+}
+
+/**
+ * Re-point one observation's index rows at what its raw JSON file columns
+ * currently hold. DELETE-then-INSERT so an UPDATE never leaves the previous
+ * revision's paths searchable. Call it inside the same transaction as the
+ * observation row write it mirrors — a row committed without its mappings is
+ * permanently unsearchable by file (the import replay match skips the row and
+ * the v68 migration is already stamped, so nothing repairs it later).
+ */
+export function replaceObservationFileIndex(
+  db: Database,
+  observationId: number,
+  filesRead: string | null | undefined,
+  filesModified: string | null | undefined,
+): void {
+  db.prepare('DELETE FROM observation_files WHERE observation_id = ?').run(observationId);
+  const paths = new Set([...parseIndexedFilePaths(filesRead), ...parseIndexedFilePaths(filesModified)]);
+  if (paths.size === 0) return;
+  const insert = db.prepare('INSERT OR IGNORE INTO observation_files(path, observation_id) VALUES (?, ?)');
+  for (const path of paths) insert.run(path, observationId);
 }
