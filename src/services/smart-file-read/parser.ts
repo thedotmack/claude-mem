@@ -628,10 +628,13 @@ function findPythonDocstringFromLines(lines: string[], bodyRow: number, endRow: 
     const trimmed = lines[i]?.trim();
     if (!trimmed) continue;
     if (!/^[rRuU]?(?:"""|''')/.test(trimmed)) break;
-    const docstring = trimmed.replace(/^[rRuU]/, "");
-    if (docstring.length > 3) return docstring;
-    const summary = lines.slice(i + 1, endRow + 1).find(line => line.trim() !== "");
-    return summary === undefined ? docstring : `${docstring}\n${summary.trim()}`;
+    let docstring = trimmed.replace(/^[rRuU]/, "");
+    if (docstring.length === 3) {
+      const summary = lines.slice(i + 1, endRow + 1).find(line => line.trim() !== "");
+      if (summary !== undefined) docstring += `\n${summary.trim()}`;
+    }
+    // An empty docstring has no summary, so the comment above stays the one.
+    return docstring.replace(/"""|'''/g, "").trim() ? docstring : undefined;
   }
   return undefined;
 }

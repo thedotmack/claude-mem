@@ -33,6 +33,11 @@ const SOURCE = [
   '@property',
   'def name(self):',
   '    pass',
+  '',
+  '@cached_property',
+  'def size(self):',
+  '    """"""',
+  '    return 0',
 ].join('\n');
 
 describe('Python docstring summaries', () => {
@@ -47,8 +52,9 @@ describe('Python docstring summaries', () => {
     expect(outline).toContain('💬 Help.');
     expect(outline).not.toContain('💬 @dataclass');
     expect(outline).not.toContain('💬 # A helper.');
-    // A definition without a docstring keeps the line above it.
+    // A definition without a docstring, or with an empty one, keeps the line above it.
     expect(outline).toContain('💬 @property');
+    expect(outline).toContain('💬 @cached_property');
   }, 120000);
 
   test('search matches the docstring and still the decorator', async () => {
