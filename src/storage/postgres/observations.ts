@@ -422,13 +422,29 @@ export class PostgresObservationRepository {
         ORDER BY rank
         LIMIT $9
       )`;
+    // A folder, platform, subagent or summary filter applies before the
+    // nearest-parts cutoff, not after it: otherwise parts from rows the filter
+    // drops can fill the cutoff and leave none of the rows it keeps.
+    const [, , , , platformSource, folderProjects, excludeSubagents, summary] = params;
+    const narrowed = platformSource !== null || folderProjects !== null || excludeSubagents === true || summary !== null;
     const sql = `
       WITH ${keyword},
-      nearest AS (
+      nearest AS (${narrowed
+        ? `
+        SELECT e.observation_id, e.embedding <=> $10::vector AS distance
+        FROM observation_embeddings e
+        INNER JOIN observations ON observations.id = e.observation_id
+        LEFT JOIN server_sessions
+          ON server_sessions.id = observations.server_session_id
+          AND server_sessions.project_id = observations.project_id
+          AND server_sessions.team_id = observations.team_id
+        WHERE e.project_id = $1 AND e.team_id = $2 AND ${SEARCH_SCOPE_SQL}
+        ORDER BY e.embedding <=> $10::vector`
+        : `
         SELECT observation_id, embedding <=> $10::vector AS distance
         FROM observation_embeddings
         WHERE project_id = $1 AND team_id = $2
-        ORDER BY embedding <=> $10::vector
+        ORDER BY embedding <=> $10::vector`}
         LIMIT $11
       ),
       semantic AS (

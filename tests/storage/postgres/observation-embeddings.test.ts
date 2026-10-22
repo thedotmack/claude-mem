@@ -199,6 +199,44 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     }
   });
 
+  it('finds a folder\'s match by meaning when other folders of the project hold nearer vectors', async () => {
+    if (!vectorAvailable) return;
+    await pool.query(`UPDATE observations SET metadata = metadata || '{"project": "here"}' WHERE id = $1`, [ids.indexer]);
+    const nearer = axis(1);
+    nearer[10] = 0.1;
+    // More parts than the nearest-parts limit, all nearer the query and all in
+    // another folder of the same project, which the search filters out.
+    await pool.query(
+      `INSERT INTO observations (id, project_id, team_id, content, metadata)
+       SELECT 'elsewhere-' || g, $1, $2, 'unrelated row ' || g, '{"project": "elsewhere"}'
+       FROM generate_series(1, 450) AS g`,
+      [projectId, teamId],
+    );
+    await pool.query(
+      `INSERT INTO observation_embeddings (observation_id, project_id, team_id, part, model, embedding)
+       SELECT 'elsewhere-' || g, $1, $2, 'narrative', 'test',
+         ('[' || array_to_string(array_fill(0, ARRAY[1]) || 1 || array_fill(0, ARRAY[8])
+           || (0.05 + g * 0.0001) || array_fill(0, ARRAY[373]), ',') || ']')::vector
+       FROM generate_series(1, 450) AS g`,
+      [projectId, teamId],
+    );
+    const query = 'which machine compiles our meaning-based lookup';
+    const search = (p: pg.Pool) => new PostgresObservationRepository(p)
+      .search({ projectId, teamId, query, queryEmbedding: nearer, folderProjects: ['here'] });
+    expect((await search(pool)).map(o => o.id)).toEqual([ids.indexer]);
+
+    // Through HNSW too, where the folder filter has to hold before the cutoff.
+    const hnswOnly = new pg.Pool({
+      connectionString: testDatabaseUrl,
+      options: `-c search_path=${schemaName},public -c enable_seqscan=off`,
+    });
+    try {
+      expect((await search(hnswOnly)).map(o => o.id)).toEqual([ids.indexer]);
+    } finally {
+      await hnswOnly.end();
+    }
+  });
+
   it('counts rows without vectors from the current model as missing', async () => {
     if (!vectorAvailable) return;
     const embedder = (modelId: string): Embedder => ({ modelId, dims: 384, embed: async texts => texts.map(() => axis(1)) });
