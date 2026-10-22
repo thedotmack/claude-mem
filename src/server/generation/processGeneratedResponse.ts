@@ -393,12 +393,25 @@ async function persistGeneratedObservations(
 
       const vectors = embedded?.[index];
       if (vectors && vectors.parts.length > 0) {
-        await embeddingsRepo.upsert({
-          observationId: observation.id,
-          model: getSharedEmbedder().modelId,
-          parts: vectors.parts,
-          vectors: vectors.vectors,
-        });
+        // Vectors are best-effort: a failed insert rolls back to this savepoint
+        // and leaves the row to the backfill, instead of aborting the
+        // transaction and discarding the generated observations with it.
+        await client.query('SAVEPOINT observation_vectors');
+        try {
+          await embeddingsRepo.upsert({
+            observationId: observation.id,
+            model: getSharedEmbedder().modelId,
+            parts: vectors.parts,
+            vectors: vectors.vectors,
+          });
+          await client.query('RELEASE SAVEPOINT observation_vectors');
+        } catch (error) {
+          await client.query('ROLLBACK TO SAVEPOINT observation_vectors');
+          logger.warn('SYSTEM', 'observation saved without vectors; the backfill embeds it at the next start', {
+            observationId: observation.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
 
       await sourcesRepo.addSource({
