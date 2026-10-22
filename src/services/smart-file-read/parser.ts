@@ -580,11 +580,51 @@ const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["k
   haskell: new Set(["function"]),
 };
 
-function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
+// Python, Ruby and Lua bodies are not delimited by braces, so a `{` in one opens a
+// dict, a hash, a block or a table. Their signature ends with the row that closes
+// its brackets, and a Python one at the `:` that opens the body.
+const UNBRACED_BODY_LANGUAGES = new Set(["python", "ruby", "lua"]);
+
+function extractUnbracedSignature(lines: string[], startRow: number, endRow: number, firstLine: string, language: string): string {
+  const rows: string[] = [];
+  let depth = 0;
+  for (let row = startRow; row <= Math.min(startRow + 9, endRow); row++) {
+    const text = row === startRow ? firstLine : lines[row] ?? "";
+    let end = text.length;
+    let quote = "";
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if (quote) {
+        if (ch === "\\") i++;
+        else if (ch === quote) quote = "";
+      } else if (ch === '"' || ch === "'") {
+        quote = ch;
+      } else if (language === "lua" ? text.startsWith("--", i) : ch === "#") {
+        end = i;
+        break;
+      } else if ("([{".includes(ch)) {
+        depth++;
+      } else if (")]}".includes(ch)) {
+        depth--;
+      } else if (ch === ":" && depth <= 0 && language === "python") {
+        end = i;
+        depth = -1;
+        break;
+      }
+    }
+    rows.push(text.slice(0, end));
+    if (depth < 0 || (depth === 0 && language !== "python")) break;
+  }
+  return rows.length > 1 ? rows.join(" ").replace(/\s+/g, " ") : rows[0] ?? firstLine;
+}
+
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0, language: string = ""): string {
   const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
 
-  if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
+  if (UNBRACED_BODY_LANGUAGES.has(language)) {
+    sig = extractUnbracedSignature(lines, startRow, endRow, firstLine, language);
+  } else if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
     const chunk = [firstLine, ...lines.slice(startRow + 1, Math.min(startRow + 10, endRow + 1))].join("\n");
     const braceIdx = chunk.indexOf("{");
     if (braceIdx !== -1 && braceIdx < 500) {
@@ -831,7 +871,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       // Extract the declaration independently: prefix comments may contain
       // braces or span more rows than the declaration signature budget.
       signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
-        200 - exportPrefix.length, kindCapture.startCol);
+        200 - exportPrefix.length, kindCapture.startCol, language);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
