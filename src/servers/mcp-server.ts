@@ -22,7 +22,7 @@ import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } fro
 import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -1278,12 +1278,27 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
+// Directory-source marketplaces (`/plugin marketplace add <local path>`) live
+// wherever the user points them; Claude Code records that in known_marketplaces.json.
+function knownMarketplaceLocation(home: string): string | null {
+  const configDir = process.env.CLAUDE_CONFIG_DIR || resolve(home, '.claude');
+  try {
+    const known = JSON.parse(readFileSync(resolve(configDir, 'plugins', 'known_marketplaces.json'), 'utf-8'));
+    const location = known?.thedotmack?.installLocation;
+    return typeof location === 'string' && location ? location : null;
+  } catch {
+    return null;
+  }
+}
+
 function detectMissingMarketplaceMarker(): void {
   const home = homedir();
   const marketplaceCandidates = [
     resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
     resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
   ];
+  const knownLocation = knownMarketplaceLocation(home);
+  if (knownLocation) marketplaceCandidates.push(knownLocation);
   const present = marketplaceCandidates.some(p => p && existsSync(p));
   const cacheCandidates = [
     resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
@@ -1295,7 +1310,7 @@ function detectMissingMarketplaceMarker(): void {
   if (!present && cachePresent) {
     logger.error(
       'SYSTEM',
-      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack or the XDG equivalent. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, run: node ~/.claude/plugins/cache/thedotmack/claude-mem/*/scripts/smart-install.js (or reinstall the plugin from the marketplace).',
+      'claude-mem MCP started but no marketplace directory was found at ~/.claude/plugins/marketplaces/thedotmack, the XDG equivalent, or the thedotmack installLocation in known_marketplaces.json. The IDE plugin loader needs that directory to fire claude-mem hooks (SessionStart, PostToolUse, Stop, etc.). Without it, MCP search will work but no new memories will be captured. To self-heal, reinstall the plugin from the marketplace (/plugin marketplace add thedotmack/claude-mem, then /plugin install claude-mem@thedotmack).',
       { marketplaceCandidates, cacheRoot }
     );
   }
