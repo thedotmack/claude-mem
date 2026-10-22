@@ -496,6 +496,10 @@ export class SessionSearch {
    *   200..600     | the same, at most 60
    *   >= 600       | the first 40 distinct words of >= 3 characters that are in at least one row and in < 2% of rows
    *
+   * If the short/medium selection has no positive-frequency token, admit the least frequent excluded tokens within a
+   * fixed candidate-document budget. Relative frequency alone can otherwise exclude every matching word in a
+   * small or topic-focused store, leaving only absent question words.
+   *
    * Without the vocabulary (no FTS5 vocab module, or a connection that cannot create temp tables) the tokens are
    * deduplicated and capped at 40.
    */
@@ -533,6 +537,8 @@ export class SessionSearch {
   private static readonly ANY_TERM_LONG_PROMPT_CAP = 40;
   /** Short and medium prompts drop a token whose rarest word is in this share of rows or more. */
   private static readonly ANY_TERM_COMMON_SHARE = 0.30;
+  /** Candidate-document upper bound for new terms admitted when the short/medium selection has no positive frequency. */
+  private static readonly ANY_TERM_MATCHING_DOCUMENT_BUDGET = 1024;
   /** Long prompts keep only words in less than this share of rows. */
   private static readonly ANY_TERM_LONG_PROMPT_MAX_SHARE = 0.02;
   private static readonly ANY_TERM_LONG_PROMPT_MIN_WORD_CHARS = 3;
@@ -613,15 +619,35 @@ export class SessionSearch {
 
   private static pickRareTokens(tokens: string[], docFrequency: DocFrequency, cap: number): string[] {
     const limit = SessionSearch.commonRowLimit(docFrequency.total, SessionSearch.ANY_TERM_COMMON_SHARE);
-    const kept = SessionSearch.dedupeTokens(tokens).filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
-    if (kept.length <= cap) {
-      return kept;
-    }
-    return kept
+    const distinct = SessionSearch.dedupeTokens(tokens);
+    const kept = distinct.filter(token => SessionSearch.tokenRows(token, docFrequency) < limit);
+    const picked = kept.length <= cap ? kept : kept
       .map(token => ({ token, rows: SessionSearch.tokenRows(token, docFrequency) }))
       .sort((a, b) => a.rows - b.rows)
       .slice(0, cap)
       .map(entry => entry.token);
+    if (picked.some(token => SessionSearch.tokenRows(token, docFrequency) > 0)) {
+      return picked;
+    }
+
+    // Zero estimated frequency does not prove a Unicode token cannot match. Preserve the original selection;
+    // only its remaining term slots and the new-candidate budget are available for excluded terms.
+    const matching = [...picked];
+    let documents = 0;
+    const excluded = distinct
+      .map(token => ({ token, rows: SessionSearch.tokenRows(token, docFrequency) }))
+      .filter(entry => entry.rows >= limit)
+      .sort((a, b) => a.rows - b.rows);
+    for (const { token, rows } of excluded) {
+      if (matching.length === cap) break;
+      // The frequency reader's Unicode folding is approximate: unicode61 preserves some non-Latin accents.
+      // Charge non-ASCII tokens for the whole store so a different indexed spelling cannot exceed the budget.
+      const candidates = /[^\x00-\x7F]/.test(token) ? docFrequency.total : rows;
+      if (documents + candidates > SessionSearch.ANY_TERM_MATCHING_DOCUMENT_BUDGET) continue;
+      matching.push(token);
+      documents += candidates;
+    }
+    return matching;
   }
 
   private static pickRareWords(query: string, docFrequency: DocFrequency): string[] {
