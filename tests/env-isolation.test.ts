@@ -222,6 +222,31 @@ describe('Issue #2375: ANTHROPIC_BASE_URL env-var isolation', () => {
       }
     });
 
+    it("'subscription' leaves an expired stored login for the CLI to refresh", async () => {
+      const profile = fs.mkdtempSync(join(TEST_DATA_DIR, 'expired-login-'));
+      const previousProfile = process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+      process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = profile;
+      fs.writeFileSync(TEST_ENV_FILE, 'ANTHROPIC_API_KEY=sk-ant-spent\nANTHROPIC_AUTH_TOKEN=spent-token\n');
+      fs.writeFileSync(join(profile, '.credentials.json'), JSON.stringify({
+        claudeAiOauth: { accessToken: 'expired-access', refreshToken: 'refresh-token', expiresAt: Date.now() - 3_600_000 },
+      }));
+      const expired = oauthToken.readClaudeCredentialsFile(profile);
+      const oauthSpy = spyOn(oauthToken, 'readClaudeOAuthToken').mockResolvedValue(expired);
+      try {
+        expect(expired.kind).toBe('expired');
+        const result = await buildIsolatedEnvWithFreshOAuth(true, { standIn: 'subscription' });
+        expect(result.CLAUDE_CONFIG_DIR).toBe(profile);
+        expect(result.CLAUDE_CODE_OAUTH_TOKEN).toBeUndefined();
+        expect(result.ANTHROPIC_API_KEY).toBeUndefined();
+        expect(result.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+      } finally {
+        oauthSpy.mockRestore();
+        if (previousProfile === undefined) delete process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR;
+        else process.env.CLAUDE_MEM_CLAUDE_CONFIG_DIR = previousProfile;
+        fs.rmSync(profile, { recursive: true, force: true });
+      }
+    });
+
     it('is ignored under a gateway ANTHROPIC_BASE_URL', async () => {
       fs.writeFileSync(
         TEST_ENV_FILE,

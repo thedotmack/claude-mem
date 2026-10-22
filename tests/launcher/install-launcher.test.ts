@@ -276,6 +276,26 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult).toMatchObject({ status: 'installed', pathSetupOutcome: 'already-on-path' });
   });
 
+  // #4934/#4940: the Bun discovery fixes live in the compiled launcher, so a
+  // protocol-1 binary already on PATH must be recompiled, by the installer and
+  // by the SessionStart self-heal alike, for existing installs to get them.
+  it('recompiles a protocol-1 launcher from before the Bun discovery fixes, in both contexts (#4934)', () => {
+    expect(LAUNCHER_PROTOCOL).toBeGreaterThanOrEqual(2);
+    for (const invocationContext of ['npx-installer', 'session-start-self-heal'] as const) {
+      const scratchHome = makeScratchHome();
+      const host = posixHost(scratchHome, { PATH: `${path.join(scratchHome, '.local', 'bin')}:/usr/bin` });
+      writeFakeLauncher(resolveLauncherBinaryPath(host), '1');
+      const compile = fakeCompile();
+
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compile, runCodesign: codesignNoop, invocationContext,
+      });
+
+      expect(compile.calls).toHaveLength(1);
+      expect(ensureResult.status).toBe('installed');
+    }
+  });
+
   it('reports bun-not-found without compiling', () => {
     const host = posixHost(makeScratchHome());
     const ensureResult = ensureLauncherOnPath({
