@@ -249,6 +249,25 @@ from `settings.json` or an API route. It must be an absolute path, and the worke
 logs the path and the file's sha256 when it loads the module.
 </Warning>
 
+## Search by meaning
+
+With pgvector 0.8 or later in its Postgres, search ranks by meaning as well as
+by keyword: `/v1/search`, `/v1/context` and the MCP `search` and `context`
+tools fuse a keyword ranking with the observations nearest the query's vector,
+so a query finds a memory that shares none of its words. The server embeds
+queries and the generation worker embeds the observations it writes, in-process
+with all-MiniLM-L6-v2; the Docker image includes the model. Without pgvector,
+or while the model cannot load, search is keyword-only.
+
+| Env var | Effect |
+|---------|--------|
+| `CLAUDE_MEM_SERVER_VECTOR_SEARCH` | `auto` (default) is on for a new database and off for one created before search by meaning, so an upgrade adds no embedding work. `true` turns it on; observations already stored get vectors in the background. `false` is keyword-only. Set it the same on the server and the worker. |
+| `CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS` | CPU threads the model may use while stored observations still need vectors, until the next restart. Empty (default) is half the machine's threads; `0` is all of them. |
+
+`GET /v1/info` reports `vectorSearch`: whether it is available, the model, how
+many observations a search by meaning cannot find yet, and the last embedding
+error.
+
 ## Endpoint reference
 
 All endpoints are mounted under `/v1`; legacy worker routes remain under `/api`.
