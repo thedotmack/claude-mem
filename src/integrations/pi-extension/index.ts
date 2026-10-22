@@ -141,10 +141,12 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
       return;
     }
     const base = messages[0].content;
-    const user = [...messages].reverse().find(message => message.role === 'user');
-    const prompt = extractTextContent(user?.content);
     // Images never leave Pi; an image-only turn has no automatic text capture.
-    const selectEntry = (): PiSessionEntry | undefined => {
+    // Other extensions may add per-request context to the outgoing messages: a
+    // user-role message after the prompt, or extra text on the prompt itself. The
+    // request's prompt is therefore the user message carrying the persisted
+    // entry's timestamp, not whichever user message comes last.
+    const selectEntry = (): { entry: PiSessionEntry; prompt: string } | undefined => {
       if (current !== session || ctx.sessionManager.getSessionId() !== session.id || ctx.cwd !== session.cwd
         || typeof ctx.sessionManager.getBranch !== 'function') return;
       const branch = ctx.sessionManager.getBranch();
@@ -152,21 +154,25 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
       const entry = [...branch].reverse().find(item => item.type === 'message' && item.message?.role === 'user');
       // Timestamp/text only validate correspondence with the real request.
       // The identity always comes from the persisted active-branch entry.id.
-      if (!entry || typeof entry.id !== 'string' || !/^[^\s\x00-\x1f\x7f]{1,256}$/.test(entry.id)
-        || !user || typeof user.timestamp !== 'number' || !Number.isFinite(user.timestamp)
-        || entry.message?.timestamp !== user.timestamp
-        || extractTextContent(entry.message.content) !== prompt) return;
-      return entry;
+      if (!entry || typeof entry.id !== 'string' || !/^[^\s\x00-\x1f\x7f]{1,256}$/.test(entry.id)) return;
+      const stamped = entry.message?.timestamp;
+      if (typeof stamped !== 'number' || !Number.isFinite(stamped)) return;
+      const prompt = extractTextContent(entry.message?.content);
+      const user = [...messages].reverse().find(message => message.role === 'user' && message.timestamp === stamped
+        && extractTextContent(message.content).startsWith(prompt));
+      if (!user) return;
+      return { entry, prompt };
     };
     await enqueue(session, ctx, async () => {
       try {
-        const entry = selectEntry();
-        if (!entry || !prompt.trim()) {
+        const selected = selectEntry();
+        if (!selected || !selected.prompt.trim()) {
           session.anchored = false;
           session.excluded = true;
           session.initialized = false;
           return;
         }
+        const { entry, prompt } = selected;
         if (session.entryId !== entry.id) {
           session.entryId = entry.id;
           session.initialized = false;
@@ -182,7 +188,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
           nativePromptId?: number;
         };
         if (capability.nativePromptId !== 1) throw new Error('Upgrade the worker for native Pi prompt capture.');
-        if (selectEntry()?.id !== entry.id) return;
+        if (selectEntry()?.entry.id !== entry.id) return;
         const response = await worker.post('/api/sessions/init', {
           contentSessionId: session.id, cwd: session.cwd, prompt, platformSource: 'pi', nativePromptId: entry.id,
           telemetryPromptEpochMs: entry.message!.timestamp,
@@ -191,7 +197,7 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
           skipped?: boolean; reason?: string; sessionDbId?: number;
           nativePromptId?: string; nativePromptCurrent?: boolean;
         };
-        if (selectEntry()?.id !== entry.id) return;
+        if (selectEntry()?.entry.id !== entry.id) return;
         if (result.skipped === true && result.reason !== 'duplicate') {
           // The same worker privacy/project gates run before exposing memory.
           session.initialized = true;
