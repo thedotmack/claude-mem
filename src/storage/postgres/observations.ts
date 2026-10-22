@@ -131,7 +131,8 @@ const SEARCH_SCOPE_SQL = `
 
 // Reciprocal rank fusion constant: the conventional 60 (Cormack et al. 2009).
 const RRF_K = 60;
-// Ranked candidates per leg of a hybrid search.
+// Ranked candidates per leg of a hybrid search, at least; a larger limit
+// takes as many, so fusion can fill it.
 const HYBRID_LEG_CANDIDATES = 100;
 // Nearest parts read from the HNSW index; several parts can belong to one
 // observation, so this is a multiple of HYBRID_LEG_CANDIDATES.
@@ -319,6 +320,7 @@ export class PostgresObservationRepository {
       ? input.folderProjects
       : null;
     if (query && input.queryEmbedding) {
+      const legCandidates = Math.max(HYBRID_LEG_CANDIDATES, input.limit ?? 20);
       return this.searchHybrid([
         input.projectId,
         input.teamId,
@@ -328,9 +330,9 @@ export class PostgresObservationRepository {
         folderProjects,
         input.excludeSubagents === true,
         input.summary ?? null,
-        HYBRID_LEG_CANDIDATES,
+        legCandidates,
         toVectorLiteral(input.queryEmbedding),
-        HYBRID_NEAREST_PARTS,
+        legCandidates * (HYBRID_NEAREST_PARTS / HYBRID_LEG_CANDIDATES),
       ]);
     }
     // On postgres-pgvector-textsearch, a query matches any of its terms,
@@ -484,7 +486,7 @@ export class PostgresObservationRepository {
     // filtering the nearest parts of every project down to few or none.
     // SET LOCAL needs a transaction, hence a dedicated connection from a pool.
     const run = async (client: PostgresQueryable) => {
-      await client.query(`SET LOCAL hnsw.ef_search = ${HYBRID_NEAREST_PARTS}`);
+      await client.query(`SET LOCAL hnsw.ef_search = ${Number(params[10])}`);
       await client.query(`SET LOCAL hnsw.iterative_scan = strict_order`);
       return client.query<ObservationRow>(sql, params);
     };

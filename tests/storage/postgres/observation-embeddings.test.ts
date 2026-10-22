@@ -237,6 +237,18 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     }
   });
 
+  it('fills a limit above the per-leg candidate count', async () => {
+    if (!vectorAvailable) return;
+    await pool.query(
+      `INSERT INTO observations (id, project_id, team_id, content)
+       SELECT 'match-' || g, $1, $2, 'gateway note ' || g FROM generate_series(1, 150) AS g`,
+      [projectId, teamId],
+    );
+    const results = await new PostgresObservationRepository(pool)
+      .search({ projectId, teamId, query: 'gateway', limit: 150, queryEmbedding: axis(1) });
+    expect(results.length).toBe(150);
+  });
+
   it('counts rows without vectors from the current model as missing', async () => {
     if (!vectorAvailable) return;
     const embedder = (modelId: string): Embedder => ({ modelId, dims: 384, embed: async texts => texts.map(() => axis(1)) });
