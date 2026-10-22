@@ -132,8 +132,8 @@ const QUERIES: Record<string, string> = {
 
   python: `
 (decorated_definition definition: (_) @decorated_inner) @decorated_outer
-(function_definition name: (identifier) @name) @func
-(class_definition name: (identifier) @name) @cls
+(function_definition name: (identifier) @name body: (block) @body) @func
+(class_definition name: (identifier) @name body: (block) @body) @cls
 (import_statement) @imp
 (import_from_statement) @imp
 `,
@@ -620,12 +620,18 @@ function findCommentAbove(lines: string[], startRow: number): string | undefined
   return commentLines.length > 0 ? commentLines.join("\n").trim() : undefined;
 }
 
-function findPythonDocstringFromLines(lines: string[], startRow: number, endRow: number): string | undefined {
-  for (let i = startRow + 1; i <= Math.min(startRow + 3, endRow); i++) {
+// A docstring is the first statement of the body, which a multi-line signature
+// pushes below the `def` row. Its text can start on the row after the opening
+// quotes, and a raw or unicode docstring opens with r""" or u""".
+function findPythonDocstringFromLines(lines: string[], bodyRow: number, endRow: number): string | undefined {
+  for (let i = bodyRow; i <= Math.min(bodyRow + 2, endRow); i++) {
     const trimmed = lines[i]?.trim();
     if (!trimmed) continue;
-    if (trimmed.startsWith('"""') || trimmed.startsWith("'''")) return trimmed;
-    break;
+    if (!/^[rRuU]?(?:"""|''')/.test(trimmed)) break;
+    const docstring = trimmed.replace(/^[rRuU]/, "");
+    if (docstring.length > 3) return docstring;
+    const summary = lines.slice(i + 1, endRow + 1).find(line => line.trim() !== "");
+    return summary === undefined ? docstring : `${docstring}\n${summary.trim()}`;
   }
   return undefined;
 }
@@ -835,13 +841,19 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
-    const docstring = language === "python" ? findPythonDocstringFromLines(lines, startRow, endRow) : undefined;
+    const body = match.captures.find(c => c.tag === "body");
+    const docstring = language === "python"
+      ? findPythonDocstringFromLines(lines, body?.startRow ?? startRow + 1, endRow)
+      : undefined;
 
     const sym: CodeSymbol = {
       name,
       kind,
       signature,
-      jsdoc: comment || docstring,
+      // A Python docstring goes first, so that it is the summary line: the
+      // comment found above a definition can be just its decorator
+      // (`@dataclass`), which stays searchable after it.
+      jsdoc: [docstring, comment].filter(Boolean).join("\n") || undefined,
       lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
       exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
