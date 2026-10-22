@@ -209,6 +209,7 @@ const QUERIES: Record<string, string> = {
 (deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
+(class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
 (import_declaration) @imp
 `,
