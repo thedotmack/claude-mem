@@ -45,14 +45,6 @@ function mcpStartupCommandFrom(relativePath: string): string {
   return parsed.mcpServers['mcp-search'].args[1];
 }
 
-/** PATH export through the first `; _C=` marker in Claude hook commands. */
-function claudePathPreludeFrom(command: string): string {
-  const marker = '; _C=';
-  const end = command.indexOf(marker);
-  expect(end).toBeGreaterThan(0);
-  return command.slice(0, end + 1);
-}
-
 function posixPath(p: string): string {
   return p.replace(/\\/g, '/');
 }
@@ -72,7 +64,7 @@ function normalizeShellPath(p: string): string {
 function expectResolvedPath(stdout: string, expectedRoot: string): void {
   const match = stdout.match(/RESOLVED=(.+)/);
   expect(match).not.toBeNull();
-  expect(normalizeShellPath(match![1].trim())).toBe(normalizeShellPath(expectedRoot));
+  expect(realpathSync(match![1].trim())).toBe(realpathSync(expectedRoot));
 }
 
 function bashExecutable(): string {
@@ -89,7 +81,7 @@ function installFakeNvmNode(home: string, version: string): string {
   const nodeBin = path.join(home, '.nvm', 'versions', 'node', `v${version}`, 'bin');
   mkdirSync(nodeBin, { recursive: true });
   const nodePath = path.join(nodeBin, 'node');
-  writeFileSync(nodePath, '#!/bin/sh\necho "fake-node"\n');
+  writeFileSync(nodePath, '#!/bin/sh\nprintf "NODE=%s\\nPATH=%s\\n" "$0" "$PATH"\n');
   chmodSync(nodePath, 0o755);
   return nodeBin;
 }
@@ -819,15 +811,13 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
   // remaining shell-form sites: the Claude Setup hook and the Codex hooks.
   // Actually shell-evaluate the generated commands across resolution sources:
   // (a) CLAUDE_PLUGIN_ROOT injected, (b) cache fallback hit, (c) all miss.
-  // Replace the trailing exec with `echo "_P=$_P"` so we observe the resolved
-  // root without launching node.
-  function instrument(command: string): string {
-    // Strip everything from the resolved-root guard onward, keep the resolution
-    // pipeline, then print _P. We cut at the cygpath clause / trailing command
-    // by replacing the not-found guard's exit with a print of _P.
-    const cut = command.indexOf('[ -n "$_P" ]');
-    const resolution = cut >= 0 ? command.slice(0, cut) : command;
-    return `${resolution} echo "RESOLVED=$_P"`;
+  // Fixture scripts report their location after the complete hook resolves and runs them.
+  function writeProbeScripts(root: string): void {
+    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
+      writeFileSync(path.join(root, 'scripts', file),
+        "console.log('RESOLVED=' + require('path').dirname(__dirname));\n");
+    }
   }
 
   const claudeCommands = () => {
@@ -839,20 +829,20 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
 
   it('resolves _P from CLAUDE_PLUGIN_ROOT when the env var points at a valid root', () => {
     const root = mkdtempSync(path.join(tmpdir(), 'cm-root-'));
-    mkdirSync(path.join(root, 'scripts'), { recursive: true });
-    writeFileSync(path.join(root, 'scripts', 'version-check.js'), '');
-    writeFileSync(path.join(root, 'scripts', 'bun-runner.js'), '');
-    writeFileSync(path.join(root, 'scripts', 'worker-service.cjs'), '');
+    writeProbeScripts(root);
+    const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     try {
       for (const { command } of claudeCommands()) {
-        const { stdout } = shellEval(instrument(command), {
+        const { status, stdout } = shellEval(command, {
           CLAUDE_PLUGIN_ROOT: root,
-          HOME: mkdtempSync(path.join(tmpdir(), 'cm-home-')),
+          HOME: home,
         });
+        expect(status).toBe(0);
         expectResolvedPath(stdout, root);
       }
     } finally {
       rmSync(root, { recursive: true, force: true });
+      rmSync(home, { recursive: true, force: true });
     }
   });
 
@@ -861,13 +851,10 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const shimBin = mkdtempSync(path.join(tmpdir(), 'cm-bin-'));
     const cacheScanMarker = path.join(home, 'cache-scan-ran');
-    mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    writeProbeScripts(root);
     // The Codex hooks require the host root's dependencies (#4763), so this
     // "valid root" carries node_modules like an installer-prepared copy.
     mkdirSync(path.join(root, 'node_modules'), { recursive: true });
-    for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
-      writeFileSync(path.join(root, 'scripts', file), '');
-    }
     // Only the cache scan sorts with `sort -r`; the NVM PATH prelude sorts by
     // -t. keys. This shim records `-r` calls and passes input through.
     writeFileSync(
@@ -884,7 +871,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     try {
       for (const { dottedPath, command } of [...claudeCommands(), ...codexCommands]) {
         rmSync(cacheScanMarker, { force: true });
-        const { status, stdout } = shellEval(instrument(command), {
+        const { status, stdout } = shellEval(command, {
           CLAUDE_PLUGIN_ROOT: root,
           HOME: home,
           CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
@@ -901,7 +888,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
       const [{ command: setupCommand }] = claudeCommands().filter(
         ({ dottedPath }) => dottedPath === 'Setup.0.0',
       );
-      shellEval(instrument(setupCommand), {
+      shellEval(setupCommand, {
         CLAUDE_PLUGIN_ROOT: path.join(home, 'not-a-plugin-root'),
         HOME: home,
         CACHE_SCAN_MARKER: posixPath(cacheScanMarker),
@@ -925,25 +912,19 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     const codexRoot = mkdtempSync(path.join(tmpdir(), 'cm-codex-root-'));
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
-    mkdirSync(path.join(codexRoot, 'scripts'), { recursive: true });
-    for (const file of ['bun-runner.js', 'worker-service.cjs']) {
-      writeFileSync(path.join(codexRoot, 'scripts', file), '');
-    }
+    writeProbeScripts(codexRoot);
     // The Codex copy deliberately has no node_modules — that is the bug shape.
-    mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
+    writeProbeScripts(cacheRoot);
     // The prepared cache copy has the dependencies (the installer ran bun
     // install there); only the host root is dependency-checked, so it still
     // resolves.
     mkdirSync(path.join(cacheRoot, 'node_modules'), { recursive: true });
-    for (const file of ['bun-runner.js', 'worker-service.cjs']) {
-      writeFileSync(path.join(cacheRoot, 'scripts', file), '');
-    }
 
     const codexHooks = readJson('plugin/hooks/codex-hooks.json');
     const command = hookCommandByPath(codexHooks, 'SessionStart.0.0')!;
 
     try {
-      const { status, stdout } = shellEval(instrument(command), {
+      const { status, stdout } = shellEval(command, {
         CLAUDE_PLUGIN_ROOT: codexRoot,
         HOME: home,
       });
@@ -977,14 +958,12 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
         const hostRoot = makeRoot(path.join(sandbox, 'codex-plugin'), hostRootHasDependencies);
         const cacheRoot = makeRoot(path.join(configDir, 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0'), true);
         const command = buildCodexWindowsCommand(['hook', 'codex', 'session-init'], { requireDependencies: true });
-        expect(command.startsWith('node -e "')).toBe(true);
-        const payload = command.slice('node -e "'.length, -1);
         const env: Record<string, string | undefined> = {
           ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: configDir, CLAUDE_PLUGIN_ROOT: hostRoot,
         };
         delete env.PLUGIN_ROOT;
         delete env.CLAUDE_MEM_DISABLE_TOOL_HOOKS;
-        const result = spawnSync('node', ['-e', payload], { cwd: sandbox, env, encoding: 'utf-8', timeout: 20000 });
+        const result = spawnSync(command, { shell: true, cwd: sandbox, env, encoding: 'utf-8', timeout: 20000 });
         return {
           status: result.status,
           stderr: result.stderr,
@@ -1013,13 +992,11 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
   it('resolves _P from the cache directory when CLAUDE_PLUGIN_ROOT is unset', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-home-'));
     const cacheRoot = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem', '99.0.0');
-    mkdirSync(path.join(cacheRoot, 'scripts'), { recursive: true });
-    writeFileSync(path.join(cacheRoot, 'scripts', 'version-check.js'), '');
-    writeFileSync(path.join(cacheRoot, 'scripts', 'bun-runner.js'), '');
-    writeFileSync(path.join(cacheRoot, 'scripts', 'worker-service.cjs'), '');
+    writeProbeScripts(cacheRoot);
     try {
       for (const { command } of claudeCommands()) {
-        const { stdout } = shellEval(instrument(command), { HOME: home });
+        const { status, stdout } = shellEval(command, { HOME: home });
+        expect(status).toBe(0);
         // The version-sort producer yields a trailing slash; the hook trims it
         // via _R="${_R%/}".
         expectResolvedPath(stdout, cacheRoot);
@@ -1034,10 +1011,7 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     const cacheBase = path.join(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem');
     const makeVersion = (version: string) => {
       const root = path.join(cacheBase, version);
-      mkdirSync(path.join(root, 'scripts'), { recursive: true });
-      for (const file of ['version-check.js', 'bun-runner.js', 'worker-service.cjs']) {
-        writeFileSync(path.join(root, 'scripts', file), '');
-      }
+      writeProbeScripts(root);
       return root;
     };
     // The storm layout: the OLD version dir carries the .orphaned_at stamp and
@@ -1050,7 +1024,8 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     utimesSync(newRoot, past, past);
     try {
       for (const { command } of claudeCommands()) {
-        const { stdout } = shellEval(instrument(command), { HOME: home });
+        const { status, stdout } = shellEval(command, { HOME: home });
+        expect(status).toBe(0);
         expectResolvedPath(stdout, newRoot);
       }
     } finally {
@@ -1075,14 +1050,22 @@ describe('Spawn-Contract Templating - Rule A shell resolution matrix', () => {
     const home = mkdtempSync(path.join(tmpdir(), 'cm-nvm-only-'));
     installFakeNvmNode(home, '18.20.0');
     const newestBin = installFakeNvmNode(home, '20.11.0');
-    const prelude = claudePathPreludeFrom(hookCommandByPath(readJson('plugin/hooks/hooks.json'), 'Setup.0.0')!);
+    const root = path.join(home, 'plugin');
+    writeProbeScripts(root);
+    const command = hookCommandByPath(readJson('plugin/hooks/hooks.json'), 'Setup.0.0')!;
     try {
-      const { status, stdout } = shellEval(`${prelude} printf '%s' "$PATH"`, {
+      const { status, stdout } = shellEval(command, {
+        CLAUDE_PLUGIN_ROOT: root,
         HOME: home,
         PATH: '/usr/bin:/bin',
       });
       expect(status).toBe(0);
-      expect(normalizeShellPath((stdout ?? '').split(':')[0])).toBe(normalizeShellPath(newestBin));
+      const node = stdout.match(/NODE=(.+)/);
+      const nodePath = stdout.match(/PATH=(.+)/);
+      expect(node).not.toBeNull();
+      expect(nodePath).not.toBeNull();
+      expect(normalizeShellPath(node![1])).toBe(normalizeShellPath(path.join(newestBin, 'node')));
+      expect(normalizeShellPath(nodePath![1].split(':')[0])).toBe(normalizeShellPath(newestBin));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
