@@ -61,7 +61,12 @@ export class LocalEmbedder implements Embedder {
           ...(this.threads ? { session_options: { intraOpNumThreads: this.threads } } : {}),
         });
         return this.extractor;
-      })();
+      })().catch((error: unknown) => {
+        // A failed load (a download error, say) is retried by the next call
+        // rather than failing every call until the process restarts.
+        this.loading = null;
+        throw error;
+      });
     }
     return this.loading;
   }
