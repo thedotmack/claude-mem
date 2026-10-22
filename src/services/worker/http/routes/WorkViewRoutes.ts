@@ -19,6 +19,7 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
+import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -92,7 +93,11 @@ interface WorkViewOptions {
   rulesFilePath?: string;
   /** ~/.claude/CLAUDE.md: the user-level file that imports MY-RULES.md. Never a project's file. */
   claudeInstructionsPath?: string;
+  /** The install funnel's prompt scan. Without it the setup scan endpoints answer 503. */
+  setupScan?: SetupScan | null;
 }
+
+const setupScanBody = z.object({}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
 
@@ -124,6 +129,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private homeProject: string | undefined;
   private rulesFilePath: string;
   private claudeInstructionsPath: string;
+  private setupScan: SetupScan | null;
+  private unsubscribeSetupScan: (() => void) | null = null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -143,6 +150,9 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.homeProject = options.homeProject;
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(homedir(), '.claude', 'CLAUDE.md');
+    this.setupScan = options.setupScan ?? null;
+    // Scan progress rides the work view's event stream, as `setup-scan` events.
+    this.unsubscribeSetupScan = this.setupScan?.subscribe(state => this.broadcast('setup-scan', state)) ?? null;
   }
 
   setupRoutes(app: express.Application): void {
@@ -177,6 +187,21 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/work-view/review', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(reviewBody), this.wrapHandler(this.review));
     app.post('/api/work-view/rules', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(ruleBody), this.wrapHandler(this.saveRule));
     app.post('/api/work-view/rules/load-in-claude-code', workViewLoopbackOnly, requireWorkViewOrigin, this.wrapHandler(this.loadRulesInClaudeCode));
+    app.get('/api/setup/scan', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(this.setupScan.state());
+    }));
+    app.post('/api/setup/scan', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupScanBody), this.wrapHandler((_req, res) => {
+      if (!this.setupScan) { res.status(503).json({ error: 'The prompt scan is unavailable on this worker.' }); return; }
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(202).json(this.setupScan.start());
+    }));
+  }
+
+  private broadcast(event: string, value: unknown): void {
+    if (this.closed) return;
+    for (const client of this.clients) this.send(client, event, value);
   }
 
   private snapshot(): WorkViewSnapshot {
@@ -315,6 +340,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     socket?.on('close', cleanup);
     res.on('error', () => { cleanup(); res.destroy(); });
     this.send(res, 'work-view', this.snapshot());
+    const scan: SetupScanState | undefined = this.setupScan?.state();
+    if (scan && scan.phase !== 'idle') this.send(res, 'setup-scan', scan);
     if (!this.poll) this.poll = setInterval(() => this.publish(), this.pollIntervalMs);
     if (!this.heartbeat) this.heartbeat = setInterval(() => {
       const snapshot = this.snapshot();
@@ -349,6 +376,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   close(): void {
     this.closed = true;
+    this.unsubscribeSetupScan?.();
     this.stopTimers();
     for (const client of this.clients) client.end();
     this.clients.clear();
