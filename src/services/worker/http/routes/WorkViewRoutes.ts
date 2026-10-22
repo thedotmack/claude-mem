@@ -9,7 +9,6 @@ import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH } from '../../../../shared/paths.
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
 import { logger } from '../../../../utils/logger.js';
-import { formatHostForUrl } from '../../../../shared/worker-url.js';
 import { hasForwardedClientHeaders, hasLoopbackHostHeader, isLocalhost } from '../../../../server/middleware/request-auth-helpers.js';
 import { WorkStateSource, type WorkViewSnapshot } from '../../../work-view/data-source.mjs';
 import { FILE_CONTENT_TYPES } from '../../../work-view/work-product.mjs';
@@ -18,6 +17,7 @@ import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '.
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
+import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
@@ -48,20 +48,11 @@ export function workViewLoopbackOnly(req: Request, res: Response, next: NextFunc
   next();
 }
 
+// Browser writes must come from the viewer's own page. The Origin check is main's
+// shared settings guard (isForeignLoopbackBrowserWrite); the work view also rejects
+// cross-site fetch metadata and non-JSON bodies.
 export function requireWorkViewOrigin(req: Request, res: Response, next: NextFunction): void {
-  const origin = req.get('origin');
-  let valid = req.get('sec-fetch-site') !== 'cross-site';
-  if (origin) {
-    try {
-      const from = new URL(origin);
-      const authority = /^(\[::1\]|127\.0\.0\.1|localhost)(?::(\d+))?$/i.exec(req.get('host') ?? '');
-      if (!authority) throw new Error('Invalid local authority');
-      const to = new URL(`http://${formatHostForUrl(authority[1])}${authority[2] ? `:${authority[2]}` : ''}`);
-      valid = valid && from.protocol === 'http:'
-        && ['127.0.0.1', 'localhost', '[::1]'].includes(from.hostname)
-        && from.port === to.port;
-    } catch { valid = false; }
-  }
+  const valid = req.get('sec-fetch-site') !== 'cross-site' && !isForeignLoopbackBrowserWrite(req);
   if (!valid || !req.is('application/json')) {
     res.status(403).json({ error: 'Review changes must come from the local work viewer.' });
     return;
