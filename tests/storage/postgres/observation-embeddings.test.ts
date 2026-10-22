@@ -59,6 +59,13 @@ describe('observationEmbeddingParts', () => {
     ]);
   });
 
+  it('embeds at most 64 facts', () => {
+    const facts = Array.from({ length: 100 }, (_, i) => `fact ${i}`);
+    const parts = observationEmbeddingParts('discovery', { facts }, 'content');
+    expect(parts).toHaveLength(64);
+    expect(parts.at(-1)).toEqual({ part: 'fact_63', text: 'fact 63' });
+  });
+
   it('embeds the content of a row with no structured fields', () => {
     expect(observationEmbeddingParts('manual', {}, 'free text'))
       .toEqual([{ part: 'content', text: 'free text' }]);

@@ -11,6 +11,13 @@ export interface ObservationEmbeddingPart {
 const SUMMARY_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next_steps', 'notes'] as const;
 
 /**
+ * Facts embedded per observation, each one model input. Generated
+ * observations carry a few (33 at most in a 39k-row store), but a
+ * /v1/memories request can send thousands in its metadata.
+ */
+const MAX_FACT_PARTS = 64;
+
+/**
  * The texts embedded for one observation row, one vector each.
  *
  * Mirrors ChromaSync.formatObservationDocs / formatSummaryDocs, so the part
@@ -38,8 +45,10 @@ export function observationEmbeddingParts(
     add('text', toJsonObject(metadata.legacy).text);
     // Blank facts are dropped before numbering, as ChromaSync numbers its
     // fact documents, so part names match the Chroma ids.
+    // At most MAX_FACT_PARTS, so one memory cannot ask for unbounded model work.
     const facts = (Array.isArray(metadata.facts) ? metadata.facts : [])
-      .filter((fact): fact is string => typeof fact === 'string' && fact.trim().length > 0);
+      .filter((fact): fact is string => typeof fact === 'string' && fact.trim().length > 0)
+      .slice(0, MAX_FACT_PARTS);
     facts.forEach((fact, index) => add(`fact_${index}`, fact));
     if (parts.length === 0) {
       const title = typeof metadata.title === 'string' && metadata.title.trim() !== 'Untitled'
