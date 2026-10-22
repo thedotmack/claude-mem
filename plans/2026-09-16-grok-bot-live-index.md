@@ -38,7 +38,7 @@ Worker-native `GrokBotIndexWriter` (like CLAUDE.md / awareness):
 - After observations are stored, debounce-refresh **all** mapped seats (house feed changes every seat).
 - Kick once on worker start after the transcript watcher.
 - Write `agents/<uuid>/memory/log/zz-claude-mem-inject.md` directly.
-- Settings: `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` (default `true`, no-op without seats), `AGENT_IDS` default `*`, `TIER=episode`, `WINDOW=80`, `FALLBACK=house`, `PLATFORM_SOURCE` empty.
+- Settings: `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` (default `false`, no-op without seats), `AGENT_IDS` default `*`, `TIER=episode`, `WINDOW=80`, `FALLBACK=house`, `PLATFORM_SOURCE` empty.
 
 ## Phase 2 — Tests
 

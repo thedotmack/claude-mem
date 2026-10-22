@@ -527,7 +527,7 @@ The worker writes a growing observation INDEX into each Grok Bot seat’s Memory
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` | `true` | Live-write the INDEX. `false` disables it. No-op when no Grok Bot seats exist. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` | `false` | Live-write the INDEX. `false` disables it. No-op when no Grok Bot seats exist. |
 | `CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS` | `*` | `*` / `all` / empty = every live seat; or a comma-separated UUID list. |
 | `CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK` | `house` | `house` fills thin seat diaries from newest worker observations. `off` = seat project only. |
 | `CLAUDE_MEM_GROK_BOT_INJECT_TIER` | `episode` | Memory rank prefix (`episode`, `plain`, `note`). |

@@ -58,6 +58,30 @@ describe('SettingsDefaultsManager', () => {
     }
   });
 
+  it('keeps personal integrations disabled until explicitly configured', () => {
+    const defaults = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'false',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: '',
+      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false',
+      CLAUDE_MEM_CCS_ALIGN_ENABLED: 'false',
+    };
+    expect(SettingsDefaultsManager.getAllDefaults()).toMatchObject(defaults);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(defaults);
+
+    const optIn = {
+      CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED: 'true',
+      CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS: 'test-agent',
+      CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'true',
+      CLAUDE_MEM_CCS_ALIGN_ENABLED: 'true',
+    };
+    writeFileSync(settingsPath, JSON.stringify(optIn));
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+
+    writeFileSync(settingsPath, '{}');
+    Object.assign(process.env, optIn);
+    expect(SettingsDefaultsManager.loadFromFile(settingsPath)).toMatchObject(optIn);
+  });
+
   describe('loadFromFile', () => {
     describe('file does not exist', () => {
       it('should create file with defaults when file does not exist', () => {

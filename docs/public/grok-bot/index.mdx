@@ -129,7 +129,7 @@ Enable / disable (settings.json or env; env wins):
 
 | Setting | Default | Effect |
 | --- | --- | --- |
-| `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` | `true` | Worker live-writes the INDEX. `false` turns it off. No-op when no Grok Bot seats exist. |
+| `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED` | `false` | Worker live-writes the INDEX. `false` turns it off. No-op when no Grok Bot seats exist. |
 | `CLAUDE_MEM_GROK_BOT_INJECT_AGENT_IDS` | `*` | All live seats with `agents/<uuid>/profile.json`, or a UUID list. |
 | `CLAUDE_MEM_GROK_BOT_INJECT_FALLBACK` | `house` | `house` fills thin diaries from newest worker observations. `off` = seat project only. |
 | `CLAUDE_MEM_GROK_BOT_INJECT_TIER` | `episode` | Host Memory rank prefix. Keep `episode` or plain-tier lines can lose the 4000-char recall budget. |
@@ -170,8 +170,8 @@ Writes from this host stamp `platformSource=grok-bot`. When reading, do not drop
 2. Memory viewer: open the worker URL printed at install.
 3. Do a small unit of work in Grok Bot, then search. New observations should show `platformSource=grok-bot`.
 4. Default observer: first real observation stores via model `cmem-observer`. Host observer: if the queue sits idle, the reply is probably prose instead of `skip_summary`.
-5. Live INDEX: after an observation is stored (any project on this worker), `agents/<this-seat-uuid>/memory/log/zz-claude-mem-inject.md` should gain a new newest row (`- (YYYY-MM-DD) [episode] [claude-mem] <id> …`) without anyone hand-writing the file. A thin seat project still fills from the newest house rows. Turn off with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=false`.
-6. Awareness push pilot (LFG + Orifice): a needle observation (`decision`, `bugfix`, `security_alert`, `sensitive`) should append `- YYYY-MM-DD [awareness] …` to `agents/<agent_id>/memory/log/YYYY-MM.md`. Nothing is written to `profile.md`. Turn off with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=false`.
+5. Live INDEX: after an observation is stored (any project on this worker), `agents/<this-seat-uuid>/memory/log/zz-claude-mem-inject.md` should gain a new newest row (`- (YYYY-MM-DD) [episode] [claude-mem] <id> …`) without anyone hand-writing the file. A thin seat project still fills from the newest house rows. Enable with `CLAUDE_MEM_GROK_BOT_INJECT_ENABLED=true`.
+6. Opt-in awareness push: a needle observation (`decision`, `bugfix`, `security_alert`, `sensitive`) should append `- YYYY-MM-DD [awareness] …` to `agents/<agent_id>/memory/log/YYYY-MM.md`. Nothing is written to `profile.md`. Enable with `CLAUDE_MEM_GROK_BOT_AWARENESS_ENABLED=true` and set `CLAUDE_MEM_GROK_BOT_AWARENESS_AGENT_IDS` to your agent UUIDs (empty by default).
 
 ## Troubleshooting
 
