@@ -222,18 +222,24 @@ export async function createServerService(
     generationWorkerManager,
   };
 
-  if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
+  // Rows written while vectors were unavailable (pgvector just installed,
+  // the model failed to load, or the rows predate this feature) get them in
+  // the background, so search by meaning covers the whole store. A generation
+  // worker runs the backfill, and so does a server that has none (no queue or
+  // provider), whose manual memories would otherwise never get vectors. Only a
+  // server told to run HTTP only, because a separate worker does, leaves it to
+  // that worker. Of several processes, one backfills at a time.
+  const active = generationWorkerManager instanceof ActiveServerGenerationWorkerManager;
+  const withoutWorker = !generationDisabled && options.generationWorkerManager === undefined;
+  if (active || withoutWorker) {
     await capEmbedderThreadsForBackfill(pool).catch((error: unknown) => {
       logger.warn('SYSTEM', 'could not size the embedding backfill; it runs uncapped', {
         error: error instanceof Error ? error.message : String(error),
       });
     });
-    generationWorkerManager.start();
-    // Rows written while vectors were unavailable (pgvector just installed,
-    // the model failed to load, or the rows predate this feature) get them
-    // now, in the background, so search by meaning covers the whole store.
+    if (active) generationWorkerManager.start();
     void backfillMissingEmbeddings(pool).catch((error: unknown) => {
-      logger.warn('SYSTEM', 'embedding backfill stopped; it resumes at the next worker start', {
+      logger.warn('SYSTEM', 'embedding backfill stopped; it resumes at the next start', {
         error: error instanceof Error ? error.message : String(error),
       });
     });

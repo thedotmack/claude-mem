@@ -195,10 +195,47 @@ export async function backfillMissingEmbeddings(
   client: PostgresQueryable,
   options: { batchSize?: number; embedder?: Embedder } = {},
 ): Promise<{ observations: number; parts: number }> {
+  if (!(await vectorSearchOn(client))) return { observations: 0, parts: 0 };
+  // One process backfills at a time: generation workers can run as several
+  // processes, and each would otherwise embed the same missing rows. The lock
+  // is a session-level advisory lock, held on a connection of its own while
+  // the backfill runs; a process that finds it taken leaves the work to the
+  // one holding it.
+  const pooled = typeof (client as { connect?: unknown }).connect === 'function'
+    && typeof (client as { release?: unknown }).release !== 'function';
+  let lockClient: PostgresQueryable = client;
+  let release: (() => void) | null = null;
+  if (pooled) {
+    const connection = await (client as unknown as { connect(): Promise<PostgresQueryable & { release(): void }> }).connect();
+    lockClient = connection;
+    release = () => connection.release();
+  }
+  try {
+    const lock = await lockClient.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock(${BACKFILL_LOCK_KEY}) AS locked`);
+    if (lock.rows[0]?.locked !== true) {
+      logger.info('SYSTEM', 'another process is backfilling embeddings; this one leaves it to that one');
+      return { observations: 0, parts: 0 };
+    }
+    try {
+      // On the locked connection itself: a pool of one has no other.
+      return await embedMissingObservations(lockClient, options);
+    } finally {
+      await lockClient.query(`SELECT pg_advisory_unlock(${BACKFILL_LOCK_KEY})`);
+    }
+  } finally {
+    release?.();
+  }
+}
+
+const BACKFILL_LOCK_KEY = `hashtext('claude-mem observation embedding backfill')`;
+
+async function embedMissingObservations(
+  client: PostgresQueryable,
+  options: { batchSize?: number; embedder?: Embedder },
+): Promise<{ observations: number; parts: number }> {
   const embedder = options.embedder ?? getSharedEmbedder();
   const batchSize = options.batchSize ?? 64;
   const totals = { observations: 0, parts: 0 };
-  if (!(await vectorSearchOn(client))) return totals;
 
   const repo = new PostgresObservationEmbeddingsRepository(client);
   let after: { createdAt: string; id: string } | null = null;

@@ -318,6 +318,37 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     expect(await backfillMissingEmbeddings(pool, { embedder, batchSize: 2 })).toEqual({ observations: 4, parts: 3 });
   }, 10_000);
 
+  it('lets one of two concurrent backfills do the work', async () => {
+    if (!vectorAvailable) return;
+    let embedCalls = 0;
+    const embedder: Embedder = {
+      modelId: 'next',
+      dims: 384,
+      embed: async texts => {
+        embedCalls++;
+        await new Promise(resolve => setTimeout(resolve, 200));
+        return texts.map(() => axis(1));
+      },
+    };
+    const [a, b] = await Promise.all([
+      backfillMissingEmbeddings(pool, { embedder }),
+      backfillMissingEmbeddings(pool, { embedder }),
+    ]);
+    expect([a.observations, b.observations].sort()).toEqual([0, 3]);
+    expect(embedCalls).toBe(1);
+  });
+
+  it('backfills through a pool of one connection', async () => {
+    if (!vectorAvailable) return;
+    const single = new pg.Pool({ connectionString: testDatabaseUrl, max: 1, options: `-c search_path=${schemaName},public` });
+    try {
+      const embedder: Embedder = { modelId: 'next', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+      expect(await backfillMissingEmbeddings(single, { embedder })).toEqual({ observations: 3, parts: 3 });
+    } finally {
+      await single.end();
+    }
+  }, 10_000);
+
   it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {
     if (!vectorAvailable) return;
     const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
