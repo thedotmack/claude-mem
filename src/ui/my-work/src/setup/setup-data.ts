@@ -2,6 +2,7 @@
 // The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
 import type { AgentTool } from '@/data'
+import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent { id: string; label: string; detected: boolean; prompts: number }
@@ -15,16 +16,7 @@ export interface RevealRule { id: string; text: string; quote: string; quotedAt:
 /** `null` while that set is still being extracted. */
 export interface RevealSets { goals: RevealGoal[] | null; work: RevealWork[] | null; rules: RevealRule[] | null }
 
-export type Persona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User'
-export interface SetupUsage {
-  /** e.g. "Last 30 days · Claude Code". */
-  periodLabel: string
-  tokens: number
-  /** Only for a complete 30-day window. */
-  persona: Persona | null
-  /** Only from real claude-mem observation history (upgraders). */
-  efficiencyPercent: number | null
-}
+export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
 export interface SetupHistory { projects: number; sessions: number; observations: number }
 export interface HistoryImportProgress { percent: number; done: boolean }
@@ -63,10 +55,34 @@ export const EMPTY_SETUP_DATA: SetupData = {
   suggestions: [],
 }
 
-/** The live wiring (scan SSE, extraction, usage, search, import) lands in funnel Phases 5-10; until then the screens get the empty state. */
+const WORK_VIEW_EVENTS_URL = '/api/work-view/events'
+
+/** The worker's SetupScanState, as far as the funnel reads it. */
+interface SetupScanState extends SetupScanView { usage?: SetupScanUsage | null }
+
+/** The setup data the worker's scan state carries: scan progress and, once it is done, token usage. */
+export function setupDataFromScan(state: SetupScanState): Pick<SetupData, 'scan' | 'usage'> {
+  return {
+    scan: { agents: state.agents, percent: state.percent, phase: state.phase, done: state.done, error: state.error },
+    usage: state.usage ? toSetupUsage(state.usage) : null,
+  }
+}
+
+/**
+ * The live source follows the worker's setup scan through `setup-scan` events on the work view stream (sent on connect once
+ * a scan has started, then as it runs; WorkViewRoutes). It does not start the scan. Extraction, search and import land in funnel Phases 5-10; until then those parts keep the empty state.
+ */
 export const localSetupSource: SetupSource = {
   kind: 'local',
-  subscribe(onData) { onData(EMPTY_SETUP_DATA); return () => {} },
+  subscribe(onData) {
+    let data = EMPTY_SETUP_DATA
+    let closed = false
+    const accept = (state: SetupScanState) => { if (!closed) { data = { ...data, ...setupDataFromScan(state) }; onData(data) } }
+    onData(data)
+    const stream = new EventSource(WORK_VIEW_EVENTS_URL)
+    stream.addEventListener('setup-scan', (event) => accept(JSON.parse((event as MessageEvent).data as string) as SetupScanState))
+    return () => { closed = true; stream.close() }
+  },
   startHistoryImport() { throw new Error('History import is not connected to the worker yet.') },
   search: async () => [],
 }

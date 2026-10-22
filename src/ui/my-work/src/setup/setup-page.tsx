@@ -26,7 +26,7 @@ function useSetupSource(): SetupSource | null {
   useEffect(() => {
     if (!SAMPLE_REQUESTED) return
     let current = true
-    import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', PARAMS.has('scan') ? Number(PARAMS.get('scan')) : null)) })
+    import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', PARAMS.has('scan') ? Number(PARAMS.get('scan')) : null, (['partial', 'none'] as const).find((kind) => kind === PARAMS.get('usage')))) })
     return () => { current = false }
   }, [])
   return source
