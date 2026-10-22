@@ -24,9 +24,18 @@ export function isHumanActionRequest(value) {
   if (/^(?:You are (?:Codex|an AI)|Available skills|Environment context)\b/i.test(plain)) return false;
   if (/^(?:(?:please|just)\s+)?make sure (?:this|that|it|everything) (?:is |will be |keeps? )?(?:working|works|ok|okay|correct)(?:[.!\s]*)$/i.test(plain)) return false;
   if (/^you can (?:def(?:initely)? )?do (?:real )?tests?[,;.!\s]/i.test(plain) && !/\b(?:fix|build|create|implement|change|update|rename|remove|add)\b/i.test(plain)) return false;
-  // Any language counts: once the exclusions above pass, two letters make a request.
-  return /\p{L}.*\p{L}/u.test(plain);
+  if (/(?:^|\s)GOAL\s*:\s*\S/i.test(plain)) return true;
+  if (ENGLISH_ACTION.test(plain)) return true;
+  // English needs an action verb, so "list", "ps" or a pasted fragment never
+  // becomes a request. Text in other scripts counts once two letters remain.
+  if (/[^\x00-\x7F]/.test(plain)) return /\p{L}.*\p{L}/u.test(plain);
+  // Plain ASCII without an English word (Turkish, Spanish without accents...)
+  // counts once two real words remain; shell commands like "ls -la" do not.
+  return !ENGLISH_WORDS.test(plain) && (plain.match(/\b[a-z]{3,}\b/gi) ?? []).length >= 2;
 }
+
+const ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
+const ENGLISH_WORDS = /\b(?:the|a|an|this|that|it|is|are|to|of|and|for|with|in|on|my|me|you|we|please|just|all|so|now|then|from|be|not)\b/i;
 
 export function humanRequestTitle(original) {
   const text = requestText(typeof original === 'string' ? original : original?.text);
