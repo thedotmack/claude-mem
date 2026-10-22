@@ -473,15 +473,8 @@ export type LauncherCodesignRunner = (binaryPath: string) => {
   stderr: string;
 };
 
-/**
- * Ad-hoc re-signs the freshly compiled launcher (`codesign --force --sign -`).
- * Bun's `--compile` output carries an invalid code signature, and macOS 27
- * enforces signatures: the kernel SIGKILLs the binary on exec, before it can
- * print the protocol for the check that follows (#4778). Ad-hoc signing makes
- * the signature valid without any developer identity.
- */
-const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
-  const invocation = buildSpawnSyncInvocation('codesign', ['--force', '--sign', '-', binaryPath], {
+const runCodesignCommand = (codesignArguments: string[]): ReturnType<LauncherCodesignRunner> => {
+  const invocation = buildSpawnSyncInvocation('codesign', codesignArguments, {
     encoding: 'utf-8',
     // stdout is piped, never inherited: in a SessionStart hook it would be
     // injected into Claude's context.
@@ -493,6 +486,22 @@ const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
     status: codesignResult.status,
     stderr: codesignResult.stderr || (codesignResult.error ? codesignResult.error.message : ''),
   };
+};
+
+/**
+ * Ad-hoc re-signs the freshly compiled launcher (`codesign --remove-signature`,
+ * then `codesign --force --sign -`). Bun's `--compile` output carries an
+ * invalid code signature, and macOS 27 enforces signatures: the kernel SIGKILLs
+ * the binary on exec, before it can print the protocol for the check that
+ * follows (#4778). Ad-hoc signing makes the signature valid without any
+ * developer identity. `--force` alone refuses a signature blob it cannot parse
+ * ("invalid or unsupported format for signature", Bun 1.3.12's output, #4947),
+ * so the old signature is removed first.
+ */
+const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
+  const removeSignatureResult = runCodesignCommand(['--remove-signature', binaryPath]);
+  if (removeSignatureResult.status !== 0) return removeSignatureResult;
+  return runCodesignCommand(['--force', '--sign', '-', binaryPath]);
 };
 
 /**
@@ -699,7 +708,7 @@ export function ensureLauncherOnPath(options: {
     if (host.platform === 'darwin') {
       const codesignResult = runCodesign(temporaryOutfilePath);
       if (codesignResult.status !== 0) {
-        logger.warn(`codesign --force --sign - failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}; the launcher may not start on macOS versions that enforce valid code signatures`);
+        logger.warn(`ad-hoc codesign failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}; the launcher may not start on macOS versions that enforce valid code signatures`);
       }
     }
     // Verified before the move: after it, a concurrent session may already

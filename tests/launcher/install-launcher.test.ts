@@ -97,6 +97,28 @@ const codesignMustNotRun: LauncherCodesignRunner = () => {
 /** Signing is a no-op for fake compiles, so no test reaches the real `codesign`. */
 const codesignNoop: LauncherCodesignRunner = () => ({ status: 0, stderr: '' });
 
+/**
+ * Zeroes the LC_CODE_SIGNATURE blob of a 64-bit Mach-O, so that
+ * `codesign --force --sign -` refuses it ("invalid or unsupported format for
+ * signature") the way it refuses Bun 1.3.12's `--compile` output (#4947).
+ */
+function zeroMachOCodeSignature(binaryPath: string): void {
+  const binary = readFileSync(binaryPath);
+  expect(binary.readUInt32LE(0)).toBe(0xfeedfacf);
+  const loadCommandCount = binary.readUInt32LE(16);
+  let loadCommandOffset = 32;
+  for (let loadCommandIndex = 0; loadCommandIndex < loadCommandCount; loadCommandIndex++) {
+    if (binary.readUInt32LE(loadCommandOffset) === 0x1d) {
+      const signatureOffset = binary.readUInt32LE(loadCommandOffset + 8);
+      const signatureSize = binary.readUInt32LE(loadCommandOffset + 12);
+      writeFileSync(binaryPath, binary.fill(0, signatureOffset, signatureOffset + signatureSize));
+      return;
+    }
+    loadCommandOffset += binary.readUInt32LE(loadCommandOffset + 4);
+  }
+  throw new Error(`${binaryPath} has no LC_CODE_SIGNATURE load command`);
+}
+
 beforeAll(() => {
   mkdirSync(scratchParentDirectory, { recursive: true });
 });
@@ -375,6 +397,28 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
   });
 
+  it.skipIf(process.platform !== 'darwin')('ad-hoc signs a real build whose signature codesign --force cannot replace (Bun 1.3.12, #4947)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const logger = recordingLogger();
+    const compileWithMalformedSignature: LauncherCompileRunner = (bunPath, compileArguments, workingDirectory) => {
+      const compileResult = spawnSync(bunPath, compileArguments, { cwd: workingDirectory, encoding: 'utf-8' });
+      zeroMachOCodeSignature(compileArguments[compileArguments.indexOf('--outfile') + 1]);
+      return { status: compileResult.status, stderr: compileResult.stderr };
+    };
+
+    // No runCodesign: the real `codesign` signs the build.
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => process.execPath, logger, host,
+      runCompile: compileWithMalformedSignature, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(logger.lines.filter((line) => line.includes('codesign'))).toEqual([]);
+    expect(spawnSync(resolveLauncherBinaryPath(host), ['--version'], { encoding: 'utf-8' }).stdout.trim())
+      .toBe(String(LAUNCHER_PROTOCOL));
+  }, 60_000);
+
   it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {
     const scratchHome = makeScratchHome();
     const host = posixHost(scratchHome);
@@ -389,7 +433,7 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
 
     expect(ensureResult.status).toBe('installed');
     expect(logger.lines.some((line) => line.startsWith('warn:')
-      && line.includes('codesign --force --sign - failed (exit 1): fake codesign failure')
+      && line.includes('ad-hoc codesign failed (exit 1): fake codesign failure')
       && line.includes('may not start on macOS'))).toBe(true);
     expect(spawnSync(resolveLauncherBinaryPath(host), ['--version'], { encoding: 'utf-8' }).stdout.trim())
       .toBe(String(LAUNCHER_PROTOCOL));
