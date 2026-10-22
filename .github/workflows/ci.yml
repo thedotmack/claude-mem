@@ -248,6 +248,55 @@ jobs:
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts
 
+  # Search by meaning needs pgvector, which the postgres:16 service above
+  # lacks; there these suites report their tests as skipped. On this image
+  # CLAUDE_MEM_TEST_PGVECTOR=1 makes a missing pgvector fail them instead.
+  server-search-pgvector:
+    name: server search (pgvector)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: ghcr.io/rich-murphey/postgres-pgvector-textsearch:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: server_search_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d server_search_test"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      CLAUDE_MEM_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/server_search_test
+      CLAUDE_MEM_TEST_PGVECTOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install repository dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: Hybrid search, vector writes and backfill
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-search-data
+        run: >-
+          bun test
+          tests/storage/postgres/observation-embeddings.test.ts
+          tests/server/embedding-parts-contract.test.ts
+          tests/server/runtime/memories-vector-write.test.ts
+          tests/server/generation/process-generated-response-vectors.test.ts
+
   clean-room-deps:
     name: clean-room dependency closure smoke
     runs-on: ubuntu-latest

@@ -4,22 +4,23 @@ import pg from 'pg';
 import { bootstrapServerPostgresSchema, createPostgresStorageRepositories } from '../../../src/storage/postgres/index.js';
 import { PostgresObservationEmbeddingsRepository } from '../../../src/storage/postgres/observation-embeddings.js';
 import { processGeneratedResponse } from '../../../src/server/generation/processGeneratedResponse.js';
-import { getSharedEmbedder } from '../../../src/server/services/ObservationEmbeddingService.js';
+import { LocalEmbedder } from '../../../src/services/vector/LocalEmbedder.js';
 import { ModeManager } from '../../../src/services/domain/ModeManager.js';
-import { createIsolatedSchema, dropSchema } from '../../sdk/pg-isolation.js';
+import { createIsolatedSchema, dropSchema, pgvectorAvailable } from '../../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
+const vectorAvailable = await pgvectorAvailable(testDatabaseUrl);
 
-describe('processGeneratedResponse vector writes', () => {
-  if (!testDatabaseUrl) {
-    it.skip('requires CLAUDE_MEM_TEST_POSTGRES_URL', () => {});
-    return;
-  }
+describe.skipIf(!vectorAvailable)('processGeneratedResponse vector writes', () => {
   let pool: pg.Pool;
   let schemaName: string;
   let upsertSpy: ReturnType<typeof spyOn> | null = null;
+  let embedSpy: ReturnType<typeof spyOn> | null = null;
 
   beforeEach(async () => {
+    // Vectors without the model, so generation has vectors to write.
+    embedSpy = spyOn(LocalEmbedder.prototype, 'embed')
+      .mockImplementation(async (texts: string[]) => texts.map(() => new Float32Array(384).fill(0.05)));
     ModeManager.getInstance().loadMode('code');
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_generation_vectors');
     // public too, where pgvector's type lives.
@@ -29,16 +30,12 @@ describe('processGeneratedResponse vector writes', () => {
 
   afterEach(async () => {
     upsertSpy?.mockRestore();
+    embedSpy?.mockRestore();
     await pool.end();
     await dropSchema(testDatabaseUrl!, schemaName);
   });
 
   it('keeps the generated observations when their vector write fails', async () => {
-    // Needs pgvector and the embedding model, so generation has vectors to write.
-    const vectors = (await pool.query(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`)).rows[0].present;
-    const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
-    if (!vectors || !model) return console.warn('pgvector or the embedding model is unavailable; vector write not tested');
-
     const storage = createPostgresStorageRepositories(pool);
     const team = await storage.teams.create({ name: 'team' });
     const project = await storage.projects.create({ teamId: team.id, name: 'project' });

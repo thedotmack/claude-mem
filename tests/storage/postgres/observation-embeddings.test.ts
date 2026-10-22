@@ -19,7 +19,7 @@ import {
 } from '../../../src/server/services/ObservationEmbeddingService.js';
 import type { LocalEmbedder } from '../../../src/services/vector/LocalEmbedder.js';
 import type { Embedder } from '../../../src/services/vector/types.js';
-import { createIsolatedSchema, dropSchema } from '../../sdk/pg-isolation.js';
+import { createIsolatedSchema, dropSchema, pgvectorAvailable } from '../../sdk/pg-isolation.js';
 
 describe('observationEmbeddingParts', () => {
   it('splits an observation into narrative, legacy text and each fact, named like the Chroma ids', () => {
@@ -66,6 +66,16 @@ describe('observationEmbeddingParts', () => {
 });
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
+const vectorAvailable = await pgvectorAvailable(testDatabaseUrl);
+const superuser = vectorAvailable && await (async () => {
+  const client = new pg.Client({ connectionString: testDatabaseUrl });
+  await client.connect();
+  try {
+    return (await client.query(`SELECT rolsuper FROM pg_roles WHERE rolname = current_user`)).rows[0]?.rolsuper === true;
+  } finally {
+    await client.end();
+  }
+})();
 
 /** A unit vector along one axis, so nearness is exact and needs no model. */
 function axis(index: number): Float32Array {
@@ -74,33 +84,20 @@ function axis(index: number): Float32Array {
   return vector;
 }
 
-describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
-  let vectorAvailable = false;
+describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
   let schemaName: string;
   let pool: pg.Pool;
   let projectId: string;
   let teamId: string;
   const ids: Record<string, string> = {};
 
-  beforeAll(async () => {
+  // The extension lives in public, so each test schema reaches it through
+  // its search_path, the way a deployment with the default path does.
+  beforeAll(() => {
     process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH = 'true';
-    // The extension lives in public, so each test schema reaches it through
-    // its search_path, the way a deployment with the default path does.
-    const admin = new pg.Client({ connectionString: testDatabaseUrl });
-    await admin.connect();
-    try {
-      const available = await admin.query(`SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`);
-      if (available.rows.length > 0) {
-        await admin.query('CREATE EXTENSION IF NOT EXISTS vector SCHEMA public');
-        vectorAvailable = true;
-      }
-    } finally {
-      await admin.end();
-    }
   });
 
   beforeEach(async () => {
-    if (!vectorAvailable) return;
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_vec_test');
     pool = new pg.Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${schemaName},public` });
     await bootstrapServerPostgresSchema(pool);
@@ -129,18 +126,15 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   afterEach(async () => {
-    if (!vectorAvailable) return;
     await pool.end();
     await dropSchema(testDatabaseUrl!, schemaName);
   });
 
   afterAll(() => {
     delete process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH;
-    if (!vectorAvailable) console.warn('pgvector not installed in the test database; hybrid search tests did nothing');
   });
 
   it('finds an observation by meaning when no keyword matches', async () => {
-    if (!vectorAvailable) return;
     const repo = new PostgresObservationRepository(pool);
     const query = 'which machine compiles our meaning-based lookup';
     expect(await repo.search({ projectId, teamId, query })).toEqual([]);
@@ -150,7 +144,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('ranks an observation found by both keyword and vector above one found by either', async () => {
-    if (!vectorAvailable) return;
     const repo = new PostgresObservationRepository(pool);
     // "gateway" matches by keyword only; the vector points at the same row,
     // while "backup" is the second-nearest vector and matches no keyword.
@@ -162,7 +155,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('finds a project\'s match by meaning when other projects hold nearer vectors', async () => {
-    if (!vectorAvailable) return;
     const storage = createPostgresStorageRepositories(pool);
     const other = await storage.projects.create({ teamId, name: 'other' });
     // More parts than the nearest-parts limit, each nearer the query than
@@ -205,7 +197,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('finds a folder\'s match by meaning when other folders of the project hold nearer vectors', async () => {
-    if (!vectorAvailable) return;
     await pool.query(`UPDATE observations SET metadata = metadata || '{"project": "here"}' WHERE id = $1`, [ids.indexer]);
     const nearer = axis(1);
     nearer[10] = 0.1;
@@ -243,7 +234,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('fills a limit above the per-leg candidate count', async () => {
-    if (!vectorAvailable) return;
     await pool.query(
       `INSERT INTO observations (id, project_id, team_id, content)
        SELECT 'match-' || g, $1, $2, 'gateway note ' || g FROM generate_series(1, 150) AS g`,
@@ -255,7 +245,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('counts rows without vectors from the current model as missing', async () => {
-    if (!vectorAvailable) return;
     const embedder = (modelId: string): Embedder => ({ modelId, dims: 384, embed: async texts => texts.map(() => axis(1)) });
     const current = await getVectorSearchStatus(pool, embedder('test'));
     expect(current).toMatchObject({ available: true, model: 'test', observationsWithoutVectors: 0 });
@@ -267,7 +256,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('counts missing vectors once a minute, not on every status read', async () => {
-    if (!vectorAvailable) return;
     const embedder: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
     const count = spyOn(PostgresObservationEmbeddingsRepository.prototype, 'countMissing');
     try {
@@ -280,7 +268,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('reports the last embedding failure until an embed succeeds', async () => {
-    if (!vectorAvailable) return;
     const failing: Embedder = { modelId: 'test', dims: 384, embed: async () => { throw new Error('model download failed'); } };
     const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
 
@@ -292,7 +279,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('skips a row the model cannot embed and backfills the rest', async () => {
-    if (!vectorAvailable) return;
     const embedder: Embedder = {
       modelId: 'next',
       dims: 384,
@@ -311,7 +297,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('finishes when the last row yields no parts', async () => {
-    if (!vectorAvailable) return;
     // The newest row, stored with microseconds, has nothing to embed, so it
     // stays missing; paging past it must not land back on it.
     await pool.query(
@@ -324,7 +309,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   }, 10_000);
 
   it('lets one of two concurrent backfills do the work', async () => {
-    if (!vectorAvailable) return;
     let embedCalls = 0;
     const embedder: Embedder = {
       modelId: 'next',
@@ -344,7 +328,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('backfills through a pool of one connection', async () => {
-    if (!vectorAvailable) return;
     const single = new pg.Pool({ connectionString: testDatabaseUrl, max: 1, options: `-c search_path=${schemaName},public` });
     try {
       const embedder: Embedder = { modelId: 'next', dims: 384, embed: async texts => texts.map(() => axis(1)) };
@@ -355,7 +338,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   }, 10_000);
 
   it('stops between batches when signalled, releasing its lock for the next start', async () => {
-    if (!vectorAvailable) return;
     const stop = new AbortController();
     const stopping: Embedder = {
       modelId: 'next',
@@ -372,7 +354,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {
-    if (!vectorAvailable) return;
     const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
     process.env.CLAUDE_MEM_SERVER_VECTOR_SEARCH = 'false';
     try {
@@ -384,7 +365,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('caps the shared embedder\'s threads only while stored rows need vectors', async () => {
-    if (!vectorAvailable) return;
     // The rows above carry 'test' vectors, so the configured model has a backlog.
     process.env.CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS = '3';
     try {
@@ -410,7 +390,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   });
 
   it('creates the vector table on a new database only, unless told to', async () => {
-    if (!vectorAvailable) return;
     const hasTable = async (client: pg.Pool, schema: string) =>
       (await client.query(`SELECT to_regclass($1) IS NOT NULL AS present`, [`${schema}.observation_embeddings`])).rows[0].present;
     const fresh = await createIsolatedSchema(testDatabaseUrl!, 'cm_vec_auto');
@@ -438,12 +417,28 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     }
   });
 
-  it('boots keyword-only when the role cannot create pgvector', async () => {
-    if (!vectorAvailable) return;
+  it('stays keyword-only when pgvector is outside the search_path', async () => {
+    // Installed in public, which this schema's search_path leaves out, so the
+    // vector type cannot be named here.
+    const hidden = await createIsolatedSchema(testDatabaseUrl!, 'cm_vec_hidden');
+    const hiddenPool = new pg.Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${hidden}` });
+    const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+    try {
+      await bootstrapServerPostgresSchema(hiddenPool, 'on');
+      const table = await hiddenPool.query(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
+      expect(table.rows[0].present).toBe(false);
+      expect(await embedSearchQuery(hiddenPool, 'a query', working)).toBeNull();
+      expect(await backfillMissingEmbeddings(hiddenPool, { embedder: working })).toEqual({ observations: 0, parts: 0 });
+      expect((await getVectorSearchStatus(hiddenPool, working)).available).toBe(false);
+    } finally {
+      await hiddenPool.end();
+      await dropSchema(testDatabaseUrl!, hidden);
+    }
+  });
+
+  it.skipIf(!superuser)('boots keyword-only when the role cannot create pgvector', async () => {
     const admin = new pg.Client({ connectionString: testDatabaseUrl });
     await admin.connect();
-    const superuser = (await admin.query(`SELECT rolsuper FROM pg_roles WHERE rolname = current_user`)).rows[0]?.rolsuper;
-    if (!superuser) return void (await admin.end());
     const role = 'cm_vec_noext';
     const database = 'cm_vec_noext';
     await admin.query(`DROP DATABASE IF EXISTS ${database}`);
@@ -472,7 +467,6 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
   }, 30_000);
 
   it('deletes an observation\'s vectors with it', async () => {
-    if (!vectorAvailable) return;
     await pool.query('DELETE FROM observations WHERE id = $1', [ids.indexer]);
     const remaining = await pool.query('SELECT count(*)::int AS n FROM observation_embeddings WHERE observation_id = $1', [ids.indexer]);
     expect(remaining.rows[0].n).toBe(0);

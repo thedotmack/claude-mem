@@ -5,16 +5,13 @@ import { Server } from '../../../src/services/server/Server.js';
 import { ServerV1PostgresRoutes } from '../../../src/server/routes/v1/ServerV1PostgresRoutes.js';
 import { bootstrapServerPostgresSchema, createPostgresStorageRepositories } from '../../../src/storage/postgres/index.js';
 import { PostgresObservationEmbeddingsRepository } from '../../../src/storage/postgres/observation-embeddings.js';
-import { getSharedEmbedder } from '../../../src/server/services/ObservationEmbeddingService.js';
+import { LocalEmbedder } from '../../../src/services/vector/LocalEmbedder.js';
 import { DisabledServerQueueManager } from '../../../src/server/runtime/types.js';
-import { createIsolatedSchema, dropSchema, newApiKey } from '../../sdk/pg-isolation.js';
+import { createIsolatedSchema, dropSchema, newApiKey, pgvectorAvailable } from '../../sdk/pg-isolation.js';
 
 const databaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
-describe('POST /v1/memories vector write', () => {
-  if (!databaseUrl) {
-    it.skip('requires CLAUDE_MEM_TEST_POSTGRES_URL', () => {});
-    return;
-  }
+const vectorAvailable = await pgvectorAvailable(databaseUrl);
+describe.skipIf(!vectorAvailable)('POST /v1/memories vector write', () => {
   let pool: pg.Pool;
   let schema: string;
   let server: Server;
@@ -22,9 +19,13 @@ describe('POST /v1/memories vector write', () => {
   let projectId: string;
   let apiKey: string;
   let upsertSpy: ReturnType<typeof spyOn> | null = null;
+  let embedSpy: ReturnType<typeof spyOn> | null = null;
 
   beforeEach(async () => {
-    schema = await createIsolatedSchema(databaseUrl, 'cm_memory_vectors');
+    // Vectors without the model, so the route has vectors to write.
+    embedSpy = spyOn(LocalEmbedder.prototype, 'embed')
+      .mockImplementation(async (texts: string[]) => texts.map(() => new Float32Array(384).fill(0.05)));
+    schema = await createIsolatedSchema(databaseUrl!, 'cm_memory_vectors');
     // public too, where pgvector's type lives.
     pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public` });
     await bootstrapServerPostgresSchema(pool);
@@ -49,19 +50,15 @@ describe('POST /v1/memories vector write', () => {
   });
   afterEach(async () => {
     upsertSpy?.mockRestore();
+    embedSpy?.mockRestore();
     try { await server?.close(); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') throw error;
     }
     await pool?.end();
-    if (schema) await dropSchema(databaseUrl, schema);
+    if (schema) await dropSchema(databaseUrl!, schema);
   });
 
   it('answers 201 for a saved memory whose vector write fails', async () => {
-    // Needs pgvector and the embedding model, so the route has vectors to write.
-    const vectors = (await pool.query(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`)).rows[0].present;
-    const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
-    if (!vectors || !model) return console.warn('pgvector or the embedding model is unavailable; vector write not tested');
-
     upsertSpy = spyOn(PostgresObservationEmbeddingsRepository.prototype, 'upsert')
       .mockRejectedValue(new Error('connection lost'));
     const response = await fetch(url, { method: 'POST', headers: {
