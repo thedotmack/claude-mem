@@ -15,6 +15,7 @@ import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWor
 import {
   backfillMissingEmbeddings,
   capEmbedderThreadsForBackfill,
+  getSharedEmbedder,
   vectorSearchMode,
 } from '../services/ObservationEmbeddingService.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
@@ -471,7 +472,7 @@ async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean):
     return { initialized: false, schemaVersion: null, appliedAt: null };
   }
 
-  await bootstrapServerPostgresSchema(pool, vectorSearchMode());
+  await bootstrapServerPostgresSchema(pool, vectorSearchMode(), getSharedEmbedder().dims);
   const result = await pool.query(
     `
       SELECT version, applied_at

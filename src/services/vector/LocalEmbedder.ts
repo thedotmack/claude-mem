@@ -29,12 +29,6 @@ const MAX_TEXT_CHARS = 32 * 1024;
 export const LOAD_RETRY_MS = 5 * 60_000;
 
 /**
- * The length all-MiniLM-L6-v2 was trained at, and where Chroma truncates.
- * The tokenizer's model_max_length says 512.
- */
-const MAX_TOKENS = 256;
-
-/**
  * all-MiniLM-L6-v2, or another model from models.ts, via transformers.js,
  * in-process. all-MiniLM-L6-v2 is the model and dimensionality of Chroma's
  * default embedding function, which the worker's search uses, so with it the
@@ -63,7 +57,7 @@ export class LocalEmbedder implements Embedder {
   ) {
     // The token limit is part of the identity: the same model truncated
     // elsewhere produces different vectors for long texts.
-    this.modelId = `${model.repo}/${model.dtype}/${model.pooling}/l2/${MAX_TOKENS}`;
+    this.modelId = `${model.repo}/${model.dtype}/${model.pooling}/l2/${model.maxTokens}`;
     this.dims = model.dims;
   }
 
@@ -97,8 +91,10 @@ export class LocalEmbedder implements Embedder {
     return this.loading;
   }
 
-  async embed(texts: string[]): Promise<Float32Array[]> {
+  async embed(texts: string[], role: 'query' | 'passage' = 'passage'): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
+    const prefix = role === 'query' ? this.model.queryPrefix : this.model.passagePrefix;
+    if (prefix) texts = texts.map(text => prefix + text);
     const vectors: Float32Array[] = [];
     for (let start = 0; start < texts.length; start += EMBED_CHUNK_SIZE) {
       const chunk = texts.slice(start, start + EMBED_CHUNK_SIZE).map(text => text.slice(0, MAX_TEXT_CHARS));
@@ -113,20 +109,21 @@ export class LocalEmbedder implements Embedder {
    * model_max_length (512) rather than the length the model was trained at:
    * for all-MiniLM-L6-v2 that is 256, which Chroma uses, and a text of 936 to
    * 1,716 tokens embedded at 512 came out at cosine 0.79 to 0.83 from Chroma's
-   * vector. Truncation also drops the closing [SEP], which transformers.js
-   * 4.3.1 adds before cutting (huggingface/tokenizers.js#41); it is restored
-   * here. With both, vectors match Chroma's to cosine 0.9999995.
+   * vector. Truncation also drops the closing [SEP] (or </s>), which
+   * transformers.js 4.3.1 adds before cutting (huggingface/tokenizers.js#41);
+   * it is restored here. With both, vectors match Chroma's to cosine 0.9999995.
    */
   protected async encode(texts: string[]): Promise<Float32Array[]> {
     const { tokenizer, model } = await this.ready();
-    const inputs = tokenizer(texts, { padding: true, truncation: true, max_length: MAX_TOKENS });
+    const maxTokens = this.model.maxTokens;
+    const inputs = tokenizer(texts, { padding: true, truncation: true, max_length: maxTokens });
     const [rows, width] = inputs.input_ids.dims as number[];
     const ids = inputs.input_ids.data as BigInt64Array;
     const mask = inputs.attention_mask.data as BigInt64Array;
     const sep = BigInt(tokenizer.sep_token_id);
-    if (width === MAX_TOKENS) {
+    if (width === maxTokens) {
       for (let r = 0; r < rows; r++) {
-        const last = r * width + MAX_TOKENS - 1;
+        const last = r * width + maxTokens - 1;
         if (mask[last] === 1n && ids[last] !== sep) ids[last] = sep;
       }
     }
@@ -144,10 +141,7 @@ export class LocalEmbedder implements Embedder {
         for (let d = 0; d < this.dims; d++) v[d] += h[base + d];
       }
       let norm = 0;
-      for (let d = 0; d < this.dims; d++) {
-        v[d] /= n;
-        norm += v[d] * v[d];
-      }
+      for (let d = 0; d < this.dims; d++) { v[d] /= n; norm += v[d] * v[d]; }
       norm = Math.sqrt(norm);
       for (let d = 0; d < this.dims; d++) v[d] /= norm;
       return v;

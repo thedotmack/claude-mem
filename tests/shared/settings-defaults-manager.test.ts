@@ -1327,3 +1327,9 @@ describe('server search by meaning default', () => {
     expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS).toBe('');
   });
 });
+
+describe('embedding model default', () => {
+  it('keeps all-MiniLM-L6-v2, the model Chroma embeds with', () => {
+    expect(SettingsDefaultsManager.getAllDefaults().CLAUDE_MEM_EMBEDDING_MODEL).toBe('all-MiniLM-L6-v2');
+  });
+});

@@ -22,7 +22,7 @@ import {
 } from '../../storage/postgres/pool.js';
 import { stripTags } from '../../utils/tag-stripping.js';
 import { PostgresObservationEmbeddingsRepository } from '../../storage/postgres/observation-embeddings.js';
-import { embedObservationRows, getSharedEmbedder } from '../services/ObservationEmbeddingService.js';
+import { embedObservationRows } from '../services/ObservationEmbeddingService.js';
 
 // processGeneratedResponse owns the full "we got XML from a provider →
 // persist + link + advance outbox" pipeline. Every side-effect runs inside
@@ -301,7 +301,9 @@ async function persistGeneratedObservations(
   // Vectors for search by meaning, computed before the transaction opens so
   // the model never holds it, and written beside each row inside it. Null when
   // unavailable: the rows are written anyway and the backfill at the next
-  // start embeds them.
+  // start embeds them. Index-aligned with `rendered`, not with the
+  // rows the loop below writes: a row it skips is embedded and discarded, so
+  // the loop's index (which also feeds the generation key) picks each vector.
   const embedded = await embedObservationRows(
     input.pool,
     rendered.map(({ kind, content, metadata }) => ({
@@ -391,19 +393,13 @@ async function persistGeneratedObservations(
       });
       persisted.push(observation);
 
-      const vectors = embedded?.[index];
-      if (vectors && vectors.parts.length > 0) {
+      if (embedded) {
         // Vectors are best-effort: a failed insert rolls back to this savepoint
         // and leaves the row to the backfill, instead of aborting the
         // transaction and discarding the generated observations with it.
         await client.query('SAVEPOINT observation_vectors');
         try {
-          await embeddingsRepo.upsert({
-            observationId: observation.id,
-            model: getSharedEmbedder().modelId,
-            parts: vectors.parts,
-            vectors: vectors.vectors,
-          });
+          await embeddingsRepo.upsert({ observationId: observation.id, ...embedded[index]! });
           await client.query('RELEASE SAVEPOINT observation_vectors');
         } catch (error) {
           await client.query('ROLLBACK TO SAVEPOINT observation_vectors');
