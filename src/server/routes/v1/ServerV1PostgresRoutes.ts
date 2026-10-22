@@ -934,11 +934,19 @@ export class ServerV1PostgresRoutes implements RouteHandler {
           if (observation.id === createInput.id) {
             const vectors = embedded?.[0];
             if (vectors && vectors.parts.length > 0) {
+              // The memory is saved; its vectors are best-effort. A failed write
+              // is logged and left to the backfill, rather than answering 500
+              // for a memory that exists, which a retry would duplicate.
               await new PostgresObservationEmbeddingsRepository(this.options.pool).upsert({
                 observationId: observation.id,
                 model: getSharedEmbedder().modelId,
                 parts: vectors.parts,
                 vectors: vectors.vectors,
+              }).catch((error: unknown) => {
+                logger.warn('SYSTEM', 'memory saved without vectors; the backfill embeds it at the next worker start', {
+                  observationId: observation.id,
+                  error: error instanceof Error ? error.message : String(error),
+                });
               });
             }
             await this.auditWrite(req, 'memory.write', observation.id, observation.projectId);
