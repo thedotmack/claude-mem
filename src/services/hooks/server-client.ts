@@ -14,7 +14,7 @@
 import { fetchWithTimeout } from '../../shared/worker-utils.js';
 import { HOOK_TIMEOUTS, getTimeout } from '../../shared/hook-constants.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
-import { stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
+import { stripMemoryTags, stripMemoryTagsFromJsonStrings } from '../../utils/tag-stripping.js';
 
 const DEFAULT_TIMEOUT_MS = getTimeout(HOOK_TIMEOUTS.API_REQUEST);
 
@@ -341,7 +341,8 @@ export class ServerClient {
     input: ServerSemanticContextRequest,
     options: ServerRequestOptions = {},
   ): Promise<ServerSemanticContextResponse> {
-    const payload: Record<string, unknown> = { projectId: input.projectId, query: input.query };
+    // The query is the user's prompt; <private> sections never leave the hook.
+    const payload: Record<string, unknown> = { projectId: input.projectId, query: stripMemoryTags(input.query) };
     if (input.limit !== undefined) payload.limit = input.limit;
     if (input.platformSource !== undefined) {
       payload.platformSource = normalizePlatformSourceField(input.platformSource);
