@@ -21,6 +21,9 @@ const EMBED_CHUNK_SIZE = 32;
  */
 const EMBED_CHUNK_CHARS = 256 * 1024;
 
+/** How long a failed model load fails every call before the next attempt. */
+export const LOAD_RETRY_MS = 5 * 60_000;
+
 /**
  * all-MiniLM-L6-v2 via transformers.js, in-process.
  *
@@ -47,6 +50,9 @@ export class LocalEmbedder implements Embedder {
 
   private extractor: { tokenizer: any; model: any } | null = null;
   private loading: Promise<{ tokenizer: any; model: any }> | null = null;
+  // A failed load, and when. Each attempt can take minutes where a firewall
+  // drops the download, so calls fail at once until LOAD_RETRY_MS has passed.
+  private failed: { error: unknown; at: number } | null = null;
 
   /**
    * `threads` caps onnxruntime's intra-op threads; unset, it takes every CPU
@@ -61,6 +67,7 @@ export class LocalEmbedder implements Embedder {
    */
   private async ready(): Promise<{ tokenizer: any; model: any }> {
     if (this.extractor) return this.extractor;
+    if (this.failed && Date.now() - this.failed.at < LOAD_RETRY_MS) throw this.failed.error;
     if (!this.loading) {
       this.loading = (async () => {
         const { AutoModel, AutoTokenizer } = await import('@huggingface/transformers');
@@ -73,9 +80,10 @@ export class LocalEmbedder implements Embedder {
         };
         return this.extractor;
       })().catch((error: unknown) => {
-        // A failed load (a download error, say) is retried by the next call
-        // rather than failing every call until the process restarts.
+        // A failed load (a download error, say) is retried by a call after
+        // LOAD_RETRY_MS rather than failing every call until the process restarts.
         this.loading = null;
+        this.failed = { error, at: Date.now() };
         throw error;
       });
     }
