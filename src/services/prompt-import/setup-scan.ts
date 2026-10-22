@@ -10,6 +10,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import { observationTokenEconomics, scanTokenUsage, summarizeTokenUsage, type SetupTokenUsage } from './token-usage.js';
 import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
 
 /** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
@@ -42,6 +43,10 @@ export interface SetupScanState {
   added: number;
   skippedSources: number;
   error: string | null;
+  /** Token Savings: 30-day token totals per agent, read in the same pass. Set when the scan is done. */
+  usage: SetupTokenUsage | null;
+  /** Why the token totals could not be read; the prompt scan itself still finished. */
+  usageError: string | null;
 }
 
 /** The SessionStore methods the scan uses. */
@@ -51,12 +56,15 @@ export interface SetupScanStore {
     platformSource: string; contentSessionId: string; project: string; nativePromptId: string; promptText: string;
     createdAtEpoch: number; hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
   }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number };
+  /** claude-mem's observation history, for the Token Savings efficiency percent. */
+  streamObservationTokenFields(): Iterable<{ title: string | null; subtitle: string | null; narrative: string | null; facts: string | null; discovery_tokens: number | null }>;
 }
 
 export interface SetupScanOptions {
   getStore: () => SetupScanStore;
   scan?: typeof scanOwnerPrompts;
   scanOptions?: Omit<PromptScanOptions, 'sinceEpochMs' | 'memoryPrompts' | 'onProgress'>;
+  readTokenUsage?: typeof scanTokenUsage;
   now?: () => number;
   /** Minimum gap between progress notifications while a phase runs. */
   progressIntervalMs?: number;
@@ -70,7 +78,7 @@ function idleState(): SetupScanState {
   return {
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0 })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null,
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null,
   };
 }
 
@@ -117,6 +125,18 @@ export class SetupScan {
     for (const listener of this.listeners) listener(snapshot);
   }
 
+  private async tokenSavings(
+    store: SetupScanStore,
+    tokenUsage: ReturnType<typeof scanTokenUsage>,
+  ): Promise<{ usage: SetupTokenUsage | null; usageError: string | null }> {
+    try {
+      return { usage: summarizeTokenUsage(await tokenUsage, observationTokenEconomics(store.streamObservationTokenFields())), usageError: null };
+    } catch (error) {
+      logger.error('IMPORT', 'Setup token usage could not be read', {}, error as Error);
+      return { usage: null, usageError: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
   private async run(): Promise<void> {
     const startedAt = this.now();
     const windowStart = scanWindowStart(startedAt);
@@ -125,6 +145,11 @@ export class SetupScan {
     try {
       const store = this.options.getStore();
       const memoryPrompts = store.listHookRecordedPrompts(windowStart);
+      // Token totals are read alongside the prompts, from the same transcripts and window.
+      const tokenUsage = (this.options.readTokenUsage ?? scanTokenUsage)({
+        sinceEpochMs: windowStart, homeDirectory: this.options.scanOptions?.homeDirectory, agents: this.options.scanOptions?.agents,
+      });
+      tokenUsage.catch(() => {}); // Awaited (and reported) in tokenSavings, after the prompts.
       let lastPhase: PromptScanProgress['phase'] = 'reading';
       const result = await (this.options.scan ?? scanOwnerPrompts)({
         ...this.options.scanOptions,
@@ -177,9 +202,10 @@ export class SetupScan {
         const transcriptOnly = fromTranscripts.get(agent.id) ?? 0;
         return { ...agent, detected: summary.detected, fromMemory, fromTranscripts: transcriptOnly, prompts: fromMemory + transcriptOnly };
       });
+      const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const finishedAt = this.now();
       this.update({
-        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length,
+        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length, usage, usageError,
         finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
       }, true);
       logger.info('IMPORT', 'Setup prompt scan finished', { added, durationMs: finishedAt - startedAt });

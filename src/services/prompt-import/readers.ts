@@ -72,11 +72,11 @@ export async function* readLines(path: string): AsyncGenerator<string> {
 }
 
 /** A line that is not JSON (a torn last line, a partial write) is not a record; the Python reader skips it the same way. */
-function parseLine(line: string): any {
+export function parseLine(line: string): any {
   try { return JSON.parse(line); } catch { return undefined; }
 }
 
-function isoToEpochMs(timestamp: unknown): number | null {
+export function isoToEpochMs(timestamp: unknown): number | null {
   if (typeof timestamp !== 'string' || !timestamp) return null;
   const epoch = Date.parse(timestamp);
   return Number.isFinite(epoch) ? epoch : null;
@@ -310,7 +310,7 @@ function geminiProjectDirectories(homeDirectory: string): Map<string, string> {
   return directories;
 }
 
-async function readGeminiChat(path: string): Promise<{ header: any; messages: any[] }> {
+export async function readGeminiChat(path: string): Promise<{ header: any; messages: any[] }> {
   if (!path.endsWith('.jsonl')) {
     const document = JSON.parse(readFileSync(path, 'utf8'));
     return { header: document, messages: Array.isArray(document.messages) ? document.messages : [] };
