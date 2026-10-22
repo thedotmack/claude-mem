@@ -8,13 +8,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, StateBadge, useWorkspace } from '@/components/bits'
+import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, SkillLastRun, StateBadge, useWorkspace } from '@/components/bits'
 import { AgentMark } from '@/components/brand'
 import { RequestCard } from '@/components/request-card'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { deviceById, SAMPLE_RUNS, startedTimestamp, useWorkModel, type LiveState, type Request } from '@/data'
-import type { RequestReadError } from '@/live/work-data-source'
+import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 
 type View = 'cards' | 'list' | 'agents' | 'team'
 type Filter = 'all' | 'needs-you' | 'shipped' | 'closed'
@@ -72,24 +72,27 @@ function Summary({ requests, onOpen, onShowNeedsYou }: { requests: Request[]; on
   )
 }
 
-/** Today's story, after the work: one hero image, the narrative, and the sync funnel (§7, §8). */
-function TodayPanel({ requests, onOpenStory }: { requests: Request[]; onOpenStory: () => void }) {
+/** The build story's recap, after the work: its first paragraph, plus the hero image and sync funnel in the sample (§7, §8). */
+function TodayPanel({ story, onOpenStory }: { story: BuildStory; onOpenStory: () => void }) {
   const { mode, connected } = useWorkspace()
-  const shipped = requests.filter((request) => request.state === 'shipped').length
+  // The daily recap image is not generated from real records yet, so live mode leaves its slot out.
+  const sample = useWorkModel().sourceKind === 'sample'
   return (
-    <div className="grid gap-4 rounded-xl border bg-card/70 p-4 sm:grid-cols-[132px_1fr] md:p-5">
-      <Req ids={['R7.4']}>
-        <div className="flex aspect-[3/1] items-center justify-center rounded-lg border border-dashed bg-surface text-muted-foreground sm:aspect-square"><ImageIcon className="size-5" /><span className="sr-only">Today's hero image (not generated in the wireframe)</span></div>
-      </Req>
+    <div className={cn('grid gap-4 rounded-xl border bg-card/70 p-4 md:p-5', sample && 'sm:grid-cols-[132px_1fr]')}>
+      {sample && (
+        <Req ids={['R7.4']}>
+          <div className="flex aspect-[3/1] items-center justify-center rounded-lg border border-dashed bg-surface text-muted-foreground sm:aspect-square"><ImageIcon className="size-5" /><span className="sr-only">Today's hero image (not generated in the wireframe)</span></div>
+        </Req>
+      )}
       <div className="min-w-0 space-y-3">
         <Req ids={['R7.1', 'R7.2']}>
           <div className="space-y-1">
-            <p className="section-label">Today</p>
-            <p className="text-sm">The spec moved to a wireframe, embeddings moved to their own table, and {shipped} request{shipped === 1 ? '' : 's'} shipped.</p>
+            <p className="section-label">{story.writtenAt ? `Build story · ${story.writtenAt}` : 'Build story'}</p>
+            <p className="text-sm">{story.recap}</p>
             <Button variant="link" className="h-11 p-0 text-sm text-accent-foreground md:h-auto" onClick={onOpenStory}>Read the build story</Button>
           </div>
         </Req>
-        {mode === 'home' && !connected && (
+        {sample && mode === 'home' && !connected && (
           <Req ids={['R8.2']}>
             <div className="flex flex-wrap items-center gap-2 border-t border-border/70 pt-3 text-sm">
               <PlugIcon className="size-4 text-muted-foreground" />
@@ -105,7 +108,7 @@ function TodayPanel({ requests, onOpenStory }: { requests: Request[]; onOpenStor
 }
 
 /** Shipping velocity, the narrative, and the preferences it found (§7). Preferences are the same records My Rules shows. */
-function StorySheet({ open, requests, onClose, onOpenRules }: { open: boolean; requests: Request[]; onClose: () => void; onOpenRules: () => void }) {
+function StorySheet({ open, story, requests, onClose, onOpenRules }: { open: boolean; story: BuildStory; requests: Request[]; onClose: () => void; onOpenRules: () => void }) {
   const shipped = requests.filter((request) => request.state === 'shipped').length
   const waiting = requests.filter(needsYou).length
   const { rules } = useWorkModel()
@@ -115,18 +118,19 @@ function StorySheet({ open, requests, onClose, onOpenRules }: { open: boolean; r
       <SheetContent className="overflow-y-auto data-[side=right]:w-full data-[side=right]:sm:max-w-lg">
         <SheetHeader>
           <SheetTitle>Build story</SheetTitle>
-          <SheetDescription>From request-progress, reviewed from memory.</SheetDescription>
+          <SheetDescription>From request-progress, reviewed from memory{story.writtenAt ? `, written ${story.writtenAt}` : ''}.</SheetDescription>
         </SheetHeader>
         <div className="space-y-6 px-4 pb-6">
           <Req ids={['R7.1']}>
-            <p className="text-sm">{shipped} request{shipped === 1 ? '' : 's'} shipped and {waiting} waiting on you today.</p>
+            <p className="text-sm">{shipped} request{shipped === 1 ? '' : 's'} shipped and {waiting} waiting on you.</p>
           </Req>
           <Req ids={['R7.2']}>
-            <p className="text-sm text-muted-foreground">Monday started with the work viewer: cards came back, live updates landed, and the list gained sorting. Midweek went to cloud sync, after write stalls traced back to vector indexes…</p>
+            <div className="space-y-3">{story.paragraphs.map((paragraph, index) => <p key={index} className="text-sm text-muted-foreground">{paragraph}</p>)}</div>
           </Req>
           <Req ids={['R7.3']}>
             <div className="space-y-2">
               <h4 className="section-label">What it learned about how you work</h4>
+              {learned.length === 0 && <p className="text-sm text-muted-foreground">No preferences learned yet.</p>}
               <ul className="space-y-2">
                 {learned.map((rule) => (
                   <li key={rule.id} className="text-sm">
@@ -293,7 +297,7 @@ function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
 
 export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: Request) => void; onOpenGoal: (goalId: string) => void; onOpenRules: () => void }) {
   const { team } = useWorkspace()
-  const { sourceKind, requests, requestReadErrors, unlinkedWorkCount, sourceHealth } = useWorkModel()
+  const { sourceKind, requests, requestReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns } = useWorkModel()
   const sample = sourceKind === 'sample'
   const [view, setView] = useState<View>('cards')
   const [filter, setFilter] = useState<Filter>('all')
@@ -322,10 +326,14 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
             {team && <ToggleGroupItem value="team" className="h-11 px-3.5 md:h-8">Team</ToggleGroupItem>}
           </ToggleGroup>
         </Req>
-        {/* The request-progress run is not wired to real data yet (plan Phase 9), so live mode leaves it out. */}
-        {sample && (
+        {/* Live mode shows when request-progress last reviewed, and the command that reviews again. No cost. */}
+        {sample ? (
           <div className="order-last w-full md:ml-auto md:w-auto">
             <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
+          </div>
+        ) : lastRuns.progress && (
+          <div className="order-last w-full md:ml-auto md:w-auto">
+            <SkillLastRun run={lastRuns.progress} command="/claude-mem:request-progress" label="Last reviewed" ids={['R14.12']} />
           </div>
         )}
         <div className="flex w-full items-center gap-1 md:w-auto">
@@ -384,11 +392,11 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
         <p className="text-xs text-muted-foreground">{unlinkedWorkCount} work record{unlinkedWorkCount === 1 ? " isn't" : "s aren't"} linked to a request yet.</p>
       )}
 
-      {/* Today's narrative and the build story are written by request-progress (plan Phase 9); live mode hides them until then. */}
-      {sample && (
+      {/* The recap and the build story are written by request-progress; with no story, both are hidden. */}
+      {buildStory && (
         <>
-          <TodayPanel requests={requests} onOpenStory={() => setStoryOpen(true)} />
-          <StorySheet open={storyOpen} requests={requests} onClose={() => setStoryOpen(false)} onOpenRules={() => { setStoryOpen(false); onOpenRules() }} />
+          <TodayPanel story={buildStory} onOpenStory={() => setStoryOpen(true)} />
+          <StorySheet open={storyOpen} story={buildStory} requests={requests} onClose={() => setStoryOpen(false)} onOpenRules={() => { setStoryOpen(false); onOpenRules() }} />
         </>
       )}
     </div>

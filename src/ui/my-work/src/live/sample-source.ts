@@ -60,6 +60,11 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
   rules: sampleRules,
   ruleScopes: sampleRuleScopes,
   rulesLearning: SAMPLE_RULES_LEARNING,
+  buildStory: {
+    recap: 'The spec moved to a wireframe, embeddings moved to their own table, and cloud sync shipped.',
+    paragraphs: ['Monday started with the work viewer: cards came back, live updates landed, and the list gained sorting. Midweek went to cloud sync, after write stalls traced back to vector indexes…'],
+    writtenAt: SAMPLE_RUNS.progress.lastRunAt,
+  },
   rulesFile: { path: '~/.claude-mem/MY-RULES.md', approvedCount: sampleRules.filter((rule) => rule.status === 'on').length, loadedInClaudeCode: true },
   rulesReadError: null,
   lastRuns: {

@@ -307,6 +307,7 @@ export class WorkStateSource {
     const now = Date.now();
     return {
       ...this.agentView,
+      ...this.goalLinks(),
       teamMode: process.env.WORK_STATE_TEAM_MODE === '1',
       // Progress reviews and the build story come from the request-progress
       // skill; they are assessments, separate from recorded lifecycle.
@@ -319,6 +320,28 @@ export class WorkStateSource {
       } })),
       source: { ...this.source, kind: 'claude-mem-recorded-agent-activity', lastUpdatedAt: this.agentView.agents[0]?.presence.lastActivityAt ?? null, stale: !this.source.connected && this.agentView.agents.length > 0 },
     };
+  }
+
+  /** Join the request-progress alignment onto requests and goals, the way the
+   * prototype's goalsSnapshot() does. A request's `goals` is absent until it is
+   * aligned (Goal not linked yet), [] when it serves none, else its goals. */
+  goalLinks() {
+    const alignment = this.ledger?.alignment;
+    const goals = this.agentView.goals;
+    if (!alignment || !goals) return {};
+    const byGoal = new Map([...goals.priorities, ...goals.openAsks].map((goal) => [goal.task, goal]));
+    // "Serves none" was judged against one goals run; a newer run asks again.
+    const unaligned = new Set(alignment.goalsGeneratedAt === goals.generatedAt ? alignment.unaligned ?? [] : []);
+    const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
+      if (!request.groupId) return request;
+      const links = (alignment.links?.[request.groupId] ?? []).filter((link) => byGoal.has(link.goal)).map((link) => {
+        const goal = byGoal.get(link.goal);
+        return { goalId: goal.id, goal: link.goal, title: goal.title, kind: goal.kind, evidence: link.evidence };
+      });
+      if (links.length) return { ...request, goals: links };
+      return unaligned.has(request.groupId) ? { ...request, goals: [] } : request;
+    });
+    return { humanRequests, goals: { ...goals, alignedAt: alignment.alignedAt ?? null } };
   }
 
   evidence(kind, id) {

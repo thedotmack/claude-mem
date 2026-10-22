@@ -179,12 +179,13 @@ export function RequestDetail({ request, onClose, onOpenGoal }: { request: Reque
             </Req>
           )}
 
-          {request.story.length > 0 && (
+          {(request.story.length > 0 || request.storyNarrative) && (
             <Req ids={['R7.2', 'R3.2']}>
               <ChainOfThought defaultOpen={false}>
                 <ChainOfThoughtHeader>Build story</ChainOfThoughtHeader>
                 <ChainOfThoughtContent>
-                  {request.story.map((step) => <ChainOfThoughtStep key={step.label} label={step.label} description={step.description} status={step.status} />)}
+                  {request.storyNarrative && <p className="text-sm text-muted-foreground">{request.storyNarrative}</p>}
+                  {request.story.map((step, index) => <ChainOfThoughtStep key={`${index}:${step.label}`} label={step.label} description={step.description} status={step.status} />)}
                 </ChainOfThoughtContent>
               </ChainOfThought>
             </Req>

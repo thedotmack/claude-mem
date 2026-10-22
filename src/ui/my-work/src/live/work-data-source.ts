@@ -43,6 +43,8 @@ export interface WorkModel {
   rulesFile: RulesFile | null
   /** Why the saved rules could not be read. My Rules says so instead of showing anything made up. */
   rulesReadError: string | null
+  /** Null until request-progress writes a build story: My Work then hides the recap. */
+  buildStory: BuildStory | null
   /** progress: the last request-progress build story. */
   lastRuns: { goals: SkillRun | null; progress: SkillRun | null }
   /** The backend's own health. `connected: false` means it answered but could not read saved work. */
@@ -50,6 +52,9 @@ export interface WorkModel {
   /** The live feed's health (getConnectionStatus). Only SSE messages renew "live"; an HTTP read never does. */
   connection: ConnectionStatus
 }
+
+/** The last build story request-progress wrote. `writtenAt` is display text; null when not recorded. */
+export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null }
 
 /** What the pure mapper produces; the source adds the connection it measured. */
 export type MappedWorkModel = Omit<WorkModel, 'connection'>

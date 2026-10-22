@@ -5,7 +5,9 @@ import { assertConsistentRequest, type Agent, type AgentTool, type CurrentPeriod
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
-import type { WorkViewAgent, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
+import type { BuildStory } from './work-data-source.ts'
+import { measuredEstimate } from './measured-estimate.ts'
+import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
@@ -80,6 +82,24 @@ function nextTextFor(status: NormalizedStatus, recordedNext: string) {
   return recordedNext
 }
 
+/** The review's milestones, oldest first, as build-story steps. Every milestone already happened. */
+function storySteps(progress: WorkViewProgress, now: number): Request['story'] {
+  return [...progress.milestones]
+    .sort((a, b) => (Date.parse(a.at ?? '') || 0) - (Date.parse(b.at ?? '') || 0))
+    .map((milestone) => {
+      const at = Date.parse(milestone.at ?? '')
+      return { label: cleanText(milestone.text, 200), description: Number.isFinite(at) ? formatRecordTime(at, now) : 'Date not recorded', status: 'complete' as const }
+    })
+    .filter((step) => step.label)
+}
+
+/** Absent goals: not linked yet. Empty: serves none. Otherwise a priority wins over an open ask. */
+function goalIdFor(raw: WorkViewHumanRequest): string | null | undefined {
+  if (!raw.goals) return undefined
+  if (!raw.goals.length) return null
+  return (raw.goals.find((goal) => goal.kind === 'priority') ?? raw.goals[0]).goalId
+}
+
 /** One human request → one Request. Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
 export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number): Request {
   const copy = raw.humanCopy
@@ -92,6 +112,9 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     || NEXT_STEP_NOT_RECORDED
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
+  const review = raw.progress ?? null
+  const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
+  const readings = review?.readings ?? []
   const evidence = [
     ...(raw.original.url ? [{ title: `${EVIDENCE_KIND_LABEL.prompt}: ${cleanText(raw.original.text, 80)}`, href: raw.original.url }] : []),
     ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
@@ -103,8 +126,8 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     title: copyReady && copy.title?.trim() ? copy.title.trim() : null,
     summary: copyReady && copy.summary?.trim() ? copy.summary.trim() : null,
     stageNote: copy?.stage?.trim() || undefined,
-    // Goal links arrive with request-progress (plan Phase 9). Until then: "Goal not linked yet".
-    goalId: undefined,
+    // From the request-progress alignment: absent reads "Goal not linked yet", null reads "No goal".
+    goalId: goalIdFor(raw),
     askedBy: raw.requestedBy ?? SOLO_REQUESTER,
     agentId,
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
@@ -113,15 +136,15 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     stage,
     state,
     closed: status === 'closed' || undefined,
-    // No memory review in this snapshot: no percent, no readings. An explicit shipped lifecycle is complete by definition.
+    // The percent comes only from a memory review. An explicit shipped lifecycle is complete by definition.
     progress: {
-      percent: status === 'shipped' ? 100 : null,
-      readings: 0,
-      reviewedAt: 'Not reviewed yet',
-      history: [],
+      percent: status === 'shipped' ? 100 : review ? review.percent : null,
+      readings: review ? Math.max(1, readings.length) : 0,
+      reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
+      history: readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && raw.completedAtEpoch ? formatDateTime(raw.completedAtEpoch) : undefined,
     },
-    estimate: null,
+    estimate: measuredEstimate(readings, status === 'shipped' || review?.state === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
     terminal: raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean),
     activityWord: copyReady ? 'Working' : 'Translating',
@@ -148,7 +171,8 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
       .filter((prompt) => prompt.quote),
     workProduct: [],
     followUps: [],
-    story: [],
+    story: review ? storySteps(review, now) : [],
+    storyNarrative: review?.narrative?.trim() || undefined,
     evidence,
     checkedAt: raw.review?.checked && raw.review.checkedAtEpoch ? formatDateTime(raw.review.checkedAtEpoch) : undefined,
   })
@@ -320,6 +344,17 @@ export function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleSco
   }
 }
 
+/** The build story request-progress wrote: its first paragraph is My Work's recap. No story, no recap. */
+export function toBuildStory(story: WorkViewBuildStory | null, now: number): BuildStory | null {
+  const blocks = (story?.narrative ?? '').split(/\n\s*\n/).map((block) => block.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/\s+/g, ' ').trim()).filter(Boolean)
+  // Chapter headings stay in the story as plain lines; the recap is the first real paragraph.
+  const recap = blocks.find((block) => !block.startsWith('#'))
+  if (!recap) return null
+  const paragraphs = blocks.map((block) => block.replace(/^#+\s*/, ''))
+  const writtenAt = Date.parse(story?.writtenAt ?? '')
+  return { recap, paragraphs, writtenAt: Number.isFinite(writtenAt) ? formatRecordTime(writtenAt, now) : null }
+}
+
 export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWorkModel {
   if (!Array.isArray(snapshot?.humanRequests) || typeof snapshot.source?.connected !== 'boolean') {
     throw new Error('The work view has no humanRequests list or no source health')
@@ -339,6 +374,9 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     }
   }
   const { goalsRun, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
+  // An open ask lists the requests the alignment linked to it; priorities link through request.goalId.
+  const aligned = snapshot.humanRequests.some((raw) => raw.goals)
+  const openAsks = aligned ? goalsModel.openAsks.map((ask) => ({ ...ask, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((goal) => goal.goalId === ask.id)).map((raw) => raw.id) })) : goalsModel.openAsks
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
   const agents = snapshot.agents.map(toAgent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
@@ -352,7 +390,9 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
     ...goalsModel,
+    openAsks,
     ...rulesModel,
+    buildStory: toBuildStory(snapshot.story?.story ?? null, now),
     lastRuns: { goals: goalsRun, progress: progressRun },
     goalOnlyRequests: [],
   }

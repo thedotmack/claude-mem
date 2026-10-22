@@ -44,8 +44,13 @@ function isHumanActionRequest(value) {
   if (/^(?:You are (?:Codex|an AI)|Available skills|Environment context)\b/i.test(plain)) return false;
   if (/^(?:(?:please|just)\s+)?make sure (?:this|that|it|everything) (?:is |will be |keeps? )?(?:working|works|ok|okay|correct)(?:[.!\s]*)$/i.test(plain)) return false;
   if (/^you can (?:def(?:initely)? )?do (?:real )?tests?[,;.!\s]/i.test(plain) && !/\b(?:fix|build|create|implement|change|update|rename|remove|add)\b/i.test(plain)) return false;
-  return new RegExp("\\p{L}.*\\p{L}", "u").test(plain);
+  if (/(?:^|\s)GOAL\s*:\s*\S/i.test(plain)) return true;
+  if (ENGLISH_ACTION.test(plain)) return true;
+  if (/[^\x00-\x7F]/.test(plain)) return new RegExp("\\p{L}.*\\p{L}", "u").test(plain);
+  return !ENGLISH_WORDS.test(plain) && (plain.match(/\b[a-z]{3,}\b/gi) ?? []).length >= 2;
 }
+var ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
+var ENGLISH_WORDS = /\b(?:the|a|an|this|that|it|is|are|to|of|and|for|with|in|on|my|me|you|we|please|just|all|so|now|then|from|be|not)\b/i;
 function conversationKey(session) {
   if (!session?.content_session_id || !session?.platform_source) return null;
   return JSON.stringify(["conversation", session.platform_source, session.content_session_id]);
@@ -59,6 +64,9 @@ function originalFor(session, prompts) {
   return null;
 }
 
+// src/services/work-view/owner-goals.mjs
+var OWNER_GOALS_LIST = "owner-goals";
+
 // src/services/work-view/request-groups.mjs
 var DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
 var LEDGER_DIR = join(DATA_DIR, "work-view");
@@ -69,6 +77,7 @@ var PREFERENCE_KINDS = ["directive", "correction", "praise", "frustration"];
 var USAGE_LEVELS = ["in-use", "some-use", "no-evidence", "unknown"];
 var VALUE_LEVELS = ["high", "medium", "low", "unclear"];
 var LINK_KINDS = ["shared-work-list", "shared-request-id", "agent-judgment"];
+var MAX_READINGS = 20;
 var iso = (epoch) => Number.isFinite(epoch) && epoch > 0 ? new Date(epoch).toISOString() : null;
 var groupIdFor = (anchorConversationKey) => `g_${createHash("sha256").update(anchorConversationKey).digest("hex").slice(0, 12)}`;
 function placeholders(values) {
@@ -177,6 +186,48 @@ function linkBackwards(candidates) {
   }
   for (const link of links) groups.get(find(link.conversations[0])).links.push(link);
   return { proposedGroups: [...groups.values()], skippedLists };
+}
+function readGoals(database) {
+  const rows = database.prepare("SELECT fields FROM work_state_entries WHERE list_name = ? ORDER BY id").all(OWNER_GOALS_LIST);
+  const listState = {}, items = /* @__PURE__ */ new Map();
+  for (const row of rows) {
+    const fields = JSON.parse(row.fields);
+    const target = fields.task ? items.get(fields.task) ?? items.set(fields.task, {}).get(fields.task) : listState;
+    for (const [key, value] of Object.entries(fields)) {
+      if (value === null) delete target[key];
+      else target[key] = value;
+    }
+  }
+  const goals = [...items.values()].filter((item) => !["done", "dropped"].includes(String(item.status).toLowerCase())).map((item) => ({
+    goal: item.task,
+    kind: item.goal_kind === "open-ask" ? "open-ask" : "priority",
+    rank: Number(item.rank) || null,
+    title: item.title ?? item.task,
+    product: item.product ?? null,
+    latestAt: item.latest_at ?? null,
+    timesAsked: Number(item.times_asked) || null,
+    evidence: String(item.evidence ?? "").split("\n").filter(Boolean).map((line) => {
+      const [at, ...quote] = line.split(" | ");
+      return { at, quote: quote.join(" | ") };
+    })
+  })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "priority" ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
+  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, goals };
+}
+function validateAlignment(input, { groups, goals }) {
+  const goalNames = new Set(goals.map((goal) => goal.goal));
+  if (!Array.isArray(input?.links)) throw new TypeError("Alignment needs a links array.");
+  const links = {};
+  for (const [index, link] of input.links.entries()) {
+    if (!groups[link.groupId]) throw new TypeError(`links[${index}] has unknown group ${link.groupId}.`);
+    if (!goalNames.has(link.goal)) throw new TypeError(`links[${index}].goal must be a current goal's exact "goal" value.`);
+    (links[link.groupId] ??= []).push({ goal: link.goal, evidence: boundedText(link.evidence, 300, `links[${index}].evidence`) });
+  }
+  const unaligned = [...new Set(input.unaligned ?? [])];
+  for (const groupId of unaligned) {
+    if (!groups[groupId]) throw new TypeError(`unaligned has unknown group ${groupId}.`);
+    if (links[groupId]) throw new TypeError(`Group ${groupId} is both linked and unaligned.`);
+  }
+  return { links, unaligned };
 }
 function readJson(path, fallback) {
   try {
@@ -320,6 +371,15 @@ function validateProgress(entry, knownGroups) {
     reviewedConversations: [...new Set(basis.conversations)].sort()
   };
 }
+function readingsOf(entry) {
+  if (Array.isArray(entry?.readings)) return entry.readings;
+  return entry?.checkedAt && Number.isInteger(entry.percent) ? [{ at: entry.checkedAt, percent: entry.percent }] : [];
+}
+function appendReading(previous, reading) {
+  const byAt = new Map(readingsOf(previous).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
+  byAt.set(reading.at, { at: reading.at, percent: reading.percent });
+  return [...byAt.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-MAX_READINGS);
+}
 function reviewIsCurrent(review, conversationKeys, lastActivityEpoch) {
   if (!review?.reviewedThrough || !Array.isArray(review.reviewedConversations)) return false;
   const current = [...new Set(conversationKeys)].sort();
@@ -350,9 +410,9 @@ function readLedger(dir = LEDGER_DIR) {
   }
   for (const name of names) {
     const entry = readJson(join(dir, "progress", name), null);
-    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
+    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, readings: readingsOf(entry), title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join(dir, "story.json"), null) };
+  return { groups, progress, story: readJson(join(dir, "story.json"), null), alignment: readJson(join(dir, "alignment.json"), null) };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
   const group = ledger.groups.groups[groupId];
@@ -437,9 +497,11 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command === "record-progress") {
     const ledger = readLedger(dir);
-    const entry = { ...validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups), checkedAt: iso(now) };
+    const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups);
+    const checkedAt = iso(now);
+    const entry = { ...reviewed, checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join(dir, "progress", `${entry.groupId}.json`), entry);
-    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent });
+    return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
   }
   if (command === "story-input") {
     const { groups, progress, story } = readLedger(dir);
@@ -450,7 +512,22 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     writeJsonAtomic(join(dir, "story.json"), story);
     return print({ recorded: "story", preferences: story.preferences.length });
   }
-  throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story (see file header).");
+  if (command === "align-input") {
+    const ledger = readLedger(dir);
+    const groups = Object.entries(ledger.groups.groups).map(([groupId, group]) => {
+      const review = ledger.progress[groupId];
+      return { groupId, title: group.title, firstAsk: group.anchorAsk?.text?.slice(0, 400) ?? null, state: review?.state ?? null, percent: review?.percent ?? null, summary: review?.summary ?? null };
+    });
+    return print({ goals: readGoals(db()), groups, previous: ledger.alignment });
+  }
+  if (command === "record-alignment") {
+    const ledger = readLedger(dir);
+    const goals = readGoals(db());
+    const alignment = { ...validateAlignment(readInput(args[0] ?? "-"), { groups: ledger.groups.groups, goals: goals.goals }), goalsGeneratedAt: goals.generatedAt, alignedAt: iso(now) };
+    writeJsonAtomic(join(dir, "alignment.json"), alignment);
+    return print({ aligned: Object.keys(alignment.links).length, unaligned: alignment.unaligned.length });
+  }
+  throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment (see file header).");
 }
 
 // src/services/work-view/request-groups-cli.mjs

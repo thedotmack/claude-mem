@@ -264,12 +264,12 @@ export function CopyCommandButton({ command, className }: { command: string; cla
 }
 
 /** A live skill's real last run, plus the command that runs it again in Claude Code. Never a fake run. */
-export function SkillLastRun({ run, command, ids }: { run: SkillRun; command: string; ids: string[] }) {
+export function SkillLastRun({ run, command, ids, label = 'Last run' }: { run: SkillRun; command: string; ids: string[]; label?: string }) {
   return (
     <Req ids={[...ids, 'R14.10']}>
       <div className="flex w-full items-center gap-3 sm:w-auto">
         <span className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground sm:text-right">
-          Last run {run.lastRunAt}<br />on {run.deviceName} · run again with <code className="font-mono">{command}</code>
+          {label} {run.lastRunAt}<br />on {run.deviceName} · run again with <code className="font-mono">{command}</code>
         </span>
         <CopyCommandButton command={command} />
       </div>

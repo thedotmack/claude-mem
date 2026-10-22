@@ -1,6 +1,6 @@
 ---
 name: request-progress
-description: Group recent conversations into overall requests, review each one's progress from memory, and write the build story, so My Work shows progress meters, shipping velocity and learned working preferences. Use when asked to "group requests", "group by overall request", "review request progress", "refresh progress", "build story", "shipping velocity", or "how do I like to work with agents".
+description: Group recent conversations into overall requests, review each one's progress from memory, link each to the owner goals it serves, and write the build story, so My Work shows progress meters, shipping velocity and learned working preferences. Use when asked to "group requests", "group by overall request", "review request progress", "refresh progress", "build story", "shipping velocity", or "how do I like to work with agents".
 ---
 
 # Request Progress
@@ -13,7 +13,7 @@ My Work groups records by **conversation**: one session's first substantive ask 
 CLI="bun ${CLAUDE_SKILL_DIR}/scripts/request-groups.mjs"
 ```
 
-It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; the **Story** view shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
+It opens `~/.claude-mem/claude-mem.db` read-only and writes only to `~/.claude-mem/work-view/`. My Work picks up changes within a second: grouped conversations show as one card that starts at the earliest ask, with a progress meter; the request page shows the build story, how released work landed (usage, value, regressions, why each change was made) and its work product; each card shows the owner goal it serves; the build story's first paragraph is My Work's recap, and the story sheet shows shipping velocity, the narrative and preferences. A review never changes a request's recorded status.
 
 Default window: 14 days. Use the window the user asks for.
 
@@ -90,16 +90,33 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 >      - `value`: `{level: high | medium | low | unclear, text, evidence}` for us: did later work build on it, did the owner praise, rely on or replace it, did it remove a cost or a chore.
 >      - `regressions` (≤10): `{text, at, fixedBy, evidence}` for anything it broke: later fix PRs or commits that name it, reverts, bug reports, the owner's corrections. `fixedBy` is null while unfixed.
 >      - `changes` (≤12): `{what, why, at, evidence}` for each meaningful change, with the WHY from the owner's own ask (quote it), the commit or PR message, or the incident that caused it. Never write a why you cannot cite.
->    - `preferences` (≤10): how the owner likes to work with agents, taken ONLY from the owner's own asks shown by `show`. `quote` is verbatim; `kind` is `directive` | `correction` | `praise` | `frustration`. Skip pasted agent text, secrets, keys and tokens.
+>    - `preferences` (≤10): how the owner likes to work with agents, taken ONLY from the owner's own asks shown by `show`. Each has `preference` (≤200 chars, the statement), `quote` (verbatim, ≤300 chars), `kind` and `at`. `quote` is verbatim; `kind` is `directive` | `correction` | `praise` | `frustration`. Skip pasted agent text, secrets, keys and tokens.
 > 4. Record it: `<CLI> record-progress - <<'JSON' {...} JSON` with `groupId`, `state`, `percent`, the dates, `summary`, `narrative`, `milestones`, `outcome`, `preferences`, `evidence` and `reviewBasis` copied verbatim from that group's `show` output (it marks which conversations and activity you reviewed). Pass the JSON through the heredoc; never write review files to disk, because other reviewers run at the same time. Fix and retry if it rejects. A subtask finishing does not mean the request shipped.
 >
 > Return the groups you recorded and any you could not, with the reason.
 
-## 3. Write the build story
+## 3. Link each request to the goals it serves
+
+Run this yourself after the reviews (it needs the reviews' summaries):
+
+1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), every request group (title, first ask, progress state and summary) and the previous alignment. If it lists no goals, skip this step: the owner-goals skill has not run, and every card keeps "Goal not linked yet".
+2. For each group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
+3. Each link needs `evidence` (≤300 chars): name what in the request advances the goal, quoting the goal's or the request's words.
+4. Record it. Every group must appear in `links` or `unaligned`; the command validates, so fix and retry if it rejects:
+
+```bash
+$CLI record-alignment - <<'JSON'
+{"links": [{"groupId": "g_…", "goal": "<exact goal key>", "evidence": "…"}], "unaligned": ["g_…"]}
+JSON
+```
+
+My Work shows the linked goal on each card, "No goal" for an unaligned group, and "Goal not linked yet" for a group this step has not seen.
+
+## 4. Write the build story
 
 Run `$CLI story-input`. It returns every review and the previous story. Write:
 
-- `narrative` (markdown, ≤12000 chars, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity, then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns.
+- `narrative` (markdown, ≤12000 chars, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity (My Work shows it as the recap), then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns.
 - `preferences` (≤30): merge the per-request preferences into distinct, actionable statements of how the owner likes to work with agents. `supportCount` is how many requests showed it; keep up to 3 verbatim quotes with dates. Drop one-off remarks.
 
 ```bash
@@ -108,4 +125,4 @@ $CLI record-story - <<'JSON'
 JSON
 ```
 
-Finish by telling the user how many requests were reviewed, the shipping velocity in two sentences, and the five strongest preferences.
+Finish by telling the user how many requests were reviewed, how many were linked to goals, the shipping velocity in two sentences, and the five strongest preferences.

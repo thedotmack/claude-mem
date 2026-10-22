@@ -31,12 +31,12 @@ for (const url of SNAPSHOT_FILES) {
   test(`${name}: percent, estimate and asked-by are never invented`, () => {
     for (const request of model.requests) {
       const raw = rawById.get(request.id)!
-      assert.equal(request.estimate, null, 'no measured-pace ETA without readings')
-      assert.equal(request.progress.readings, 0)
-      assert.deepEqual(request.progress.history, [])
-      assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : null, 'percent only from a review, or 100 for an explicit ship')
+      const readings = raw.progress?.readings ?? []
+      if (readings.length < 2) assert.equal(request.estimate, null, 'no measured-pace ETA without two readings')
+      assert.deepEqual(request.progress.history, readings.map((reading) => reading.percent))
+      assert.equal(request.progress.percent, request.state === 'shipped' ? 100 : raw.progress?.percent ?? null, 'percent only from a review, or 100 for an explicit ship')
       assert.equal(request.askedBy, raw.requestedBy ?? 'You')
-      assert.equal(request.goalId, undefined, 'goal reads "Goal not linked yet" until request-progress links it')
+      if (!raw.goals) assert.equal(request.goalId, undefined, 'goal reads "Goal not linked yet" until request-progress links it')
     }
   })
 
@@ -107,4 +107,51 @@ test('a request whose work-state items were all dropped is closed, with no lifec
   assert.equal(readError, undefined)
   assert.equal(request.state, 'idle')
   assert.equal(request.closed, true)
+})
+
+const syntheticRequest = (): WorkViewHumanRequest => ({
+  id: '["overall-request","g_000000000001"]', contentFingerprint: 'f', title: 'Cards', original: { text: 'Build the release cards', atEpoch: Date.UTC(2026, 9, 18) },
+  scopeUpdates: [], humanCopy: null, lifecycle: null, items: [], workstreams: [], activity: [], agentIds: [], conversationKeys: [],
+  requestedBy: null, startedAtEpoch: Date.UTC(2026, 9, 18), completedAtEpoch: null, updatedAtEpoch: Date.UTC(2026, 9, 21), review: null,
+})
+const snapshotWith = (humanRequests: WorkViewHumanRequest[], extra: Partial<WorkViewSnapshot> = {}): WorkViewSnapshot => ({
+  version: 1, generatedAt: '2026-10-22T12:00:00Z', agents: [], humanRequests, unlinkedWork: [], revision: '1',
+  source: { kind: 'test', connected: true, error: null, lastCheckedAt: null }, ...extra,
+})
+
+test('a reviewed request shows the review percent, its readings, the measured ETA and its milestones', () => {
+  const raw = { ...syntheticRequest(), progress: {
+    state: 'in-progress' as const, percent: 60, summary: 'Under way.', narrative: 'Cards built first, then spacing.', checkedAt: '2026-10-21T12:00:00Z',
+    milestones: [{ at: '2026-10-21T09:00:00Z', text: 'Spacing fixed' }, { at: '2026-10-19T09:00:00Z', text: 'Cards built' }],
+    readings: [{ at: '2026-10-20T12:00:00Z', percent: 40 }, { at: '2026-10-21T12:00:00Z', percent: 60 }],
+  } }
+  const [request] = toWorkModel(snapshotWith([raw]), Date.parse('2026-10-22T12:00:00Z')).requests
+  assert.equal(request.progress.percent, 60)
+  assert.equal(request.progress.readings, 2)
+  assert.deepEqual(request.progress.history, [40, 60])
+  assert.equal(request.estimate, 'at this pace, about Oct 23')
+  assert.deepEqual(request.story.map((step) => step.label), ['Cards built', 'Spacing fixed'])
+  assert.equal(request.storyNarrative, 'Cards built first, then spacing.')
+  const single = toWorkModel(snapshotWith([{ ...raw, progress: { ...raw.progress, readings: [raw.progress.readings[1]] } }]), Date.parse('2026-10-22T12:00:00Z')).requests[0]
+  assert.equal(single.estimate, null, 'one reading has no pace')
+  assert.equal(single.progress.readings, 1)
+})
+
+test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
+  const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
+  const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }
+  const linked = { ...syntheticRequest(), id: 'r1', goals: [{ goalId: 'ask', goal: 'ask', title: 'ask', kind: 'open-ask' as const, evidence: 'x' }, { goalId: 'ship', goal: 'ship', title: 'ship', kind: 'priority' as const, evidence: 'y' }] }
+  const none = { ...syntheticRequest(), id: 'r2', goals: [] }
+  const notYet = { ...syntheticRequest(), id: 'r3' }
+  const model = toWorkModel(snapshotWith([linked, none, notYet], { goals }), Date.parse('2026-10-22T12:00:00Z'))
+  assert.deepEqual(model.requests.map((request) => request.goalId), ['ship', null, undefined])
+  assert.deepEqual(model.openAsks[0].servedBy, ['r1'])
+})
+
+test('the build story recap is its first paragraph; no story hides it', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const model = toWorkModel(snapshotWith([], { story: { story: { narrative: '## Velocity\n\nFirst **part**.\n\nSecond part.', writtenAt: '2026-10-22T10:00:00Z' } } }), now)
+  assert.equal(model.buildStory?.recap, 'First part.')
+  assert.deepEqual(model.buildStory?.paragraphs, ['Velocity', 'First part.', 'Second part.'])
+  assert.equal(toWorkModel(snapshotWith([]), now).buildStory, null)
 })

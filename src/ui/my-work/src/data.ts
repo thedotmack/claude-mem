@@ -55,6 +55,8 @@ export interface Request {
   workProduct: { kind: 'PR' | 'Page' | 'Deck' | 'Commit'; label: string; href: string }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
   story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
+  /** The last memory review's account of how the request went (request-progress). */
+  storyNarrative?: string
   evidence: { title: string; href: string }[]
   /** Agent-only cards: the human text the title writer produces, so the wireframe can play the transform. */
   resolvesTo?: { title: string; summary: string }

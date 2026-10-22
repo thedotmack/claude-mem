@@ -56,6 +56,25 @@ export interface WorkViewPrompt { text: string; atEpoch?: number; url?: string }
 
 export interface WorkViewReview { checked: boolean; checkedAtEpoch: number | null; available: boolean }
 
+/** A request-progress memory review of one overall request (request-groups.mjs `record-progress`). */
+export interface WorkViewProgress {
+  state: 'shipped' | 'in-progress' | 'stalled' | 'abandoned' | 'unknown'
+  percent: number
+  summary: string
+  narrative: string
+  milestones: { at: string | null; text: string }[]
+  /** ISO time the review was recorded. */
+  checkedAt: string
+  /** Every review's percent, oldest first; files from before readings existed carry one. */
+  readings: { at: string; percent: number }[]
+}
+
+/** An owner goal the request-progress alignment linked to this request. */
+export interface WorkViewRequestGoal { goalId: string; goal: string; title: string; kind: 'priority' | 'open-ask'; evidence: string }
+
+/** The build story request-progress last wrote. */
+export interface WorkViewBuildStory { narrative: string; writtenAt: string | null }
+
 export interface WorkViewHumanRequest {
   id: string
   contentFingerprint: string
@@ -74,6 +93,10 @@ export interface WorkViewHumanRequest {
   completedAtEpoch: number | null
   updatedAtEpoch: number | null
   review: WorkViewReview | null
+  /** The last memory review; null when its group has none. Older workers leave it out. */
+  progress?: WorkViewProgress | null
+  /** Absent: not aligned yet ("Goal not linked yet"). Empty: aligned to no goal ("No goal"). */
+  goals?: WorkViewRequestGoal[]
 }
 
 export interface WorkViewAgent {
@@ -173,4 +196,6 @@ export interface WorkViewSnapshot {
   ruleScopes?: WorkViewRuleScope[]
   rulesLearning?: WorkViewRulesLearning | null
   rulesFile?: WorkViewRulesFile
+  /** request-progress reviews and the build story; null when the ledger is empty. Older workers leave it out. */
+  story?: { story: WorkViewBuildStory | null } | null
 }

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { applyGroupDecisions, groupIdFor, linkBackwards, readCandidates, readLedger, runCli, validateProgress } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, runCli, validateAlignment, validateProgress } from '../../src/services/work-view/request-groups.mjs';
+import { WorkStateSource } from '../../src/services/work-view/data-source.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
 
 const ledgerDir = () => mkdtempSync(join(tmpdir(), 'request-groups-test-'));
@@ -15,7 +16,8 @@ function fixtureDatabase() {
   db.exec(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, platform_source TEXT, content_session_id TEXT, memory_session_id TEXT, project TEXT, user_prompt TEXT, started_at_epoch INTEGER);
     CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER, prompt_text TEXT, created_at_epoch INTEGER);
     CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, session_db_id INTEGER, tool_name TEXT, tool_input TEXT, created_at_epoch INTEGER);
-    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, created_at_epoch INTEGER);`);
+    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, created_at_epoch INTEGER);
+    CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER);`);
   const session = db.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)');
   const prompt = db.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)');
   const write = db.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input, created_at_epoch) VALUES (?, ?, ?, ?)');
@@ -218,4 +220,122 @@ describe('overall requests and progress reviews', () => {
   expect(unlinkedWork.find((work: { agentId: string }) => work.agentId === 'bot').reason).toBe('ignored-by-request-grouping');
 });
 
+  it('goals fold the current owner-goals list and drop closed items and history', () => {
+  const database = fixtureDatabase();
+  saveGoals(database, '2026-10-01T10:00:00Z');
+  const goals = readGoals(database);
+  expect(goals.summary).toBe('Ship the cards.');
+  expect(goals.goals.map((goal) => [goal.goal, goal.kind, goal.rank])).toEqual([['Priority: Ship cards', 'priority', 1]]);
+  expect(goals.goals[0].evidence).toEqual([{ at: '2026-10-01 10:00', quote: 'ship the cards | today' }]);
 });
+
+  it('alignment links only known groups to exact current goals, with evidence', () => {
+  const context = { groups: { g_000000000001: {}, g_000000000002: {} }, goals: [{ goal: 'Priority: Ship cards' }] };
+  const valid = validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: 'The card work is the release the owner asked for.' }], unaligned: ['g_000000000002'] }, context);
+  expect(valid.links.g_000000000001[0].goal).toBe('Priority: Ship cards');
+  expect(valid.unaligned).toEqual(['g_000000000002']);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Ship cards', evidence: 'x' }] }, context)).toThrow(/exact "goal"/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_ffffffffffff', goal: 'Priority: Ship cards', evidence: 'x' }] }, context)).toThrow(/unknown group/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: '' }] }, context)).toThrow(/evidence/);
+  expect(() => validateAlignment({ links: [{ groupId: 'g_000000000001', goal: 'Priority: Ship cards', evidence: 'x' }], unaligned: ['g_000000000001'] }, context)).toThrow(/both linked and unaligned/);
+  expect(() => validateAlignment({ unaligned: [] }, context)).toThrow(/links array/);
+});
+
+  it('CLI alignment round trip: align-input lists goals and groups, record-alignment writes alignment.json', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    saveGoals(database, '2026-10-01T10:00:00Z');
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] }));
+    run(['apply', decisions]);
+    const before = ledgerSignature(dir);
+    const input = run(['align-input']);
+    expect(input.goals.goals.map((goal: { goal: string }) => goal.goal)).toEqual(['Priority: Ship cards']);
+    expect(input.groups.map((group: { title: string; firstAsk: string }) => [group.title, group.firstAsk])).toEqual([['Release cards', 'Build the release cards'], ['Pricing page', 'Write the pricing page']]);
+    expect(input.previous).toBeNull();
+    const alignment = join(dir, 'alignment-input.json');
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
+    expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
+    const stored = readLedger(dir).alignment;
+    expect(stored.links[groupIdFor(key('a'))][0].goal).toBe('Priority: Ship cards');
+    expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
+    expect(stored.goalsGeneratedAt).toBe('2026-10-01T10:00:00Z');
+    expect(ledgerSignature(dir)).not.toBe(before);
+    expect(run(['align-input']).previous.alignedAt).toBe(new Date(NOW).toISOString());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('readings: each review adds one dated percent, deduplicated by time and capped', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Pricing page', conversations: [key('c')] }] }));
+    run(['apply', decisions]);
+    const groupId = groupIdFor(key('c'));
+    const review = (percent: number, now: number) => {
+      const file = join(dir, 'review.json');
+      writeFileSync(file, JSON.stringify({ groupId, state: 'in-progress', percent, summary: 'Under way.', reviewBasis: run(['show', groupId], now).reviewBasis }));
+      return run(['record-progress', file], now);
+    };
+    expect(review(30, NOW).readings).toBe(1);
+    expect(review(55, NOW + DAY).readings).toBe(2);
+    expect(review(60, NOW + DAY).readings).toBe(2);
+    expect(readLedger(dir).progress[groupId].readings).toEqual([{ at: new Date(NOW).toISOString(), percent: 30 }, { at: new Date(NOW + DAY).toISOString(), percent: 60 }]);
+    let readings = readLedger(dir).progress[groupId];
+    for (let index = 0; index < MAX_READINGS + 5; index++) readings = { readings: appendReading(readings, { at: new Date(NOW + (index + 2) * DAY).toISOString(), percent: index }) };
+    expect(readings.readings.length).toBe(MAX_READINGS);
+    expect(readings.readings.at(-1).percent).toBe(MAX_READINGS + 4);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('a review written before readings existed is seeded with its single reading', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Pricing page', conversations: [key('c')] }] }));
+    run(['apply', decisions]);
+    const groupId = groupIdFor(key('c'));
+    mkdirSync(join(dir, 'progress'), { recursive: true });
+    writeFileSync(join(dir, 'progress', `${groupId}.json`), JSON.stringify({ groupId, state: 'in-progress', percent: 40, summary: 'Old.', checkedAt: '2026-10-19T10:00:00.000Z' }));
+    expect(readLedger(dir).progress[groupId].readings).toEqual([{ at: '2026-10-19T10:00:00.000Z', percent: 40 }]);
+    const file = join(dir, 'review.json');
+    writeFileSync(file, JSON.stringify({ groupId, state: 'in-progress', percent: 65, summary: 'Further.', reviewBasis: run(['show', groupId]).reviewBasis }));
+    expect(run(['record-progress', file]).readings).toBe(2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('the snapshot joins alignment onto requests: linked, explicitly none, or not linked yet', () => {
+  const source = new WorkStateSource({ ledgerDir: null });
+  const goal = { id: '["owner","owner-goals"]-ship', task: 'Priority: Ship cards', title: 'Ship cards', kind: 'priority' };
+  source.agentView = { ...source.agentView, goals: { generatedAt: '2026-10-01T10:00:00Z', priorities: [goal], openAsks: [] }, humanRequests: [{ id: 'r1', groupId: 'g_1' }, { id: 'r2', groupId: 'g_2' }, { id: 'r3', groupId: 'g_3' }, { id: 'r4', groupId: null }] } as any;
+  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goalsGeneratedAt: '2026-10-01T10:00:00Z', alignedAt: '2026-10-02T00:00:00Z' } } as any;
+  const { humanRequests, goals } = source.goalLinks() as any;
+  expect(humanRequests[0].goals).toEqual([{ goalId: goal.id, goal: goal.task, title: 'Ship cards', kind: 'priority', evidence: 'The cards.' }]);
+  expect(humanRequests[1].goals).toEqual([]);
+  expect(humanRequests[2].goals).toBeUndefined();
+  expect(humanRequests[3].goals).toBeUndefined();
+  expect(goals.alignedAt).toBe('2026-10-02T00:00:00Z');
+  // A newer goals run makes "serves none" a question again.
+  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, generatedAt: '2026-10-05T10:00:00Z' } } as any;
+  expect((source.goalLinks() as any).humanRequests[1].goals).toBeUndefined();
+});
+
+});
+
+function saveGoals(database: Database, generatedAt: string) {
+  const write = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+  write.run('owner', 'owner-goals', JSON.stringify({ human_summary: 'Ship the cards.', generated_at: generatedAt }), 1);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Ship cards', evidence: '2026-10-01 10:00 | ship the cards | today' }), 2);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Old thing', status: 'todo', goal_kind: 'open-ask', rank: 1, title: 'Old thing' }), 3);
+  write.run('owner', 'owner-goals', JSON.stringify({ task: 'Open ask: Old thing', status: 'dropped' }), 4);
+  write.run('owner', 'owner-goals/2026-09-01', JSON.stringify({ task: 'Priority: History', status: 'done', title: 'History' }), 5);
+}
