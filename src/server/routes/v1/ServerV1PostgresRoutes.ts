@@ -1201,9 +1201,12 @@ export class ServerV1PostgresRoutes implements RouteHandler {
         // Always the worker's 'narrative' format. Its 'index' format lists ids
         // for get_observations to expand, and that tool reads the worker by
         // numeric id; a server id is a UUID nothing here can expand.
+        // Summaries and manual memories have no title or narrative; their text
+        // is the content, which renders in the narrative's place.
+        const text = (value: unknown) => (typeof value === 'string' && value.trim() ? value : null);
         const context = renderSemanticContext(results.map(observation => ({
-          title: typeof observation.metadata.title === 'string' ? observation.metadata.title : null,
-          narrative: typeof observation.metadata.narrative === 'string' ? observation.metadata.narrative : null,
+          title: text(observation.metadata.title) ?? (observation.kind === 'summary' ? 'Session summary' : null),
+          narrative: text(observation.metadata.narrative) ?? text(observation.content),
           date: new Date(observation.createdAtEpoch).toISOString().slice(0, 10),
         })));
         await this.auditWrite(req, 'observation.read', null, body.projectId, {

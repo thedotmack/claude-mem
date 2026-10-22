@@ -17,8 +17,10 @@ import {
 } from '../../src/storage/postgres/index.js';
 import { DisabledServerQueueManager } from '../../src/server/runtime/types.js';
 import { SEMANTIC_CONTEXT_MAX_LIMIT } from '../../src/shared/semantic-context.js';
+import { embedObservationRows, getSharedEmbedder } from '../../src/server/services/ObservationEmbeddingService.js';
+import { PostgresObservationEmbeddingsRepository } from '../../src/storage/postgres/observation-embeddings.js';
 import { logger } from '../../src/utils/logger.js';
-import { newApiKey, createIsolatedSchema, poolForSchema, dropSchema } from '../sdk/pg-isolation.js';
+import { newApiKey, createIsolatedSchema, dropSchema } from '../sdk/pg-isolation.js';
 
 const testDatabaseUrl = process.env.CLAUDE_MEM_TEST_POSTGRES_URL;
 
@@ -42,9 +44,12 @@ describe('POST /v1/context/semantic limits', () => {
       spyOn(logger, level).mockImplementation(() => {}),
     );
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_semantic_ctx');
-    pool = poolForSchema(testDatabaseUrl!, schemaName);
+    // public too, where pgvector's type lives once any test has created it.
+    pool = new pg.Pool({ connectionString: testDatabaseUrl, options: `-c search_path=${schemaName},public` });
     client = await pool.connect();
-    await bootstrapServerPostgresSchema(client);
+    // Through the pool, as the server does: whether vectors are available is
+    // recorded for the pool the route reads through.
+    await bootstrapServerPostgresSchema(pool);
     const storage = createPostgresStorageRepositories(client);
     const team = await storage.teams.create({ name: 'team' });
     projectId = (await storage.projects.create({ teamId: team.id, name: 'P' })).id;
@@ -97,12 +102,55 @@ describe('POST /v1/context/semantic limits', () => {
     return { status: 200, count: json.count, context: json.context };
   }
 
+  // An answer with content needs pgvector and the embedding model; without
+  // either the route answers empty and these tests say so and return.
+  async function canAnswer(): Promise<boolean> {
+    // Whether this database got the embeddings table, which the bootstrap
+    // creates only where pgvector 0.8+ is usable, not merely installable.
+    const table = await pool.query<{ present: boolean }>(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
+    const vectors = table.rows[0]?.present === true;
+    const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
+    if (!vectors || !model) console.warn('vector search or the embedding model is unavailable; semantic answers not tested');
+    return vectors && model;
+  }
+
+  async function seed(rows: Array<{ content: string; kind?: string; metadata?: Record<string, string> }>): Promise<void> {
+    const storage = createPostgresStorageRepositories(client);
+    const team = (await client.query<{ team_id: string }>('SELECT team_id FROM projects WHERE id = $1', [projectId])).rows[0]!.team_id;
+    const embeddings = new PostgresObservationEmbeddingsRepository(pool);
+    for (const row of rows) {
+      const observation = await storage.observations.create({ projectId, teamId: team, ...row });
+      // With vectors, so the search finds them by meaning on any Postgres
+      // with pgvector, not only where bm25 matches any keyword.
+      const [embedded] = (await embedObservationRows(pool, [observation])) ?? [];
+      if (embedded) await embeddings.upsert({ observationId: observation.id, model: getSharedEmbedder().modelId, ...embedded });
+    }
+  }
+
   it('clamps a limit above the cap instead of rejecting it, as the worker does', async () => {
-    const result = await semantic({
-      query: 'when did we change the retry limit for the queue',
-      limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10,
-    });
+    const query = 'when did we change the retry limit for the queue';
+    const result = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
     expect(result.status).toBe(200);
+    if (!(await canAnswer())) return;
+    await seed(Array.from({ length: SEMANTIC_CONTEXT_MAX_LIMIT + 10 }, (_, i) => ({
+      content: `Raised the queue retry limit to ${i + 2}.`,
+      metadata: { title: `Retry limit ${i}`, narrative: `Raised the queue retry limit to ${i + 2}.` },
+    })));
+    const capped = await semantic({ query, limit: SEMANTIC_CONTEXT_MAX_LIMIT + 10 });
+    expect(capped.count).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
+    expect(capped.context?.match(/^### /gm)?.length).toBe(SEMANTIC_CONTEXT_MAX_LIMIT);
+  });
+
+  it('renders the content of a memory or summary that has no narrative', async () => {
+    if (!(await canAnswer())) return;
+    await seed([
+      { content: 'The queue retry limit is now five, set in the gateway config.' },
+      { kind: 'summary', content: 'Session summary: raised the queue retry limit and redeployed.' },
+    ]);
+    const result = await semantic({ query: 'when did we change the retry limit for the queue' });
+    expect(result.context).toContain('The queue retry limit is now five, set in the gateway config.');
+    expect(result.context).toContain('### Session summary (');
+    expect(result.context).toContain('raised the queue retry limit and redeployed.');
   });
 
   it('answers a short prompt with no context', async () => {
