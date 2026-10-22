@@ -132,8 +132,8 @@ const QUERIES: Record<string, string> = {
 
   python: `
 (decorated_definition definition: (_) @decorated_inner) @decorated_outer
-(function_definition name: (identifier) @name) @func
-(class_definition name: (identifier) @name) @cls
+(function_definition name: (identifier) @name type_parameters: (_)? @sig_end parameters: (_) @sig_end return_type: (_)? @sig_end) @func
+(class_definition name: (identifier) @name type_parameters: (_)? @sig_end superclasses: (_)? @sig_end) @cls
 (import_statement) @imp
 (import_from_statement) @imp
 `,
@@ -155,10 +155,10 @@ const QUERIES: Record<string, string> = {
 `,
 
   ruby: `
-(method name: (identifier) @name) @func
-(singleton_method object: (_) @receiver name: (identifier) @name) @method
+(method name: (identifier) @name parameters: (_)? @sig_end) @func
+(singleton_method object: (_) @receiver name: (identifier) @name parameters: (_)? @sig_end) @method
 (singleton_class value: (self)) @singleton_scope
-(class name: [(constant) (scope_resolution)] @name) @cls
+(class name: [(constant) (scope_resolution)] @name superclass: (_)? @sig_end) @cls
 (module name: [(constant) (scope_resolution)] @name) @cls
 (call method: (identifier) @name) @imp
 `,
@@ -226,10 +226,10 @@ const QUERIES: Record<string, string> = {
   lua: `
 (assignment_statement
   (variable_list . name: [(identifier) (dot_index_expression) (bracket_index_expression)] @name .)
-  (expression_list . value: (function_definition) .)) @const_func
-(function_declaration name: (identifier) @name) @func
-(function_declaration name: (dot_index_expression) @name) @func
-(function_declaration name: (method_index_expression) @name) @func
+  (expression_list . value: (function_definition parameters: (_) @sig_end) .)) @const_func
+(function_declaration name: (identifier) @name parameters: (_) @sig_end) @func
+(function_declaration name: (dot_index_expression) @name parameters: (_) @sig_end) @func
+(function_declaration name: (method_index_expression) @name parameters: (_) @sig_end) @func
 `,
 
   scala: `
@@ -573,6 +573,9 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface", "namespace"]);
 
+// Languages whose query marks the end of a signature with @sig_end captures.
+const SIGNATURE_END_LANGUAGES = new Set(["python", "ruby", "lua"]);
+
 // Kinds that own nested symbols only in some languages: a PHP enum holds its
 // methods, and a Haskell function holds its `where`/`let` helpers.
 const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
@@ -580,69 +583,11 @@ const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["k
   haskell: new Set(["function"]),
 };
 
-// Python, Ruby and Lua bodies are not delimited by braces, so a `{` in one opens a
-// dict, a hash, a block or a table. Their signature ends with the row that closes
-// its brackets, and a Python one at the `:` that opens the body.
-const UNBRACED_BODY_LANGUAGES = new Set(["python", "ruby", "lua"]);
-
-function extractUnbracedSignature(lines: string[], startRow: number, endRow: number, firstLine: string, language: string): string {
-  const rows: string[] = [];
-  let depth = 0;
-  // A Python triple-quoted string can hold quotes, brackets and colons, and it
-  // can run over several rows.
-  let tripleQuote = "";
-  for (let row = startRow; row <= Math.min(startRow + 9, endRow); row++) {
-    const text = row === startRow ? firstLine : lines[row] ?? "";
-    let end = text.length;
-    let quote = "";
-    let closed = false;
-    for (let i = 0; i < text.length; i++) {
-      const ch = text[i];
-      if (tripleQuote) {
-        if (text.startsWith(tripleQuote, i)) {
-          tripleQuote = "";
-          i += 2;
-        }
-      } else if (quote) {
-        if (ch === "\\") i++;
-        else if (ch === quote) quote = "";
-      } else if (ch === "\\") {
-        // An escaped character, such as the `\(` of a Ruby regexp, is no bracket.
-        i++;
-      } else if (language === "python" && (text.startsWith('"""', i) || text.startsWith("'''", i))) {
-        tripleQuote = text.slice(i, i + 3);
-        i += 2;
-      } else if (ch === '"' || ch === "'") {
-        quote = ch;
-      } else if (language === "lua" ? text.startsWith("--", i) : ch === "#") {
-        end = i;
-        break;
-      } else if ("([{".includes(ch)) {
-        depth++;
-      } else if (")]}".includes(ch)) {
-        depth--;
-      } else if (ch === ":" && depth <= 0 && language === "python") {
-        end = i;
-        closed = true;
-        break;
-      }
-    }
-    rows.push(text.slice(0, end));
-    if (language !== "python" && depth <= 0) closed = true;
-    if (closed) return rows.length > 1 ? rows.join(" ").replace(/\s+/g, " ") : rows[0];
-  }
-  // The brackets did not close within the rows read, as when a regexp holds an
-  // unescaped `(`: keep the first row, as for any other language.
-  return firstLine;
-}
-
-function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0, language: string = ""): string {
+function extractSignatureFromLines(lines: string[], startRow: number, endRow: number, maxLen: number = 200, startCol: number = 0): string {
   const firstLine = Buffer.from(lines[startRow] || "").subarray(startCol).toString();
   let sig = firstLine;
 
-  if (UNBRACED_BODY_LANGUAGES.has(language)) {
-    sig = extractUnbracedSignature(lines, startRow, endRow, firstLine, language);
-  } else if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
+  if (!sig.trimEnd().endsWith("{") && !sig.trimEnd().endsWith(":")) {
     const chunk = [firstLine, ...lines.slice(startRow + 1, Math.min(startRow + 10, endRow + 1))].join("\n");
     const braceIdx = chunk.indexOf("{");
     if (braceIdx !== -1 && braceIdx < 500) {
@@ -867,6 +812,18 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       signature = "---frontmatter---";
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
+    } else if (SIGNATURE_END_LANGUAGES.has(language)) {
+      // A Python, Ruby or Lua body is not braced: a `{` in it opens a dict, a
+      // hash, a block or a table. The parse tree marks where the signature ends,
+      // after the last of its parameters, return type or superclass, or else
+      // after the name.
+      const end = match.captures
+        .filter(c => c.tag === "sig_end")
+        .reduce<RawCapture | undefined>((last, c) => !last || c.endRow > last.endRow
+          || (c.endRow === last.endRow && c.endCol > last.endCol) ? c : last, undefined)
+        ?? nameCapture ?? kindCapture;
+      signature = captureText(lines, { ...kindCapture, endRow: end.endRow, endCol: end.endCol });
+      if (signature.length > 200) signature = signature.slice(0, 197) + "...";
     } else {
       // Export wrappers start before their direct declaration. Preserve only
       // the export keywords that end that prefix: decorators belong to the
@@ -889,7 +846,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       // Extract the declaration independently: prefix comments may contain
       // braces or span more rows than the declaration signature budget.
       signature = exportPrefix + extractSignatureFromLines(lines, startRow, endRow,
-        200 - exportPrefix.length, kindCapture.startCol, language);
+        200 - exportPrefix.length, kindCapture.startCol);
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);

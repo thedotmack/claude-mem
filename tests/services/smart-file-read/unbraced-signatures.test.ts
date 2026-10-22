@@ -17,9 +17,9 @@ function signatures(source: string, file: string): Record<string, string> {
 }
 
 describe('signatures of languages without braced bodies', () => {
-  test('Ruby signatures end with the row that closes their brackets', () => {
+  test('Ruby signatures end after the parameters, the superclass or the name', () => {
     const source = [
-      'class User',
+      'class User < ApplicationRecord',
       '  def initialize(name,',
       '                 currency = "(")',
       '    @attrs = { name: name }',
@@ -28,30 +28,42 @@ describe('signatures of languages without braced bodies', () => {
       '  def each_name # yields each name',
       '    names.each { |n| yield n }',
       '  end',
+      '',
+      '  def to_json(*args)',
+      '    logger.info("serializing #{id}")',
+      '  end',
       'end',
     ].join('\n');
     expect(signatures(source, 'user.rb')).toEqual({
-      User: 'class User',
+      User: 'class User < ApplicationRecord',
       initialize: 'def initialize(name, currency = "(")',
       each_name: 'def each_name',
+      to_json: 'def to_json(*args)',
     });
   }, 120000);
 
-  test('Lua signatures end with the row that closes their brackets', () => {
+  test('Lua signatures end after the parameters', () => {
     const source = [
-      'local function build(name, -- the name',
+      'local function build(name,',
       '                     size)',
       '  local t = { name = name, size = size }',
       '  return t',
       'end',
+      '',
+      'M.render = function(items)',
+      '  return { items = items }',
+      'end',
     ].join('\n');
-    expect(signatures(source, 'build.lua')).toEqual({ build: 'local function build(name, size)' });
+    expect(signatures(source, 'build.lua')).toEqual({
+      build: 'local function build(name, size)',
+      'M.render': 'M.render = function(items)',
+    });
   }, 120000);
 
-  test('Python signatures end at the colon that opens the body', () => {
+  test('Python signatures end after the parameters, the return type or the superclasses', () => {
     const source = [
       'class Config(',
-      '    Base,  # the base (abstract',
+      '    Base,',
       '    metaclass=Meta,',
       '):',
       '    def make(',
@@ -61,11 +73,17 @@ describe('signatures of languages without braced bodies', () => {
       '        return {"sep": sep}',
       '',
       '    def one(self): return {}',
+      '',
+      'class Stack[T]:',
+      '    def first[U](self, items: list[U]) -> U:',
+      '        return items[0]',
     ].join('\n');
     expect(signatures(source, 'config.py')).toEqual({
       Config: 'class Config( Base, metaclass=Meta, )',
       make: 'def make( self, sep: str = ":", ) -> dict[str, int]',
       one: 'def one(self)',
+      Stack: 'class Stack[T]',
+      first: 'def first[U](self, items: list[U]) -> U',
     });
   }, 120000);
 
@@ -97,8 +115,7 @@ describe('signatures of languages without braced bodies', () => {
       '  puts pattern',
       'end',
     ].join('\n');
-    // An escaped `\\(` is no bracket. An unescaped one leaves the brackets open, so
-    // the first row stands, as before.
+    // The parse tree knows where a regexp ends, with an escaped `(` or an unescaped one.
     expect(signatures(source, 'match.rb')).toEqual({
       match: 'def match(pattern = /\\(/)',
       bracket: 'def bracket(pattern = /[(]/)',
