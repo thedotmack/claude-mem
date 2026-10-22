@@ -845,8 +845,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
     const body = match.captures.find(c => c.tag === "body");
-    const docstring = language === "python"
-      ? findPythonDocstringFromLines(lines, body?.startRow ?? startRow + 1, endRow)
+    const docstring = language === "python" && body
+      ? findPythonDocstringFromLines(lines, body.startRow, endRow)
       : undefined;
 
     const sym: CodeSymbol = {
