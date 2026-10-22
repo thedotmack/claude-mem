@@ -99,6 +99,23 @@ export interface VectorSearchStatus {
   lastEmbedError: { message: string; at: string } | null;
 }
 
+// The missing-vector count reads every observation, a few hundred
+// milliseconds on a large store, so /v1/info reuses it for a minute rather
+// than counting on every request.
+const MISSING_COUNT_TTL_MS = 60_000;
+const missingCounts = new WeakMap<PostgresQueryable, Map<string, { at: number; count: Promise<number> }>>();
+
+function cachedCountMissing(client: PostgresQueryable, model: string): Promise<number> {
+  let byModel = missingCounts.get(client);
+  if (!byModel) missingCounts.set(client, byModel = new Map());
+  const cached = byModel.get(model);
+  if (cached && Date.now() - cached.at < MISSING_COUNT_TTL_MS) return cached.count;
+  const count = new PostgresObservationEmbeddingsRepository(client).countMissing(model);
+  byModel.set(model, { at: Date.now(), count });
+  count.catch(() => byModel!.delete(model));
+  return count;
+}
+
 export async function getVectorSearchStatus(
   client: PostgresQueryable,
   embedder: Embedder = getSharedEmbedder(),
@@ -108,7 +125,7 @@ export async function getVectorSearchStatus(
     available,
     model: embedder.modelId,
     observationsWithoutVectors: available
-      ? await new PostgresObservationEmbeddingsRepository(client).countMissing(embedder.modelId)
+      ? await cachedCountMissing(client, embedder.modelId)
       : null,
     lastEmbedError,
   };

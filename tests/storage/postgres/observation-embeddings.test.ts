@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, spyOn } from 'bun:test';
 import { availableParallelism } from 'os';
 import pg from 'pg';
 import {
@@ -259,6 +259,19 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     expect((await getVectorSearchStatus(pool, embedder('next'))).observationsWithoutVectors).toBe(3);
     const missing = await new PostgresObservationEmbeddingsRepository(pool).listMissing({ model: 'next', limit: 10 });
     expect(missing.map(row => row.id).sort()).toEqual(Object.values(ids).sort());
+  });
+
+  it('counts missing vectors once a minute, not on every status read', async () => {
+    if (!vectorAvailable) return;
+    const embedder: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+    const count = spyOn(PostgresObservationEmbeddingsRepository.prototype, 'countMissing');
+    try {
+      await getVectorSearchStatus(pool, embedder);
+      await getVectorSearchStatus(pool, embedder);
+      expect(count).toHaveBeenCalledTimes(1);
+    } finally {
+      count.mockRestore();
+    }
   });
 
   it('reports the last embedding failure until an embed succeeds', async () => {
