@@ -77,6 +77,16 @@ text after`;
     expect(result.counts.private_key_pem).toBe(1);
   });
 
+  it('redacts a PGP private key block and an encrypted PKCS#8 key', () => {
+    const pgp = '-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nlQOYBF8wP0sBCADH\n=abcd\n-----END PGP PRIVATE KEY BLOCK-----';
+    const pkcs8 = '-----BEGIN ENCRYPTED PRIVATE KEY-----\nMIIFHDBOBgkqhkiG\n-----END ENCRYPTED PRIVATE KEY-----';
+    for (const block of [pgp, pkcs8]) {
+      const result = redactSensitive(`text before\n${block}\ntext after`, cfg);
+      expect(result.redacted).toBe("text before\n<redacted type='private_key_pem'/>\ntext after");
+      expect(result.counts.private_key_pem).toBe(1);
+    }
+  });
+
   it('redacts aws_secret_key only when anchored to AWS_SECRET_ACCESS_KEY', () => {
     const anchored = 'AWS_SECRET_ACCESS_KEY=abcdefghijklmnopqrstuvwxyz0123456789ABCD';
     const r1 = redactSensitive(anchored, cfg);
