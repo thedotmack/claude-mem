@@ -145,6 +145,9 @@ services:
       # The HTTP service does not consume BullMQ jobs; the worker container
       # does. This split keeps HTTP latency unaffected by provider calls.
       CLAUDE_MEM_GENERATION_DISABLED: "true"
+      # Search by meaning: the server embeds queries and the worker embeds the
+      # observations it generates, so both containers take the same setting.
+      CLAUDE_MEM_SERVER_VECTOR_SEARCH: ${CLAUDE_MEM_SERVER_VECTOR_SEARCH:-auto}
     ports:
       - "37877:37877"
     volumes:
@@ -195,6 +198,8 @@ services:
       CLAUDE_MEM_ANTHROPIC_API_KEY: ${CLAUDE_MEM_ANTHROPIC_API_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Search by meaning; the same as the server's (see the server service above).
+      CLAUDE_MEM_SERVER_VECTOR_SEARCH: ${CLAUDE_MEM_SERVER_VECTOR_SEARCH:-auto}
     volumes:
       - claude-mem-data:/data/claude-mem
       # #2558 — credentials-file mount (see server service above). Keeps
