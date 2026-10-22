@@ -280,6 +280,19 @@ describe.skipIf(!testDatabaseUrl)('hybrid observation search', () => {
     expect(await backfillMissingEmbeddings(pool, { embedder: failing, batchSize: 1 })).toEqual({ observations: 0, parts: 0 });
   });
 
+  it('finishes when the last row yields no parts', async () => {
+    if (!vectorAvailable) return;
+    // The newest row, stored with microseconds, has nothing to embed, so it
+    // stays missing; paging past it must not land back on it.
+    await pool.query(
+      `INSERT INTO observations (id, project_id, team_id, content, created_at)
+       VALUES ('blank', $1, $2, '   ', now() + interval '1.234567 second')`,
+      [projectId, teamId],
+    );
+    const embedder: Embedder = { modelId: 'next', dims: 384, embed: async texts => texts.map(() => axis(1)) };
+    expect(await backfillMissingEmbeddings(pool, { embedder, batchSize: 2 })).toEqual({ observations: 4, parts: 3 });
+  }, 10_000);
+
   it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {
     if (!vectorAvailable) return;
     const working: Embedder = { modelId: 'test', dims: 384, embed: async texts => texts.map(() => axis(1)) };

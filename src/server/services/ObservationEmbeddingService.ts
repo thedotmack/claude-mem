@@ -184,7 +184,7 @@ export async function backfillMissingEmbeddings(
   if (!(await vectorSearchOn(client))) return totals;
 
   const repo = new PostgresObservationEmbeddingsRepository(client);
-  let after: { createdAt: Date; id: string } | null = null;
+  let after: { createdAt: string; id: string } | null = null;
   for (;;) {
     const rows = await repo.listMissing({ model: embedder.modelId, limit: batchSize, after });
     if (rows.length === 0) break;

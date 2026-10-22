@@ -113,11 +113,11 @@ export class PostgresObservationEmbeddingsRepository {
   async listMissing(input: {
     model: string;
     limit: number;
-    after?: { createdAt: Date; id: string } | null;
+    after?: { createdAt: string; id: string } | null;
   }): Promise<MissingEmbeddingRow[]> {
-    const result = await this.client.query<{ id: string; kind: string; content: string; metadata: unknown; created_at: Date }>(
+    const result = await this.client.query<{ id: string; kind: string; content: string; metadata: unknown; created_at: string }>(
       `
-        SELECT o.id, o.kind, o.content, o.metadata, o.created_at
+        SELECT o.id, o.kind, o.content, o.metadata, o.created_at::text AS created_at
         FROM observations o
         WHERE NOT EXISTS (SELECT 1 FROM observation_embeddings e WHERE e.observation_id = o.id AND e.model = $4)
           AND ($2::timestamptz IS NULL OR (o.created_at, o.id) > ($2::timestamptz, $3::text))
@@ -154,5 +154,6 @@ export interface MissingEmbeddingRow {
   kind: string;
   content: string;
   metadata: JsonObject;
-  createdAt: Date;
+  /** created_at as Postgres prints it, to the microsecond; a Date keeps only milliseconds, which would page back onto the same row. */
+  createdAt: string;
 }
