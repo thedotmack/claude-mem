@@ -16,7 +16,6 @@ export interface RefreshStatus {
 }
 
 export class AutoRefreshWorker {
-  revision: number;
   constructor(options: {
     dir: string;
     openDatabase: () => LedgerDatabase & { close(): void };

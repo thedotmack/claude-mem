@@ -424,25 +424,6 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('a review written before readings existed is seeded with its single reading', () => {
-  const dir = ledgerDir();
-  try {
-    const database = fixtureDatabase();
-    let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
-    const decisions = join(dir, 'decisions.json');
-    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Pricing page', conversations: [key('c')] }] }));
-    run(['apply', decisions]);
-    const groupId = groupIdFor(key('c'));
-    mkdirSync(join(dir, 'progress'), { recursive: true });
-    writeFileSync(join(dir, 'progress', `${groupId}.json`), JSON.stringify({ groupId, state: 'in-progress', percent: 40, summary: 'Old.', checkedAt: '2026-10-19T10:00:00.000Z' }));
-    expect(readLedger(dir).progress[groupId].readings).toEqual([{ at: '2026-10-19T10:00:00.000Z', percent: 40 }]);
-    const file = join(dir, 'review.json');
-    writeFileSync(file, JSON.stringify({ groupId, state: 'in-progress', percent: 65, summary: 'Further.', reviewBasis: run(['show', groupId]).reviewBasis }));
-    expect(run(['record-progress', file]).readings).toBe(2);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
   it('the snapshot joins alignment onto requests: linked, explicitly none, or not linked yet', () => {
   const source = new WorkStateSource({ ledgerDir: null });
   const goal = { id: '["owner","owner-goals"]-ship', task: 'Priority: Ship cards', title: 'Ship cards', kind: 'priority' };

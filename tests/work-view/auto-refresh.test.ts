@@ -59,7 +59,6 @@ describe('automatic refresh scheduler', () => {
       finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null });
       expect(await first).toBe('ok');
       expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString() });
-      expect(worker.revision).toBe(2);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 

@@ -309,16 +309,9 @@ export function validateProgress(entry, knownGroups) {
   };
 }
 
-/** A review's dated percents, oldest first. Files written before readings
- * existed seed one reading from their own checkedAt and percent. */
-export function readingsOf(entry) {
-  if (Array.isArray(entry?.readings)) return entry.readings;
-  return entry?.checkedAt && Number.isInteger(entry.percent) ? [{ at: entry.checkedAt, percent: entry.percent }] : [];
-}
-
 /** Add one reading: deduplicated by `at`, oldest first, the newest MAX_READINGS kept. */
 export function appendReading(previous, reading) {
-  const byAt = new Map(readingsOf(previous).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
+  const byAt = new Map((previous?.readings ?? []).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
   byAt.set(reading.at, { at: reading.at, percent: reading.percent });
   return [...byAt.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-MAX_READINGS);
 }
@@ -354,7 +347,7 @@ export function readLedger(dir = LEDGER_DIR) {
   catch (error) { if (error.code !== 'ENOENT') throw error; }
   for (const name of names) {
     const entry = readJson(join(dir, 'progress', name), null);
-    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, readings: readingsOf(entry), title: groups.groups[entry.groupId].title };
+    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return { groups, progress, story: readJson(join(dir, 'story.json'), null), alignment: readJson(join(dir, 'alignment.json'), null), refresh: readJson(join(dir, 'refresh.json'), null) };
 }

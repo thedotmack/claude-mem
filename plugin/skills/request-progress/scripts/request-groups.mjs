@@ -379,12 +379,8 @@ function validateProgress(entry, knownGroups) {
     reviewedConversations: [...new Set(basis.conversations)].sort()
   };
 }
-function readingsOf(entry) {
-  if (Array.isArray(entry?.readings)) return entry.readings;
-  return entry?.checkedAt && Number.isInteger(entry.percent) ? [{ at: entry.checkedAt, percent: entry.percent }] : [];
-}
 function appendReading(previous, reading) {
-  const byAt = new Map(readingsOf(previous).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
+  const byAt = new Map((previous?.readings ?? []).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
   byAt.set(reading.at, { at: reading.at, percent: reading.percent });
   return [...byAt.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-MAX_READINGS);
 }
@@ -418,7 +414,7 @@ function readLedger(dir = LEDGER_DIR) {
   }
   for (const name of names) {
     const entry = readJson(join(dir, "progress", name), null);
-    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, readings: readingsOf(entry), title: groups.groups[entry.groupId].title };
+    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return { groups, progress, story: readJson(join(dir, "story.json"), null), alignment: readJson(join(dir, "alignment.json"), null), refresh: readJson(join(dir, "refresh.json"), null) };
 }

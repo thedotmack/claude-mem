@@ -24,7 +24,7 @@ export class AutoRefreshWorker {
    */
   constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {} }) {
     Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log });
-    this.timer = null; this.closed = false; this.busy = false; this.revision = 0;
+    this.timer = null; this.closed = false; this.busy = false;
   }
 
   path() { return join(this.dir, 'refresh.json'); }
@@ -34,7 +34,7 @@ export class AutoRefreshWorker {
     catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   }
 
-  write(status) { writeJsonAtomic(this.path(), status); this.revision++; }
+  write(status) { writeJsonAtomic(this.path(), status); }
 
   start() { this.tick(); this.timer = setInterval(() => this.tick(), this.checkMs); this.timer.unref?.(); }
 
