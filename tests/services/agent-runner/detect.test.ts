@@ -3,6 +3,7 @@ import { EventEmitter } from 'events';
 import type { spawn } from 'child_process';
 import {
   detectUsableAgents,
+  GEMINI_NO_MCP_SERVERS,
   runCommand,
   type AgentDetectionDependencies,
   type UsableAgent,
@@ -72,6 +73,7 @@ function dependencies(overrides: Partial<AgentDetectionDependencies>): Partial<A
     homeDirectory: () => HOME,
     platform: () => 'darwin',
     now: () => 1_000_000,
+    geminiAccountChecks: new Map(),
     ...overrides,
   };
 }
@@ -215,17 +217,55 @@ describe('detectUsableAgents', () => {
       expect(agent.reason).toContain('oauth_creds.json');
     });
 
-    it('logged in through settings.json + oauth_creds.json', async () => {
-      const agent = await detectOne('gemini', {
-        spawn: fakeSpawn(WHICH_GEMINI),
-        fileExists: path => path === settingsPath || path === credentialsPath,
-        readTextFile: path => {
-          if (path !== settingsPath) throw new Error(`unexpected read ${path}`);
-          return settings;
-        },
-      });
+    const PROBE = [GEMINI_PATH, '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'].join(' ');
+    const NO_INPUT = 'No input provided via stdin. Input can be provided by piping data into gemini or using the --prompt option.\n';
+    const INELIGIBLE = 'Error authenticating: IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google\n'
+      + '    at throwIneligibleOrProjectIdError (file:///gemini/bundle/chunk.js:300912:11)\n  ineligibleTiers: [ { reasonCode: \'UNSUPPORTED_CLIENT\' } ]\n' + NO_INPUT;
+    const signedIn = (probe: ScriptedOutcome, credentials = () => JSON.stringify({ refresh_token: 'refresh-1', access_token: 'a' }), calls: string[] = []) => ({
+      spawn: fakeSpawn({ ...WHICH_GEMINI, [PROBE]: probe }, calls),
+      fileExists: (path: string) => path === settingsPath || path === credentialsPath,
+      readTextFile: (path: string) => (path === settingsPath ? settings : credentials()),
+    });
+
+    it('usable: the account probe signs in and stops for lack of a prompt (exit 42, no generation)', async () => {
+      const calls: string[] = [];
+      const agent = await detectOne('gemini', signedIn({ exitCode: 42, stderr: NO_INPUT }, undefined, calls));
       expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: true });
       expect(agent.reason).toContain('oauth-personal');
+      expect(calls).toContain(PROBE);
+      expect(calls.join(' ')).not.toMatch(/ -p |--prompt|yolo|bypass/);
+    });
+
+    it('ineligible tier: installed, credentials on disk, but Google refuses the account', async () => {
+      const agent = await detectOne('gemini', signedIn({ exitCode: 42, stderr: INELIGIBLE }));
+      expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: false });
+      expect(agent.reason).toBe("Gemini is installed, but this Google account can't use it: This client is no longer supported for Gemini Code Assist for individuals. To continue using Gemini, please migrate to the Antigravity suite of products: https://antigravity.google");
+    });
+
+    it('not logged in: stale credentials whose sign-in fails are reported, not trusted', async () => {
+      const agent = await detectOne('gemini', signedIn({ exitCode: 41, stderr: 'Error authenticating: Error: invalid_grant\n' }));
+      expect(agent).toMatchObject({ path: GEMINI_PATH, authenticated: false, reason: 'Gemini is installed, but its Google sign-in failed: invalid_grant' });
+    });
+
+    it('a probe that exits with another error is not usable', async () => {
+      const agent = await detectOne('gemini', signedIn({ exitCode: 1, stderr: 'boom\n' }));
+      expect(agent).toMatchObject({ authenticated: false, reason: '`gemini (account check)` exited 1: boom' });
+    });
+
+    it('caches the probe per login and probes again when the refresh token changes', async () => {
+      const calls: string[] = [];
+      let refreshToken = 'refresh-1';
+      const geminiAccountChecks = new Map();
+      const overrides = { ...signedIn({ exitCode: 42, stderr: INELIGIBLE }, () => JSON.stringify({ refresh_token: refreshToken }), calls), geminiAccountChecks };
+      const [first, second] = await Promise.all([detectOne('gemini', overrides), detectOne('gemini', overrides)]);
+      expect(await detectOne('gemini', overrides)).toEqual(first);
+      expect(second).toEqual(first);
+      expect(calls.filter(call => call === PROBE)).toHaveLength(1);
+      refreshToken = 'refresh-2';
+      const relogged = await detectOne('gemini', { ...overrides, spawn: fakeSpawn({ ...WHICH_GEMINI, [PROBE]: { exitCode: 42, stderr: NO_INPUT } }, calls) });
+      expect(relogged.authenticated).toBe(true);
+      expect(calls.filter(call => call === PROBE)).toHaveLength(2);
+      expect([...geminiAccountChecks.keys()].join(' ')).not.toContain('refresh-');
     });
 
     it('logged in through GEMINI_API_KEY', async () => {

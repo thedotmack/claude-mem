@@ -31,10 +31,12 @@ import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@ant
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
-import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
+export { GEMINI_NO_MCP_SERVERS };
+
 export interface StepModel { model?: string; reasoningEffort?: string }
 export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
 
@@ -163,10 +165,9 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffo
   ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
-export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 // --skip-trust: in a folder Gemini never trusted, headless runs exit 55 and drop plan mode. It trusts the data dir for
 // this one session only, so plan (read-only) mode holds; it approves no tools.
+// Gemini with no extensions and no MCP server, so plan mode is the only tool surface.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
