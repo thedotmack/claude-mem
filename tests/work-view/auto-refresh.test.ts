@@ -151,6 +151,10 @@ describe('refresh task', () => {
     expect(claudeCode.checkTool('Edit', { file_path: join(goalsFolder, 'owner-map.md') })).toMatch(/not available/);
     expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__timeline', {})).toBe(true);
     expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__rebuild_corpus', {})).toMatch(/not available/);
+    // No raw work-state writes: they would skip the skills' validators.
+    expect(claudeCode.allowedTools).not.toContain('mcp__plugin_claude-mem_mcp-search__work_state_write');
+    expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__work_state_write', { list: 'my-rules' })).toMatch(/not available/);
+    expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__work_state_read');
     // The owner-goals scripts' file options are pinned to today's goals folder.
     const exportScript = '/plugin/skills/owner-goals/scripts/export_owner_prompts.py', saveScript = '/plugin/skills/owner-goals/scripts/save_goals.py';
     expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}" --days 31` })).toBe(true);

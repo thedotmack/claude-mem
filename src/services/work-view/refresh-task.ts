@@ -16,8 +16,9 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import type { AgentTask, AskAgent } from '../agent-runner/run.js';
 import { runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
-/** claude-mem MCP tools a refresh may call: memory reads and work state. */
-export const MEMORY_TOOLS = ['search', 'dumb_search', 'smart_search', 'timeline', 'get_observations', 'get_tool_uses', 'smart_outline', 'smart_unfold', 'work_state_read', 'work_state_write'];
+/** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
+ * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
+export const MEMORY_TOOLS = ['search', 'dumb_search', 'smart_search', 'timeline', 'get_observations', 'get_tool_uses', 'smart_outline', 'smart_unfold', 'work_state_read'];
 const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
 
