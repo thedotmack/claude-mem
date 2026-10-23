@@ -865,7 +865,9 @@ describe('fileContextHandler — File Read Gate', () => {
     expect(result.hookSpecificOutput!.additionalContext).toContain('Rate table refactor');
   });
 
-  it('does not deny a Read whose file stat fails with anything but ENOENT — the timeline is still context', async () => {
+  // Windows reports ENOENT for a path through a regular file, so the
+  // "anything but ENOENT" premise this test exercises cannot be expressed there.
+  it.skipIf(process.platform === 'win32')('does not deny a Read whose file stat fails with anything but ENOENT — the timeline is still context', async () => {
     // A path through a regular file: stat fails with ENOTDIR, so the lookup
     // goes on without its size and mtime checks. A claude-mem failure must
     // never block a Read.
@@ -957,7 +959,9 @@ describe('fileContextHandler — File Read Gate', () => {
     expectContextNotDeny(result);
   });
 
-  it('never denies a symlink in the project to a code file outside it — the smart tools refuse that path', async () => {
+  // Creating a file symlink on Windows needs Developer Mode (or an elevated
+  // process); without it symlinkSync throws EPERM.
+  it.skipIf(process.platform === 'win32')('never denies a symlink in the project to a code file outside it — the smart tools refuse that path', async () => {
     const projectDir = join(tmpDir, 'project');
     const outsideDir = join(tmpDir, 'outside');
     mkdirSync(projectDir);
@@ -976,7 +980,7 @@ describe('fileContextHandler — File Read Gate', () => {
     await expect(realWorkspacePathSnapshot.resolveWithinWorkspace(linkInProject, projectDir)).rejects.toThrow(/Access denied/);
   });
 
-  it('still denies a symlink in the project to a file inside it', async () => {
+  it.skipIf(process.platform === 'win32')('still denies a symlink in the project to a file inside it', async () => {
     const projectDir = join(tmpDir, 'project');
     mkdirSync(join(projectDir, 'src'), { recursive: true });
     const realFile = join(projectDir, 'src', 'rate-table.ts');

@@ -136,11 +136,15 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
     const session = current;
     const messages = event.messages;
     if (!session) return;
-    if (!Array.isArray(messages) || messages[0]?.role !== 'system' || typeof messages[0].content !== 'string') {
+    // Find the system message by role: a custom message an extension sends
+    // from before_agent_start or session_start is flushed ahead of it.
+    const systemIndex = Array.isArray(messages) ? messages.findIndex(message => message?.role === 'system') : -1;
+    const system = Array.isArray(messages) ? messages[systemIndex] : undefined;
+    if (!Array.isArray(messages) || !system || typeof system.content !== 'string') {
       await resetTurn(event, ctx);
       return;
     }
-    const base = messages[0].content;
+    const base = system.content;
     const user = [...messages].reverse().find(message => message.role === 'user');
     const prompt = extractTextContent(user?.content);
     // Images never leave Pi; an image-only turn has no automatic text capture.
@@ -214,9 +218,10 @@ export default function claudeMemPi(pi: PiExtensionAPI): void {
       }
     });
     if (current !== session || !session.anchored || session.excluded || !session.memory) return;
-    const [head, ...tail] = messages;
-    return { messages: [{ ...head, content: base + '\n\n<claude-mem-context>\n'
-      + session.memory + '\n</claude-mem-context>' }, ...tail] };
+    const injected = [...messages];
+    injected[systemIndex] = { ...system, content: base + '\n\n<claude-mem-context>\n'
+      + session.memory + '\n</claude-mem-context>' };
+    return { messages: injected };
   });
 
   pi.on('tool_result', (event, ctx) => {
