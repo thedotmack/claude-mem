@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -216,6 +217,63 @@ describe('refresh task', () => {
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
       expect(ledger.story.narrative).toBe('One request is under way.');
       expect(prompts.filter(prompt => prompt.includes('section 3'))).toHaveLength(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('incremental owner goals', () => {
+  /** A python3 stand-in: the export reports `newPrompts` prompts since the saved goals; save_goals records its goals file. */
+  function fakePython(newPrompts: number, calls: Array<{ args: string[]; goals?: any }>) {
+    return ((_command: string, args: string[]) => {
+      const child: any = new EventEmitter();
+      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      const call: { args: string[]; goals?: any } = { args };
+      calls.push(call);
+      queueMicrotask(() => {
+        if (args[0].endsWith('export_owner_prompts.py')) mkdirSync(args[args.indexOf('--out') + 1], { recursive: true });
+        if (args[0].endsWith('export_owner_prompts.py')) child.stdout.emit('data', JSON.stringify({ owner_prompts: 40, ...(args.includes('--since') ? { new_prompts: newPrompts } : {}) }) + '\n');
+        else call.goals = JSON.parse(readFileSync(args[args.indexOf('--goals') + 1], 'utf8'));
+        child.emit('close', 0);
+      });
+      return child;
+    }) as any;
+  }
+
+  it('updates the saved goals from only the prompts typed since, and keeps the saved map', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(3, calls) });
+      const prompts: string[] = [];
+      const ask = async (prompt: string) => {
+        prompts.push(prompt);
+        const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        expect(previous.priorities.map((item: any) => item.title)).toEqual(['Ship cards']);
+        return JSON.stringify({ ...previous, priorities: [{ ...previous.priorities[0], rank: 2 }] });
+      };
+      expect(await task.inline(ask, 'codex')).toBe('goals updated.');
+      expect(prompts).toHaveLength(1);
+      expect(prompts[0]).toContain('new-owner-prompts.md');
+      expect(prompts[0]).toContain('3 prompts the owner typed since');
+      const exportCall = calls[0].args;
+      expect(exportCall.slice(exportCall.indexOf('--since'), exportCall.indexOf('--since') + 2)).toEqual(['--since', new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
+      expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, priorities: [{ title: 'Ship cards', rank: 2 }] });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('with no new prompts, re-saves the saved goals without asking an agent', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-goals-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
+      const calls: Array<{ args: string[]; goals?: any }> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(0, calls) });
+      expect(await task.inline(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
+      expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

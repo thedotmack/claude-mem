@@ -216,7 +216,7 @@ function readGoals(database) {
       return { at, quote: quote.join(" | ") };
     })
   })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "priority" ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
-  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, goals };
+  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
 function validateAlignment(input, { groups, goals }) {
   const goalNames = new Set(goals.map((goal) => goal.goal));
@@ -446,11 +446,16 @@ function pendingReviews(ledger, database, sinceEpoch) {
   const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch)).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
   return { due, ungrouped };
 }
+function goalsAddedSince(alignment, goalKeys) {
+  const seen = new Set(alignment?.goals ?? goalKeys);
+  return goalKeys.filter((goal) => !seen.has(goal));
+}
 function alignmentDue(ledger, goals) {
   if (!goals.goals.length) return [];
-  const aligned = /* @__PURE__ */ new Set([...Object.keys(ledger.alignment?.links ?? {}), ...ledger.alignment?.unaligned ?? []]);
-  const goalsChanged = (ledger.alignment?.goalsGeneratedAt ?? null) !== goals.generatedAt;
-  return Object.keys(ledger.groups.groups).filter((id) => goalsChanged || !aligned.has(id));
+  const current = goals.goals.map((goal) => goal.goal);
+  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []);
+  if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
+  return Object.keys(ledger.groups.groups).filter((id) => links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id));
 }
 function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 }) {
   const ledger = readLedger(dir);
@@ -567,7 +572,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const alignment = {
       links: { ...Object.fromEntries(Object.entries(previous.links ?? {}).filter(([id]) => kept(id))), ...decided.links },
       unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
-      goalsGeneratedAt: goals.generatedAt,
+      goals: goals.goals.map((goal) => goal.goal),
       alignedAt: iso(now)
     };
     writeJsonAtomic(join(dir, "alignment.json"), alignment);

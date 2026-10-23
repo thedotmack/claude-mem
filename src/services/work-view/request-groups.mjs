@@ -154,7 +154,7 @@ export function readGoals(database) {
     title: item.title ?? item.task, product: item.product ?? null, latestAt: item.latest_at ?? null, timesAsked: Number(item.times_asked) || null,
     evidence: String(item.evidence ?? '').split('\n').filter(Boolean).map((line) => { const [at, ...quote] = line.split(' | '); return { at, quote: quote.join(' | ') }; }),
   })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'priority' ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
-  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, goals };
+  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
 
 /** Alignment links each overall request to the owner goals it serves, with evidence. */
@@ -394,13 +394,22 @@ function pendingReviews(ledger, database, sinceEpoch) {
   return { due, ungrouped };
 }
 
-/** Groups the alignment step still has to decide: groups it has not seen, and
- * every group when the goals changed. With no goals there is nothing to align to. */
+/** Goals added since the alignment was recorded. A goals update that only
+ * re-ranks or re-quotes adds none. Files from before goal keys were recorded count as current. */
+export function goalsAddedSince(alignment, goalKeys) {
+  const seen = new Set(alignment?.goals ?? goalKeys);
+  return goalKeys.filter((goal) => !seen.has(goal));
+}
+
+/** Groups the alignment step still has to decide: groups it has not seen,
+ * groups linked to a goal that is gone, and every group when a goal was added
+ * (any group may serve it). With no goals there is nothing to align to. */
 function alignmentDue(ledger, goals) {
   if (!goals.goals.length) return [];
-  const aligned = new Set([...Object.keys(ledger.alignment?.links ?? {}), ...(ledger.alignment?.unaligned ?? [])]);
-  const goalsChanged = (ledger.alignment?.goalsGeneratedAt ?? null) !== goals.generatedAt;
-  return Object.keys(ledger.groups.groups).filter((id) => goalsChanged || !aligned.has(id));
+  const current = goals.goals.map((goal) => goal.goal);
+  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []);
+  if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
+  return Object.keys(ledger.groups.groups).filter((id) => links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id));
 }
 
 /** What an automatic refresh would do now; nothing to do means no agent runs.
@@ -539,7 +548,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const alignment = {
       links: { ...Object.fromEntries(Object.entries(previous.links ?? {}).filter(([id]) => kept(id))), ...decided.links },
       unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
-      goalsGeneratedAt: goals.generatedAt, alignedAt: iso(now),
+      goals: goals.goals.map((goal) => goal.goal), alignedAt: iso(now),
     };
     writeJsonAtomic(join(dir, 'alignment.json'), alignment);
     return print({ aligned: Object.keys(decided.links).length, unaligned: decided.unaligned.length });

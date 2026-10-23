@@ -14,7 +14,7 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import type { AgentTask, AskAgent } from '../agent-runner/run.js';
-import { runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
@@ -149,10 +149,21 @@ export function parseAgentJson(text: string): any {
   return JSON.parse(text.slice(start, end + 1));
 }
 
+const pad = (value: number) => String(value).padStart(2, '0');
 const localDay = (epoch: number) => {
   const date = new Date(epoch);
-  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
 };
+/** The local `YYYY-MM-DD HH:MM` that owner-prompts.md headers use. */
+const localMinute = (epoch: number) => `${localDay(epoch)} ${pad(new Date(epoch).getHours())}:${pad(new Date(epoch).getMinutes())}`;
+
+/** The saved goals as the owner-goals.json the skill writes, so an update starts from them. */
+function goalsJson(saved: ReturnType<typeof readGoals>) {
+  const items = (kind: string) => saved.goals.filter(goal => goal.kind === kind).map(goal => ({
+    rank: goal.rank, title: goal.title, product: goal.product, latest_at: goal.latestAt, times_asked: goal.timesAsked, evidence: goal.evidence,
+  }));
+  return { generated_at: saved.generatedAt, window_days: 31, human_summary: saved.summary, priorities: items('priority'), open_asks: items('open-ask') };
+}
 
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
@@ -207,13 +218,14 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       finally { database.close(); }
       return output;
     };
-    const runScript = (args: string[]) => new Promise<void>((resolveRun, reject) => {
+    /** Runs a skill script; resolves with its output. */
+    const runScript = (args: string[]) => new Promise<string>((resolveRun, reject) => {
       const child = spawnImpl('python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
       let output = '';
       child.stdout?.on('data', chunk => { output = (output + chunk).slice(-4000); });
       child.stderr?.on('data', chunk => { output = (output + chunk).slice(-4000); });
       child.on('error', reject);
-      child.on('close', code => (code === 0 ? resolveRun() : reject(new Error(`${args[0].split('/').pop()} exited ${code}: ${output.trim().slice(-800)}`))));
+      child.on('close', code => (code === 0 ? resolveRun(output) : reject(new Error(`${args[0].split('/').pop()} exited ${code}: ${output.trim().slice(-800)}`))));
     });
     /** Ask, save, and on a validator's refusal ask once more with the reason. */
     const step = async <T>(name: string, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => {
@@ -230,17 +242,40 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
     try {
       const done: string[] = [];
       if (needs.goalsStale) {
-        await runScript([paths.exportScript, '--out', goalsFolder, '--days', '31']);
-        await step('owner goals', [
-          inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
-          `Step 1 is done: the owner's prompts are in ${join(goalsFolder, 'owner-prompts.md')}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
-        ].join('\n\n'), async answer => {
-          if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
-          writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
-          writeFileSync(join(goalsFolder, 'owner-goals.json'), JSON.stringify(answer.goals, null, 2), { mode: 0o600 });
-          await runScript([paths.saveScript, '--goals', join(goalsFolder, 'owner-goals.json'), '--prompts', join(goalsFolder, 'owner-prompts.md'), '--map', join(goalsFolder, 'owner-map.md')]);
-        });
-        done.push('goals refreshed');
+        const database = openDatabase();
+        let saved: ReturnType<typeof readGoals>;
+        try { saved = readGoals(database); } finally { database.close(); }
+        // With saved goals, update them from the prompts typed since; otherwise map the whole window.
+        const since = saved.goals.length && Number.isFinite(Date.parse(saved.generatedAt ?? '')) ? localMinute(Date.parse(saved.generatedAt!)) : null;
+        const exported = JSON.parse((await runScript([paths.exportScript, '--out', goalsFolder, '--days', '31', ...(since ? ['--since', since] : [])])).trim().split('\n').pop()!);
+        const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
+        const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
+          writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: exported.owner_prompts }, null, 2), { mode: 0o600 });
+          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : [])]);
+        };
+        const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
+        if (!since) {
+          await step('owner goals', [
+            inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+            `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
+          ].join('\n\n'), async answer => {
+            if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
+            writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
+            await save(answer.goals, join(goalsFolder, 'owner-map.md'));
+          });
+          done.push('goals mapped');
+        } else if (!exported.new_prompts) {
+          // Nothing new typed: the saved goals still hold; re-save them as current.
+          await save({ ...goalsJson(saved), generated_at: new Date(now()).toISOString() }, previousMap);
+          done.push('goals unchanged');
+        } else {
+          const previousPath = writeInput('previous-owner-goals', goalsJson(saved));
+          await step('owner goals', [
+            inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
+            `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${exported.new_prompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
+          ].join('\n\n'), answer => save({ ...answer, generated_at: new Date(now()).toISOString() }, previousMap));
+          done.push('goals updated');
+        }
       }
 
       const requestProgress = inlineSkill(paths.requestProgressSkill);

@@ -15,9 +15,11 @@ and runs over 400 characters. Prompts that open in lowercase are kept. Long past
 Writes into --out:
   owner-prompts.md                    the owner's prompts, oldest first, headed "## YYYY-MM-DD HH:MM · tool · project"
   excluded-agent-written-prompts.md   what step 2 removed, for audit
+  new-owner-prompts.md                with --since: only the prompts from that minute on, for updating a snapshot
 
-Usage: python3 export_owner_prompts.py --out <dir> [--days 31 | --start YYYY-MM-DD --end YYYY-MM-DD]
+Usage: python3 export_owner_prompts.py --out <dir> [--days 31 | --start YYYY-MM-DD --end YYYY-MM-DD] [--since "YYYY-MM-DD HH:MM"]
   --start/--end read a past period instead: from local midnight on --start up to local midnight on --end.
+  --since names the previous snapshot's local generated_at minute.
 """
 import argparse, glob, json, os, re, subprocess, sys, time
 
@@ -184,7 +186,10 @@ def main():
     parser.add_argument("--days", type=int, default=31, help="how many days back to read (default 31)")
     parser.add_argument("--start", help="read from this day instead, YYYY-MM-DD (with --end)")
     parser.add_argument("--end", help="read up to, not including, this day, YYYY-MM-DD (with --start)")
+    parser.add_argument("--since", help="also write new-owner-prompts.md with the prompts from this local minute on, YYYY-MM-DD HH:MM")
     args = parser.parse_args()
+    if args.since and not re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}", args.since):
+        sys.exit("--since takes a local minute, YYYY-MM-DD HH:MM")
     if bool(args.start) != bool(args.end):
         sys.exit("--start and --end go together")
 
@@ -203,9 +208,10 @@ def main():
     # Agent text written a little before the window can still be the source of a prompt inside it.
     agent_chunks = read_agent_authored_text(cutoff_seconds - 9 * 86400)
 
-    owner_written, agent_written = [], []
+    owner_written, agent_written, new_since = [], [], []
     for epoch, tool, project, session, text in owner_typed:
-        header = f"## {time.strftime('%Y-%m-%d %H:%M', time.localtime(epoch))} · {tool} · {project}\nsession `{session}`\n\n"
+        minute = time.strftime('%Y-%m-%d %H:%M', time.localtime(epoch))
+        header = f"## {minute} · {tool} · {project}\nsession `{session}`\n\n"
         if is_agent_written(epoch, text, agent_chunks):
             agent_written.append(header + text + "\n")
             continue
@@ -213,6 +219,8 @@ def main():
             trimmed = len(text) - MAXIMUM_KEPT_PROMPT_CHARACTERS
             text = text[:MAXIMUM_KEPT_PROMPT_CHARACTERS] + f"\n\n[... {trimmed} more characters, mostly pasted material, trimmed]"
         owner_written.append(header + text + "\n")
+        if args.since and minute >= args.since:
+            new_since.append(owner_written[-1])
 
     def write(filename, title, sections):
         with open(os.path.join(out_dir, filename), "w") as markdown_file:
@@ -220,8 +228,11 @@ def main():
 
     write("owner-prompts.md", f"Owner prompts (typed by the owner, not written by an agent), {window}", owner_written)
     write("excluded-agent-written-prompts.md", "Excluded: prompts an agent wrote first (audit file)", agent_written)
-    print(json.dumps({"out": out_dir, "window": window, "owner_prompts": len(owner_written),
-                      "excluded_agent_written": len(agent_written)}))
+    summary = {"out": out_dir, "window": window, "owner_prompts": len(owner_written), "excluded_agent_written": len(agent_written)}
+    if args.since:
+        write("new-owner-prompts.md", f"Owner prompts since {args.since}", new_since)
+        summary["new_prompts"] = len(new_since)
+    print(json.dumps(summary))
 
 
 if __name__ == "__main__":

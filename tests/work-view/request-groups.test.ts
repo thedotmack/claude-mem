@@ -275,7 +275,7 @@ describe('overall requests and progress reviews', () => {
     const stored = readLedger(dir).alignment;
     expect(stored.links[groupIdFor(key('a'))][0].goal).toBe('Priority: Ship cards');
     expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
-    expect(stored.goalsGeneratedAt).toBe('2026-10-01T10:00:00Z');
+    expect(stored.goals).toEqual(['Priority: Ship cards']);
     expect(ledgerSignature(dir)).not.toBe(before);
     expect(run(['align-input']).previous.alignedAt).toBe(new Date(NOW).toISOString());
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -372,8 +372,25 @@ describe('overall requests and progress reviews', () => {
     expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
     expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000 })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unaligned: 0, needed: false });
     expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
+    // A goals update that keeps the same goals (new ranks, quotes or summary) needs no new alignment.
     saveGoals(database, new Date(NOW).toISOString());
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
+    // Ship cards is replaced by Pricing.
+    const goalWrite = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'dropped' }), 3);
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Pricing', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Pricing' }), 4);
+    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a')), groupIdFor(key('c'))]);
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }], unaligned: [groupIdFor(key('a'))] }));
+    run(['record-alignment', alignment]);
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
+    // A new goal: any group may serve it, so every group is asked (keeping its previous links).
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'todo', goal_kind: 'priority', rank: 2, title: 'Docs' }), 5);
     expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(2);
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }, { groupId: groupIdFor(key('a')), goal: 'Priority: Docs', evidence: 'Card docs.' }] }));
+    run(['record-alignment', alignment]);
+    // A goal that is gone: only the group linked to it is asked again.
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'dropped' }), 6);
+    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a'))]);
     const before = ledgerSignature(dir);
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
     expect(ledgerSignature(dir)).not.toBe(before);
@@ -430,15 +447,17 @@ describe('overall requests and progress reviews', () => {
   const source = new WorkStateSource({ ledgerDir: null });
   const goal = { id: '["owner","owner-goals"]-ship', task: 'Priority: Ship cards', title: 'Ship cards', kind: 'priority' };
   source.agentView = { ...source.agentView, goals: { generatedAt: '2026-10-01T10:00:00Z', priorities: [goal], openAsks: [] }, humanRequests: [{ id: 'r1', groupId: 'g_1' }, { id: 'r2', groupId: 'g_2' }, { id: 'r3', groupId: 'g_3' }, { id: 'r4', groupId: null }] } as any;
-  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goalsGeneratedAt: '2026-10-01T10:00:00Z', alignedAt: '2026-10-02T00:00:00Z' } } as any;
+  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goals: ['Priority: Ship cards', 'Priority: Gone'], alignedAt: '2026-10-02T00:00:00Z' } } as any;
   const { humanRequests, goals } = source.goalLinks() as any;
   expect(humanRequests[0].goals).toEqual([{ goalId: goal.id, goal: goal.task, title: 'Ship cards', kind: 'priority', evidence: 'The cards.' }]);
   expect(humanRequests[1].goals).toEqual([]);
   expect(humanRequests[2].goals).toBeUndefined();
   expect(humanRequests[3].goals).toBeUndefined();
   expect(goals.alignedAt).toBe('2026-10-02T00:00:00Z');
-  // A newer goals run makes "serves none" a question again.
+  // A newer goals run with the same goals keeps "serves none"; an added goal makes it a question again.
   source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, generatedAt: '2026-10-05T10:00:00Z' } } as any;
+  expect((source.goalLinks() as any).humanRequests[1].goals).toEqual([]);
+  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, openAsks: [{ ...goal, id: 'new', task: 'Open ask: Docs', title: 'Docs', kind: 'open-ask' }] } } as any;
   expect((source.goalLinks() as any).humanRequests[1].goals).toBeUndefined();
 });
 
