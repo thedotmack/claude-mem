@@ -174,7 +174,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
         const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
           writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: exported.owner_prompts }, null, 2), { mode: 0o600 });
-          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : [])]);
+          await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : []), ...(since ? ['--carried-before', since] : [])]);
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
         if (!since) {

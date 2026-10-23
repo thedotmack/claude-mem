@@ -29,7 +29,7 @@ A period that ended before today is a past month: it is saved to "owner-goals/<s
 its items are saved done, so they never count as open), and My Work lists it under the Goals month switcher.
 
 Usage: python3 save_goals.py --goals owner-goals.json --prompts owner-prompts.md [--map owner-map.md]
-                             [--start YYYY-MM-DD --end YYYY-MM-DD] [--dry-run]
+                             [--start YYYY-MM-DD --end YYYY-MM-DD] [--carried-before "YYYY-MM-DD HH:MM"] [--dry-run]
 """
 import argparse, datetime, json, os, re, sys, urllib.error, urllib.request
 
@@ -104,6 +104,24 @@ def drop_aged_quotes(goals, prompts):
     return aged_out
 
 
+def drop_unverifiable_carried_quotes(goals, prompts, carried_before):
+    """Quotes dated before carried_before came from goals saved earlier, already checked then. One that no longer
+    matches (its words were inside a <private> block, which the export now strips) is dropped, not refused, so
+    one old quote cannot stop every later refresh. Items left without a quote go too. Returns what was dropped."""
+    dropped = []
+    for kind_key in ("priorities", "open_asks"):
+        kept = []
+        for item in goals.get(kind_key, []):
+            quotes = item.get("evidence") or []
+            item["evidence"] = [quote for quote in quotes
+                                if str(quote.get("at", ""))[:16] >= carried_before or not unverified_quotes({"priorities": [{"evidence": [quote]}]}, prompts)]
+            dropped += [f'{item.get("title")}: {quote.get("at")}' for quote in quotes if quote not in item["evidence"]]
+            if not quotes or item["evidence"]:
+                kept.append(item)
+        goals[kind_key] = kept
+    return dropped
+
+
 def unverified_quotes(goals, prompts):
     problems = []
     for kind_key in ("priorities", "open_asks"):
@@ -149,6 +167,7 @@ def main():
     parser.add_argument("--map", help="owner-map.md, recorded on the list so the full map can be found")
     parser.add_argument("--start", type=datetime.date.fromisoformat, help="first day the prompts cover, YYYY-MM-DD")
     parser.add_argument("--end", type=datetime.date.fromisoformat, help="day after the last day the prompts cover, YYYY-MM-DD")
+    parser.add_argument("--carried-before", help="local minute the saved goals were exported, YYYY-MM-DD HH:MM: an older quote that no longer matches is dropped instead of refused")
     parser.add_argument("--dry-run", action="store_true", help="validate and print the writes without saving")
     args = parser.parse_args()
     if bool(args.start) != bool(args.end) or (args.start and args.end <= args.start):
@@ -159,11 +178,12 @@ def main():
     goals = json.load(open(args.goals))
     prompts = prompts_by_minute(args.prompts)
     aged_out = drop_aged_quotes(goals, prompts)
+    dropped_carried = drop_unverifiable_carried_quotes(goals, prompts, args.carried_before) if args.carried_before else []
     items = [("priority", item) for item in goals.get("priorities", [])] + [("open-ask", item) for item in goals.get("open_asks", [])]
     missing = [f'{kind} {item.get("title")!r}' for kind, item in items if not item.get("title") or not item.get("evidence")]
     # An empty snapshot is valid only when the window emptied it (every quote aged out, or no prompts in it);
     # an answer that names no goals while there are prompts is refused.
-    if (not items and not aged_out and prompts) or missing:
+    if (not items and not aged_out and not dropped_carried and prompts) or missing:
         sys.exit("every priority and open ask needs a title and at least one evidence quote: " + ", ".join(missing or ["no items"]))
     problems = unverified_quotes(goals, prompts)
     if problems:
@@ -197,7 +217,7 @@ def main():
         reply = worker_request(base_url, "/api/work-state/entries", {"cwd": home, "list": list_name, "fields": fields})
         if not reply.startswith("Saved to"):
             sys.exit(f"work state did not save: {reply[:300]}")
-    print(json.dumps({"saved_items": len(writes) - 1, "dropped_previous_items": len(stale_tasks), "aged_out_items": aged_out,
+    print(json.dumps({"saved_items": len(writes) - 1, "dropped_previous_items": len(stale_tasks), "aged_out_items": aged_out, "dropped_carried_quotes": dropped_carried,
                       "view": f"{base_url}/#cards", "list": list_name, "history": history}))
 
 

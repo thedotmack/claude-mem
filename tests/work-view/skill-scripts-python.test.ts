@@ -87,6 +87,26 @@ describe('save_goals.py', () => {
       expect(save('# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nunrelated words\n', { priorities: [] }).exitCode).not.toBe(0);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it('drops a carried-forward quote that no longer matches, but still refuses a new one', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-'));
+    try {
+      writeFileSync(join(dir, 'owner-prompts.md'), '# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nship the cards  today\n\n---\n\n## 2026-10-21 09:00 · claude · repo\nsession `a`\n\nfix the login\n');
+      const save = (goals: unknown) => {
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify(goals));
+        return Bun.spawnSync(['python3', join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--carried-before', '2026-10-21 00:00', '--dry-run']);
+      };
+      // Saved before the export stripped <private>: the quote held the private words.
+      const result = save({ priorities: [
+        { rank: 1, title: 'Cards', evidence: [{ at: '2026-10-20 10:00', quote: 'ship the cards key sk-123 today' }] },
+        { rank: 2, title: 'Login', evidence: [{ at: '2026-10-21 09:00', quote: 'fix the login' }] },
+      ] });
+      expect(result.stderr.toString()).toBe('');
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout.toString()).writes.slice(1).map((write: { task: string }) => write.task)).toEqual(['Priority: Login']);
+      expect(save({ priorities: [{ title: 'Made up', evidence: [{ at: '2026-10-21 09:00', quote: 'never typed' }] }] }).exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
 
 describe('export_owner_prompts.py', () => {

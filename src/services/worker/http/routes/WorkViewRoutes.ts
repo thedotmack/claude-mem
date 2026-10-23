@@ -250,7 +250,13 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     // A recorded work-product file, found through the record that names it.
     // Pages and images render sandboxed so they cannot act as the viewer.
+    // It reads real files, so another local page (which worker CORS lets read responses) is refused:
+    // a cross-origin fetch carries its Origin, while the viewer opens files from its own origin.
     app.get('/api/work-view/file/:kind/:id/:index', workViewLoopbackOnly, this.wrapHandler((req, res) => {
+      if (req.get('sec-fetch-site') === 'cross-site' || isForeignLoopbackBrowserWrite(req)) {
+        res.status(403).json({ error: 'Recorded files open only from the local work viewer.' });
+        return;
+      }
       const id = this.parseIntParam(req, res, 'id');
       if (id === null) return;
       const index = this.parseIntParam(req, res, 'index');
