@@ -307,6 +307,7 @@ jobs:
           tests/server/runtime/memories-vector-write.test.ts
           tests/server/generation/process-generated-response-vectors.test.ts
           tests/services/vector/local-embedder-encode.test.ts
+          tests/server/semantic-context-route.test.ts
 
   clean-room-deps:
     name: clean-room dependency closure smoke
