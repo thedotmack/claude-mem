@@ -31,6 +31,7 @@ mock.module('../../../src/shared/EnvManager.js', () => ({
   hasAnthropicAuthToken: () => machine ? machine.hasAnthropicAuthToken?.() ?? false : envManager.hasAnthropicAuthToken(),
 }));
 const { detectUsableAgents, runCommand } = await import('../../../src/services/agent-runner/detect.js');
+const { windowsWhereExecutablePath } = await import('../../../src/shared/spawn.js');
 type UsableAgent = Awaited<ReturnType<typeof detectUsableAgents>>[number];
 
 type ScriptedOutcome =
@@ -221,10 +222,28 @@ describe('detectUsableAgents', () => {
       expect(agent).toMatchObject({ path: CODEX_PATH, authenticated: true, reason: 'Logged in using ChatGPT' });
     }, 10_000);
 
-    it('uses where.exe on Windows', async () => {
+    it('uses the system where.exe on Windows, never one from the working folder', async () => {
       const calls: string[] = [];
       await detectOne('codex', { platform: 'win32', spawn: fakeSpawn({}, calls) });
-      expect(calls).toContain('where.exe codex');
+      expect(calls).toContain(`${windowsWhereExecutablePath()} codex`);
+    });
+
+    it('on Windows, an npm-installed codex.cmd shim is found and started through cmd.exe', async () => {
+      // npm installs an extensionless sh script beside the .cmd shim; where.exe lists it first.
+      const bin = mkdtempSync(join(os.tmpdir(), 'detect-npm-bin-'));
+      try {
+        const script = join(bin, 'codex'), shim = join(bin, 'codex.cmd');
+        writeFileSync(script, ''); writeFileSync(shim, '');
+        const calls: string[] = [];
+        const agent = await detectOne('codex', {
+          platform: 'win32',
+          spawn: fakeSpawn({
+            [`${windowsWhereExecutablePath()} codex`]: { exitCode: 0, stdout: `${script}\r\n${shim}\r\n` },
+            [`${process.env.ComSpec ?? 'cmd.exe'} /d /s /c ""${shim}" "login" "status""`]: { exitCode: 0, stderr: 'Logged in using ChatGPT\n' },
+          }, calls),
+        });
+        expect(agent).toMatchObject({ path: shim, authenticated: true, reason: 'Logged in using ChatGPT' });
+      } finally { rmSync(bin, { recursive: true, force: true }); }
     });
   });
 

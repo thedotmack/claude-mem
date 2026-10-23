@@ -29,6 +29,7 @@ import { join } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
 import { readClaudeOAuthToken } from '../../shared/oauth-token.js';
 import { hasAnthropicApiKey, hasAnthropicAuthToken } from '../../shared/EnvManager.js';
+import { commandInvocation, resolveVoltaShim, selectWindowsCommandCandidate, windowsWhereExecutablePath } from '../../shared/spawn.js';
 
 export type UsableAgentId = 'claude-code' | 'codex' | 'gemini';
 
@@ -58,9 +59,9 @@ export interface CommandOptions {
 }
 
 /**
- * Run a command with argv (no shell) and wait for it to exit, however long
- * that takes. Never rejects. The one spawn-and-collect helper for agent
- * detection, agent runs and the refresh's skill scripts.
+ * Run a command with argv (no shell; a Windows .cmd/.bat shim through cmd.exe)
+ * and wait for it to exit, however long that takes. Never rejects. The one
+ * spawn-and-collect helper for agent detection, agent runs and the refresh's skill scripts.
  */
 export function runCommand(
   command: string,
@@ -68,10 +69,12 @@ export function runCommand(
   options: CommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise<CommandResult>(resolve => {
-    const child = spawn(command, args, {
+    const invocation = commandInvocation(command, args);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: options.env,
       windowsHide: true,
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     child.stdout?.setEncoding('utf8');
@@ -117,15 +120,23 @@ function describeError(error: unknown): string {
   return message.split('\n')[0].trim() || 'unknown error';
 }
 
-/** Resolve a command on PATH the way ide-detection.ts does (`which` / `where.exe`). */
+/**
+ * Resolve a command on PATH: `which`, or on Windows the system where.exe with
+ * the hit chosen the way the rest of claude-mem chooses it (a native .exe, else
+ * the npm .cmd shim, never the extensionless sh script npm installs beside it).
+ */
 async function resolveOnPath(command: string): Promise<{ path: string } | { path: null; reason: string }> {
-  const lookup = process.platform === 'win32' ? 'where.exe' : 'which';
-  const result = await runCommand(lookup, [command]);
-  const firstLine = result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
-  if (result.exitCode !== 0 || !firstLine) {
+  const windows = process.platform === 'win32';
+  const result = await runCommand(windows ? windowsWhereExecutablePath() : 'which', [command]);
+  const lines = result.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  // where.exe can garble a non-ASCII profile folder (lookupWindowsCommandCandidates): keep the paths that exist.
+  const found = result.exitCode !== 0 ? null
+    : windows ? selectWindowsCommandCandidate(lines.filter(line => existsSync(line)), shim => resolveVoltaShim(command, shim))
+      : lines[0] ?? null;
+  if (!found) {
     return { path: null, reason: `not installed: \`${command}\` is not on PATH` };
   }
-  return { path: firstLine };
+  return { path: found };
 }
 
 function commandFailureReason(command: string, result: CommandResult): string {
