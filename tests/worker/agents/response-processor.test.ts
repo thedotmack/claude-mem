@@ -111,7 +111,9 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 
 import {
   extractObservationFileEvidence,
+  isOutputCapFinishReason,
   processAgentResponse,
+  hasUnfinishedObservationBlock,
   takeObserverSchemaReminder,
   type ResponseContext,
 } from '../../../src/services/worker/agents/ResponseProcessor.js';
@@ -247,6 +249,60 @@ describe('ResponseProcessor', () => {
       ...overrides,
     } as ActiveSession;
   }
+
+  describe('reply cut off at the output-token cap', () => {
+    const complete = '<observation><type>discovery</type><title>Kept</title><narrative>Whole block</narrative></observation>';
+    const cut = `${complete}\n<observation><type>change</type><title>Unfinished`;
+    const cutOffErrors = () => (loggerSpies[3] as ReturnType<typeof spyOn>).mock.calls
+      .filter(call => String(call[1]).includes('reply was cut off'));
+
+    it('stores the complete blocks and reports the lost tail when finish_reason is length', async () => {
+      const session = createMockSession({ lastFinishReason: 'length' } as Partial<ActiveSession>);
+      const result = await processAgentResponse(cut, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(result).not.toBeNull();
+      expect(mockStoreObservations).toHaveBeenCalled();
+      const errors = cutOffErrors();
+      expect(errors).toHaveLength(1);
+      expect(errors[0][2]).toMatchObject({ finishReason: 'length', completeObservations: 1, hasUnfinishedObservationBlock: true });
+    });
+
+    it('reports an unclosed block even when the provider gives no finish reason', async () => {
+      const session = createMockSession();
+      await processAgentResponse(cut, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(cutOffErrors()).toHaveLength(1);
+    });
+
+    it('stays quiet for a whole reply that stopped normally', async () => {
+      const session = createMockSession({ lastFinishReason: 'stop' } as Partial<ActiveSession>);
+      await processAgentResponse(complete, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(cutOffErrors()).toHaveLength(0);
+    });
+
+    it('stays quiet for a whole reply whose content mentions an <observation> tag', async () => {
+      const aboutXml = '<observation><type>discovery</type><title>Prompt format</title>'
+        + '<narrative><![CDATA[Use <observation> for each result]]> and close it.</narrative></observation>';
+      const session = createMockSession({ lastFinishReason: 'stop' } as Partial<ActiveSession>);
+      await processAgentResponse(aboutXml, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(mockStoreObservations).toHaveBeenCalled();
+      expect(cutOffErrors()).toHaveLength(0);
+    });
+  });
+
+  it('classifies output-cap finish reasons and finds an unfinished observation block', () => {
+    expect(isOutputCapFinishReason('length')).toBe(true);
+    expect(isOutputCapFinishReason('MAX_TOKENS')).toBe(true);
+    expect(isOutputCapFinishReason('stop')).toBe(false);
+    expect(isOutputCapFinishReason(null)).toBe(false);
+    expect(hasUnfinishedObservationBlock('<observation>a</observation><observation>b')).toBe(true);
+    expect(hasUnfinishedObservationBlock('<observation>a</observation>')).toBe(false);
+    // A tag inside a stored block's content is content, not a block boundary.
+    expect(hasUnfinishedObservationBlock('<observation><![CDATA[<observation>]]></observation>')).toBe(false);
+    expect(hasUnfinishedObservationBlock('<observation>say "<observation>" twice: <observation></observation>')).toBe(false);
+    expect(hasUnfinishedObservationBlock('<observation>a</observation><observation>cut <![CDATA[<observation>')).toBe(true);
+    // A whole summary, or a skip reason, that mentions the tag is not a cut-off observation.
+    expect(hasUnfinishedObservationBlock('<summary><learned>Each result needs an <observation> block</learned></summary>')).toBe(false);
+    expect(hasUnfinishedObservationBlock('<skip_summary reason="no <observation> worth storing" />')).toBe(false);
+  });
 
   it('does not report a successful observer store when no memory rows were written', async () => {
     const store = new SessionStore(':memory:');
