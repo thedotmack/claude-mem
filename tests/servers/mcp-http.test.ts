@@ -7,7 +7,6 @@ import {
   allowedHosts,
   cwdFromRoots,
   headerCwd,
-  isAuthorized,
   normalizeCwd,
   parseHttpArgs,
 } from '../../src/servers/mcp-http.js';
@@ -35,28 +34,22 @@ describe('parseHttpArgs', () => {
   });
 
   it('uses defaults with the flag or environment switch', () => {
-    const defaults = { host: '127.0.0.1', port: 37790, token: undefined };
+    const defaults = { host: '127.0.0.1', port: 37790 };
     expect(parseHttpArgs(['--http'], {})).toEqual(defaults);
     expect(parseHttpArgs([], { CLAUDE_MEM_MCP_HTTP: '1' })).toEqual(defaults);
   });
 
   it('accepts both port flag forms', () => {
     for (const args of [['--port=1234'], ['--port', '1234']]) {
-      expect(parseHttpArgs(['--http', ...args], {})).toEqual({
-        host: '127.0.0.1', port: 1234, token: undefined,
-      });
+      expect(parseHttpArgs(['--http', ...args], {})).toEqual({ host: '127.0.0.1', port: 1234 });
     }
   });
 
   it('reads environment host/port and lets CLI flags override them', () => {
     const env = { CLAUDE_MEM_MCP_HTTP_HOST: 'localhost', CLAUDE_MEM_MCP_HTTP_PORT: '4321' };
-    expect(parseHttpArgs(['--http'], env)).toEqual({
-      host: 'localhost', port: 4321, token: undefined,
-    });
+    expect(parseHttpArgs(['--http'], env)).toEqual({ host: 'localhost', port: 4321 });
     for (const hostArgs of [['--host=127.0.0.1'], ['--host', '127.0.0.1']]) {
-      expect(parseHttpArgs(['--http', ...hostArgs, '--port=1234'], env)).toEqual({
-        host: '127.0.0.1', port: 1234, token: undefined,
-      });
+      expect(parseHttpArgs(['--http', ...hostArgs, '--port=1234'], env)).toEqual({ host: '127.0.0.1', port: 1234 });
     }
   });
 
@@ -71,29 +64,24 @@ describe('parseHttpArgs', () => {
     }
   });
 
-  it('requires an environment token for non-loopback hosts', () => {
-    for (const token of [undefined, '', '   ']) {
-      expect(() => parseHttpArgs(['--http', '--host=0.0.0.0'], {
-        CLAUDE_MEM_MCP_HTTP_TOKEN: token,
-      })).toThrow('CLAUDE_MEM_MCP_HTTP_TOKEN');
+  it('binds to loopback only and refuses every other host, token or not', () => {
+    for (const host of ['0.0.0.0', '::', '192.168.1.20', 'laptop.lan', '127.0.0.2', 'localhost.evil.example']) {
+      expect(() => parseHttpArgs(['--http', `--host=${host}`], {})).toThrow('loopback only');
+      expect(() => parseHttpArgs(['--http'], { CLAUDE_MEM_MCP_HTTP_HOST: host, CLAUDE_MEM_MCP_HTTP_TOKEN: 'secret' }))
+        .toThrow('loopback only');
     }
-    expect(parseHttpArgs(['--http', '--host=0.0.0.0'], {
-      CLAUDE_MEM_MCP_HTTP_TOKEN: ' secret ',
-    })).toEqual({ host: '0.0.0.0', port: 37790, token: 'secret' });
     for (const host of ['127.0.0.1', 'localhost', '::1']) {
       expect(parseHttpArgs(['--http', `--host=${host}`], {})?.host).toBe(host);
     }
+    expect(parseHttpArgs(['--http', '--host=[::1]'], {})?.host).toBe('::1');
   });
 
-  it('reads tokens only from the environment, never CLI flags', () => {
-    for (const args of [['--token=cli-secret'], ['--token', 'cli-secret']]) {
-      expect(parseHttpArgs(['--http', ...args], {})?.token).toBeUndefined();
-      expect(parseHttpArgs(['--http', ...args], {
-        CLAUDE_MEM_MCP_HTTP_TOKEN: 'env-secret',
-      })?.token).toBe('env-secret');
-      expect(() => parseHttpArgs(['--http', '--host=0.0.0.0', ...args], {}))
-        .toThrow('CLAUDE_MEM_MCP_HTTP_TOKEN');
-    }
+  it('has no token or LAN options', () => {
+    const parsed = parseHttpArgs(['--http', '--token=x', '--allowed-host=laptop.lan'], {
+      CLAUDE_MEM_MCP_HTTP_TOKEN: 'secret',
+      CLAUDE_MEM_MCP_HTTP_ALLOWED_HOSTS: 'laptop.lan',
+    });
+    expect(parsed).toEqual({ host: '127.0.0.1', port: 37790 });
   });
 });
 
@@ -127,44 +115,13 @@ describe('cwdFromRoots', () => {
 });
 
 describe('allowedHosts', () => {
-  it('includes loopback and bind hosts with and without the port', () => {
-    const hosts = allowedHosts('0.0.0.0', 1234);
-    for (const host of ['127.0.0.1', 'localhost', '[::1]', '0.0.0.0']) {
+  it('is the loopback names, with and without the port, and nothing else', () => {
+    const hosts = allowedHosts(1234);
+    for (const host of ['127.0.0.1', 'localhost', '[::1]']) {
       expect(hosts).toContain(host);
       expect(hosts).toContain(`${host}:1234`);
     }
-  });
-
-  it('adds the extra names clients use, brackets for IPv6', () => {
-    const hosts = allowedHosts('0.0.0.0', 1234, ['192.168.1.20', 'laptop.lan', 'fe80::1']);
-    for (const host of ['192.168.1.20', 'laptop.lan', '[fe80::1]']) {
-      expect(hosts).toContain(host);
-      expect(hosts).toContain(`${host}:1234`);
-    }
-    expect(allowedHosts('127.0.0.1', 1234)).not.toContain('laptop.lan');
-  });
-});
-
-describe('allowed hosts option', () => {
-  const base = ['--http', '--host=0.0.0.0'];
-  const env = { CLAUDE_MEM_MCP_HTTP_TOKEN: 'secret' };
-
-  it('collects repeated flags and a comma separated environment value', () => {
-    const parsed = parseHttpArgs(
-      [...base, '--allowed-host', 'Laptop.LAN', '--allowed-host=192.168.1.20'],
-      { ...env, CLAUDE_MEM_MCP_HTTP_ALLOWED_HOSTS: ' [fe80::1] , ,desk.lan ' },
-    );
-    expect(parsed?.allowedHosts).toEqual(['laptop.lan', '192.168.1.20', 'fe80::1', 'desk.lan']);
-  });
-
-  it('leaves the option out when nothing was given', () => {
-    expect(parseHttpArgs(base, env)).toEqual({ host: '0.0.0.0', port: 37790, token: 'secret' });
-  });
-
-  it('rejects values that are not host names', () => {
-    for (const bad of ['evil.example/path', 'a b', 'user@host', 'http://host']) {
-      expect(() => parseHttpArgs([...base, `--allowed-host=${bad}`], env)).toThrow('Invalid MCP HTTP allowed host');
-    }
+    expect(hosts).toHaveLength(6);
   });
 });
 
@@ -176,25 +133,5 @@ describe('headerCwd', () => {
     expect(headerCwd({ 'x-claude-mem-cwd': 'relative' })).toBeNull();
     expect(headerCwd({ other: firstDir })).toBeNull();
     expect(headerCwd(undefined)).toBeNull();
-  });
-});
-
-describe('isAuthorized', () => {
-  it('allows any authorization when no token is configured', () => {
-    for (const header of [undefined, 'Basic abc', 'Bearer wrong']) {
-      expect(isAuthorized(header, undefined)).toBe(true);
-    }
-  });
-
-  it('rejects missing, Basic, wrong, and different-length tokens', () => {
-    for (const header of [undefined, 'Basic secret', 'Bearer secrew', 'Bearer x', 'Bearer secret-long']) {
-      expect(isAuthorized(header, 'secret')).toBe(false);
-    }
-  });
-
-  it('accepts correct Bearer tokens with case-insensitive scheme', () => {
-    for (const header of ['Bearer secret', 'bearer secret', 'bEaReR secret']) {
-      expect(isAuthorized(header, 'secret')).toBe(true);
-    }
   });
 });

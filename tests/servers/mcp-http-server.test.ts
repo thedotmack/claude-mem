@@ -16,6 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { CWD_HEADER, startMcpHttpServer, type CwdResolver, type McpHttpHandle } from '../../src/servers/mcp-http.js';
 import { getRequestCwd, runWithCwd } from '../../src/servers/request-context.js';
+import type { WorkerOriginPolicy } from '../../src/services/worker/http/middleware.js';
 
 const temp = mkdtempSync(join(tmpdir(), 'cm-http-'));
 const projectA = join(temp, 'project-a');
@@ -42,22 +43,22 @@ function createFakeServer(resolveCwd: CwdResolver): Server {
   return server;
 }
 
+const ALLOWED_ORIGIN = 'http://allowed.test:8080';
+const originPolicy: WorkerOriginPolicy = { allowedOrigins: [ALLOWED_ORIGIN], workerHost: '' };
+
 let open: McpHttpHandle;
-let secured: McpHttpHandle;
-let lan: McpHttpHandle;
+let capped: McpHttpHandle;
 const clients: Client[] = [];
 
 beforeAll(async () => {
-  open = await startMcpHttpServer({ host: '127.0.0.1', port: 0, createServer: createFakeServer });
-  secured = await startMcpHttpServer({ host: '127.0.0.1', port: 0, token: 's3cret', createServer: createFakeServer });
-  lan = await startMcpHttpServer({ host: '127.0.0.1', port: 0, allowedHosts: ['lan.test'], createServer: createFakeServer });
+  open = await startMcpHttpServer({ host: '127.0.0.1', port: 0, originPolicy, createServer: createFakeServer });
+  capped = await startMcpHttpServer({ host: '127.0.0.1', port: 0, originPolicy, maxSessions: 2, createServer: createFakeServer });
 });
 
 afterAll(async () => {
   await Promise.allSettled(clients.map((c) => c.close()));
   await open.close();
-  await secured.close();
-  await lan.close();
+  await capped.close();
   rmSync(temp, { recursive: true, force: true });
 });
 
@@ -107,6 +108,32 @@ const INITIALIZE = {
 function parseRpc(text: string): any {
   const data = text.split('\n').find((line) => line.startsWith('data:'));
   return JSON.parse(data ? data.slice(5) : text);
+}
+
+/** A raw request, so the test controls Host and Origin (fetch does not let it set Host). */
+function raw(
+  handle: McpHttpHandle,
+  options: { path?: string; method?: string; headers?: Record<string, string>; body?: unknown },
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolveResponse, reject) => {
+    const req = request(
+      {
+        host: '127.0.0.1',
+        port: handle.port,
+        path: options.path ?? '/mcp',
+        method: options.method ?? 'POST',
+        headers: { ...JSON_HEADERS, ...options.headers },
+      },
+      (res) => {
+        let body = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => resolveResponse({ status: res.statusCode ?? 0, body }));
+      },
+    );
+    req.on('error', reject);
+    req.end(options.body === undefined ? undefined : JSON.stringify(options.body));
+  });
 }
 
 describe('mcp http server', () => {
@@ -162,37 +189,51 @@ describe('mcp http server', () => {
     expect(second).toBe(resolve(projectB));
   });
 
-  it('answers /health and 404s other paths', async () => {
+  it('rejects an X-Claude-Mem-Cwd that is relative or does not exist, instead of falling back', async () => {
+    for (const cwd of ['relative/dir', join(temp, 'nonexistent'), '']) {
+      const res = await raw(open, { headers: { [CWD_HEADER]: cwd }, body: INITIALIZE });
+      expect(res.status).toBe(400);
+      expect(res.body).toContain(CWD_HEADER);
+    }
+
+    const init = await fetch(`http://127.0.0.1:${open.port}/mcp`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, [CWD_HEADER]: projectA },
+      body: JSON.stringify(INITIALIZE),
+    });
+    const sessionId = init.headers.get('mcp-session-id')!;
+    await init.text();
+    const inSession = await raw(open, {
+      headers: { 'Mcp-Session-Id': sessionId, [CWD_HEADER]: 'relative/dir' },
+      body: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'whoami', arguments: {} } },
+    });
+    expect(inSession.status).toBe(400);
+  });
+
+  it('answers /health without revealing the session count, and 404s other paths', async () => {
     const health = await fetch(`http://127.0.0.1:${open.port}/health`);
     expect(health.status).toBe(200);
-    expect((await health.json()).status).toBe('ok');
+    expect(await health.json()).toEqual({ status: 'ok' });
     expect((await fetch(`http://127.0.0.1:${open.port}/nope`)).status).toBe(404);
   });
 
-  it('requires the bearer token when one is configured', async () => {
-    const denied = await fetch(`http://127.0.0.1:${secured.port}/mcp`, {
-      method: 'POST',
-      headers: JSON_HEADERS,
-      body: '{}',
-    });
-    expect(denied.status).toBe(401);
-    const client = await connect(secured, { Authorization: 'Bearer s3cret', [CWD_HEADER]: projectA });
-    expect(await whoami(client)).toBe(resolve(projectA));
+  it('rejects a foreign Host header (DNS rebinding) on /mcp and /health', async () => {
+    expect((await raw(open, { headers: { Host: 'evil.example' }, body: INITIALIZE })).status).toBe(403);
+    expect((await raw(open, { headers: { Host: `evil.example:${open.port}` }, body: INITIALIZE })).status).toBe(403);
+    expect((await raw(open, { path: '/health', method: 'GET', headers: { Host: 'evil.example' } })).status).toBe(403);
+    expect((await raw(open, { headers: { Host: `localhost:${open.port}` }, body: INITIALIZE })).status).toBe(200);
   });
 
-  it('rejects a foreign Host header (DNS rebinding) unless it is explicitly allowed', async () => {
-    const statusFor = (handle: McpHttpHandle, host: string) => new Promise<number>((resolveStatus, reject) => {
-      const req = request(
-        { host: '127.0.0.1', port: handle.port, path: '/mcp', method: 'POST', headers: { Host: host, ...JSON_HEADERS } },
-        (res) => { res.resume(); resolveStatus(res.statusCode ?? 0); },
-      );
-      req.on('error', reject);
-      req.end(JSON.stringify(INITIALIZE));
-    });
-    expect(await statusFor(open, 'evil.example')).toBe(403);
-    expect(await statusFor(lan, 'evil.example')).toBe(403);
-    expect(await statusFor(lan, 'lan.test')).toBe(200);
-    expect(await statusFor(lan, `lan.test:${lan.port}`)).toBe(200);
+  it('rejects a browser Origin other than an allowlisted one, on /mcp and /health', async () => {
+    for (const origin of ['http://evil.example', 'http://localhost:3000', 'null']) {
+      const res = await raw(open, { headers: { Origin: origin }, body: INITIALIZE });
+      expect(res.status).toBe(403);
+      expect(res.body).toContain('Origin');
+      expect((await raw(open, { path: '/health', method: 'GET', headers: { Origin: origin } })).status).toBe(403);
+    }
+    expect((await raw(open, { headers: { Origin: ALLOWED_ORIGIN }, body: INITIALIZE })).status).toBe(200);
+    // Local clients (Claude Code, opencode, curl) send no Origin at all.
+    expect((await raw(open, { body: INITIALIZE })).status).toBe(200);
   });
 
   it('rejects a session id it does not know', async () => {
@@ -202,5 +243,22 @@ describe('mcp http server', () => {
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(404);
+  });
+
+  it('refuses a new session with a clear 503 once the session cap is reached', async () => {
+    expect((await raw(capped, { body: INITIALIZE })).status).toBe(200);
+    expect((await raw(capped, { body: INITIALIZE })).status).toBe(200);
+    expect(capped.sessionCount()).toBe(2);
+    const refused = await raw(capped, { body: INITIALIZE });
+    expect(refused.status).toBe(503);
+    expect(refused.body).toContain('session limit');
+    expect(capped.sessionCount()).toBe(2);
+  });
+
+  it('refuses to listen on anything but loopback', async () => {
+    for (const host of ['0.0.0.0', '::', '192.168.1.20']) {
+      await expect(startMcpHttpServer({ host, port: 0, originPolicy, createServer: createFakeServer }))
+        .rejects.toThrow('loopback only');
+    }
   });
 });
