@@ -13,7 +13,7 @@ import {
 } from '../../src/services/worker/OpenRouterProvider.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
 import { logger } from '../../src/utils/logger.js';
-import { OBSERVER_REASONING_BUDGET_TOKENS } from '../../src/services/worker/reasoning-budget.js';
+import { OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT } from '../../src/services/worker/reasoning-budget.js';
 
 // CLAUDE_MEM_OPENROUTER_REASONING_EFFORT (#3001, #2995): a typed reasoning
 // control for openrouter.ai. Unset disables reasoning on openrouter.ai and the
@@ -37,12 +37,15 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
       .toBeUndefined();
   });
 
-  it('maps none to enabled:false and every other value to effort', () => {
+  it('maps none to enabled:false and every other value to that effort\'s reasoning token budget', () => {
     expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: 'none' }).reasoning)
       .toEqual({ enabled: false });
+    // OpenRouter takes `effort` or `max_tokens` in `reasoning`, never both;
+    // only `max_tokens` is a cap the provider enforces.
+    expect(OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT).toEqual({ minimal: 455, low: 1024, medium: 4096, high: 16384 });
     for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
       expect(buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort }).reasoning)
-        .toEqual({ effort });
+        .toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[effort] });
     }
   });
 
@@ -60,7 +63,7 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
       reasoningEffort: 'low',
       extraBody: { reasoning: { effort: 'high' }, provider: { sort: 'price' } },
     });
-    expect(body.reasoning).toEqual({ effort: 'low' });
+    expect(body.reasoning).toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT.low });
     expect(body.provider).toEqual({ sort: 'price' });
   });
 
@@ -89,7 +92,7 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     const observation = buildOpenRouterRequestBody({
       ...base, apiUrl: OPENROUTER_URL, label: { kind: 'observation', sessionId: 'session-1' }, reasoningEffort: 'high',
     });
-    expect(observation.reasoning).toEqual({ effort: 'high' });
+    expect(observation.reasoning).toEqual({ max_tokens: OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT.high });
   });
 
   it('leaves a custom gateway field condensation to its own extra body', () => {
@@ -106,10 +109,23 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
 });
 
 describe('reasoning gets its own budget, separate from the answer', () => {
-  it('adds the reasoning budget on top of the answer cap only when a typed effort turns reasoning on', () => {
+  it('caps reasoning itself and keeps max_tokens at answer plus reasoning when a typed effort turns reasoning on', () => {
     for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
       const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort });
-      expect(body.max_tokens).toBe(base.maxOutputTokens + OBSERVER_REASONING_BUDGET_TOKENS);
+      const reasoningBudget = OBSERVER_REASONING_BUDGET_TOKENS_BY_EFFORT[effort];
+      expect(body.reasoning).toEqual({ max_tokens: reasoningBudget });
+      expect(body.max_tokens).toBe(base.maxOutputTokens + reasoningBudget);
+    }
+  });
+
+  it('gives an effort-only model the typed effort back at the default answer cap', () => {
+    // OpenRouter turns a reasoning budget into effort as its share of max_tokens:
+    // minimal 10%, low 20%, medium 50%, high 80%.
+    const documentedShares = { minimal: 0.1, low: 0.2, medium: 0.5, high: 0.8 } as const;
+    for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
+      const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort });
+      const share = (body.reasoning as { max_tokens: number }).max_tokens / (body.max_tokens as number);
+      expect(Math.abs(share - documentedShares[effort])).toBeLessThan(0.001);
     }
   });
 
