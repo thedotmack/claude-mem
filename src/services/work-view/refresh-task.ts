@@ -11,8 +11,8 @@
 
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
-import { isAbsolute, join, relative, resolve } from 'path';
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import type { AgentTask, AskAgent } from '../agent-runner/run.js';
 import { runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
@@ -35,11 +35,51 @@ export interface RefreshTaskOptions {
   spawnImpl?: typeof spawn;
 }
 
+/** The path with every existing folder on it resolved through symlinks, so a link cannot lead out of a folder. */
+function realPath(path: string): string {
+  const missing: string[] = [];
+  let existing = resolve(path);
+  while (!existsSync(existing) && dirname(existing) !== existing) { missing.unshift(basename(existing)); existing = dirname(existing); }
+  return join(realpathSync(existing), ...missing);
+}
+
+/** Only an absolute path counts: a relative one would be read against the agent's working folder, not `parent`. */
+const isWithin = (child: string, parent: string) => {
+  if (!isAbsolute(child)) return false;
+  const path = relative(realPath(parent), realPath(child));
+  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
+};
+
 const quoted = (path: string) => [path, `"${path}"`, `'${path}'`];
 
+/**
+ * The options a script may take. A `path` option's value must sit inside
+ * `within`; any other option or argument is refused, abbreviations included
+ * (argparse would read `--ou` as `--out`).
+ */
+export interface ScriptArguments { within: string; options: Record<string, 'path' | 'value' | 'switch'> }
+export type RefreshProgram = [bin: string, path: string, args?: ScriptArguments];
+
+/** Shell words of an operator-free command: "a b", 'a b' or a bare word. */
+const shellWords = (text: string) => [...text.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(match => match[1] ?? match[2] ?? match[3]);
+
+function checkScriptArguments(words: string[], { within, options }: ScriptArguments): string | null {
+  for (let index = 0; index < words.length; index++) {
+    const [name, inlineValue] = words[index].startsWith('--') && words[index].includes('=') ? [words[index].slice(0, words[index].indexOf('=')), words[index].slice(words[index].indexOf('=') + 1)] : [words[index], undefined];
+    const kind = options[name];
+    if (!kind) return `This script takes only ${Object.keys(options).join(', ')}, spelled out in full.`;
+    if (kind === 'switch') { if (inlineValue !== undefined) return `${name} takes no value.`; continue; }
+    const value = inlineValue ?? words[++index];
+    if (value === undefined || value.startsWith('-')) return `${name} needs a value.`;
+    if (kind === 'path' && !isWithin(value, within)) return `${name} must name a file inside ${within}.`;
+  }
+  return null;
+}
+
 /** Bash may run only the skills' own scripts, one command per call, with JSON
- * passed through a quoted heredoc. Returns null when allowed. */
-export function checkRefreshCommand(command: string, programs: Array<[string, string]>): string | null {
+ * passed through a quoted heredoc. A script with `args` takes only those
+ * options, and its file paths stay inside their folder. Returns null when allowed. */
+export function checkRefreshCommand(command: string, programs: RefreshProgram[]): string | null {
   const text = command.trim();
   const heredocAt = text.indexOf('<<');
   const head = (heredocAt === -1 ? text : text.slice(0, heredocAt)).trim();
@@ -48,6 +88,12 @@ export function checkRefreshCommand(command: string, programs: Array<[string, st
     return `Only these commands may run here, called by their full path: ${programs.map(([bin, path]) => `${bin} "${path}"`).join(', ')}.`;
   }
   if (/[;&|`$><\n\\]/.test(head)) return 'Run one command per call, without shell operators, variables or redirects.';
+  const program = programs.find(([bin, path]) => quoted(path).some(form => head === `${bin} ${form}` || head.startsWith(`${bin} ${form} `)))!;
+  if (program[2]) {
+    const prefix = quoted(program[1]).map(form => `${program[0]} ${form}`).find(form => head === form || head.startsWith(`${form} `))!;
+    const problem = checkScriptArguments(shellWords(head.slice(prefix.length)), program[2]);
+    if (problem) return problem;
+  }
   if (heredocAt === -1) return null;
   const lines = text.slice(heredocAt).split('\n');
   const delimiter = /^<<-?\s*(?:'(\w+)'|"(\w+)")\s*$/.exec(lines[0]);
@@ -60,10 +106,6 @@ export function checkRefreshCommand(command: string, programs: Array<[string, st
   return null;
 }
 
-const isWithin = (child: string, parent: string) => {
-  const path = relative(parent, resolve(child));
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-};
 
 function skillPaths(pluginRoot: string) {
   const skills = join(pluginRoot, 'skills');
@@ -100,7 +142,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const spawnImpl = options.spawnImpl ?? spawn;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
-  const programs: Array<[string, string]> = [['bun', paths.cli], ['python3', paths.exportScript], ['python3', paths.saveScript]];
+  // The owner-goals scripts write and read their files only in today's goals folder (--out, --goals, --prompts, --map).
+  const programs: RefreshProgram[] = [
+    ['bun', paths.cli],
+    ['python3', paths.exportScript, { within: goalsFolder, options: { '--out': 'path', '--days': 'value', '--start': 'value', '--end': 'value' } }],
+    ['python3', paths.saveScript, { within: goalsFolder, options: { '--goals': 'path', '--prompts': 'path', '--map': 'path', '--start': 'value', '--end': 'value', '--dry-run': 'switch' } }],
+  ];
 
   const prompt = [
     'You are claude-mem\'s automatic refresh for My Work. You run in the background on the owner\'s computer with read-only tools; nobody is watching, so never ask a question.',

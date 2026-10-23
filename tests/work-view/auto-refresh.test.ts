@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
@@ -151,7 +151,33 @@ describe('refresh task', () => {
     expect(claudeCode.checkTool('Edit', { file_path: join(goalsFolder, 'owner-map.md') })).toMatch(/not available/);
     expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__timeline', {})).toBe(true);
     expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__rebuild_corpus', {})).toMatch(/not available/);
+    // The owner-goals scripts' file options are pinned to today's goals folder.
+    const exportScript = '/plugin/skills/owner-goals/scripts/export_owner_prompts.py', saveScript = '/plugin/skills/owner-goals/scripts/save_goals.py';
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}" --days 31` })).toBe(true);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals "${goalsFolder}/owner-goals.json" --prompts "${goalsFolder}/owner-prompts.md" --map "${goalsFolder}/owner-map.md" --dry-run` })).toBe(true);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out=${goalsFolder}` })).toBe(true);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "/Users/someone/repo" --days 31` })).toMatch(/inside/);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}/../../.."` })).toMatch(/inside/);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out owner-goals` })).toMatch(/inside/);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --ou /elsewhere` })).toMatch(/spelled out in full/);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out` })).toMatch(/needs a value/);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals "${goalsFolder}/owner-goals.json" --prompts /etc/passwd` })).toMatch(/inside/);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" extra-positional` })).toMatch(/spelled out in full/);
     expect(claudeCode.checkTool('WebFetch', {})).toMatch(/not available/);
+  });
+
+  it('a symlink inside the goals folder cannot carry a write outside it', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-jail-'));
+    try {
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: join(dir, 'work-view'), pluginRoot: '/plugin', openDatabase: handle(fixtureDatabase()), now: () => NOW });
+      const goalsFolder = join(dir, 'work-view', 'owner-goals', new Date(NOW).toLocaleDateString('en-CA'));
+      mkdirSync(goalsFolder, { recursive: true });
+      mkdirSync(join(dir, 'outside'));
+      symlinkSync(join(dir, 'outside'), join(goalsFolder, 'link'));
+      expect(task.claudeCode.checkTool('Write', { file_path: join(goalsFolder, 'owner-map.md') })).toBe(true);
+      expect(task.claudeCode.checkTool('Write', { file_path: join(goalsFolder, 'link', 'x.md') })).toMatch(/only inside/);
+      expect(task.claudeCode.checkTool('Bash', { command: `python3 "/plugin/skills/owner-goals/scripts/export_owner_prompts.py" --out "${join(goalsFolder, 'link')}"` })).toMatch(/inside/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
   it('Codex/Gemini (read-only): the worker groups, reviews and retells from the agent\'s JSON through the validators', async () => {
