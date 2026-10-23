@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { renderMemoryContent, projectMemoryContent, progressiveSearchToolResult, progressiveSearchToolError, type ProgressiveSearch, ProgressiveBackend, ProgressiveSearchInput, ProgressiveSearchResult, MemoryIndexRow } from '../../src/shared/progressive-search.js';
+import { WorkerRequestTimeoutError } from '../../src/shared/worker-request-timeout-error.js';
 
 type Engine = typeof ProgressiveSearch;
 const row = (id: string, title = 'Authentication fix', project = 'fixture', kind: MemoryIndexRow['kind'] = 'observation'): MemoryIndexRow => ({ id, title, project, kind, createdAt: 1000, type: 'decision' });
@@ -132,6 +133,22 @@ export async function runProgressiveSearchCases(Implementation: Engine): Promise
     assert.match(result.content[0].text, /Memory retrieval failed/);
     assert.match(result.content[0].text, /Next: retry dumb_search/);
     assert(!result.content[0].text.includes('PRIVATE_'));
+
+    const timeoutResult = progressiveSearchToolError(new WorkerRequestTimeoutError(30000));
+    assert.equal(timeoutResult.isError, true);
+    assert.match(timeoutResult.content[0].text, /The local worker did not answer within 30000ms\./);
+    assert.match(timeoutResult.content[0].text, /Next: retry dumb_search/);
+
+    // Only the typed worker-client timeout is disclosed; backend text that also says "timed out" stays masked.
+    for (const backendTimeout of [
+      new Error('chroma-mcp timed out after 5000ms: PRIVATE_x'),
+      new Error('Request timed out after 30000ms PRIVATE_y'),
+    ]) {
+      const masked = progressiveSearchToolError(backendTimeout);
+      assert.match(masked.content[0].text, /Memory retrieval failed/);
+      assert(!masked.content[0].text.includes('PRIVATE_'));
+      assert(!masked.content[0].text.includes('timed out'));
+    }
   });
   await check(async () => {
     const projected = projectMemoryContent({ narrative: 'x'.repeat(40000) });

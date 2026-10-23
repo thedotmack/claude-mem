@@ -56,6 +56,11 @@
     "openclaw",
     "omp",
     "hermes",
+    "ods/README.md",
+    "ods/install.mjs",
+    "ods/native",
+    "ods/patches",
+    "ods/service",
     "pi",
     "dsh",
     "NOTICE"

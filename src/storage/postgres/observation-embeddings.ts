@@ -15,7 +15,7 @@ const SUMMARY_FIELDS = ['request', 'investigated', 'learned', 'completed', 'next
  * observations carry a few (33 at most in a 39k-row store), but a
  * /v1/memories request can send thousands in its metadata.
  */
-const MAX_FACT_PARTS = 64;
+export const MAX_FACT_PARTS = 64;
 
 /**
  * The texts embedded for one observation row, one vector each.

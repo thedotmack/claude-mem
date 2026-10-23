@@ -8,6 +8,7 @@
 // startup in the generation worker, or in a server that has none.
 
 import { availableParallelism } from 'os';
+import pg from 'pg';
 import type { PostgresQueryable } from '../../storage/postgres/utils.js';
 import type { VectorSchemaMode } from '../../storage/postgres/schema.js';
 import {
@@ -133,15 +134,66 @@ export async function getVectorSearchStatus(
   };
 }
 
+/**
+ * How long a request waits for the embedding model to finish loading. A
+ * server outside Docker downloads the model at first use, which can take
+ * minutes or never finish behind a firewall; past this, the request goes on
+ * without vectors (keyword-only search, or a write the backfill embeds later)
+ * while the load carries on in the background.
+ */
+export const EMBEDDER_READY_WAIT_MS = 2_000;
+
+/**
+ * Whether the embedder can embed now, waiting at most `waitMs` for its model
+ * to load, and no longer than until `signal` aborts.
+ */
+async function embedderReadyWithin(embedder: Embedder, waitMs: number, signal?: AbortSignal): Promise<boolean> {
+  if (!embedder.isReady || !embedder.warm || embedder.isReady()) return true;
+  const warming = embedder.warm();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const giveUp = new Promise<boolean>(resolve => {
+    if (waitMs !== Infinity) timer = setTimeout(() => resolve(false), waitMs);
+    if (signal) {
+      onAbort = () => resolve(false);
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  try {
+    return await Promise.race([warming, giveUp]);
+  } finally {
+    clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
+  }
+}
+
+/**
+ * At startup, when search by meaning is on: begin loading the model in the
+ * background, so the first save or search does not wait for the download.
+ */
+export async function warmSharedEmbedder(client: PostgresQueryable): Promise<void> {
+  if (!(await vectorSearchOn(client))) return;
+  const embedder = getSharedEmbedder();
+  void embedder.warm?.().then(ready => {
+    if (!ready) logger.warn('SYSTEM', 'the embedding model did not load; search is keyword-only until it does');
+  });
+}
+
 /** The query's vector and its model, or null when search should stay keyword-only. */
 export async function embedSearchQuery(
   client: PostgresQueryable,
   query: string | null | undefined,
   embedder: Embedder = getSharedEmbedder(),
+  options: { waitForModelMs?: number } = {},
 ): Promise<{ vector: Float32Array; model: string } | null> {
   if (!query || query.trim().length === 0) return null;
   try {
     if (!(await vectorSearchOn(client))) return null;
+    if (!(await embedderReadyWithin(embedder, options.waitForModelMs ?? EMBEDDER_READY_WAIT_MS))) {
+      logger.debug('SYSTEM', 'embedding model still loading; searching by keyword only');
+      return null;
+    }
     const [vector] = await embedder.embed([query], 'query');
     lastEmbedError = null;
     return vector ? { vector, model: embedder.modelId } : null;
@@ -170,10 +222,15 @@ export async function embedObservationRows(
   client: PostgresQueryable,
   rows: Array<{ kind: string; metadata: Record<string, unknown>; content: string }>,
   embedder: Embedder = getSharedEmbedder(),
+  options: { waitForModelMs?: number } = {},
 ): Promise<EmbeddedParts[] | null> {
   if (rows.length === 0) return [];
   try {
     if (!(await vectorSearchOn(client))) return null;
+    if (!(await embedderReadyWithin(embedder, options.waitForModelMs ?? EMBEDDER_READY_WAIT_MS))) {
+      logger.debug('SYSTEM', 'embedding model still loading; rows are written without vectors for the backfill');
+      return null;
+    }
     const partsPerRow = rows.map(row => observationEmbeddingParts(row.kind, row.metadata, row.content));
     const vectors = await embedder.embed(partsPerRow.flat().map(p => p.text));
     lastEmbedError = null;
@@ -201,19 +258,34 @@ export async function backfillMissingEmbeddings(
   options: { batchSize?: number; embedder?: Embedder; signal?: AbortSignal } = {},
 ): Promise<{ observations: number; parts: number }> {
   if (!(await vectorSearchOn(client))) return { observations: 0, parts: 0 };
+  const embedder = options.embedder ?? getSharedEmbedder();
+  // Wait for the model before taking the lock, so a slow first download holds
+  // nothing, and so rows written while it loaded are still ahead of the scan.
+  // A stop (the server shutting down) ends the wait.
+  if (!(await embedderReadyWithin(embedder, Infinity, options.signal))) {
+    if (!options.signal?.aborted) {
+      logger.warn('SYSTEM', 'embedding model did not load; the backfill resumes at the next start');
+    }
+    return { observations: 0, parts: 0 };
+  }
   // One process backfills at a time: generation workers can run as several
   // processes, and each would otherwise embed the same missing rows. The lock
-  // is a session-level advisory lock, held on a connection of its own while
-  // the backfill runs; a process that finds it taken leaves the work to the
-  // one holding it.
-  const pooled = typeof (client as { connect?: unknown }).connect === 'function'
-    && typeof (client as { release?: unknown }).release !== 'function';
+  // is a session-level advisory lock, so it needs one connection for the
+  // whole backfill, which can run for hours. From a pool, that connection is
+  // a client of its own, opened with the pool's settings and outside it, so
+  // the backfill never takes a pool connection from requests for longer than
+  // one read or write; a process that finds the lock taken leaves the work to
+  // the one holding it.
   let lockClient: PostgresQueryable = client;
-  let release: (() => void) | null = null;
-  if (pooled) {
-    const connection = await (client as unknown as { connect(): Promise<PostgresQueryable & { release(): void }> }).connect();
-    lockClient = connection;
-    release = () => connection.release();
+  let closeLockClient: (() => Promise<void>) | null = null;
+  if (isPool(client)) {
+    const dedicated = new pg.Client(client.options);
+    dedicated.on('error', (error: Error) => {
+      logger.warn('SYSTEM', 'embedding backfill lock connection failed', { error: error.message });
+    });
+    await dedicated.connect();
+    lockClient = dedicated;
+    closeLockClient = () => dedicated.end();
   }
   try {
     const lock = await lockClient.query<{ locked: boolean }>(`SELECT pg_try_advisory_lock(${BACKFILL_LOCK_KEY}) AS locked`);
@@ -222,14 +294,22 @@ export async function backfillMissingEmbeddings(
       return { observations: 0, parts: 0 };
     }
     try {
-      // On the locked connection itself: a pool of one has no other.
-      return await embedMissingObservations(lockClient, options);
+      // Reads and writes go through the pool (or the caller's own client).
+      return await embedMissingObservations(client, { ...options, embedder });
     } finally {
       await lockClient.query(`SELECT pg_advisory_unlock(${BACKFILL_LOCK_KEY})`);
     }
   } finally {
-    release?.();
+    await closeLockClient?.();
   }
+}
+
+/** A pg.Pool, as opposed to a single client or a client checked out of a pool. */
+function isPool(client: PostgresQueryable): client is PostgresQueryable & { options: pg.ClientConfig } {
+  const candidate = client as { connect?: unknown; release?: unknown; options?: unknown };
+  return typeof candidate.connect === 'function'
+    && typeof candidate.release !== 'function'
+    && typeof candidate.options === 'object';
 }
 
 const BACKFILL_LOCK_KEY = `hashtext('claude-mem observation embedding backfill')`;
@@ -252,13 +332,13 @@ async function embedMissingObservations(
     const last = rows[rows.length - 1]!;
     after = { createdAt: last.createdAt, id: last.id };
 
-    let embedded: Array<EmbeddedParts | null> | null = await embedObservationRows(client, rows, embedder);
+    let embedded: Array<EmbeddedParts | null> | null = await embedObservationRows(client, rows, embedder, { waitForModelMs: Infinity });
     if (!embedded) {
       // Retry a failed batch a row at a time, so a row the model cannot embed
       // is skipped instead of stopping every row after it at each start. If
       // every row fails, the fault is not the rows'; stop until the next start.
       embedded = [];
-      for (const row of rows) embedded.push((await embedObservationRows(client, [row], embedder))?.[0] ?? null);
+      for (const row of rows) embedded.push((await embedObservationRows(client, [row], embedder, { waitForModelMs: Infinity }))?.[0] ?? null);
       if (embedded.every(parts => parts === null)) break;
     }
     if (options.signal?.aborted) break;

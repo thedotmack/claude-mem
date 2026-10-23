@@ -8,7 +8,7 @@ import { FormattingService } from '../../src/services/worker/FormattingService.j
 import { TimelineService } from '../../src/services/worker/TimelineService.js';
 import { ProgressiveMemorySearch } from '../../src/services/worker/ProgressiveMemorySearch.js';
 import { SearchRoutes } from '../../src/services/worker/http/routes/SearchRoutes.js';
-import { progressiveSearchToolResult, PROGRESSIVE_RESPONSE_BYTES } from '../../src/shared/progressive-search.js';
+import { progressiveSearchToolResult, PROGRESSIVE_RESPONSE_BYTES, type MemoryIndexRow } from '../../src/shared/progressive-search.js';
 
 describe('worker Dumb search with real SQLite fixtures', () => {
   let db: Database;
@@ -151,6 +151,158 @@ describe('worker Dumb search with real SQLite fixtures', () => {
       expect(() => JSON.parse(payload.content[0].text)).toThrow();
     } finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+});
+
+describe('worker timeline context window', () => {
+  let db: Database;
+  let store: SessionStore;
+  let manager: SearchManager;
+  let progressive: ProgressiveMemorySearch;
+  const project = 'timeline-window-fixture';
+  const decoyProject = 'timeline-window-decoy';
+  const base = Date.UTC(2026, 9, 8, 12, 0, 0);
+  type SeedRow = { id: number; kind: MemoryIndexRow['kind']; epoch: number; title: string; type: string | null };
+  let seeded: SeedRow[];
+
+  function observation(title: string, timestamp: number, target = project): SeedRow {
+    const memory = store.getOrCreateManualSession(target);
+    const id = store.storeObservation(memory, target, {
+      type: 'decision', title, subtitle: null, narrative: title, facts: [], concepts: [], files_read: [], files_modified: [],
+    }, 1, 0, timestamp).id;
+    return { id, kind: 'observation', epoch: timestamp, title, type: 'decision' };
+  }
+  function summary(request: string, timestamp: number): SeedRow {
+    const memory = store.getOrCreateManualSession(project);
+    const id = store.storeSummary(memory, project, {
+      request, investigated: '', learned: '', completed: '', next_steps: '', notes: null,
+    }, 1, 0, timestamp).id;
+    return { id, kind: 'summary', epoch: timestamp, title: request, type: null };
+  }
+  function prompt(text: string, timestamp: number, promptNumber: number): SeedRow {
+    const memory = store.getOrCreateManualSession(project);
+    const session = store.db.prepare('SELECT id, content_session_id FROM sdk_sessions WHERE memory_session_id = ?')
+      .get(memory) as { id: number; content_session_id: string };
+    const id = store.saveUserPrompt(session.content_session_id, promptNumber, text, session.id);
+    // The store stamps prompts with "now"; this fixture needs controlled epochs.
+    store.db.prepare('UPDATE user_prompts SET created_at_epoch = ? WHERE id = ?').run(timestamp, id);
+    return { id, kind: 'prompt', epoch: timestamp, title: text.slice(0, 160), type: null };
+  }
+
+  beforeEach(() => {
+    db = new Database(':memory:');
+    store = new SessionStore(db);
+    manager = new SearchManager(new SessionSearch(db), store, null, new FormattingService(), new TimelineService());
+    progressive = new ProgressiveMemorySearch(manager, store);
+    // Every kind shares epochs with the others so ties and kind ordering decide
+    // the window, not insertion order.
+    seeded = [
+      observation('Authentication earliest', base - 3000),
+      observation('Authentication tied before a', base - 2000),
+      observation('Authentication tied before b', base - 2000),
+      summary('Authentication summary before', base - 2000),
+      observation('Authentication just before', base - 1000),
+      prompt('Authentication prompt before', base - 1000, 1),
+      observation('Authentication anchor', base),
+      observation('Authentication anchor sibling', base),
+      summary('Authentication summary at anchor', base),
+      prompt('Authentication prompt at anchor', base, 2),
+      observation('Authentication just after', base + 1000),
+      prompt('Authentication prompt after', base + 1000, 3),
+      observation('Authentication tied after a', base + 2000),
+      observation('Authentication tied after b', base + 2000),
+      summary('Authentication summary after', base + 2000),
+      observation('Authentication latest', base + 3000),
+    ];
+    observation('Authentication decoy', base, decoyProject);
+  });
+
+  afterEach(() => db.close());
+
+  const pick = (title: string) => seeded.find(row => row.title === title)!;
+  const refId = (row: { id: number; kind: MemoryIndexRow['kind'] }) =>
+    row.kind === 'summary' ? `S${row.id}` : row.kind === 'prompt' ? `P${row.id}` : String(row.id);
+  const asIndexRow = (row: SeedRow): MemoryIndexRow =>
+    ({ id: refId(row), kind: row.kind, project, title: row.title, createdAt: row.epoch, type: row.type });
+  const orderKey = (row: { id: number; kind: MemoryIndexRow['kind']; epoch: number }) => [row.epoch, row.kind, row.id] as const;
+  const compareKeys = (a: readonly [number, string, number], b: readonly [number, string, number]) =>
+    a[0] - b[0] || (a[1] < b[1] ? -1 : a[1] > b[1] ? 1 : 0) || a[2] - b[2];
+
+  it('bounds each timeline union arm instead of materialising the project', async () => {
+    // A project large enough that an unbounded arm has to read all of it.
+    for (let i = 0; i < 300; i++) observation(`Authentication filler ${i}`, base + 10_000 + i * 7);
+    const captured: string[] = [];
+    const originalPrepare = db.prepare.bind(db);
+    (db as unknown as { prepare: Database['prepare'] }).prepare = ((sql: string, ...rest: unknown[]) => {
+      if (sql.includes('memory_index')) captured.push(sql);
+      return (originalPrepare as (...args: unknown[]) => unknown)(sql, ...rest);
+    }) as unknown as Database['prepare'];
+    try {
+      const response = await progressive.run({ query: 'authentication', project, limit: 8, maxDetails: 2 });
+      expect(response.trace.map(row => row.operation)).toContain('timeline');
+    } finally {
+      (db as unknown as { prepare: Database['prepare'] }).prepare = originalPrepare as unknown as Database['prepare'];
+    }
+    expect(captured.length).toBeGreaterThan(0);
+
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${captured[0]}`).all() as Array<{ id: number; parent: number; detail: string }>;
+    const byParent = new Map<number, Array<{ id: number; parent: number; detail: string }>>();
+    for (const row of plan) byParent.set(row.parent, [...(byParent.get(row.parent) ?? []), row]);
+    const subtree = (id: number): Array<{ detail: string }> => (byParent.get(id) ?? [])
+      .flatMap(child => [child, ...subtree(child.id)]);
+    // LEFT-MOST SUBQUERY + one UNION ALL per remaining arm.
+    const arms = plan.filter(row => row.detail === 'LEFT-MOST SUBQUERY' || row.detail === 'UNION ALL');
+    expect(arms).toHaveLength(3);
+    // What this PR guarantees: the LIMIT lives inside each arm, so SQLite plans
+    // each arm as its own bounded subquery (a CO-ROUTINE node) that stops after
+    // `limit` rows instead of streaming every matching row of the project into
+    // the CTE. An arm without an internal LIMIT has no such node.
+    //
+    // Deliberately not pinned: how an arm sorts. Whether a `USE TEMP B-TREE`
+    // node appears depends on which index the planner picks for the arm's
+    // ORDER BY, so requiring (or forbidding) one would turn this test red when a
+    // better index is added later. Sorting is not what this test claims.
+    //
+    // Honest limit of the guarantee: the `user_prompts` arm still gathers the
+    // project's prompts. Its project filter lives on the joined `sdk_sessions`,
+    // and `user_prompts` has no `(session_db_id, created_at_epoch)` index that
+    // could bound it by project; adding that index is deliberately out of scope.
+    const boundedArms = arms.map(arm => subtree(arm.id))
+      .filter(nodes => nodes.some(node => node.detail.startsWith('CO-ROUTINE (subquery')));
+    expect(boundedArms).toHaveLength(3);
+  });
+
+  it('returns exactly the boundary window rows for matched and mismatched anchors', () => {
+    const timeline = progressive as unknown as {
+      timeline(anchor: MemoryIndexRow, before: number, after: number): MemoryIndexRow[];
+    };
+    const anchors: Array<{ id: number; kind: MemoryIndexRow['kind']; epoch: number; title: string; type: string | null }> = [
+      pick('Authentication anchor'),
+      pick('Authentication summary at anchor'),
+      pick('Authentication prompt at anchor'),
+      pick('Authentication earliest'),
+      pick('Authentication latest'),
+      // An anchor that is not a stored row still windows by the same tuple.
+      { id: 4242, kind: 'prompt', epoch: base, title: 'Phantom anchor', type: null },
+    ];
+    const windows: Array<[number, number]> = [[3, 3], [1, 3], [3, 1], [0, 2], [2, 0]];
+    for (const anchor of anchors) {
+      const anchorKey = orderKey(anchor);
+      const sorted = [...seeded].sort((a, b) => compareKeys(orderKey(a), orderKey(b)));
+      const below = sorted.filter(row => compareKeys(orderKey(row), anchorKey) < 0);
+      const above = sorted.filter(row => compareKeys(orderKey(row), anchorKey) > 0);
+      for (const [before, after] of windows) {
+        const anchorRow: MemoryIndexRow = {
+          id: refId(anchor), kind: anchor.kind, project, title: anchor.title, createdAt: anchor.epoch, type: anchor.type,
+        };
+        const expected = [
+          ...(before ? below.slice(-before) : []).map(asIndexRow),
+          anchorRow,
+          ...above.slice(0, after).map(asIndexRow),
+        ];
+        expect(timeline.timeline(anchorRow, before, after)).toEqual(expected);
+      }
     }
   });
 });

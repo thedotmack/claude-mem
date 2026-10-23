@@ -4,6 +4,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 
 import { hookLauncherCheck, probeChromaDiagnostics, treeSitterCliCheck } from '../../src/npx-cli/commands/doctor.js';
+import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 
 // `npx claude-mem doctor` reads the worker's /api/admin/doctor `health.chroma`
 // block (#3362). These rows are optional: a missing, malformed or unreachable
@@ -220,7 +221,7 @@ describe.skipIf(process.platform === 'win32')('npx doctor hook launcher', () => 
     runningCli = join(cliDir, 'index.js');
     executable(runningCli, '13.41.0');
     symlinkSync('../claude-mem/dist/npx-cli/index.js', join(npxBin, 'claude-mem'));
-    executable(join(launcherDir, 'claude-mem'), '1');
+    executable(join(launcherDir, 'claude-mem'), String(LAUNCHER_PROTOCOL));
   });
 
   afterEach(() => {

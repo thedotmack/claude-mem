@@ -13,6 +13,7 @@ import {
 import {
   backfillMissingEmbeddings,
   capEmbedderThreadsForBackfill,
+  embedObservationRows,
   embedSearchQuery,
   getSharedEmbedder,
   getVectorSearchStatus,
@@ -273,6 +274,31 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     expect(results.length).toBe(150);
   });
 
+  it('finds an observation by meaning when fact-heavy observations fill the nearest-parts cutoff', async () => {
+    // Seven observations of 64 facts each: 448 parts, all nearer the query
+    // than "backup", more than the 400 nearest parts read at first.
+    await pool.query(
+      `INSERT INTO observations (id, project_id, team_id, content)
+       SELECT 'heavy-' || g, $1, $2, 'unrelated row ' || g FROM generate_series(1, 7) AS g`,
+      [projectId, teamId],
+    );
+    await pool.query(
+      `INSERT INTO observation_embeddings (observation_id, project_id, team_id, part, model, embedding)
+       SELECT 'heavy-' || g, $1, $2, 'fact_' || f, 'test',
+         ('[' || array_to_string(array_fill(0, ARRAY[5]) || 1 || array_fill(0, ARRAY[94])
+           || (0.0001 * (g * 64 + f)) || array_fill(0, ARRAY[283]), ',') || ']')::vector
+       FROM generate_series(1, 7) AS g, generate_series(0, 63) AS f`,
+      [projectId, teamId],
+    );
+    const query = axis(5);
+    query[3] = 0.5;
+    const results = await new PostgresObservationRepository(pool)
+      .search({ projectId, teamId, query: 'zzqx nothing matches this', queryEmbedding: { vector: query, model: 'test' } });
+    const found = results.map(row => row.id);
+    expect(found.filter(id => id.startsWith('heavy-')).length).toBe(7);
+    expect(found).toContain(ids.backup);
+  });
+
   it('searches with a limit whose nearest-part count exceeds pgvector\'s ef_search maximum', async () => {
     // 4 x 300 nearest parts would ask for ef_search 1200; pgvector allows 1000.
     const results = await new PostgresObservationRepository(pool)
@@ -387,6 +413,70 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
       .toEqual({ observations: 0, parts: 0 });
     const resumed: Embedder = { modelId: 'next', dims: 384, embed: async texts => texts.map(() => axis(1)) };
     expect(await backfillMissingEmbeddings(pool, { embedder: resumed })).toEqual({ observations: 3, parts: 3 });
+  });
+
+  it('leaves the pool\'s connections to requests while it backfills', async () => {
+    // A pool of one: the advisory lock must not hold its only connection.
+    const single = new pg.Pool({ connectionString: testDatabaseUrl, max: 1, options: `-c search_path=${schemaName},public` });
+    try {
+      let requestServed = false;
+      const embedder: Embedder = {
+        modelId: 'next',
+        dims: 384,
+        embed: async texts => {
+          // A request arriving mid-backfill gets a connection at once.
+          const timeout = new Promise<never>((_, reject) => setTimeout(() => reject(new Error('request starved')), 2_000));
+          await Promise.race([single.query('SELECT 1'), timeout]);
+          requestServed = true;
+          return texts.map(() => axis(1));
+        },
+      };
+      expect(await backfillMissingEmbeddings(single, { embedder })).toEqual({ observations: 3, parts: 3 });
+      expect(requestServed).toBe(true);
+    } finally {
+      await single.end();
+    }
+  }, 10_000);
+
+  it('does not wait for a model that is still loading on a search or a save', async () => {
+    let embedCalls = 0;
+    const loading: Embedder = {
+      modelId: 'next',
+      dims: 384,
+      isReady: () => false,
+      warm: () => new Promise<boolean>(() => {}), // a download that never finishes
+      embed: async texts => {
+        embedCalls++;
+        return texts.map(() => axis(1));
+      },
+    };
+    const started = Date.now();
+    expect(await embedSearchQuery(pool, 'a query', loading, { waitForModelMs: 50 })).toBeNull();
+    expect(await embedObservationRows(pool, [{ kind: 'observation', metadata: {}, content: 'x' }], loading, { waitForModelMs: 50 })).toBeNull();
+    expect(Date.now() - started).toBeLessThan(1_000);
+    expect(embedCalls).toBe(0);
+  });
+
+  it('backfills once the model has loaded, and gives up waiting when stopped', async () => {
+    let finishLoad!: (ready: boolean) => void;
+    const load = new Promise<boolean>(resolve => { finishLoad = resolve; });
+    let ready = false;
+    const embedder: Embedder = {
+      modelId: 'next',
+      dims: 384,
+      isReady: () => ready,
+      warm: () => load,
+      embed: async texts => texts.map(() => axis(1)),
+    };
+    const stop = new AbortController();
+    const stopped = backfillMissingEmbeddings(pool, { embedder, signal: stop.signal });
+    stop.abort();
+    expect(await stopped).toEqual({ observations: 0, parts: 0 });
+
+    const backfill = backfillMissingEmbeddings(pool, { embedder });
+    ready = true;
+    finishLoad(true);
+    expect(await backfill).toEqual({ observations: 3, parts: 3 });
   });
 
   it('embeds nothing while CLAUDE_MEM_SERVER_VECTOR_SEARCH is off', async () => {

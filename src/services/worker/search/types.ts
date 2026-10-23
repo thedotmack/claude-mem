@@ -111,6 +111,8 @@ export interface StrategySearchResult {
   results: SearchResults;
   usedChroma: boolean;
   strategy: SearchStrategyHint;
+  /** The bounded semantic prefix was insufficient; keyword hits may fill its remaining slots. */
+  semanticBudgetReached?: boolean;
 }
 
 export interface CombinedResult {

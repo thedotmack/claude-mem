@@ -509,7 +509,7 @@ export async function startGeneratorWithProvider(
       // for can take the work back once it recovers. Left as an auth pause the
       // periodic sweep would skip the session for good, so mark it resumable;
       // the sweep paces itself on the primary's breaker.
-      if (session.fallbackFrom != null && session.pausedReason === 'auth') {
+      if ((session.fallbackFrom != null || session.claudeAuthOverride != null) && session.pausedReason === 'auth') {
         session.pausedReason = 'provider_switch';
       }
 

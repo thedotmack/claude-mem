@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -1657,6 +1657,31 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(existsSync(chromaWriterLockPath())).toBe(true);
     expect(transportInstances.length).toBe(0);
+  });
+
+  it('does not reap a live Chroma writer lock when statSync fails transiently (#4951)', async () => {
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    const lockPath = chromaWriterLockPath();
+    const realStatSync = fs.statSync;
+    fs.statSync = ((targetPath: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (String(targetPath) === lockPath) {
+        throw Object.assign(new Error(`EMFILE: too many open files, stat '${lockPath}'`), { code: 'EMFILE' });
+      }
+      return realStatSync(targetPath, options as any);
+    }) as typeof fs.statSync;
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toThrow('is unreadable; refusing to start a second writer');
+    } finally {
+      fs.statSync = realStatSync;
+    }
+
+    expect(transportInstances.length).toBe(0);
+    expect(existsSync(lockPath)).toBe(true);
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8'));
+    expect(lock.ownerId).toBe('other-worker-owner');
   });
 
   it('preserves remote mutation concurrency', async () => {

@@ -13,7 +13,7 @@ import {
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
 import { bm25Order, usesBm25Index } from './schema.js';
-import { toVectorLiteral } from './observation-embeddings.js';
+import { MAX_FACT_PARTS, toVectorLiteral } from './observation-embeddings.js';
 import { withPostgresTransaction, type PostgresPool } from './pool.js';
 
 export type ObservationSourceType = 'agent_event' | 'session_summary' | 'observation_reindex' | 'manual';
@@ -137,10 +137,23 @@ const HYBRID_LEG_CANDIDATES = 100;
 // Nearest parts read from the HNSW index; several parts can belong to one
 // observation, so this is a multiple of HYBRID_LEG_CANDIDATES.
 const HYBRID_NEAREST_PARTS = 400;
+// The most parts one observation can have: a narrative, a legacy text and
+// MAX_FACT_PARTS facts (observationEmbeddingParts); a summary has fewer.
+const MAX_PARTS_PER_OBSERVATION = MAX_FACT_PARTS + 2;
+
+type HybridSearchRow = ObservationRow & { nearest_parts_read: number; semantic_candidates: number };
 
 function isPool(client: PostgresQueryable): client is PostgresPool {
   const candidate = client as { connect?: unknown; release?: unknown };
   return typeof candidate.connect === 'function' && typeof candidate.release !== 'function';
+}
+
+/**
+ * Whether a keyword query uses websearch_to_tsquery syntax: a double quote
+ * (phrase), a word starting with "-" (exclusion), or a standalone "or".
+ */
+export function usesWebsearchSyntax(query: string): boolean {
+  return /"|(^|\s)-\S|(^|\s)or(\s|$)/i.test(query);
 }
 
 export class PostgresObservationRepository {
@@ -343,18 +356,23 @@ export class PostgresObservationRepository {
     // no query term last, scored 0, once the matches run out; matches_query
     // marks those to drop. Elsewhere the query is unchanged.
     const bm25 = query !== null && usesBm25Index(this.client);
+    // A query written with web-search syntax (a quoted phrase, -term, or) keeps
+    // the websearch_to_tsquery match it always had, so phrases, exclusions and
+    // alternatives still mean what they say; bm25 only ranks those matches.
+    // Plain words match any term on the bm25 path.
+    const bm25MatchesAnyTerm = bm25 && !usesWebsearchSyntax(query);
     const result = await this.client.query<ObservationRow & { matches_query?: boolean }>(
       `
         SELECT observations.*,
           COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
-          ${bm25 ? `, observations.content_search @@ ${ANY_TERM_TSQUERY_SQL} AS matches_query` : ''}
+          ${bm25MatchesAnyTerm ? `, observations.content_search @@ ${ANY_TERM_TSQUERY_SQL} AS matches_query` : ''}
         FROM observations
         LEFT JOIN server_sessions
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
         WHERE ${SEARCH_SCOPE_SQL}
-          ${bm25 ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
+          ${bm25MatchesAnyTerm ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
         ORDER BY ${bm25
           ? bm25Order('$3')
           : `CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
@@ -373,7 +391,7 @@ export class PostgresObservationRepository {
         input.summary ?? null,
       ]
     );
-    return result.rows.filter(row => !bm25 || row.matches_query).map(mapObservationRow);
+    return result.rows.filter(row => !bm25MatchesAnyTerm || row.matches_query).map(mapObservationRow);
   }
 
   // Keyword and vector ranking fused by reciprocal rank fusion. Each leg ranks
@@ -391,8 +409,9 @@ export class PostgresObservationRepository {
     // come; the score is not named outside ORDER BY, so the scan is not
     // rescored (see search()). The LIMIT keeps the planner from pushing the
     // match filter into the scan, which would walk the whole index whenever
-    // fewer than $9 rows match.
-    const keyword = usesBm25Index(this.client)
+    // fewer than $9 rows match. A query in web-search syntax keeps its
+    // websearch_to_tsquery match, as in search().
+    const keyword = usesBm25Index(this.client) && !usesWebsearchSyntax(String(params[2]))
       ? `
       keyword AS (
         SELECT id, row_number() OVER () AS rank
@@ -472,7 +491,9 @@ export class PostgresObservationRepository {
         GROUP BY id
       )
       SELECT observations.*,
-        COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
+        COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id,
+        (SELECT count(*) FROM nearest)::int AS nearest_parts_read,
+        (SELECT count(*) FROM semantic)::int AS semantic_candidates
       FROM fused
       INNER JOIN observations ON observations.id = fused.id
       LEFT JOIN server_sessions
@@ -488,16 +509,35 @@ export class PostgresObservationRepository {
     // the index until enough of that project's parts are found, rather than
     // filtering the nearest parts of every project down to few or none.
     // SET LOCAL needs a transaction, hence a dedicated connection from a pool.
+    //
+    // The nearest-parts cutoff counts parts, not observations, and one
+    // observation can have dozens (a part per fact), so a few fact-heavy
+    // observations can fill it and leave the vector leg with fewer than $9
+    // observations. When that happens and the cutoff was reached, the read
+    // runs again with four times the parts, until the leg is full, the
+    // project has no more parts, or every candidate could have its maximum
+    // number of parts.
+    const legCandidates = Number(params[8]);
+    const maxNearestParts = legCandidates * MAX_PARTS_PER_OBSERVATION;
     const run = async (client: PostgresQueryable) => {
-      // pgvector rejects a value above 1000, which a limit above 250 would ask for.
-      await client.query(`SET LOCAL hnsw.ef_search = ${Math.min(1000, Number(params[10]))}`);
       await client.query(`SET LOCAL hnsw.iterative_scan = strict_order`);
-      return client.query<ObservationRow>(sql, params);
+      let nearestParts = Number(params[10]);
+      for (;;) {
+        // pgvector rejects a value above 1000, which a limit above 250 would ask for.
+        await client.query(`SET LOCAL hnsw.ef_search = ${Math.min(1000, nearestParts)}`);
+        const attempt = await client.query<HybridSearchRow>(sql, [...params.slice(0, 10), nearestParts, ...params.slice(11)]);
+        const first = attempt.rows[0];
+        const legIsShort = first !== undefined
+          && first.semantic_candidates < legCandidates
+          && first.nearest_parts_read >= nearestParts;
+        if (!legIsShort || nearestParts >= maxNearestParts) return attempt;
+        nearestParts = Math.min(maxNearestParts, nearestParts * 4);
+      }
     };
     const result = isPool(this.client)
       ? await withPostgresTransaction(this.client, run)
       : await run(this.client);
-    return result.rows.map(mapObservationRow);
+    return result.rows.map(({ nearest_parts_read: _parts, semantic_candidates: _candidates, ...row }) => mapObservationRow(row));
   }
 }
 

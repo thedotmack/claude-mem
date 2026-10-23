@@ -205,4 +205,18 @@ describe('worker-utils API timeout resolution', () => {
       })
     );
   });
+
+  it('throws a typed WorkerRequestTimeoutError when the request deadline passes', async () => {
+    const workerUtils = await import('../../src/shared/worker-utils.js');
+    const { WorkerRequestTimeoutError } = await import('../../src/shared/worker-request-timeout-error.js');
+    global.fetch = mock(() => Promise.reject(new DOMException('The operation timed out.', 'TimeoutError'))) as unknown as typeof fetch;
+
+    const failure = await workerUtils.fetchWithTimeout('http://127.0.0.1:37777/api/dumb-search', { method: 'POST' }, 30000)
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(failure).toBeInstanceOf(WorkerRequestTimeoutError);
+    expect((failure as InstanceType<typeof WorkerRequestTimeoutError>).timeoutMs).toBe(30000);
+    // Existing callers still match the historical message.
+    expect((failure as Error).message).toBe('Request timed out after 30000ms');
+  });
 });
