@@ -76,6 +76,25 @@ describe('native Pi capture', () => {
     expect(messages[0].content).toBe('Base prompt');
   });
 
+  it('captures and injects when a custom message comes before the system message', async () => {
+    await emit('session_start');
+    await emit('before_agent_start', { prompt: 'Run the tests', systemPrompt: 'Base prompt' });
+    const user = { role: 'user', content: 'Run the tests', timestamp: ++stamp };
+    await emit('message_end', { message: user });
+    branch.push({ type: 'message', id: 'user-after-custom', message: user });
+    const custom = { role: 'custom', customType: 'extension-context', content: 'Extra context', display: false };
+    messages = [custom, { role: 'system', content: 'Base prompt', toolsAdded: [{ name: 'read' }] }, user];
+    const result = await request();
+    expect(inits()[0].body).toMatchObject({ prompt: 'Run the tests', nativePromptId: 'user-after-custom' });
+    expect(result.messages).toHaveLength(3);
+    expect(result.messages[0]).toBe(custom);
+    expect(result.messages[1]).toMatchObject({ role: 'system', toolsAdded: [{ name: 'read' }] });
+    expect(result.messages[1].content).toContain('Useful project memory');
+    expect(result.messages[2]).toBe(user);
+    await emit('tool_result', { toolName: 'read', toolCallId: 'tool-1', content: 'file text' });
+    expect(calls.some(call => call.route === '/api/sessions/observations')).toBe(true);
+  });
+
   it('queues native prompt before tool before summary and preserves tool-call identity', async () => {
     await emit('session_start');
     let finishInit!: (response: Response) => void;
