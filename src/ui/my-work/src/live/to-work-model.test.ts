@@ -223,3 +223,17 @@ test('recorded work product maps onto the drawer kinds; a missing local file is 
   ])
   assert.deepEqual(mapOne({ workProduct: undefined }).request.workProduct, [])
 })
+
+test('a subagent shows Finished only on a recorded stop, and quiet otherwise; main agents carry no status', async () => {
+  const { toAgent } = await import('./to-work-model.ts')
+  const base = { id: 'g', label: 'Claude Code', platformSource: 'claude', sessionTitle: null, project: 'repo', contentSessionId: 's' }
+  assert.equal(toAgent(base).status, undefined)
+  const finished = toAgent({ ...base, isSubagent: true, canMarkFinished: false, presence: { status: 'finished', finishedAt: '2026-10-23T18:12:50Z', evidence: 'subagent-stop-hook' } })
+  assert.equal(finished.status, 'finished')
+  assert.equal(finished.canMarkFinished, false)
+  assert.ok(finished.finishedAt)
+  const quiet = toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'quiet' } })
+  assert.equal(quiet.status, 'quiet')
+  assert.equal(quiet.canMarkFinished, true)
+  assert.equal(toAgent({ ...base, isSubagent: true, canMarkFinished: true, presence: { status: 'recent' } }).status, 'working')
+})

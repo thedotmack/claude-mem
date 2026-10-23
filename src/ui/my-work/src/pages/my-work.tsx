@@ -13,7 +13,7 @@ import { AgentMark } from '@/components/brand'
 import { RequestCard } from '@/components/request-card'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
-import { deviceById, SAMPLE_RUNS, startedTimestamp, useWorkModel, type LiveState, type Request } from '@/data'
+import { deviceById, markAgentFinished, SAMPLE_RUNS, startedTimestamp, useWorkModel, type Agent as WorkAgent, type LiveState, type Request } from '@/data'
 import type { BuildStory, RequestReadError } from '@/live/work-data-source'
 
 type View = 'cards' | 'list' | 'agents' | 'team'
@@ -215,6 +215,40 @@ function ListView({ requests, sort, onSort, onOpen, onOpenGoal }: { requests: Re
   )
 }
 
+const AGENT_STATUS_LABEL: Record<NonNullable<WorkAgent['status']>, string> = { working: 'Working', quiet: 'No recent step', finished: 'Finished' }
+
+/**
+ * A subagent's recorded state. Finished only on a recorded stop; a quiet subagent stays quiet, never guessed done.
+ * One that finished before stops were recorded can be marked finished by the owner (saved as a work-state row).
+ */
+function SubagentStatus({ agent }: { agent: WorkAgent }) {
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  if (!agent.status) return null
+  const mark = () => {
+    setSaving(true)
+    setError(null)
+    markAgentFinished(agent.id)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : String(reason)))
+      .finally(() => setSaving(false))
+  }
+  return (
+    <div className="space-y-1 px-3 pb-2">
+      <div className="flex min-h-9 items-center justify-between gap-2 text-xs">
+        <span className={cn('text-muted-foreground', agent.status === 'finished' && 'text-shipped-foreground')}>
+          {AGENT_STATUS_LABEL[agent.status]}{agent.status === 'finished' && agent.finishedAt ? ` · ${agent.finishedAt}` : ''}
+        </span>
+        {agent.canMarkFinished && (
+          <Button variant="outline" size="sm" className="h-11 shrink-0 text-xs md:h-7" disabled={saving} onClick={mark}>
+            {saving ? 'Saving…' : 'Mark finished'}
+          </Button>
+        )}
+      </div>
+      {error && <p role="alert" className="text-xs text-destructive">{error}</p>}
+    </div>
+  )
+}
+
 /** One card per running agent: its mark, its role and machine, so two agents of one tool are told apart (§4, §13.2). */
 function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (request: Request) => void }) {
   const { agents } = useWorkModel()
@@ -229,6 +263,7 @@ function ByAgentView({ requests, onOpen }: { requests: Request[]; onOpen: (reque
               <AgentHeader name={agent.name} role={agent.role} icon={<AgentMark tool={agent.tool} className="size-5" />}
                 model={`${device.name} · ${device.syncedMinutesAgo === 0 ? 'this machine' : `synced ${device.syncedMinutesAgo} min ago`}`} />
               <AgentContent className="space-y-0 px-2 pb-2">
+                <SubagentStatus agent={agent} />
                 {theirs.length === 0 && <p className="px-3 pb-3 text-sm text-muted-foreground">Nothing on it in this view.</p>}
                 {theirs.map((request) => (
                   <button key={request.id} type="button" onClick={() => onOpen(request)} className="flex w-full min-w-0 flex-col gap-1.5 rounded-lg px-3 py-2.5 text-left hover:bg-surface focus-visible:outline-2 focus-visible:outline-ring">

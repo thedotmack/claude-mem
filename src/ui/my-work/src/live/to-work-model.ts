@@ -87,7 +87,17 @@ function parseRecordKey(key: string): string[] {
 
 export function toAgent(agent: WorkViewAgent): Agent {
   const tool = KNOWN_TOOLS.includes(agent.platformSource as AgentTool) ? agent.platformSource as AgentTool : 'other'
-  return { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? 'Recorded session', deviceId: THIS_COMPUTER.id }
+  const mapped: Agent = { id: agent.id, tool, name: agent.label, role: agent.sessionTitle ?? lastPathSegment(agent.project) ?? 'Recorded session', deviceId: THIS_COMPUTER.id }
+  if (!agent.isSubagent) return mapped
+  const finished = agent.presence?.status === 'finished'
+  const finishedAt = finished && agent.presence?.finishedAt ? Date.parse(agent.presence.finishedAt) : NaN
+  return {
+    ...mapped,
+    role: `Subagent · ${mapped.role}`,
+    status: finished ? 'finished' : agent.presence?.status === 'recent' ? 'working' : 'quiet',
+    ...(Number.isFinite(finishedAt) ? { finishedAt: formatDateTime(finishedAt) } : {}),
+    canMarkFinished: agent.canMarkFinished === true,
+  }
 }
 
 function nextTextFor(status: NormalizedStatus, recordedNext: string) {
