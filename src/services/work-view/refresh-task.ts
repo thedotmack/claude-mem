@@ -14,8 +14,9 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTask, AskAgent, StepModels } from '../agent-runner/run.js';
+import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
-import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
@@ -30,6 +31,9 @@ const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: '
 const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
 export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, alignment: LIGHT, story: CAREFUL } as const;
 type Step = keyof typeof STEP_MODELS;
+
+/** When each step ran, for refresh.json's run record (not shown in My Work). */
+export interface StepTiming { step: string; agent: UsableAgentId; startedAt: string; finishedAt: string; groups?: number }
 
 export interface RefreshTaskOptions {
   needs: RefreshNeeds;
@@ -84,13 +88,14 @@ function goalsJson(saved: ReturnType<typeof readGoals>) {
   return { generated_at: saved.generatedAt, window_days: 31, human_summary: saved.summary, priorities: items('priority'), open_asks: items('open-ask') };
 }
 
-export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
+export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { steps: StepTiming[] } {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
   const now = options.now ?? Date.now;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
 
-  const run = async (ask: AskAgent): Promise<string> => {
+  const steps: StepTiming[] = [];
+  const run = async (ask: AskAgent, agent: UsableAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
@@ -113,8 +118,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       if (result.exitCode !== 0) throw new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`);
       return result.stdout;
     };
+    const timed = async <T>(name: string, work: () => Promise<T>, extra: { groups?: number } = {}): Promise<T> => {
+      const startedAt = new Date(now()).toISOString();
+      try { return await work(); }
+      finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
+    };
     /** Ask, save, and on a validator's refusal ask once more with the reason. */
-    const step = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => {
+    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => timed(name, async () => {
       let refusal: string | null = null;
       for (let attempt = 0; attempt < 2; attempt++) {
         const answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name]);
@@ -122,8 +132,13 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
         catch (error) { refusal = error instanceof Error ? error.message : String(error); }
       }
       throw new Error(`${name}: ${refusal}`);
-    };
-    const readOnly = 'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question. Search claude-mem memory with its MCP tools if you have them.';
+    });
+    const readOnly = [
+      'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
+      agent === 'claude-code'
+        ? 'Search claude-mem memory with its MCP tools (search, timeline, get_observations) for evidence beyond the input files.'
+        : 'You have no memory tools: the input files hold the evidence (each conversation\'s asks and observations). Where the skill says to search memory, use them instead.',
+    ].join(' ');
 
     try {
       const done: string[] = [];
@@ -133,7 +148,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
         try { saved = readGoals(database); } finally { database.close(); }
         // With saved goals, update them from the prompts typed since; otherwise map the whole window.
         const since = saved.goals.length && Number.isFinite(Date.parse(saved.generatedAt ?? '')) ? localMinute(Date.parse(saved.generatedAt!)) : null;
-        const exported = JSON.parse((await runScript([paths.exportScript, '--out', goalsFolder, '--days', '31', ...(since ? ['--since', since] : [])])).trim().split('\n').pop()!);
+        const exported = JSON.parse((await timed('goals-export', () => runScript([paths.exportScript, '--out', goalsFolder, '--days', '31', ...(since ? ['--since', since] : [])]))).trim().split('\n').pop()!);
         const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
         const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
           writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: exported.owner_prompts }, null, 2), { mode: 0o600 });
@@ -165,14 +180,18 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       }
 
       const requestProgress = inlineSkill(paths.requestProgressSkill);
-      const candidates = cli(['candidates', '--days', '14', '--brief']);
-      if (candidates.candidates.some((candidate: { currentGroup: string | null }) => !candidate.currentGroup)) {
-        const decisions = await step('grouping', [
+      // Only conversations the ledger has not decided, one project root per question, each beside
+      // that root's open requests. Every batch is saved before the next is read, so a later batch
+      // sees the requests an earlier one started.
+      let grouped = 0;
+      for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
+        await step('grouping', [
           requestProgress, '---', readOnly,
-          `Do only section 1 (grouping). The \`candidates --days 14 --brief\` output is in ${writeInput('candidates', candidates)}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}).`,
-        ].join('\n\n'), answer => cli(['apply'], answer));
-        done.push(`${decisions.conversations} conversations in ${decisions.groups} groups`);
+          `Do only section 1 (grouping) for the one batch of new conversations in the \`grouping-input\` output in ${writeInput('grouping-input', input)}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
+        ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)));
+        grouped += input.conversations.length;
       }
+      if (grouped) done.push(`${grouped} new conversations grouped`);
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
@@ -203,7 +222,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       // Batches are independent, so they run at once; every batch finishes (and saves) before a failure is reported.
       const batches: Array<Array<{ groupId: string }>> = [];
       for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
-      const failed = (await Promise.allSettled(batches.map(reviewBatch))).filter(outcome => outcome.status === 'rejected');
+      const failed = (await Promise.allSettled(batches.map(batch => timed('review', () => reviewBatch(batch), { groups: batch.length })))).filter(outcome => outcome.status === 'rejected');
       if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 
@@ -242,5 +261,6 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       allowedTools: ['Read', 'Grep', 'Glob', ...MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`)],
     },
     run,
+    steps,
   };
 }

@@ -1,9 +1,9 @@
 // src/services/work-view/request-groups.mjs
 import { Database } from "bun:sqlite";
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { join } from "node:path";
+import { mkdirSync, readFileSync as readFileSync2, readdirSync, renameSync, statSync as statSync2, writeFileSync } from "node:fs";
+import { homedir as homedir2 } from "node:os";
+import { join as join2 } from "node:path";
 
 // src/services/work-view/work-product.mjs
 var FILE_KINDS = {
@@ -26,6 +26,186 @@ var FILE_KINDS = {
 };
 var GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
 var FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
+
+// src/services/work-view/session-project.mjs
+import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, join, relative, resolve } from "node:path";
+var NO_PROJECT = "";
+function projectRoot(project) {
+  return typeof project === "string" ? project.split("/")[0] : null;
+}
+var realpathOrSelf = (path) => {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
+  }
+};
+var TEMP_FOLDERS = [.../* @__PURE__ */ new Set([resolve(tmpdir()), realpathOrSelf(resolve(tmpdir())), "/tmp", "/private/tmp"])];
+var HOME = homedir();
+var TEMP_PROJECT_NAMES = new Set(TEMP_FOLDERS.map((folder) => basename(folder)).filter((name) => name && name !== "tmp"));
+var CODEX_SCRATCH = /[/\\]Documents[/\\]Codex[/\\]\d{4}-\d{2}-\d{2}(?:[/\\]|$)/;
+function isAgentScratchFolder(folder) {
+  if (typeof folder !== "string" || !folder) return false;
+  if (CODEX_SCRATCH.test(folder)) return true;
+  const absolute = resolve(folder);
+  return TEMP_FOLDERS.some((temp) => absolute === temp || absolute.startsWith(`${temp}/`));
+}
+var repoRootCache = /* @__PURE__ */ new Map();
+function repoRootOf(path) {
+  const visited = [];
+  let current = resolve(path), found = null;
+  for (; ; ) {
+    if (repoRootCache.has(current)) {
+      found = repoRootCache.get(current);
+      break;
+    }
+    visited.push(current);
+    if (existsSync(join(current, ".git"))) {
+      found = current;
+      break;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  for (const dir of visited) repoRootCache.set(dir, found);
+  return found;
+}
+function projectNameForCheckout(root) {
+  const name = basename(root);
+  let gitdir = null;
+  try {
+    const gitPath = join(root, ".git");
+    if (statSync(gitPath).isFile()) gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitPath, "utf8"))?.[1]?.trim() ?? null;
+  } catch {
+    return name;
+  }
+  if (!gitdir) return name;
+  const absolute = resolve(root, gitdir);
+  const worktree = /^(.+)[/\\]\.git[/\\]worktrees[/\\][^/\\]+$/.exec(absolute);
+  if (worktree) {
+    const parent = basename(worktree[1]);
+    return parent === name ? parent : `${parent}/${name}`;
+  }
+  const submodule = /^(.+)[/\\]\.git[/\\]modules[/\\].+$/.exec(absolute);
+  if (submodule) {
+    const leaf = relative(submodule[1], root);
+    return leaf && !leaf.startsWith("..") ? `${basename(submodule[1])}/${leaf.split(/[/\\]/).join("/")}` : name;
+  }
+  return name;
+}
+var PATH_START = /(?:^|[\s"'`=:(])((?:~\/|\/)[^\n\r"'`;|&<>()]*)/g;
+var AGENT_HOMES = [".claude", ".codex", ".gemini", ".claude-mem", ".cursor"].map((name) => join(HOME, name));
+var isAgentHome = (path) => AGENT_HOMES.some((home) => path === home || path.startsWith(`${home}/`));
+function pathsIn(toolInput) {
+  let parsed = toolInput;
+  if (typeof toolInput === "string") {
+    try {
+      parsed = JSON.parse(toolInput);
+    } catch {
+      parsed = toolInput;
+    }
+  }
+  const strings = [];
+  const walk = (value) => {
+    if (typeof value === "string") strings.push(value);
+    else if (Array.isArray(value)) value.forEach(walk);
+    else if (value && typeof value === "object") Object.values(value).forEach(walk);
+  };
+  walk(parsed);
+  const paths = [];
+  for (const text of strings) for (const match of text.matchAll(PATH_START)) {
+    const raw = match[1].trim();
+    const path = raw.startsWith("~/") ? join(HOME, raw.slice(2)) : raw;
+    if (path.length > 1 && path.startsWith("/") && !path.startsWith("//") && !isAgentHome(path)) paths.push(path);
+  }
+  return paths;
+}
+var checkoutForPath = (path) => {
+  let current = path;
+  while (current !== dirname(current) && !existsSync(current)) current = dirname(current);
+  return repoRootOf(current);
+};
+function folderNeedsProject(folder, storedProject) {
+  if (!folder) return TEMP_PROJECT_NAMES.has(storedProject);
+  if (existsSync(folder)) return !repoRootOf(folder);
+  return isAgentScratchFolder(folder);
+}
+function projectFromToolPaths(toolInputs) {
+  const byRoot = /* @__PURE__ */ new Map();
+  for (const input of toolInputs) for (const path of pathsIn(input)) {
+    const checkout = checkoutForPath(path);
+    if (!checkout) continue;
+    const project = projectNameForCheckout(checkout);
+    const root = projectRoot(project);
+    if (!byRoot.has(root)) byRoot.set(root, { count: 0, projects: /* @__PURE__ */ new Map() });
+    const entry = byRoot.get(root);
+    entry.count++;
+    entry.projects.set(project, (entry.projects.get(project) ?? 0) + 1);
+  }
+  let best = null;
+  for (const entry of byRoot.values()) if (!best || entry.count > best.count) best = entry;
+  if (!best) return NO_PROJECT;
+  return [...best.projects].sort((a, b) => b[1] - a[1])[0][0];
+}
+function safeAll(database, sql, params) {
+  try {
+    return database.prepare(sql).all(...params);
+  } catch (error) {
+    if (/no such (table|column)/i.test(String(error.message))) return null;
+    throw error;
+  }
+}
+var derivedCache = /* @__PURE__ */ new Map();
+var TOOL_SAMPLE = 400;
+function deriveSessionProjects(database, sessions) {
+  const result = /* @__PURE__ */ new Map();
+  const ids = [...new Set(sessions.map((session) => session.id).filter((id) => id != null))];
+  if (!ids.length) return result;
+  const folders = /* @__PURE__ */ new Map();
+  for (let index = 0; index < ids.length; index += 500) {
+    const chunk = ids.slice(index, index + 500);
+    const rows = safeAll(database, `SELECT id, cwd FROM sdk_sessions WHERE id IN (${chunk.map(() => "?").join(",")})`, chunk);
+    if (rows === null) return result;
+    for (const row of rows) folders.set(row.id, row.cwd || null);
+  }
+  const unknownFolderProjects = [...new Set(sessions.filter((session) => folders.has(session.id) && !folders.get(session.id) && typeof session.project === "string").map((session) => session.project))];
+  const scratchProjects = /* @__PURE__ */ new Set();
+  for (let index = 0; index < unknownFolderProjects.length; index += 500) {
+    const chunk = unknownFolderProjects.slice(index, index + 500);
+    for (const row of safeAll(database, `SELECT DISTINCT project, cwd FROM sdk_sessions WHERE project IN (${chunk.map(() => "?").join(",")}) AND cwd IS NOT NULL AND cwd <> ''`, chunk) ?? []) {
+      if (isAgentScratchFolder(row.cwd)) scratchProjects.add(row.project);
+    }
+  }
+  const needing = sessions.filter((session) => folders.has(session.id) && (folders.get(session.id) ? folderNeedsProject(folders.get(session.id), session.project) : folderNeedsProject(null, session.project) || scratchProjects.has(session.project)));
+  if (!needing.length) return result;
+  const needIds = [...new Set(needing.map((session) => session.id))];
+  const heads = /* @__PURE__ */ new Map();
+  for (let index = 0; index < needIds.length; index += 500) {
+    const chunk = needIds.slice(index, index + 500);
+    for (const row of safeAll(database, `SELECT session_db_id, MAX(id) AS head FROM tool_uses WHERE session_db_id IN (${chunk.map(() => "?").join(",")}) GROUP BY session_db_id`, chunk) ?? []) heads.set(row.session_db_id, row.head);
+  }
+  for (const id of needIds) {
+    const head = heads.get(id) ?? 0;
+    const cached = derivedCache.get(id);
+    if (cached && cached.head === head) {
+      result.set(id, cached.project);
+      continue;
+    }
+    const calls = head ? safeAll(database, `SELECT substr(tool_input, 1, 4000) AS tool_input, cwd FROM tool_uses WHERE session_db_id = ? ORDER BY id DESC LIMIT ${TOOL_SAMPLE}`, [id]) ?? [] : [];
+    const project = projectFromToolPaths(calls.flatMap((call) => [call.tool_input, ...call.cwd ? [JSON.stringify({ cwd: call.cwd })] : []]));
+    derivedCache.set(id, { head, project });
+    result.set(id, project);
+  }
+  return result;
+}
+function withDerivedProjects(database, sessions) {
+  const derived = deriveSessionProjects(database, sessions);
+  if (!derived.size) return sessions;
+  return sessions.map((session) => derived.has(session.id) ? { ...session, project: derived.get(session.id), storedProject: session.project } : session);
+}
 
 // src/services/work-view/request-projection.mjs
 function requestText(value, max = 1200) {
@@ -52,6 +232,14 @@ function isHumanActionRequest(value) {
 }
 var ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
 var ENGLISH_WORDS = /\b(?:the|a|an|this|that|it|is|are|to|of|and|for|with|in|on|my|me|you|we|please|just|all|so|now|then|from|be|not)\b/i;
+var isConversationKey = (value) => {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) && parsed[0] === "conversation" && parsed.length === 3;
+  } catch {
+    return false;
+  }
+};
 function conversationKey(session) {
   if (!session?.content_session_id || !session?.platform_source) return null;
   return JSON.stringify(["conversation", session.platform_source, session.content_session_id]);
@@ -69,8 +257,8 @@ function originalFor(session, prompts) {
 var OWNER_GOALS_LIST = "owner-goals";
 
 // src/services/work-view/request-groups.mjs
-var DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
-var LEDGER_DIR = join(DATA_DIR, "work-view");
+var DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join2(homedir2(), ".claude-mem");
+var LEDGER_DIR = join2(DATA_DIR, "work-view");
 var DAY_MS = 864e5;
 var GOALS_STALE_MS = DAY_MS;
 var MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
@@ -88,11 +276,12 @@ function placeholders(values) {
 function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false }) {
   const columns = "SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions";
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
-  const sessions = pairs ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => "(?, ?)").join(",")})`).all(...pairs.flat()) : [] : database.prepare(`${columns} WHERE started_at_epoch >= ?
+  const stored = pairs ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => "(?, ?)").join(",")})`).all(...pairs.flat()) : [] : database.prepare(`${columns} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
         OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
-  if (!sessions.length) return [];
+  if (!stored.length) return [];
+  const sessions = withDerivedProjects(database, stored);
   const ids = sessions.map((session) => session.id);
   const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? "prompt_text" : "substr(prompt_text, 1, 1200) AS prompt_text"}, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
@@ -167,7 +356,7 @@ function linkBackwards(candidates) {
   const shared = (kind, field) => {
     const owners = /* @__PURE__ */ new Map();
     for (const candidate of candidates) for (const value of candidate[field]) {
-      const scope = kind === "shared-work-list" ? JSON.stringify([candidate.project, value]) : value;
+      const scope = JSON.stringify([projectRoot(candidate.project), value]);
       if (!owners.has(scope)) owners.set(scope, { value, project: candidate.project, keys: [] });
       owners.get(scope).keys.push(candidate.conversationKey);
     }
@@ -236,29 +425,21 @@ function validateAlignment(input, { groups, goals }) {
 }
 function readJson(path, fallback) {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return JSON.parse(readFileSync2(path, "utf8"));
   } catch (error) {
     if (error.code === "ENOENT") return fallback;
     throw error;
   }
 }
 function writeJsonAtomic(path, value) {
-  mkdirSync(join(path, ".."), { recursive: true });
+  mkdirSync(join2(path, ".."), { recursive: true });
   const temp = `${path}.tmp`;
   writeFileSync(temp, `${JSON.stringify(value, null, 2)}
 `, { mode: 384 });
   renameSync(temp, path);
 }
 var emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
-var isConversationKey = (value) => {
-  try {
-    const parsed = JSON.parse(value);
-    return Array.isArray(parsed) && parsed[0] === "conversation" && parsed.length === 3;
-  } catch {
-    return false;
-  }
-};
-function applyGroupDecisions(stored, decisions, now = Date.now()) {
+function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = /* @__PURE__ */ new Map() } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError("Decisions need a groups array.");
   const next = structuredClone(stored ?? emptyGroups());
   for (const [index, decision] of decisions.groups.entries()) {
@@ -282,11 +463,21 @@ function applyGroupDecisions(stored, decisions, now = Date.now()) {
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(", ")} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
+    const allMembers = [.../* @__PURE__ */ new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
+    const roots = /* @__PURE__ */ new Map();
+    for (const key of allMembers) {
+      const root = projectRoot(projectOf.get(key));
+      if (root != null) roots.set(root, [...roots.get(root) ?? [], key]);
+    }
+    const storedRoot = next.groups[id]?.projectRoot;
+    if (typeof storedRoot === "string" && !roots.has(storedRoot)) roots.set(storedRoot, roots.get(storedRoot) ?? []);
+    if (roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || "no project").join(", ")}); a request stays inside one project root.`);
+    const projectRootOfGroup = roots.size ? [...roots.keys()][0] : storedRoot ?? null;
     for (const key of decision.conversations) {
       next.conversations[key] = id;
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
@@ -404,19 +595,19 @@ function validateStory(story) {
   };
 }
 function readLedger(dir = LEDGER_DIR) {
-  const groups = readJson(join(dir, "request-groups.json"), emptyGroups());
+  const groups = readJson(join2(dir, "request-groups.json"), emptyGroups());
   const progress = {};
   let names = [];
   try {
-    names = readdirSync(join(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
+    names = readdirSync(join2(dir, "progress")).filter((name) => /^g_[0-9a-f]{12}\.json$/.test(name));
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
   for (const name of names) {
-    const entry = readJson(join(dir, "progress", name), null);
+    const entry = readJson(join2(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join(dir, "story.json"), null), alignment: readJson(join(dir, "alignment.json"), null), refresh: readJson(join(dir, "refresh.json"), null) };
+  return { groups, progress, story: readJson(join2(dir, "story.json"), null), alignment: readJson(join2(dir, "alignment.json"), null), refresh: readJson(join2(dir, "refresh.json"), null) };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
   const group = ledger.groups.groups[groupId];
@@ -463,7 +654,7 @@ function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 
   return { due: due.length, ungrouped, goalsStale, unaligned, needed: Boolean(due.length || ungrouped || goalsStale || unaligned) };
 }
 function readInput(source) {
-  return JSON.parse(readFileSync(source === "-" ? 0 : source, "utf8"));
+  return JSON.parse(readFileSync2(source === "-" ? 0 : source, "utf8"));
 }
 function textOption(args, name) {
   const index = args.indexOf(`--${name}`);
@@ -477,34 +668,85 @@ function option(args, name, fallback) {
   return value;
 }
 function openDatabase() {
-  const path = process.env.CLAUDE_MEM_DB ?? join(DATA_DIR, "claude-mem.db");
-  statSync(path);
+  const path = process.env.CLAUDE_MEM_DB ?? join2(DATA_DIR, "claude-mem.db");
+  statSync2(path);
   const database = new Database(path, { readonly: true, create: false });
   database.exec("PRAGMA busy_timeout = 1500");
   return database;
+}
+function readConversationProjects(database, conversationKeys) {
+  const pairs = [...new Set(conversationKeys)].filter(isConversationKey).map((key) => JSON.parse(key).slice(1));
+  const sessions = [];
+  for (let index = 0; index < pairs.length; index += 400) {
+    const chunk = pairs.slice(index, index + 400);
+    sessions.push(...database.prepare(`SELECT id, platform_source, content_session_id, project FROM sdk_sessions WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => "(?, ?)").join(",")})`).all(...chunk.flat()));
+  }
+  return new Map(withDerivedProjects(database, sessions).map((session) => [conversationKey(session), session.project]));
+}
+var GROUPING_BATCH = 20;
+var OPEN_REQUESTS_SHOWN = 15;
+var CLOSED_STATES = /* @__PURE__ */ new Set(["shipped", "abandoned"]);
+function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
+  const candidates = readCandidates(database, { sinceEpoch });
+  const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
+  const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
+  if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
+  const root = projectRoot(fresh[0].project);
+  const batch = fresh.filter((candidate) => projectRoot(candidate.project) === root).slice(0, limit);
+  const inRoot = candidates.filter((candidate) => projectRoot(candidate.project) === root);
+  const byKey = new Map(inRoot.map((candidate) => [candidate.conversationKey, candidate]));
+  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => typeof group.projectRoot !== "string").map((group) => group.anchor));
+  const openRequests = Object.entries(ledger.groups.groups).filter(([groupId, group]) => (typeof group.projectRoot === "string" ? group.projectRoot : projectRoot(anchorProjects.get(group.anchor))) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state)).map(([groupId, group]) => {
+    const members = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => byKey.get(key)).filter(Boolean);
+    const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+    return {
+      groupId,
+      title: group.title,
+      anchor: group.anchor,
+      anchorAsk: requestText(group.anchorAsk?.text ?? members[0]?.firstAsk ?? "", 400),
+      recentAsks: asks.slice(0, 3).map((ask) => ask.text.slice(0, 200)),
+      lastActivityEpoch: Math.max(0, ...members.map((member) => member.lastActivityEpoch ?? 0))
+    };
+  }).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch).slice(0, OPEN_REQUESTS_SHOWN).map(({ lastActivityEpoch, ...request }) => ({ ...request, lastActivityAt: iso(lastActivityEpoch) }));
+  const batchKeys = new Set(batch.map((candidate) => candidate.conversationKey));
+  const proposedLinks = linkBackwards(inRoot).proposedGroups.filter((group) => group.links.length && group.conversations.some((key) => batchKeys.has(key))).flatMap((group) => group.links).map((link) => ({ ...link, groups: [...new Set(link.conversations.map((key) => ledger.groups.conversations[key]).filter(Boolean))] }));
+  return {
+    root,
+    conversations: batch.map((candidate) => ({ conversationKey: candidate.conversationKey, project: candidate.project, startedAt: candidate.startedAt, openingAsk: requestText(candidate.firstAsk, 400), workLists: candidate.workLists })),
+    openRequests,
+    proposedLinks,
+    remaining: fresh.length - batch.length
+  };
 }
 function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)) } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, "days", 14) * DAY_MS;
   if (command === "candidates") {
-    const projectRoot = textOption(args, "project");
+    const wantedRoot = textOption(args, "project");
     const stored = readLedger(dir).groups;
-    const candidates = readCandidates(db(), { sinceEpoch: since() }).filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (!projectRoot || candidate.project.split("/")[0] === projectRoot));
+    const candidates = readCandidates(db(), { sinceEpoch: since() }).filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
     const { proposedGroups, skippedLists } = linkBackwards(candidates);
     const brief = args.includes("--brief");
     const shown = candidates.map(({ lastActivityEpoch, startedAtEpoch, original, ...candidate }) => {
       const currentGroup = stored.conversations[candidate.conversationKey] ?? null;
       return brief ? { conversationKey: candidate.conversationKey, project: candidate.project, startedAt: candidate.startedAt, lastActivityAt: candidate.lastActivityAt, firstAsk: candidate.firstAsk.slice(0, 200), laterAsks: candidate.asks.slice(1, 4).map((ask) => ask.text.slice(0, 120)), workLists: candidate.workLists, currentGroup } : { ...candidate, currentGroup };
     });
-    return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => candidate.project.split("/")[0]))] });
+    return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => projectRoot(candidate.project)))] });
   }
+  if (command === "grouping-input") return print(groupingInput(readLedger(dir), db(), { sinceEpoch: since(), limit: option(args, "limit", GROUPING_BATCH) }));
   if (command === "apply") {
-    const next = applyGroupDecisions(readLedger(dir).groups, readInput(args[0] ?? "-"), now);
+    const database2 = db();
+    const stored = readLedger(dir).groups;
+    const decisions = readInput(args[0] ?? "-");
+    const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
+    const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
+    const existing = Object.entries(stored.conversations).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
+    const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database2, [...touched, ...existing]) });
     const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(db(), { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
+    const anchors = new Map(readCandidates(database2, { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
-    writeJsonAtomic(join(dir, "request-groups.json"), next);
+    writeJsonAtomic(join2(dir, "request-groups.json"), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });
   }
   if (command === "pending" || command === "show") {
@@ -516,7 +758,18 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       const details = groupDetails(args[0], ledger, candidates);
       const previous = details.previousReview;
       const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
-      const conversations = amendSince ? details.conversations.map((conversation) => conversation.asks ? { ...conversation, asks: conversation.asks.filter((ask) => Date.parse(ask.at) > Date.parse(amendSince)) } : conversation) : details.conversations;
+      const since2 = amendSince ? Date.parse(amendSince) : 0;
+      const observations = db().prepare(`SELECT o.id, o.type, o.title, o.subtitle, o.created_at_epoch FROM observations o
+        JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+        WHERE s.platform_source = ? AND s.content_session_id = ? AND o.created_at_epoch > ? ORDER BY o.created_at_epoch, o.id`);
+      const conversations = details.conversations.map((conversation) => {
+        const [, platform, sessionId] = JSON.parse(conversation.conversationKey);
+        return {
+          ...conversation,
+          ...conversation.asks && amendSince ? { asks: conversation.asks.filter((ask) => Date.parse(ask.at) > since2) } : {},
+          observations: observations.all(platform, sessionId, since2).map((row) => ({ id: row.id, at: iso(row.created_at_epoch), type: row.type, title: row.title, subtitle: row.subtitle }))
+        };
+      });
       return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());
@@ -530,7 +783,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const previous = ledger.progress[reviewed.groupId];
     const unchanged = previous && previous.state === reviewed.state && previous.percent === reviewed.percent;
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
-    writeJsonAtomic(join(dir, "progress", `${entry.groupId}.json`), entry);
+    writeJsonAtomic(join2(dir, "progress", `${entry.groupId}.json`), entry);
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
   }
   if (command === "story-input") {
@@ -542,7 +795,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command === "record-story") {
     const story = { ...validateStory(readInput(args[0] ?? "-")), writtenAt: iso(now) };
-    writeJsonAtomic(join(dir, "story.json"), story);
+    writeJsonAtomic(join2(dir, "story.json"), story);
     return print({ recorded: "story", preferences: story.preferences.length });
   }
   if (command === "align-input") {
@@ -571,7 +824,7 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       goals: goals.goals.map((goal) => goal.goal),
       alignedAt: iso(now)
     };
-    writeJsonAtomic(join(dir, "alignment.json"), alignment);
+    writeJsonAtomic(join2(dir, "alignment.json"), alignment);
     return print({ aligned: Object.keys(decided.links).length, unaligned: decided.unaligned.length });
   }
   if (command === "refresh-needs") return print(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14) }));

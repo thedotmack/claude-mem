@@ -1,6 +1,7 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
 import { fileUrl, mergeProducts, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
+import { projectRoot } from './session-project.mjs';
 
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
@@ -55,6 +56,8 @@ export function humanRequestTitle(original) {
   return `${cut.slice(0, boundary > 60 ? boundary : 99).trimEnd()}…`;
 }
 
+export const isConversationKey = (value) => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) && parsed[0] === 'conversation' && parsed.length === 3; } catch { return false; } };
+
 export function conversationKey(session) {
   if (!session?.content_session_id || !session?.platform_source) return null;
   return JSON.stringify(['conversation', session.platform_source, session.content_session_id]);
@@ -79,8 +82,11 @@ export function originalFor(session, prompts) {
 }
 
 // `ledger` holds evidence-backed overall-request groups (request-groups.mjs).
-// A group joins conversations that serve one goal; an explicit work-state
-// request_id still wins because the producer recorded it directly.
+// A human request is the top level: one card per ledger group and per
+// ungrouped conversation with a substantive human ask, built from its prompts.
+// Recorded work, activity, work product and progress attach beneath it when
+// they exist. An explicit work-state request_id still wins because the
+// producer recorded it directly. Requests stay inside one project root.
 export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger = null } = {}) {
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
@@ -113,7 +119,65 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       explicitIds.get(key).add(String(item.requestId));
     }
   }
+  const sessionsByKey = new Map();
+  for (const session of sessions.values()) {
+    const key = conversationKey(session);
+    if (key && !sessionsByKey.has(key)) sessionsByKey.set(key, session);
+  }
+  // A group's root is stored at apply time; older groups take their anchor's.
+  const groupRoot = (groupId) => {
+    const group = ledger?.groups?.groups?.[groupId];
+    if (typeof group?.projectRoot === 'string') return group.projectRoot;
+    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
+  };
+  // A conversation joins its group only from the group's own project root.
+  const groupFor = (key, session) => {
+    const groupId = key ? ledger?.groups?.conversations?.[key] ?? null : null;
+    if (!groupId) return null;
+    const own = projectRoot(session?.project), expected = groupRoot(groupId);
+    return own == null || expected == null || own === expected ? groupId : null;
+  };
   const requests = new Map(), unlinkedWork = [];
+  const requestFor = (id, { key, original, groupId = null, explicit = null, explicitText = null }) => {
+    let request = requests.get(id);
+    // A group keeps its first ask in the ledger, so the start holds even when
+    // the anchor conversation is outside the loaded records.
+    const anchorAsk = groupId ? ledger?.groups?.groups?.[groupId]?.anchorAsk ?? null : null;
+    if (anchorAsk && (anchorAsk.atEpoch ?? Infinity) < (original.atEpoch ?? Infinity)) original = anchorAsk;
+    if (!request) {
+      request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit, groupId };
+      requests.set(id, request);
+    } else {
+      if (!request.explicitRequestText && explicitText) request.explicitRequestText = explicitText;
+      // An overall request starts at its earliest linked human ask.
+      if (groupId && (original.atEpoch ?? Infinity) < (request.original.atEpoch ?? Infinity)) request.original = original;
+    }
+    if (key && !request.conversationKeys.includes(key)) request.conversationKeys.push(key);
+    return request;
+  };
+  const addProject = (request, project) => { if (typeof project === 'string' && project && !request.projects.includes(project)) request.projects.push(project); };
+
+  // 1. Requests from prompts: every ungrouped conversation with a substantive
+  // human ask, and every group, whether or not any work was recorded yet.
+  for (const [key, session] of sessionsByKey) {
+    // Its work is filed under the request ids the producer recorded.
+    if (explicitIds.has(key) || ledger?.groups?.ignored?.[key]) continue;
+    const original = originalFor(session, prompts);
+    if (!original) continue;
+    const groupId = groupFor(key, session);
+    addProject(requestFor(groupId ? JSON.stringify(['overall-request', groupId]) : key, { key, original, groupId }), session.project);
+  }
+  // A group whose conversations are all outside the loaded records shows from its stored first ask.
+  for (const [groupId, group] of Object.entries(ledger?.groups?.groups ?? {})) {
+    const id = JSON.stringify(['overall-request', groupId]);
+    if (requests.has(id) || !group?.anchorAsk || ledger?.groups?.ignored?.[group.anchor]) continue;
+    const anchorSession = sessionsByKey.get(group.anchor);
+    // The anchor itself is loaded, so its ask (or its recorded request id) already decided the card.
+    if (anchorSession) continue;
+    requestFor(id, { key: isConversationKey(group.anchor) ? group.anchor : null, original: group.anchorAsk, groupId });
+  }
+
+  // 2. Recorded work attaches beneath its request.
   for (const item of flattened) {
     const session = sessions.get(item.agentSessionId);
     const key = conversationKey(session);
@@ -136,23 +200,13 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       unlinkedWork.push({ ...item, reason: 'ignored-by-request-grouping' });
       continue;
     }
-    const groupId = !explicit && key ? ledger?.groups?.conversations?.[key] ?? null : null;
-    const id = explicit ? JSON.stringify(['explicit-request', explicit]) : groupId ? JSON.stringify(['overall-request', groupId]) : key;
-    let request = requests.get(id);
-    // A group keeps its first ask in the ledger, so the start holds even when
-    // the anchor conversation is outside the loaded work.
-    const anchorAsk = groupId ? ledger?.groups?.groups?.[groupId]?.anchorAsk ?? null : null;
-    if (anchorAsk && (anchorAsk.atEpoch ?? Infinity) < (original.atEpoch ?? Infinity)) original = anchorAsk;
-    if (!request) {
-      request = { id, conversationKey: key, conversationKeys: [], original, explicitRequestText: explicitText, scopeUpdates: [], projects: [], agentIds: [], items: [], workstreams: [], updatedAtEpoch: 0, explicitRequestId: explicit, groupId };
-      requests.set(id, request);
-    } else {
-      if (!request.explicitRequestText && explicitText) request.explicitRequestText = explicitText;
-      // An overall request starts at its earliest linked human ask.
-      if (groupId && (original.atEpoch ?? Infinity) < (request.original.atEpoch ?? Infinity)) request.original = original;
-    }
-    if (key && !request.conversationKeys.includes(key)) request.conversationKeys.push(key);
-    if (item.project && !request.projects.includes(item.project)) request.projects.push(item.project);
+    const groupId = !explicit ? groupFor(key, session) : null;
+    // One request id names one request per project root; worktrees of a repo share it.
+    const root = projectRoot(session?.project) ?? projectRoot(item.project);
+    const id = explicit ? JSON.stringify(root == null ? ['explicit-request', explicit] : ['explicit-request', root, explicit]) : groupId ? JSON.stringify(['overall-request', groupId]) : key;
+    const request = requestFor(id, { key, original, groupId, explicit, explicitText });
+    addProject(request, session?.project);
+    addProject(request, item.project);
     if (!request.agentIds.includes(item.agentId)) request.agentIds.push(item.agentId);
     request.items.push(item);
     request.updatedAtEpoch = Math.max(request.updatedAtEpoch, item.lastUpdateEpoch ?? 0);
@@ -176,12 +230,24 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   for (const call of records.productCalls ?? []) attach(sessions.get(call.session_db_id), productsFromToolUse(call));
   for (const observation of records.productObservations ?? []) attach(sessionsByMemory.get(observation.memory_session_id), productsFromObservation(observation));
 
+  const sessionIdsByKey = new Map(), promptsBySession = new Map();
+  for (const session of sessions.values()) {
+    const key = conversationKey(session);
+    if (key) sessionIdsByKey.set(key, [...(sessionIdsByKey.get(key) ?? []), session.id]);
+  }
+  for (const prompt of prompts) {
+    if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
+    promptsBySession.get(prompt.session_db_id).push(prompt);
+  }
   for (const request of requests.values()) {
     request.workProduct = mergeProducts([...(recordedProducts.get(request) ?? []), ...request.items.flatMap((item) => item.workProduct ?? [])])
       .map((product) => ({ ...product, fileUrl: fileUrl(product), available: product.path ? Boolean(servableFile(product)) : true }));
-    const relatedSessions = [...sessions.values()].filter((session) => request.conversationKeys.includes(conversationKey(session)));
-    const relatedIds = new Set(relatedSessions.map((session) => session.id));
-    request.scopeUpdates = prompts.filter((prompt) => relatedIds.has(prompt.session_db_id) && !(request.original.source === 'user-prompt' && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber))
+    const relatedIds = new Set(request.conversationKeys.flatMap((key) => sessionIdsByKey.get(key) ?? []));
+    const related = [...relatedIds].flatMap((id) => promptsBySession.get(id) ?? []);
+    // A new ask is activity on its request, even before any agent records work.
+    request.updatedAtEpoch = Math.max(request.updatedAtEpoch, request.original.atEpoch ?? 0, ...related.map((prompt) => prompt.created_at_epoch ?? 0));
+    if (!request.agentIds.length) for (const agent of view.agents ?? []) if (relatedIds.has(agent.sessionId) && !request.agentIds.includes(agent.id)) request.agentIds.push(agent.id);
+    request.scopeUpdates = related.filter((prompt) => !(request.original.source === 'user-prompt' && prompt.id === request.original.sourceId) && requestText(prompt.prompt_text) && (request.original.promptNumber == null || prompt.prompt_number >= request.original.promptNumber))
       .sort((a, b) => (b.created_at_epoch ?? 0) - (a.created_at_epoch ?? 0) || b.prompt_number - a.prompt_number || b.id - a.id)
       .slice(0, 6).reverse().map((prompt) => ({ text: requestText(prompt.prompt_text, 500), sourceId: prompt.id, url: `/api/work-view/evidence/prompt/${prompt.id}`, promptNumber: prompt.prompt_number, atEpoch: prompt.created_at_epoch ?? null }));
     const streams = new Map();

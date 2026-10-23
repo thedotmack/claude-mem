@@ -11,3 +11,11 @@ export function writeJsonAtomic(path: string, value: unknown): void;
 export function readLedger(dir?: string): Record<string, any>;
 export function ledgerSignature(dir?: string): string;
 export function runCli(argv: string[], options?: { dir?: string; database?: LedgerDatabase | null; now?: number; print?: (value: any) => void }): void;
+export interface GroupingInput {
+  root: string | null;
+  conversations: Array<{ conversationKey: string; project: string; startedAt: string | null; openingAsk: string | null; workLists: string[] }>;
+  openRequests: Array<{ groupId: string; title: string; anchor: string; anchorAsk: string | null; recentAsks: string[]; lastActivityAt: string | null }>;
+  proposedLinks: Array<{ kind: string; conversations: string[]; evidence: string; groups: string[] }>;
+  remaining: number;
+}
+export function validateGroupingAnswer<T>(answer: T, input: GroupingInput): T;

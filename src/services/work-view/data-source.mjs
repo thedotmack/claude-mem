@@ -218,7 +218,7 @@ export class WorkStateSource {
             this.cachedState = reduceWorkState(scopedEntries, { currentProject: this.currentProject, currentProjectScope, localDeviceId: this.localDeviceId });
           }
           this.agentRevision++;
-          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState }), { titleCache: this.titleCache, ledger: this.ledger }), revision: this.agentRevision };
+          this.agentView = { ...buildAgentView(this.cachedState, readAgentRecords(database, { workState: this.cachedState, ledger: this.ledger }), { titleCache: this.titleCache, ledger: this.ledger }), revision: this.agentRevision };
           // Hash full linked evidence without sending its potentially large raw
           // text in every snapshot. A review covers the source disclosure too.
           const evidenceHashes = new Map();

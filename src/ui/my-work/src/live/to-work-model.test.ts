@@ -172,6 +172,21 @@ test('an explicit status recorded after a review wins over it: a reopened reques
   assert.equal(model.requests[2].progress.percent, 60, 'an older partial review still shows')
 })
 
+test('a request with only asks maps cleanly: its asks show, no activity, and a fresh ask reads as working', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const asked = { ...syntheticRequest(), updatedAtEpoch: now - 60000, scopeUpdates: [{ text: 'Keep the existing design.', atEpoch: now - 60000 }] }
+  const model = toWorkModel(snapshotWith([asked, { ...asked, id: 'old-ask', updatedAtEpoch: now - 3 * 86400000 }]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const [fresh, old] = model.requests
+  assert.deepEqual(fresh.terminal, ['ask Build the release cards', 'ask Keep the existing design.'])
+  assert.deepEqual(fresh.granular, [])
+  assert.deepEqual(fresh.workstreams, [])
+  assert.equal(fresh.next.text, 'No agent work recorded yet')
+  assert.equal(fresh.state, 'working')
+  assert.deepEqual(fresh.prompts.map((prompt) => prompt.quote), ['Build the release cards', 'Keep the existing design.'])
+  assert.equal(old.state, 'idle')
+})
+
 test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
   const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
   const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }
