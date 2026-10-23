@@ -260,14 +260,45 @@ describe('only new opening prompts are checked', () => {
   });
 });
 
+const git = (cwd: string, ...args: string[]) => {
+  const result = Bun.spawnSync(['git', '-c', 'user.name=test', '-c', 'user.email=test@example.com', ...args], { cwd });
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(' ')}: ${result.stderr.toString()}`);
+};
+const gitRepo = (dir: string) => { mkdirSync(dir, { recursive: true }); git(dir, 'init', '-q'); git(dir, 'commit', '-q', '--allow-empty', '-m', 'init'); };
+
 describe('the real project of an agent scratch-folder session', () => {
+  it('is named the way claude-mem names the checkout, so git-remote naming does not split one repo in two', () => {
+    const root = mkdtempSync(join(tmpdir(), 'scratch-project-'));
+    const previous = process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+    try {
+      const repo = join(root, 'product');
+      gitRepo(repo);
+      git(repo, 'remote', 'add', 'origin', 'git@github.com:acme/product.git');
+      process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = 'git-remote';
+      // A session started inside the checkout is stored as "acme/product"; one that only touched it must match.
+      expect(projectFromToolPaths([JSON.stringify({ file_path: join(repo, 'README.md') })])).toBe('acme/product');
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE; else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = previous;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reads native Windows paths and working folders on Windows', () => {
+    const input = JSON.stringify({ file_path: 'C:\\work\\repo\\src\\app.ts', command: 'cd D:/code/site && npm test', cwd: 'C:\\work\\repo' });
+    expect(pathsIn(input, 'win32')).toEqual(['C:\\work\\repo\\src\\app.ts', 'D:/code/site', 'C:\\work\\repo']);
+    // Elsewhere a drive path is not a local path and is not looked up.
+    expect(pathsIn(input, 'darwin')).toEqual([]);
+  });
+
+
   it('comes from the repo its tool calls touched most, worktrees counted together, else the no-project pool', () => {
     const root = mkdtempSync(join(tmpdir(), 'scratch-project-'));
     try {
       const repo = join(root, 'claude-mem'), tree = join(root, 'worktrees', 'claude-mem 🧠', 'cards'), other = join(root, 'other-repo');
       const scratch = join(root, 'Documents', 'Codex', '2026-10-13', 'det');
-      for (const dir of [join(repo, '.git', 'worktrees', 'cards'), join(repo, 'src'), tree, join(other, '.git'), join(scratch, 'outputs')]) mkdirSync(dir, { recursive: true });
-      writeFileSync(join(tree, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'cards')}\n`);
+      for (const dir of [join(repo, 'src'), other, join(scratch, 'outputs')]) mkdirSync(dir, { recursive: true });
+      gitRepo(repo); gitRepo(other);
+      git(repo, 'worktree', 'add', '-q', tree);
       expect(pathsIn(JSON.stringify({ command: `rtk git -C '${tree}' status && ls ~15k ./relative` }))).toEqual([tree]);
       const calls = [
         JSON.stringify({ file_path: join(repo, 'src', 'a.ts') }),

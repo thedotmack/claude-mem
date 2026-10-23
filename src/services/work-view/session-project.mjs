@@ -3,9 +3,10 @@
 // ~/Documents/Codex/<date>/<slug>, the system temp folder) or from a folder
 // outside any git repo. Those sessions take the git repo their tool calls
 // touched most; a session that touched no repo joins the "no project" pool.
-import { existsSync, readFileSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
-import { basename, dirname, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import { getProjectContext } from '../../utils/project-name.js';
 
 /** The "no project" pool: a session whose tool calls touched no git repo. */
 export const NO_PROJECT = '';
@@ -46,34 +47,15 @@ export function repoRootOf(path) {
   return found;
 }
 
-/** The project key claude-mem's path mode gives a checkout: its folder name,
- * or `<parent>/<worktree>` for a worktree (`<parent>` alone when they match)
- * and `<parent>/<path>` for a submodule (src/utils/project-name.ts). */
-export function projectNameForCheckout(root) {
-  const name = basename(root);
-  let gitdir = null;
-  try {
-    const gitPath = join(root, '.git');
-    if (statSync(gitPath).isFile()) gitdir = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitPath, 'utf8'))?.[1]?.trim() ?? null;
-  } catch { return name; }
-  if (!gitdir) return name;
-  const absolute = resolve(root, gitdir);
-  const worktree = /^(.+)[/\\]\.git[/\\]worktrees[/\\][^/\\]+$/.exec(absolute);
-  if (worktree) { const parent = basename(worktree[1]); return parent === name ? parent : `${parent}/${name}`; }
-  const submodule = /^(.+)[/\\]\.git[/\\]modules[/\\].+$/.exec(absolute);
-  if (submodule) {
-    const leaf = relative(submodule[1], root);
-    return leaf && !leaf.startsWith('..') ? `${basename(submodule[1])}/${leaf.split(/[/\\]/).join('/')}` : name;
-  }
-  return name;
-}
-
-const PATH_START = /(?:^|[\s"'`=:(])((?:~\/|\/)[^\n\r"'`;|&<>()]*)/g;
+// A path starts with `/`, `~/` or, on Windows, a drive (`C:\`, `C:/`, `~\`).
+const PATH_START = /(?:^|[\s"'`=:(])((?:~[/\\]|\/|[A-Za-z]:[/\\])[^\n\r"'`;|&<>()]*)/g;
 // Agent tool and config folders (plugin marketplace clones, skills) are not the work's project.
 const AGENT_HOMES = ['.claude', '.codex', '.gemini', '.claude-mem', '.cursor'].map((name) => join(HOME, name));
-const isAgentHome = (path) => AGENT_HOMES.some((home) => path === home || path.startsWith(`${home}/`));
+const isAgentHome = (path) => AGENT_HOMES.some((home) => path === home || path.startsWith(`${home}/`) || path.startsWith(`${home}\\`));
+/** Absolute on this platform: `/…` everywhere, and a drive path (`C:\…`) on Windows. */
+const isAbsoluteOn = (path, platform) => (path.startsWith('/') && !path.startsWith('//')) || (platform === 'win32' && /^[A-Za-z]:[/\\]/.test(path));
 /** Absolute paths named in a tool call's input (file paths, commands, cwd). */
-export function pathsIn(toolInput) {
+export function pathsIn(toolInput, platform = process.platform) {
   let parsed = toolInput;
   if (typeof toolInput === 'string') { try { parsed = JSON.parse(toolInput); } catch { parsed = toolInput; } }
   const strings = [];
@@ -86,9 +68,9 @@ export function pathsIn(toolInput) {
   const paths = [];
   for (const text of strings) for (const match of text.matchAll(PATH_START)) {
     const raw = match[1].trim();
-    const path = raw.startsWith('~/') ? join(HOME, raw.slice(2)) : raw;
+    const path = raw.startsWith('~/') || (platform === 'win32' && raw.startsWith('~\\')) ? join(HOME, raw.slice(2)) : raw;
     // Only absolute paths: a relative one would resolve against this process's folder.
-    if (path.length > 1 && path.startsWith('/') && !path.startsWith('//') && !isAgentHome(path)) paths.push(path);
+    if (path.length > 1 && isAbsoluteOn(path, platform) && !isAgentHome(path)) paths.push(path);
   }
   return paths;
 }
@@ -110,13 +92,15 @@ export function folderNeedsProject(folder, storedProject) {
 }
 
 /** The project the repo touched most names; NO_PROJECT when no call touched one.
- * Worktrees of one repo count together, and the most-touched checkout names it. */
+ * Worktrees of one repo count together, and the most-touched checkout names it,
+ * by the same rules (path, git-remote or environment) that name a session started there. */
 export function projectFromToolPaths(toolInputs) {
-  const byRoot = new Map();
+  const byRoot = new Map(), nameOf = new Map();
   for (const input of toolInputs) for (const path of pathsIn(input)) {
     const checkout = checkoutForPath(path);
     if (!checkout) continue;
-    const project = projectNameForCheckout(checkout);
+    if (!nameOf.has(checkout)) nameOf.set(checkout, getProjectContext(checkout).primary);
+    const project = nameOf.get(checkout);
     const root = projectRoot(project);
     if (!byRoot.has(root)) byRoot.set(root, { count: 0, projects: new Map() });
     const entry = byRoot.get(root);
