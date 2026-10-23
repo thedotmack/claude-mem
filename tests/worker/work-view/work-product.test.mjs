@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, posix, win32 } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileKind, mergeProducts, productsFromFields, productsFromObservation, productsFromToolUse, recordedFile } from '../../../src/services/work-view/work-product.mjs';
+import { fileKind, isLocalPath, mergeProducts, productsFromFields, productsFromObservation, productsFromToolUse, recordedFile } from '../../../src/services/work-view/work-product.mjs';
 import { buildHumanRequests } from '../../../src/services/work-view/request-projection.mjs';
 
 const call = (extra) => ({ id: 5, session_db_id: 7, prompt_number: 1, created_at_epoch: 100, ...extra });
@@ -38,6 +38,21 @@ test('work_product fields attach links and files; unsafe URLs are dropped', () =
   assert.deepEqual(products.map((product) => [product.kind, product.title, product.field, product.sourceRef.index]), [
     ['link', 'Q4 deck', 'work_product', 0], ['image', 'hero.png', 'work_product', 1], ['documentation', 'docs.example.com', 'docs_url', 3],
   ]);
+});
+
+test('several work products with titles arrive as one JSON string field', () => {
+  const products = productsFromFields({ work_product: JSON.stringify([{ title: 'Q4 deck', url: 'https://docs.google.com/presentation/d/1' }, { path: '/w/out/hero.png' }]) });
+  assert.deepEqual(products.map((product) => [product.kind, product.title]), [['link', 'Q4 deck'], ['image', 'hero.png']]);
+  assert.deepEqual(productsFromFields({ work_product: '/w/out/report.pdf' }).map((product) => product.title), ['report.pdf']);
+});
+
+test('local paths are absolute for the platform, with no .. part', () => {
+  assert.equal(isLocalPath('C:\\work\\hero.png', win32.isAbsolute), true);
+  assert.equal(isLocalPath('C:/work/report.pdf', win32.isAbsolute), true);
+  assert.equal(isLocalPath('C:\\work\\..\\secret.png', win32.isAbsolute), false);
+  assert.equal(isLocalPath('work\\hero.png', win32.isAbsolute), false);
+  assert.equal(isLocalPath('/w/out/hero.png', posix.isAbsolute), true);
+  assert.equal(isLocalPath('C:\\work\\hero.png', posix.isAbsolute), false);
 });
 
 test('merging keeps the newest entry for each link or file', () => {

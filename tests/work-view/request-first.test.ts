@@ -8,7 +8,7 @@ import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { applyGroupDecisions, groupIdFor, groupingInput, linkBackwards, readCandidates, readLedger, runCli, validateGroupingAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
-import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects } from '../../src/services/work-view/session-project.mjs';
+import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot } from '../../src/services/work-view/session-project.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
@@ -342,5 +342,14 @@ describe('the real project of an agent scratch-folder session', () => {
       // Stored rows are unchanged.
       expect((db.prepare('SELECT project FROM sdk_sessions WHERE id = 1').get() as any).project).toBe('det');
     } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+describe('projectRoot', () => {
+  it('joins worktrees under their repo, but keeps git-remote org/repo keys apart', () => {
+    expect(projectRoot('repo/feature-worktree', false)).toBe('repo');
+    expect(projectRoot('acme/frontend', true)).toBe('acme/frontend');
+    expect(projectRoot('acme/backend', true)).not.toBe(projectRoot('acme/frontend', true));
+    expect(projectRoot(null, true)).toBeNull();
   });
 });

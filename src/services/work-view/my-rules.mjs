@@ -66,9 +66,12 @@ function suggestionsFromStory(story) {
 /** Story suggestions with the saved my-rules rows laid over them; owner-written rules added. */
 export function buildRules(state, ledger) {
   const rules = new Map(suggestionsFromStory(ledger?.story).map((rule) => [rule.ruleId, rule]));
-  const lists = state.lists.filter((list) => isMyRulesList(list.name));
-  for (const list of lists) for (const task of list.tasks) {
-    if (!task.name.startsWith(RULE_TASK_PREFIX)) continue;
+  // Every row saves the whole rule. Two computers with different home folders save under different
+  // projects, so after sync one rule can sit in several lists: apply them oldest first, the latest wins.
+  const ruleTasks = state.lists.filter((list) => isMyRulesList(list.name)).flatMap((list) => list.tasks)
+    .filter((task) => task.name.startsWith(RULE_TASK_PREFIX))
+    .sort((a, b) => (a.updatedAtEpoch ?? 0) - (b.updatedAtEpoch ?? 0) || (a.latestEntryId ?? 0) - (b.latestEntryId ?? 0));
+  for (const task of ruleTasks) {
     const fields = task.fields;
     const ruleId = text(fields.rule_id) || task.name.slice(RULE_TASK_PREFIX.length);
     const base = rules.get(ruleId) ?? {

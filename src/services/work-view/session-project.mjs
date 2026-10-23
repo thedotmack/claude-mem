@@ -6,14 +6,17 @@
 import { existsSync, realpathSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
-import { getProjectContext } from '../../utils/project-name.js';
+import { getProjectContext, useGitRemoteProjectNames } from '../../utils/project-name.js';
 
 /** The "no project" pool: a session whose tool calls touched no git repo. */
 export const NO_PROJECT = '';
 
-/** Worktrees of one repo share a root: the project key before its first `/`. */
-export function projectRoot(project) {
-  return typeof project === 'string' ? project.split('/')[0] : null;
+/** Worktrees of one repo share a root: the project key before its first `/`. With git-remote naming
+ * (CLAUDE_MEM_PROJECT_NAME_SOURCE) every checkout already shares one `org/repo` key, and its slash
+ * separates the owner from the repository, so the whole key is the root. */
+export function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
+  if (typeof project !== 'string') return null;
+  return gitRemoteNames ? project : project.split('/')[0];
 }
 
 const realpathOrSelf = (path) => { try { return realpathSync(path); } catch { return path; } };

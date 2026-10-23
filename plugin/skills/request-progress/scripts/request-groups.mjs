@@ -1700,8 +1700,9 @@ function getPathProjectContext(cwd, expandedCwd, repoRoot) {
 
 // src/services/work-view/session-project.mjs
 var NO_PROJECT = "";
-function projectRoot(project) {
-  return typeof project === "string" ? project.split("/")[0] : null;
+function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
+  if (typeof project !== "string") return null;
+  return gitRemoteNames ? project : project.split("/")[0];
 }
 var realpathOrSelf3 = (path3) => {
   try {

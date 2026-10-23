@@ -159,4 +159,16 @@ describe('My Rules routes', () => {
     await new Promise(resolve => setTimeout(resolve, 50));
     expect(readFileSync(rulesFilePath, 'utf8')).not.toContain(PREFERENCE);
   });
+
+  it('takes the latest decision when one rule is saved in several projects\' my-rules lists', async () => {
+    await saveRule({ action: 'approve', ruleId: SUGGESTED_ID });
+    const fields = JSON.parse((source.prepare("SELECT fields FROM work_state_entries WHERE list_name = 'my-rules' ORDER BY id DESC LIMIT 1").get() as { fields: string }).fields);
+    const now = Date.now();
+    // A computer with another home folder name turned it off later; its list sorts before 'home'.
+    source.prepare('INSERT INTO work_state_entries VALUES (?, ?, ?, ?, ?)').run(nextId++, 'aaa-laptop-home', 'my-rules', JSON.stringify({ ...fields, status: 'off' }), now + 5000);
+    expect(ruleById(await snapshot(), SUGGESTED_ID).status).toBe('off');
+    // And an older row in another list does not undo it.
+    source.prepare('INSERT INTO work_state_entries VALUES (?, ?, ?, ?, ?)').run(nextId++, 'zzz-desktop-home', 'my-rules', JSON.stringify({ ...fields, status: 'on' }), now - 5000);
+    expect(ruleById(await snapshot(), SUGGESTED_ID).status).toBe('off');
+  });
 });

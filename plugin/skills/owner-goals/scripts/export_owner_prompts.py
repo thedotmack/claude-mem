@@ -1,7 +1,7 @@
 """Export the prompts the owner typed personally in the last N days, minus prompts an agent wrote first.
 
 Step 1, owner-typed prompts, from the transcripts' own labels:
-  Claude Code (~/.claude/projects/*/*.jsonl): user messages with origin.kind == "human", entrypoint cli or
+  Claude Code ($CLAUDE_CONFIG_DIR or ~/.claude, projects/*/*.jsonl): user messages with origin.kind == "human", entrypoint cli or
     claude-desktop, not sidechain, not meta. Agent-launched runs (claude -p, SDK, subagents, observers) never
     carry origin "human".
   Codex (~/.codex/sessions): user messages from interactive sessions only. codex_exec runs and spawned
@@ -21,7 +21,7 @@ Usage: python3 export_owner_prompts.py --out <dir> [--days 31 | --start YYYY-MM-
   --start/--end read a past period instead: from local midnight on --start up to local midnight on --end.
   --since names the previous snapshot's local generated_at minute.
 """
-import argparse, glob, json, os, re, subprocess, sys, time
+import argparse, calendar, glob, json, os, re, subprocess, sys, time
 
 CODEX_INJECTED_PREFIXES = ("# AGENTS.md", "<environment_context", "<user_instructions", "<permissions", "<INSTRUCTIONS", "<turn_aborted")
 MINIMUM_CHECKABLE_LENGTH = 160
@@ -73,7 +73,12 @@ def strip_memory_tags(text):
 
 
 def iso_to_epoch(timestamp):
-    return time.mktime(time.strptime(timestamp[:19], "%Y-%m-%dT%H:%M:%S")) - time.timezone
+    """Transcript timestamps are UTC ("...Z"); timegm reads them as UTC, with no local daylight-saving shift."""
+    return calendar.timegm(time.strptime(timestamp[:19], "%Y-%m-%dT%H:%M:%S"))
+
+
+# Claude Code keeps transcripts under CLAUDE_CONFIG_DIR when it is set, like claude-mem's own paths.ts.
+CLAUDE_PROJECTS = os.path.join(os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude"), "projects")
 
 
 def text_of(content, text_types):
@@ -93,7 +98,7 @@ def recent_files(pattern, cutoff_seconds):
 def read_owner_typed_prompts(cutoff_seconds):
     """(epoch, tool, project, session, text) for every prompt the transcripts label as typed by a person."""
     prompts, seen_keys = [], set()
-    for transcript_path in recent_files("~/.claude/projects/*/*.jsonl", cutoff_seconds):
+    for transcript_path in recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl"), cutoff_seconds):
         project_folder = os.path.basename(os.path.dirname(transcript_path))
         for line in open(transcript_path, errors="ignore"):
             if '"type":"user"' not in line:
@@ -151,8 +156,8 @@ def read_owner_typed_prompts(cutoff_seconds):
 def read_agent_authored_text(cutoff_seconds):
     """(epoch, normalized text) for everything an agent wrote: assistant text, tool inputs, Codex function calls."""
     chunks = []
-    claude_paths = (recent_files("~/.claude/projects/*/*.jsonl", cutoff_seconds)
-                    + recent_files("~/.claude/projects/*/*/subagents/*.jsonl", cutoff_seconds))
+    claude_paths = (recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*.jsonl"), cutoff_seconds)
+                    + recent_files(os.path.join(CLAUDE_PROJECTS, "*", "*", "subagents", "*.jsonl"), cutoff_seconds))
     for path in claude_paths:
         for line in open(path, errors="ignore"):
             if '"type":"assistant"' not in line:

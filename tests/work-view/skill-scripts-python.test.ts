@@ -134,4 +134,22 @@ describe('export_owner_prompts.py', () => {
       rmSync(home, { recursive: true, force: true });
     }
   });
+
+  it('reads transcripts from CLAUDE_CONFIG_DIR and dates them in local time across daylight saving', () => {
+    const home = mkdtempSync(join(tmpdir(), 'export-owner-home-'));
+    try {
+      const projectDir = join(home, 'custom-claude', 'projects', '-repo');
+      mkdirSync(projectDir, { recursive: true });
+      writeFileSync(join(projectDir, 'session-1.jsonl'), JSON.stringify({ type: 'user', uuid: 'u1', sessionId: 'session-1', timestamp: '2026-07-15T12:00:00.000Z', entrypoint: 'cli', origin: { kind: 'human' }, message: { content: 'summer prompt' } }) + '\n');
+      const out = join(home, 'out');
+      const result = Bun.spawnSync(['python3', join(SKILLS, 'owner-goals', 'scripts', 'export_owner_prompts.py'), '--out', out, '--start', '2026-07-14', '--end', '2026-07-16'], {
+        env: { ...process.env, HOME: home, CLAUDE_CONFIG_DIR: join(home, 'custom-claude'), TZ: 'America/New_York' },
+      });
+      expect(result.stderr.toString()).toBe('');
+      // 12:00 UTC is 08:00 in New York during daylight saving time (EDT, UTC-4).
+      expect(readFileSync(join(out, 'owner-prompts.md'), 'utf8')).toContain('## 2026-07-15 08:00 · claude · -repo');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

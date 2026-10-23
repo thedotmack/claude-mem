@@ -427,9 +427,12 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     }
   }
   const { goalsRun, ...goalsModel } = toGoalsModel(snapshot.goals, snapshot.goalHistory)
-  // An open ask lists the requests the alignment linked to it; priorities link through request.goalId.
+  // Each goal lists every request the alignment linked to it. A request can serve up to three goals,
+  // while request.goalId names only one, so priorities need the list too.
   const aligned = snapshot.humanRequests.some((raw) => raw.goals)
-  const openAsks = aligned ? goalsModel.openAsks.map((ask) => ({ ...ask, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((goal) => goal.goalId === ask.id)).map((raw) => raw.id) })) : goalsModel.openAsks
+  const withServedBy = <T extends { id: string }>(goal: T) => ({ ...goal, servedBy: snapshot.humanRequests.filter((raw) => raw.goals?.some((link) => link.goalId === goal.id)).map((raw) => raw.id) })
+  const priorities = aligned ? goalsModel.priorities.map(withServedBy) : goalsModel.priorities
+  const openAsks = aligned ? goalsModel.openAsks.map(withServedBy) : goalsModel.openAsks
   const { progressRun, ...rulesModel } = toRulesModel(snapshot, now)
   const agents = snapshot.agents.map(toAgent)
   if (requests.some((request) => request.agentId === UNRECORDED_AGENT.id)) agents.push(UNRECORDED_AGENT)
@@ -443,6 +446,7 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     unlinkedWorkCount: Array.isArray(snapshot.unlinkedWork) ? snapshot.unlinkedWork.length : 0,
     sourceHealth: { connected: snapshot.source.connected, error: snapshot.source.error },
     ...goalsModel,
+    priorities,
     openAsks,
     ...rulesModel,
     buildStory: toBuildStory(snapshot.story?.story ?? null, now),
