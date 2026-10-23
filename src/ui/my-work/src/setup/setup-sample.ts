@@ -2,7 +2,9 @@
 // nothing else imports this file. Invented work for a made-up person; no real prompts, usage or history.
 // `&sample=new` shows a new install (no claude-mem history: no efficiency percent, no import step).
 // `&scan=<percent>` holds the scan at that percent, for screenshots.
+// `&usage=partial|none` shows an incomplete or missing usage history (default: a complete 30-day window).
 import type { MemoryResult, SetupData, SetupSource } from './setup-data'
+import { toSetupUsage, type SetupScanUsage } from './setup-usage'
 
 const SCAN_MS = 8000
 const REVEAL_GAP_MS = 900
@@ -37,11 +39,22 @@ const RECORDS: MemoryResult[] = [
   { id: 'm3', title: 'Feed stutter traced to image decoding', body: 'Large thumbnails were decoded on the main thread. Moving decoding off the main thread brought scrolling back to 60 fps on the test phone.', project: 'Mobile app', agent: 'Gemini CLI', session: 'Feed performance', date: '2026-10-14' },
 ]
 
-function sampleData(newInstall: boolean): SetupData {
+export type SampleUsage = 'complete' | 'partial' | 'none'
+
+function sampleUsage(kind: SampleUsage, newInstall: boolean): SetupScanUsage {
+  const agents = [
+    { id: 'claude-code', label: 'Claude Code', detected: true, recordsTokens: true, tokens: kind === 'none' ? 0 : 61_200_000 },
+    { id: 'codex', label: 'Codex', detected: true, recordsTokens: true, tokens: kind === 'none' ? 0 : 23_400_000 },
+  ]
+  const totalTokens = agents.reduce((sum, agent) => sum + agent.tokens, 0)
+  return { windowDays: 30, agents, totalTokens, coverage: kind, persona: kind === 'complete' ? 'Heavy AI User' : null, efficiencyPercent: newInstall ? null : 50 }
+}
+
+function sampleData(newInstall: boolean, usage: SampleUsage): SetupData {
   return {
     scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null },
     reveal: { goals: null, work: null, rules: null },
-    usage: { periodLabel: 'Last 30 days · Claude Code · Codex · Gemini CLI', tokens: 84_600_000, persona: 'Heavy AI User', efficiencyPercent: newInstall ? null : 50 },
+    usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
     history: newInstall ? null : { projects: 3, sessions: 24, observations: 128 },
@@ -51,8 +64,8 @@ function sampleData(newInstall: boolean): SetupData {
 }
 
 /** Plays the scan, then lands Goals, Work and Rules one after another, as the live screen will. */
-export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null): SetupSource {
-  let data = sampleData(newInstall)
+export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, usage: SampleUsage = 'complete'): SetupSource {
+  let data = sampleData(newInstall, usage)
   const listeners = new Set<(data: SetupData) => void>()
   const publish = (changes: Partial<SetupData>) => { data = { ...data, ...changes }; for (const listener of listeners) listener(data) }
   let playing = false

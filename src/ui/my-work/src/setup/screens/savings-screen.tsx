@@ -7,7 +7,8 @@ const monthly = (cents: number) => `${money(cents)}/mo`
 const tokensLabel = (tokens: number) => `${new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(tokens)} tokens`
 
 /**
- * Step 4, Token Savings, result only (PROTO #route-savings-result). The persona and 30-day tokens come from the scan.
+ * Step 4, Token Savings, result only (PROTO #route-savings-result). The persona and 30-day tokens come from the scan, and
+ * only for a complete window; otherwise the line says the history is incomplete or missing (DATA-CONTRACT.md).
  * "% more efficient" shows only with real claude-mem observation history. The price card is plan prices (D6).
  * "Use my existing token plan" stays off On The Go: there is no standalone Cloud Sync price yet (gap G1).
  */
@@ -25,7 +26,7 @@ export function SavingsScreen({ usage, branch, onPro, onExistingPlan, onSkip }: 
       <div className="page-heading">
         <h1 id="savings-title" tabIndex={-1}>{title}</h1>
         {usage?.persona && <p className="persona">You are a {usage.persona}.</p>}
-        {usage && <p className="usage-period">{usage.periodLabel} · {tokensLabel(usage.tokens)}</p>}
+        {usage && <p className="usage-period">{usage.coverage === 'complete' ? `${usage.periodLabel} · ${tokensLabel(usage.tokens)}` : usage.periodLabel}</p>}
       </div>
       <div className="panel is-memory price-card">
         <h2>Monthly price after your trial</h2>

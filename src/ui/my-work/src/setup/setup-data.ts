@@ -2,6 +2,7 @@
 // The live source fills it from the worker (prompt scan, extraction, usage, setup state); `?source=sample` loads
 // setup-sample.ts instead, and only then.
 import type { AgentTool } from '@/data'
+import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent { id: string; label: string; detected: boolean; prompts: number }
@@ -15,16 +16,7 @@ export interface RevealRule { id: string; text: string; quote: string; quotedAt:
 /** `null` while that set is still being extracted. */
 export interface RevealSets { goals: RevealGoal[] | null; work: RevealWork[] | null; rules: RevealRule[] | null }
 
-export type Persona = 'Cracked Dev' | 'Heavy AI User' | 'Medium AI User' | 'Light AI User'
-export interface SetupUsage {
-  /** e.g. "Last 30 days · Claude Code". */
-  periodLabel: string
-  tokens: number
-  /** Only for a complete 30-day window. */
-  persona: Persona | null
-  /** Only from real claude-mem observation history (upgraders). */
-  efficiencyPercent: number | null
-}
+export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
 export interface SetupHistory { projects: number; sessions: number; observations: number }
 export interface HistoryImportProgress { percent: number; done: boolean }
@@ -71,7 +63,11 @@ export const EMPTY_SETUP_DATA: SetupData = {
 }
 
 /** The worker's answers, trimmed to what this file reads. */
-interface WorkerScanState extends SetupScanView { agents: Array<SetupScanAgent & { fromMemory?: number; fromTranscripts?: number }> }
+interface WorkerScanState extends SetupScanView {
+  agents: Array<SetupScanAgent & { fromMemory?: number; fromTranscripts?: number }>
+  /** The 30-day token usage the same pass sums, once the scan is done. */
+  usage?: SetupScanUsage | null
+}
 interface WorkerSetupState { status: 'pending' | 'complete'; alreadyPro: boolean }
 
 async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
@@ -100,7 +96,7 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
- * stream) and the setup state. Extraction, usage, search and import land in funnel Phases 5-10; until then those
+ * stream), the 30-day token usage that scan sums, and the setup state. Extraction, usage, search and import land in funnel Phases 5-10; until then those
  * parts stay empty.
  */
 export const localSetupSource: SetupSource = {
@@ -111,6 +107,7 @@ export const localSetupSource: SetupSource = {
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
     const applyScan = (scan: WorkerScanState) => publish({
       scan: toScanView(scan),
+      usage: scan.usage ? toSetupUsage(scan.usage) : null,
       // Finish Setup pre-ticks the tools the scan found on this machine.
       detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
     })
