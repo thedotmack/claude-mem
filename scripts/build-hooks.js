@@ -460,6 +460,7 @@ async function buildHooks() {
     console.log('✓ Output directories ready');
 
     console.log('\n📦 Generating plugin package.json...');
+    const onnxruntimeNode = '1.23.2';
     const pluginPackageJson = {
       name: 'claude-mem-plugin',
       version: version,
@@ -499,8 +500,45 @@ async function buildHooks() {
         '@tree-sitter-grammars/tree-sitter-markdown': '^0.3.2',
         'shell-quote': '1.9.0',
       },
+      // The server's embedder, about 300 MB, which only server mode runs. The
+      // plugin install omits optional dependencies (installPluginDependencies),
+      // and `npx claude-mem server start` installs them before it starts a
+      // server; the Docker image's npm install includes them. LocalEmbedder
+      // reaches these through a request-time
+      // `await import('@huggingface/transformers')`, and they are kept EXTERNAL
+      // from the bundles below — so a server needs them in the plugin's own
+      // runtime closure or the lazy path dies with "Cannot find module
+      // 'onnxruntime-node'".
+      // sharp is deliberately NOT declared here: it is a hard dependency of
+      // @huggingface/transformers, so it installs and hoists into
+      // plugin/node_modules with it — and declaring it directly would trip
+      // scripts/check-postinstall-allowlist.js (sharp carries an `install`
+      // script), which prepublishOnly enforces. It is still marked external in
+      // the bundles below so the trio resolves at runtime, never at build time.
+      optionalDependencies: {
+        '@huggingface/transformers': '^4.2.0',
+      },
       overrides: {
-        'tree-sitter': '^0.25.0'
+        'tree-sitter': '^0.25.0',
+        // MUST live here, not only in the root package.json. npm/bun apply
+        // `overrides` ONLY in the project being installed, so the root override is
+        // invisible to users; plugin/ is its own install root (own package.json +
+        // own bun.lock, installed by setup-runtime.ts), so this one DOES apply.
+        // Without it, @huggingface/transformers' EXACT transitive pin wins
+        // ("onnxruntime-node": "1.30.0" in transformers 4.3.1), and ONNX Runtime
+        // ships no macOS x86_64 binary from 1.24 on (v1.24.1 release notes), so
+        // every Intel Mac would lose search by meaning, as in #3199. 1.23.2 is
+        // the last release with all six targets, {linux,darwin,win32} x
+        // {x64,arm64}, and the version uv resolves Chroma's `onnxruntime>=1.20`
+        // to on an Intel Mac. Its vectors are bit-identical to 1.21.0's.
+        'onnxruntime-node': onnxruntimeNode,
+        // A workaround, not a real package: transformers lists onnxruntime-web
+        // (a 141 MB nightly) as a hard dependency, but its Node build runs on
+        // onnxruntime-node and never loads it. This points the name at
+        // onnxruntime-common, which onnxruntime-node already installs, so it
+        // downloads nothing. Remove it once transformers.js stops requiring
+        // onnxruntime-web under Node.
+        'onnxruntime-web': `npm:onnxruntime-common@${onnxruntimeNode}`
       },
       trustedDependencies: [
         'tree-sitter-cli'
@@ -710,6 +748,17 @@ async function buildHooks() {
         // bun:ffi backs Windows listen-socket HANDLE_FLAG_INHERIT clearing (#3300).
         'bun:ffi',
         'zod',
+        // @huggingface/transformers is reached ONLY through LocalEmbedder's
+        // request-time `await import('@huggingface/transformers')`. Bundling it
+        // inlines the ONNX runtime glue while onnxruntime-node / sharp stay
+        // external, so the lazy path dies on a real install with
+        // "Cannot find module 'onnxruntime-node'". Keeping the whole trio external
+        // makes the dynamic import resolve against plugin/node_modules, where
+        // plugin/package.json ships them (and pins onnxruntime-node; see its
+        // overrides above).
+        'onnxruntime-node',
+        '@huggingface/transformers',
+        'sharp',
       ],
       define: {
         '__DEFAULT_PACKAGE_VERSION__': `"${version}"`,

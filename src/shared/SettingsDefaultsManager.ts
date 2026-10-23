@@ -215,6 +215,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
@@ -293,6 +294,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
+  CLAUDE_MEM_SERVER_VECTOR_SEARCH: string;       // server search by meaning: 'auto', 'true' or 'false'
+  CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: string; // CPU threads for embedding stored rows; '' = half, 0 = all
+  CLAUDE_MEM_EMBEDDING_MODEL: string;            // in-process embedding model for server search by meaning
   CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
@@ -473,12 +477,13 @@ export class SettingsDefaultsManager {
     // JSON object of provider-specific request fields, e.g. {"reasoning":{"enabled":false}}.
     // Settings file or env only (never the HTTP settings API); never sent to the cmem gateway.
     CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',
-    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // none | minimal | low | medium | high. Empty sends nothing. openrouter.ai only.
+    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // none | minimal | low | medium | high. Empty disables reasoning on openrouter.ai and the cmem gateway. A set effort is openrouter.ai only.
     CLAUDE_MEM_OPENAI_COMPAT_PRESET: '',  // Named endpoint preset for the openai-compatible provider (nvidia-nim, deepseek, groq, together, vllm, ollama, lmstudio). Empty = 'custom', configure the base URL by hand.
     CLAUDE_MEM_OPENAI_COMPAT_API_KEY: '',  // Key for the openai-compatible provider. Never shares the OpenRouter key or its attribution headers.
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
+    CLAUDE_MEM_OPENAI_COMPAT_REASONING: '',  // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
     CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: '', // '' (off) | 'subscription' | 'api-key': the Claude credential to run on while the primary one is held for quota. 'subscription': the Claude Code login, for a spent ANTHROPIC_API_KEY. 'api-key': ANTHROPIC_FALLBACK_API_KEY from .env, for a login that is spent or paused by the quota guard. Tried before CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER
@@ -562,6 +567,25 @@ export class SettingsDefaultsManager {
     // memory text to that vendor. Any other value is rejected. Applies to new
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
+    // The server's search by meaning (pgvector): it embeds every observation
+    // in process, existing rows in the background at startup. 'true'
+    // turns it on and 'false' off. 'auto' turns it on for a new database and
+    // leaves a database from before it keyword-only, so an upgrade adds no
+    // embedding work until that deployment sets 'true'.
+    CLAUDE_MEM_SERVER_VECTOR_SEARCH: 'auto',
+    // A server start that finds stored observations without vectors from the
+    // current model (search by meaning just turned on, or the model changed)
+    // embeds them in the background, which can take hours on a large store.
+    // That start caps the embedder at this many CPU threads until the next
+    // restart: empty is half the machine's threads, 0 is every thread.
+    CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: '',
+    // Embedding model the server's search by meaning uses: a key of
+    // EMBEDDING_MODELS in src/services/vector/models.ts, which lists them and
+    // their vector widths. 'all-MiniLM-L6-v2' is Chroma's default
+    // (English-tuned). Any other value is rejected. Changing it re-embeds
+    // every observation, and search by meaning covers only rows already
+    // re-embedded until that finishes.
+    CLAUDE_MEM_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
     CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     CLAUDE_MEM_SEARCH_RECENCY_DAYS: '90',      // Date-less semantic search only ranks matches from the last N days (#4770). 0 = no window (every match eligible); an explicit dateStart/dateEnd always wins. Restart the worker after changing it
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.

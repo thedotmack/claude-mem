@@ -30,6 +30,8 @@ import { captureEvent } from '../../../telemetry/telemetry.js';
 import { recordWorkStatePrompt, recordWorkStatePrivacy } from '../../../telemetry/work-state.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { isSimpleTierMessage, namesSameClaudeModel } from '../../session/tier-routing.js';
+import { resolveTierAlias } from '../../model-aliases.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -1062,12 +1064,9 @@ export class SessionRoutes extends BaseRouteHandler {
     });
   });
 
-  private static readonly SIMPLE_TOOLS = new Set([
-    'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
-  ]);
-
   private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    session.simpleTierRun = false;
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;
       return;
@@ -1083,9 +1082,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const hasSummarize = pending.some(m => m.message_type === 'summarize');
-    const allSimple = pending.every(m =>
-      m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
-    );
+    const allSimple = pending.every(m => isSimpleTierMessage(m.message_type, m.tool_name));
 
     if (hasSummarize) {
       const summaryModel = settings.CLAUDE_MEM_TIER_SUMMARY_MODEL;
@@ -1099,6 +1096,13 @@ export class SessionRoutes extends BaseRouteHandler {
       const simpleModel = settings.CLAUDE_MEM_TIER_SIMPLE_MODEL;
       if (simpleModel) {
         session.modelOverride = simpleModel;
+        // Hold the run to the simple tier only when that tier is a different
+        // model from the one a non-simple message would get; otherwise ending
+        // the run at the next Bash/Edit/summarize only resends the prompt.
+        session.simpleTierRun = !namesSameClaudeModel(
+          resolveTierAlias(simpleModel, settings),
+          resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings),
+        );
         logger.debug('SESSION', `Tier routing: simple model`, {
           sessionId: session.sessionDbId, model: simpleModel
         });
@@ -1124,6 +1128,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
     if (!model) return;
     session.modelOverride = model;
+    session.simpleTierRun = false;
     logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
       sessionId: session.sessionDbId,
       model,

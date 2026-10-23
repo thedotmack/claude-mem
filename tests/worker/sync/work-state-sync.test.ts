@@ -503,7 +503,11 @@ function rollBackWorkStateSyncSteps(db: Database): void {
   db.run('DROP INDEX idx_work_state_entries_unsynced');
   db.run('DROP INDEX ux_work_state_entries_origin');
   for (const column of WORK_STATE_SYNC_COLUMNS) db.run(`ALTER TABLE work_state_entries DROP COLUMN ${column}`);
-  db.run('DELETE FROM schema_versions WHERE version IN (66, 67)');
+  // Roll back everything after v65, not just the work-state steps: v68's
+  // observation_files row would otherwise remain the newest applied version
+  // and the fixture would no longer be a database main left at v65.
+  db.run('DROP TABLE IF EXISTS observation_files');
+  db.run('DELETE FROM schema_versions WHERE version IN (66, 67, 68)');
 }
 
 /** Counts every attempt to write the v65 row, kept or ignored: a BEFORE trigger fires either way. */
