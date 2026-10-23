@@ -83,6 +83,9 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       if (!playing) play()
       return () => listeners.delete(onData)
     },
+    // Review fixtures hand nothing to an installer.
+    async choose() {},
+    async complete() {},
     startHistoryImport() {
       const started = Date.now()
       const timer = setInterval(() => {

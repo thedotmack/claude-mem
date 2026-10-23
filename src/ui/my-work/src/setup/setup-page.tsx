@@ -89,8 +89,18 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     if (step !== 'workspace') main.current?.querySelector<HTMLElement>('h1')?.focus({ preventScroll: true })
   }, [step])
 
-  const toFinishSetup = (changes: Partial<SetupFlowState>) => {
+  // The terminal waits on these two hand-offs; a refusal stays on this screen and says why.
+  const [handOffError, setHandOffError] = useState<string | null>(null)
+  const handOff = async (send: () => Promise<void>): Promise<boolean> => {
+    try { await send() } catch (error) { setHandOffError(error instanceof Error ? error.message : String(error)); return false }
+    setHandOffError(null)
+    return true
+  }
+
+  // Leaving Token Savings is when both halves of the choice are final, so that is when the installer gets it.
+  const toFinishSetup = async (changes: Partial<SetupFlowState>) => {
     const merged = { ...flow, ...changes }
+    if (!await handOff(() => source!.choose({ branch: merged.branch, memoryBilling: merged.memoryBilling }))) return
     // Detected tools come pre-ticked the first time Finish Setup opens for this branch.
     const available = SETUP_TOOLS.filter((tool) => merged.branch === 'go' || tool.kind === 'local').map((tool) => tool.id)
     const finishTools = merged.finishTools.length ? merged.finishTools.filter((id) => available.includes(id)) : data.detectedTools.filter((id) => available.includes(id))
@@ -109,9 +119,9 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
     savings: () => (
       <SavingsScreen usage={data.usage} branch={flow.branch}
-        onPro={() => toFinishSetup({ branch: 'go', memoryBilling: 'hosted' })}
-        onExistingPlan={() => toFinishSetup({ memoryBilling: 'existing' })}
-        onSkip={() => toFinishSetup({})} />
+        onPro={() => void toFinishSetup({ branch: 'go', memoryBilling: 'hosted' })}
+        onExistingPlan={() => void toFinishSetup({ memoryBilling: 'existing' })}
+        onSkip={() => void toFinishSetup({})} />
     ),
     checkout: () => <CheckoutScreen onBack={() => setRequested('savings')} onContinue={() => update({ checkoutReviewed: true }, 'finish-setup')} />,
     'finish-setup': () => (
@@ -124,7 +134,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     ),
     import: () => <ImportScreen progress={data.historyImport} />,
     launch: () => <LaunchScreen tools={pickedTools} onDone={() => setRequested('workspace')} />,
-    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} onContinue={onComplete} />,
+    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} onContinue={() => void handOff(() => source!.complete()).then((done) => { if (done) onComplete() })} />,
   }
 
   return (
@@ -135,6 +145,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
         <ProgressBar step={step} branch={flow.branch} showCheckout={!flow.alreadyPro} />
       </header>
       <main id="setup-main" ref={main} tabIndex={-1} className={`setup-main step-${step}${['scan', 'reveal', 'choice', 'savings', 'workspace'].includes(step) ? ' is-centered' : ''}`}>
+        {handOffError && <p className="scan-error" role="alert">{handOffError}</p>}
         {screens[step]()}
       </main>
     </div>

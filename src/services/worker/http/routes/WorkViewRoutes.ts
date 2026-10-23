@@ -20,6 +20,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
+import { hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
 // Statuses are compared lowercased with `_` and spaces read as `-`, matching the viewer's status normalization.
@@ -95,9 +96,25 @@ interface WorkViewOptions {
   claudeInstructionsPath?: string;
   /** The install funnel's prompt scan. Without it the setup scan endpoints answer 503. */
   setupScan?: SetupScan | null;
+  /** The install funnel's per-machine state file (choice, installer stage, completion). */
+  setupStatePath?: string;
+  /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
+  settingsPath?: string;
 }
 
 const setupScanBody = z.object({}).strict();
+// On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
+const setupChoiceBody = z.object({
+  branch: z.enum(['home', 'go']),
+  memoryBilling: z.enum(['hosted', 'existing']),
+}).strict().refine(choice => choice.branch === 'home' || choice.memoryBilling === 'hosted', {
+  message: 'On The Go uses CMEM Pro (memoryBilling "hosted").',
+});
+const setupInstallerBody = z.object({
+  stage: z.enum(['waiting-for-choice', 'home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout', 'failed']),
+  error: z.string().max(2000).nullable().optional(),
+}).strict();
+const setupCompleteBody = z.object({}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
 
@@ -130,6 +147,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private rulesFilePath: string;
   private claudeInstructionsPath: string;
   private setupScan: SetupScan | null;
+  private setupStatePath: string;
+  private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
 
   constructor(options: WorkViewOptions = {}) {
@@ -151,6 +170,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
     this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(homedir(), '.claude', 'CLAUDE.md');
     this.setupScan = options.setupScan ?? null;
+    this.setupStatePath = options.setupStatePath ?? setupStatePath();
+    this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
     // Scan progress rides the work view's event stream, as `setup-scan` events.
     this.unsubscribeSetupScan = this.setupScan?.subscribe(state => this.broadcast('setup-scan', state)) ?? null;
   }
@@ -197,7 +218,58 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.setHeader('Cache-Control', 'no-store');
       res.status(202).json(this.setupScan.start());
     }));
+    // The funnel hand-off. The page posts the storage choice and the finish; the installer polls the state and
+    // reports what it did with the choice. Node's fetch sends no Origin, so the installer passes the same guard.
+    app.get('/api/setup/state', workViewLoopbackOnly, this.wrapHandler((_req, res) => {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json(this.setupStateView());
+    }));
+    app.post('/api/setup/choice', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupChoiceBody), this.wrapHandler(this.saveSetupChoice));
+    app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
+    app.post('/api/setup/complete', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCompleteBody), this.wrapHandler(this.completeSetup));
   }
+
+  private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
+    const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
+    return { ...state, alreadyPro: hasProConfiguration(settings) };
+  }
+
+  private saveSetupState(state: SetupStateFile, res: Response): void {
+    writeSetupState(state, this.setupStatePath);
+    const view = this.setupStateView(state);
+    this.broadcast('setup-state', view);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(view);
+  }
+
+  /** The choice can change until the installer acts on it; after that the installer holds the result. */
+  private saveSetupChoice = (req: Request, res: Response): void => {
+    const { branch, memoryBilling } = req.body as z.infer<typeof setupChoiceBody>;
+    const state = readSetupState(this.setupStatePath);
+    if (state.status === 'complete') { res.status(409).json({ error: 'Setup is already complete.', state: this.setupStateView(state) }); return; }
+    const applied = state.installer && state.installer.stage !== 'waiting-for-choice' && state.installer.stage !== 'failed';
+    if (applied && (state.choice?.branch !== branch || state.choice?.memoryBilling !== memoryBilling)) {
+      res.status(409).json({ error: 'The installer already applied the earlier choice.', state: this.setupStateView(state) });
+      return;
+    }
+    if (applied) { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    this.saveSetupState({ ...state, choice: { branch, memoryBilling, chosenAt: new Date().toISOString() } }, res);
+  };
+
+  private saveInstallerStage = (req: Request, res: Response): void => {
+    const { stage, error } = req.body as z.infer<typeof setupInstallerBody>;
+    const state = readSetupState(this.setupStatePath);
+    // A new installer run starts a fresh hand-off: a choice left by an earlier, interrupted run is not applied.
+    const choice = stage === 'waiting-for-choice' ? null : state.choice;
+    this.saveSetupState({ ...state, choice, installer: { stage, error: error ?? null, updatedAt: new Date().toISOString() } }, res);
+  };
+
+  private completeSetup = (_req: Request, res: Response): void => {
+    const state = readSetupState(this.setupStatePath);
+    if (state.status === 'complete') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    if (!state.choice) { res.status(409).json({ error: 'Choose where to keep your memory before finishing setup.', state: this.setupStateView(state) }); return; }
+    this.saveSetupState({ ...state, status: 'complete', completedAt: new Date().toISOString() }, res);
+  };
 
   private broadcast(event: string, value: unknown): void {
     if (this.closed) return;

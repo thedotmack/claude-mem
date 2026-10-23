@@ -88,9 +88,19 @@ function readReadingSignals(): ReadingSignals {
 
 const SetupPage = lazy(() => import('@/setup/setup-page'))
 const SETUP_REQUESTED = new URLSearchParams(window.location.search).get('setup') === '1'
+const SAMPLE_REQUESTED = new URLSearchParams(window.location.search).get('source') === 'sample'
 
 export default function App() {
-  const [page, setPage] = useState<Page>(SETUP_REQUESTED ? 'setup' : 'work')
+  // The funnel shows once per machine until setup completes, upgrades included, so My Work asks the worker first.
+  const [page, setPage] = useState<Page | 'checking'>(SETUP_REQUESTED ? 'setup' : SAMPLE_REQUESTED ? 'work' : 'checking')
+  useEffect(() => {
+    if (page !== 'checking') return
+    // A worker without the endpoint (older) has no funnel to show; one that can't be reached says so in My Work.
+    fetch('/api/setup/state', { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() as Promise<{ status?: string }> : null))
+      .then((state) => setPage(state?.status === 'pending' ? 'setup' : 'work'), () => setPage('work'))
+  }, [page])
+  if (page === 'checking') return null
   if (page !== 'setup') return <WorkApp />
   const finishSetup = () => {
     const url = new URL(window.location.href)

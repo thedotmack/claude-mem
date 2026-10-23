@@ -45,9 +45,16 @@ export interface SetupData {
   suggestions: string[]
 }
 
+/** What the page posts when it leaves Token Savings: where memory lives, and who generates it. */
+export interface SetupChoice { branch: 'home' | 'go'; memoryBilling: 'hosted' | 'existing' }
+
 export interface SetupSource {
   readonly kind: 'local' | 'sample'
   subscribe(onData: (data: SetupData) => void): () => void
+  /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
+  choose(choice: SetupChoice): Promise<void>
+  /** Finishes setup for this machine; the terminal exits and the funnel does not show again (POST /api/setup/complete). */
+  complete(): Promise<void>
   startHistoryImport(): void
   search(query: string): Promise<MemoryResult[]>
 }
@@ -63,10 +70,65 @@ export const EMPTY_SETUP_DATA: SetupData = {
   suggestions: [],
 }
 
-/** The live wiring (scan SSE, extraction, usage, search, import) lands in funnel Phases 5-10; until then the screens get the empty state. */
+/** The worker's answers, trimmed to what this file reads. */
+interface WorkerScanState extends SetupScanView { agents: Array<SetupScanAgent & { fromMemory?: number; fromTranscripts?: number }> }
+interface WorkerSetupState { status: 'pending' | 'complete'; alreadyPro: boolean }
+
+async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(url, { cache: 'no-store', ...init })
+  let answer: unknown = null
+  try { answer = await response.json() } catch { /* A body that isn't JSON leaves only the status to report. */ }
+  if (!response.ok) {
+    const reason = (answer as { error?: unknown } | null)?.error
+    throw new Error(typeof reason === 'string' ? reason : `The worker answered ${response.status} for ${url}.`)
+  }
+  return answer as T
+}
+const postJson = <T>(url: string, body: unknown) => workerJson<T>(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+
+/** Whether this machine still has the funnel to go through. A worker without the endpoint (older) has nothing to show. */
+export async function setupPending(): Promise<boolean> {
+  const response = await fetch('/api/setup/state', { cache: 'no-store' })
+  if (!response.ok) return false
+  return ((await response.json()) as WorkerSetupState).status === 'pending'
+}
+
+const toScanView = (scan: WorkerScanState): SetupScanView => ({
+  agents: scan.agents.map(({ id, label, detected, prompts }) => ({ id, label, detected, prompts })),
+  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error,
+})
+
+/**
+ * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
+ * stream) and the setup state. Extraction, usage, search and import land in funnel Phases 5-10; until then those
+ * parts stay empty.
+ */
 export const localSetupSource: SetupSource = {
   kind: 'local',
-  subscribe(onData) { onData(EMPTY_SETUP_DATA); return () => {} },
+  subscribe(onData) {
+    let data = EMPTY_SETUP_DATA
+    let closed = false
+    const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
+    const applyScan = (scan: WorkerScanState) => publish({
+      scan: toScanView(scan),
+      // Finish Setup pre-ticks the tools the scan found on this machine.
+      detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
+    })
+    const applyState = (state: WorkerSetupState) => publish({ alreadyPro: state.alreadyPro })
+    onData(data)
+    const stream = new EventSource('/api/work-view/events')
+    stream.addEventListener('setup-scan', (event) => applyScan(JSON.parse((event as MessageEvent<string>).data) as WorkerScanState))
+    stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
+    void (async () => {
+      const [scan, state] = await Promise.all([workerJson<WorkerScanState>('/api/setup/scan'), workerJson<WorkerSetupState>('/api/setup/state')])
+      applyState(state)
+      applyScan(scan)
+      if (scan.phase === 'idle') applyScan(await postJson<WorkerScanState>('/api/setup/scan', {}))
+    })().catch((error: unknown) => publish({ scan: { ...data.scan, phase: 'failed', error: error instanceof Error ? error.message : String(error) } }))
+    return () => { closed = true; stream.close() }
+  },
+  async choose(choice) { await postJson('/api/setup/choice', choice) },
+  async complete() { await postJson('/api/setup/complete', {}) },
   startHistoryImport() { throw new Error('History import is not connected to the worker yet.') },
   search: async () => [],
 }
