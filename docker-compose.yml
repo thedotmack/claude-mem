@@ -62,7 +62,6 @@ services:
     image: claude-mem-postgres:17
     build:
       context: docker/postgres
-    pull_policy: build
     restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:?POSTGRES_USER is required}
