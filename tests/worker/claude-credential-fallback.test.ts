@@ -15,6 +15,7 @@ import { resetDependencyStatusesForTesting } from '../../src/shared/dependency-h
 import { claudeQuotaStandIn, setClaudeFallbackReadinessForTesting } from '../../src/shared/claude-fallback-readiness.js';
 import { SessionManager } from '../../src/services/worker/SessionManager.js';
 import type { DatabaseManager } from '../../src/services/worker/DatabaseManager.js';
+import { ClassifiedProviderError } from '../../src/services/worker/provider-errors.js';
 import { readObserverHealth, renderObserverQuotaCooldownNotice } from '../../src/shared/observer-health.js';
 import {
   quotaServingProvider,
@@ -137,6 +138,20 @@ function nextTick(): Promise<void> {
   return new Promise(resolve => setTimeout(resolve, 5));
 }
 
+function makeSessionManager(): SessionManager {
+  return new SessionManager({
+    getSessionById: () => ({
+      content_session_id: 'content-handback',
+      project: 'proj',
+      platform_source: 'claude',
+      user_prompt: 'prompt',
+      memory_session_id: null,
+    }),
+    getSessionStore: () => ({ getPromptNumberFromUserPrompts: () => 1 }),
+    getChromaSync: () => undefined,
+  } as unknown as DatabaseManager);
+}
+
 function buildRoutes(session: ActiveSession, claude: (s: ActiveSession) => Promise<void>) {
   let active: ActiveSession | undefined = session;
   const sessionManager = {
@@ -238,6 +253,51 @@ describe('Claude credential fallback: order and booking', () => {
   afterEach(tearDown);
   afterAll(() => resetQuotaCooldownsForTesting());
 
+  it.each([
+    ['subscription', 'auth:observer_text'],
+    ['subscription', 'auth:observer_org_policy'],
+    ['api-key', 'auth:auth_invalid'],
+  ] as const)('automatically retries the primary after a refused %s fallback (%s)', async (target, reason) => {
+    process.env.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD = target;
+    if (target === 'subscription') signIn();
+    else setFallbackKey();
+    recordQuotaExhausted('claude', SPENT_KEY, undefined, undefined, undefined,
+      target === 'subscription' ? 'api-key' : 'subscription');
+    const sm = makeSessionManager();
+    const session = sm.initializeSession(304, 'prompt', 1);
+    sm.queueObservation(304, { tool_name: 'Read', tool_input: {}, tool_response: {}, prompt_number: 1, toolUseId: 'auth-recovery' });
+    const starts: Array<string | null> = [];
+    const routes = new SessionRoutes(
+      sm, {} as any,
+      { startSession: async (s: ActiveSession) => {
+        starts.push(s.claudeAuthOverride ?? null);
+        if (starts.length > 1) { await hang(); return; }
+        s.abortReason = reason;
+        s.abortController.abort();
+        if (reason === 'auth:auth_invalid') {
+          throw new ClassifiedProviderError('Invalid API key', { kind: 'auth_invalid', cause: null });
+        }
+      } } as any,
+      {} as any, {} as any, {} as any, {} as any,
+      { finalizeSession: async () => {} } as any,
+    );
+
+    await routes.ensureGeneratorRunning(304, 'observation');
+    await session.generatorPromise;
+    expect(starts).toEqual([target]);
+    expect(session.fallbackFrom).toBeNull();
+    expect(getQuotaCooldown('claude')?.cause).toBe('auth');
+    expect(sm.getMessageBuffer().getPendingCount(304)).toBe(1);
+    expect(session.pausedReason).toBe('provider_switch');
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(0);
+
+    getQuotaCooldown('claude')!.armedAtMs -= QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS + 1;
+    expect(routes.resumePendingSessions('periodic-resume')).toBe(1);
+    await nextTick();
+    expect(starts).toEqual([target, null]);
+    expect(getQuotaCooldown('claude')?.probeInFlightSinceMs).not.toBeNull();
+  });
+
   it('tries the other credential before the provider fallback, and the provider fallback once both are held', () => {
     signIn();
     process.env.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER = 'gemini';
@@ -306,20 +366,6 @@ describe('Claude credential fallback: a running stand-in hands back to the prima
   beforeEach(setUp);
   afterEach(tearDown);
   afterAll(() => resetQuotaCooldownsForTesting());
-
-  function makeSessionManager(): SessionManager {
-    return new SessionManager({
-      getSessionById: () => ({
-        content_session_id: 'content-handback',
-        project: 'proj',
-        platform_source: 'claude',
-        user_prompt: 'prompt',
-        memory_session_id: null,
-      }),
-      getSessionStore: () => ({ getPromptNumberFromUserPrompts: () => 1 }),
-      getChromaSync: () => undefined,
-    } as unknown as DatabaseManager);
-  }
 
   /** A stand-in run on the subscription login, one batch answered, one more queued. */
   async function standInBetweenBatches(sessionDbId: number) {

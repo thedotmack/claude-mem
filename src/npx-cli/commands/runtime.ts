@@ -5,6 +5,7 @@ import { join } from 'path';
 import { styleText } from 'node:util';
 import { ensureServerEmbedder, getBunPath, hasServerEmbedder } from '../install/setup-runtime.js';
 import { npmPackageRootDirectory } from '../utils/paths.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { resolvePluginRoot, buildWorkerUrl } from '../../shared/worker-utils.js';
 import { isConnectionRefusedError } from '../../shared/connection-errors.js';
 
@@ -106,6 +107,14 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
 }
 
 /**
+ * Whether the server may search by meaning: CLAUDE_MEM_SERVER_VECTOR_SEARCH is
+ * anything but 'false', read as the server reads it (vectorSearchMode).
+ */
+export function serverVectorSearchAllowed(): boolean {
+  return SettingsDefaultsManager.get('CLAUDE_MEM_SERVER_VECTOR_SEARCH').toLowerCase() !== 'false';
+}
+
+/**
  * Start a server process, first installing the embedder the plugin install
  * leaves out (installPluginDependencies). Without it the server still runs,
  * searching by keyword only.
@@ -113,6 +122,12 @@ function spawnBunServerCommand(command: string, extraArgs: string[] = []): void 
 async function spawnBunServerWithEmbedder(command: string, extraArgs: string[] = []): Promise<void> {
   const pluginRoot = pluginRootOrExit();
   const bunPath = resolveBunOrExit();
+  // With search by meaning off, the server never loads the embedder, so the
+  // install is skipped; the spawned server reads the same environment.
+  if (!serverVectorSearchAllowed()) {
+    spawnBunServerCommand(command, extraArgs);
+    return;
+  }
   try {
     if (!hasServerEmbedder(pluginRoot)) {
       console.error('Installing the embedder for search by meaning (about 300 MB, once)...');

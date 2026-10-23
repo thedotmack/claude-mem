@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import {
   appendDirectoryToWindowsPathValue,
   buildLauncherCompileArguments,
+  createAdhocCodesigner,
   ensureDirectoryOnWindowsUserPath,
   ensureLauncherOnPath,
   ensureLocalBinOnShellPath,
@@ -96,6 +97,43 @@ const codesignMustNotRun: LauncherCodesignRunner = () => {
 
 /** Signing is a no-op for fake compiles, so no test reaches the real `codesign`. */
 const codesignNoop: LauncherCodesignRunner = () => ({ status: 0, stderr: '' });
+
+/** The thrown error's message, so a test can assert on more than one fragment of it. */
+function thrownMessage(action: () => unknown): string {
+  try {
+    action();
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error);
+  }
+  throw new Error('expected the action to throw');
+}
+
+/**
+ * Zeroes the signature blob of a 64-bit Mach-O, so `codesign --force --sign -`
+ * refuses it with "invalid or unsupported format for signature" — the way it
+ * refuses Bun 1.3.12's `--compile` output (#4947). Corrupting the blob rather
+ * than trusting the installed Bun to emit a malformed signature keeps the
+ * regression test meaningful if a later Bun signs its output correctly.
+ */
+function zeroMachOCodeSignature(binaryPath: string): void {
+  const binary = readFileSync(binaryPath);
+  if (binary.readUInt32LE(0) !== 0xfeedfacf) {
+    throw new Error(`${binaryPath} is not a 64-bit Mach-O`);
+  }
+  const loadCommandCount = binary.readUInt32LE(16);
+  let loadCommandOffset = 32;
+  for (let loadCommandIndex = 0; loadCommandIndex < loadCommandCount; loadCommandIndex++) {
+    // LC_CODE_SIGNATURE, the load command that points at the embedded blob.
+    if (binary.readUInt32LE(loadCommandOffset) === 0x1d) {
+      const signatureOffset = binary.readUInt32LE(loadCommandOffset + 8);
+      const signatureSize = binary.readUInt32LE(loadCommandOffset + 12);
+      writeFileSync(binaryPath, binary.fill(0, signatureOffset, signatureOffset + signatureSize));
+      return;
+    }
+    loadCommandOffset += binary.readUInt32LE(loadCommandOffset + 4);
+  }
+  throw new Error(`${binaryPath} has no LC_CODE_SIGNATURE load command to corrupt`);
+}
 
 beforeAll(() => {
   mkdirSync(scratchParentDirectory, { recursive: true });
@@ -276,6 +314,26 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult).toMatchObject({ status: 'installed', pathSetupOutcome: 'already-on-path' });
   });
 
+  // #4934/#4940: the Bun discovery fixes live in the compiled launcher, so a
+  // protocol-1 binary already on PATH must be recompiled, by the installer and
+  // by the SessionStart self-heal alike, for existing installs to get them.
+  it('recompiles a protocol-1 launcher from before the Bun discovery fixes, in both contexts (#4934)', () => {
+    expect(LAUNCHER_PROTOCOL).toBeGreaterThanOrEqual(2);
+    for (const invocationContext of ['npx-installer', 'session-start-self-heal'] as const) {
+      const scratchHome = makeScratchHome();
+      const host = posixHost(scratchHome, { PATH: `${path.join(scratchHome, '.local', 'bin')}:/usr/bin` });
+      writeFakeLauncher(resolveLauncherBinaryPath(host), '1');
+      const compile = fakeCompile();
+
+      const ensureResult = ensureLauncherOnPath({
+        pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host, runCompile: compile, runCodesign: codesignNoop, invocationContext,
+      });
+
+      expect(compile.calls).toHaveLength(1);
+      expect(ensureResult.status).toBe('installed');
+    }
+  });
+
   it('reports bun-not-found without compiling', () => {
     const host = posixHost(makeScratchHome());
     const ensureResult = ensureLauncherOnPath({
@@ -373,6 +431,122 @@ describe.skipIf(!isPosixHost)('ensureLauncherOnPath', () => {
     expect(ensureResult.status).toBe('installed');
     expect(codesign.calls).toEqual([path.join(binDirectory, `.claude-mem-${process.pid}.tmp`)]);
     expect(readdirSync(binDirectory)).toEqual(['claude-mem']);
+  });
+
+  it('clears the old signature before re-signing, and reports only the sign step (#4947)', () => {
+    const invocations: string[][] = [];
+    const signer = createAdhocCodesigner((codesignArguments) => {
+      invocations.push([...codesignArguments]);
+      // The clear fails and the sign succeeds: clearing is best effort, so the
+      // clear's failure must neither stop the sign nor be reported.
+      return codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'code object is not signed at all\n' }
+        : { status: 0, stderr: '' };
+    });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 0, stderr: '' });
+    expect(invocations).toEqual([
+      ['--remove-signature', '/tmp/claude-mem'],
+      ['--force', '--sign', '-', '/tmp/claude-mem'],
+    ]);
+  });
+
+  it('reports the signing failure, not the successful clear, when only signing fails', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 0, stderr: 'replacing existing signature\n' }
+        : { status: 3, stderr: 'sign step failed\n' });
+
+    // Returning the clear's result would hide the failure that matters.
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 3, stderr: 'sign step failed\n' });
+  });
+
+  it('reports the signing failure when both steps fail', () => {
+    const signer = createAdhocCodesigner((codesignArguments) =>
+      codesignArguments[0] === '--remove-signature'
+        ? { status: 1, stderr: 'clear step failed\n' }
+        : { status: 2, stderr: 'sign step failed\n' });
+
+    expect(signer('/tmp/claude-mem')).toEqual({ status: 2, stderr: 'sign step failed\n' });
+  });
+
+  it.skipIf(process.platform !== 'darwin')('installs a real build whose signature codesign --force cannot replace (Bun 1.3.12, #4947)', () => {
+    const scratchHome = makeScratchHome();
+    const host = posixHost(scratchHome);
+    const logger = recordingLogger();
+    // Compile the real launcher bundle, then reproduce Bun 1.3.12's malformed
+    // signature. No runCodesign: the real `codesign` runs the repair.
+    const compileThenCorruptSignature: LauncherCompileRunner = (bunPath, compileArguments, workingDirectory) => {
+      const compileResult = spawnSync(bunPath, compileArguments, { cwd: workingDirectory, encoding: 'utf-8' });
+      zeroMachOCodeSignature(compileArguments[compileArguments.indexOf('--outfile') + 1]);
+      return { status: compileResult.status, stderr: compileResult.stderr };
+    };
+
+    const ensureResult = ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => process.execPath, logger, host,
+      runCompile: compileThenCorruptSignature, invocationContext: 'npx-installer',
+    });
+
+    expect(ensureResult.status).toBe('installed');
+    expect(logger.lines.filter((line) => line.includes('codesign'))).toEqual([]);
+    const placedBinaryPath = resolveLauncherBinaryPath(host);
+    expect(spawnSync(placedBinaryPath, ['--version'], { encoding: 'utf-8' }).stdout.trim())
+      .toBe(String(LAUNCHER_PROTOCOL));
+    // The cleared signature is replaced by an ad-hoc one, not left absent.
+    expect(spawnSync('codesign', ['-dv', placedBinaryPath], { encoding: 'utf-8' }).stderr)
+      .toContain('flags=0x2(adhoc)');
+  }, 60_000);
+
+  it('quotes the signing failure when the probe cannot run the binary', () => {
+    const scratchHome = makeScratchHome();
+    // What macOS does to an invalidly-signed launcher: the exec fails before
+    // the protocol can be printed.
+    const compileCrashingLauncher: LauncherCompileRunner = (_bunPath, compileArguments) => {
+      const outfilePath = compileArguments[compileArguments.indexOf('--outfile') + 1];
+      writeFileSync(outfilePath, '#!/bin/sh\necho "killed on exec" >&2\nexit 137\n');
+      chmodSync(outfilePath, 0o755);
+      return { status: 0, stderr: '' };
+    };
+    const failingCodesign: LauncherCodesignRunner = () => ({
+      status: 1,
+      stderr: 'warning: first line\n.claude-mem-1.tmp: invalid or unsupported format for signature\n',
+    });
+
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: compileCrashingLauncher, runCodesign: failingCodesign, invocationContext: 'npx-installer',
+    }));
+
+    // The protocol message still says what the probe saw ...
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    // ... and the actionable half names the signing failure, last stderr line only.
+    expect(message).toContain('codesign --force --sign - failed (exit 1): .claude-mem-1.tmp: invalid or unsupported format for signature');
+    expect(message).not.toContain('warning: first line');
+  });
+
+  it('does not blame signing when signing succeeded but the probe still failed', () => {
+    const scratchHome = makeScratchHome();
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: posixHost(scratchHome),
+      runCompile: fakeCompile('garbage'), runCodesign: codesignNoop, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
+  });
+
+  it('does not mention signing on a host where codesign never runs', () => {
+    const scratchHome = makeScratchHome();
+    const linuxHost: LauncherHostEnvironment = {
+      homeDirectory: scratchHome, platform: 'linux', environmentVariables: { PATH: '/usr/bin', SHELL: '/bin/bash' },
+    };
+    const message = thrownMessage(() => ensureLauncherOnPath({
+      pluginRoot, resolveBunPath: () => '/fake/bun', logger: recordingLogger(), host: linuxHost,
+      runCompile: fakeCompile('garbage'), runCodesign: codesignMustNotRun, invocationContext: 'npx-installer',
+    }));
+
+    expect(message).toContain(`compiled launcher printed protocol null, expected ${LAUNCHER_PROTOCOL}`);
+    expect(message).not.toContain('codesign');
   });
 
   it('warns and still installs when ad-hoc signing fails (codesign missing or broken)', () => {

@@ -291,7 +291,7 @@ describe('server beta postgres observation storage', () => {
       await create('Change the header font.'),
       await create('Change the footer colour.'),
     ];
-    await create('Lunch is at noon.');
+    const lunch = await create('Lunch is at noon.');
     const search = async (query: string) =>
       (await storage.observations.search({ projectId: project.id, teamId: team.id, query })).map(o => o.id);
 
@@ -301,6 +301,14 @@ describe('server beta postgres observation storage', () => {
     expect(results[0]).toBe(retry.id);
     expect(new Set(results)).toEqual(new Set([retry.id, ...changes.map(o => o.id)]));
     expect(await search('retry pizza')).toEqual([retry.id]);
+
+    // Web-search syntax keeps its meaning on the bm25 path: a quoted phrase,
+    // an excluded -term and "or" filter as websearch_to_tsquery always did.
+    expect(await search('"header font"')).toEqual([changes[1]!.id]);
+    expect(await search('"font header"')).toEqual([]);
+    expect(await search('retry -gateway')).toEqual([]);
+    expect(new Set(await search('change -font'))).toEqual(new Set([changes[0]!.id, changes[2]!.id]));
+    expect(new Set(await search('retry or lunch'))).toEqual(new Set([retry.id, lunch.id]));
   });
 
   it('scopes observation generation_key idempotency to project and team', async () => {

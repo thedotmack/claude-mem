@@ -38,6 +38,14 @@ jobs:
 
       - run: npm run build
 
+      - name: Hook compatibility with Git Bash and Windows overrides
+        shell: pwsh
+        run: |
+          $bun = Join-Path $env:USERPROFILE '.bun\bin\bun.exe'
+          & $bun test tests/infrastructure/hook-shell.test.ts
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & $bun test tests/infrastructure/plugin-distribution.test.ts --test-name-pattern 'Codex Windows payload dependency check'
+
       - name: Context reader responsiveness and packaging
         shell: pwsh
         run: |

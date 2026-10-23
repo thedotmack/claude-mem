@@ -329,10 +329,28 @@ export function progressiveSearchToolResult(result: ProgressiveSearchResult) {
   const content: [{ type: "text"; text: string }] = [{ type: "text", text: renderProgressiveSearchResult(result) }];
   return { content };
 }
+
+/**
+ * Matches WorkerRequestTimeoutError (src/shared/worker-request-timeout-error.ts)
+ * by its name and numeric deadline rather than by import, so this contract file
+ * stays import-free. Message text is never consulted: other backends also say
+ * "timed out" and may carry private detail.
+ */
+function isWorkerRequestTimeout(error: unknown): error is Error & { timeoutMs: number } {
+  return error instanceof Error
+    && error.name === "WorkerRequestTimeoutError"
+    && Number.isFinite((error as { timeoutMs?: unknown }).timeoutMs);
+}
+
 export function progressiveSearchToolError(error: unknown) {
-  // Backend exceptions may contain credentials or SQL. Only contract errors are
-  // safe to disclose; adapters log backend errors through their own safe logger.
-  const message = error instanceof ProgressiveSearchError ? error.message : "Memory retrieval failed. Retry the query.";
+  // Backend exceptions may contain credentials or SQL. Only contract errors and
+  // the worker-client timeout are safe to disclose, and the timeout is mapped to
+  // a fixed sentence; adapters log backend errors through their own safe logger.
+  const message = error instanceof ProgressiveSearchError
+    ? error.message
+    : isWorkerRequestTimeout(error)
+      ? `The local worker did not answer within ${error.timeoutMs}ms.`
+      : "Memory retrieval failed. Retry the query.";
   const text = `Memory search could not continue.\n${message}\nNext: retry dumb_search with a query, or use ${MEM_SEARCH_WORKFLOW}.`;
   return { content: [{ type: "text" as const, text }], isError: true as const };
 }
