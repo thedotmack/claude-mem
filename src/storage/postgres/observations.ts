@@ -12,6 +12,7 @@ import {
   toJsonObject
 } from './utils.js';
 import { normalizePlatformSourceOrNull } from '../../shared/platform-source.js';
+import { bm25Order, usesBm25Index } from './schema.js';
 
 export type ObservationSourceType = 'agent_event' | 'session_summary' | 'observation_reindex' | 'manual';
 
@@ -67,6 +68,21 @@ interface ObservationSourceRow {
   source_id: string;
   metadata: unknown;
   created_at: Date;
+}
+
+// Any term of $3, as the english tsvector's lexemes ORed: whether a row holds
+// any term of the query, as the bm25 index tokenizes it.
+const ANY_TERM_TSQUERY_SQL = `(
+  SELECT string_agg(quote_literal(lexeme), ' | ')::tsquery
+  FROM unnest(tsvector_to_array(to_tsvector('english', $3))) AS lexeme
+)`;
+
+/**
+ * Whether a keyword query uses websearch_to_tsquery syntax: a double quote
+ * (phrase), a word starting with "-" (exclusion), or a standalone "or".
+ */
+export function usesWebsearchSyntax(query: string): boolean {
+  return /"|(^|\s)-\S|(^|\s)or(\s|$)/i.test(query);
 }
 
 export class PostgresObservationRepository {
@@ -240,10 +256,23 @@ export class PostgresObservationRepository {
     const folderProjects = input.folderProjects && input.folderProjects.length > 0
       ? input.folderProjects
       : null;
-    const result = await this.client.query<ObservationRow>(
+    // On postgres-pgvector-textsearch, a query matches any of its terms,
+    // ranked by bm25 through the pg_textsearch index's scan, which scores rows
+    // as it yields them; naming the score anywhere else would score each row
+    // again outside the index, at milliseconds a row. The scan yields rows with
+    // no query term last, scored 0, once the matches run out; matches_query
+    // marks those to drop. Elsewhere the query is unchanged.
+    const bm25 = query !== null && usesBm25Index(this.client);
+    // A query written with web-search syntax (a quoted phrase, -term, or) keeps
+    // the websearch_to_tsquery match it always had, so phrases, exclusions and
+    // alternatives still mean what they say; bm25 only ranks those matches.
+    // Plain words match any term on the bm25 path.
+    const bm25MatchesAnyTerm = bm25 && !usesWebsearchSyntax(query);
+    const result = await this.client.query<ObservationRow & { matches_query?: boolean }>(
       `
         SELECT observations.*,
           COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
+          ${bm25MatchesAnyTerm ? `, observations.content_search @@ ${ANY_TERM_TSQUERY_SQL} AS matches_query` : ''}
         FROM observations
         LEFT JOIN server_sessions
           ON server_sessions.id = observations.server_session_id
@@ -252,7 +281,7 @@ export class PostgresObservationRepository {
         WHERE observations.project_id = $1
           AND observations.team_id = $2
           AND ($8::boolean IS NULL OR (observations.kind = 'summary') = $8)
-          AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))
+          ${bm25MatchesAnyTerm ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
           AND (
             $6::text[] IS NULL
             OR lower((observations.metadata->>'project') COLLATE "C") = ANY(
@@ -292,10 +321,11 @@ export class PostgresObservationRepository {
               )
             )
           )
-        ORDER BY
-          CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
+        ORDER BY ${bm25
+          ? bm25Order('$3')
+          : `CASE WHEN $3::text IS NULL THEN observations.created_at END DESC,
           ts_rank(observations.content_search, websearch_to_tsquery('english', $3)) DESC,
-          observations.updated_at DESC
+          observations.updated_at DESC`}
         LIMIT $4
       `,
       [
@@ -309,7 +339,7 @@ export class PostgresObservationRepository {
         input.summary ?? null,
       ]
     );
-    return result.rows.map(mapObservationRow);
+    return result.rows.filter(row => !bm25MatchesAnyTerm || row.matches_query).map(mapObservationRow);
   }
 }
 

@@ -30,6 +30,7 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
     const poolClient = await client.connect();
     try {
       await bootstrapServerPostgresSchema(poolClient);
+      bm25InUse.set(client, usesBm25Index(poolClient));
     } finally {
       poolClient.release();
     }
@@ -39,6 +40,7 @@ export async function bootstrapServerPostgresSchema(client: PostgresQueryable): 
   await client.query('BEGIN');
   try {
     await applyPhase1Migration(client);
+    await applyBm25Index(client);
     await client.query('COMMIT');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -58,6 +60,49 @@ async function applyPhase1Migration(client: PostgresQueryable): Promise<void> {
     `,
     [SERVER_POSTGRES_SCHEMA_VERSION, 'phase 1 postgres observation storage foundation']
   );
+}
+
+const BM25_INDEX_NAME = 'idx_observations_content_bm25';
+
+// On the postgres-pgvector-textsearch image, which installs and preloads
+// pg_textsearch, keyword search ranks by bm25 through an index over
+// observation content, tokenized as content_search is. On other Postgres the
+// extension cannot be created or used (not installed, not preloaded, or not a
+// superuser), so this fails under a savepoint, the bootstrap goes on, and
+// search is unchanged. Recorded per pool or client, so a search runs no query
+// to find out.
+const bm25InUse = new WeakMap<PostgresQueryable, boolean>();
+
+async function applyBm25Index(client: PostgresQueryable): Promise<void> {
+  await client.query('SAVEPOINT bm25_index');
+  try {
+    await client.query('CREATE EXTENSION IF NOT EXISTS pg_textsearch SCHEMA public');
+    await client.query(
+      `CREATE INDEX IF NOT EXISTS ${BM25_INDEX_NAME} ON observations USING bm25 (content) WITH (text_config = 'english')`
+    );
+    // search()'s ordering, run once: it fails if the library is not
+    // preloaded or the extension is outside public.
+    await client.query(`SELECT 1 FROM observations ORDER BY ${bm25Order('$1')} LIMIT 1`, ['probe']);
+    await client.query('RELEASE SAVEPOINT bm25_index');
+    bm25InUse.set(client, true);
+  } catch (error) {
+    await client.query('ROLLBACK TO SAVEPOINT bm25_index');
+    bm25InUse.set(client, false);
+    // Expected on Postgres without pg_textsearch; the reason tells that apart
+    // from a broken setup on an image that has it.
+    logger.info('SYSTEM', 'pg_textsearch bm25 is not in use; keyword search ranks by ts_rank', {
+      reason: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** ORDER BY for search() on pg_textsearch: its operator and function in public, given the query's parameter. */
+export function bm25Order(queryParam: string): string {
+  return `observations.content OPERATOR(public.<@>) public.to_bm25query(${queryParam}, '${BM25_INDEX_NAME}'), observations.id`;
+}
+
+export function usesBm25Index(client: PostgresQueryable): boolean {
+  return bm25InUse.get(client) === true;
 }
 
 interface PostgresPoolLike extends PostgresQueryable {
