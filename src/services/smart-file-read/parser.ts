@@ -146,6 +146,7 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
+(type_declaration (type_alias name: (type_identifier) @name)) @tdef
 (import_declaration) @imp
 `,
 
@@ -216,6 +217,7 @@ const QUERIES: Record<string, string> = {
 (deinit_declaration "deinit" @name) @method
 (function_declaration name: (simple_identifier) @name) @func
 (class_declaration name: (type_identifier) @name) @cls
+(class_declaration declaration_kind: "extension" name: (_) @name) @impl_def
 (protocol_declaration name: (type_identifier) @name) @iface
 (import_declaration) @imp
 `,
@@ -784,7 +786,12 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     if (!kindCapture) continue;
 
     const startRow = kindCapture.startRow;
-    const endRow = kindCapture.endRow;
+    // An end at column 0 is just past a newline: the node's last line is the one
+    // before. A TOML table and an indented Scala 3 body end where the next
+    // declaration starts, and that line is not theirs.
+    const endRow = kindCapture.endCol === 0 && kindCapture.endRow > startRow
+      ? kindCapture.endRow - 1
+      : kindCapture.endRow;
     const kind = KIND_MAP[kindCapture.tag];
     // The CLI prints `text` only for one-row captures and cuts it at the first
     // backtick, so names come from the source range. A zero-width MISSING node
@@ -817,7 +824,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       }
       const headingLine = lines[startRow] || "";
       const hashMatch = headingLine.match(/^(#{1,6})\s/);
-      const underline = lines[endRow - (kindCapture.endCol === 0 ? 1 : 0)] || "";
+      const underline = lines[endRow] || "";
       const level = hashMatch ? hashMatch[1].length : /^\s*-+\s*$/.test(underline) ? 2 : 1;
       signature = `${"#".repeat(level)} ${name}`;
     } else if (language === "markdown" && kind === "code") {

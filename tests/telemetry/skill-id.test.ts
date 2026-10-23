@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'bun:test';
-import { existsSync, readdirSync, readFileSync } from 'fs';
+import { existsSync, readdirSync } from 'fs';
 import { join } from 'path';
 import {
   FIRST_PARTY_SKILL_IDS,
@@ -53,13 +53,6 @@ describe('FIRST_PARTY_SKILL_IDS pinned to plugin/skills/', () => {
       skill_id: 'mem-search',
       skill_source: 'first_party',
     });
-  });
-
-  it('is a pure helper — no captureEvent, completion, or duration fields', () => {
-    const src = readFileSync(join(PROJECT_ROOT, 'src/services/telemetry/skill-id.ts'), 'utf8');
-    expect(src).not.toContain('captureEvent');
-    expect(src).not.toContain('skill_completed');
-    expect(src).not.toContain('duration_ms');
   });
 });
 

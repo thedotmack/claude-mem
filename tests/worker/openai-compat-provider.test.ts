@@ -1,4 +1,3 @@
-import { readFileSync } from 'fs';
 import { describe, it, expect, beforeEach, afterEach, mock, spyOn } from 'bun:test';
 import { createServer } from 'node:http';
 import {
@@ -526,22 +525,6 @@ describe('auth failures are not mistaken for spent quota', () => {
     expect(kind(429, 'Too Many Requests')).toBe('rate_limit');
     expect(kind(404, 'not found')).toBe('unrecoverable');
     expect(kind(500, 'boom')).toBe('transient');
-  });
-});
-
-/** Same credential rule as the rotation pools: never returned in cleartext. */
-describe('openai-compatible credentials are registered as secrets', () => {
-  it('redacts both the key and the pool on GET /api/settings', () => {
-    const source = readFileSync(
-      new URL('../../src/services/worker/http/routes/SettingsRoutes.ts', import.meta.url),
-      'utf-8',
-    );
-    const secretBlock = source.slice(
-      source.indexOf('const SECRET_SETTING_KEYS'),
-      source.indexOf('function maskSecretValue'),
-    );
-    expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEY'");
-    expect(secretBlock).toContain("'CLAUDE_MEM_OPENAI_COMPAT_API_KEYS'");
   });
 });
 

@@ -10,7 +10,7 @@ for (const scenario of ['safety', 'limit', 'thought-only', 'text-with-thoughts',
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       child = Bun.spawn([process.execPath, 'tests/fixtures/gemini/empty-usage.ts', scenario], {
-        env: { ...process.env, CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
+        env: { ...process.env, CLAUDE_MEM_GROK_BOT_INJECT_ENABLED: 'false', CLAUDE_MEM_DATA_DIR: dataDir }, stdout: 'pipe', stderr: 'pipe',
       });
       const exit = await Promise.race([
         child.exited,
