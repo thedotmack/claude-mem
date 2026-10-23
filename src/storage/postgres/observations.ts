@@ -77,6 +77,14 @@ const ANY_TERM_TSQUERY_SQL = `(
   FROM unnest(tsvector_to_array(to_tsvector('english', $3))) AS lexeme
 )`;
 
+/**
+ * Whether a keyword query uses websearch_to_tsquery syntax: a double quote
+ * (phrase), a word starting with "-" (exclusion), or a standalone "or".
+ */
+export function usesWebsearchSyntax(query: string): boolean {
+  return /"|(^|\s)-\S|(^|\s)or(\s|$)/i.test(query);
+}
+
 export class PostgresObservationRepository {
   constructor(private client: PostgresQueryable) {}
 
@@ -255,11 +263,16 @@ export class PostgresObservationRepository {
     // no query term last, scored 0, once the matches run out; matches_query
     // marks those to drop. Elsewhere the query is unchanged.
     const bm25 = query !== null && usesBm25Index(this.client);
+    // A query written with web-search syntax (a quoted phrase, -term, or) keeps
+    // the websearch_to_tsquery match it always had, so phrases, exclusions and
+    // alternatives still mean what they say; bm25 only ranks those matches.
+    // Plain words match any term on the bm25 path.
+    const bm25MatchesAnyTerm = bm25 && !usesWebsearchSyntax(query);
     const result = await this.client.query<ObservationRow & { matches_query?: boolean }>(
       `
         SELECT observations.*,
           COALESCE(NULLIF(server_sessions.content_session_id, ''), server_sessions.external_session_id) AS content_session_id
-          ${bm25 ? `, observations.content_search @@ ${ANY_TERM_TSQUERY_SQL} AS matches_query` : ''}
+          ${bm25MatchesAnyTerm ? `, observations.content_search @@ ${ANY_TERM_TSQUERY_SQL} AS matches_query` : ''}
         FROM observations
         LEFT JOIN server_sessions
           ON server_sessions.id = observations.server_session_id
@@ -268,7 +281,7 @@ export class PostgresObservationRepository {
         WHERE observations.project_id = $1
           AND observations.team_id = $2
           AND ($8::boolean IS NULL OR (observations.kind = 'summary') = $8)
-          ${bm25 ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
+          ${bm25MatchesAnyTerm ? '' : "AND ($3::text IS NULL OR observations.content_search @@ websearch_to_tsquery('english', $3))"}
           AND (
             $6::text[] IS NULL
             OR lower((observations.metadata->>'project') COLLATE "C") = ANY(
@@ -326,7 +339,7 @@ export class PostgresObservationRepository {
         input.summary ?? null,
       ]
     );
-    return result.rows.filter(row => !bm25 || row.matches_query).map(mapObservationRow);
+    return result.rows.filter(row => !bm25MatchesAnyTerm || row.matches_query).map(mapObservationRow);
   }
 }
 

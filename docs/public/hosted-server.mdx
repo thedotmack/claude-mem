@@ -281,6 +281,24 @@ DELETE /v1/projects/:projectId/memory   # purge a whole project
 GET    /v1/audit?projectId=<id>
 ```
 
+## Keyword search
+
+`/v1/search`, `/v1/context` and the MCP `search` tool match keywords with
+Postgres full-text search (English stemming). How plain words match depends on
+the Postgres the server runs on:
+
+- **With pg_textsearch** (the Docker Compose image): plain words match **any** of
+  the query's terms, ranked by bm25, so rare terms count for more than common ones
+  and a question such as `when did we change the retry limit` finds the memory
+  about the retry limit first. Memories with none of the terms are left out.
+- **Without it** (any other Postgres): plain words must **all** appear, ranked by
+  `ts_rank`, as before.
+
+Web-search syntax means the same on both: `"quoted phrase"` matches the words in
+that order, `-term` excludes memories containing it, and `or` matches either side.
+A query that uses any of them is filtered exactly as before; bm25 only orders the
+matches.
+
 ## Upgrading the Postgres image (Docker Compose)
 
 `docker-compose.yml` builds its Postgres image locally from
