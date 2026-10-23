@@ -1,0 +1,83 @@
+services:
+  claude-mem:
+    build:
+      context: ./extensions/services/claude-mem
+      dockerfile: Dockerfile
+    image: ods-claude-mem:15.0.1
+    container_name: ods-claude-mem
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    environment:
+      CLAUDE_MEM_DATA_DIR: /data
+      # Listens on its private network only; the API has no authentication.
+      CLAUDE_MEM_WORKER_HOST: 0.0.0.0
+      CLAUDE_MEM_WORKER_PORT: "37777"
+      CLAUDE_MEM_PROVIDER: openai-compatible
+      CLAUDE_MEM_OPENAI_COMPAT_PRESET: custom
+      CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: http://claude-mem-gateway:4000/v1
+      CLAUDE_MEM_OPENAI_COMPAT_MODEL: ods/current
+      CLAUDE_MEM_OPENAI_COMPAT_API_KEY: ${LITELLM_KEY:?ODS LiteLLM must be configured}
+      CLAUDE_MEM_CHROMA_ENABLED: "false"
+      CLAUDE_MEM_WELCOME_HINT_ENABLED: "false"
+      CLAUDE_MEM_WORK_STATE_ENABLED: "false"
+      CLAUDE_MEM_TELEMETRY: "false"
+      DO_NOT_TRACK: "1"
+    ports:
+      - "127.0.0.1:${ODS_CLAUDE_MEM_PORT:-37778}:37777"
+    volumes:
+      - ./data/claude-mem:/data
+    # Not on the shared ODS network: other ODS containers cannot reach the API.
+    networks: [claude-mem-private]
+    depends_on:
+      claude-mem-gateway:
+        condition: service_started
+    healthcheck:
+      test: [CMD, bun, -e, "const r = await fetch('http://127.0.0.1:37777/api/health'); if (!r.ok) process.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    deploy:
+      resources:
+        limits:
+          cpus: '1.0'
+          memory: 1G
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+  # Relays the worker's LiteLLM calls and the dashboard's health probe; see gateway.mjs.
+  claude-mem-gateway:
+    build:
+      context: ./extensions/services/claude-mem
+      dockerfile: Dockerfile
+    image: ods-claude-mem:15.0.1
+    container_name: ods-claude-mem-gateway
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    command: [node, /opt/cmem/gateway.mjs]
+    networks: [default, claude-mem-private]
+    depends_on:
+      litellm:
+        condition: service_healthy
+    deploy:
+      resources:
+        limits:
+          cpus: '0.25'
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+networks:
+  claude-mem-private: {}
