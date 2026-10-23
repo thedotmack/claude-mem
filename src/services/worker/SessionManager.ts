@@ -11,6 +11,7 @@ import { MAX_LLM_TIMEOUT_MS, resolveLlmTimeoutMs } from './retry.js';
 import { canCmemGatewayServe } from '../../shared/cmem-gateway.js';
 import { planUnattendedGatewayResume, unattendedGatewayResumesSpent } from './session/response-pacer.js';
 import { PROVIDER_SWITCH_BOUNDARY_ABORT_REASON } from './session/abort-reason.js';
+import { isSimpleTierMessage } from './session/tier-routing.js';
 import { claudeStandInStillServes } from '../../shared/claude-fallback-readiness.js';
 
 export const SESSION_END_WRAPUP_GRACE_MS = 5_000;
@@ -848,13 +849,20 @@ export class SessionManager {
       // the next admission probes the primary through the single probe claim.
       const standInLapsed = Boolean(session.claudeAuthOverride)
         && !claudeStandInStillServes(session.claudeAuthOverride!);
-      if (session.providerSwitchPending || standInLapsed) {
+      // A run tier routing put on the simple model keeps that model for its
+      // whole life, so a Bash/Edit/Write that arrives later ends it here and
+      // the next generator routes it to CLAUDE_MEM_MODEL (#4963).
+      const leavesSimpleTier = this.leavesSimpleTier(session, message);
+      if (session.providerSwitchPending || standInLapsed || leavesSimpleTier) {
         logger.info('SESSION', standInLapsed
           ? 'Primary Claude credential may serve again; ending the quota-fallback run at a message boundary'
-          : 'Ending generator at a message boundary to switch providers', {
+          : leavesSimpleTier
+            ? 'Ending the simple-tier run at a message boundary for a message it should not serve'
+            : 'Ending generator at a message boundary to switch providers', {
           sessionDbId,
           currentProvider: session.currentProvider,
           ...(standInLapsed ? { credential: session.claudeAuthOverride } : {}),
+          ...(leavesSimpleTier ? { messageType: message.type, toolName: message.tool_name } : {}),
         });
         session.abortReason = PROVIDER_SWITCH_BOUNDARY_ABORT_REASON;
         session.abortController.abort();
@@ -873,12 +881,21 @@ export class SessionManager {
     }
   }
 
+  /** Only ClaudeProvider reads modelOverride, so only its runs are held to the tier. */
+  private leavesSimpleTier(session: ActiveSession, message: PendingMessageWithId): boolean {
+    return Boolean(session.simpleTierRun)
+      && session.currentProvider === 'claude'
+      && !isSimpleTierMessage(message.type, message.tool_name);
+  }
+
   /** Extend the current request without advancing the asynchronous iterator. */
   claimNextObservation(sessionDbId: number, accepts: (message: PendingMessageWithId) => boolean): PendingMessageWithId | null {
     const session = this.sessions.get(sessionDbId);
     if (!session || session.abortController.signal.aborted) return null;
     const message = this.buffer.claimNextMatching(sessionDbId,
-      candidate => candidate.type === 'observation' && accepts(candidate));
+      candidate => candidate.type === 'observation'
+        && !this.leavesSimpleTier(session, candidate)
+        && accepts(candidate));
     if (message) {
       session.claimedMessageIds.push(message._persistentId);
       session.earliestPendingTimestamp = Math.min(session.earliestPendingTimestamp ?? message._originalTimestamp, message._originalTimestamp);
