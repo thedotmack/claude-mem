@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -86,5 +86,32 @@ describe('save_goals.py', () => {
       // An answer with no goals at all, while prompts exist, is still refused.
       expect(save('# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nunrelated words\n', { priorities: [] }).exitCode).not.toBe(0);
     } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('export_owner_prompts.py', () => {
+  it('leaves text the owner marked private out of the exported prompts', () => {
+    const home = mkdtempSync(join(tmpdir(), 'export-owner-home-'));
+    try {
+      const projectDir = join(home, '.claude', 'projects', '-repo');
+      mkdirSync(projectDir, { recursive: true });
+      const typed = (uuid: string, text: string) => JSON.stringify({ type: 'user', uuid, sessionId: 'session-1', timestamp: new Date().toISOString(), entrypoint: 'cli', origin: { kind: 'human' }, message: { content: text } });
+      writeFileSync(join(projectDir, 'session-1.jsonl'), [
+        typed('u1', 'ship the cards <private>key sk-123</private> today'),
+        typed('u2', '<private>only a secret</private>'),
+        typed('u3', 'explain how <private> works'),
+      ].join('\n') + '\n');
+      const out = join(home, 'out');
+      const result = Bun.spawnSync(['python3', join(SKILLS, 'owner-goals', 'scripts', 'export_owner_prompts.py'), '--out', out, '--days', '1'], { env: { ...process.env, HOME: home } });
+      expect(result.exitCode).toBe(0);
+      const exported = readFileSync(join(out, 'owner-prompts.md'), 'utf8');
+      expect(exported).not.toContain('sk-123');
+      expect(exported).not.toContain('only a secret');
+      expect(exported).toContain('ship the cards  today');
+      expect(exported).toContain('explain how <private> works');
+      expect(JSON.parse(result.stdout.toString().trim().split('\n').pop()!).owner_prompts).toBe(2);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
