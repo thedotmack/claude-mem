@@ -765,6 +765,13 @@ export class DataRoutes extends BaseRouteHandler {
   });
 
   private handleImport = this.wrapHandler((req: Request, res: Response): void => {
+    // An import writes arbitrary sessions, summaries, observations and
+    // prompts, so other localhost pages may not trigger it. Origin-less
+    // clients (the CLI import) keep the existing loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({ error: 'Imports from a different localhost origin are not allowed' });
+      return;
+    }
     const { sessions, summaries, observations, prompts } = req.body;
 
     const stats = {
