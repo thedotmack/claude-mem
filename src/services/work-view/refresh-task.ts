@@ -4,15 +4,16 @@
  * every request that is due. No day window beyond the skill's own default,
  * no group cap and no time limit (owner rule, Oct 22).
  *
- * Claude Code runs the two skills themselves. Codex and Gemini run read-only,
- * so the worker prepares each step's input, asks for JSON, and saves the
- * answer through the same validators the skills' CLI uses.
+ * Every backend (Claude Code, Codex, Gemini) runs the same way: the worker
+ * runs the skills' CLI and scripts, asks the read-only agent one JSON
+ * question per step, and saves the answer through the same validators the
+ * skills' CLI uses.
  */
 
 import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'fs';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import type { AgentTask, AskAgent } from '../agent-runner/run.js';
 import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
@@ -35,95 +36,6 @@ export interface RefreshTaskOptions {
   now?: () => number;
   spawnImpl?: typeof spawn;
 }
-
-/** The path with every existing folder on it resolved through symlinks, so a link cannot lead out of a folder. */
-function realPath(path: string): string {
-  const missing: string[] = [];
-  let existing = resolve(path);
-  while (!existsSync(existing) && dirname(existing) !== existing) { missing.unshift(basename(existing)); existing = dirname(existing); }
-  return join(realpathSync(existing), ...missing);
-}
-
-/** Only an absolute path counts: a relative one would be read against the agent's working folder, not `parent`. */
-const isWithin = (child: string, parent: string) => {
-  if (!isAbsolute(child)) return false;
-  const path = relative(realPath(parent), realPath(child));
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-};
-
-const quoted = (path: string) => [path, `"${path}"`, `'${path}'`];
-
-/**
- * The options a script may take. A `path` option's value must sit inside
- * `within`; any other option or argument is refused, abbreviations included
- * (argparse would read `--ou` as `--out`).
- */
-export interface ScriptArguments { within: string; options: Record<string, 'path' | 'value' | 'switch'> }
-export type RefreshProgram = [bin: string, path: string, args?: ScriptArguments];
-
-/** Shell words of an operator-free command, the way the shell splits them: quotes can open
- * mid-word (--out="/a b") and are removed, and only unquoted whitespace ends a word. */
-export function shellWords(text: string): string[] {
-  const words: string[] = [];
-  let word: string | null = null;
-  let quote: string | null = null;
-  for (const char of text) {
-    if (quote) { if (char === quote) quote = null; else word += char; continue; }
-    if (char === '"' || char === "'") { quote = char; word ??= ''; continue; }
-    if (/\s/.test(char)) { if (word !== null) words.push(word); word = null; continue; }
-    word = (word ?? '') + char;
-  }
-  if (quote) throw new Error('Close every quote in the command.');
-  if (word !== null) words.push(word);
-  return words;
-}
-
-function checkScriptArguments(words: string[], { within, options }: ScriptArguments): string | null {
-  for (let index = 0; index < words.length; index++) {
-    const [name, inlineValue] = words[index].startsWith('--') && words[index].includes('=') ? [words[index].slice(0, words[index].indexOf('=')), words[index].slice(words[index].indexOf('=') + 1)] : [words[index], undefined];
-    const kind = options[name];
-    if (!kind) return `This script takes only ${Object.keys(options).join(', ')}, spelled out in full.`;
-    if (kind === 'switch') { if (inlineValue !== undefined) return `${name} takes no value.`; continue; }
-    const value = inlineValue ?? words[++index];
-    if (value === undefined || value.startsWith('-')) return `${name} needs a value.`;
-    if (kind === 'path' && !isWithin(value, within)) return `${name} must name a file inside ${within}.`;
-  }
-  return null;
-}
-
-/** Bash may run only the skills' own scripts, one command per call, with JSON
- * passed through a quoted heredoc. A script with `args` takes only those
- * options, and its file paths stay inside their folder. Returns null when allowed. */
-export function checkRefreshCommand(command: string, programs: RefreshProgram[]): string | null {
-  const text = command.trim();
-  const heredocAt = text.indexOf('<<');
-  const head = (heredocAt === -1 ? text : text.slice(0, heredocAt)).trim();
-  const allowedPrefixes = programs.flatMap(([bin, path]) => quoted(path).map(form => `${bin} ${form}`));
-  if (!allowedPrefixes.some(prefix => head === prefix || head.startsWith(`${prefix} `))) {
-    return `Only these commands may run here, called by their full path: ${programs.map(([bin, path]) => `${bin} "${path}"`).join(', ')}.`;
-  }
-  if (/[;&|`$><\n\\]/.test(head)) return 'Run one command per call, without shell operators, variables or redirects.';
-  const program = programs.find(([bin, path]) => quoted(path).some(form => head === `${bin} ${form}` || head.startsWith(`${bin} ${form} `)))!;
-  if (program[2]) {
-    const prefix = quoted(program[1]).map(form => `${program[0]} ${form}`).find(form => head === form || head.startsWith(`${form} `))!;
-    let words: string[];
-    try { words = shellWords(head.slice(prefix.length)); }
-    catch (error) { return (error as Error).message; }
-    const problem = checkScriptArguments(words, program[2]);
-    if (problem) return problem;
-  }
-  if (heredocAt === -1) return null;
-  const lines = text.slice(heredocAt).split('\n');
-  const delimiter = /^<<-?\s*(?:'(\w+)'|"(\w+)")\s*$/.exec(lines[0]);
-  if (!delimiter) return "Pass JSON through a quoted heredoc (<<'JSON'), with nothing after it on that line.";
-  const word = delimiter[1] ?? delimiter[2];
-  while (lines.length > 1 && !lines[lines.length - 1].trim()) lines.pop();
-  if (lines.length < 3 || lines[lines.length - 1].trim() !== word || lines.slice(1, -1).some(line => line.trim() === word)) {
-    return `End the command with the heredoc's closing ${word} line and nothing after it.`;
-  }
-  return null;
-}
-
 
 function skillPaths(pluginRoot: string) {
   const skills = join(pluginRoot, 'skills');
@@ -171,38 +83,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const spawnImpl = options.spawnImpl ?? spawn;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
-  // The owner-goals scripts write and read their files only in today's goals folder (--out, --goals, --prompts, --map).
-  const programs: RefreshProgram[] = [
-    ['bun', paths.cli],
-    ['python3', paths.exportScript, { within: goalsFolder, options: { '--out': 'path', '--days': 'value', '--start': 'value', '--end': 'value' } }],
-    ['python3', paths.saveScript, { within: goalsFolder, options: { '--goals': 'path', '--prompts': 'path', '--map': 'path', '--start': 'value', '--end': 'value', '--dry-run': 'switch' } }],
-  ];
 
-  const prompt = [
-    'You are claude-mem\'s automatic refresh for My Work. You run in the background on the owner\'s computer with read-only tools; nobody is watching, so never ask a question.',
-    `What is due now: ${JSON.stringify(needs)}.`,
-    needs.goalsStale
-      ? `1. Run the /claude-mem:owner-goals skill. Use the folder ${goalsFolder} for its files.\n2. Then run the /claude-mem:request-progress skill.`
-      : '1. Run the /claude-mem:request-progress skill.',
-    'Run request-progress over its default 14-day window and do only what is due: group every ungrouped conversation, review every due group (run `pending` again after each round until `due` is 0; there is no group cap), link only the groups `align-input` lists (skip section 3 when it lists none), and update the build story only from the reviews `story-input` lists (skip section 4 when it lists none). Take as long as the work needs.',
-    'Rules for this run:',
-    `- Call the CLI by its full path in every command, for example: bun "${paths.cli}" pending --days 14 --limit 48. Do not define shell variables. Bash may run only bun "${paths.cli}", python3 "${paths.exportScript}" and python3 "${paths.saveScript}", one command per call, with JSON passed through a quoted heredoc.`,
-    `- Write files only inside ${goalsFolder}.`,
-    '- Search memory with the claude-mem MCP tools (search, timeline, get_observations).',
-    'When you finish, reply with one line: how many conversations were grouped, how many requests were reviewed and linked to goals, and whether the goals and the build story were refreshed.',
-  ].join('\n');
-
-  const checkTool = (toolName: string, input: Record<string, unknown>): true | string => {
-    if (['Read', 'Grep', 'Glob', 'Agent', 'Skill'].includes(toolName)) return true;
-    if (toolName === 'Bash') return checkRefreshCommand(String(input.command ?? ''), programs) ?? true;
-    if (toolName === 'Write') {
-      return typeof input.file_path === 'string' && isWithin(input.file_path, goalsFolder) ? true : `Write files only inside ${goalsFolder}.`;
-    }
-    if (toolName.startsWith('mcp__') && toolName.includes('claude-mem') && MEMORY_TOOLS.includes(toolName.split('__').pop() ?? '')) return true;
-    return `${toolName} is not available to the automatic refresh, which uses read-only tools.`;
-  };
-
-  const inline = async (ask: AskAgent): Promise<string> => {
+  const run = async (ask: AskAgent): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
@@ -345,13 +227,11 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
     reason,
     cwd: dataDir,
     claudeCode: {
-      prompt,
+      // The plugin is loaded for its memory-search MCP server; steps read files and search memory, nothing else.
       plugins: [{ type: 'local', path: pluginRoot }],
-      skills: ['claude-mem:owner-goals', 'claude-mem:request-progress'],
-      tools: ['Skill', 'Read', 'Grep', 'Glob', 'Agent', 'Bash', 'Write'],
-      allowedTools: ['Read', 'Grep', 'Glob', 'Agent', ...MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`)],
-      checkTool,
+      tools: ['Read', 'Grep', 'Glob'],
+      allowedTools: ['Read', 'Grep', 'Glob', ...MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`)],
     },
-    inline,
+    run,
   };
 }

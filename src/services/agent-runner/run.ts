@@ -8,17 +8,18 @@
  * with an error, never because it is slow. The next agent is tried only when
  * a run actually fails.
  *
- *   - Claude Code: one Agent SDK `query` with the claude-mem plugin's skills
- *     loaded, an explicit allowed-tools list plus a `canUseTool` check for
- *     everything else, `cwd` = the data dir and no session persistence.
+ *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
+ *     loaded for its memory-search MCP tools, only the task's allowed tools
+ *     (everything else is denied), `cwd` = the data dir and no session persistence.
  *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
  *
- * Codex and Gemini run read-only with no MCP tools, so they cannot save anything themselves.
- * The task's `inline` function drives them one step at a time and saves each
- * answer through claude-mem's own validators.
+ * No agent can save anything itself. The task's `run` function drives every
+ * backend the same way, one step at a time: code runs claude-mem's CLI, the
+ * agent answers one JSON question per step, and code saves each answer
+ * through claude-mem's own validators.
  */
 
 import { spawn } from 'child_process';
@@ -35,20 +36,12 @@ import { detectUsableAgents, type UsableAgent, type UsableAgentId } from './dete
 export type AskAgent = (prompt: string) => Promise<string>;
 
 export interface ClaudeCodeTaskOptions {
-  prompt: string;
-  /** Plugins whose skills (and MCP servers) the run needs. */
+  /** Plugins whose MCP servers the steps need. */
   plugins: SdkPluginConfig[];
-  /** Skills the run may call, `plugin:skill`. */
-  skills: string[];
   /** The built-in tools the model can see at all. */
   tools: string[];
-  /** Auto-approved tool rules (read-only tools and restricted Bash prefixes). */
+  /** The only tools a step may use (read-only); every other tool is denied. */
   allowedTools: string[];
-  /**
-   * Final check for any tool the allowed list did not approve: true allows it,
-   * a string denies it with that message.
-   */
-  checkTool: (toolName: string, input: Record<string, unknown>) => true | string;
 }
 
 export interface AgentTask {
@@ -57,8 +50,8 @@ export interface AgentTask {
   /** Working directory for every backend: the claude-mem data dir. */
   cwd: string;
   claudeCode: ClaudeCodeTaskOptions;
-  /** Drives a read-only Codex or Gemini step by step; returns a short result line. */
-  inline: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  /** Drives the agent step by step; returns a short result line. */
+  run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
@@ -94,42 +87,41 @@ const defaultDependencies: AgentRunnerDependencies = {
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
 
-/** One Agent SDK run. Resolves with the final result text; rejects when the run fails. */
-async function runClaudeCode(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): Promise<string> {
+/** One Agent SDK query per step, with read-only tools only. */
+function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
   const { claudeCode } = task;
-  const canUseTool: CanUseTool = async (toolName, input) => {
-    const verdict = claudeCode.checkTool(toolName, input);
-    if (verdict === true) return { behavior: 'allow', updatedInput: input };
-    logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`, { reason: verdict });
-    return { behavior: 'deny', message: verdict };
+  const canUseTool: CanUseTool = async toolName => {
+    logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`);
+    return { behavior: 'deny', message: `${toolName} is not available to this read-only step.` };
   };
-  let stderr = '';
-  const options: Options = {
-    pathToClaudeCodeExecutable: agent.path!,
-    cwd: task.cwd,
-    env: await dependencies.buildEnv(),
-    persistSession: false,
-    settingSources: [],
-    plugins: claudeCode.plugins,
-    skills: claudeCode.skills,
-    tools: claudeCode.tools,
-    allowedTools: claudeCode.allowedTools,
-    permissionMode: 'default',
-    canUseTool,
-    stderr: data => { stderr = (stderr + data).slice(-4000); },
-  };
-  type FinalResult = { is_error?: boolean; subtype?: string; result?: string };
-  let final = null as FinalResult | null;
-  try {
-    for await (const message of dependencies.query({ prompt: claudeCode.prompt, options })) {
-      if (message.type === 'result') final = message as FinalResult;
+  return async prompt => {
+    let stderr = '';
+    const options: Options = {
+      pathToClaudeCodeExecutable: agent.path!,
+      cwd: task.cwd,
+      env,
+      persistSession: false,
+      settingSources: [],
+      plugins: claudeCode.plugins,
+      tools: claudeCode.tools,
+      allowedTools: claudeCode.allowedTools,
+      permissionMode: 'default',
+      canUseTool,
+      stderr: data => { stderr = (stderr + data).slice(-4000); },
+    };
+    type FinalResult = { is_error?: boolean; subtype?: string; result?: string };
+    let final = null as FinalResult | null;
+    try {
+      for await (const message of dependencies.query({ prompt, options })) {
+        if (message.type === 'result') final = message as FinalResult;
+      }
+    } catch (error) {
+      throw new Error(`Claude Code stopped: ${describeError(error)}${stderr.trim() ? ` (${stderr.trim().split('\n').pop()})` : ''}`);
     }
-  } catch (error) {
-    throw new Error(`Claude Code stopped: ${describeError(error)}${stderr.trim() ? ` (${stderr.trim().split('\n').pop()})` : ''}`);
-  }
-  if (!final) throw new Error('Claude Code ended without a result.');
-  if (final.is_error || final.subtype !== 'success') throw new Error(`Claude Code run failed (${final.subtype ?? 'error'}): ${String(final.result ?? '').slice(0, 500)}`);
-  return String(final.result ?? '');
+    if (!final) throw new Error('Claude Code ended without a result.');
+    if (final.is_error || final.subtype !== 'success') throw new Error(`Claude Code run failed (${final.subtype ?? 'error'}): ${String(final.result ?? '').slice(0, 500)}`);
+    return String(final.result ?? '');
+  };
 }
 
 /** Spawn an agent CLI with the prompt on stdin and wait for it, however long it takes. */
@@ -216,12 +208,9 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      let result: string;
-      if (agent.id === 'claude-code') result = await runClaudeCode(agent, task, dependencies);
-      else {
-        const env = await dependencies.buildEnv();
-        result = await task.inline(agent.id === 'codex' ? codexAsk(agent, task, dependencies, env) : geminiAsk(agent, task, dependencies, env), agent.id);
-      }
+      const env = await dependencies.buildEnv();
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies, env);
+      const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };
     } catch (error) {

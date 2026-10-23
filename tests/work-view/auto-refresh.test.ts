@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, checkRefreshCommand } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { readLedger } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -115,80 +115,20 @@ describe('automatic refresh scheduler', () => {
 });
 
 describe('refresh task', () => {
-  const programs: Array<[string, string]> = [['bun', '/p/request-groups.mjs'], ['python3', '/p/save_goals.py']];
-
-  it('Bash runs only the skills\' scripts, one command, JSON through a closed quoted heredoc', () => {
-    expect(checkRefreshCommand('bun /p/request-groups.mjs pending --days 14 --limit 48', programs)).toBeNull();
-    expect(checkRefreshCommand('bun "/p/request-groups.mjs" show g_000000000001', programs)).toBeNull();
-    expect(checkRefreshCommand("bun /p/request-groups.mjs record-progress - <<'JSON'\n{\"a\": \"$(rm -rf ~)\"}\nJSON", programs)).toBeNull();
-    expect(checkRefreshCommand('python3 /p/save_goals.py --goals "/x/owner-goals.json"', programs)).toBeNull();
-    expect(checkRefreshCommand('rm -rf ~', programs)).toMatch(/Only these commands/);
-    expect(checkRefreshCommand('CLI="bun /p/request-groups.mjs"; $CLI pending', programs)).toMatch(/Only these commands/);
-    expect(checkRefreshCommand('bun /p/request-groups.mjs pending; rm -rf ~', programs)).toMatch(/one command/);
-    expect(checkRefreshCommand('bun /p/request-groups.mjs pending > /etc/x', programs)).toMatch(/one command/);
-    expect(checkRefreshCommand('bun /p/request-groups.mjs.evil pending', programs)).toMatch(/Only these commands/);
-    expect(checkRefreshCommand('bun /p/request-groups.mjs record-progress - <<JSON\n{}\nJSON', programs)).toMatch(/quoted heredoc/);
-    expect(checkRefreshCommand("bun /p/request-groups.mjs record-progress - <<'JSON'\n{}\nJSON\nrm -rf ~", programs)).toMatch(/closing JSON/);
-  });
-
-  it('Claude Code gets the two skills, read-only tools, writes only in the goals folder, and no bypass', () => {
-    const database = fixtureDatabase();
-    const task = buildRefreshTask({ needs: { due: 2, ungrouped: 1, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: handle(database), now: () => NOW });
+  it('Claude Code gets only read-only tools: Read, Grep, Glob and memory search, with no Bash, Write or bypass', () => {
+    const task = buildRefreshTask({ needs: { due: 2, ungrouped: 1, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: handle(fixtureDatabase()), now: () => NOW });
     const { claudeCode } = task;
     expect(task.cwd).toBe('/data');
-    expect(claudeCode.prompt).toMatch(/\/claude-mem:owner-goals/);
-    expect(claudeCode.prompt).toMatch(/\/claude-mem:request-progress/);
-    expect(claudeCode.prompt).toMatch(/there is no group cap/);
-    expect(claudeCode.skills).toEqual(['claude-mem:owner-goals', 'claude-mem:request-progress']);
     expect(claudeCode.plugins).toEqual([{ type: 'local', path: '/plugin' }]);
-    expect(claudeCode.allowedTools).not.toContain('Bash');
+    expect(claudeCode.tools).toEqual(['Read', 'Grep', 'Glob']);
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__search');
-    expect(JSON.stringify(task)).not.toMatch(/bypass|dangerous/i);
-    expect(claudeCode.checkTool('Bash', { command: 'bun "/plugin/skills/request-progress/scripts/request-groups.mjs" pending' })).toBe(true);
-    expect(claudeCode.checkTool('Bash', { command: 'git push' })).toMatch(/Only these commands/);
-    const goalsFolder = join('/data/work-view/owner-goals', new Date(NOW).toLocaleDateString('en-CA'));
-    expect(claudeCode.checkTool('Write', { file_path: join(goalsFolder, 'owner-map.md') })).toBe(true);
-    expect(claudeCode.checkTool('Write', { file_path: '/data/work-view/request-groups.json' })).toMatch(/only inside/);
-    expect(claudeCode.checkTool('Edit', { file_path: join(goalsFolder, 'owner-map.md') })).toMatch(/not available/);
-    expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__timeline', {})).toBe(true);
-    expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__rebuild_corpus', {})).toMatch(/not available/);
-    // No raw work-state writes: they would skip the skills' validators.
-    expect(claudeCode.allowedTools).not.toContain('mcp__plugin_claude-mem_mcp-search__work_state_write');
-    expect(claudeCode.checkTool('mcp__plugin_claude-mem_mcp-search__work_state_write', { list: 'my-rules' })).toMatch(/not available/);
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__work_state_read');
-    // The owner-goals scripts' file options are pinned to today's goals folder.
-    const exportScript = '/plugin/skills/owner-goals/scripts/export_owner_prompts.py', saveScript = '/plugin/skills/owner-goals/scripts/save_goals.py';
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}" --days 31` })).toBe(true);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals "${goalsFolder}/owner-goals.json" --prompts "${goalsFolder}/owner-prompts.md" --map "${goalsFolder}/owner-map.md" --dry-run` })).toBe(true);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out=${goalsFolder}` })).toBe(true);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out="${goalsFolder}"` })).toBe(true);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals '${goalsFolder}/my goals.json' --prompts "${goalsFolder}/owner-prompts.md"` })).toBe(true);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}` })).toMatch(/Close every quote/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "/Users/someone/repo" --days 31` })).toMatch(/inside/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}/../../.."` })).toMatch(/inside/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out owner-goals` })).toMatch(/inside/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --ou /elsewhere` })).toMatch(/spelled out in full/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out` })).toMatch(/needs a value/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals "${goalsFolder}/owner-goals.json" --prompts /etc/passwd` })).toMatch(/inside/);
-    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" extra-positional` })).toMatch(/spelled out in full/);
-    expect(claudeCode.checkTool('WebFetch', {})).toMatch(/not available/);
+    // No raw work-state writes: they would skip the skills' validators.
+    expect(claudeCode.allowedTools.filter(tool => /Bash|Write|Edit|work_state_write|save_memory|Agent|Skill/.test(tool))).toEqual([]);
+    expect(JSON.stringify(task)).not.toMatch(/bypass|dangerous/i);
   });
 
-  it('a symlink inside the goals folder cannot carry a write outside it', () => {
-    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-jail-'));
-    try {
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: join(dir, 'work-view'), pluginRoot: '/plugin', openDatabase: handle(fixtureDatabase()), now: () => NOW });
-      const goalsFolder = join(dir, 'work-view', 'owner-goals', new Date(NOW).toLocaleDateString('en-CA'));
-      mkdirSync(goalsFolder, { recursive: true });
-      mkdirSync(join(dir, 'outside'));
-      symlinkSync(join(dir, 'outside'), join(goalsFolder, 'link'));
-      expect(task.claudeCode.checkTool('Write', { file_path: join(goalsFolder, 'owner-map.md') })).toBe(true);
-      expect(task.claudeCode.checkTool('Write', { file_path: join(goalsFolder, 'link', 'x.md') })).toMatch(/only inside/);
-      expect(task.claudeCode.checkTool('Bash', { command: `python3 "/plugin/skills/owner-goals/scripts/export_owner_prompts.py" --out "${join(goalsFolder, 'link')}"` })).toMatch(/inside/);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
-  });
-
-  it('Codex/Gemini (read-only): the worker groups, reviews and retells from the agent\'s JSON through the validators', async () => {
+  it('every backend (read-only): the worker groups, reviews and retells from the agent\'s JSON through the validators', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-inline-'));
     try {
       const database = fixtureDatabase();
@@ -211,7 +151,7 @@ describe('refresh task', () => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.inline(ask, 'codex')).toBe('1 conversations in 1 groups, 1 requests reviewed, story written.');
+      expect(await task.run(ask, 'codex')).toBe('1 conversations in 1 groups, 1 requests reviewed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
@@ -254,7 +194,7 @@ describe('incremental owner goals', () => {
         expect(previous.priorities.map((item: any) => item.title)).toEqual(['Ship cards']);
         return JSON.stringify({ ...previous, priorities: [{ ...previous.priorities[0], rank: 2 }] });
       };
-      expect(await task.inline(ask, 'codex')).toBe('goals updated.');
+      expect(await task.run(ask, 'codex')).toBe('goals updated.');
       expect(prompts).toHaveLength(1);
       expect(prompts[0]).toContain('new-owner-prompts.md');
       expect(prompts[0]).toContain('3 prompts the owner typed since');
@@ -272,7 +212,7 @@ describe('incremental owner goals', () => {
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
       const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(0, calls) });
-      expect(await task.inline(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
+      expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
       expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
