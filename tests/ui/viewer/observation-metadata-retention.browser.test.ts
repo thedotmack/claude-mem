@@ -1,18 +1,11 @@
 import { expect, it } from 'bun:test';
-import { execFileSync } from 'node:child_process';
-import { createRequire } from 'node:module';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
-const chrome = Bun.which('google-chrome') ?? Bun.which('chromium')
-  ?? (existsSync('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome')
-    ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : null);
-if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium for viewer regressions.');
-(chrome ? it : it.skip)('retains valid facts, concepts and files from mixed and plain-text stored metadata', async () => {
-  const esbuild = createRequire(import.meta.url).resolve(`@esbuild/${process.platform}-${process.arch}/${process.platform === 'win32' ? 'esbuild.exe' : 'bin/esbuild'}`);
-  const bundle = execFileSync(esbuild, ['--bundle','--loader=tsx','--platform=browser','--format=iife','--define:process.env.NODE_ENV="production"','--log-level=error'], {
-    cwd: resolve(import.meta.dir, '../../..'), timeout: 20000, maxBuffer: 8 * 1024 * 1024, encoding:'utf8',
-    input: `import React from 'react'; import {createRoot} from 'react-dom/client';
+import {
+  FIXTURE_PAGE_HTML, UNTHROTTLED_TIMER_FLAGS, chromeExecutablePath, compileBrowserFixture, failOnCiWithoutChrome,
+  htmlResponse, launchChrome, scriptResponse, withTimeout, type OwnedChrome,
+} from '../../helpers/chrome-devtools';
+failOnCiWithoutChrome('CI requires Chrome or Chromium for viewer regressions.');
+(chromeExecutablePath ? it : it.skip)('retains valid facts, concepts and files from mixed and plain-text stored metadata', async () => {
+  const bundle = compileBrowserFixture(`import React from 'react'; import {createRoot} from 'react-dom/client';
       import {ObservationCard} from './src/ui/viewer/components/ObservationCard';
       const mixed = value => JSON.stringify([null,4,{invalid:true},value]);
       // The second card stores CJK facts and concepts as plain text, not JSON (#3423).
@@ -27,22 +20,20 @@ if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium f
         for(const button of buttons) button.click();
         for(let i=0;i<4;i++) await new Promise(requestAnimationFrame);
         await fetch('/result',{method:'POST',body:JSON.stringify({facts:[...document.querySelectorAll('.facts-list li')].map(n=>n.textContent),text:document.body.textContent})});
-      }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})});}})();`
-  });
+      }catch(error){await fetch('/result',{method:'POST',body:JSON.stringify({failure:String(error)})});}})();`);
   let report!: (value:any)=>void;
   const result = new Promise<any>(resolve=>{report=resolve;});
   const server = Bun.serve({hostname:'127.0.0.1',port:0,async fetch(request){
     const path=new URL(request.url).pathname;
-    if(path==='/') return new Response('<div id="root"></div><script src="/fixture.js"></script>',{headers:{'Content-Type':'text/html'}});
-    if(path==='/fixture.js') return new Response(bundle,{headers:{'Content-Type':'application/javascript'}});
+    if(path==='/') return htmlResponse(FIXTURE_PAGE_HTML);
+    if(path==='/fixture.js') return scriptResponse(bundle);
     if(path==='/result'){report(await request.json());return new Response('received');}
     return new Response('',{status:404});
   }});
-  const profile=mkdtempSync(join(tmpdir(),'cm-metadata-browser-'));
-  const child=Bun.spawn([chrome!,'--headless','--no-sandbox','--disable-gpu','--disable-background-networking','--disable-background-timer-throttling','--disable-renderer-backgrounding','--no-first-run',`--user-data-dir=${profile}`,server.url.href],{stdout:'ignore',stderr:'ignore'});
-  let timer: ReturnType<typeof setTimeout> | undefined;
+  let chrome: OwnedChrome | undefined;
   try {
-    const observed=await Promise.race([result,new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(new Error('Owned browser timed out')),30000);})]);
+    chrome=launchChrome(server.url.href,{profilePrefix:'cm-metadata-browser-',extraFlags:UNTHROTTLED_TIMER_FLAGS});
+    const observed=await withTimeout(result,30000,'Owned browser timed out');
     expect(observed.failure).toBeUndefined();
     expect(observed.facts).toEqual(['VALID FACT', '用户身份定位']);
     expect(observed.text).toContain('VALID CONCEPT');
@@ -51,6 +42,6 @@ if (process.env.CI && !chrome) throw new Error('CI requires Chrome or Chromium f
     expect(observed.text).toContain('src/changed.ts');
     expect(observed.text).not.toContain('[object Object]');
   } finally {
-    if(timer) clearTimeout(timer);child.kill();await child.exited;server.stop(true);rmSync(profile,{recursive:true,force:true});
+    await chrome?.close();server.stop(true);
   }
 },80000);
