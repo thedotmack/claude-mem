@@ -61,8 +61,10 @@ export const BUILTIN_REDACTION_PATTERNS: RedactionPattern[] = [
   // Known limitation: only matches shell-style (`KEY=val`, `KEY='val'`) and
   // yaml-style (`KEY: val`); JSON-style `"KEY": "val"` is not anchored
   // because the lookbehind expects `=`/`:` directly after the key name.
-  // Whitespace is bounded for the same reason as BOUNDED_SPACE.
-  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/g },
+  // Whitespace is bounded for the same reason as BOUNDED_SPACE. The key name
+  // matches in any letter case: the AWS CLI writes `aws_secret_access_key = …`
+  // to ~/.aws/credentials, and the SDKs take it as a lowercase argument.
+  { name: 'aws_secret_key',  regex: /(?<=AWS_SECRET_ACCESS_KEY\s{0,8}[=:]\s{0,8}['"]?)[A-Za-z0-9/+=]{40}/gi },
   { name: 'github_pat',      regex: /\bgh[oprsu]_[A-Za-z0-9]{36}\b|\bgithub_pat_[A-Za-z0-9_]{82}\b/g },
   // openai_key, anthropic_key, slack_token, jwt and google_api_key end in a
   // class that includes `-`. A closing `\b` after a `-` needs a word character

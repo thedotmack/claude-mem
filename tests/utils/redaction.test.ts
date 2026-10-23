@@ -87,6 +87,15 @@ text after`;
     expect(r2.counts.aws_secret_key).toBeUndefined();
   });
 
+  it('redacts aws_secret_key under the lowercase key of the AWS credentials file', () => {
+    const credentials = '[default]\naws_access_key_id = AKIAIOSFODNN7EXAMPLE\naws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY\n';
+    const result = redactSensitive(credentials, cfg);
+    expect(result.redacted).toBe("[default]\naws_access_key_id = <redacted type='aws_access_key'/>\naws_secret_access_key = <redacted type='aws_secret_key'/>\n");
+
+    const sdkArgument = "boto3.client('s3', aws_secret_access_key='wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY')";
+    expect(redactSensitive(sdkArgument, cfg).counts.aws_secret_key).toBe(1);
+  });
+
   it('does NOT match near-miss strings', () => {
     const negatives = [
       'sk-short',                                  // openai_key too short
