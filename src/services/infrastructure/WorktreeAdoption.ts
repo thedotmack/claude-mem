@@ -422,8 +422,9 @@ function wasWrittenUnderRepository(
     if (checkouts.length > 0) {
       return checkouts.every(({ cwd, key_source }) => {
         if (!existsSync(cwd)) return key_source === null || key_source === 'path';
-        // Checkouts of this repository (itself, its worktrees and submodules)
-        // read its folder-based key in every naming mode.
+        // Checkouts normally read the repository's folder-based key. An
+        // explicitly scoped environment can exclude it and must not be
+        // treated as an orphaned worktree of that repository.
         return getProjectContext(cwd).allProjects.includes(parentProject);
       });
     }
