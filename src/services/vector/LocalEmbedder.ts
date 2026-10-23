@@ -91,6 +91,19 @@ export class LocalEmbedder implements Embedder {
     return this.loading;
   }
 
+  /** Whether the model has loaded, so an embed runs without waiting for a download. */
+  isReady(): boolean {
+    return this.extractor !== null;
+  }
+
+  /**
+   * Start loading the model if it is not loaded or loading. Resolves true once
+   * it is ready and false if the load fails; never rejects.
+   */
+  warm(): Promise<boolean> {
+    return this.ready().then(() => true, () => false);
+  }
+
   async embed(texts: string[], role: 'query' | 'passage' = 'passage'): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
     const prefix = role === 'query' ? this.model.queryPrefix : this.model.passagePrefix;

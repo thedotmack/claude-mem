@@ -526,6 +526,7 @@ const tools = [
           ...(result.isError ? { isError: true } : {}),
         };
       } catch (error) {
+        logger.warn('SYSTEM', 'dumb_search failed', undefined, error instanceof Error ? error : new Error(String(error)));
         return progressiveSearchToolError(error);
       }
     },

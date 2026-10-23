@@ -15,18 +15,20 @@
  * resolver or of plugin/scripts/bun-runner.js — no handlers, no HTTP, and no
  * imports from the worker, hook handlers or shared worker helpers (Phase 6
  * sweep greps this directory for those paths).
- * Bump LAUNCHER_PROTOCOL (src/launcher/launcher-protocol.ts) only when the
- * launcher's contract with hooks.json or the installer changes.
+ * Bump LAUNCHER_PROTOCOL (src/launcher/launcher-protocol.ts) when the
+ * launcher's contract with hooks.json or the installer changes, or when a fix
+ * here must reach launchers already compiled onto PATH.
  *
  * Runs as `bun`/`node plugin/scripts/claude-mem-launcher.cjs` and as a
  * `bun build --compile` binary (process.argv[0..1] is runtime + entry in both).
  */
-import { spawn, spawnSync, type SpawnOptions } from 'child_process';
+import { spawn, type SpawnOptions } from 'child_process';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'fs';
 import { homedir, tmpdir } from 'os';
 import { basename, dirname, join, resolve } from 'path';
 import { LAUNCHER_PROTOCOL } from './launcher-protocol.js';
 import { bunVersionHonoursBunBeBun } from './bun-be-bun-support.js';
+import { findBun } from './bun-runtime.js';
 
 const IS_WINDOWS = process.platform === 'win32';
 const STDIN_COLLECTION_TIMEOUT_MS = 5000;
@@ -163,102 +165,6 @@ function isToolHookDisabledByEnvironment(workerServiceArguments: string[]): bool
 }
 
 /**
- * Absolute path of a Windows system tool. Spawning the bare name lets libuv
- * pick up a same-named executable from the hook's cwd (the user's project)
- * before PATH, so a `where.exe` committed to a repository would run on every
- * hook. Same mitigation as the installer's powershell.exe lookup.
- */
-function windowsSystem32Executable(executableName: string): string {
-  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT || process.env.windir || process.env.WINDIR || 'C:\\Windows';
-  return join(systemRoot, 'System32', executableName);
-}
-
-/** Ported from bun-runner.js findBun(): PATH first, then explicit overrides and well-known homes. */
-function findBun(): string | null {
-  const pathCheck = IS_WINDOWS
-    ? spawnSync(windowsSystem32Executable('where.exe'), ['bun'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe'],
-        windowsHide: true
-      })
-    : spawnSync('which', ['bun'], {
-        encoding: 'utf-8',
-        stdio: ['pipe', 'pipe', 'pipe']
-      });
-
-  if (pathCheck.status === 0 && pathCheck.stdout && pathCheck.stdout.trim()) {
-    if (IS_WINDOWS) {
-      // where.exe prints in the console code page, so a non-ASCII profile path
-      // can arrive garbled; keep only lines that exist on disk (#4694).
-      const bunPaths = pathCheck.stdout.split(/\r?\n/).map(line => line.trim()).filter(Boolean)
-        .filter(line => existsSync(line));
-      const firstBunPath = bunPaths.find(line => {
-        const lowerPath = line.toLowerCase();
-        return lowerPath.endsWith('bun.exe') || lowerPath.endsWith('bun.cmd');
-      });
-      const firstBunDir = firstBunPath ? dirname(firstBunPath).toLowerCase() : null;
-      const firstInstallPaths = firstBunDir
-        ? bunPaths.filter(line => dirname(line).toLowerCase() === firstBunDir)
-        : [];
-      const bunExePath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.exe'));
-      if (bunExePath) {
-        return bunExePath;
-      }
-      const bunCmdPath = firstInstallPaths.find(line => line.toLowerCase().endsWith('bun.cmd'));
-      if (bunCmdPath) {
-        return bunCmdPath;
-      }
-      // The official installer ships bun.exe only (no bun.cmd shim). Return
-      // the resolved absolute path instead of falling through to the bare
-      // name: resolving a bare `bun` later relies on the child's PATH, which
-      // cmd.exe drops entirely when it exceeds ~8191 chars (issue #3196).
-      const firstWherePath = bunPaths.find(Boolean);
-      if (firstWherePath) {
-        return firstWherePath;
-      }
-      // Every where hit was garbled or stale (#4694): fall through to the
-      // explicit overrides and well-known install homes below.
-    } else {
-      return 'bun';
-    }
-  }
-
-  const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
-  const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
-  const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
-
-  // Explicit overrides + BUN_INSTALL (official installer) + well-known homes.
-  // Hook PATH from Git Bash often omits ~/.bun/bin (#3224).
-  const bunPaths = IS_WINDOWS
-    ? [
-        bunEnv,
-        bunPathEnv,
-        bunInstall ? join(bunInstall, 'bin', 'bun.exe') : '',
-        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
-        bunInstall ? join(bunInstall, 'bun.exe') : '',
-        join(homedir(), '.bun', 'bin', 'bun.exe'),
-      ]
-    : [
-        bunEnv,
-        bunPathEnv,
-        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
-        bunInstall ? join(bunInstall, 'bun') : '',
-        join(homedir(), '.bun', 'bin', 'bun'),
-        '/usr/local/bin/bun',
-        '/opt/homebrew/bin/bun',
-        '/home/linuxbrew/.linuxbrew/bin/bun'
-      ];
-
-  for (const bunPath of bunPaths) {
-    if (bunPath && existsSync(bunPath)) {
-      return bunPath;
-    }
-  }
-
-  return null;
-}
-
-/**
  * True when this process is a `bun build --compile` binary (the on-PATH
  * `claude-mem`), not `bun`/`node` running the bundle as a script. Only then can
  * `BUN_BE_BUN=1` turn our own executable into the bun CLI (SPIKE item 7).
@@ -281,8 +187,8 @@ interface BunRuntimeSelection {
  * only when the embedded runtime honours it (Bun 1.2.16+): an older one would
  * run this launcher again instead of the worker, forever (#4933).
  */
-function selectBunRuntime(): BunRuntimeSelection | null {
-  const discoveredBunPath = findBun();
+async function selectBunRuntime(): Promise<BunRuntimeSelection | null> {
+  const discoveredBunPath = await findBun();
   if (discoveredBunPath) {
     return { bunExecutablePath: discoveredBunPath, extraEnvironment: {} };
   }
@@ -370,7 +276,7 @@ async function runThroughWorker(workerServiceArguments: string[]): Promise<never
   }
   const workerScriptPath = join(pluginRoot, 'scripts', 'worker-service.cjs');
 
-  const bunRuntime = selectBunRuntime();
+  const bunRuntime = await selectBunRuntime();
   if (!bunRuntime) {
     exitContinuingWithoutMemory('Bun not found (install Bun, then restart your terminal)');
   }
