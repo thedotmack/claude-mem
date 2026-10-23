@@ -203,24 +203,35 @@ function firstHeader(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value;
 }
 
+/** A client mistake in the request body, answered with its own HTTP status and JSON-RPC code. */
+class RequestBodyError extends Error {
+  constructor(message: string, readonly httpStatus: number, readonly jsonRpcCode: number) {
+    super(message);
+  }
+}
+
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
   return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
     let size = 0;
+    let tooLarge = false;
     req.on('data', (chunk: Buffer) => {
+      if (tooLarge) return; // Drain the rest unread, so the 413 reaches the client.
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        reject(new Error('Request body too large'));
-        req.destroy();
+        tooLarge = true;
+        chunks.length = 0;
+        reject(new RequestBodyError(`Request body too large (limit ${MAX_BODY_BYTES} bytes)`, 413, -32600));
         return;
       }
       chunks.push(chunk);
     });
     req.on('end', () => {
+      if (tooLarge) return;
       try {
         resolveBody(JSON.parse(Buffer.concat(chunks).toString('utf8')));
       } catch {
-        reject(new Error('Invalid JSON body'));
+        reject(new RequestBodyError('Parse error: the request body is not valid JSON', 400, -32700));
       }
     });
     req.on('error', reject);
@@ -405,9 +416,14 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   let actualPort = options.port;
   const httpServer = createHttpServer((req, res) => {
     handle(req, res).catch((error: unknown) => {
+      if (error instanceof RequestBodyError) {
+        logger.warn('SYSTEM', `MCP HTTP: ${error.message}`, { method: req.method, path: req.url });
+        sendJsonRpcError(res, error.httpStatus, error.jsonRpcCode, error.message);
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       logger.error('SYSTEM', 'MCP HTTP request failed', undefined, error instanceof Error ? error : new Error(message));
-      sendJsonRpcError(res, message === 'Request body too large' ? 413 : 500, -32603, message);
+      sendJsonRpcError(res, 500, -32603, message);
     });
   });
 
