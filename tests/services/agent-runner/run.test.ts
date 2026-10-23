@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
-import { mkdtempSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
@@ -118,6 +118,29 @@ describe('agent runner', () => {
       expect(child.stdinText).toBe('inline prompt for codex');
       expect(options.cwd).toBe(cwd);
       expect((options.env as Record<string, string>).CLAUDE_MEM_INTERNAL).toBe('1');
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('Codex: a step with an answer schema passes it as --output-schema, and the schema file is removed after', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-schema-'));
+    try {
+      const schema = { type: 'object', additionalProperties: false, required: ['ok'], properties: { ok: { type: 'boolean' } } };
+      const calls: SpawnCall[] = [];
+      let schemaSeen: unknown = null;
+      const spawnImpl = fakeSpawn(calls, call => {
+        schemaSeen = JSON.parse(readFileSync(call.args[call.args.indexOf('--output-schema') + 1], 'utf8'));
+        writeFileSync(call.args[call.args.indexOf('-o') + 1], '{"ok":true}');
+        call.child.emit('close', 0);
+      });
+      const schemaTask: AgentTask = { ...task(cwd), run: async ask => ask('prompt', LIGHT_MODELS, schema) };
+      const result = await runTask(schemaTask, { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(result).toMatchObject({ state: 'ok', agent: 'codex', result: '{"ok":true}' });
+      const { args } = calls[0];
+      expect(args.slice(10, 12)).toEqual(['--output-schema', args[11]]);
+      expect(args[11].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args.slice(12)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      expect(schemaSeen).toEqual(schema);
+      expect(existsSync(args[11])).toBe(false);
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

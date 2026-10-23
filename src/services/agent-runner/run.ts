@@ -11,8 +11,9 @@
  *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
  *     loaded for its memory-search MCP tools, only the task's allowed tools
  *     (everything else is denied), `cwd` = the data dir and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [-m <model>] [-c model_reasoning_effort="<effort>"] -`
- *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers.
+ *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [--output-schema <file>] [-m <model>] [-c model_reasoning_effort="<effort>"] -`
+ *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers. A step that names an answer
+ *     schema gets it as `--output-schema`, so the final message is that JSON shape and nothing else.
  *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
  *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
@@ -24,7 +25,7 @@
  */
 
 import { randomBytes } from 'crypto';
-import { mkdirSync, readFileSync, rmSync } from 'fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
@@ -37,8 +38,12 @@ import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, t
 export interface StepModel { model?: string; reasoningEffort?: string }
 export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
 
-/** Ask a read-only agent one prompt, on the step's model, and get its final answer text. */
-export type AskAgent = (prompt: string, models: StepModels) => Promise<string>;
+/** A JSON Schema for a step's answer, strict-mode shaped (every property required, no extra properties). */
+export type AnswerSchema = Record<string, unknown>;
+
+/** Ask a read-only agent one prompt, on the step's model, and get its final answer text.
+ * With `answerSchema`, an agent CLI that supports structured output (Codex) must answer in that shape. */
+export type AskAgent = (prompt: string, models: StepModels, answerSchema?: AnswerSchema) => Promise<string>;
 
 export interface ClaudeCodeTaskOptions {
   /** Plugins whose MCP servers the steps need. */
@@ -155,9 +160,9 @@ function failure(name: string, result: CommandResult): Error {
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffort }: StepModel = {}) => [
+const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, schemaPath: string | null, { model, reasoningEffort }: StepModel = {}) => [
   'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
-  ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
+  ...(schemaPath ? ['--output-schema', schemaPath] : []), ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
 /** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
@@ -165,17 +170,23 @@ export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
-  return async (prompt, models) => {
+  return async (prompt, models, answerSchema) => {
     const env = await dependencies.buildEnv();
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
-    const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
+    const id = randomBytes(6).toString('hex');
+    const answerPath = join(directory, `codex-${id}.txt`);
+    // Free-form JSON from Codex can be malformed (Oct 23: an 82-conversation grouping answer closed
+    // its arrays twice), so a step with a schema asks Codex's structured output for it instead.
+    const schemaPath = answerSchema ? join(directory, `codex-${id}.schema.json`) : null;
+    if (schemaPath) writeFileSync(schemaPath, JSON.stringify(answerSchema), { mode: 0o600 });
     try {
-      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, models.codex), prompt, { cwd: task.cwd, env });
+      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, schemaPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
       rmSync(answerPath, { force: true });
+      if (schemaPath) rmSync(schemaPath, { force: true });
     }
   };
 }

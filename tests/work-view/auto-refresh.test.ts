@@ -6,7 +6,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, GROUPING_ANSWER_SCHEMA, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -169,6 +169,53 @@ describe('refresh task', () => {
       expect(models).toEqual([STEP_MODELS.grouping, STEP_MODELS.review, STEP_MODELS.review, STEP_MODELS.story]);
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('Codex grouping answers', () => {
+  const FIXTURES = join(import.meta.dir, '..', 'fixtures', 'codex');
+  const groupingTask = (dir: string, database: Database) => buildRefreshTask({ needs: { due: 0, ungrouped: 1, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+
+  it('grouping asks for the apply schema, and a schema-shaped Codex answer is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-codex-schema-'));
+    try {
+      const database = fixtureDatabase();
+      const schemas: unknown[] = [];
+      const ask = async (prompt: string, _models: unknown, schema?: unknown) => {
+        schemas.push(schema);
+        if (prompt.includes('Do only section 1')) return readFileSync(join(FIXTURES, 'grouping-answer-schema.txt'), 'utf8');
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
+        }
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      expect(await groupingTask(dir, database).run(ask, 'codex')).toBe('1 new conversations grouped, 1 requests reviewed, story written.');
+      expect(schemas[0]).toBe(GROUPING_ANSWER_SCHEMA);
+      expect(Object.values(readLedger(dir).groups.groups).map((group: any) => group.title)).toEqual(['Release cards for My Work']);
+      // Strict structured output: every object lists all its properties as required and allows no others.
+      const objects: any[] = [];
+      const walk = (node: any) => { if (node?.type === 'object') objects.push(node); for (const value of Object.values(node ?? {})) if (value && typeof value === 'object') walk(value); };
+      walk(GROUPING_ANSWER_SCHEMA);
+      expect(objects.length).toBe(4);
+      for (const object of objects) { expect(object.additionalProperties).toBe(false); expect(object.required).toEqual(Object.keys(object.properties)); }
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it('a malformed answer (recorded Oct 23 Codex output: arrays closed twice) fails loudly with the raw answer kept', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-codex-malformed-'));
+    try {
+      const malformed = readFileSync(join(FIXTURES, 'grouping-answer-malformed.txt'), 'utf8');
+      const prompts: string[] = [];
+      const ask = async (prompt: string) => { prompts.push(prompt); return malformed; };
+      const error = await groupingTask(dir, fixtureDatabase()).run(ask, 'codex').then(() => null, failure => failure as Error);
+      expect(error?.message).toMatch(/^grouping: JSON Parse error.*\(raw answer: (.+failed-answers.+-grouping-codex\.txt)\)$/);
+      expect(readFileSync(/\(raw answer: (.+)\)$/.exec(error!.message)![1], 'utf8')).toBe(malformed);
+      // Asked once more with the reason before failing; nothing was grouped.
+      expect(prompts).toHaveLength(2);
+      expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
+      expect(Object.keys(readLedger(dir).groups.groups)).toEqual([]);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });

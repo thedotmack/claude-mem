@@ -13,7 +13,7 @@
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import type { AgentTask, AskAgent, StepModels } from '../agent-runner/run.js';
+import type { AgentTask, AnswerSchema, AskAgent, StepModels } from '../agent-runner/run.js';
 import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
@@ -31,6 +31,18 @@ const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: '
 const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
 export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, alignment: LIGHT, story: CAREFUL } as const;
 type Step = keyof typeof STEP_MODELS;
+
+const strictObject = (properties: Record<string, unknown>) => ({ type: 'object', additionalProperties: false, required: Object.keys(properties), properties });
+const stringArray = { type: 'array', items: { type: 'string' } };
+/** The decisions `apply` takes, as Codex's structured-output schema (strict mode: every field required). */
+export const GROUPING_ANSWER_SCHEMA: AnswerSchema = strictObject({
+  groups: { type: 'array', items: strictObject({
+    title: { type: 'string' },
+    conversations: stringArray,
+    links: { type: 'array', items: strictObject({ kind: { type: 'string', enum: ['shared-work-list', 'shared-request-id', 'agent-judgment'] }, conversations: stringArray, evidence: { type: 'string' } }) },
+  }) },
+  ignored: { type: 'array', items: strictObject({ conversation: { type: 'string' }, reason: { type: 'string' } }) },
+});
 
 /** When each step ran, for refresh.json's run record (not shown in My Work). */
 export interface StepTiming { step: string; agent: UsableAgentId; startedAt: string; finishedAt: string; groups?: number }
@@ -123,15 +135,21 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       try { return await work(); }
       finally { steps.push({ step: name, agent, startedAt, finishedAt: new Date(now()).toISOString(), ...extra }); }
     };
-    /** Ask, save, and on a validator's refusal ask once more with the reason. */
-    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => timed(name, async () => {
+    /** Ask, save, and on a refusal (unreadable JSON or a validator's) ask once more with the reason.
+     * A step refused twice fails with its last raw answer kept in failed-answers/ for diagnosis. */
+    const step = <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>, answerSchema?: AnswerSchema): Promise<T> => timed(name, async () => {
       let refusal: string | null = null;
+      let answer = '';
       for (let attempt = 0; attempt < 2; attempt++) {
-        const answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name]);
+        answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name], answerSchema);
         try { return await save(parseAgentJson(answer)); }
         catch (error) { refusal = error instanceof Error ? error.message : String(error); }
       }
-      throw new Error(`${name}: ${refusal}`);
+      const failedDir = join(ledgerDir, 'failed-answers');
+      mkdirSync(failedDir, { recursive: true });
+      const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
+      writeFileSync(answerPath, answer, { mode: 0o600 });
+      throw new Error(`${name}: ${String(refusal).slice(0, 300)} (raw answer: ${answerPath})`);
     });
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
@@ -188,7 +206,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         await step('grouping', [
           requestProgress, '---', readOnly,
           `Do only section 1 (grouping) for the one batch of new conversations in the \`grouping-input\` output in ${writeInput('grouping-input', input)}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
-        ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)));
+        ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)), GROUPING_ANSWER_SCHEMA);
         grouped += input.conversations.length;
       }
       if (grouped) done.push(`${grouped} new conversations grouped`);
