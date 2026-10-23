@@ -255,3 +255,29 @@ export function isCodexInternalPrompt(text: string): boolean {
   const opening = text.trimStart();
   return CODEX_INTERNAL_PROMPT_OPENINGS.some(pattern => pattern.test(opening));
 }
+
+/**
+ * Grok Bot's research sub-agent briefing prompts from #4811 arrive through
+ * the same UserPromptSubmit hook as a user turn. These are client-generated
+ * helper briefings, rather than prompts typed by a person.
+ */
+const GROK_BOT_INTERNAL_PROMPT_OPENINGS: readonly RegExp[] = [
+  // Research verification briefing.
+  /^Independently verify every candidate claim in the JSON packet below/,
+  // Verified findings rewrite briefing.
+  /^Rewrite the verified research findings/,
+  // Research question investigation briefing.
+  /^Investigate the JSON-encoded question/,
+  // Research query decomposition briefing.
+  /^Break the JSON-encoded research query/,
+];
+
+/**
+ * Whether a prompt is one of Grok Bot's internal helper briefings. Callers
+ * apply it only to platformSource 'grok-bot': the same text from any other
+ * host is a person's prompt.
+ */
+export function isGrokBotInternalPrompt(text: string): boolean {
+  const opening = text.trimStart();
+  return GROK_BOT_INTERNAL_PROMPT_OPENINGS.some(pattern => pattern.test(opening));
+}

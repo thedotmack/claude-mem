@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 import { afterEach, beforeEach, describe, expect, it, spyOn } from 'bun:test';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   OpenAICompatProvider,
   resolveOpenAICompatConfig,
@@ -49,6 +52,78 @@ describe('MiniMax presets', () => {
       for (const key of ENV_KEYS) {
         if (savedEnv[key] === undefined) delete process.env[key];
         else process.env[key] = savedEnv[key];
+      }
+    });
+
+    for (const preset of ['minimax', 'minimax-cn']) {
+      for (const model of ['', 'MiniMax-M3', 'MiniMax-M3.1-Flash', 'MiniMax-M2.7', 'account-custom-model']) {
+        it(`sends ${preset} with ${model || 'the M3 default'} from saved settings`, async () => {
+          for (const key of ENV_KEYS) delete process.env[key];
+          const directory = mkdtempSync(join(tmpdir(), 'minimax-preset-'));
+          const settingsPath = join(directory, 'settings.json');
+          const saved = JSON.stringify({
+            CLAUDE_MEM_OPENAI_COMPAT_PRESET: preset,
+            CLAUDE_MEM_OPENAI_COMPAT_API_KEY: 'fixture-minimax-key',
+            CLAUDE_MEM_OPENAI_COMPAT_MODEL: model,
+          });
+          writeFileSync(settingsPath, saved);
+          const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response([
+            'data: {"choices":[{"delta":{"reasoning_content":"private reasoning"}}]}',
+            'data: {"choices":[{"delta":{"content":"<observation>kept</observation>"},"finish_reason":"stop"}]}',
+            'data: [DONE]',
+            '',
+          ].join('\n\n'), { headers: { 'Content-Type': 'text/event-stream' } }));
+          try {
+            const config = resolveOpenAICompatConfig(settingsPath);
+            const history = [
+              { role: 'user', content: 'Observe the tool result: image saved to chart.png' },
+              { role: 'assistant', content: '<observation>previous</observation>' },
+              { role: 'user', content: 'Summarize the next observation' },
+            ];
+            const result = await (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+              query(h: unknown[], c: unknown): Promise<{ content: string }>;
+            }).query(history, config);
+            const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+            expect(url).toBe(`${resolveOpenAICompatPreset(preset).baseUrl}/chat/completions`);
+            expect((init.headers as Record<string, string>).Authorization).toBe('Bearer fixture-minimax-key');
+            const body = JSON.parse(String(init.body));
+            expect(body.model).toBe(model || 'MiniMax-M3');
+            expect(body.messages).toEqual(history);
+            expect(body.stream).toBe(true);
+            expect(body.stream_options).toEqual({ include_usage: true });
+            // Omission leaves thinking and effort at the API's defaults (max effort for Flash).
+            // This observer has no tool-execution or multimodal request interface.
+            for (const key of ['thinking', 'reasoning_effort', 'reasoning_split', 'service_tier', 'tools']) {
+              expect(body).not.toHaveProperty(key);
+            }
+            expect(result.content).toBe('<observation>kept</observation>');
+            expect(readFileSync(settingsPath, 'utf8')).toBe(saved);
+          } finally {
+            fetchSpy.mockRestore();
+            rmSync(directory, { recursive: true, force: true });
+          }
+        });
+      }
+    }
+
+    it('preserves a custom endpoint and explicit model through the request boundary', async () => {
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_PRESET = 'minimax';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_API_KEY = 'fixture-minimax-key';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_BASE_URL = 'https://gateway.example/v1';
+      process.env.CLAUDE_MEM_OPENAI_COMPAT_MODEL = 'custom-model';
+      const fetchSpy = spyOn(globalThis, 'fetch').mockResolvedValue(new Response(JSON.stringify({
+        choices: [{ message: { content: 'ok' } }],
+      }), { status: 200 }));
+      try {
+        const config = resolveOpenAICompatConfig();
+        await (new OpenAICompatProvider({} as never, {} as never) as unknown as {
+          query(h: unknown[], c: unknown): Promise<unknown>;
+        }).query([{ role: 'user', content: 'observe' }], config);
+        const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+        expect(url).toBe('https://gateway.example/v1/chat/completions');
+        expect(JSON.parse(String(init.body)).model).toBe('custom-model');
+      } finally {
+        fetchSpy.mockRestore();
       }
     });
 

@@ -17,6 +17,7 @@ import { isDirectChild, normalizePath } from '../shared/path-utils.js';
 import { logger } from '../utils/logger.js';
 import { getProjectContext } from '../utils/project-name.js';
 import { replaceTaggedContent } from '../utils/claude-md-utils.js';
+import { toBmpSafe } from '../utils/bmp-safe.js';
 import { ensureDirectoryExists, resolveSymlinkWriteTarget } from '../shared/atomic-json.js';
 import { paths } from '../shared/paths.js';
 import { pageMatchingRows } from '../services/sqlite/stream-rows.js';
@@ -331,7 +332,9 @@ function writeClaudeMdToFolder(folderPath: string, newContent: string): void {
     existingContent = readFileSync(claudeMdPath, 'utf-8');
   }
 
-  const finalContent = replaceTaggedContent(existingContent, newContent);
+  // #2787: an observation title can carry an emoji, and the block must stay
+  // BMP-only, as the worker's folder writer keeps it.
+  const finalContent = replaceTaggedContent(existingContent, toBmpSafe(newContent));
 
   // A symlinked CLAUDE.md stays a symlink: write onto its final target.
   const writeTarget = resolveSymlinkWriteTarget(claudeMdPath);

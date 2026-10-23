@@ -13,8 +13,28 @@ import {
 import { logger } from '../../../utils/logger.js';
 import { redactForLog } from '../../../utils/redaction.js';
 
+/**
+ * Every worker response refuses framing, except Observation TV (`/tv`,
+ * `/tv.html`). The viewer can delete observations and save settings, and its
+ * requests are same-origin, so a hostile page that frames it could harvest
+ * real clicks through an overlay.
+ *
+ * The check is an allowlist on purpose. A per-page check on `req.path` misses
+ * the URLs the static mounts decode and normalize to the same file
+ * (`/viewer%2Ehtml`, `/%76iewer.html`, `//viewer.html`, and `/Viewer.html` on
+ * a case-insensitive disk). Here any such variant is simply refused.
+ */
+export function refuseFramingExceptObservationTv(req: Request, res: Response, next: NextFunction): void {
+  if (req.path !== '/tv' && req.path !== '/tv.html') {
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
+  }
+  next();
+}
+
 export function createMiddleware(): RequestHandler[] {
-  const middlewares: RequestHandler[] = [];
+  // First, so it covers both static UI mounts and every route after them.
+  const middlewares: RequestHandler[] = [refuseFramingExceptObservationTv];
 
   const parseJson = express.json({ limit: '5mb' });
   middlewares.push((req: Request, res: Response, next: NextFunction) => {
@@ -49,13 +69,6 @@ export function createMiddleware(): RequestHandler[] {
 
   const packageRoot = getPackageRoot();
   const uiDir = path.join(packageRoot, 'plugin', 'ui');
-  middlewares.push((req: Request, res: Response, next: NextFunction) => {
-    if (req.path.startsWith('/work-view/')) {
-      res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
-      res.setHeader('X-Frame-Options', 'DENY');
-    }
-    next();
-  });
   middlewares.push(express.static(uiDir));
 
   return middlewares;

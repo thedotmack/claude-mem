@@ -161,12 +161,22 @@ export function createV1Hooks(ctx: OpenCodePluginContextV1) {
     tool: {
       claude_mem_search: {
         description:
-          "Search claude-mem memory database for past observations, sessions, and context",
+          "Smart search (default), step 1: get a memory index. Review claude_mem_timeline, then fetch only selected IDs with claude_mem_get_observations.",
         args: {
           query: z.string().describe("Search query for memory observations"),
         },
         execute: async (args: Record<string, unknown>): Promise<string> =>
           core.search(String(args.query || "")),
+      },
+      claude_mem_timeline: {
+        description: "Smart search, step 2: inspect context around an observation ID from claude_mem_search.",
+        args: { anchor: z.number().int().describe("Observation ID from the memory index") },
+        execute: async (args: Record<string, unknown>): Promise<string> => core.timeline(Number(args.anchor)),
+      },
+      claude_mem_get_observations: {
+        description: "Smart search, step 3: fetch only IDs selected after reviewing the index and timeline.",
+        args: { ids: z.array(z.number().int()).min(1).describe("Selected observation IDs") },
+        execute: async (args: Record<string, unknown>): Promise<string> => core.getObservations(args.ids as number[]),
       },
     },
   };

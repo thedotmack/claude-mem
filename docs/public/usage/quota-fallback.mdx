@@ -9,7 +9,7 @@ When the observer's provider can't serve (its allowance is spent, it stays rate 
 
 **By default, that work moves to your Anthropic plan (Claude)** for as long as the provider is held, provided Claude can run on this machine (a Claude Code login, or an `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in `~/.claude-mem/.env`). When the cooldown ends, one generator probes the original provider; if it answers, everything moves back on its own. If Claude can't run, or you turn the fallback off, work waits and stays queued until the provider recovers.
 
-This applies when your selected provider is the claude-mem observer (cmem.ai), OpenRouter, Gemini, Codex, or an OpenAI-compatible endpoint. When Claude is your selected provider there is nothing to fall back to.
+This applies when your selected provider is the claude-mem observer (cmem.ai), OpenRouter, Gemini, Codex, or an OpenAI-compatible endpoint. When Claude is your selected provider, it can also switch between its two credentials, an API key and your Claude Code login: see [Claude credential fallback](#claude-credential-fallback).
 
 ## Settings
 
@@ -19,6 +19,7 @@ Add these to `~/.claude-mem/settings.json`, or set them in the viewer under **Se
 |---|---|---|
 | `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` | `claude` (the default; `""` means the same), `gemini`, `openrouter`, `openai-compatible`, `off` | Where observation work goes while the selected provider can't serve. `off` turns the fallback off: work waits for the provider. |
 | `CLAUDE_MEM_QUOTA_FALLBACK_MODEL` | `""` or a Claude model id or alias | The model for a **Claude** fallback run. Empty keeps `CLAUDE_MEM_MODEL` and tier routing. Ignored for every other fallback. |
+| `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` | `""` (the default, off), `subscription`, `api-key` | For a **Claude** observer: the other credential to run on while the primary one is held for quota. Tried before `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER`. See below. |
 
 For example, Gemini as the primary with Claude Haiku as the fallback:
 
@@ -50,6 +51,36 @@ The fallback needs its own credentials: a Gemini, OpenRouter or OpenAI-compatibl
 - **A fallback with a bad key is skipped once it is refused.** Only a *missing* key is detected ahead of time; an invalid or revoked fallback key fails its first run, and its auth cooldown then takes it out of rotation. Fix or clear the fallback key.
 - **Paused work resumes on its own.** A generator that stops on a quota error keeps its queued observations. The worker's periodic resume (once a minute) restarts them on whichever provider can take the work — the fallback, or the original provider again if it has recovered by then — and the session's next tool call does the same sooner. If neither can, it waits as before.
 - **Both exhausted:** if the fallback is also in a quota cooldown, nothing changes: work waits until one of them clears.
+
+## Claude credential fallback
+
+A Claude observer bills one of two credentials: the `ANTHROPIC_API_KEY` in `~/.claude-mem/.env` when one is set, otherwise your Claude Code login. When that credential is held for quota, `CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD` names the other one to run on meanwhile:
+
+| Value | Primary credential | Runs on while it is held |
+|---|---|---|
+| `""` (default) | | Nothing: work waits, or goes to `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` |
+| `subscription` | `ANTHROPIC_API_KEY` | Your Claude Code login. Needs a signed-in login. |
+| `api-key` | Your Claude Code login | `ANTHROPIC_FALLBACK_API_KEY` in `~/.claude-mem/.env`. Only claude-mem reads this key; it is never the primary. |
+
+For example, to protect your plan and spend API credits once the quota guard pauses it:
+
+```bash
+# ~/.claude-mem/.env
+ANTHROPIC_FALLBACK_API_KEY=sk-ant-...
+```
+
+```json
+{
+  "CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD": "api-key"
+}
+```
+
+- **What switches:** a spent allowance (a credit balance too low, a plan limit) and, for the login, a pause by the quota guard at its `CLAUDE_MEM_QUOTA_THRESHOLD_*` limits. Outages, rate limits and auth errors do not switch: the same API serves both credentials, and a refused credential needs you to act.
+- **Order:** the other credential is tried first, then `CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER` once both are held, then capture pauses.
+- **How it ends:** when the 30-minute cooldown elapses, one generator probes the primary credential. If it answers, every session goes back to it. If not, the cooldown re-arms and the fallback credential carries on.
+- **What it spends:** `subscription` runs count against the plan you use interactively, so the quota guard still pauses them near its limits. `api-key` runs are billed per request with nobody watching; set a spend limit on the key's workspace in the Anthropic Console.
+- **Gateways:** neither value applies under `ANTHROPIC_BASE_URL`, so observer traffic is never routed around a gateway you configured.
+- The log shows the switch once: `API key quota exhausted; running the Claude observer on the subscription login until the key recovers`, or `Claude Code login paused for quota; running the Claude observer on the fallback API key until the login recovers`. The session-start notice names the credential memory is running on.
 
 ## Things to know
 

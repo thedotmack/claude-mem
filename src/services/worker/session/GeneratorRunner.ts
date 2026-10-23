@@ -37,6 +37,7 @@ import {
   releaseQuotaProbe,
   recordAuthCooldown,
   recordQuotaExhausted,
+  type ClaudeCredential,
   QUOTA_EXHAUSTED_RECHECK_COOLDOWN_MS,
 } from '../../../shared/quota-cooldown.js';
 import {
@@ -425,7 +426,7 @@ export async function startGeneratorWithProvider(
         // SessionStart banner must not call a 95% reserve pause a spent
         // allowance, nor a provider's own refusal a precaution.
         const pause = quotaPauseForExit(provider, reason, session.observerProfile);
-        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile);
+        recordQuotaExhausted(provider, pause.message, reason?.split(':')[1], undefined, session.observerProfile, primaryCredentialOf(session, provider));
         // Quota returned as assistant prose never throws, so it never reaches
         // the .catch above and never armed the health ledger. Without this the
         // session-start warning is structurally blind to an entire outage
@@ -452,12 +453,14 @@ export async function startGeneratorWithProvider(
           action: 'Run /login in Claude Code (or `claude auth login` in a terminal) to refresh the observer credentials',
         });
       }
-      // A Claude fallback run that finds Claude signed out (or refused by org
-      // policy) takes Claude out of the fallback rotation for a cooldown, as a
+      // A Claude fallback run, or a run on the quota-fallback credential,
+      // that finds Claude signed out (or refused by org policy) takes Claude
+      // out of the fallback rotation for a cooldown, as a
       // thrown auth refusal already does (bookClassifiedFailure). Otherwise each
       // captured event would start the same signed-out fallback again while
       // the primary is held. A Claude primary keeps retrying on the next event.
-      const claudeStandInSignedOut = provider === 'claude' && session.fallbackFrom != null && !failureBooked
+      const claudeStandInSignedOut = provider === 'claude' && !failureBooked
+        && (session.fallbackFrom != null || session.claudeAuthOverride != null)
         && (reason === 'auth:observer_text' || reason === 'auth:observer_org_policy');
       if (claudeStandInSignedOut) {
         recordAuthCooldown('claude', 'Claude Code reported the fallback observer as signed out', session.observerProfile);
@@ -506,7 +509,7 @@ export async function startGeneratorWithProvider(
       // for can take the work back once it recovers. Left as an auth pause the
       // periodic sweep would skip the session for good, so mark it resumable;
       // the sweep paces itself on the primary's breaker.
-      if (session.fallbackFrom != null && session.pausedReason === 'auth') {
+      if ((session.fallbackFrom != null || session.claudeAuthOverride != null) && session.pausedReason === 'auth') {
         session.pausedReason = 'provider_switch';
       }
 
@@ -589,6 +592,15 @@ export async function startGeneratorWithProvider(
 }
 
 /**
+ * The credential this Claude run spent (or had paused by the quota guard), so
+ * its breaker may hand the work to the other one (claudeQuotaStandIn). A
+ * quota-fallback run is never tagged: when it is refused too, both are spent.
+ */
+function primaryCredentialOf(session: ActiveSession, provider: SelectableProvider): ClaudeCredential | undefined {
+  return provider === 'claude' && !session.claudeAuthOverride ? session.observerAuth : undefined;
+}
+
+/**
  * Book a classified provider failure once, with the provider's own detail
  * (code, message, action, link, request id), so the session-start warning
  * shows the same words as the log line. Returns when and why a paused session
@@ -605,7 +617,7 @@ function bookClassifiedFailure(
     case 'quota_exhausted':
       // A spent allowance: withhold requests for a cooldown, then let one
       // through to re-probe, instead of one doomed request per event (#3634).
-      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile);
+      recordQuotaExhausted(provider, error.message, undefined, undefined, session.observerProfile, primaryCredentialOf(session, provider));
       break;
     case 'auth_invalid':
       // A refused credential fails every request until the user acts; the

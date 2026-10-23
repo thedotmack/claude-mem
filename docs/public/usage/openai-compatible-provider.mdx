@@ -155,14 +155,21 @@ and model. The API key is set in `~/.claude-mem/settings.json` or
 
 `minimax` is MiniMax's global endpoint and `minimax-cn` the mainland-China one;
 use the preset that matches where your account lives. Both default to
-`MiniMax-M3`. Any model id MiniMax serves is passed verbatim:
+`MiniMax-M3`. Any model id MiniMax serves is passed verbatim, including legacy
+ids such as `MiniMax-M2.7`.
+
+To use M3.1 Flash instead, set its model id explicitly. The observer uses Chat
+Completions without overriding thinking or reasoning effort, so Flash runs with
+the API's adaptive thinking at its default `max` effort, which spends more
+tokens per observation. Flash may also need a MiniMax Token Plan rather than
+pay-as-you-go. See the [MiniMax OpenAI API reference](https://platform.minimax.io/docs/api-reference/text-openai-api).
 
 ```json
 {
   "CLAUDE_MEM_PROVIDER": "openai-compatible",
   "CLAUDE_MEM_OPENAI_COMPAT_PRESET": "minimax",
   "CLAUDE_MEM_OPENAI_COMPAT_API_KEY": "<key from platform.minimax.io>",
-  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "MiniMax-M2.7"
+  "CLAUDE_MEM_OPENAI_COMPAT_MODEL": "MiniMax-M3.1-Flash"
 }
 ```
 

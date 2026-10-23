@@ -10,7 +10,7 @@
 //
 // Nothing here touches the runner's home: HOME, the data dir and HERMES_HOME
 // all point into one temporary folder.
-import { afterAll, beforeAll, describe, expect, it, spyOn } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
@@ -155,20 +155,19 @@ describe.skipIf(!PYTHON)('Hermes session memory, end to end against a real worke
     expect(claudeNote.success).toBe(true);
 
     // 2. Install the provider the way a user does, into a temporary HERMES_HOME.
-    const saved = { HERMES_HOME: process.env.HERMES_HOME, CLAUDE_MEM_DEV_HOOK_SOURCE: process.env.CLAUDE_MEM_DEV_HOOK_SOURCE, CLAUDE_MEM_DATA_DIR: process.env.CLAUDE_MEM_DATA_DIR };
-    const quiet = [spyOn(console, 'log').mockImplementation(() => {}), spyOn(console, 'error').mockImplementation(() => {})];
-    process.env.HERMES_HOME = hermesHome;
-    process.env.CLAUDE_MEM_DEV_HOOK_SOURCE = '1';
-    process.env.CLAUDE_MEM_DATA_DIR = env.CLAUDE_MEM_DATA_DIR;
-    try {
-      const { installHermesIntegration } = await import('../../src/services/integrations/HermesInstaller.js');
-      expect(installHermesIntegration()).toBe(0);
-    } finally {
-      for (const spy of quiet) spy.mockRestore();
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key];
-        else process.env[key] = value;
-      }
+    // Resolve import-time paths inside the isolated home. A developer's existing
+    // marketplace must not substitute an older provider or MCP bundle here.
+    const installed = spawnSync(process.execPath, ['-e',
+      "import { installHermesIntegration } from './src/services/integrations/HermesInstaller.ts'; process.exit(installHermesIntegration());",
+    ], {
+      cwd: REPO,
+      env: { ...env, HERMES_HOME: hermesHome, CLAUDE_MEM_DEV_HOOK_SOURCE: '1' },
+      encoding: 'utf-8', timeout: 30_000,
+    });
+    expect(installed.status, installed.stderr).toBe(0);
+    for (const name of ['__init__.py', 'client.py', 'plugin.yaml', 'README.md']) {
+      expect(readFileSync(join(hermesHome, 'plugins', 'claude-mem', name)))
+        .toEqual(readFileSync(join(REPO, 'hermes', 'claude-mem', name)));
     }
     const hermesConfig = parseYaml(readFileSync(join(hermesHome, 'config.yaml'), 'utf-8'));
     expect(hermesConfig.memory.provider).toBe('claude-mem');
@@ -211,7 +210,11 @@ describe.skipIf(!PYTHON)('Hermes session memory, end to end against a real worke
       await client.connect(transport);
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).toContain('search');
-      expect(names).toContain('mem_search');
+      expect(names).toContain('timeline');
+      expect(names).toContain('get_observations');
+      expect(names).toContain('dumb_search');
+      expect(names).not.toContain('mem_search');
+      expect(names).not.toContain('flash_search');
       const result = await client.callTool({ name: 'search', arguments: { query: 'zebracornflower', project } }) as CallToolResult;
       const text = result.content.filter(block => block.type === 'text').map(block => (block as { text: string }).text).join('\n');
       expect(result.isError).toBeFalsy();

@@ -227,7 +227,7 @@ describe("OpenCode V2 hook registration", () => {
     const { ctx, tools } = createV2Context();
     await setupV2(ctx);
 
-    expect(tools.length).toBe(1);
+    expect(tools.map(tool => tool.name)).toEqual(["claude_mem_search", "claude_mem_timeline", "claude_mem_get_observations"]);
     const tool = tools[0];
     expect(tool.name).toBe("claude_mem_search");
     expect(typeof tool.description).toBe("string");

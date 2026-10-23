@@ -68,7 +68,7 @@ describe('CLAUDE_MEM_WORK_STATE_ENABLED over stdio (#4606)', () => {
       const names = (await client.listTools()).tools.map(tool => tool.name);
       expect(names).not.toContain('work_state_write');
       expect(names).not.toContain('work_state_read');
-      expect(names).toContain('mem_search');
+      expect(names).toContain('dumb_search');
 
       for (const call of workStateCalls) {
         const result = await client.callTool(call) as CallToolResult;

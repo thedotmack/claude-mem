@@ -304,6 +304,31 @@ describe('ResponseProcessor', () => {
     }
   });
 
+  it.each([
+    ['subscription', 'api-key'],
+    ['api-key', 'subscription'],
+  ] as const)("keeps the primary credential's breaker when a quota-fallback run on %s stores memory", async (standIn, held) => {
+    const store = new SessionStore(':memory:');
+    const sessionDbId = store.createSDKSession(`stand-in-${standIn}`, 'test-project', 'prompt');
+    store.ensureMemorySessionIdRegistered(sessionDbId, `stand-in-memory-${standIn}`);
+    mockDbManager = { ...mockDbManager, getSessionStore: () => store } as unknown as DatabaseManager;
+    const session = createMockSession({
+      sessionDbId, contentSessionId: `stand-in-${standIn}`, memorySessionId: `stand-in-memory-${standIn}`,
+      currentProvider: 'claude', claudeAuthOverride: standIn,
+    });
+    const cooldown = recordQuotaExhausted('claude', 'allowance spent', undefined, undefined, undefined, held);
+    try {
+      const result = await processAgentResponse(
+        '<observation><type>discovery</type><title>Useful result</title><narrative>Real finding</narrative></observation>',
+        session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent',
+      );
+      expect(result?.observationIds.length).toBeGreaterThan(0);
+      expect(getQuotaCooldown('claude')).toEqual(cooldown);
+    } finally {
+      store.close();
+    }
+  });
+
   describe('parsing observations from XML response', () => {
     it('should parse single observation from response', async () => {
       const session = createMockSession({ project: 'repo-b/worktree' });

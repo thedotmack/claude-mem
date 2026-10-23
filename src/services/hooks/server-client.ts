@@ -207,6 +207,17 @@ export interface ServerContextObservationsResponse {
   context: string;
 }
 
+export interface ServerTimelineRequest {
+  projectId: string;
+  anchorId: string;
+  depthBefore?: number;
+  depthAfter?: number;
+}
+export interface ServerSelectedObservationsRequest {
+  projectId: string;
+  ids: string[];
+}
+
 // Phase 8 — generation job status, scoped by api-key team/project.
 export interface ServerJobStatusResponse {
   generationJob: {
@@ -276,6 +287,14 @@ export class ServerClient {
       '/v1/search',
       this.buildSearchPayload(input),
     );
+  }
+
+  async timelineObservations(input: ServerTimelineRequest): Promise<ServerSearchObservationsResponse> {
+    return this.request<ServerSearchObservationsResponse>('POST', '/v1/timeline', input);
+  }
+
+  async selectedObservations(input: ServerSelectedObservationsRequest): Promise<ServerSearchObservationsResponse> {
+    return this.request<ServerSearchObservationsResponse>('POST', '/v1/observations/batch', input);
   }
 
   // Phase 8 — MCP `observation_context` and the server-runtime session-start

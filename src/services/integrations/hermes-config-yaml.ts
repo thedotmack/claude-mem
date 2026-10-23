@@ -22,15 +22,17 @@ interface Block {
   childIndent: number;
 }
 
-function splitLines(text: string): { lines: string[]; eol: string } {
+function splitLines(text: string): { lines: string[]; eol: string; bom: string } {
+  // Windows editors save UTF-8 with a byte-order mark; it is not part of the first key.
+  const bom = text.startsWith('\uFEFF') ? '\uFEFF' : '';
   const eol = text.includes('\r\n') ? '\r\n' : '\n';
-  const lines = text.split(/\r?\n/);
+  const lines = text.slice(bom.length).split(/\r?\n/);
   if (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
-  return { lines, eol };
+  return { lines, eol, bom };
 }
 
-function joinLines(lines: string[], eol: string): string {
-  return lines.length === 0 ? '' : lines.join(eol) + eol;
+function joinLines(lines: string[], eol: string, bom: string): string {
+  return lines.length === 0 ? bom : bom + lines.join(eol) + eol;
 }
 
 function stripComment(value: string): string {
@@ -51,6 +53,13 @@ function indentOf(line: string): number {
 /** The block for a top-level key, or null when the key is absent. Throws on a
  *  value this editor cannot extend (anything but empty, `{}`, `null` or `~`). */
 function findBlock(lines: string[], key: string): Block | null {
+  // A file whose root keys are all indented is valid YAML, but the keys below would
+  // not be found and a second block would be appended beside them.
+  // A `---` document marker or a `%` directive in front of the keys is not a key.
+  const firstContent = lines.find(line => isContent(line) && !/^(---(\s|$)|%)/.test(line));
+  if (firstContent !== undefined && indentOf(firstContent) > 0) {
+    throw new HermesConfigShapeError('the top level of config.yaml is indented; claude-mem edits only unindented root keys');
+  }
   // A quoted key is the same key to YAML; editing beside it would add a duplicate.
   if (lines.some(line => line.startsWith(`"${key}"`) || line.startsWith(`'${key}'`))) {
     throw new HermesConfigShapeError(`"${key}" is written as a quoted key; claude-mem edits only plain keys`);
@@ -156,7 +165,7 @@ export function readMemoryProvider(text: string): string | null {
 }
 
 export function selectMemoryProvider(text: string, provider: string): { text: string; receipt: ProviderReceipt } {
-  const { lines, eol } = splitLines(text);
+  const { lines, eol, bom } = splitLines(text);
   const before = findBlock(lines, 'memory');
   const memoryHeader = before ? lines[before.header] : null;
   const block = openBlock(lines, 'memory');
@@ -169,20 +178,20 @@ export function selectMemoryProvider(text: string, provider: string): { text: st
     providerLine = lines[index];
     lines[index] = line;
   }
-  return { text: joinLines(lines, eol), receipt: { memoryHeader, providerLine } };
+  return { text: joinLines(lines, eol, bom), receipt: { memoryHeader, providerLine } };
 }
 
 /** Undo selectMemoryProvider, but only while `provider` is still selected:
  *  a provider the user chose since is theirs. */
 export function restoreMemoryProvider(text: string, provider: string, receipt: ProviderReceipt): string {
-  const { lines, eol } = splitLines(text);
+  const { lines, eol, bom } = splitLines(text);
   const block = findBlock(lines, 'memory');
   if (!block) return text;
   const index = providerLineIndex(lines, block);
   if (index === -1 || scalar(lines[index]) !== provider) return text;
   if (receipt.providerLine !== null) {
     lines[index] = receipt.providerLine;
-    return joinLines(lines, eol);
+    return joinLines(lines, eol, bom);
   }
   lines.splice(index, 1);
   const after = findBlock(lines, 'memory')!;
@@ -190,7 +199,7 @@ export function restoreMemoryProvider(text: string, provider: string, receipt: P
     if (receipt.memoryHeader === null) lines.splice(after.header, after.end - after.header);
     else lines[after.header] = receipt.memoryHeader;
   }
-  return joinLines(lines, eol);
+  return joinLines(lines, eol, bom);
 }
 
 export interface McpServerEntry {
@@ -238,7 +247,7 @@ function entryLines(name: string, entry: McpServerEntry, indent: number): string
 /** Add `mcp_servers.<name>`, replacing an entry of that name (callers decide
  *  whether an existing entry is theirs to replace). */
 export function putMcpServer(text: string, name: string, entry: McpServerEntry): { text: string; receipt: McpReceipt } {
-  const { lines, eol } = splitLines(text);
+  const { lines, eol, bom } = splitLines(text);
   const before = findBlock(lines, 'mcp_servers');
   const mcpHeader = before ? lines[before.header] : null;
   const block = openBlock(lines, 'mcp_servers');
@@ -246,12 +255,12 @@ export function putMcpServer(text: string, name: string, entry: McpServerEntry):
   const replacement = entryLines(name, entry, block.childIndent);
   if (index === -1) lines.splice(block.header + 1, 0, ...replacement);
   else lines.splice(index, childEnd(lines, block, index) - index, ...replacement);
-  return { text: joinLines(lines, eol), receipt: { mcpHeader, installedEntry: replacement.join('\n') } };
+  return { text: joinLines(lines, eol, bom), receipt: { mcpHeader, installedEntry: replacement.join('\n') } };
 }
 
 export function removeMcpServer(text: string, name: string, receipt: McpReceipt): string {
   if (!matchesMcpReceipt(text, name, receipt)) return text;
-  const { lines, eol } = splitLines(text);
+  const { lines, eol, bom } = splitLines(text);
   const block = findBlock(lines, 'mcp_servers');
   if (!block) return text;
   const index = childLine(lines, block, name);
@@ -262,5 +271,5 @@ export function removeMcpServer(text: string, name: string, receipt: McpReceipt)
     if (receipt.mcpHeader === null) lines.splice(after.header, after.end - after.header);
     else lines[after.header] = receipt.mcpHeader;
   }
-  return joinLines(lines, eol);
+  return joinLines(lines, eol, bom);
 }

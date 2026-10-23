@@ -30,6 +30,7 @@ import type { SessionManager } from '../SessionManager.js';
 import type { WorkerRef, StorageResult } from './types.js';
 import { broadcastObservation, broadcastSummary } from './ObservationBroadcaster.js';
 import { telemetryBuffer } from '../../telemetry/buffer.js';
+import { logChromaWriteFailure } from '../search/errors.js';
 
 type ObservationFileEvidenceMessage = Pick<PendingMessage, 'type' | 'tool_name' | 'tool_input'>;
 
@@ -793,7 +794,8 @@ export async function processAgentResponse(
   // here must not erase a newer failure from a concurrent pool slot.
   if (result.observationIds.length > 0 || result.summaryId !== null) {
     recordObserverSuccess();
-    if (session.currentProvider && session.currentProvider !== 'codex') {
+    // A quota-fallback run proves its own credential works, not the spent primary one.
+    if (session.currentProvider && session.currentProvider !== 'codex' && !session.claudeAuthOverride) {
       clearQuotaCooldown(session.currentProvider);
     }
   }
@@ -1074,7 +1076,7 @@ async function syncAndBroadcastObservations(
         title: obs.title || '(untitled)'
       });
     }).catch((error) => {
-      logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+      logChromaWriteFailure('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
         obsId,
         type: obs.type,
         title: obs.title || '(untitled)'
@@ -1164,7 +1166,7 @@ async function syncAndBroadcastSummary(
       request: summaryForStore.request || '(no request)'
     });
   }).catch((error) => {
-    logger.error('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
+    logChromaWriteFailure('CHROMA', `${agentName} chroma sync failed, continuing without vector search`, {
       summaryId: result.summaryId,
       request: summaryForStore.request || '(no request)'
     }, error);

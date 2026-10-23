@@ -99,6 +99,43 @@ function findBunForWhereOutput(stdout: string) {
   })();
 }
 
+describe('bun-runner.js Windows known paths before where (#4934)', () => {
+  it('returns ~/.bun without running where when it exists', () => {
+    const homeBun = win32.join('C:\\Users\\fixture', '.bun', 'bin', 'bun.exe');
+    let whereCalls = 0;
+    const result = createFindBun({
+      IS_WINDOWS: true,
+      dirname: win32.dirname,
+      existsSync: (p: string) => p === homeBun || p === 'C:\\other\\bun.exe',
+      homedir: () => 'C:\\Users\\fixture',
+      join: win32.join,
+      spawnSync: (() => {
+        whereCalls++;
+        return { status: 0, stdout: 'C:\\other\\bun.exe\r\n', stderr: '' };
+      }) as unknown as typeof spawnSync,
+    })();
+    expect(result).toBe(homeBun);
+    expect(whereCalls).toBe(0);
+  });
+
+  it('still asks where when no known Bun exists', () => {
+    let whereCalls = 0;
+    const result = createFindBun({
+      IS_WINDOWS: true,
+      dirname: win32.dirname,
+      existsSync: (p: string) => p === 'C:\\scoop\\shims\\bun.exe',
+      homedir: () => 'C:\\Users\\fixture',
+      join: win32.join,
+      spawnSync: (() => {
+        whereCalls++;
+        return { status: 0, stdout: 'C:\\scoop\\shims\\bun.exe\r\n', stderr: '' };
+      }) as unknown as typeof spawnSync,
+    })();
+    expect(result).toBe('C:\\scoop\\shims\\bun.exe');
+    expect(whereCalls).toBe(1);
+  });
+});
+
 describe('bun-runner.js Windows PATH ordering', () => {
   it('keeps an earlier bun.cmd ahead of a later bun.exe', () => {
     expect(findBunForWhereOutput([
@@ -219,11 +256,19 @@ describe('bun-runner.js findBun: absolute bun.exe resolution (#3196)', () => {
     expect(result).toBe('C:\\Users\\test\\.bun\\bin\\bun.exe');
   });
 
-  it('still prefers bun.cmd when an npm shim is present', () => {
+  it('prefers an installed ~/.bun bun.exe over an earlier npm bun.cmd shim on PATH (#4934)', () => {
     const result = runFindBun({
       status: 0,
       stdout: 'C:\\npm\\bun.cmd\r\nC:\\Users\\test\\.bun\\bin\\bun.exe\r\n'
     }, { existingPaths: ['C:\\npm\\bun.cmd', 'C:\\Users\\test\\.bun\\bin\\bun.exe'] });
+    expect(result).toBe('C:\\Users\\test\\.bun\\bin\\bun.exe');
+  });
+
+  it('still prefers an earlier npm bun.cmd shim when no known Bun is installed', () => {
+    const result = runFindBun({
+      status: 0,
+      stdout: 'C:\\npm\\bun.cmd\r\nC:\\other\\bun.exe\r\n'
+    }, { existingPaths: ['C:\\npm\\bun.cmd', 'C:\\other\\bun.exe'] });
     expect(result).toBe('C:\\npm\\bun.cmd');
   });
 

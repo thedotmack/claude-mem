@@ -128,7 +128,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: (Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> & Partial<Pick<ContextCacheService, 'invalidationGenerationNow'>>) | null = null,
+    private contextCache: (Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> & Partial<Pick<ContextCacheService, 'invalidationGenerationNow' | 'beginRenderSequence'>>) | null = null,
     // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
     private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
     private contextReader: ContextReadWorkerClient | null = null,
@@ -226,7 +226,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // carry the depth/economics stats computed during generation.
 
     app.get('/api/search', this.handleUnifiedSearch.bind(this));
-    app.post('/api/mem-search', this.handleProgressiveSearch.bind(this));
+    app.post('/api/dumb-search', this.handleDumbSearch.bind(this));
     app.get('/api/timeline', this.handleUnifiedTimeline.bind(this));
 
     app.get('/api/search/observations', this.handleSearchObservations.bind(this));
@@ -252,13 +252,13 @@ export class SearchRoutes extends BaseRouteHandler {
     res.json(result);
   });
 
-  private handleProgressiveSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
+  private handleDumbSearch = this.wrapHandler(async (req: Request, res: Response): Promise<void> => {
     this.progressiveSearch ??= new ProgressiveMemorySearch(this.searchManager, this.searchManager.getSessionStore());
-    const { searchScope, projects, ...input } = req.body ?? {};
-    const scope = typeof searchScope === 'string' ? `worker/${searchScope}` : 'worker/global';
+    const { projects, ...input } = req.body ?? {};
     try {
-      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, scope, projects)));
+      res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, projects)));
     } catch (error) {
+      logger.warn('HTTP', 'Progressive memory search failed', { projectCount: Array.isArray(projects) ? projects.length : projects ? 1 : 0 }, error instanceof Error ? error : new Error(String(error)));
       res.json(progressiveSearchToolError(error));
     }
   });
@@ -431,6 +431,8 @@ export class SearchRoutes extends BaseRouteHandler {
     // A delete that lands while this renders must not see its row written back to the cache.
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
     const invalidationGenerationAtStart = this.contextCache?.invalidationGenerationNow?.();
+    // A queued re-render that starts after this one must win, even if it finishes first.
+    const renderSequenceAtStart = this.contextCache?.beginRenderSequence?.();
     let rendered: ContextInjectRender;
     try {
       rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
@@ -482,6 +484,7 @@ export class SearchRoutes extends BaseRouteHandler {
             },
             respondedAtEpochMs,
             removalGenerationAtRenderStart,
+            renderSequenceAtStart,
           );
         }
       } catch (error) {

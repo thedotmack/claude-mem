@@ -536,7 +536,12 @@ export class ChromaMcpManager {
     const transportChild = (this.transport as unknown as { _process?: ChildProcess })._process;
     const currentTracked = transportChild ? trackChild(transportChild) : null;
     const currentTrackedPid = currentTracked?.pid;
+    // client.connect() installed the SDK's own close handler, which rejects
+    // in-flight requests with ConnectionClosed. Replacing it would leave a
+    // pending write waiting out the full mutation timeout after a crash.
+    const sdkOnClose = this.transport.onclose;
     this.transport.onclose = () => {
+      sdkOnClose?.();
       if (this.transport !== currentTransport) {
         logger.debug('CHROMA_MCP', 'Ignoring stale onclose from previous transport');
         return;
@@ -558,12 +563,14 @@ export class ChromaMcpManager {
         code: transportChild?.exitCode ?? null,
         signal: transportChild?.signalCode ?? null,
       };
+      const stderrTail = transportStderrTail();
       logger.warn('CHROMA_MCP', 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff', {
         count: this.chromaCrashCount,
         exitCode: this.chromaLastExit.code,
         signalCode: this.chromaLastExit.signal,
         chromaMcpVersion: CHROMA_MCP_PINNED_VERSION,
         dependencyOverrides: [...CHROMA_MCP_DEP_OVERRIDES],
+        ...(stderrTail ? { stderrTail } : {}),
       });
       this.connected = false;
       if (currentTrackedPid) getSupervisor().unregisterProcess(CHROMA_SUPERVISOR_ID, currentTrackedPid);
@@ -867,9 +874,11 @@ export class ChromaMcpManager {
   private static isChromaWriterLockAbandoned(lockPath: string): boolean {
     try {
       return Date.now() - fs.statSync(lockPath).mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
-    } catch {
-      // Vanished between the failed create and the stat: nothing left to reap.
-      return true;
+    } catch (error) {
+      // Only ENOENT proves the lock vanished between the failed create and the stat;
+      // transient stat errors (e.g. EMFILE, EIO, EACCES) must not reap a live lock (#4951).
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      return errno === 'ENOENT';
     }
   }
 

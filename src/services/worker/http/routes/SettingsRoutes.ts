@@ -269,6 +269,7 @@ export class SettingsRoutes extends BaseRouteHandler {
       'CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS',
       'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER',
       'CLAUDE_MEM_QUOTA_FALLBACK_MODEL',
+      'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD',
       'CLAUDE_MEM_DATA_DIR',
       'CLAUDE_MEM_LOG_LEVEL',
       'CLAUDE_MEM_PYTHON_VERSION',
@@ -331,6 +332,18 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
+    // The MCP toggle renames the plugin's .mcp.json, so it gets the same
+    // browser cross-port rejection as POST /api/settings: the viewer's own
+    // page keeps working, another localhost origin cannot flip the MCP server.
+    // Origin-less clients (hooks, CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const { enabled } = req.body as z.infer<typeof toggleMcpSchema>;
 
     this.toggleMcp(enabled);
@@ -369,6 +382,11 @@ export class SettingsRoutes extends BaseRouteHandler {
       if (!validFallbacks.includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER)) {
         return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER must be "claude" (or empty, the default), "gemini", "openrouter", "openai-compatible", or "off"' };
       }
+    }
+
+    if (settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD
+      && !['subscription', 'api-key'].includes(settings.CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD)) {
+      return { valid: false, error: 'CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD must be "subscription", "api-key", or empty (off, the default)' };
     }
 
     if (settings.CLAUDE_MEM_CLAUDE_AUTH_METHOD) {

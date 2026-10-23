@@ -3,7 +3,8 @@ import { logger } from '../../../utils/logger.js';
 import type { SessionManager } from '../SessionManager.js';
 import type { DatabaseManager } from '../DatabaseManager.js';
 import type { SessionEventBroadcaster } from '../events/SessionEventBroadcaster.js';
-import { isCodexInternalPrompt, isInternalProtocolPayload, stripMemoryTags } from '../../../utils/tag-stripping.js';
+import { isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload, stripMemoryTags } from '../../../utils/tag-stripping.js';
+import { logChromaWriteFailure } from '../search/errors.js';
 import { isProjectExcluded } from '../../../utils/project-filter.js';
 import { shouldSkipAgentObservation } from '../../../shared/should-skip-agent-observation.js';
 import { isToolSkipped } from '../../../shared/is-tool-skipped.js';
@@ -196,6 +197,13 @@ export async function ingestSessionInit(
   // suggestions) arrive like a user turn; Codex only (see the hook handler).
   if (rawPrompt && platformSource === 'codex' && isCodexInternalPrompt(rawPrompt)) {
     logger.debug('HTTP', 'session-init: skipping a Codex internal helper prompt before session creation', { contentSessionId });
+    return { status: 'skipped', reason: 'internal_system_prompt' };
+  }
+
+  // Grok Bot's own research sub-agent briefings arrive like a user turn;
+  // Grok Bot only (see the hook handler, #4811).
+  if (rawPrompt && platformSource === 'grok-bot' && isGrokBotInternalPrompt(rawPrompt)) {
+    logger.debug('HTTP', 'session-init: skipping a Grok Bot internal helper prompt before session creation', { contentSessionId });
     return { status: 'skipped', reason: 'internal_system_prompt' };
   }
 
@@ -429,7 +437,7 @@ export async function ingestSessionInit(
           prompt: truncatedPrompt
         });
       }).catch((error) => {
-        logger.error('CHROMA', 'User prompt sync failed, continuing without vector search', {
+        logChromaWriteFailure('CHROMA', 'User prompt sync failed, continuing without vector search', {
           promptId: savedUserPrompt.id,
           prompt: promptText.length > 60 ? promptText.substring(0, 60) + '...' : promptText
         }, error);
@@ -678,9 +686,16 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     prompt_number: promptNumber,
     // An explicit project stands in for the missing checkout on purpose.
     cwd: (cwd || explicitProject) ? cwd : (() => {
-      logger.error('INGEST', 'Missing cwd when ingesting observation', {
+      // A host with no checkout (ODS, other HTTP hosts) names its project at
+      // session init and never sends a cwd; that is expected. Without a
+      // project from init, a missing cwd is a capture fault.
+      const sessionProject = store.getSessionById(sessionDbId)?.project;
+      const hostHasNoCheckout = !!sessionProject && sessionProject !== 'unknown';
+      const log = hostHasNoCheckout ? logger.debug : logger.error;
+      log.call(logger, 'INGEST', 'Missing cwd when ingesting observation', {
         sessionId: sessionDbId,
         toolName: payload.toolName,
+        project: sessionProject,
       });
       return '';
     })(),

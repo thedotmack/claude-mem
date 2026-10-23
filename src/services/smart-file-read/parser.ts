@@ -103,12 +103,16 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
+(abstract_class_declaration name: (type_identifier) @name) @cls
 (method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(abstract_method_signature name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
 (public_field_definition name: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
 (public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
+(internal_module name: (_) @name) @namespace_def
+(module name: (_) @name) @namespace_def
 (import_statement) @imp
 (export_statement) @exp
 `,
@@ -132,8 +136,8 @@ const QUERIES: Record<string, string> = {
 
   python: `
 (decorated_definition definition: (_) @decorated_inner) @decorated_outer
-(function_definition name: (identifier) @name) @func
-(class_definition name: (identifier) @name) @cls
+(function_definition name: (identifier) @name type_parameters: (_)? @sig_end parameters: (_) @sig_end return_type: (_)? @sig_end body: (block) @body) @func
+(class_definition name: (identifier) @name type_parameters: (_)? @sig_end superclasses: (_)? @sig_end body: (block) @body) @cls
 (import_statement) @imp
 (import_from_statement) @imp
 `,
@@ -151,16 +155,19 @@ const QUERIES: Record<string, string> = {
 (enum_item name: (type_identifier) @name) @enm
 (trait_item name: (type_identifier) @name) @trait_def
 (impl_item type: (_) @name) @impl_def
+(mod_item name: (identifier) @name) @namespace_def
 (use_declaration) @imp
 `,
 
+  // Only the Ruby calls that load code are imports, and only without a
+  // receiver: `YAML.load(text)` and `items.each do … end` are not.
   ruby: `
-(method name: (identifier) @name) @func
-(singleton_method object: (_) @receiver name: (identifier) @name) @method
+(method name: (identifier) @name parameters: (_)? @sig_end) @func
+(singleton_method object: (_) @receiver name: (identifier) @name parameters: (_)? @sig_end) @method
 (singleton_class value: (self)) @singleton_scope
-(class name: [(constant) (scope_resolution)] @name) @cls
+(class name: [(constant) (scope_resolution)] @name superclass: (_)? @sig_end) @cls
 (module name: [(constant) (scope_resolution)] @name) @cls
-(call method: (identifier) @name) @imp
+((call !receiver method: (identifier) @name) @imp (#match? @name "^(require|require_relative|load|autoload)$"))
 `,
 
   java: `
@@ -226,10 +233,10 @@ const QUERIES: Record<string, string> = {
   lua: `
 (assignment_statement
   (variable_list . name: [(identifier) (dot_index_expression) (bracket_index_expression)] @name .)
-  (expression_list . value: (function_definition) .)) @const_func
-(function_declaration name: (identifier) @name) @func
-(function_declaration name: (dot_index_expression) @name) @func
-(function_declaration name: (method_index_expression) @name) @func
+  (expression_list . value: (function_definition parameters: (_) @sig_end) .)) @const_func
+(function_declaration name: (identifier) @name parameters: (_) @sig_end) @func
+(function_declaration name: (dot_index_expression) @name parameters: (_) @sig_end) @func
+(function_declaration name: (method_index_expression) @name parameters: (_) @sig_end) @func
 `,
 
   scala: `
@@ -573,6 +580,9 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface", "namespace"]);
 
+// Languages whose query marks the end of a signature with @sig_end captures.
+const SIGNATURE_END_LANGUAGES = new Set(["python", "ruby", "lua"]);
+
 // Kinds that own nested symbols only in some languages: a PHP enum holds its
 // methods, and a Haskell function holds its `where`/`let` helpers.
 const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
@@ -620,12 +630,21 @@ function findCommentAbove(lines: string[], startRow: number): string | undefined
   return commentLines.length > 0 ? commentLines.join("\n").trim() : undefined;
 }
 
-function findPythonDocstringFromLines(lines: string[], startRow: number, endRow: number): string | undefined {
-  for (let i = startRow + 1; i <= Math.min(startRow + 3, endRow); i++) {
+// A docstring is the first statement of the body, which a multi-line signature
+// pushes below the `def` row. Its text can start on the row after the opening
+// quotes, and a raw or unicode docstring opens with r""" or u""".
+function findPythonDocstringFromLines(lines: string[], bodyRow: number, endRow: number): string | undefined {
+  for (let i = bodyRow; i <= Math.min(bodyRow + 2, endRow); i++) {
     const trimmed = lines[i]?.trim();
     if (!trimmed) continue;
-    if (trimmed.startsWith('"""') || trimmed.startsWith("'''")) return trimmed;
-    break;
+    if (!/^[rRuU]?(?:"""|''')/.test(trimmed)) break;
+    let docstring = trimmed.replace(/^[rRuU]/, "");
+    if (docstring.length === 3) {
+      const summary = lines.slice(i + 1, endRow + 1).find(line => line.trim() !== "");
+      if (summary !== undefined) docstring += `\n${summary.trim()}`;
+    }
+    // An empty docstring has no summary, so the comment above stays the one.
+    return docstring.replace(/"""|'''/g, "").trim() ? docstring : undefined;
   }
   return undefined;
 }
@@ -727,9 +746,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "imp") {
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
-        // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
-        // is one capture that can span a whole file. Keep both ends, because an
-        // import's module source comes last.
+        // group or an SCSS `@include { … }` is one capture that can span many
+        // rows. Keep both ends, because an import's module source comes last.
         const importText = captureText(lines, cap);
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
@@ -809,6 +827,18 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       signature = "---frontmatter---";
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
+    } else if (SIGNATURE_END_LANGUAGES.has(language)) {
+      // A Python, Ruby or Lua body is not braced: a `{` in it opens a dict, a
+      // hash, a block or a table. The parse tree marks where the signature ends,
+      // after the last of its parameters, return type or superclass, or else
+      // after the name.
+      const end = match.captures
+        .filter(c => c.tag === "sig_end")
+        .reduce<RawCapture | undefined>((last, c) => !last || c.endRow > last.endRow
+          || (c.endRow === last.endRow && c.endCol > last.endCol) ? c : last, undefined)
+        ?? nameCapture ?? kindCapture;
+      signature = captureText(lines, { ...kindCapture, endRow: end.endRow, endCol: end.endCol });
+      if (signature.length > 200) signature = signature.slice(0, 197) + "...";
     } else {
       // Export wrappers start before their direct declaration. Preserve only
       // the export keywords that end that prefix: decorators belong to the
@@ -835,13 +865,19 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
     }
 
     const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
-    const docstring = language === "python" ? findPythonDocstringFromLines(lines, startRow, endRow) : undefined;
+    const body = match.captures.find(c => c.tag === "body");
+    const docstring = language === "python" && body
+      ? findPythonDocstringFromLines(lines, body.startRow, endRow)
+      : undefined;
 
     const sym: CodeSymbol = {
       name,
       kind,
       signature,
-      jsdoc: comment || docstring,
+      // A Python docstring goes first, so that it is the summary line: the
+      // comment found above a definition can be just its decorator
+      // (`@dataclass`), which stays searchable after it.
+      jsdoc: [docstring, comment].filter(Boolean).join("\n") || undefined,
       lineStart: decoratedRanges.get(`${startRow}:${kindCapture.startCol}`)?.startRow ?? startRow,
       lineEnd: endRow,
       exported: isExported(nameCapture?.text || name, startRow, endRow, exportRanges, lines, language),
@@ -1162,6 +1198,19 @@ function findContainingHeadingLevel(symbols: CodeSymbol[], lineStart: number): n
   return bestLevel;
 }
 
+// The first line of text in a symbol's comment or docstring, without its markers:
+// `/** Returns the id. */` and `"""Returns the id."""` both read `Returns the id.`.
+export function docCommentSummary(comment: string): string | undefined {
+  // Only a block comment has a closer; a line comment can end in `*/` as text.
+  const blockComment = comment.trimStart().startsWith("/*");
+  for (const line of comment.split("\n")) {
+    let text = line.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").replace(/['"`]{3}$/, "").trim();
+    if (blockComment) text = text.replace(/\s*\*+\/$/, "");
+    if (text) return text;
+  }
+  return undefined;
+}
+
 function formatSymbol(sym: CodeSymbol, indent: string): string {
   const parts: string[] = [];
 
@@ -1174,18 +1223,9 @@ function formatSymbol(sym: CodeSymbol, indent: string): string {
   parts.push(`${indent}${icon} ${sym.name}${exportTag} (${lineRange})`);
   parts.push(`${indent}  ${sym.signature}`);
 
-  if (sym.jsdoc) {
-    const jsdocLines = sym.jsdoc.split("\n");
-    const firstLine = jsdocLines.find(l => {
-      const t = l.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").trim();
-      return t.length > 0 && !t.startsWith("/**");
-    });
-    if (firstLine) {
-      const cleaned = firstLine.replace(/^[\s*/]+/, "").replace(/^['"`]{3}/, "").replace(/['"`]{3}$/, "").trim();
-      if (cleaned) {
-        parts.push(`${indent}  💬 ${cleaned}`);
-      }
-    }
+  const summary = sym.jsdoc && docCommentSummary(sym.jsdoc);
+  if (summary) {
+    parts.push(`${indent}  💬 ${summary}`);
   }
 
   if (sym.children && sym.children.length > 0) {

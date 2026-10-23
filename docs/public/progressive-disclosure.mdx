@@ -371,7 +371,7 @@ Fetch full details only for relevant observations:
 
 ```typescript
 get_observations({
-  ids: [2543, 2102]  // Selected from search results
+  ids: [2543, 2102]  // Selected after reviewing the index and timeline
 })
 ```
 
@@ -537,7 +537,13 @@ search({
   limit: 20
 })
 
-// Layer 2: Review index, identify 2-3 relevant IDs
+// Layer 2: Review context around a relevant index result
+timeline({
+  anchor: 2543,
+  depth_before: 3,
+  depth_after: 3
+})
+// Keep only IDs that remain relevant after reading the timeline
 
 // Layer 3: Fetch only relevant observations
 get_observations({

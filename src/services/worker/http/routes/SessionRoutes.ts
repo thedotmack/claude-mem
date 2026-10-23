@@ -12,6 +12,7 @@ import { GeminiProvider } from '../../GeminiProvider.js';
 import { OpenRouterProvider } from '../../OpenRouterProvider.js';
 import { OpenAICompatProvider } from '../../OpenAICompatProvider.js';
 import type { CodexProvider } from '../../CodexProvider.js';
+import { claudeQuotaStandIn } from '../../../../shared/claude-fallback-readiness.js';
 import { getSelectedProvider, recordCmemFallbackIfEligible, releaseCmemGatewayProbe, selectProviderForGenerator, type SelectableProvider } from '../../provider-dispatch.js';
 import type { WorkerService } from '../../../worker-service.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
@@ -20,6 +21,9 @@ import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsMana
 import { USER_SETTINGS_PATH, ensureObserverSessionsDir } from '../../../../shared/paths.js';
 import { startGeneratorWithProvider } from '../../session/GeneratorRunner.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
+import { isSimpleTierMessage, namesSameClaudeModel } from '../../session/tier-routing.js';
+import { resolveTierAlias } from '../../model-aliases.js';
+import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
   CODEX_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -184,7 +188,9 @@ export class SessionRoutes extends BaseRouteHandler {
     if (!includeOperatorOnly && sessionIds.length > 0) {
       const provider = getSelectedProvider();
       const cooldown = getQuotaCooldown(provider);
-      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)) {
+      // The quota-fallback credential serves while the primary one is held, so it paces nothing.
+      if (cooldown && cooldownAppliesToCurrentAccount(cooldown)
+        && !(provider === 'claude' && claudeQuotaStandIn())) {
         if (isQuotaCooldownActive(provider)) return 0;
         sessionIds = sessionIds.slice(0, 1);
       }
@@ -478,7 +484,12 @@ export class SessionRoutes extends BaseRouteHandler {
       // sees the window elapse at the same instant, so a bare check would let
       // them all through together.
       const admission = tryAdmitQuotaProbe(selectedProvider);
-      if (!admission.admitted) {
+      // The primary Claude credential is held: run on the quota-fallback one
+      // (dispatch logs the switch). No probe claim is taken; the primary's own
+      // probe still runs when its window elapses.
+      const standIn = !admission.admitted && selectedProvider === 'claude' ? claudeQuotaStandIn() : null;
+      session.claudeAuthOverride = standIn;
+      if (!admission.admitted && !standIn) {
         // This run is not starting, so it must not hold the gateway re-probe.
         releaseCmemGatewayProbe(gatewayProbeClaimId);
         const cooldown = getQuotaCooldown(selectedProvider);
@@ -794,12 +805,9 @@ export class SessionRoutes extends BaseRouteHandler {
     }
   });
 
-  private static readonly SIMPLE_TOOLS = new Set([
-    'Read', 'Glob', 'Grep', 'LS', 'ListMcpResourcesTool'
-  ]);
-
   private async applyTierRouting(session: NonNullable<ReturnType<typeof this.sessionManager.getSession>>): Promise<void> {
     const settings = SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH);
+    session.simpleTierRun = false;
     if (settings.CLAUDE_MEM_TIER_ROUTING_ENABLED === 'false') {
       session.modelOverride = undefined;
       return;
@@ -815,9 +823,7 @@ export class SessionRoutes extends BaseRouteHandler {
     }
 
     const hasSummarize = pending.some(m => m.message_type === 'summarize');
-    const allSimple = pending.every(m =>
-      m.message_type === 'observation' && m.tool_name && SessionRoutes.SIMPLE_TOOLS.has(m.tool_name)
-    );
+    const allSimple = pending.every(m => isSimpleTierMessage(m.message_type, m.tool_name));
 
     if (hasSummarize) {
       const summaryModel = settings.CLAUDE_MEM_TIER_SUMMARY_MODEL;
@@ -831,6 +837,13 @@ export class SessionRoutes extends BaseRouteHandler {
       const simpleModel = settings.CLAUDE_MEM_TIER_SIMPLE_MODEL;
       if (simpleModel) {
         session.modelOverride = simpleModel;
+        // Hold the run to the simple tier only when that tier is a different
+        // model from the one a non-simple message would get; otherwise ending
+        // the run at the next Bash/Edit/summarize only resends the prompt.
+        session.simpleTierRun = !namesSameClaudeModel(
+          resolveTierAlias(simpleModel, settings),
+          resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings),
+        );
         logger.debug('SESSION', `Tier routing: simple model`, {
           sessionId: session.sessionDbId, model: simpleModel
         });
@@ -856,6 +869,7 @@ export class SessionRoutes extends BaseRouteHandler {
     const model = (SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_QUOTA_FALLBACK_MODEL ?? '').trim();
     if (!model) return;
     session.modelOverride = model;
+    session.simpleTierRun = false;
     logger.info('SESSION', 'Quota fallback run uses the configured fallback model', {
       sessionId: session.sessionDbId,
       model,

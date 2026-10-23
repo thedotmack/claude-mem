@@ -177,8 +177,9 @@ import { emitContextInvalidation } from '../../shared/context-invalidation.js';
 import type { Database } from 'bun:sqlite';
 import type { CurrentRow, StoredObservation, StoredSummary, StoredUserPrompt } from './ChromaSync.js';
 import { logger } from '../../utils/logger.js';
+import { logChromaWriteFailure } from '../worker/search/errors.js';
 import { DEFAULT_PLATFORM_SOURCE, normalizePlatformSource } from '../../shared/platform-source.js';
-import { parseFileList } from '../sqlite/observations/files.js';
+import { parseFileList, replaceObservationFileIndex } from '../sqlite/observations/files.js';
 import {
   assertCanonicalDecimal,
   compareCanonicalDecimals,
@@ -616,7 +617,7 @@ export class SyncApply {
       job().then(() => {
         logger.debug('SYNC_APPLY', 'Applied row forwarded to Chroma');
       }).catch((error) => {
-        logger.error('SYNC_APPLY', 'Chroma forward of applied row failed, continuing without vector search', {},
+        logChromaWriteFailure('SYNC_APPLY', 'Chroma forward of applied row failed, continuing without vector search', {},
           error instanceof Error ? error : new Error(String(error)));
       });
     }
@@ -1130,6 +1131,10 @@ export class SyncApply {
         createdAt, createdAtEpoch, op.rev, this.now(),
         existing.id
       );
+      // A revision replaces the row's file columns, so its index rows are
+      // replaced too — otherwise the previous revision's paths stay
+      // searchable and the new ones never resolve. Inside the batch tx.
+      replaceObservationFileIndex(this.db, existing.id, fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'));
       this.forwardObservation(existing.id, op, body, chromaJobs, true);
       return 'applied';
     }
@@ -1165,6 +1170,9 @@ export class SyncApply {
       return 'stale';
     }
 
+    // Pulled observations bypass storeObservations, so their paths are
+    // indexed here; inside the batch tx, atomic with the row itself.
+    replaceObservationFileIndex(this.db, inserted.id, fieldString(op, body, 'files_read'), fieldString(op, body, 'files_modified'));
     this.forwardObservation(inserted.id, op, body, chromaJobs);
     return 'applied';
   }

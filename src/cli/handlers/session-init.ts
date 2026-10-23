@@ -17,7 +17,7 @@ import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/sh
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
 import { workStatePlatform } from '../../shared/work-state-telemetry.js';
-import { isCodexInternalPrompt, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
+import { isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import {
   resolveRuntimeContext as defaultResolveRuntimeContext,
   logServerFallback as defaultLogServerFallback,
@@ -164,6 +164,17 @@ const sessionInit = {
     // text from another host is a person's prompt.
     if (rawPrompt && normalizePlatformSource(input.platform) === 'codex' && isCodexInternalPrompt(rawPrompt)) {
       logger.debug('HOOK', 'session-init: skipping a Codex internal helper prompt', {
+        reason: 'internal_system_prompt',
+        preview: rawPrompt.slice(0, 80),
+      });
+      return { continue: true, suppressOutput: true };
+    }
+
+    // Grok Bot runs its own research sub-agent briefings through the same hook
+    // as a user turn. Grok Bot only: the same text from another host is a
+    // person's prompt (#4811).
+    if (rawPrompt && normalizePlatformSource(input.platform) === 'grok-bot' && isGrokBotInternalPrompt(rawPrompt)) {
+      logger.debug('HOOK', 'session-init: skipping a Grok Bot internal helper prompt', {
         reason: 'internal_system_prompt',
         preview: rawPrompt.slice(0, 80),
       });

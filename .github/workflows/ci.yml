@@ -29,6 +29,11 @@ jobs:
       - name: Install dependencies
         run: npm install --no-audit --no-fund
 
+      - name: Install Fish for hook regression tests
+        run: |
+          sudo apt-get update && sudo apt-get install -y fish
+          fish --version
+
       # Plugin installations execute the committed bundles directly. Check
       # them before rebuilding, which would hide a stale published worker or
       # a bundle committed with merge-conflict markers (#4728).
@@ -236,10 +241,12 @@ jobs:
         working-directory: services/sync-api
         run: bun install --frozen-lockfile
 
-      - name: Generation attempt ownership (Postgres)
+      # Every Postgres-backed server and storage suite, generation attempt
+      # ownership included; without a test database they skip.
+      - name: Server and storage tests (Postgres)
         env:
           CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-generation-data
-        run: CLAUDE_MEM_TEST_POSTGRES_URL="$DATABASE_URL" bun test tests/server/generation/generation-attempt-fencing.test.ts
+        run: CLAUDE_MEM_TEST_POSTGRES_URL="$DATABASE_URL" bun test tests/server tests/storage tests/cli/server-jobs.test.ts
 
       - name: sync-api unit and protocol tests
         working-directory: services/sync-api
@@ -247,6 +254,59 @@ jobs:
 
       - name: protocol-v2 matrix e2e against local sync-api
         run: bun scripts/sync-matrix-e2e.ts
+
+  # bm25 keyword ranking needs pg_textsearch (and search by meaning needs
+  # pgvector), which the postgres:16 service above lacks; there these tests
+  # skip. This job builds docker/postgres, the image docker-compose.yml runs,
+  # so the search tests run against the same Postgres self-hosters get.
+  server-search-pgvector:
+    name: server search (pgvector · pg_textsearch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAUDE_MEM_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/server_search_test
+      # Fail, rather than skip, a search-by-meaning test that finds no pgvector.
+      CLAUDE_MEM_TEST_PGVECTOR: '1'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and start Postgres from docker/postgres
+        run: |
+          docker build -t claude-mem-postgres:17 docker/postgres
+          docker run -d --name search-postgres -p 5432:5432 \
+            -e POSTGRES_USER=postgres -e POSTGRES_PASSWORD=postgres -e POSTGRES_DB=server_search_test \
+            claude-mem-postgres:17
+          # Over TCP, so the image's socket-only init server does not count as ready.
+          for attempt in $(seq 60); do
+            docker exec search-postgres pg_isready -h 127.0.0.1 -U postgres -d server_search_test && exit 0
+            sleep 1
+          done
+          docker logs search-postgres
+          exit 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install repository dependencies
+        run: npm install --no-audit --no-fund
+
+      - name: bm25 and hybrid search, vector writes and backfill
+        env:
+          CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-search-data
+        run: >-
+          bun test
+          tests/storage/postgres/postgres-storage.test.ts
+          tests/storage/postgres/observation-embeddings.test.ts
+          tests/server/embedding-parts-contract.test.ts
+          tests/server/runtime/memories-vector-write.test.ts
+          tests/server/generation/process-generated-response-vectors.test.ts
+          tests/services/vector/local-embedder-encode.test.ts
 
   clean-room-deps:
     name: clean-room dependency closure smoke

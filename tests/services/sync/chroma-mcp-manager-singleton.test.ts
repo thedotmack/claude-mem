@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, afterAll, mock } from 'bun:test';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import fs, { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -138,7 +138,17 @@ let callToolImpl: (
 
 class FakeClient {
   closed = false;
+  private pendingCallRejects = new Set<(error: Error) => void>();
   async connect(transport: FakeTransport): Promise<void> {
+    // Like the SDK's Protocol.connect(): chain the existing close handler and
+    // reject every in-flight request when the transport closes.
+    const previousOnclose = transport.onclose;
+    transport.onclose = () => {
+      previousOnclose?.();
+      const error = new McpError(ErrorCode.ConnectionClosed, 'Connection closed');
+      for (const reject of this.pendingCallRejects) reject(error);
+      this.pendingCallRejects.clear();
+    };
     await connectImpl(transport);
   }
   async callTool(
@@ -146,7 +156,12 @@ class FakeClient {
     _resultSchema?: unknown,
     options?: { timeout?: number }
   ): Promise<unknown> {
-    return await callToolImpl(request, options);
+    return await new Promise((resolve, reject) => {
+      this.pendingCallRejects.add(reject);
+      callToolImpl(request, options)
+        .then(resolve, reject)
+        .finally(() => this.pendingCallRejects.delete(reject));
+    });
   }
   async close(): Promise<void> {
     this.closed = true;
@@ -991,6 +1006,31 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
     expect(transportInstances.length).toBe(2);
   });
 
+  it('fails a pending mutation at once when chroma-mcp dies mid-write (#4916)', async () => {
+    const mgr = ChromaMcpManager.getInstance();
+    await mgr.callTool('chroma_list_collections', { limit: 1 });
+    const transport = transportInstances[0]!;
+
+    let writeStarted = false;
+    callToolImpl = () => {
+      writeStarted = true;
+      return new Promise(() => {});
+    };
+    const pendingWrite = mgr.callTool('chroma_add_documents', { ids: ['crash'] });
+    await waitForCondition(() => writeStarted);
+
+    transport._process.stderr.write('Fatal Python error: Segmentation fault\n');
+    await new Promise(resolve => setImmediate(resolve));
+    transport._process.finish(null, 'SIGSEGV');
+    transport.onclose?.();
+
+    // The SDK close handler rejects the write, so it does not wait out the
+    // 600 s mutation timeout. The reconnect backoff then fails the retry.
+    await expect(pendingWrite).rejects.toThrow(/connection in backoff/);
+    expect(logEntries.find(entry => entry.message === 'chroma-mcp subprocess closed unexpectedly, applying reconnect backoff')?.meta)
+      .toMatchObject({ signalCode: 'SIGSEGV', stderrTail: 'Fatal Python error: Segmentation fault' });
+  });
+
   it('records exact active-child exit details and retains them across reconnect', async () => {
     const mgr = ChromaMcpManager.getInstance();
     await mgr.callTool('chroma_list_collections', { limit: 1 });
@@ -1617,6 +1657,31 @@ describe('ChromaMcpManager singleton enforcement (#2313)', () => {
 
     expect(existsSync(chromaWriterLockPath())).toBe(true);
     expect(transportInstances.length).toBe(0);
+  });
+
+  it('does not reap a live Chroma writer lock when statSync fails transiently (#4951)', async () => {
+    writeChromaWriterLock(process.pid, 'other-worker-owner');
+    const lockPath = chromaWriterLockPath();
+    const realStatSync = fs.statSync;
+    fs.statSync = ((targetPath: fs.PathLike, options?: fs.StatSyncOptions) => {
+      if (String(targetPath) === lockPath) {
+        throw Object.assign(new Error(`EMFILE: too many open files, stat '${lockPath}'`), { code: 'EMFILE' });
+      }
+      return realStatSync(targetPath, options as any);
+    }) as typeof fs.statSync;
+
+    try {
+      const mgr = ChromaMcpManager.getInstance();
+      await expect(mgr.callTool('chroma_list_collections', { limit: 1 }))
+        .rejects.toThrow('is unreadable; refusing to start a second writer');
+    } finally {
+      fs.statSync = realStatSync;
+    }
+
+    expect(transportInstances.length).toBe(0);
+    expect(existsSync(lockPath)).toBe(true);
+    const lock = JSON.parse(readFileSync(lockPath, 'utf-8'));
+    expect(lock.ownerId).toBe('other-worker-owner');
   });
 
   it('preserves remote mutation concurrency', async () => {
