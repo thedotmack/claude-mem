@@ -5,6 +5,8 @@
 //
 //   bun request-groups.mjs candidates [--days 14] [--project root] [--brief]
 //                                                   conversations + deterministic links
+//   bun request-groups.mjs grouping-input [--days 14] [--limit 20]
+//                                                   undecided conversations of one root + its open requests
 //   bun request-groups.mjs apply <file|->            persist group decisions
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
 //   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
@@ -19,8 +21,9 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { conversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
+import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
 import { OWNER_GOALS_LIST } from './owner-goals.mjs';
+import { projectRoot, withDerivedProjects } from './session-project.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -47,14 +50,16 @@ function placeholders(values) { return values.map(() => '?').join(','); }
 export function readCandidates(database, { sinceEpoch = 0, conversationKeys = null, fullAsks = false }) {
   const columns = 'SELECT id, platform_source, content_session_id, project, user_prompt, started_at_epoch FROM sdk_sessions';
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
-  const sessions = pairs
+  const stored = pairs
     ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => '(?, ?)').join(',')})`).all(...pairs.flat()) : []
     // Any recent activity counts: a new start, prompt, observation or recorded tool use (a commit, a push, a work-state write).
     : database.prepare(`${columns} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
         OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
-  if (!sessions.length) return [];
+  if (!stored.length) return [];
+  // A session started from an agent scratch folder takes the repo its tool calls touched.
+  const sessions = withDerivedProjects(database, stored);
   const ids = sessions.map((session) => session.id);
   const prompts = database.prepare(`SELECT id, session_db_id, prompt_number, ${fullAsks ? 'prompt_text' : 'substr(prompt_text, 1, 1200) AS prompt_text'}, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${placeholders(ids)})`).all(...ids);
@@ -108,7 +113,8 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
 }
 
 /** Union conversations that recorded into the same work list or request id.
- * Work lists are stored per project, so a list name only links within one project. */
+ * A list name or request id links only within one project root, so worktrees
+ * of one repo link and different repos never do. */
 export function linkBackwards(candidates) {
   const parent = new Map(candidates.map((candidate) => [candidate.conversationKey, candidate.conversationKey]));
   const find = (key) => { while (parent.get(key) !== key) { parent.set(key, parent.get(parent.get(key))); key = parent.get(key); } return key; };
@@ -117,7 +123,7 @@ export function linkBackwards(candidates) {
   const shared = (kind, field) => {
     const owners = new Map();
     for (const candidate of candidates) for (const value of candidate[field]) {
-      const scope = kind === 'shared-work-list' ? JSON.stringify([candidate.project, value]) : value;
+      const scope = JSON.stringify([projectRoot(candidate.project), value]);
       if (!owners.has(scope)) owners.set(scope, { value, project: candidate.project, keys: [] });
       owners.get(scope).keys.push(candidate.conversationKey);
     }
@@ -188,11 +194,11 @@ export function writeJsonAtomic(path, value) {
 }
 
 const emptyGroups = () => ({ version: 1, updatedAt: null, conversations: {}, groups: {}, ignored: {} });
-const isConversationKey = (value) => { try { const parsed = JSON.parse(value); return Array.isArray(parsed) && parsed[0] === 'conversation' && parsed.length === 3; } catch { return false; } };
 
 /** Merge decisions into the stored ledger. Conversations listed in a decision
- * move to that group; others keep their previous group. */
-export function applyGroupDecisions(stored, decisions, now = Date.now()) {
+ * move to that group; others keep their previous group. `projectOf` maps a
+ * conversation key to its project: a group holds one project root only. */
+export function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = new Map() } = {}) {
   if (!Array.isArray(decisions?.groups)) throw new TypeError('Decisions need a groups array.');
   const next = structuredClone(stored ?? emptyGroups());
   for (const [index, decision] of decisions.groups.entries()) {
@@ -213,12 +219,23 @@ export function applyGroupDecisions(stored, decisions, now = Date.now()) {
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(', ')} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
+    // A request stays in one project root, members it already has included.
+    const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
+    const roots = new Map();
+    for (const key of allMembers) {
+      const root = projectRoot(projectOf.get(key));
+      if (root != null) roots.set(root, [...(roots.get(root) ?? []), key]);
+    }
+    const storedRoot = next.groups[id]?.projectRoot;
+    if (typeof storedRoot === 'string' && !roots.has(storedRoot)) roots.set(storedRoot, roots.get(storedRoot) ?? []);
+    if (roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
+    const projectRootOfGroup = roots.size ? [...roots.keys()][0] : storedRoot ?? null;
     for (const key of decision.conversations) {
       next.conversations[key] = id;
       // A later decision can correct an earlier ignore; the viewer checks ignored first.
       if (next.ignored) delete next.ignored[key];
     }
-    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
+    next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], projectRoot: projectRootOfGroup, links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};
   for (const [index, ignored] of (decisions.ignored ?? []).entries()) {
@@ -443,15 +460,95 @@ function openDatabase() {
   return database;
 }
 
+/** Conversation key → project (derived for scratch-folder sessions). */
+export function readConversationProjects(database, conversationKeys) {
+  const pairs = [...new Set(conversationKeys)].filter(isConversationKey).map((key) => JSON.parse(key).slice(1));
+  const sessions = [];
+  for (let index = 0; index < pairs.length; index += 400) {
+    const chunk = pairs.slice(index, index + 400);
+    sessions.push(...database.prepare(`SELECT id, platform_source, content_session_id, project FROM sdk_sessions WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => '(?, ?)').join(',')})`).all(...chunk.flat()));
+  }
+  return new Map(withDerivedProjects(database, sessions).map((session) => [conversationKey(session), session.project]));
+}
+
+/** New conversations sent to the grouping agent at once. */
+export const GROUPING_BATCH = 20;
+const OPEN_REQUESTS_SHOWN = 15;
+const CLOSED_STATES = new Set(['shipped', 'abandoned']);
+
+/** One grouping question: only conversations the ledger has not decided,
+ * earliest first and all from one project root, each judged from its opening
+ * ask, beside that root's open requests. Decided conversations are never sent
+ * again. `remaining` counts the new conversations left for later questions. */
+export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH }) {
+  const candidates = readCandidates(database, { sinceEpoch });
+  const decided = (key) => Boolean(ledger.groups.conversations[key] || ledger.groups.ignored?.[key]);
+  const fresh = candidates.filter((candidate) => !decided(candidate.conversationKey));
+  if (!fresh.length) return { root: null, conversations: [], openRequests: [], proposedLinks: [], remaining: 0 };
+  const root = projectRoot(fresh[0].project);
+  const batch = fresh.filter((candidate) => projectRoot(candidate.project) === root).slice(0, limit);
+  const inRoot = candidates.filter((candidate) => projectRoot(candidate.project) === root);
+  const byKey = new Map(inRoot.map((candidate) => [candidate.conversationKey, candidate]));
+  // A group's root is stored at apply time; older groups take it from their anchor.
+  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => typeof group.projectRoot !== 'string').map((group) => group.anchor));
+  const openRequests = Object.entries(ledger.groups.groups)
+    .filter(([groupId, group]) => (typeof group.projectRoot === 'string' ? group.projectRoot : projectRoot(anchorProjects.get(group.anchor))) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state))
+    .map(([groupId, group]) => {
+      const members = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => byKey.get(key)).filter(Boolean);
+      const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
+      return {
+        groupId, title: group.title, anchor: group.anchor,
+        anchorAsk: requestText(group.anchorAsk?.text ?? members[0]?.firstAsk ?? '', 400),
+        recentAsks: asks.slice(0, 3).map((ask) => ask.text.slice(0, 200)),
+        lastActivityEpoch: Math.max(0, ...members.map((member) => member.lastActivityEpoch ?? 0)),
+      };
+    })
+    .sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch).slice(0, OPEN_REQUESTS_SHOWN)
+    .map(({ lastActivityEpoch, ...request }) => ({ ...request, lastActivityAt: iso(lastActivityEpoch) }));
+  // Code-proven links (a shared work list or request id) between a new conversation and anything in its root.
+  const batchKeys = new Set(batch.map((candidate) => candidate.conversationKey));
+  const proposedLinks = linkBackwards(inRoot).proposedGroups.filter((group) => group.links.length && group.conversations.some((key) => batchKeys.has(key)))
+    .flatMap((group) => group.links).map((link) => ({ ...link, groups: [...new Set(link.conversations.map((key) => ledger.groups.conversations[key]).filter(Boolean))] }));
+  return {
+    root,
+    conversations: batch.map((candidate) => ({ conversationKey: candidate.conversationKey, project: candidate.project, startedAt: candidate.startedAt, openingAsk: requestText(candidate.firstAsk, 400), workLists: candidate.workLists })),
+    openRequests, proposedLinks,
+    remaining: fresh.length - batch.length,
+  };
+}
+
+/** The grouping agent decides exactly the conversations it was sent: each
+ * one joins an open request (listed after that request's anchor), starts a new
+ * one, or is ignored. Nothing already decided may move. */
+export function validateGroupingAnswer(answer, input) {
+  const asked = new Set(input.conversations.map((conversation) => conversation.conversationKey));
+  const anchors = new Set(input.openRequests.map((request) => request.anchor));
+  const decided = new Set();
+  for (const [index, group] of (Array.isArray(answer?.groups) ? answer.groups : []).entries()) {
+    for (const [position, key] of (Array.isArray(group?.conversations) ? group.conversations : []).entries()) {
+      if (asked.has(key)) { decided.add(key); continue; }
+      if (position === 0 && anchors.has(key)) continue;
+      throw new TypeError(`groups[${index}] lists ${key}, which was not asked about. Continue an open request by listing its anchor first, then only the new conversations.`);
+    }
+  }
+  for (const [index, ignored] of (Array.isArray(answer?.ignored) ? answer.ignored : []).entries()) {
+    if (!asked.has(ignored?.conversation)) throw new TypeError(`ignored[${index}] names a conversation that was not asked about.`);
+    decided.add(ignored.conversation);
+  }
+  const missing = [...asked].filter((key) => !decided.has(key));
+  if (missing.length) throw new TypeError(`Decide every conversation asked about; missing ${missing.join(', ')}.`);
+  return answer;
+}
+
 export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), print = (value) => console.log(JSON.stringify(value, null, 2)) } = {}) {
   const [command, ...args] = argv;
   const db = () => database ?? openDatabase();
   const since = () => now - option(args, 'days', 14) * DAY_MS;
   if (command === 'candidates') {
-    const projectRoot = textOption(args, 'project');
+    const wantedRoot = textOption(args, 'project');
     const stored = readLedger(dir).groups;
     const candidates = readCandidates(db(), { sinceEpoch: since() })
-      .filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (!projectRoot || candidate.project.split('/')[0] === projectRoot));
+      .filter((candidate) => !stored.ignored?.[candidate.conversationKey] && (wantedRoot == null || projectRoot(candidate.project) === wantedRoot));
     const { proposedGroups, skippedLists } = linkBackwards(candidates);
     const brief = args.includes('--brief');
     const shown = candidates.map(({ lastActivityEpoch, startedAtEpoch, original, ...candidate }) => {
@@ -460,14 +557,22 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
         ? { conversationKey: candidate.conversationKey, project: candidate.project, startedAt: candidate.startedAt, lastActivityAt: candidate.lastActivityAt, firstAsk: candidate.firstAsk.slice(0, 200), laterAsks: candidate.asks.slice(1, 4).map((ask) => ask.text.slice(0, 120)), workLists: candidate.workLists, currentGroup }
         : { ...candidate, currentGroup };
     });
-    return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => candidate.project.split('/')[0]))] });
+    return print({ candidates: shown, proposedGroups: proposedGroups.filter((group) => group.links.length), skippedLists, projects: [...new Set(candidates.map((candidate) => projectRoot(candidate.project)))] });
   }
+  if (command === 'grouping-input') return print(groupingInput(readLedger(dir), db(), { sinceEpoch: since(), limit: option(args, 'limit', GROUPING_BATCH) }));
   if (command === 'apply') {
-    const next = applyGroupDecisions(readLedger(dir).groups, readInput(args[0] ?? '-'), now);
+    const database = db();
+    const stored = readLedger(dir).groups;
+    const decisions = readInput(args[0] ?? '-');
+    // Every conversation the decisions touch, and the members their groups already hold, by project.
+    const touched = (decisions?.groups ?? []).flatMap((group) => Array.isArray(group?.conversations) ? group.conversations : []).filter(isConversationKey);
+    const touchedGroups = new Set(touched.map((key) => groupIdFor(key)));
+    const existing = Object.entries(stored.conversations).filter(([, id]) => touchedGroups.has(id)).map(([key]) => key);
+    const next = applyGroupDecisions(stored, decisions, now, { projectOf: readConversationProjects(database, [...touched, ...existing]) });
     // Keep each group's first ask in the ledger so a card's start never moves
     // forward when the anchor conversation ages out of My Work's reads.
     const missing = Object.values(next.groups).filter((group) => !group.anchorAsk).map((group) => group.anchor);
-    const anchors = new Map(readCandidates(db(), { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
+    const anchors = new Map(readCandidates(database, { conversationKeys: missing }).map((candidate) => [candidate.conversationKey, candidate.original]));
     for (const group of Object.values(next.groups)) if (!group.anchorAsk && anchors.has(group.anchor)) group.anchorAsk = anchors.get(group.anchor);
     writeJsonAtomic(join(dir, 'request-groups.json'), next);
     return print({ groups: Object.keys(next.groups).length, conversations: Object.keys(next.conversations).length });

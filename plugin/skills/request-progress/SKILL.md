@@ -5,7 +5,7 @@ description: Group recent conversations into overall requests, review each one's
 
 # Request Progress
 
-My Work groups records by **conversation**: one session's first substantive ask owns its follow-ups and agent work. People rarely finish a goal in one conversation, though. They `/clear`, switch worktrees, hand off to Codex, come back the next day. This skill works backwards from recorded work to join those conversations into one **overall request**, then reviews each request from memory and writes the build story.
+My Work shows one card per **human request**, built from the human's own prompts: a conversation's first substantive ask owns its follow-ups, and agent work, activity and progress sit beneath it, even before any work is recorded. People rarely finish a goal in one conversation, though. They `/clear`, switch worktrees, hand off to Codex, come back the next day. This skill checks each new conversation's opening ask against the open requests in its project to join those conversations into one **overall request**, then reviews each request from memory and writes the build story.
 
 `${CLAUDE_SKILL_DIR}` is the folder holding this file. Every step runs one CLI:
 
@@ -19,31 +19,27 @@ Default window: 14 days. Use the window the user asks for.
 
 ## 1. Group conversations into overall requests
 
+A human request is the top level of My Work: every conversation's opening ask either starts a request or continues one. Grouping decides **once per conversation**, from its opening substantive ask, and decisions already in the ledger are kept. Requests stay inside one project root (the project key before its first `/`, so worktrees of one repo share requests); a conversation never joins a request from another root, and `apply` refuses one that does.
+
 ```bash
-$CLI candidates --days 14 --brief
-# narrow a large window one project root at a time:
-$CLI candidates --days 14 --brief --project <root>
+$CLI grouping-input --days 14
 ```
 
-Each candidate is a conversation with a substantive human ask. The output includes:
+It returns one batch: up to 20 conversations the ledger has not decided yet, earliest first, all from one project `root`, each with its `openingAsk` and work lists; that root's `openRequests` (title, `anchor` conversation, `anchorAsk`, `recentAsks`; shipped and abandoned requests are left out); and `proposedLinks`, conversations code already linked because they wrote to the same work-state list or recorded the same `request_id` (keep these unless the list is obviously a generic bucket). `remaining` counts the undecided conversations left for later batches. Apply each batch, then run `grouping-input` again until `conversations` is empty.
 
-- `proposedGroups`: conversations already linked by code, because they wrote to the same work-state list or recorded the same `request_id`. Keep these unless the list is obviously a generic bucket.
-- `skippedLists`: lists touched by too many conversations to count as proof.
-- `currentGroup`: the group a conversation already belongs to. Do not reshuffle settled groups without new evidence.
+Decide every conversation in the batch:
 
-For every conversation without a deterministic link, decide:
-
-- **continue**: it serves an existing overall request.
+- **continue**: it serves one of the `openRequests` (or another conversation in the same batch).
 - **new**: it starts its own overall request (a group of one).
 - **ignore**: it is not a human goal (an automated naming prompt, a bot kickoff, a pasted transcript with no ask).
 
 Evidence for **continue**, strongest first:
 
 1. The ask refers back to earlier work: "this is excellent work, can you now …", "continue the X", a PR or branch name, a pasted handoff.
-2. The same named artifact (feature, page, skill, release, bug) appears in both asks, in the same project root, within a few days.
+2. The same named artifact (feature, page, skill, release, bug) appears in both asks within a few days.
 3. Memory confirms it: `mem_search` for the artifact finds observations from both conversations describing the same change.
 
-Similar wording alone is not evidence, and neither is sharing a repo. When unsure, make it **new**: a wrongly merged card hides work, a split card only shows up twice. Link across projects only on evidence 1 or 3.
+Similar wording alone is not evidence, and neither is sharing a repo. When unsure, make it **new**: a wrongly merged card hides work, a split card only shows up twice. To continue an open request, list its `anchor` first, then the new conversations, keep its title, and add a link with the evidence. List only conversations from the batch (and an open request's anchor first).
 
 Apply the decisions:
 
@@ -68,6 +64,7 @@ The command fails fast; fix the input and rerun. Its rules:
 - List `conversations` **earliest first**. The first one anchors the group id, so reviews survive later merges.
 - A group of more than one conversation needs at least one link (`shared-work-list`, `shared-request-id` or `agent-judgment`) with evidence text. Quote the human's words where you can.
 - `title` is the goal in plain words (≤120 chars), not the process.
+- Every conversation in a group comes from one project root.
 
 Then run `$CLI pending --days 14 --limit 48`. `ungroupedConversations` should be 0; `groups` lists the overall requests due for a review (new, or active since their last review).
 

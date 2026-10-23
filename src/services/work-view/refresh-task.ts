@@ -16,7 +16,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTask, AskAgent, StepModels } from '../agent-runner/run.js';
 import { runCommand } from '../agent-runner/detect.js';
-import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
+import { readGoals, runCli, validateGroupingAnswer, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
  * validators (save_goals.py, the request-groups CLI), never a raw work_state_write. */
@@ -168,14 +168,18 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       }
 
       const requestProgress = inlineSkill(paths.requestProgressSkill);
-      const candidates = cli(['candidates', '--days', '14', '--brief']);
-      if (candidates.candidates.some((candidate: { currentGroup: string | null }) => !candidate.currentGroup)) {
-        const decisions = await step('grouping', [
+      // Only conversations the ledger has not decided, one project root per question, each beside
+      // that root's open requests. Every batch is saved before the next is read, so a later batch
+      // sees the requests an earlier one started.
+      let grouped = 0;
+      for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
+        await step('grouping', [
           requestProgress, '---', readOnly,
-          `Do only section 1 (grouping). The \`candidates --days 14 --brief\` output is in ${writeInput('candidates', candidates)}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}).`,
-        ].join('\n\n'), answer => cli(['apply'], answer));
-        done.push(`${decisions.conversations} conversations in ${decisions.groups} groups`);
+          `Do only section 1 (grouping) for the one batch of new conversations in the \`grouping-input\` output in ${writeInput('grouping-input', input)}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
+        ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)));
+        grouped += input.conversations.length;
       }
+      if (grouped) done.push(`${grouped} new conversations grouped`);
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
