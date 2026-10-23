@@ -124,7 +124,7 @@ describe('agent runner', () => {
     const result = await runAgentTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
     expect(calls[0].command).toBe('/bin/gemini');
-    expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-o', 'json']);
+    expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-o', 'json']);
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 

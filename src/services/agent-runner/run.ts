@@ -13,8 +13,11 @@
  *     everything else, `cwd` = the data dir and no session persistence.
  *   - Codex: `codex exec -s read-only --ephemeral --skip-git-repo-check -C <cwd> -o <file> -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin.
- *   - Gemini: `gemini -p <line> --approval-mode plan -o json` (gemini 0.49.0
- *     `--help`: plan = read-only mode), prompt on stdin.
+ *   - Gemini: `gemini -p <line> --approval-mode plan --skip-trust -o json`
+ *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin. In a
+ *     folder Gemini has never trusted, headless runs exit 55 and plan mode is
+ *     overridden; --skip-trust trusts the claude-mem data dir for this one
+ *     session only, so plan (read-only) mode holds. It grants no tool approvals.
  *
  * Codex and Gemini run read-only, so they cannot save anything themselves.
  * The task's `inline` function drives them one step at a time and saves each
@@ -179,7 +182,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
 
 function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
   return async prompt => {
-    const result = await runCli(dependencies, agent.path!, ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-o', 'json'], prompt, { cwd: task.cwd, env });
+    const result = await runCli(dependencies, agent.path!, ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-o', 'json'], prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
