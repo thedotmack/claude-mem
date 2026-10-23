@@ -147,6 +147,20 @@ describe('a group decided before its project was known', () => {
     expect(() => applyGroupDecisions(known, { groups: [{ title: 'Cards', conversations: [key('a')] }] }, NOW, { projectOf: new Map([[key('a'), 'other']]) })).toThrow(/different projects/);
   });
 
+  it('never joins two repositories: members that went to different repos are not one request', () => {
+    const groupId = groupIdFor(key('a'));
+    const ledger = { groups: { conversations: { [key('a')]: groupId, [key('b')]: groupId, [key('c')]: groupId }, groups: { [groupId]: { title: 'Cards', anchor: key('a'), projectRoot: NO_PROJECT } }, ignored: {} }, progress: {} };
+    // a and c later worked in repo-one, b in repo-two.
+    const sessions = [session(1, 'a', 'repo-one', 'Build the release cards'), session(2, 'b', 'repo-two', 'Fix the card spacing'), session(3, 'c', 'repo-one/tree', 'Add the card dates')];
+    const prompts = [prompt(11, 1, 'Build the release cards', 10), prompt(21, 2, 'Fix the card spacing', 20), prompt(31, 3, 'Add the card dates', 30)];
+    const ids = buildHumanRequests({ agents: [] }, { sessions, prompts }, { ledger }).humanRequests.map((request: any) => request.id).sort();
+    expect(ids).toEqual([key('b'), overall('a')].sort());
+    // With the anchor still in no repo, the one repo its members went to is the group's.
+    const stillScratch = [session(1, 'a', NO_PROJECT, 'Build the release cards'), session(2, 'b', 'repo-two', 'Fix the card spacing')];
+    const both = { ...ledger, groups: { ...ledger.groups, conversations: { [key('a')]: groupId, [key('b')]: groupId } } };
+    expect(buildHumanRequests({ agents: [] }, { sessions: stillScratch, prompts }, { ledger: both }).humanRequests.map((request: any) => request.id)).toEqual([overall('a')]);
+  });
+
   it('is offered as an open request to the root it now belongs to', () => {
     const db = database();
     addSession(db, 1, 'a', 'repo', 'Build the release cards', NOW - 3 * DAY);
