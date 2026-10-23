@@ -257,6 +257,17 @@ Each matching observation is sent as one JSON POST:
 
 POSTs are sent concurrently and each times out after 5 seconds. Redirects are refused, so the shared secret and the observation only ever go to the configured URL; put the receiver's final address in the setting. A failure is logged with the receiver's origin and a short reason only (never the full URL) and never blocks observation storage or other notifications.
 
+### Notion Export
+
+Optional. Upserts each new observation into a Notion database as it is stored. See [Notion Export](/notion-export) for setup and the database schema.
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `CLAUDE_MEM_NOTION_ENABLED` | `false` | Turn the export on |
+| `CLAUDE_MEM_NOTION_TOKEN` | — | Notion integration secret. File/env only, masked by `GET /api/settings` |
+| `CLAUDE_MEM_NOTION_DATABASE_ID` | — | Target database id or URL |
+| `CLAUDE_MEM_NOTION_AUTO_CREATE_PROPERTIES` | `true` | Add missing database properties on first run |
+
 ### Near-Duplicate Deduplication
 
 Opt-in (off by default) dedup of observations whose titles describe the same recurring
