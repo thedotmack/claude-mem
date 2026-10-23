@@ -17,10 +17,10 @@ let server: Server;
 let routes: WorkViewRoutes;
 let origin: string;
 
-async function start() {
+async function start(autoRefresh: unknown = null) {
   routes = new WorkViewRoutes({
     databasePath: join(FIXTURE_HOME, 'no-work-state.db'), reviewPath: ':memory:', pollIntervalMs: 20,
-    humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath,
+    humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath, autoRefresh: autoRefresh as never,
   });
   const app = express();
   app.use(express.json());
@@ -47,8 +47,19 @@ function post(path: string, body: unknown, headers: Record<string, string> = { '
 describe('setup state endpoints', () => {
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null });
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
     expect(existsSync(statePath)).toBe(false);
+  });
+
+  it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {
+    let status: Record<string, unknown> | null = { state: 'running', pid: process.pid };
+    await start({ status: () => status, start() {}, close() {}, async runNow() { return 'idle'; } });
+    expect((await state()).backgroundWorkRunning).toEqual(['extraction']);
+    // A 'running' record left by a worker process that is gone.
+    status = { state: 'running', pid: 2 ** 22 + 12345 };
+    expect((await state()).backgroundWorkRunning).toEqual([]);
+    status = { state: 'ok', pid: process.pid };
+    expect((await state()).backgroundWorkRunning).toEqual([]);
   });
 
   it('report an existing CMEM Pro configuration so On The Go is pre-selected', async () => {

@@ -58,7 +58,7 @@ import {
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
 import { readSetupState } from '../../shared/setup-state.js';
-import { runBrowserSetup, shouldUseBrowserSetup, type BrowserSetupOutcome } from '../install/browser-setup.js';
+import { runBrowserSetup, settingsChangesNeedingRestart, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
   return SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH)[key];
@@ -3127,10 +3127,14 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             ? `Skipped (--no-auto-start)`
             : `Skipped (non-TTY)`;
         }
-        // The browser funnel started the worker already; restart it only if
-        // the choice changed its settings.
-        if (browserOutcome && readSettingsSnapshot() === settingsBeforeBrowserSetup) {
-          return describeWorkerStart(workerStartResult);
+        // The browser funnel started the worker already. It reads the provider and model live, so it restarts only
+        // for settings it reads at boot (cloud sync after On The Go's checkout), and never while it is extracting
+        // goals, work and rules or importing history: the restart waits for that work, however long it takes.
+        if (browserOutcome) {
+          const needRestart = settingsChangesNeedingRestart(settingsBeforeBrowserSetup ?? '', readSettingsSnapshot());
+          if (!needRestart.length) return describeWorkerStart(workerStartResult);
+          message('Waiting for the worker to finish its setup work before it restarts...');
+          await waitForBackgroundWorkToFinish({ workerBaseUrl: `http://127.0.0.1:${getSetting('CLAUDE_MEM_WORKER_PORT')}`, log: { info: message, warn: message } });
         }
         const port = Number(getSetting('CLAUDE_MEM_WORKER_PORT'));
         const marketplaceScriptPath = join(marketplaceDirectory(), 'plugin', 'scripts', 'worker-service.cjs');

@@ -45,6 +45,12 @@ function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifec
   return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
 }
 
+/** True while a process with this pid exists (signal 0 checks without signalling). */
+function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch { return false; }
+}
+
 /** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
  * The viewer offers "Mark checked" on exactly these requests. */
 export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null }): boolean {
@@ -350,7 +356,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
 
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
-    return { ...state, alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport: this.historyImport?.state() ?? null };
+    const historyImport = this.historyImport?.state() ?? null;
+    const backgroundWorkRunning: NonNullable<SetupStateView['backgroundWorkRunning']> = [];
+    const refresh = this.autoRefresh?.status() ?? null;
+    // A 'running' record whose process is gone was cut off; only a live run counts.
+    // The setup scan counts too: when it finishes it starts the extraction run.
+    const scanPhase = this.setupScan?.state().phase ?? 'idle';
+    const scanning = !['idle', 'done', 'failed'].includes(scanPhase);
+    if (scanning || (refresh?.state === 'running' && processIsAlive(Number((refresh as { pid?: number }).pid)))) backgroundWorkRunning.push('extraction');
+    if (historyImport?.state === 'running') backgroundWorkRunning.push('history-import');
+    return { ...state, alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport, backgroundWorkRunning };
   }
 
   /** This machine's own observations, for the import offer. A missing database is a new install: nothing to import. */

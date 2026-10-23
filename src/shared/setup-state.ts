@@ -48,6 +48,9 @@ export interface SetupStateView extends SetupStateFile {
   history?: { projects: number; sessions: number; observations: number } | null;
   /** The running or last history import (worker memory only). */
   historyImport?: unknown;
+  /** Long work this worker is doing now that a restart would kill: the extraction run (the automatic refresh) and the
+   * history import. The installer waits for it to finish before any restart. */
+  backgroundWorkRunning?: Array<'extraction' | 'history-import'>;
 }
 
 export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null };

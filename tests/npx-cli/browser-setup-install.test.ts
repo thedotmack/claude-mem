@@ -93,7 +93,7 @@ mock.module('@clack/prompts', () => ({
       offeredTasks.push(task.title);
       if (!/^(Starting worker daemon|Claude Code)/.test(task.title)) continue;
       ranTasks.push(task.title);
-      lines.push(await task.task(() => {}));
+      lines.push(await task.task((value) => lines.push(value)));
     }
   },
   log: Object.fromEntries(['info', 'success', 'warn', 'error', 'message', 'step'].map(key => [key, (value: string) => lines.push(value)])),
@@ -106,11 +106,19 @@ mock.module('../../src/shared/worker-spawn-gate.js', () => ({ ...spawnGate, hold
 const express = (await import('express')).default;
 const { WorkViewRoutes } = await import('../../src/services/worker/http/routes/WorkViewRoutes.js');
 let worker: { server: Server; routes: InstanceType<typeof WorkViewRoutes> } | null = null;
+/** The extraction run (the automatic refresh) as the routes see it: 'running' in this process until a case ends it. */
+const extraction = {
+  running: false,
+  restartsWhileRunning: 0,
+  status() { return this.running ? { state: 'running', pid: process.pid, reason: 'setup-scan', startedAt: new Date().toISOString() } : null; },
+  start() {}, close() {}, async runNow() { return 'idle'; },
+};
 async function startFixtureWorker(): Promise<void> {
   if (worker) return;
   const routes = new WorkViewRoutes({
     databasePath: join(import.meta.dir, '..', 'fixtures', 'prompt-import', 'home', 'no-work-state.db'),
     reviewPath: ':memory:', humanCopy: null, ledgerDir: null, setupScan: null, setupStatePath: statePath, settingsPath,
+    autoRefresh: extraction as never,
   });
   const app = express();
   app.use(express.json());
@@ -127,7 +135,7 @@ async function stopFixtureWorker(): Promise<void> {
 }
 mock.module('../../src/services/worker-spawner.js', () => ({
   ...spawner,
-  ensureWorkerStarted: async () => { workerStarts++; await startFixtureWorker(); return 'ready'; },
+  ensureWorkerStarted: async () => { workerStarts++; if (extraction.running) extraction.restartsWhileRunning++; await startFixtureWorker(); return 'ready'; },
   getLastWorkerBootFailure: () => undefined,
 }));
 
@@ -185,6 +193,7 @@ beforeEach(async () => {
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
   lines.length = 0; questions.length = 0; ranTasks.length = 0; offeredTasks.length = 0; opened.length = 0;
   pairingStarts.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
+  extraction.running = false; extraction.restartsWhileRunning = 0;
 });
 afterAll(async () => {
   await stopFixtureWorker();
@@ -301,6 +310,53 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await browserPost('/api/setup/complete', {});
     await install;
     expect(readSettings().CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
+  });
+
+  it('At Home: Finish Setup while the extraction runs finishes the terminal without restarting the worker, so the run goes on', async () => {
+    const install = runInstallCommand({});
+    await waitForStage('waiting-for-choice');
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    extraction.running = true;
+    expect((await browserState()).backgroundWorkRunning).toEqual(['extraction']);
+    expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
+    await install;
+    // The provider and auth method changed, but the worker reads them live: the one start is the funnel's own.
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
+    expect(workerStarts).toBe(1);
+    expect(extraction.restartsWhileRunning).toBe(0);
+    expect(extraction.running).toBe(true);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).status).toBe('complete');
+    expect(lines.join('\n')).toContain('claude-mem installed successfully!');
+  });
+
+  it('On The Go: cloud sync needs a restart, which waits for the running extraction to finish', async () => {
+    const install = runInstallCommand({});
+    let installed = false;
+    void install.then(() => { installed = true; });
+    await waitForStage('waiting-for-choice');
+    await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    await waitForStage('go-awaiting-checkout');
+    pollAnswers.push({ status: 200, body: READY_BODY });
+    await browserPost('/api/setup/checkout', {});
+    await waitForCheckout('paid');
+    extraction.running = true;
+    expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
+    // The terminal holds the restart for as long as the run takes; the page already shows setup complete.
+    for (let poll = 0; poll < 100 && !lines.some(line => line.includes('restarts to apply your settings once it finishes reading your goals, work and rules')); poll++) {
+      await new Promise(resolve => setTimeout(resolve, 20));
+    }
+    expect(lines.join('\n')).toContain('restarts to apply your settings once it finishes reading your goals, work and rules');
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    expect(installed).toBe(false);
+    expect(workerStarts).toBe(1);
+    expect((await browserState()).status).toBe('complete');
+
+    extraction.running = false;
+    await install;
+    expect(workerStarts).toBe(2);
+    expect(extraction.restartsWhileRunning).toBe(0);
+    expect(lines.join('\n')).toMatch(/Account: .*CMEM Pro .*Free Trial active/);
   });
 
   it('a machine that already finished setup keeps the terminal flow', async () => {

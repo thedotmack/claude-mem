@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { runBrowserSetup, setupPageUrl, shouldUseBrowserSetup } from '../../src/npx-cli/install/browser-setup.js';
+import { runBrowserSetup, settingsChangesNeedingRestart, setupPageUrl, shouldUseBrowserSetup, waitForBackgroundWorkToFinish } from '../../src/npx-cli/install/browser-setup.js';
 import type { SetupStateView } from '../../src/shared/setup-state.js';
 
 const GUI = { interactive: true, runtime: 'worker' as const, setupComplete: false };
@@ -83,5 +83,52 @@ describe('runBrowserSetup', () => {
     })).rejects.toThrow('Could not start the CMEM Pro sign-in.');
     expect(worker.stages).toEqual(['waiting-for-choice', 'failed']);
     expect(worker.get().installer?.error).toBe('Could not start the CMEM Pro sign-in.');
+  });
+});
+
+describe('settingsChangesNeedingRestart', () => {
+  const before = JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_RUNTIME: 'worker' });
+  it('At Home needs no restart: the worker reads the provider, auth method and model live, and sync stays off', () => {
+    // What useSubscriptionAuth() writes (buildAnthropicMaxLocalSettings): the scenario (b) settings file.
+    const atHome = JSON.stringify({
+      CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription',
+      CLAUDE_MEM_MODEL: 'claude-sonnet-5', CLAUDE_MEM_CLOUD_SYNC_TOKEN: '', CLAUDE_MEM_CLOUD_SYNC_USER_ID: '', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: '',
+      CLAUDE_MEM_CLOUD_SYNC_DEVICE_ID: '', CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: '', CLAUDE_MEM_PRO_MEMORY_KEY: '', CLAUDE_MEM_PRO_MEMORY_BASE_URL: '', CLAUDE_MEM_PRO_MEMORY_MODEL: '',
+    });
+    expect(settingsChangesNeedingRestart(before, atHome)).toEqual([]);
+    expect(settingsChangesNeedingRestart('', JSON.stringify({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLOUD_SYNC_DEVICE_NAME: '' }))).toEqual([]);
+    expect(settingsChangesNeedingRestart(before, before)).toEqual([]);
+  });
+  it('turning cloud sync on (On The Go paid) needs a restart: the worker sets up sync only at boot', () => {
+    const paid = JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 't', CLAUDE_MEM_CLOUD_SYNC_USER_ID: 'u', CLAUDE_MEM_CLOUD_SYNC_HUB_URL: 'https://cmem.ai/api/sync' });
+    expect(settingsChangesNeedingRestart(before, paid)).toEqual(['CLAUDE_MEM_CLOUD_SYNC_HUB_URL', 'CLAUDE_MEM_CLOUD_SYNC_TOKEN', 'CLAUDE_MEM_CLOUD_SYNC_USER_ID']);
+  });
+  it('any other setting the worker reads at boot needs a restart', () => {
+    expect(settingsChangesNeedingRestart(before, JSON.stringify({ CLAUDE_MEM_WORKER_PORT: '37896', CLAUDE_MEM_RUNTIME: 'worker', CLAUDE_MEM_CHROMA_ENABLED: 'false' }))).toEqual(['CLAUDE_MEM_CHROMA_ENABLED']);
+  });
+});
+
+describe('waitForBackgroundWorkToFinish', () => {
+  it('waits, with no time limit, until no extraction or history import runs, and says why once per change', async () => {
+    const answers = [['extraction'], ['extraction'], ['extraction', 'history-import'], []];
+    let reads = 0, sleeps = 0;
+    const said: string[] = [];
+    await waitForBackgroundWorkToFinish({
+      workerBaseUrl: 'http://w',
+      fetch: (async () => Response.json({ backgroundWorkRunning: answers[reads++] })) as unknown as typeof fetch,
+      sleep: async () => { sleeps++; },
+      log: { info: line => said.push(line), warn: line => said.push(line) },
+    });
+    expect(reads).toBe(4);
+    expect(sleeps).toBe(3);
+    expect(said).toEqual([
+      'Setup is complete. The worker restarts to apply your settings once it finishes reading your goals, work and rules; that work keeps going until then.',
+      'Setup is complete. The worker restarts to apply your settings once it finishes reading your goals, work and rules and bringing your memory to CMEM; that work keeps going until then.',
+    ]);
+  });
+  it('ends at once when nothing runs or the worker is gone (nothing left to protect)', async () => {
+    const log = { info: () => {}, warn: () => {} };
+    await waitForBackgroundWorkToFinish({ workerBaseUrl: 'http://w', log, fetch: (async () => Response.json({})) as unknown as typeof fetch, sleep: async () => { throw new Error('no wait'); } });
+    await waitForBackgroundWorkToFinish({ workerBaseUrl: 'http://w', log, fetch: (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch, sleep: async () => { throw new Error('no wait'); } });
   });
 });

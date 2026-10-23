@@ -2,6 +2,8 @@
 // until the page finishes setup. The worker holds the state (GET /api/setup/state); the terminal only waits.
 // There is no time limit anywhere: if the browser never connects, the URL is on screen and the wait goes on.
 import type { SetupCheckoutState, SetupChoice, SetupInstallerStage, SetupStateView } from '../../shared/setup-state.js';
+import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
+import { settingsTarget, type SettingsDocument } from '../../shared/settings-document.js';
 
 /** On The Go checkout on the existing pairing path (funnel Phase 8). */
 export interface BrowserCheckout {
@@ -141,5 +143,65 @@ export async function runBrowserSetup(deps: BrowserSetupDeps): Promise<BrowserSe
     await watchForRepeats;
     if (checkoutPaid) await report(stage, null, 'paid');
     else await report(stage, failure ?? 'Checkout did not finish. Continue to open it again.', 'failed');
+  }
+}
+
+/**
+ * Settings a running worker reads from settings.json each time it uses them (provider-dispatch, the Claude provider),
+ * so At Home's choice (provider, Claude auth method, model) takes effect with no restart.
+ */
+const SETTINGS_THE_WORKER_READS_LIVE = new Set(['CLAUDE_MEM_PROVIDER', 'CLAUDE_MEM_CLAUDE_AUTH_METHOD', 'CLAUDE_MEM_MODEL']);
+const CLOUD_SYNC_SETTING_PREFIX = 'CLAUDE_MEM_CLOUD_SYNC_';
+
+function effectiveSettings(snapshot: string): Record<string, string> {
+  const document = snapshot.trim() ? settingsTarget(JSON.parse(snapshot.replace(/^\uFEFF/, '')) as SettingsDocument) : {};
+  return { ...SettingsDefaultsManager.getAllDefaults(), ...document } as unknown as Record<string, string>;
+}
+
+const cloudSyncOn = (settings: Record<string, string>) => Boolean(settings.CLAUDE_MEM_CLOUD_SYNC_TOKEN && settings.CLAUDE_MEM_CLOUD_SYNC_USER_ID
+  && String(settings.CLAUDE_MEM_CLOUD_SYNC_HUB_URL ?? '').trim());
+
+/**
+ * The settings the browser setup changed that the running worker only reads when it starts (cloud sync is set up at
+ * boot), so they need a worker restart. Empty means the worker already runs with the new settings: no restart.
+ * Cloud sync's keys count only when sync is on before or after (At Home writes them empty over the defaults).
+ */
+export function settingsChangesNeedingRestart(before: string, after: string): string[] {
+  const previous = effectiveSettings(before), next = effectiveSettings(after);
+  const syncMatters = cloudSyncOn(previous) || cloudSyncOn(next);
+  return [...new Set([...Object.keys(previous), ...Object.keys(next)])].filter(key => String(previous[key] ?? '') !== String(next[key] ?? ''))
+    .filter(key => !SETTINGS_THE_WORKER_READS_LIVE.has(key) && (syncMatters || !key.startsWith(CLOUD_SYNC_SETTING_PREFIX)))
+    .sort();
+}
+
+export const BACKGROUND_WORK_LABELS: Record<NonNullable<SetupStateView['backgroundWorkRunning']>[number], string> = {
+  extraction: 'reading your goals, work and rules',
+  'history-import': 'bringing your memory to CMEM',
+};
+
+/**
+ * Waits, with no time limit, until the worker runs no extraction or history import, so a restart cannot kill one.
+ * A worker that cannot be reached runs nothing to protect, so the wait ends.
+ */
+export async function waitForBackgroundWorkToFinish(deps: Pick<BrowserSetupDeps, 'workerBaseUrl' | 'log' | 'fetch' | 'sleep' | 'pollIntervalMs'>): Promise<void> {
+  const request = deps.fetch ?? fetch;
+  const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  let announced = '';
+  for (;;) {
+    let running: NonNullable<SetupStateView['backgroundWorkRunning']>;
+    try {
+      const response = await request(`${deps.workerBaseUrl}/api/setup/state`, { cache: 'no-store' });
+      if (!response.ok) return;
+      running = ((await response.json()) as SetupStateView).backgroundWorkRunning ?? [];
+    } catch {
+      return;
+    }
+    if (!running.length) return;
+    const doing = running.map(work => BACKGROUND_WORK_LABELS[work]).join(' and ');
+    if (doing !== announced) {
+      deps.log.info(`Setup is complete. The worker restarts to apply your settings once it finishes ${doing}; that work keeps going until then.`);
+      announced = doing;
+    }
+    await sleep(deps.pollIntervalMs ?? 1000);
   }
 }
