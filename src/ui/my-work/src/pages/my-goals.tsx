@@ -341,7 +341,7 @@ function Lead() {
     <Req ids={['R12.3', 'R12.2', 'R3.9']}>
       <div className="space-y-2">
         <p className="text-base leading-snug font-semibold text-balance sm:text-lg">
-          Your work is moving {count('moving')} of your top {TOP_COUNT} priorities. {count('your-move')} is waiting on you, and {count('nothing')} has nothing working on it.
+          Your work is moving {count('moving')} of your top {top.length} priorities. {count('your-move')} is waiting on you, and {count('nothing')} has nothing working on it.
         </p>
         <p className="hidden text-sm text-muted-foreground lg:block">
           {unserved.length} open asks have no request yet.{mostAsked && <> The one you’ve asked for most is “{mostAsked.title}”, {mostAsked.timesAsked} times.</>}
@@ -402,7 +402,7 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
                   {priorities.slice(0, TOP_COUNT).map((goal) => <PriorityItem key={goal.id} goal={goal} highlighted={focus.highlighted === goal.id} onOpen={onOpen} />)}
                 </Accordion>
               </div>
-              <Collapsible open={focus.moreOpen} onOpenChange={focus.setMoreOpen}>
+              {priorities.length > TOP_COUNT && <Collapsible open={focus.moreOpen} onOpenChange={focus.setMoreOpen}>
                 <CollapsibleTrigger className="group flex min-h-11 items-center gap-1 text-sm text-muted-foreground hover:text-foreground">
                   <ChevronDownIcon className="size-4 transition-transform group-data-[state=open]:rotate-180" />{priorities.length - TOP_COUNT} more priorities
                 </CollapsibleTrigger>
@@ -413,7 +413,7 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
                     </Accordion>
                   </div>
                 </CollapsibleContent>
-              </Collapsible>
+              </Collapsible>}
               <RequestStateLine className="pt-1 sm:hidden" />
             </section>
           </Req>
