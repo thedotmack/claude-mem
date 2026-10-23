@@ -103,7 +103,9 @@ const QUERIES: Record<string, string> = {
 (lexical_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (variable_declaration (variable_declarator name: (identifier) @name value: [(arrow_function) (function_expression) (generator_function)])) @const_func
 (class_declaration name: (type_identifier) @name) @cls
+(abstract_class_declaration name: (type_identifier) @name) @cls
 (method_definition name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
+(abstract_method_signature name: [(property_identifier) (private_property_identifier) (string) (number) (computed_property_name)] @name) @method
 (public_field_definition name: (_) @name value: [(arrow_function) (function_expression) (generator_function)]) @method
 (public_field_definition name: (_) @name value: (parenthesized_expression [(arrow_function) (function_expression) (generator_function)])) @method
 (interface_declaration name: (type_identifier) @name) @iface
