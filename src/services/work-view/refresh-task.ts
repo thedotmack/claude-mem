@@ -205,7 +205,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       for (let input = cli(['grouping-input', '--days', '14']); input.conversations.length; input = cli(['grouping-input', '--days', '14'])) {
         await step('grouping', [
           requestProgress, '---', readOnly,
-          `Do only section 1 (grouping) for the one batch of new conversations in the \`grouping-input\` output in ${writeInput('grouping-input', input)}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
+          // The batch is inline, with its keys named: on a file path alone Codex's light model sometimes
+          // answered {"groups": [], "ignored": []} without reading it (Oct 23, twice in a row).
+          `Do only section 1 (grouping) for this one batch of new conversations, the \`grouping-input\` output (also saved in ${writeInput('grouping-input', input)}):\n\n\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``,
+          `Decide each of these ${input.conversations.length} conversations exactly once, in "groups" or "ignored": ${input.conversations.map((conversation: { conversationKey: string }) => conversation.conversationKey).join(', ')}. Reply with only the decisions JSON that \`apply\` takes ({"groups": [...], "ignored": [...]}), deciding every conversation in the batch and nothing else.`,
         ].join('\n\n'), answer => cli(['apply'], validateGroupingAnswer(answer, input)), GROUPING_ANSWER_SCHEMA);
         grouped += input.conversations.length;
       }

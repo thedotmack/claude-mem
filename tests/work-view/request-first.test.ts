@@ -178,7 +178,10 @@ describe('only new opening prompts are checked', () => {
       const sent: string[][] = [];
       const ask = async (question: string) => {
         if (question.includes('Do only section 1')) {
-          const input = JSON.parse(readFileSync(/output in (\S+\.json)/.exec(question)![1], 'utf8'));
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(question)![1]);
+          // The batch is inline and its keys are named; the saved copy matches.
+          expect(JSON.parse(readFileSync(/also saved in (\S+\.json)/.exec(question)![1], 'utf8'))).toEqual(input);
+          expect(question).toContain(`exactly once, in "groups" or "ignored": ${input.conversations.map((item: any) => item.conversationKey).join(', ')}.`);
           sent.push(input.conversations.map((conversation: any) => conversation.conversationKey));
           const [conversation] = input.conversations;
           return JSON.stringify(conversation.conversationKey === key('b')
