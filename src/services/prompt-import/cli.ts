@@ -28,11 +28,12 @@ const byAgent = Object.fromEntries(result.agents.map(agent => [agent.id, {
   ownerPrompts: result.ownerPrompts.filter(prompt => prompt.agent === agent.id).length,
   agentWritten: result.agentWritten.filter(prompt => prompt.agent === agent.id).length,
 }]));
-console.log(JSON.stringify({
+// A CLI's answer goes to stdout (not the worker logger: this never runs inside the worker).
+process.stdout.write(`${JSON.stringify({
   since: new Date(sinceEpochMs).toISOString(),
   durationMs: Date.now() - startedAt,
   ownerPrompts: result.ownerPrompts.length,
   agentWritten: result.agentWritten.length,
   agents: byAgent,
   skippedSources: result.skippedSources,
-}, null, 2));
+}, null, 2)}\n`);
