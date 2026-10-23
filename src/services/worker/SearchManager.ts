@@ -1,6 +1,7 @@
 
 import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { SessionStore } from '../sqlite/SessionStore.js';
+import type { ContextReadWorkerClient } from '../context/ContextReadWorkerClient.js';
 import { ChromaSync, type ChromaQueryProgress } from '../sync/ChromaSync.js';
 import { FormattingService } from './FormattingService.js';
 import { TimelineService } from './TimelineService.js';
@@ -52,7 +53,8 @@ export class SearchManager {
      * days; 0 disables the window so every semantic match stays eligible.
      * An explicit `dateRange` on a request always wins over it.
      */
-    private searchRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS
+    private searchRecencyWindowMs: number = SEARCH_CONSTANTS.RECENCY_WINDOW_MS,
+    private contextReader: ContextReadWorkerClient | null = null
   ) {
     this.orchestrator = new SearchOrchestrator(
       sessionSearch,
@@ -397,14 +399,14 @@ export class SearchManager {
    * oldest) matches outside them. Each requested category is unioned with its FTS5 keyword
    * matches, which SQL selects by date, then deduped by id, sorted by date and cut to `limit`.
    */
-  private mergeKeywordMatchesByDate(
+  private async mergeKeywordMatchesByDate(
     query: string,
     dateOrder: 'date_desc' | 'date_asc',
     chromaResults: SearchResults,
     observationOptions: any,
     options: any,
     scope: { searchObservations: boolean; searchSessions: boolean; searchPrompts: boolean }
-  ): SearchResults {
+  ): Promise<SearchResults> {
     const limit = options.limit || SEARCH_CONSTANTS.DEFAULT_LIMIT;
     const byDate = (a: { id: number; created_at_epoch: number }, b: { id: number; created_at_epoch: number }) =>
       dateOrder === 'date_desc'
@@ -420,13 +422,19 @@ export class SearchManager {
 
     return {
       observations: scope.searchObservations
-        ? mergeByDate(chromaResults.observations, this.sessionSearch.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit }))
+        ? mergeByDate(chromaResults.observations, this.contextReader
+            ? await this.contextReader.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit })
+            : this.sessionSearch.searchObservations(query, { ...observationOptions, orderBy: dateOrder, limit }))
         : chromaResults.observations,
       sessions: scope.searchSessions
-        ? mergeByDate(chromaResults.sessions, this.sessionSearch.searchSessions(query, { ...options, orderBy: dateOrder, limit }))
+        ? mergeByDate(chromaResults.sessions, this.contextReader
+            ? await this.contextReader.searchSessions(query, { ...options, orderBy: dateOrder, limit })
+            : this.sessionSearch.searchSessions(query, { ...options, orderBy: dateOrder, limit }))
         : chromaResults.sessions,
       prompts: scope.searchPrompts
-        ? mergeByDate(chromaResults.prompts, this.sessionSearch.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit }))
+        ? mergeByDate(chromaResults.prompts, this.contextReader
+            ? await this.contextReader.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit })
+            : this.sessionSearch.searchUserPrompts(query, { ...options, orderBy: dateOrder, limit }))
         : chromaResults.prompts,
     };
   }
@@ -544,13 +552,19 @@ export class SearchManager {
         // leaves an empty answer, not a failed request.
         try {
           if (searchObservations) {
-            observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+            observations = this.contextReader
+              ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
+              : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
           }
           if (searchSessions) {
-            sessions = this.sessionSearch.searchSessions(query, options);
+            sessions = this.contextReader
+              ? await this.contextReader.searchSessions(query, options)
+              : this.sessionSearch.searchSessions(query, options);
           }
           if (searchPrompts) {
-            prompts = this.sessionSearch.searchUserPrompts(query, options);
+            prompts = this.contextReader
+              ? await this.contextReader.searchUserPrompts(query, options)
+              : this.sessionSearch.searchUserPrompts(query, options);
           }
         } catch (ftsError) {
           const ftsErrorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
@@ -559,7 +573,7 @@ export class SearchManager {
       }
 
       if (!chromaFailed && (options.orderBy === 'date_desc' || options.orderBy === 'date_asc')) {
-        ({ observations, sessions, prompts } = this.mergeKeywordMatchesByDate(
+        ({ observations, sessions, prompts } = await this.mergeKeywordMatchesByDate(
           query,
           options.orderBy,
           { observations, sessions, prompts },
@@ -581,13 +595,19 @@ export class SearchManager {
       logger.debug('SEARCH', 'ChromaDB not initialized — falling back to FTS5 keyword search', {});
       try {
         if (searchObservations) {
-          observations = this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
+          observations = this.contextReader
+            ? await this.contextReader.searchObservations(query, { ...options, type: effectiveObsType, concepts, files })
+            : this.sessionSearch.searchObservations(query, { ...options, type: effectiveObsType, concepts, files });
         }
         if (searchSessions) {
-          sessions = this.sessionSearch.searchSessions(query, options);
+          sessions = this.contextReader
+            ? await this.contextReader.searchSessions(query, options)
+            : this.sessionSearch.searchSessions(query, options);
         }
         if (searchPrompts) {
-          prompts = this.sessionSearch.searchUserPrompts(query, options);
+          prompts = this.contextReader
+            ? await this.contextReader.searchUserPrompts(query, options)
+            : this.sessionSearch.searchUserPrompts(query, options);
         }
       } catch (ftsError) {
         const errorObject = ftsError instanceof Error ? ftsError : new Error(String(ftsError));
