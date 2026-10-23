@@ -70,7 +70,7 @@ function observationReply(body: Body): Body {
 }
 
 /** Scripted chat-completions endpoint: empty+length unless reasoning is disabled. */
-async function startReasoningServer(mode: 'honor-disable' | 'always-burn' | 'reject-reasoning-field' | 'reject-mandatory-reasoning') {
+async function startReasoningServer(mode: 'honor-disable' | 'always-burn' | 'reject-reasoning-field' | 'reject-unsupported-parameter' | 'reject-mandatory-reasoning') {
   const bodies: Body[] = [];
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     let raw = '';
@@ -83,10 +83,18 @@ async function startReasoningServer(mode: 'honor-disable' | 'always-burn' | 'rej
       if (mode === 'reject-reasoning-field' && 'reasoning' in body) {
         status = 400;
         payload = { error: { message: "Unknown parameter: 'reasoning'. Extra fields are not permitted.", type: 'invalid_request_error', code: 'unknown_parameter' } };
+      } else if (mode === 'reject-unsupported-parameter' && 'reasoning' in body) {
+        status = 400;
+        payload = { error: { message: "Unsupported parameter: 'reasoning'", type: 'invalid_request_error', code: 'unsupported_parameter' } };
       } else if (mode === 'reject-mandatory-reasoning' && 'reasoning' in body) {
         status = 400;
         payload = { error: { message: "Invalid parameter: reasoning.effort 'none' is unsupported for this model", type: 'invalid_request_error' } };
-      } else if (mode !== 'reject-reasoning-field' && mode !== 'reject-mandatory-reasoning' && (mode === 'always-burn' || !reasoningDisabled(body))) {
+      } else if (
+        mode !== 'reject-reasoning-field'
+        && mode !== 'reject-unsupported-parameter'
+        && mode !== 'reject-mandatory-reasoning'
+        && (mode === 'always-burn' || !reasoningDisabled(body))
+      ) {
         payload = lengthBurn(body);
       } else {
         payload = observationReply(body);
@@ -229,6 +237,21 @@ describe('reasoning budget exhaustion', () => {
       expect(server.bodies[1]?.reasoning).toEqual({ enabled: false });
       expect(result.content).toContain('Kept the answer');
       expect(errorSpy.mock.calls.some(call => String(call[1]).includes('output budget'))).toBe(true);
+    } finally {
+      await server.close();
+    }
+  });
+
+  it('openai-compatible: an OpenAI-style unsupported parameter is retried without the field', async () => {
+    const server = await startReasoningServer('reject-unsupported-parameter');
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    spies.push(warnSpy);
+    try {
+      const result = await queryCompat(server.url);
+      expect('reasoning' in (server.bodies[0] ?? {})).toBe(true);
+      expect('reasoning' in (server.bodies[1] ?? {})).toBe(false);
+      expect(result.content).toContain('Kept the answer');
+      expect(endpointRejectsReasoningField(server.url)).toBe(true);
     } finally {
       await server.close();
     }
@@ -495,6 +518,7 @@ describe('reasoning budget exhaustion', () => {
 
   it('does not treat a mandatory or invalid-effort refusal as an unknown reasoning field', async () => {
     expect(isUnknownReasoningParameter("Unknown parameter: 'reasoning'. Extra fields are not permitted.")).toBe(true);
+    expect(isUnknownReasoningParameter("Unsupported parameter: 'reasoning'")).toBe(true);
     expect(isUnknownReasoningParameter("Invalid parameter: reasoning.effort 'none' is unsupported for this model")).toBe(false);
     expect(isUnknownReasoningParameter('This model requires reasoning')).toBe(false);
     const server = await startReasoningServer('reject-mandatory-reasoning');

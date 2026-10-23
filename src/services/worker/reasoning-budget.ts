@@ -106,7 +106,9 @@ export function isUnknownReasoningParameter(text: string): boolean {
   const lower = text.toLowerCase();
   if (!lower.includes('reasoning')) return false;
   if (isMandatoryReasoningRejection(lower)) return false;
-  return /unknown (?:parameter|field|argument)|unrecognized (?:parameter|field|argument)|unexpected (?:parameter|field|argument)|extra fields?|additional propert|not permitted/.test(lower);
+  // "unsupported parameter" is OpenAI's unknown-field wording. A bare
+  // "unsupported" is not: "unsupported reasoning effort" is a value refusal.
+  return /unknown (?:parameter|field|argument)|unrecognized (?:parameter|field|argument)|unexpected (?:parameter|field|argument)|unsupported parameter|extra fields?|additional propert|not permitted/.test(lower);
 }
 
 export function reasoningBudgetRetryMessage(label: string): string {
