@@ -21,7 +21,6 @@ const INTEGRATION_PATH_PATTERNS: RegExp[] = [
 
 // Unit-test locations whose files still spend real seconds waiting on timers.
 const INTEGRATION_TIMER_HEAVY_FILES = new Set<string>([
-  'tests/worker/codex-app-server-client.test.ts',
 ]);
 
 // The same names `bun test` treats as test files.
