@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
-import { runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import { GEMINI_NO_MCP_SERVERS, runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
 import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 
 class FakeStream extends EventEmitter {
@@ -88,7 +88,7 @@ describe('agent runner', () => {
     expect((await options.canUseTool('Edit', { file_path: '/x' })).behavior).toBe('deny');
   });
 
-  it('Codex: codex exec read-only and ephemeral, prompt on stdin, answer from the -o file', async () => {
+  it('Codex: codex exec read-only, ephemeral and without the user config (no MCP tools), prompt on stdin, answer from the -o file', async () => {
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-codex-'));
     try {
       const calls: SpawnCall[] = [];
@@ -104,10 +104,10 @@ describe('agent runner', () => {
       expect(calls).toHaveLength(1);
       const { command, args, options, child } = calls[0];
       expect(command).toBe('/bin/codex');
-      expect(args.slice(0, 7)).toEqual(['exec', '-s', 'read-only', '--ephemeral', '--skip-git-repo-check', '-C', cwd]);
-      expect(args[7]).toBe('-o');
-      expect(args[8].startsWith(join(cwd, 'agent-runs'))).toBe(true);
-      expect(args[9]).toBe('-');
+      expect(args.slice(0, 8)).toEqual(['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd]);
+      expect(args[8]).toBe('-o');
+      expect(args[9].startsWith(join(cwd, 'agent-runs'))).toBe(true);
+      expect(args[10]).toBe('-');
       expect(args.join(' ')).not.toMatch(/bypass|dangerous|full-auto|yolo/i);
       expect(child.stdinText).toBe('inline prompt for codex');
       expect(options.cwd).toBe(cwd);
@@ -115,7 +115,7 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
-  it('Gemini: gemini -p in plan (read-only) mode with JSON output, prompt on stdin', async () => {
+  it('Gemini: gemini -p in plan (read-only) mode, no extensions or MCP servers, JSON output, prompt on stdin', async () => {
     const calls: SpawnCall[] = [];
     const spawnImpl = fakeSpawn(calls, call => {
       call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}', stats: {} }));
@@ -124,7 +124,7 @@ describe('agent runner', () => {
     const result = await runAgentTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
     expect(calls[0].command).toBe('/bin/gemini');
-    expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-o', 'json']);
+    expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
     expect(calls[0].child.stdinText).toBe('inline prompt for gemini');
   });
 

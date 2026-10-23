@@ -11,12 +11,12 @@
  *   - Claude Code: one Agent SDK `query` with the claude-mem plugin's skills
  *     loaded, an explicit allowed-tools list plus a `canUseTool` check for
  *     everything else, `cwd` = the data dir and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --skip-git-repo-check -C <cwd> -o <file> -`
- *     (codex-cli 0.163.0 `exec --help`), prompt on stdin.
- *   - Gemini: `gemini -p <line> --approval-mode plan -o json` (gemini 0.49.0
- *     `--help`: plan = read-only mode), prompt on stdin.
+ *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> -`
+ *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers.
+ *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json`
+ *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
  *
- * Codex and Gemini run read-only, so they cannot save anything themselves.
+ * Codex and Gemini run read-only with no MCP tools, so they cannot save anything themselves.
  * The task's `inline` function drives them one step at a time and saves each
  * answer through claude-mem's own validators.
  */
@@ -160,13 +160,26 @@ function failure(name: string, result: { exitCode: number | null; stdout: string
   return new Error(`${name} exited ${result.exitCode}${detail ? `: ${detail}` : ''}`);
 }
 
+/**
+ * `-s read-only` sandboxes only shell and files, not MCP tools, and `--ephemeral`
+ * still loads $CODEX_HOME/config.toml, where the user's write-capable MCP
+ * servers (claude-mem's save_memory and work_state_write among them) live.
+ * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
+ * still comes from CODEX_HOME. Every save goes through the worker's validators.
+ */
+const CODEX_EXEC_ARGS = (cwd: string, answerPath: string) => ['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath, '-'];
+
+/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
+export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
+const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
+
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
   return async prompt => {
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
     const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
     try {
-      const result = await runCli(dependencies, agent.path!, ['exec', '-s', 'read-only', '--ephemeral', '--skip-git-repo-check', '-C', task.cwd, '-o', answerPath, '-'], prompt, { cwd: task.cwd, env });
+      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
@@ -177,7 +190,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
 
 function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
   return async prompt => {
-    const result = await runCli(dependencies, agent.path!, ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-o', 'json'], prompt, { cwd: task.cwd, env });
+    const result = await runCli(dependencies, agent.path!, GEMINI_ARGS, prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
