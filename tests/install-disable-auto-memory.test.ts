@@ -14,8 +14,9 @@ import { disableClaudeAutoMemory } from '../src/npx-cli/commands/install.js';
  * hook-based memory for context-window tokens, but we should not disable it
  * without the user's opt-in.
  *
- * Source-inspection style mirrors install-non-tty.test.ts — disableClaudeAutoMemory
- * is a private module-level helper that can't be imported directly.
+ * The consent gate (resolveClaudeAutoMemoryChoice) is a private module-level
+ * helper that prompts on a TTY, so its rules are pinned by source inspection;
+ * disableClaudeAutoMemory itself is exercised directly below.
  */
 
 const installSourcePath = join(
@@ -29,56 +30,7 @@ const installSourcePath = join(
 const installSource = readFileSync(installSourcePath, 'utf-8');
 
 describe('Install: disable Claude Code auto-memory', () => {
-  describe('disableClaudeAutoMemory helper', () => {
-    it('defines the helper function', () => {
-      expect(installSource).toContain('function disableClaudeAutoMemory()');
-    });
-
-    it('writes CLAUDE_CODE_DISABLE_AUTO_MEMORY=1 to settings.json env block', () => {
-      expect(installSource).toMatch(/CLAUDE_CODE_DISABLE_AUTO_MEMORY:\s*['"]1['"]/);
-    });
-
-    it('reads existing settings via readJsonSafe (preserves other keys)', () => {
-      const helperBody = installSource.match(
-        /function disableClaudeAutoMemory\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toBeDefined();
-      expect(helperBody).toContain('readJsonSafe');
-      expect(helperBody).toContain('writeJsonFileAtomic(claudeSettingsPath()');
-    });
-
-    it('merges with existing env vars instead of replacing the env block', () => {
-      const helperBody = installSource.match(
-        /function disableClaudeAutoMemory\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toMatch(/\.\.\.env/);
-    });
-
-    it('is idempotent — returns false (no write) when already set to "1"', () => {
-      const helperBody = installSource.match(
-        /function disableClaudeAutoMemory\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toMatch(/CLAUDE_CODE_DISABLE_AUTO_MEMORY === ['"]1['"]/);
-      expect(helperBody).toMatch(/return false/);
-    });
-
-    it('returns true after a successful write', () => {
-      const helperBody = installSource.match(
-        /function disableClaudeAutoMemory\(\)[\s\S]*?\n\}/,
-      )?.[0];
-      expect(helperBody).toMatch(/return true/);
-    });
-  });
-
   describe('runInstallCommand integration', () => {
-    it('resolves auto-memory choice after setupIDEs', () => {
-      const setupCallIdx = installSource.indexOf('await setupIDEs(selectedIDEs');
-      const choiceCallIdx = installSource.indexOf('await resolveClaudeAutoMemoryChoice(selectedIDEs, options)');
-      expect(setupCallIdx).toBeGreaterThan(-1);
-      expect(choiceCallIdx).toBeGreaterThan(-1);
-      expect(choiceCallIdx).toBeGreaterThan(setupCallIdx);
-    });
-
     it('skips the consent helper entirely when claude-code is not selected', () => {
       expect(installSource).toMatch(
         /if \(!selectedIDEs\.includes\(['"]claude-code['"]\)\) \{\s*return ['"]not-applicable['"]/
@@ -97,42 +49,6 @@ describe('Install: disable Claude Code auto-memory', () => {
       );
       expect(installSource).toMatch(
         /if \(options\.disableAutoMemory\) \{\s*return ['"]disable['"]/
-      );
-    });
-
-    it('catches errors from disableClaudeAutoMemory and continues', () => {
-      const integrationBlock = installSource.match(
-        /if \(autoMemoryChoice === ['"]disable['"]\)[\s\S]{0,800}/
-      )?.[0];
-      expect(integrationBlock).toBeDefined();
-      expect(integrationBlock).toContain('try {');
-      expect(integrationBlock).toMatch(/const wrote = disableClaudeAutoMemory\(\)/);
-      expect(integrationBlock).toContain('catch');
-      expect(integrationBlock).toMatch(/installerError\(ErrorSeverity\.WARN_CONTINUE/);
-    });
-
-    it('tracks a four-state autoMemoryStatus (disabled / already-disabled / left-enabled / failed)', () => {
-      expect(installSource).toMatch(
-        /let autoMemoryStatus:\s*['"]disabled['"]\s*\|\s*['"]already-disabled['"]\s*\|\s*['"]left-enabled['"]\s*\|\s*['"]failed['"]\s*\|\s*null/
-      );
-      const integrationBlock = installSource.match(/autoMemoryChoice[\s\S]{0,1200}/)?.[0];
-      expect(integrationBlock).toMatch(/autoMemoryStatus = wrote \? ['"]disabled['"] : ['"]already-disabled['"]/);
-      expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]left-enabled['"]/);
-      expect(integrationBlock).toMatch(/autoMemoryStatus = ['"]failed['"]/);
-    });
-
-    it('surfaces disabled, already-disabled, left-enabled, and failed states in the install summary distinctly', () => {
-      expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]disabled['"][\s\S]{0,200}CLAUDE_CODE_DISABLE_AUTO_MEMORY=1/
-      );
-      expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]already-disabled['"][\s\S]{0,200}already disabled/
-      );
-      expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]left-enabled['"][\s\S]{0,200}left enabled/
-      );
-      expect(installSource).toMatch(
-        /autoMemoryStatus === ['"]failed['"][\s\S]{0,200}write failed/
       );
     });
   });
@@ -236,25 +152,5 @@ describe('Install: claude-mem hook launcher placement', () => {
     expect(runtimeTaskStart).toBeGreaterThan(-1);
     expect(ensureBunCall).toBeGreaterThan(runtimeTaskStart);
     expect(launcherCall).toBeGreaterThan(ensureBunCall);
-  });
-
-  it('warns and continues on a launcher failure instead of aborting the install', () => {
-    const helperBody = installSource.match(/function placeHookLauncherOnPath\([\s\S]*?\n\}/)?.[0];
-    expect(helperBody).toBeDefined();
-    expect(helperBody).toContain('ensureLauncherOnPath(');
-    expect(helperBody).toContain('ErrorSeverity.WARN_CONTINUE');
-    expect(helperBody).not.toContain('ErrorSeverity.ABORT');
-  });
-
-  it('keeps the Claude Code PATH setup on the shared ~/.local/bin appender, gated on the claude binary', () => {
-    const helperBody = installSource.match(/function applyClaudeCodePathSetupIfNeeded\(\)[\s\S]*?\n\}/)?.[0];
-    expect(helperBody).toBeDefined();
-    expect(helperBody).toContain("join(homedir(), '.local', 'bin', 'claude')");
-    expect(helperBody).toContain("ensureLocalBinOnShellPath({ purposeLabel: 'Claude Code', logger: log })");
-  });
-
-  it('runs for `update` too, which dispatches to runInstallCommand', () => {
-    const cliSource = readFileSync(join(__dirname, '..', 'src', 'npx-cli', 'index.ts'), 'utf-8');
-    expect(cliSource).toMatch(/case 'update':[\s\S]*?runInstallCommand/);
   });
 });

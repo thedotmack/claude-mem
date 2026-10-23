@@ -175,7 +175,7 @@ export type GeminiModel =
   | 'gemini-3.1-flash-lite'
   | 'gemini-3-flash-preview';
 
-const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
+export const GEMINI_RPM_LIMITS: Record<GeminiModel, number> = {
   'gemini-flash-latest': 10,
   'gemini-flash-lite-latest': 15,
   'gemini-3.5-flash': 10,

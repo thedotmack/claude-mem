@@ -1,6 +1,6 @@
 
 import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, statSync, writeSync } from 'fs';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { paths } from '../shared/paths.js';
 import { emitDiagnostic } from '../shared/hook-io.js';
 import { readJsonFileWithBom } from '../shared/atomic-json.js';
@@ -158,6 +158,9 @@ class Logger {
       if (!current) this.closeLogFd();
     }
     if (this.logFd === null) {
+      // The stat above re-opens after an external delete; recreate the logs
+      // directory too, or every later line fails until the next UTC day.
+      mkdirSync(dirname(path), { recursive: true });
       this.logFd = openSync(path, 'a');
     }
     try {

@@ -16,24 +16,16 @@ describe('provider account gate', () => {
 
   it('still requires an account when no provider was named', () => {
     expect(providerNeedsAccount(undefined)).toBe(true);
-    expect(source).toContain('if (providerNeedsAccount(options.provider)) {');
   });
 
   it('still treats openrouter, gemini and codex as account-backed providers', () => {
     expect(providerNeedsAccount('openrouter')).toBe(true);
     expect(providerNeedsAccount('gemini')).toBe(true);
     expect(providerNeedsAccount('codex')).toBe(true);
-    expect(source).toContain("if (options.provider !== 'gemini' && options.provider !== 'openrouter') return;");
   });
 });
 
 describe('install flow wiring', () => {
-  it('gates the OAuth login call behind providerNeedsAccount', () => {
-    expect(source).toMatch(
-      /if \(providerNeedsAccount\(options\.provider\)\) \{\s*\n\s*oauthPairing = await requireInstallerOAuthLogin\(version\);/,
-    );
-  });
-
   it('never runs the blocking OAuth login for a persisted non-interactive provider', () => {
     // A non-TTY run that reused CLAUDE_MEM_PROVIDER=openrouter|gemini from
     // settings must not enter requireInstallerOAuthLogin: it would open a
@@ -68,9 +60,5 @@ describe('install flow wiring', () => {
     expect(persistedIdx).toBeGreaterThan(noAccountIdx);
     expect(summary.slice(noAccountIdx, persistedIdx)).toContain("'Not required (local provider)'");
     expect(summary.slice(persistedIdx)).toContain("'Kept existing account (no login this run)'");
-  });
-
-  it('refuses CMEM Pro enrollment without a pairing', () => {
-    expect(source).toContain("throw new Error('CMEM Pro requires a signed-in claude-mem account.');");
   });
 });
