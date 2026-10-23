@@ -16,11 +16,14 @@ describe.skipIf(!vectorAvailable)('processGeneratedResponse vector writes', () =
   let schemaName: string;
   let upsertSpy: ReturnType<typeof spyOn> | null = null;
   let embedSpy: ReturnType<typeof spyOn> | null = null;
+  let readySpy: ReturnType<typeof spyOn> | null = null;
 
   beforeEach(async () => {
     // Vectors without the model, so generation has vectors to write.
     embedSpy = spyOn(LocalEmbedder.prototype, 'embed')
       .mockImplementation(async (texts: string[]) => texts.map(() => new Float32Array(384).fill(0.05)));
+    // As if the model had loaded, so the route does not wait for it.
+    readySpy = spyOn(LocalEmbedder.prototype, 'isReady').mockReturnValue(true);
     ModeManager.getInstance().loadMode('code');
     schemaName = await createIsolatedSchema(testDatabaseUrl!, 'cm_generation_vectors');
     // public too, where pgvector's type lives.
@@ -31,6 +34,7 @@ describe.skipIf(!vectorAvailable)('processGeneratedResponse vector writes', () =
   afterEach(async () => {
     upsertSpy?.mockRestore();
     embedSpy?.mockRestore();
+    readySpy?.mockRestore();
     await pool.end();
     await dropSchema(testDatabaseUrl!, schemaName);
   });

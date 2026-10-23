@@ -16,6 +16,7 @@ import {
   backfillMissingEmbeddings,
   capEmbedderThreadsForBackfill,
   vectorSearchMode,
+  warmSharedEmbedder,
 } from '../services/ObservationEmbeddingService.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
@@ -249,6 +250,14 @@ export async function createServerService(
       await backfill;
     };
   }
+  // Every role embeds (the server its queries, the worker its observations),
+  // so every role starts loading the model now rather than at the first
+  // request; after the thread cap above, which fixes the embedder it loads.
+  await warmSharedEmbedder(pool).catch((error: unknown) => {
+    logger.warn('SYSTEM', 'could not start loading the embedding model', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   return new ServerService({ graph });
 }

@@ -20,11 +20,14 @@ describe.skipIf(!vectorAvailable)('POST /v1/memories vector write', () => {
   let apiKey: string;
   let upsertSpy: ReturnType<typeof spyOn> | null = null;
   let embedSpy: ReturnType<typeof spyOn> | null = null;
+  let readySpy: ReturnType<typeof spyOn> | null = null;
 
   beforeEach(async () => {
     // Vectors without the model, so the route has vectors to write.
     embedSpy = spyOn(LocalEmbedder.prototype, 'embed')
       .mockImplementation(async (texts: string[]) => texts.map(() => new Float32Array(384).fill(0.05)));
+    // As if the model had loaded, so the route does not wait for it.
+    readySpy = spyOn(LocalEmbedder.prototype, 'isReady').mockReturnValue(true);
     schema = await createIsolatedSchema(databaseUrl!, 'cm_memory_vectors');
     // public too, where pgvector's type lives.
     pool = new pg.Pool({ connectionString: databaseUrl, options: `-c search_path=${schema},public` });
@@ -51,6 +54,7 @@ describe.skipIf(!vectorAvailable)('POST /v1/memories vector write', () => {
   afterEach(async () => {
     upsertSpy?.mockRestore();
     embedSpy?.mockRestore();
+    readySpy?.mockRestore();
     try { await server?.close(); } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ERR_SERVER_NOT_RUNNING') throw error;
     }

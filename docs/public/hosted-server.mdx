@@ -268,6 +268,17 @@ or while the model cannot load, search is keyword-only.
 many observations a search by meaning cannot find yet, and the last embedding
 error.
 
+Outside Docker, the model (about 90 MB) downloads from huggingface.co on first
+start. The server begins loading it at startup; until it is ready, searches are
+keyword-only and new memories are saved without vectors (a request waits at most
+two seconds for it). The background backfill embeds those memories once the
+model loads, or at the latest at the next start.
+`npx claude-mem server start`, `restart` and `worker start` install the embedder's
+packages (about 300 MB, once) unless `CLAUDE_MEM_SERVER_VECTOR_SEARCH=false`.
+
+Vectors cost about 28 KB of Postgres storage per observation (about 1 GB per
+40,000 observations), plus CPU time to embed each one.
+
 ## Endpoint reference
 
 All endpoints are mounted under `/v1`; legacy worker routes remain under `/api`.
