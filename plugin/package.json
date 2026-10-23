@@ -18,6 +18,7 @@
     "tree-sitter-typescript": "^0.23.2",
     "tree-sitter-kotlin": "^0.3.8",
     "tree-sitter-swift": "^0.7.1",
+    "tree-sitter-delphi": "^0.1.0",
     "tree-sitter-php": "^0.24.2",
     "@tree-sitter-grammars/tree-sitter-lua": "^0.4.1",
     "tree-sitter-scala": "^0.24.0",
@@ -71,7 +72,8 @@
     "@derekstride/tree-sitter-sql": true,
     "esbuild": true,
     "@biomejs/biome": true,
-    "better-sqlite3": true
+    "better-sqlite3": true,
+    "tree-sitter-delphi": true
   },
   "engines": {
     "node": ">=20.12.0",

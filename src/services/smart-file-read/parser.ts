@@ -65,6 +65,7 @@ const GRAMMAR_PACKAGES: Record<string, string> = {
   yaml: "@tree-sitter-grammars/tree-sitter-yaml",
   sql: "@derekstride/tree-sitter-sql",
   markdown: "@tree-sitter-grammars/tree-sitter-markdown",
+  pascal: "tree-sitter-delphi",
 };
 
 const GRAMMAR_SUBDIR: Record<string, string> = {
@@ -306,6 +307,17 @@ const QUERIES: Record<string, string> = {
 (create_view (object_reference) @name) @cls
 `,
 
+  pascal: `
+(type_declaration name: (identifier) @name (class_definition)) @cls
+(type_declaration name: (identifier) @name (record_definition)) @struct_def
+(type_declaration name: (identifier) @name (interface_definition)) @iface
+(type_declaration name: (identifier) @name (type_alias_definition (enum_type))) @enm
+(function_definition header: (function_declaration name: (function_name) @name)) @func
+(function_declaration name: (function_name) @name) @method
+(class_property name: (identifier) @name) @property
+(unit_reference name: (identifier) @imp)
+`,
+
   markdown: `
 (atx_heading heading_content: (inline) @name) @heading
 (setext_heading heading_content: (paragraph) @name) @heading
@@ -353,6 +365,7 @@ function getQueryKey(language: string): string {
     case "yaml": return "yaml";
     case "sql": return "sql";
     case "markdown": return "markdown";
+    case "pascal": return "pascal";
     default: return "generic";
   }
 }
@@ -571,6 +584,7 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
   impl_def: "impl",
   namespace_def: "namespace",
   mixin_def: "mixin",
+  property: "property",
   heading: "section",
   code_block: "code",
   frontmatter: "metadata",
@@ -1020,6 +1034,67 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (sym.kind === "function" && owner.sym.kind !== "namespace" && (language !== "haskell" || owner.sym.kind === "class")) sym.kind = "method";
       owner.sym.children!.push(sym);
       nested.add(sym);
+    }
+  }
+
+  // Pascal declares a class method inside the class and implements it later as
+  // `procedure TClass.Method`, outside the class range. Move the body range
+  // onto the declared member so the method unfolds once, then merge interface
+  // declarations with their implementations. Signatures are compared up to
+  // the first semicolon so `overload`/`virtual` directives on either side do
+  // not split a declaration from its body.
+  if (language === "pascal") {
+    const signatureKey = (signature: string): string => {
+      const end = signature.indexOf(";");
+      return end >= 0 ? signature.slice(0, end + 1) : signature;
+    };
+    for (const sym of symbols) {
+      if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
+      const dot = sym.name.lastIndexOf(".");
+      if (dot <= 0) continue;
+      const ownerName = sym.name.slice(0, dot);
+      const leafName = sym.name.slice(dot + 1);
+      const owner = containers.find(container => container.sym.kind === "class" && container.sym.name === ownerName);
+      if (!owner?.sym.children) continue;
+      const signature = sym.signature.replace(
+        new RegExp(`^((?:class\\s+)?(?:procedure|function|constructor|destructor|operator)\\s+)${ownerName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.`),
+        "$1",
+      );
+      const member = owner.sym.children.find(child => child.name === leafName
+        && signatureKey(child.signature) === signatureKey(signature));
+      if (!member) continue;
+      // A definition's header matches the same member as the definition body;
+      // it is redundant either way, only its larger range may be applied.
+      nested.add(sym);
+      const candidate = ranges.get(sym)!;
+      const current = ranges.get(member)!;
+      if (candidate.endRow - candidate.startRow < current.endRow - current.startRow) continue;
+      member.signature = signature;
+      member.lineStart = sym.lineStart;
+      member.lineEnd = sym.lineEnd;
+      ranges.set(member, candidate);
+    }
+
+    const declarations = new Map<string, CodeSymbol>();
+    for (const sym of symbols) {
+      if (nested.has(sym) || (sym.kind !== "function" && sym.kind !== "method")) continue;
+      if (sym.name.includes(".")) continue;
+      const key = `${sym.name}|${signatureKey(sym.signature)}`;
+      const previous = declarations.get(key);
+      if (!previous) {
+        declarations.set(key, sym);
+        continue;
+      }
+      const keep = sym.lineEnd - sym.lineStart > previous.lineEnd - previous.lineStart ? sym : previous;
+      declarations.set(key, keep);
+      nested.add(keep === sym ? previous : sym);
+    }
+
+    // A standalone routine declared in the interface is a function, not a
+    // method: it only became a method because Pascal declares routines with
+    // the same node type used for class members.
+    for (const sym of symbols) {
+      if (!nested.has(sym) && sym.kind === "method" && !sym.name.includes(".")) sym.kind = "function";
     }
   }
 
