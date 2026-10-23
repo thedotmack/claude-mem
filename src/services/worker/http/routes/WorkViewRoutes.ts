@@ -26,6 +26,7 @@ import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
 import type { SetupScan, SetupScanState } from '../../../prompt-import/setup-scan.js';
+import { readHistoryCounts, type HistoryImport } from '../../../setup/history-import.js';
 import { hasProConfiguration, readSetupState, setupStatePath, writeSetupState, type SetupStateFile, type SetupStateView } from '../../../../shared/setup-state.js';
 
 // A request is ready for a human check once its explicit lifecycle reports it complete, shipped, or waiting for review.
@@ -108,6 +109,8 @@ interface WorkViewOptions {
   setupStatePath?: string;
   /** Read for `alreadyPro`; defaults to ~/.claude-mem/settings.json. */
   settingsPath?: string;
+  /** Finish Setup's history upload to CMEM Pro. Without it POST /api/setup/import answers 503. */
+  historyImport?: HistoryImport | null;
 }
 
 /** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
@@ -129,7 +132,11 @@ const setupInstallerBody = z.object({
   checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
 }).strict();
 const setupCheckoutBody = z.object({}).strict();
-const setupCompleteBody = z.object({}).strict();
+const setupCompleteBody = z.object({
+  /** Finish Setup's picked tools; the installer sets up the local ones it has not installed. */
+  tools: z.array(z.string().min(1).max(40)).max(20).optional(),
+}).strict();
+const setupImportBody = z.object({}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
 
@@ -189,6 +196,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private ledgerDir: string | null;
   private databasePath: string;
   private setupWorkCache: { signature: string; work: SetupWorkItem[] | null } | null = null;
+  private historyImport: HistoryImport | null;
+  private unsubscribeHistoryImport: (() => void) | null = null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -219,6 +228,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.setupScan = options.setupScan ?? null;
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
+    this.historyImport = options.historyImport ?? null;
+    this.unsubscribeHistoryImport = this.historyImport?.subscribe(state => this.broadcast('setup-import', state)) ?? null;
     // Scan progress rides the work view's event stream, as `setup-scan` events. A finished scan starts the
     // extraction right away (funnel Phase 5): goals, then work, then rules land in the snapshot as each is saved.
     this.unsubscribeSetupScan = this.setupScan?.subscribe(state => {
@@ -283,13 +294,36 @@ export class WorkViewRoutes extends BaseRouteHandler {
     app.post('/api/setup/choice', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupChoiceBody), this.wrapHandler(this.saveSetupChoice));
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
     app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
+    app.post('/api/setup/import', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupImportBody), this.wrapHandler(this.startHistoryImport));
     app.post('/api/setup/complete', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCompleteBody), this.wrapHandler(this.completeSetup));
   }
 
   private setupStateView(state: SetupStateFile = readSetupState(this.setupStatePath)): SetupStateView {
     const settings = SettingsDefaultsManager.loadFromFile(this.settingsPath, true, { readOnly: true }) as unknown as Record<string, unknown>;
-    return { ...state, alreadyPro: hasProConfiguration(settings) };
+    return { ...state, alreadyPro: hasProConfiguration(settings), history: this.historyCounts(), historyImport: this.historyImport?.state() ?? null };
   }
+
+  /** This machine's own observations, for the import offer. A missing database is a new install: nothing to import. */
+  private historyCounts(): { projects: number; sessions: number; observations: number } | null {
+    if (!existsSync(this.databasePath)) return { projects: 0, sessions: 0, observations: 0 };
+    const database = new Database(this.databasePath, { readonly: true, create: false });
+    try { return readHistoryCounts(database); }
+    finally { database.close(); }
+  }
+
+  /** Finish Setup's "Import full history" (On The Go only, after checkout). */
+  private startHistoryImport = (_req: Request, res: Response): void => {
+    if (!this.historyImport) { res.status(503).json({ error: 'Bringing your memory is unavailable on this worker.' }); return; }
+    const state = readSetupState(this.setupStatePath);
+    if (state.choice?.branch !== 'go') { res.status(409).json({ error: 'Bringing your memory to CMEM is part of On The Go.' }); return; }
+    try {
+      const started = this.historyImport.start();
+      res.setHeader('Cache-Control', 'no-store');
+      res.status(202).json(started);
+    } catch (error) {
+      res.status(409).json({ error: error instanceof Error ? error.message : String(error) });
+    }
+  };
 
   private saveSetupState(state: SetupStateFile, res: Response): void {
     writeSetupState(state, this.setupStatePath);
@@ -338,7 +372,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.saveSetupState({ ...state, checkout: { state: 'requested', requests, error: null, updatedAt: new Date().toISOString() } }, res);
   };
 
-  private completeSetup = (_req: Request, res: Response): void => {
+  private completeSetup = (req: Request, res: Response): void => {
+    const { tools } = req.body as z.infer<typeof setupCompleteBody>;
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
     if (!state.choice) { res.status(409).json({ error: 'Choose where to keep your memory before finishing setup.', state: this.setupStateView(state) }); return; }
@@ -346,7 +381,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(409).json({ error: 'Finish checkout before finishing setup.', state: this.setupStateView(state) });
       return;
     }
-    this.saveSetupState({ ...state, status: 'complete', completedAt: new Date().toISOString() }, res);
+    this.saveSetupState({ ...state, status: 'complete', tools: tools ?? state.tools, completedAt: new Date().toISOString() }, res);
   };
 
   private broadcast(event: string, value: unknown): void {
@@ -585,6 +620,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   close(): void {
     this.closed = true;
     this.unsubscribeSetupScan?.();
+    this.unsubscribeHistoryImport?.();
     this.stopTimers();
     for (const client of this.clients) client.end();
     this.clients.clear();

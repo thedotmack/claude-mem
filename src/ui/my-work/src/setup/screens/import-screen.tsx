@@ -1,8 +1,8 @@
 import type { HistoryImportProgress } from '../setup-data'
 import { PageHeading } from './shared'
 
-/** PROTO workspace-data.js history phases, one per quarter of the upload. */
-const PHASES = ['Reading your projects.', 'Bringing over your sessions.', 'Importing your memories.', 'Building your cross-project search.']
+/** PROTO workspace-data.js history phases, minus "Bringing over your sessions.": the import carries observations only (gap G2). */
+const PHASES = ['Reading your projects.', 'Importing your memories.', 'Building your cross-project search.']
 
 /** Step 6b, On The Go with history only (PROTO #route-import). */
 export function ImportScreen({ progress }: { progress: HistoryImportProgress | null }) {
@@ -15,7 +15,7 @@ export function ImportScreen({ progress }: { progress: HistoryImportProgress | n
           <progress max={100} value={percent} aria-label="Full history import progress">{percent}%</progress>
           <span className="scan-percent" aria-hidden="true">{percent}%</span>
         </div>
-        <p className="scan-status" role="status" aria-live="polite">{PHASES[Math.min(3, Math.floor(percent / 26))]}</p>
+        <p className="scan-status" role="status" aria-live="polite">{PHASES[Math.min(PHASES.length - 1, Math.floor(percent / 34))]}</p>
       </div>
     </section>
   )

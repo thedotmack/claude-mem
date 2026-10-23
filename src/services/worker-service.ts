@@ -144,6 +144,9 @@ import { SyncClient } from './sync/SyncClient.js';
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SetupScan } from './prompt-import/setup-scan.js';
 import { AGENT_WRITTEN_PROMPTS_FILE, writeJsonAtomic } from './work-view/request-groups.mjs';
+import { HistoryImport } from './setup/history-import.js';
+import { cmemProOrigin } from '../shared/cmem-gateway.js';
+import { Database as BunDatabase } from 'bun:sqlite';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -575,6 +578,12 @@ export class WorkerService implements WorkerRef {
       setupScan: new SetupScan({
         getStore: () => this.dbManager.getSessionStore(),
         saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
+      }),
+      // Finish Setup's history upload to CMEM Pro, with the setup token checkout saved.
+      historyImport: new HistoryImport({
+        openDatabase: () => new BunDatabase(DB_PATH, { readonly: true, create: false }),
+        origin: () => cmemProOrigin(),
+        token: () => SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_CLOUD_SYNC_TOKEN?.trim() || null,
       }),
     });
     this.server.registerRoutes(this.workViewRoutes);

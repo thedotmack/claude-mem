@@ -1,6 +1,6 @@
 import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ChevronDownIcon, CopyIcon } from 'lucide-react'
 import { useState, type FormEvent } from 'react'
-import { CMEM_MCP_URL, type SetupHistory, type SetupTool } from '../setup-data'
+import { CMEM_MCP_URL, type HistoryImportProgress, type SetupHistory, type SetupTool } from '../setup-data'
 import type { HistoryImportStatus, MemoryBranch } from '../setup-flow'
 import { PageHeading, ToolMark } from './shared'
 
@@ -40,7 +40,7 @@ function Connection({ tool, open }: { tool: SetupTool; open: boolean }) {
   )
 }
 
-function HistoryPanel({ history, status, onImport, onSkip }: { history: SetupHistory; status: HistoryImportStatus; onImport: () => void; onSkip: () => void }) {
+function HistoryPanel({ history, status, result, onImport, onSkip }: { history: SetupHistory; status: HistoryImportStatus; result: HistoryImportProgress | null; onImport: () => void; onSkip: () => void }) {
   const [permission, setPermission] = useState(false)
   return (
     <section className="panel is-memory history-panel" aria-labelledby="history-title">
@@ -48,11 +48,12 @@ function HistoryPanel({ history, status, onImport, onSkip }: { history: SetupHis
       <p>Upload your existing claude-mem history from all projects to your CMEM account.</p>
       {status === 'complete' ? (
         // The import persists observations only (gap G2), so the receipt counts those and nothing else.
-        <p className="history-done" role="status">{history.observations.toLocaleString('en-US')} memories · Your project history is ready to search.</p>
+        <p className="history-done" role="status">{(result?.imported ?? 0).toLocaleString('en-US')} memories imported to your CMEM account · Ready to search.</p>
       ) : (
         <>
           <p className="history-count">{history.projects} projects · {history.sessions} sessions · {history.observations.toLocaleString('en-US')} memories</p>
           {status === 'skipped' && <p className="history-done">History import skipped. You can bring it over later.</p>}
+          {result?.error && <p className="scan-error" role="alert">{result.error}</p>}
           <label className="history-permission">
             <input type="checkbox" checked={permission} onChange={(event) => setPermission(event.target.checked)} />
             <span>Import my full history from all projects to my CMEM account.</span>
@@ -68,13 +69,14 @@ function HistoryPanel({ history, status, onImport, onSkip }: { history: SetupHis
 }
 
 /** Step 6 (PROTO #route-finish-setup). Detected tools come pre-ticked; the import panel shows only when there is history to import. */
-export function FinishSetupScreen({ branch, tools, selected, onSelect, history, importStatus, onImport, onSkipImport, onBack, onContinue }: {
+export function FinishSetupScreen({ branch, tools, selected, onSelect, history, importStatus, importResult, onImport, onSkipImport, onBack, onContinue }: {
   branch: MemoryBranch
   tools: SetupTool[]
   selected: string[]
   onSelect: (selected: string[]) => void
   history: SetupHistory | null
   importStatus: HistoryImportStatus
+  importResult: HistoryImportProgress | null
   onImport: () => void
   onSkipImport: () => void
   onBack: () => void
@@ -122,7 +124,7 @@ export function FinishSetupScreen({ branch, tools, selected, onSelect, history, 
               </div>
             )}
           </div>
-          {history && <HistoryPanel history={history} status={importStatus} onImport={onImport} onSkip={onSkipImport} />}
+          {history && <HistoryPanel history={history} status={importStatus} result={importResult} onImport={onImport} onSkip={onSkipImport} />}
         </div>
         <div className="actions">
           <button type="button" className="text-action" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />Back</button>

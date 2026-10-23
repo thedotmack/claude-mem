@@ -35,6 +35,8 @@ export interface SetupStateFile {
   choice: SetupChoice | null;
   installer: SetupInstallerReport | null;
   checkout: SetupCheckout | null;
+  /** Finish Setup's picked tools (SETUP_TOOLS ids); the installer sets up local ones it did not install yet. */
+  tools: string[] | null;
   completedAt: string | null;
 }
 
@@ -42,9 +44,13 @@ export interface SetupStateFile {
 export interface SetupStateView extends SetupStateFile {
   /** This machine already has a CMEM Pro configuration: On The Go is pre-selected and checkout is skipped. */
   alreadyPro: boolean;
+  /** This machine's own observation history (Finish Setup's import offer); null when the worker cannot read it. */
+  history?: { projects: number; sessions: number; observations: number } | null;
+  /** The running or last history import (worker memory only). */
+  historyImport?: unknown;
 }
 
-export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, checkout: null, completedAt: null };
+export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null };
 
 /** Resolved at call time so a CLAUDE_MEM_DATA_DIR set after import is honored (installer tests, clean-HOME runs). */
 export function setupStatePath(): string {
@@ -63,6 +69,7 @@ export function readSetupState(path: string = setupStatePath()): SetupStateFile 
     choice: parsed.choice ?? null,
     installer: parsed.installer ?? null,
     checkout: parsed.checkout ?? null,
+    tools: Array.isArray(parsed.tools) ? parsed.tools.filter((tool): tool is string => typeof tool === 'string') : null,
     completedAt: parsed.completedAt ?? null,
   };
 }

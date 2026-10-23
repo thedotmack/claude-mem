@@ -73,6 +73,11 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     setFlow((current) => ({ ...current, checkoutReviewed: true }))
     if (requested === 'checkout') setRequested('finish-setup')
   }
+  // A stopped import goes back to Finish Setup with the reason; Import starts it again (re-sending is safe).
+  if (requested === 'import' && data.historyImport?.error) {
+    setFlow((current) => ({ ...current, importStatus: 'available' }))
+    setRequested('finish-setup')
+  }
   if (requested === 'import' && data.historyImport?.done) {
     setFlow((current) => ({ ...current, importStatus: 'complete' }))
     setRequested('finish-setup')
@@ -132,14 +137,15 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     'finish-setup': () => (
       <FinishSetupScreen branch={flow.branch} tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
         history={flow.branch === 'go' && historyAvailable ? data.history : null} importStatus={flow.importStatus}
-        onImport={() => { source!.startHistoryImport(); update({ importStatus: 'running' }, 'import') }}
+        importResult={data.historyImport}
+        onImport={() => void handOff(() => source!.startHistoryImport()).then((started) => { if (started) update({ importStatus: 'running' }, 'import') })}
         onSkipImport={() => update({ importStatus: 'skipped' })}
         onBack={() => setRequested(nextAfterSavings(flow) === 'checkout' ? 'checkout' : 'savings')}
         onContinue={() => void finishSetup()} />
     ),
     import: () => <ImportScreen progress={data.historyImport} />,
     launch: () => <LaunchScreen tools={pickedTools} onDone={() => setRequested('workspace')} />,
-    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} onContinue={() => void handOff(() => source!.complete()).then((done) => { if (done) onComplete() })} />,
+    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} onContinue={() => void handOff(() => source!.complete(flow.finishTools)).then((done) => { if (done) onComplete() })} />,
   }
 
   return (

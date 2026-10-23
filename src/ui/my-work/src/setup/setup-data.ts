@@ -22,7 +22,8 @@ import type { RevealSets } from './setup-reveal'
 export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
 export interface SetupHistory { projects: number; sessions: number; observations: number }
-export interface HistoryImportProgress { percent: number; done: boolean }
+/** The worker's history upload. `imported` counts observations cmem.ai wrote; `error` is why a run stopped. */
+export interface HistoryImportProgress { percent: number; done: boolean; imported: number; error: string | null }
 
 export interface MemoryResult { id: string; title: string; body: string; project: string; agent: string; session: string; date: string }
 
@@ -54,9 +55,10 @@ export interface SetupSource {
   choose(choice: SetupChoice): Promise<void>
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
   checkout(): Promise<void>
-  /** Finishes setup for this machine; the terminal exits and the funnel does not show again (POST /api/setup/complete). */
-  complete(): Promise<void>
-  startHistoryImport(): void
+  /** Finishes setup for this machine with the tools picked on Finish Setup; the terminal exits (POST /api/setup/complete). */
+  complete(tools: string[]): Promise<void>
+  /** Uploads this machine's observations to the CMEM account (POST /api/setup/import). */
+  startHistoryImport(): Promise<void>
   search(query: string): Promise<MemoryResult[]>
 }
 
@@ -81,7 +83,13 @@ interface WorkerScanState extends SetupScanView {
   usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
 }
-interface WorkerSetupState { status: 'pending' | 'complete'; alreadyPro: boolean; checkout?: SetupCheckoutView | null }
+interface WorkerHistoryImport { state: 'idle' | 'running' | 'done' | 'failed'; percent: number; imported: number; error: string | null }
+interface WorkerSetupState {
+  status: 'pending' | 'complete'; alreadyPro: boolean; checkout?: SetupCheckoutView | null
+  history?: SetupHistory | null; historyImport?: WorkerHistoryImport | null
+}
+const toHistoryImport = (run: WorkerHistoryImport | null | undefined): HistoryImportProgress | null =>
+  !run || run.state === 'idle' ? null : { percent: run.percent, done: run.state === 'done', imported: run.imported, error: run.state === 'failed' ? run.error : null }
 
 async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...init })
@@ -128,6 +136,9 @@ export const localSetupSource: SetupSource = {
     const applyState = (state: WorkerSetupState) => publish({
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
+      // Nothing to bring along on a new install: the import offer stays hidden.
+      history: state.history && state.history.observations > 0 ? state.history : null,
+      historyImport: toHistoryImport(state.historyImport),
     })
     // Goals, work and rules land in the work view snapshot as the extraction saves each one.
     const applySnapshot = (snapshot: SnapshotWithSetup) => {
@@ -138,6 +149,7 @@ export const localSetupSource: SetupSource = {
     const stream = new EventSource('/api/work-view/events')
     stream.addEventListener('setup-scan', (event) => applyScan(JSON.parse((event as MessageEvent<string>).data) as WorkerScanState))
     stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
+    stream.addEventListener('setup-import', (event) => publish({ historyImport: toHistoryImport(JSON.parse((event as MessageEvent<string>).data) as WorkerHistoryImport) }))
     stream.addEventListener('work-view', (event) => applySnapshot(JSON.parse((event as MessageEvent<string>).data) as SnapshotWithSetup))
     void (async () => {
       const [scan, state] = await Promise.all([workerJson<WorkerScanState>('/api/setup/scan'), workerJson<WorkerSetupState>('/api/setup/state')])
@@ -149,8 +161,8 @@ export const localSetupSource: SetupSource = {
   },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
-  async complete() { await postJson('/api/setup/complete', {}) },
-  startHistoryImport() { throw new Error('History import is not connected to the worker yet.') },
+  async complete(tools) { await postJson('/api/setup/complete', { tools }) },
+  async startHistoryImport() { await postJson('/api/setup/import', {}) },
   search: async () => [],
 }
 

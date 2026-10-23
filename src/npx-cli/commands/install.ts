@@ -2630,6 +2630,9 @@ function describeWorkerStart(result: WorkerStartResult): string {
   }
 }
 
+/** Finish Setup's local tool ids (setup-data.ts SETUP_TOOLS) and the installer IDE each one is. */
+const FINISH_SETUP_LOCAL_TOOL_IDES: Record<string, string> = { 'claude-code': 'claude-code', codex: 'codex-cli' };
+
 function readSettingsSnapshot(): string {
   return existsSync(USER_SETTINGS_PATH) ? readFileSync(USER_SETTINGS_PATH, 'utf8') : '';
 }
@@ -3038,6 +3041,15 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
         process.exit(1);
       }
     }
+  }
+
+  // Finish Setup's picked local tools that this run did not install yet are set up now, the same way.
+  const pickedTools = (browserOutcome as BrowserSetupOutcome | null)?.state.tools ?? [];
+  const newlyPickedIDEs = pickedTools.map((tool) => FINISH_SETUP_LOCAL_TOOL_IDES[tool]).filter((ide): ide is string => Boolean(ide) && !selectedIDEs.includes(ide!));
+  if (newlyPickedIDEs.length) {
+    // Failures land on summary.failedIDEs, the same list the summary reads.
+    await setupIDEs(newlyPickedIDEs, summary, options.dshProfile);
+    selectedIDEs = [...selectedIDEs, ...newlyPickedIDEs];
   }
 
   // The terminal flow: non-TTY (agent-run) installs, --provider, --no-auto-start,

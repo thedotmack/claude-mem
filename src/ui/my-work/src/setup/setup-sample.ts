@@ -115,11 +115,11 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       setTimeout(() => publish({ checkout: { state: 'paid', error: null } }), 1500)
     },
     async complete() {},
-    startHistoryImport() {
+    async startHistoryImport() {
       const started = Date.now()
       const timer = setInterval(() => {
         const percent = Math.min(100, Math.floor(((Date.now() - started) / IMPORT_MS) * 100))
-        publish({ historyImport: { percent, done: percent === 100 } })
+        publish({ historyImport: { percent, done: percent === 100, imported: Math.round((data.history?.observations ?? 0) * percent / 100), error: null } })
         if (percent === 100) clearInterval(timer)
       }, TICK_MS)
     },

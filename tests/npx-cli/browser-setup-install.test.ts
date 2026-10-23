@@ -72,6 +72,7 @@ mock.module('../../src/npx-cli/utils/paths.js', () => ({ ...cliPaths, readPlugin
 const lines: string[] = [];
 const questions: string[] = [];
 const ranTasks: string[] = [];
+const offeredTasks: string[] = [];
 let workerStarts = 0;
 mock.module('@clack/prompts', () => ({
   ...prompts,
@@ -89,6 +90,7 @@ mock.module('@clack/prompts', () => ({
   // Plugin copy and dependency installs are other suites' business; IDE hooks and the worker start run for real.
   tasks: async (tasks: Array<{ title: string; task: (message: (value: string) => void) => Promise<string> }>) => {
     for (const task of tasks) {
+      offeredTasks.push(task.title);
       if (!/^(Starting worker daemon|Claude Code)/.test(task.title)) continue;
       ranTasks.push(task.title);
       lines.push(await task.task(() => {}));
@@ -181,7 +183,7 @@ beforeEach(async () => {
   await stopFixtureWorker();
   rmSync(statePath, { force: true });
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
-  lines.length = 0; questions.length = 0; ranTasks.length = 0; opened.length = 0;
+  lines.length = 0; questions.length = 0; ranTasks.length = 0; offeredTasks.length = 0; opened.length = 0;
   pairingStarts.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
 });
 afterAll(async () => {
@@ -235,6 +237,21 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
     expect(ranTasks).toContain('Claude Code: registering plugin');
     expect(unexpected).toEqual([]);
+  });
+
+  it('Finish Setup: local tools picked in the browser that this run did not install are set up after the page finishes', async () => {
+    const install = runInstallCommand({});
+    await waitForStage('waiting-for-choice');
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    expect(offeredTasks.filter(title => title.startsWith('Codex CLI'))).toEqual([]);
+    expect((await browserPost('/api/setup/complete', { tools: ['claude-code', 'codex', 'chatgpt'] })).status).toBe(200);
+    await install;
+    // Claude Code was already installed by this run; Codex is new; ChatGPT is a cloud reader with nothing to install.
+    expect(offeredTasks.filter(title => title.startsWith('Codex CLI'))).toHaveLength(1);
+    expect(offeredTasks.filter(title => title === 'Claude Code: registering plugin')).toHaveLength(1);
+    expect(JSON.parse(readFileSync(statePath, 'utf8')).tools).toEqual(['claude-code', 'codex', 'chatgpt']);
+    expect(lines.join('\n')).toMatch(/IDEs: .*claude-code, codex-cli/);
   });
 
   it('On The Go: the pairing starts only after the choice, checkout runs when the page asks, and setup finishes once paid', async () => {

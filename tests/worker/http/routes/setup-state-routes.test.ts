@@ -47,7 +47,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = { '
 describe('setup state endpoints', () => {
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, completedAt: null, alreadyPro: false });
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null });
     expect(existsSync(statePath)).toBe(false);
   });
 
@@ -112,5 +112,10 @@ describe('setup state endpoints', () => {
     controller.abort();
     const block = buffer.slice(buffer.indexOf('event: setup-state\n')).split('\n\n')[0];
     expect(JSON.parse(block.split('\ndata: ')[1]).installer.stage).toBe('waiting-for-choice');
+  });
+
+  it('import history only on On The Go, and only with a history import on the worker', async () => {
+    await start();
+    expect((await post('/api/setup/import', {})).status).toBe(503);
   });
 });
