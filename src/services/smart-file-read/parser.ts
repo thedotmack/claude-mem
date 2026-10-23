@@ -607,7 +607,17 @@ function extractSignatureFromLines(lines: string[], startRow: number, endRow: nu
   return sig;
 }
 
-function findCommentAbove(lines: string[], startRow: number): string | undefined {
+// `#` opens a line comment only in these languages. Elsewhere a `#` line is
+// code: a C or C++ preprocessor directive, a Rust attribute, a JavaScript
+// private field or a shebang.
+const HASH_COMMENT_LANGUAGES = new Set(["python", "ruby", "bash", "php", "toml", "yaml"]);
+
+// Languages whose decorators sit above the captured declaration. Java, Kotlin,
+// Swift and Scala annotations belong to the declaration itself; a Ruby `@` line
+// assigns an instance or class variable and a CSS one is an at-rule.
+const DECORATOR_LANGUAGES = new Set(["python", "javascript", "typescript", "tsx"]);
+
+function findCommentAbove(lines: string[], startRow: number, language: string): string | undefined {
   const commentLines: string[] = [];
   let foundComment = false;
 
@@ -617,9 +627,15 @@ function findCommentAbove(lines: string[], startRow: number): string | undefined
       if (foundComment) break;
       continue;
     }
+    // A Rust outer attribute is not documentation; a doc comment, if there is
+    // one, is above it.
+    if (language === "rust" && trimmed.startsWith("#[")) {
+      continue;
+    }
     if (trimmed.startsWith("/**") || trimmed.startsWith("*") || trimmed.startsWith("*/") ||
         trimmed.startsWith("//") || trimmed.startsWith("///") || trimmed.startsWith("//!") ||
-        trimmed.startsWith("#") || trimmed.startsWith("@")) {
+        (HASH_COMMENT_LANGUAGES.has(language) && trimmed.startsWith("#") && !(i === 0 && trimmed.startsWith("#!"))) ||
+        (DECORATOR_LANGUAGES.has(language) && trimmed.startsWith("@"))) {
       commentLines.unshift(lines[i]);
       foundComment = true;
     } else {
@@ -864,7 +880,7 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
         200 - exportPrefix.length, kindCapture.startCol);
     }
 
-    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow);
+    const comment = language === "markdown" ? undefined : findCommentAbove(lines, startRow, language);
     const body = match.captures.find(c => c.tag === "body");
     const docstring = language === "python" && body
       ? findPythonDocstringFromLines(lines, body.startRow, endRow)
