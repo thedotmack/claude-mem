@@ -120,3 +120,23 @@ test("the parent's requests stay with the main agent; the subagent holds only it
   const request = view.humanRequests.find((item) => item.conversationKey === JSON.stringify(['conversation', 'claude', session.content_session_id]));
   assert.equal(request.agentIds[0], main.id);
 });
+
+test("a parent prompt whose only observations came from a subagent still shows as the main agent's row", () => {
+  // Prompt 6: the owner asked something, and only the subagent recorded anything during it.
+  const ownerAsk = { id: 906, session_db_id: session.id, prompt_number: 6, prompt_text: 'Please publish the install page as an artifact', created_at_epoch: NOW - 150 * MIN };
+  const subagentOnly = observation(SUB, 6, NOW - 140 * MIN, 'Published the install page');
+  const view = buildAgentView(
+    reduceWorkState([], { currentProject: 'repo', currentProjectScope: ['repo'] }),
+    { sessions: [session], prompts: [...prompts, ownerAsk], observations: [...baseObservations(), subagentOnly], agentLaunches: [asyncLaunch], agentToolActivity: [] },
+    { now: NOW },
+  );
+  const main = mainOf(view), sub = subagentOf(view);
+  const row = main.work.find((item) => item.request.text === 'Please publish the install page as an artifact');
+  assert.ok(row, 'the owner ask is a row under the main agent');
+  assert.equal(row.request.key, JSON.stringify(['request', 'claude', String(session.id), 6]));
+  assert.equal(row.attribution.meaning, 'recorded-session');
+  assert.ok(row.sourceRefs.some((ref) => ref.kind === 'observation' && ref.id === subagentOnly.id), "the subagent's observation is the row's evidence");
+  // The subagent still holds only its launched task.
+  assert.equal(sub.work.length, 1);
+  assert.ok(sub.activity.some((entry) => entry.id === `observation:${subagentOnly.id}`));
+});

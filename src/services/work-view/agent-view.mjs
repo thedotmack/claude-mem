@@ -339,35 +339,54 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   }
 
   const observationBuckets = new Map();
+  function observationBucket(group, observation, session, request, requestKey, key, { withSummary }) {
+    if (observationBuckets.has(key)) return observationBuckets.get(key);
+    const summary = withSummary ? summaryByKey.get(JSON.stringify([observation.memory_session_id, observation.prompt_number])) : null;
+    const row = {
+      id: `session-request:${key}`, kind: 'session-request', recordKind: 'session',
+      title: request?.text ?? compactText(observation.title, 160) ?? 'Recorded observation',
+      project: observation.project, listId: null, taskId: null,
+      status: 'unknown', statusExplicit: false, isOpen: true,
+      request: { ...(request ?? { text: compactText(observation.title, 500) ?? 'Recorded observation', source: 'observation-title', sourceId: observation.id, url: `/api/work-view/evidence/observation/${observation.id}` }), key: requestKey },
+      nextStep: summary?.next_steps ? { text: compactText(summary.next_steps), source: 'session-summary', sourceId: summary.id } : null,
+      outcome: summary?.completed ? { text: compactText(summary.completed), source: 'session-summary', sourceId: summary.id } : null,
+      progress: { text: compactText(observation.title), source: 'observation', sourceId: observation.id }, owner: null,
+      lastUpdateAt: stamp(observation.created_at_epoch), lastUpdateEpoch: observation.created_at_epoch,
+      attribution: { source: session ? 'observation-session-link' : 'unavailable', meaning: group.isSubagent ? 'recorded-subagent' : 'recorded-session', agentId: group.agentId ?? null },
+      sourceRefs: [{ kind: 'observation', id: observation.id }], url: `/api/work-view/evidence/observation/${observation.id}`,
+    };
+    observationBuckets.set(key, row);
+    group.work.push(row);
+    return row;
+  }
+  const mainKey = (group, observation) => JSON.stringify([group.id, observation.memory_session_id ?? null, observation.content_session_id ?? null, observation.prompt_number ?? null]);
   for (const observation of observations) {
     const session = sessionsByMemory.get(observation.memory_session_id);
     const group = getGroup({ session, agentId: observation.agent_id, agentType: observation.agent_type, project: observation.project });
+    const observationActivity = { id: `observation:${observation.id}`, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}` };
+    if (!group.isSubagent) {
+      const requestKey = confirmedRequestKey(session, observation.prompt_number);
+      observationBucket(group, observation, session, requestFor(session, observation.prompt_number), requestKey, mainKey(group, observation), { withSummary: true });
+      addActivity(group, { ...observationActivity, requestKey });
+      continue;
+    }
     // A subagent's observation carries the parent's current prompt number, so
     // it says nothing about which parent request the subagent was doing. Its
-    // one request is the task it was launched with, under the launching prompt.
-    const subagentLaunch = group.isSubagent ? group.launch : null;
-    const request = group.isSubagent ? launchRequest(subagentLaunch) : requestFor(session, observation.prompt_number);
-    const requestKey = group.isSubagent ? (subagentLaunch ? confirmedRequestKey(session, subagentLaunch.promptNumber) : null) : confirmedRequestKey(session, observation.prompt_number);
-    const key = group.isSubagent ? JSON.stringify([group.id]) : JSON.stringify([group.id, observation.memory_session_id ?? null, observation.content_session_id ?? null, observation.prompt_number ?? null]);
-    if (!observationBuckets.has(key)) {
-      const summary = group.isSubagent ? null : summaryByKey.get(JSON.stringify([observation.memory_session_id, observation.prompt_number]));
-      const row = {
-        id: `session-request:${key}`, kind: 'session-request', recordKind: 'session',
-        title: request?.text ?? compactText(observation.title, 160) ?? 'Recorded observation',
-        project: observation.project, listId: null, taskId: null,
-        status: 'unknown', statusExplicit: false, isOpen: true,
-        request: { ...(request ?? { text: compactText(observation.title, 500) ?? 'Recorded observation', source: 'observation-title', sourceId: observation.id, url: `/api/work-view/evidence/observation/${observation.id}` }), key: requestKey },
-        nextStep: summary?.next_steps ? { text: compactText(summary.next_steps), source: 'session-summary', sourceId: summary.id } : null,
-        outcome: summary?.completed ? { text: compactText(summary.completed), source: 'session-summary', sourceId: summary.id } : null,
-        progress: { text: compactText(observation.title), source: 'observation', sourceId: observation.id }, owner: null,
-        lastUpdateAt: stamp(observation.created_at_epoch), lastUpdateEpoch: observation.created_at_epoch,
-        attribution: { source: session ? 'observation-session-link' : 'unavailable', meaning: group.isSubagent ? 'recorded-subagent' : 'recorded-session', agentId: observation.agent_id ?? null },
-        sourceRefs: [{ kind: 'observation', id: observation.id }], url: `/api/work-view/evidence/observation/${observation.id}`,
-      };
-      observationBuckets.set(key, row);
-      group.work.push(row);
+    // one row is the task it was launched with, under the launching prompt.
+    const launch = group.launch;
+    const launchKey = launch ? confirmedRequestKey(session, launch.promptNumber) : null;
+    observationBucket(group, observation, session, launchRequest(launch), launchKey, JSON.stringify([group.id]), { withSummary: false });
+    addActivity(group, { ...observationActivity, requestKey: launchKey });
+    // The parent's ask at that prompt still belongs to the main agent: it keeps
+    // its row even when only the subagent recorded anything during it. The
+    // subagent's observation is that row's evidence, never its author.
+    const parentRequest = requestFor(session, observation.prompt_number);
+    if (session && parentRequest) {
+      const main = getGroup({ session, agentId: null, agentType: null, project: observation.project });
+      const parentKey = confirmedRequestKey(session, observation.prompt_number);
+      const row = observationBucket(main, observation, session, parentRequest, parentKey, mainKey(main, observation), { withSummary: true });
+      if (!row.sourceRefs.some((ref) => ref.kind === 'observation' && ref.id === observation.id)) row.sourceRefs.push({ kind: 'observation', id: observation.id });
     }
-    addActivity(group, { id: `observation:${observation.id}`, requestKey, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}` });
   }
 
   // Finished only on recorded evidence that came after the agent's latest
