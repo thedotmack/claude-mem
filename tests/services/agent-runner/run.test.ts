@@ -175,6 +175,23 @@ describe('agent runner', () => {
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('each step gets a freshly built environment, so a long run never reuses an old OAuth token', async () => {
+    let built = 0;
+    const query = ((input: any) => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: input.options.env.TOKEN }; })()) as never;
+    const twoSteps: AgentTask = { ...task('/data'), run: async ask => `${await ask('one', {})} ${await ask('two', {})}` };
+    const result = await runTask(twoSteps, { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: async () => ({ TOKEN: `t${++built}` }) });
+    expect(result.result).toBe('t1 t2');
+  });
+
+  it('an auth failure ends the run as failed with the clear error, after one try', async () => {
+    let queries = 0;
+    const query = (() => { queries++; return (async function* () { yield { type: 'result', subtype: 'success', is_error: true, result: 'Failed to authenticate: OAuth token revoked. Please log in again.' }; })(); }) as never;
+    const result = await runTask(task('/data'), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result.state).toBe('failed');
+    expect(result.error).toMatch(/OAuth token revoked/);
+    expect(queries).toBe(1);
+  });
+
   it('no logged-in agent: waiting-for-agent, and nothing runs', async () => {
     const calls: SpawnCall[] = [];
     const result = await runTask(task('/data'), { detect: async () => agents(), query: neverQuery, spawn: fakeSpawn(calls, () => {}), buildEnv: env });

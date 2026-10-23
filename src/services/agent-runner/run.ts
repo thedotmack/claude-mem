@@ -72,7 +72,9 @@ export interface AgentRunResult {
 export interface AgentRunnerDependencies {
   detect: () => Promise<UsableAgent[]>;
   query: typeof query;
-  /** Environment for the agent process: the worker's isolated credentials, never tracked by claude-mem's own hooks. */
+  /** Environment for the agent process: the worker's isolated credentials, never tracked by claude-mem's own hooks.
+   * Built fresh for every step: a run can outlive the OAuth access token it started with (Oct 22: the Mac slept
+   * 11 hours mid-run, and the token injected at the start was revoked by the time the next step asked). */
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
 }
 
@@ -91,13 +93,14 @@ const defaultDependencies: AgentRunnerDependencies = {
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
 
 /** One Agent SDK query per step, with read-only tools only. */
-function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
+function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   const { claudeCode } = task;
   const canUseTool: CanUseTool = async toolName => {
     logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`);
     return { behavior: 'deny', message: `${toolName} is not available to this read-only step.` };
   };
   return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
     let stderr = '';
     const options: Options = {
       pathToClaudeCodeExecutable: agent.path!,
@@ -161,8 +164,9 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffo
 export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
-function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
+function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
     const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
@@ -176,8 +180,9 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
   };
 }
 
-function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
+function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): AskAgent {
   return async (prompt, models) => {
+    const env = await dependencies.buildEnv();
     const model = models.gemini?.model;
     const result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
@@ -205,8 +210,7 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      const env = await dependencies.buildEnv();
-      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies, env);
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies);
       const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };
