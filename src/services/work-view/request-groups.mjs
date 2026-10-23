@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
 import { OWNER_GOALS_LIST } from './owner-goals.mjs';
-import { projectRoot, withDerivedProjects } from './session-project.mjs';
+import { NO_PROJECT, projectRoot, withDerivedProjects } from './session-project.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -221,13 +221,17 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     const id = groupIdFor(decision.conversations[0]);
     // A request stays in one project root, members it already has included.
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
+    const storedRoot = next.groups[id]?.projectRoot;
+    // A group decided before its project was known (the "no project" root) takes the root its members show now:
+    // its earlier members may still show none, and that does not split it.
+    const rootWasUnknown = storedRoot === NO_PROJECT;
     const roots = new Map();
     for (const key of allMembers) {
       const root = projectRoot(projectOf.get(key));
-      if (root != null) roots.set(root, [...(roots.get(root) ?? []), key]);
+      if (root == null || (rootWasUnknown && root === NO_PROJECT && !decision.conversations.includes(key))) continue;
+      roots.set(root, [...(roots.get(root) ?? []), key]);
     }
-    const storedRoot = next.groups[id]?.projectRoot;
-    if (typeof storedRoot === 'string' && !roots.has(storedRoot)) roots.set(storedRoot, roots.get(storedRoot) ?? []);
+    if (typeof storedRoot === 'string' && !rootWasUnknown && !roots.has(storedRoot)) roots.set(storedRoot, []);
     if (roots.size > 1) throw new TypeError(`${label} joins conversations from different projects (${[...roots.keys()].map((root) => root || 'no project').join(', ')}); a request stays inside one project root.`);
     const projectRootOfGroup = roots.size ? [...roots.keys()][0] : storedRoot ?? null;
     for (const key of decision.conversations) {
@@ -473,7 +477,6 @@ export function readConversationProjects(database, conversationKeys) {
 
 /** New conversations sent to the grouping agent at once. */
 export const GROUPING_BATCH = 20;
-const OPEN_REQUESTS_SHOWN = 15;
 const CLOSED_STATES = new Set(['shipped', 'abandoned']);
 
 /** One grouping question: only conversations the ledger has not decided,
@@ -489,10 +492,14 @@ export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_B
   const batch = fresh.filter((candidate) => projectRoot(candidate.project) === root).slice(0, limit);
   const inRoot = candidates.filter((candidate) => projectRoot(candidate.project) === root);
   const byKey = new Map(inRoot.map((candidate) => [candidate.conversationKey, candidate]));
-  // A group's root is stored at apply time; older groups take it from their anchor.
-  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => typeof group.projectRoot !== 'string').map((group) => group.anchor));
+  // A group's root is stored at apply time; older groups, and groups decided before their project was
+  // known, take it from their anchor.
+  const rootIsStored = (group) => typeof group.projectRoot === 'string' && group.projectRoot !== NO_PROJECT;
+  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => !rootIsStored(group)).map((group) => group.anchor));
+  const groupRoot = (group) => rootIsStored(group) ? group.projectRoot : projectRoot(anchorProjects.get(group.anchor)) ?? group.projectRoot ?? null;
+  // Every open request of the root: a new conversation may continue any of them.
   const openRequests = Object.entries(ledger.groups.groups)
-    .filter(([groupId, group]) => (typeof group.projectRoot === 'string' ? group.projectRoot : projectRoot(anchorProjects.get(group.anchor))) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state))
+    .filter(([groupId, group]) => groupRoot(group) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state))
     .map(([groupId, group]) => {
       const members = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => byKey.get(key)).filter(Boolean);
       const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
@@ -503,7 +510,7 @@ export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_B
         lastActivityEpoch: Math.max(0, ...members.map((member) => member.lastActivityEpoch ?? 0)),
       };
     })
-    .sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch).slice(0, OPEN_REQUESTS_SHOWN)
+    .sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch)
     .map(({ lastActivityEpoch, ...request }) => ({ ...request, lastActivityAt: iso(lastActivityEpoch) }));
   // Code-proven links (a shared work list or request id) between a new conversation and anything in its root.
   const batchKeys = new Set(batch.map((candidate) => candidate.conversationKey));

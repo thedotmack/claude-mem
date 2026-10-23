@@ -1,7 +1,7 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
 import { fileUrl, mergeProducts, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
-import { projectRoot } from './session-project.mjs';
+import { NO_PROJECT, projectRoot } from './session-project.mjs';
 
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
@@ -124,9 +124,11 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
     const key = conversationKey(session);
     if (key && !sessionsByKey.has(key)) sessionsByKey.set(key, session);
   }
-  // A group's root is stored at apply time; older groups take their anchor's.
+  // A group's root is stored at apply time; older groups take their anchor's. A group decided before its
+  // project was known (the "no project" root) has no root to hold its members to.
   const groupRoot = (groupId) => {
     const group = ledger?.groups?.groups?.[groupId];
+    if (group?.projectRoot === NO_PROJECT) return null;
     if (typeof group?.projectRoot === 'string') return group.projectRoot;
     return projectRoot(sessionsByKey.get(group?.anchor)?.project);
   };

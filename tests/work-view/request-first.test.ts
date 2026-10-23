@@ -131,6 +131,62 @@ describe('requests stay inside one project root', () => {
   });
 });
 
+describe('a group decided before its project was known', () => {
+  it('keeps its conversations once tool calls reveal the repository, and re-applies under the known root', () => {
+    const groupId = groupIdFor(key('a'));
+    // Grouped while the scratch-folder session had touched no repository: the "no project" root.
+    const ledger = { groups: { conversations: { [key('a')]: groupId }, groups: { [groupId]: { title: 'Cards', anchor: key('a'), projectRoot: NO_PROJECT } }, ignored: {} }, progress: {} };
+    // Its tool calls have since worked inside "repo".
+    const sessions = [session(1, 'a', 'repo', 'Build the release cards')];
+    const prompts = [prompt(11, 1, 'Build the release cards', 10)];
+    expect(buildHumanRequests({ agents: [] }, { sessions, prompts }, { ledger }).humanRequests.map((request: any) => request.id)).toEqual([overall('a')]);
+    const reapplied = applyGroupDecisions(ledger.groups, { groups: [{ title: 'Cards', conversations: [key('a'), key('b')], links: link([key('a'), key('b')]) }] }, NOW, { projectOf: new Map([[key('a'), 'repo'], [key('b'), 'repo/tree']]) });
+    expect(reapplied.groups[groupId].projectRoot).toBe('repo');
+    // A known root is still never mixed with another one.
+    const known = { ...ledger.groups, groups: { [groupId]: { ...ledger.groups.groups[groupId], projectRoot: 'repo' } } };
+    expect(() => applyGroupDecisions(known, { groups: [{ title: 'Cards', conversations: [key('a')] }] }, NOW, { projectOf: new Map([[key('a'), 'other']]) })).toThrow(/different projects/);
+  });
+
+  it('is offered as an open request to the root it now belongs to', () => {
+    const db = database();
+    addSession(db, 1, 'a', 'repo', 'Build the release cards', NOW - 3 * DAY);
+    addSession(db, 2, 'b', 'repo', 'Continue the release cards', NOW - DAY);
+    const dir = mkdtempSync(join(tmpdir(), 'request-first-'));
+    try {
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: { [key('a')]: groupIdFor(key('a')) }, groups: { [groupIdFor(key('a'))]: { title: 'Release cards', anchor: key('a'), projectRoot: NO_PROJECT } }, ignored: {} }));
+      const input = groupingInput(readLedger(dir), db, { sinceEpoch: NOW - 14 * DAY });
+      expect(input.root).toBe('repo');
+      expect(input.openRequests.map((request: any) => request.anchor)).toEqual([key('a')]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('every open request of the root is offered', () => {
+  it('an older request linked by a shared list can still take a follow-up, however many requests are open', () => {
+    const db = database();
+    const groups: Record<string, unknown> = {}, conversations: Record<string, string> = {};
+    // The linked request is the oldest of 20 open ones.
+    for (let index = 0; index < 20; index++) {
+      const id = `s${index}`;
+      addSession(db, index + 1, id, 'repo', `Build feature number ${index}`, NOW - (40 - index) * 3600000);
+      groups[groupIdFor(key(id))] = { title: `Feature ${index}`, anchor: key(id), projectRoot: 'repo' };
+      conversations[key(id)] = groupIdFor(key(id));
+    }
+    db.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input, created_at_epoch) VALUES (?, ?, ?, ?)').run(1, 'mcp__work_state_write', JSON.stringify({ list: 'feature-zero', fields: { task: 'x' } }), NOW - 40 * 3600000);
+    addSession(db, 100, 'new', 'repo', 'Continue feature zero', NOW - 3600000);
+    db.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input, created_at_epoch) VALUES (?, ?, ?, ?)').run(100, 'mcp__work_state_write', JSON.stringify({ list: 'feature-zero', fields: { task: 'y' } }), NOW - 3600000);
+    const dir = mkdtempSync(join(tmpdir(), 'request-first-'));
+    try {
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations, groups, ignored: {} }));
+      const input = groupingInput(readLedger(dir), db, { sinceEpoch: NOW - 14 * DAY });
+      expect(input.proposedLinks.map((proposed: any) => proposed.groups)).toEqual([[groupIdFor(key('s0'))]]);
+      expect(input.openRequests).toHaveLength(20);
+      const answer = { groups: [{ title: 'Feature 0', conversations: [key('s0'), key('new')], links: input.proposedLinks }] };
+      expect(() => validateGroupingAnswer(answer, input)).not.toThrow();
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
 describe('only new opening prompts are checked', () => {
   function ledgerFixture() {
     const db = database();
