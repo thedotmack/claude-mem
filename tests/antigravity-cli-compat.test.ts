@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'bun:test';
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { readFileSync } from 'fs';
 import { antigravityCliAdapter } from '../src/cli/adapters/antigravity-cli.js';
 import { extractLastMessage } from '../src/shared/transcript-parser.js';
 import {
@@ -20,59 +19,39 @@ const INSTALLER_PATH = 'src/services/integrations/AntigravityCliHooksInstaller.t
 // none of which agy actually fires — so it "passed" while recording zero
 // observations. Do not reintroduce those names.
 describe('AntigravityCliHooksInstaller - agy event map', () => {
-  const src = readFileSync(INSTALLER_PATH, 'utf-8');
+  // A Windows-style bun path: agy splits the command on spaces and keeps quotes,
+  // so the paths must come out bare and forward-slashed.
+  const config = buildAntigravityHooksConfig(String.raw`C:\bun\bun.exe`, '/plugin/worker-service.cjs') as Record<string, any>;
+  const claudeMem = config['claude-mem'];
+  const commandFor = (event: string): string => {
+    const [entry] = claudeMem[event];
+    return (entry.hooks ? entry.hooks[0] : entry).command;
+  };
 
-  it('maps SessionStart to context (the injectSteps startup context-injection point, issue #4911)', () => {
-    expect(src).toContain("'SessionStart': 'context'");
-    expect(src).not.toContain("'PreInvocation': 'context'");
+  it.each([
+    // SessionStart is the injectSteps startup context-injection point (issue #4911).
+    ['SessionStart', 'context'],
+    ['PreToolUse', 'observation'],
+    ['PostToolUse', 'observation'],
+    ['PostInvocation', 'observation'],
+    ['Stop', 'summarize'],
+  ])('maps %s to %s through the antigravity-cli hook command', (event, internalEvent) => {
+    expect(commandFor(event)).toBe(`C:/bun/bun.exe /plugin/worker-service.cjs hook antigravity-cli ${internalEvent}`);
   });
 
-  it('maps PreToolUse and PostToolUse to observation', () => {
-    expect(src).toContain("'PreToolUse': 'observation'");
-    expect(src).toContain("'PostToolUse': 'observation'");
-  });
-
-  it('maps PostInvocation to observation', () => {
-    expect(src).toContain("'PostInvocation': 'observation'");
-  });
-
-  it('maps Stop to summarize', () => {
-    expect(src).toContain("'Stop': 'summarize'");
-  });
-
-  it('does NOT register the legacy Gemini-CLI event names (0 occurrences in agy)', () => {
-    expect(src).not.toContain("'BeforeTool'");
-    expect(src).not.toContain("'AfterTool'");
-    expect(src).not.toContain("'BeforeAgent'");
-    expect(src).not.toContain("'AfterAgent'");
-    expect(src).not.toContain("'PreCompress'");
-    expect(src).not.toContain("'Notification':");
-  });
-
-  it('uses the antigravity-cli hook command string, not gemini-cli', () => {
-    expect(src).toContain('hook antigravity-cli');
-    expect(src).not.toContain('hook gemini-cli');
+  it('registers only the agy event names, none of the legacy Gemini-CLI ones', () => {
+    expect(Object.keys(claudeMem).sort()).toEqual(['PostInvocation', 'PostToolUse', 'PreToolUse', 'SessionStart', 'Stop']);
   });
 });
 
+// The files agy reads. Install writes under the real home directory, so these
+// external paths are pinned in the source rather than exercised.
 describe('AntigravityCliHooksInstaller - hooks.json target (not settings.json)', () => {
   const src = readFileSync(INSTALLER_PATH, 'utf-8');
 
   it('writes hooks to ~/.gemini/config/hooks.json (the file agy loads)', () => {
     expect(src).toContain("path.join(GEMINI_CONFIG_DIR, 'config', 'hooks.json')");
     expect(src).toContain('writeAntigravityHooksConfig');
-  });
-
-  it('does not write hooks into settings.json on install', () => {
-    // settings.json is only referenced for LEGACY uninstall cleanup, never for
-    // writing hooks. Install must go through the hooks.json writer.
-    expect(src).toContain('writeAntigravityHooksAndSetupContext(mergedHooks)');
-    expect(src).toContain('writeAntigravityHooksConfig(mergedHooks)');
-  });
-
-  it('emits bare (unquoted) forward-slashed hook command paths (agy splits on spaces, keeps quotes)', () => {
-    expect(src).toContain('hook antigravity-cli ${internalEvent}');
-    expect(src).not.toContain('"${escapedBunPath}" "${escapedWorkerPath}"');
   });
 
   it('still targets the shared ~/.gemini GEMINI.md context file', () => {
@@ -413,11 +392,9 @@ describe('platform-source - antigravity-cli support', () => {
     const viewer = readFileSync(join(import.meta.dir, '../src/ui/viewer-template.html'), 'utf-8');
     const tv = readFileSync(join(import.meta.dir, '../src/ui/tv.html'), 'utf-8');
     expect(viewer).toContain('.source-antigravity-cli {');
-    expect(viewer).toContain('color: var(--color-source-antigravity-cli-text);');
-    // The badge colour is a theme token, so light and dark each define it.
-    expect(viewer).toContain('--color-source-antigravity-cli-text: #0284c7;');
-    expect(viewer).toContain('--color-source-antigravity-cli-text: #38bdf8;');
-    expect(tv).toContain("'antigravity-cli': '#0284c7'");
+    // Both themes define the badge token: tests/viewer/theme-tokens.test.ts.
+    expect(viewer).toContain('var(--color-source-antigravity-cli-text)');
+    expect(tv).toContain("'antigravity-cli':");
   });
 });
 

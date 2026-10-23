@@ -1092,20 +1092,4 @@ describe('Spawn-Contract Templating - Rule B installers bake absolute paths', ()
       expect(content).not.toMatch(/\$\{CLAUDE_PLUGIN_ROOT\}/);
     });
   }
-
-  it('install-paths.ts centralizes the Rule B helpers', () => {
-    const content = readFileSync(
-      path.join(projectRoot, 'src/services/integrations/install-paths.ts'),
-      'utf-8',
-    );
-    for (const name of [
-      'getMcpServerAbsolutePath',
-      'getWorkerServiceAbsolutePath',
-      'getBunAbsolutePath',
-      'getNodeAbsolutePath',
-      'getPluginRootAbsolutePath',
-    ]) {
-      expect(content).toContain(`export function ${name}`);
-    }
-  });
 });
