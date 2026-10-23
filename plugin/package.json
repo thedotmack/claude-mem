@@ -32,13 +32,8 @@
     "@tree-sitter-grammars/tree-sitter-markdown": "^0.3.2",
     "shell-quote": "1.9.0"
   },
-  "optionalDependencies": {
-    "@huggingface/transformers": "^4.2.0"
-  },
   "overrides": {
-    "tree-sitter": "^0.25.0",
-    "onnxruntime-node": "1.23.2",
-    "onnxruntime-web": "npm:onnxruntime-common@1.23.2"
+    "tree-sitter": "^0.25.0"
   },
   "trustedDependencies": [
     "tree-sitter-cli"
