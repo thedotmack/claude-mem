@@ -30,7 +30,7 @@ var FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_m
 // src/services/work-view/session-project.mjs
 import { existsSync as existsSync7, realpathSync as realpathSync4 } from "node:fs";
 import { homedir as homedir5, tmpdir as tmpdir2 } from "node:os";
-import { basename as basename5, dirname as dirname4, join as join6, resolve as resolve2 } from "node:path";
+import { basename as basename5, dirname as dirname5, join as join6, resolve as resolve2 } from "node:path";
 
 // src/utils/project-name.ts
 import path2 from "path";
@@ -298,7 +298,7 @@ var paths = {
 
 // src/shared/SettingsDefaultsManager.ts
 import { readFileSync as readFileSync4, existsSync as existsSync4, writeFileSync } from "fs";
-import { basename as basename3, dirname as dirname3, join as join5 } from "path";
+import { basename as basename3, dirname as dirname4, join as join5 } from "path";
 import { homedir as homedir3, hostname } from "os";
 
 // src/shared/hook-constants.ts
@@ -337,7 +337,7 @@ function getTimeout(baseTimeout) {
 
 // src/utils/logger.ts
 import { closeSync as closeSync2, existsSync as existsSync3, fstatSync, mkdirSync as mkdirSync3, openSync as openSync2, statSync as statSync2, writeSync as writeSync2 } from "fs";
-import { join as join4 } from "path";
+import { dirname as dirname3, join as join4 } from "path";
 var LogLevel = /* @__PURE__ */ ((LogLevel2) => {
   LogLevel2[LogLevel2["DEBUG"] = 0] = "DEBUG";
   LogLevel2[LogLevel2["INFO"] = 1] = "INFO";
@@ -409,6 +409,7 @@ var Logger = class {
       if (!current) this.closeLogFd();
     }
     if (this.logFd === null) {
+      mkdirSync3(dirname3(path3), { recursive: true });
       this.logFd = openSync2(path3, "a");
     }
     try {
@@ -702,7 +703,7 @@ var RAISED_DEADLINE_DEFAULTS = [
   { key: "CLAUDE_MEM_FIELD_OPTIMIZE_TIMEOUT_MS", legacy: "30000", markerTag: "field-optimize-timeout-migrated-v1" }
 ];
 function raisedDefaultMarkerPath(settingsPath, raised) {
-  return join5(dirname3(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
+  return join5(dirname4(settingsPath), `.${basename3(settingsPath)}.${raised.markerTag}`);
 }
 function markRaisedDefaultDone(settingsPath, raised) {
   try {
@@ -1733,7 +1734,7 @@ function repoRootOf(path3) {
       found = current;
       break;
     }
-    const parent = dirname4(current);
+    const parent = dirname5(current);
     if (parent === current) break;
     current = parent;
   }
@@ -1770,7 +1771,7 @@ function pathsIn(toolInput, platform = process.platform) {
 }
 var checkoutForPath = (path3) => {
   let current = path3;
-  while (current !== dirname4(current) && !existsSync7(current)) current = dirname4(current);
+  while (current !== dirname5(current) && !existsSync7(current)) current = dirname5(current);
   return repoRootOf(current);
 };
 function folderNeedsProject(folder, storedProject) {
