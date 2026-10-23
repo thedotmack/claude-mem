@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { conversationKey, isConversationKey, isHumanActionRequest, originalFor, requestText } from './request-projection.mjs';
 import { OWNER_GOALS_LIST } from './owner-goals.mjs';
-import { NO_PROJECT, projectRoot, withDerivedProjects } from './session-project.mjs';
+import { NO_PROJECT, projectRoot, upgradedGroupRoot, withDerivedProjects } from './session-project.mjs';
 
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
@@ -221,7 +221,8 @@ export function applyGroupDecisions(stored, decisions, now = Date.now(), { proje
     const id = groupIdFor(decision.conversations[0]);
     // A request stays in one project root, members it already has included.
     const allMembers = [...new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
-    const storedRoot = next.groups[id]?.projectRoot;
+    const storedRoot = upgradedGroupRoot(next.groups[id]?.projectRoot, projectRoot(projectOf.get(next.groups[id]?.anchor)),
+      allMembers.map((key) => projectRoot(projectOf.get(key))));
     // A group decided before its project was known (the "no project" root) takes the root its members show now:
     // its earlier members may still show none, and that does not split it.
     const rootWasUnknown = storedRoot === NO_PROJECT;
@@ -517,8 +518,10 @@ export function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_B
   // A group's root is stored at apply time; older groups, and groups decided before their project was
   // known, take it from their anchor.
   const rootIsStored = (group) => typeof group.projectRoot === 'string' && group.projectRoot !== NO_PROJECT;
-  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => !rootIsStored(group)).map((group) => group.anchor));
-  const groupRoot = (group) => rootIsStored(group) ? group.projectRoot : projectRoot(anchorProjects.get(group.anchor)) ?? group.projectRoot ?? null;
+  // With git-remote keys, a root saved before they were kept whole ("acme") also reads its anchor.
+  const mayBeUpgraded = (group) => root.includes('/') && rootIsStored(group) && root.startsWith(`${group.projectRoot}/`);
+  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => !rootIsStored(group) || mayBeUpgraded(group)).map((group) => group.anchor));
+  const groupRoot = (group) => rootIsStored(group) ? upgradedGroupRoot(group.projectRoot, projectRoot(anchorProjects.get(group.anchor))) : projectRoot(anchorProjects.get(group.anchor)) ?? group.projectRoot ?? null;
   // Every open request of the root: a new conversation may continue any of them.
   const openRequests = Object.entries(ledger.groups.groups)
     .filter(([groupId, group]) => groupRoot(group) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state))

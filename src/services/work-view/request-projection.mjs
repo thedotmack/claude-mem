@@ -1,7 +1,7 @@
 // Human requests own the top level. Agent work and observations are evidence
 // beneath a proven native conversation, never substitutes for a human ask.
 import { fileUrl, mergeProducts, productsFromObservation, productsFromToolUse, servableFile } from './work-product.mjs';
-import { NO_PROJECT, projectRoot } from './session-project.mjs';
+import { NO_PROJECT, projectRoot, upgradedGroupRoot } from './session-project.mjs';
 
 export function requestText(value, max = 1200) {
   if (typeof value !== 'string') return null;
@@ -149,8 +149,16 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       if (!derivedRoots.has(groupId)) derivedRoots.set(groupId, rootFromMembers(groupId, group));
       return derivedRoots.get(groupId);
     }
-    if (typeof group?.projectRoot === 'string') return group.projectRoot;
-    return projectRoot(sessionsByKey.get(group?.anchor)?.project);
+    const anchorRoot = projectRoot(sessionsByKey.get(group?.anchor)?.project);
+    if (typeof group?.projectRoot === 'string') {
+      if (!derivedRoots.has(groupId)) {
+        const memberRoots = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId)
+          .map(([key]) => projectRoot(sessionsByKey.get(key)?.project));
+        derivedRoots.set(groupId, upgradedGroupRoot(group.projectRoot, anchorRoot, memberRoots));
+      }
+      return derivedRoots.get(groupId);
+    }
+    return anchorRoot;
   };
   // A conversation joins its group only from the group's own project root; in a group decided before
   // its project was known, a member that still shows no project stays too.

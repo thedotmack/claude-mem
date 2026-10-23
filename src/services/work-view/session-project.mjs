@@ -19,6 +19,16 @@ export function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()
   return gitRemoteNames ? project : project.split('/')[0];
 }
 
+/** A root saved before git-remote keys were kept whole ("acme" for acme/frontend) means the full key its
+ * current members show: the anchor's, else the one `<saved>/…` key its members have. Other roots are kept. */
+export function upgradedGroupRoot(savedRoot, anchorRoot, memberRoots = []) {
+  if (typeof savedRoot !== 'string' || !savedRoot || savedRoot.includes('/')) return savedRoot;
+  const widened = (root) => typeof root === 'string' && root.startsWith(`${savedRoot}/`);
+  if (widened(anchorRoot)) return anchorRoot;
+  const candidates = new Set(memberRoots.filter(widened));
+  return candidates.size === 1 ? [...candidates][0] : savedRoot;
+}
+
 const realpathOrSelf = (path) => { try { return realpathSync(path); } catch { return path; } };
 const TEMP_FOLDERS = [...new Set([resolve(tmpdir()), realpathOrSelf(resolve(tmpdir())), '/tmp', '/private/tmp'])];
 const HOME = homedir();

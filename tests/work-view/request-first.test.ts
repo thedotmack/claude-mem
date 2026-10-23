@@ -8,7 +8,7 @@ import { reduceWorkState } from '../../src/services/work-view/data-source.mjs';
 import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
 import { applyGroupDecisions, groupIdFor, groupingInput, linkBackwards, readCandidates, readLedger, runCli, validateGroupingAnswer } from '../../src/services/work-view/request-groups.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
-import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot } from '../../src/services/work-view/session-project.mjs';
+import { NO_PROJECT, pathsIn, projectFromToolPaths, withDerivedProjects, projectRoot, upgradedGroupRoot } from '../../src/services/work-view/session-project.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
@@ -351,5 +351,28 @@ describe('projectRoot', () => {
     expect(projectRoot('acme/frontend', true)).toBe('acme/frontend');
     expect(projectRoot('acme/backend', true)).not.toBe(projectRoot('acme/frontend', true));
     expect(projectRoot(null, true)).toBeNull();
+  });
+
+  it('reads a root saved before git-remote keys were kept whole as its members\' full key', () => {
+    expect(upgradedGroupRoot('acme', 'acme/frontend')).toBe('acme/frontend');
+    expect(upgradedGroupRoot('acme', null, ['acme/backend', null])).toBe('acme/backend');
+    // Members in two repositories leave it as saved: nothing joins them.
+    expect(upgradedGroupRoot('acme', null, ['acme/backend', 'acme/frontend'])).toBe('acme');
+    expect(upgradedGroupRoot('repo', 'repo')).toBe('repo');
+    expect(upgradedGroupRoot('acme/frontend', 'acme/frontend')).toBe('acme/frontend');
+    expect(upgradedGroupRoot(NO_PROJECT, 'acme/frontend')).toBe(NO_PROJECT);
+
+    const previous = process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE;
+    process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = 'git-remote';
+    try {
+      const groupId = groupIdFor(key('a'));
+      const legacy = { conversations: { [key('a')]: groupId }, groups: { [groupId]: { title: 'Cards', anchor: key('a'), projectRoot: 'acme' } }, ignored: {} };
+      const reapplied = applyGroupDecisions(legacy, { groups: [{ title: 'Cards', conversations: [key('a')] }] }, NOW, { projectOf: new Map([[key('a'), 'acme/frontend']]) });
+      expect(reapplied.groups[groupId].projectRoot).toBe('acme/frontend');
+      // Another repository of the same owner still cannot join it.
+      expect(() => applyGroupDecisions(reapplied, { groups: [{ title: 'Cards', conversations: [key('a'), key('b')], links: link([key('a'), key('b')]) }] }, NOW, { projectOf: new Map([[key('a'), 'acme/frontend'], [key('b'), 'acme/backend']]) })).toThrow(/different projects/);
+    } finally {
+      if (previous === undefined) delete process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE; else process.env.CLAUDE_MEM_PROJECT_NAME_SOURCE = previous;
+    }
   });
 });

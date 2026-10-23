@@ -1704,6 +1704,13 @@ function projectRoot(project, gitRemoteNames = useGitRemoteProjectNames()) {
   if (typeof project !== "string") return null;
   return gitRemoteNames ? project : project.split("/")[0];
 }
+function upgradedGroupRoot(savedRoot, anchorRoot, memberRoots = []) {
+  if (typeof savedRoot !== "string" || !savedRoot || savedRoot.includes("/")) return savedRoot;
+  const widened = (root) => typeof root === "string" && root.startsWith(`${savedRoot}/`);
+  if (widened(anchorRoot)) return anchorRoot;
+  const candidates = new Set(memberRoots.filter(widened));
+  return candidates.size === 1 ? [...candidates][0] : savedRoot;
+}
 var realpathOrSelf3 = (path3) => {
   try {
     return realpathSync4(path3);
@@ -2116,7 +2123,11 @@ function applyGroupDecisions(stored, decisions, now = Date.now(), { projectOf = 
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(", ")} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
     const allMembers = [.../* @__PURE__ */ new Set([...decision.conversations, ...Object.entries(next.conversations).filter(([key, groupId]) => groupId === id && !decision.conversations.includes(key)).map(([key]) => key)])];
-    const storedRoot = next.groups[id]?.projectRoot;
+    const storedRoot = upgradedGroupRoot(
+      next.groups[id]?.projectRoot,
+      projectRoot(projectOf.get(next.groups[id]?.anchor)),
+      allMembers.map((key) => projectRoot(projectOf.get(key)))
+    );
     const rootWasUnknown = storedRoot === NO_PROJECT;
     const roots = /* @__PURE__ */ new Map();
     for (const key of allMembers) {
@@ -2369,8 +2380,9 @@ function groupingInput(ledger, database, { sinceEpoch, limit = GROUPING_BATCH })
   const inRoot = candidates.filter((candidate) => projectRoot(candidate.project) === root);
   const byKey = new Map(inRoot.map((candidate) => [candidate.conversationKey, candidate]));
   const rootIsStored = (group) => typeof group.projectRoot === "string" && group.projectRoot !== NO_PROJECT;
-  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => !rootIsStored(group)).map((group) => group.anchor));
-  const groupRoot = (group) => rootIsStored(group) ? group.projectRoot : projectRoot(anchorProjects.get(group.anchor)) ?? group.projectRoot ?? null;
+  const mayBeUpgraded = (group) => root.includes("/") && rootIsStored(group) && root.startsWith(`${group.projectRoot}/`);
+  const anchorProjects = readConversationProjects(database, Object.values(ledger.groups.groups).filter((group) => !rootIsStored(group) || mayBeUpgraded(group)).map((group) => group.anchor));
+  const groupRoot = (group) => rootIsStored(group) ? upgradedGroupRoot(group.projectRoot, projectRoot(anchorProjects.get(group.anchor))) : projectRoot(anchorProjects.get(group.anchor)) ?? group.projectRoot ?? null;
   const openRequests = Object.entries(ledger.groups.groups).filter(([groupId, group]) => groupRoot(group) === root && !CLOSED_STATES.has(ledger.progress[groupId]?.state)).map(([groupId, group]) => {
     const members = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => byKey.get(key)).filter(Boolean);
     const asks = members.flatMap((member) => member.asks).sort((a, b) => Date.parse(b.at) - Date.parse(a.at));
