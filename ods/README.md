@@ -46,9 +46,23 @@ ods start claude-mem
 ```
 
 The worker's viewer and API are at `http://127.0.0.1:37778`; its health endpoint
-is `/api/health`. The host binding is loopback-only. `LITELLM_KEY` is passed to
-the existing local model gateway inside the ODS network. This integration does
-not choose a new model or change ODS's local/cloud routing policy.
+is `/api/health`. The API has no authentication, so its exposure is limited by
+network placement:
+
+- **Host:** the published port binds `127.0.0.1` only. Any local process or
+  user on the ODS host can read, write and delete memory through it, the same
+  as a desktop Claude-Mem worker.
+- **Containers:** the worker is not on the shared `ods-network`. It sits on a
+  private Compose network whose only other member is `claude-mem-gateway`.
+  Other ODS services and extensions cannot reach the worker's API.
+- **Gateway:** `claude-mem-gateway` (`gateway.mjs`) is the one container on
+  `ods-network`. It relays the worker's observer calls to LiteLLM and answers
+  the dashboard's `GET /api/health` probe from the worker. It forwards no other
+  worker request.
+
+`LITELLM_KEY` is passed to the existing local model gateway inside the ODS
+network. This integration does not choose a new model or change ODS's
+local/cloud routing policy.
 
 ## Memory scope
 

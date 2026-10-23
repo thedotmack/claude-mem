@@ -14,6 +14,8 @@ RUN npm install --global bun@${BUN_VERSION} \
  && npm install --prefix /opt/cmem/node_modules/claude-mem/plugin --omit=dev \
  && chown -R node:node /opt/cmem /data
 
+COPY gateway.mjs /opt/cmem/gateway.mjs
+
 USER node
 WORKDIR /opt/cmem/node_modules/claude-mem
 ENV CLAUDE_MEM_DATA_DIR=/data

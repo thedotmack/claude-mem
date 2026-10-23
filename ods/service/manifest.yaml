@@ -7,7 +7,8 @@ service:
   aliases: [cmem]
   container_name: ods-claude-mem
   container_uid: 1000
-  default_host: claude-mem
+  # The dashboard probes health through the gateway; the worker is not on ods-network.
+  default_host: claude-mem-gateway
   port: 37777
   external_port_env: ODS_CLAUDE_MEM_PORT
   external_port_default: 37778

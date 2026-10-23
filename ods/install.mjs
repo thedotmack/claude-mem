@@ -16,7 +16,7 @@ const patchedPaths = [
   'extensions/services/pixel-agent/host/pixel_ingress.mjs',
   'installers/lib/pixel-host-install.sh',
 ];
-const serviceFiles = ['Dockerfile', 'manifest.yaml', 'compose.yaml.disabled'];
+const serviceFiles = ['Dockerfile', 'gateway.mjs', 'manifest.yaml', 'compose.yaml.disabled'];
 const receiptName = '.claude-mem-native-install.json';
 const sha = contents => createHash('sha256').update(contents).digest('hex');
 
