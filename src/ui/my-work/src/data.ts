@@ -17,6 +17,8 @@ export type Stage = 'Planning' | 'Building' | 'Reviewing' | 'Shipped'
 export type LiveState = 'working' | 'needs-check' | 'your-move' | 'idle' | 'shipped'
 
 export interface Quote { at: string; quote: string }
+export type WorkProductKind = 'PR' | 'Commit' | 'Branch' | 'Page' | 'Deck' | 'Doc' | 'File' | 'Link'
+
 export interface Request {
   id: string
   title: string | null
@@ -51,8 +53,9 @@ export interface Request {
   granular: { kind: 'work' | 'memory'; text: string; at: string }[]
   conversations: { tool: string; at: string; title: string }[]
   prompts: Quote[]
-  /** `href` is a real published page or PR; '#' means a sample link with nothing behind it (render with ProductLink). */
-  workProduct: { kind: 'PR' | 'Page' | 'Deck' | 'Commit'; label: string; href: string }[]
+  /** `href` is a real published page, PR or commit; '#' means a sample link with nothing behind it; absent means a
+   * recorded item with nothing to open, such as a commit whose remote is not GitHub (render with ProductLink). */
+  workProduct: { kind: WorkProductKind; label: string; href?: string }[]
   followUps: { tag: 'Docs' | 'Promo' | 'Other'; text: string; done: boolean }[]
   story: { label: string; description: string; status: 'complete' | 'active' | 'pending' }[]
   /** The last memory review's account of how the request went (request-progress). */
@@ -384,7 +387,7 @@ export function startedTimestamp(request: Request): number {
   return request.startedAtIso ? Date.parse(request.startedAtIso) : 0
 }
 
-export const isSampleHref = (href: string) => !href || href === '#'
+export const isSampleHref = (href: string | undefined) => href !== undefined && (!href || href === '#')
 
 export const SAMPLE_RUNS: Record<'goals' | 'rules' | 'progress', Run> = {
   goals: { label: 'owner-goals', lastRunAt: 'Today, 11:02 am', deviceId: 'mbp', state: 'idle' },

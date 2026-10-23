@@ -139,7 +139,9 @@ export function ProgressMeter({ request, compact = false }: { request: Request; 
 }
 
 /** A work-product link. Fixture links have nothing behind them, so they say so instead of looking real (§12). */
-export function ProductLink({ href, children, className }: { href: string; children: ReactNode; className?: string }) {
+/** No href: a recorded item with nothing to open (a commit whose remote is not GitHub). */
+export function ProductLink({ href, children, className }: { href?: string; children: ReactNode; className?: string }) {
+  if (href === undefined) return <span className={className}>{children}</span>
   if (!isSampleHref(href)) return <a href={href} target="_blank" rel="noreferrer" className={className}>{children}</a>
   return (
     <Tooltip>

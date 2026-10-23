@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from 'react'
-import { ArrowDownIcon, ChevronDownIcon, ChevronRightIcon, ExternalLinkIcon, FileTextIcon, GitPullRequestIcon, PresentationIcon } from 'lucide-react'
+import { ArrowDownIcon, ChevronDownIcon, ChevronRightIcon, ExternalLinkIcon } from 'lucide-react'
 import { InlineCitationQuote } from '@/components/ai-elements/inline-citation'
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/components/ui/accordion'
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
@@ -7,12 +7,12 @@ import { Progress } from '@/components/ui/progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { AgentIcon, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
+import { PRODUCT_ICON } from '@/lib/product-icons'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { isSampleHref, SAMPLE_RUNS, useWorkModel, type GoalItem, type LiveState, type Quote, type Request } from '@/data'
 import { formatPromptDay, formatPromptTime, promptDayKey, shipDayKey } from '@/lib/prompt-time'
 
-const PRODUCT_ICON = { PR: GitPullRequestIcon, Commit: GitPullRequestIcon, Page: FileTextIcon, Deck: PresentationIcon }
 const TOP_COUNT = 5
 const goalAnchor = (goalId: string) => `goal-${goalId}`
 const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
@@ -152,12 +152,17 @@ function WorkProduct({ requests }: { requests: Request[] }) {
       <div className="space-y-2">
         <SectionLabel>What came out of it</SectionLabel>
         <ul className="flex flex-wrap gap-2">
-          {products.map((product) => {
+          {products.map((product, index) => {
             const Icon = PRODUCT_ICON[product.kind]
             const chip = 'inline-flex min-h-11 max-w-full items-center gap-1.5 rounded-md border px-3 text-sm'
             return (
-              <li key={product.label} className="max-w-full">
-                {isSampleHref(product.href) ? (
+              <li key={`${index}-${product.label}`} className="max-w-full">
+                {product.href === undefined ? (
+                  <span className={cn(chip, 'bg-card')} title={`From ${product.from}`}>
+                    <Icon className="size-4 shrink-0 text-muted-foreground" /><span className="truncate">{product.label}</span>
+                    <span className="shrink-0 text-xs text-muted-foreground">{product.kind}</span>
+                  </span>
+                ) : isSampleHref(product.href) ? (
                   <span className={cn(chip, 'border-dashed text-muted-foreground')} title={`From ${product.from}. Sample: no real artifact yet.`}>
                     <Icon className="size-4 shrink-0" /><span className="truncate">{product.label}</span>
                     <span className="shrink-0 text-xs">{product.kind} · sample</span>

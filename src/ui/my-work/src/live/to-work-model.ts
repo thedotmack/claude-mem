@@ -1,13 +1,13 @@
 // The one pure mapper from a WorkViewSnapshot (local worker today, cmem.ai later) to the WorkModel the screens use.
 // It follows the plan's mapping table. Where the snapshot has no value, the field takes the table's "missing" value;
 // nothing is estimated or made up (spec §12). Relative imports with .ts extensions so `node --test` can load it.
-import { assertConsistentRequest, type Agent, type AgentTool, type CurrentPeriod, type Device, type Goal, type GoalItem, type PastPeriod, type Request, type SkillRun } from '../data.ts'
+import { assertConsistentRequest, type WorkProductKind, type Agent, type AgentTool, type CurrentPeriod, type Device, type Goal, type GoalItem, type PastPeriod, type Request, type SkillRun } from '../data.ts'
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
 import type { AutoRefresh, BuildStory } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
-import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
+import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot, WorkViewWorkProduct } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
@@ -18,6 +18,20 @@ const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
+// work-product.mjs kinds onto the drawer's kinds; anything unknown is a plain link.
+const WORK_PRODUCT_KIND: Record<string, WorkProductKind> = {
+  'pull-request': 'PR', commit: 'Commit', branch: 'Branch', artifact: 'Page', page: 'Page', deployment: 'Page',
+  deck: 'Deck', document: 'Doc', documentation: 'Doc', image: 'File', video: 'File', spreadsheet: 'File',
+}
+
+/** Recorded work product the drawer can show. A local file that is gone is left out. */
+export function mapWorkProduct(products: WorkViewWorkProduct[] | undefined): Request['workProduct'] {
+  return (products ?? []).filter((product) => product.available !== false).map((product) => ({
+    kind: WORK_PRODUCT_KIND[product.kind] ?? 'Link',
+    label: cleanText(product.title, 140) || product.kind,
+    href: product.url ?? product.fileUrl ?? undefined,
+  }))
+}
 const EVIDENCE_KIND_LABEL: Record<string, string> = { 'work-state': 'Work state', observation: 'Observation', prompt: 'Your prompt', summary: 'Session summary', session: 'Session' }
 
 // cleanText is copied from claude-mem v15.0.1 plugin/ui/work-view/view-model.js:6-20: it drops injected
@@ -169,7 +183,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     prompts: [raw.original, ...raw.scopeUpdates]
       .map((prompt) => ({ at: prompt.atEpoch ? formatPromptStamp(prompt.atEpoch) : 'Time not recorded', quote: cleanText(prompt.text, 400) }))
       .filter((prompt) => prompt.quote),
-    workProduct: [],
+    workProduct: mapWorkProduct(raw.workProduct),
     followUps: [],
     story: review ? storySteps(review, now) : [],
     storyNarrative: review?.narrative?.trim() || undefined,

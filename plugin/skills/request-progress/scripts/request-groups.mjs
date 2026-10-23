@@ -24,6 +24,7 @@ var FILE_KINDS = {
   ".csv": "spreadsheet",
   ".html": "page"
 };
+var GIT_PREFIX = String.raw`(?:^|[;&|(\n])\s*(?:rtk\s+)?(?:\/usr\/bin\/)?git(?:\s+-[Cc]\s+(?:"[^"]*"|'[^']*'|\S+))*\s+`;
 var FILE_EXTENSION_PATTERN = Object.keys(FILE_KINDS).map((extension) => `files_modified LIKE '%${extension}"%'`).join(" OR ");
 
 // src/services/work-view/request-projection.mjs
