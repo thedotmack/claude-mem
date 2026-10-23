@@ -18,6 +18,7 @@ import {
 } from '../../types/database.js';
 import type { ObservationSearchResult, SessionSummarySearchResult } from './types.js';
 import { computeObservationContentHash, hasStorableTitle } from './observations/store.js';
+import { replaceObservationFileIndex } from './observations/files.js';
 import { seedReinforcement, reinforceObservation } from '../reinforcement/persist.js';
 import {
   createToolUsesSchema,
@@ -313,6 +314,46 @@ export class SessionStore {
     this.ensureProjectRecencyIndexes();
     this.ensureMergedIntoProjectCoveringIndexes();
     this.ensureNativePromptIdentity();
+    this.ensureObservationFileIndex();
+  }
+
+  /**
+   * v68: file-context looks observations up by file path. json_each over
+   * files_read/files_modified scanned the whole table on the one shared
+   * connection, so concurrent lookups queued past the hook budget. Index each
+   * path instead and answer the lookup from it.
+   */
+  private ensureObservationFileIndex(): void {
+    this.db.transaction(() => {
+      if (this.db.query('SELECT version FROM schema_versions WHERE version = 68').get()) return;
+      this.db.run(`CREATE TABLE IF NOT EXISTS observation_files (
+        path TEXT NOT NULL,
+        observation_id INTEGER NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
+        PRIMARY KEY (path, observation_id)
+      )`);
+      this.db.run('CREATE INDEX IF NOT EXISTS idx_observation_files_observation ON observation_files(observation_id)');
+      // One statement, in SQL: expanding 90k rows in JS would reread every body.
+      const expand = (column: string): string =>
+        `SELECT o.id, je.value FROM observations o, json_each(o.${column}) je
+         WHERE json_valid(o.${column}) AND json_type(o.${column}) = 'array' AND je.type = 'text'`;
+      this.db.run(`INSERT OR IGNORE INTO observation_files(observation_id, path)
+        ${expand('files_read')} UNION ${expand('files_modified')}`);
+      this.db.prepare('INSERT INTO schema_versions (version, applied_at) VALUES (?, ?)')
+        .run(68, new Date().toISOString());
+    }).immediate();
+  }
+
+  /** Record the file paths an observation touches so by-file lookup is an index seek. */
+  private indexObservationFiles(observationId: number, filesRead: readonly string[], filesModified: readonly string[]): void {
+    const paths = new Set<string>();
+    for (const filePath of [...filesRead, ...filesModified]) {
+      if (typeof filePath === 'string' && filePath.length > 0) paths.add(filePath);
+    }
+    if (paths.size === 0) return;
+    const insert = this.db.prepare(
+      'INSERT OR IGNORE INTO observation_files(path, observation_id) VALUES (?, ?)',
+    );
+    for (const filePath of paths) insert.run(filePath, observationId);
   }
 
   /** Local host retry identity. Runs after every legacy user_prompts rebuild. */
@@ -4048,6 +4089,7 @@ export class SessionStore {
 
         if (inserted) {
           if (dedup.enabled) this.maintainDedupOnInsert(project, inserted.id, observation.title, dedup);
+          this.indexObservationFiles(inserted.id, observation.files_read, observation.files_modified);
           observationIds.push(inserted.id);
           mergedIntoExisting.push(false);
           insertedObservationIds.push(inserted.id);
@@ -4667,28 +4709,37 @@ export class SessionStore {
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
-    const result = stmt.run(
-      obs.memory_session_id,
-      obs.project,
-      coerceBindValue(obs.text),
-      obs.type,
-      coerceBindValue(obs.title),
-      coerceBindValue(obs.subtitle),
-      coerceBindValue(obs.facts),
-      coerceBindValue(obs.narrative),
-      coerceBindValue(obs.concepts),
-      coerceBindValue(obs.files_read),
-      coerceBindValue(obs.files_modified),
-      obs.prompt_number,
-      obs.discovery_tokens || 0,
-      obs.agent_type ?? null,
-      obs.agent_id ?? null,
-      obs.created_at,
-      obs.created_at_epoch
-    );
+    // The row and its observation_files mappings commit together: an import
+    // interrupted between the two writes leaves an observation permanently
+    // unsearchable by file — the replay match skips the existing row and the
+    // v68 migration is already stamped, so neither repairs the gap.
+    const importedId = this.db.transaction(() => {
+      const result = stmt.run(
+        obs.memory_session_id,
+        obs.project,
+        coerceBindValue(obs.text),
+        obs.type,
+        coerceBindValue(obs.title),
+        coerceBindValue(obs.subtitle),
+        coerceBindValue(obs.facts),
+        coerceBindValue(obs.narrative),
+        coerceBindValue(obs.concepts),
+        coerceBindValue(obs.files_read),
+        coerceBindValue(obs.files_modified),
+        obs.prompt_number,
+        obs.discovery_tokens || 0,
+        obs.agent_type ?? null,
+        obs.agent_id ?? null,
+        obs.created_at,
+        obs.created_at_epoch
+      );
+      const id = result.lastInsertRowid as number;
+      replaceObservationFileIndex(this.db, id, obs.files_read, obs.files_modified);
+      return id;
+    })();
     emitContextInvalidation({ projects: [obs.project] }, 'importObservation');
 
-    return { imported: true, id: result.lastInsertRowid as number };
+    return { imported: true, id: importedId };
   }
 
   rebuildObservationsFTSIndex(): void {
