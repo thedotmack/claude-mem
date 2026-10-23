@@ -16,12 +16,10 @@ export interface RefreshStatus {
 }
 
 export class AutoRefreshWorker {
-  revision: number;
   constructor(options: {
     dir: string;
     openDatabase: () => LedgerDatabase & { close(): void };
     runJob: (job: { needs: RefreshNeeds; reason: string }) => Promise<RefreshJobOutcome>;
-    hasUsableAgent?: () => Promise<boolean>;
     enabled?: () => boolean;
     checkMs?: number;
     now?: () => number;

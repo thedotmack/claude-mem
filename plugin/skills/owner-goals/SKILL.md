@@ -58,6 +58,16 @@ It prints how many prompts it kept and excluded.
 >
 > Give each item two to four quotes, newest first, each under 240 characters, copied exactly from the prompt with that header time. Use `...` between pieces when skipping words.
 
+## Or update the saved goals
+
+When Goals were saved before (the saved `owner-goals.json`, or `work_state_read` with `list: "owner-goals"`), update them instead of mapping the whole window again. In step 1, add `--since "<YYYY-MM-DD HH:MM>"`, the saved `generated_at` as a local minute: the script also writes `new-owner-prompts.md` with only the prompts from that minute on. If it holds no prompts, save the saved goals again with a new `generated_at`. Otherwise read only `new-owner-prompts.md` and update the saved goals JSON:
+
+- re-rank by recency × repetition × intensity, add new priorities and open asks, and drop what the new prompts show is done or replaced;
+- keep each kept item's `title` exactly as it was, so the requests already linked to it stay linked; a goal that really changed gets a new title;
+- add new quotes (newest first, two to four per item) copied exactly from `new-owner-prompts.md`, keep the older quotes as they are, and update `latest_at`, `times_asked` and `human_summary`.
+
+Keep the saved `owner-map.md`; step 3 can name it with `--map`. Quotes that aged out of the window are dropped when saving.
+
 ## 3. Save to Goals
 
 ```bash
@@ -66,7 +76,7 @@ python3 "${CLAUDE_SKILL_DIR}/scripts/save_goals.py" --goals "<folder>/owner-goal
 
 For a date range, add the same `--start YYYY-MM-DD --end YYYY-MM-DD` used in step 1.
 
-The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. `--dry-run` shows the writes without saving.
+The script checks every quote against the prompt typed at that minute. If any fail, it lists them; correct the wording or time from `owner-prompts.md` and run it again. A quote dated before the first prompt in `owner-prompts.md` has aged out of the window: it is dropped, and so is an item left with no quote. `--dry-run` shows the writes without saving.
 
 It saves through the local claude-mem worker to the `owner-goals` work-state list, one list per computer:
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
-import { readdirSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 const SKILLS = join(import.meta.dir, '..', '..', 'plugin', 'skills');
@@ -41,4 +42,25 @@ describe('skill Python scripts', () => {
       expect(result.exitCode).toBe(0);
     });
   }
+});
+
+describe('save_goals.py', () => {
+  it('drops quotes that aged out of the prompts window, and items left without one, but still refuses invented quotes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-'));
+    try {
+      writeFileSync(join(dir, 'owner-prompts.md'), '# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nship the cards today\n');
+      const save = (goals: unknown) => {
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify(goals));
+        return Bun.spawnSync(['python3', join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--dry-run']);
+      };
+      const result = save({ priorities: [
+        { rank: 1, title: 'Cards', evidence: [{ at: '2026-10-20 10:00', quote: 'ship the cards' }, { at: '2026-09-01 09:00', quote: 'aged out' }] },
+        { rank: 2, title: 'Old', evidence: [{ at: '2026-09-02 09:00', quote: 'older words' }] },
+      ] });
+      expect(result.exitCode).toBe(0);
+      const writes = JSON.parse(result.stdout.toString()).writes;
+      expect(writes.slice(1).map((write: { task: string; evidence: string }) => [write.task, write.evidence])).toEqual([['Priority: Cards', '2026-10-20 10:00 | ship the cards']]);
+      expect(save({ priorities: [{ title: 'Made up', evidence: [{ at: '2026-10-20 10:00', quote: 'never typed' }] }] }).exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });

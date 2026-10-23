@@ -39,12 +39,15 @@ function render(title: string, sections: string[]): string {
   return `# ${title}\n\n${sections.length} prompts, oldest first.\n\n${sections.join('\n---\n\n')}`;
 }
 
-export interface OwnerPromptsFile { path: string; ownerPrompts: number; excludedAgentWritten: number }
+export interface OwnerPromptsFile { path: string; ownerPrompts: number; excludedAgentWritten: number; newPrompts?: number }
 
-/** Reads the last `days` of every agent's transcripts and writes the two files into `folder`. */
+/** Reads the last `days` of every agent's transcripts and writes the two files into `folder`. With `since` (a local
+ * `YYYY-MM-DD HH:MM`, like export_owner_prompts.py --since) it also writes new-owner-prompts.md with the prompts from
+ * that minute on, for updating saved goals. */
 export async function writeOwnerPromptsFile(options: {
   folder: string;
   days?: number;
+  since?: string | null;
   now?: number;
   scan?: typeof scanOwnerPrompts;
   scanOptions?: Omit<PromptScanOptions, 'sinceEpochMs'>;
@@ -55,5 +58,12 @@ export async function writeOwnerPromptsFile(options: {
   const path = join(options.folder, 'owner-prompts.md');
   writeFileSync(path, render(`Owner prompts (typed by the owner, not written by an agent), last ${days} days`, result.ownerPrompts.map(prompt => section(prompt, true))), { mode: 0o600 });
   writeFileSync(join(options.folder, 'excluded-agent-written-prompts.md'), render('Excluded: prompts an agent wrote first (audit file)', result.agentWritten.map(prompt => section(prompt, false))), { mode: 0o600 });
-  return { path, ownerPrompts: result.ownerPrompts.length, excludedAgentWritten: result.agentWritten.length };
+  const written: OwnerPromptsFile = { path, ownerPrompts: result.ownerPrompts.length, excludedAgentWritten: result.agentWritten.length };
+  if (options.since) {
+    const since = options.since;
+    const newPrompts = result.ownerPrompts.filter(prompt => promptMinute(prompt.at) >= since);
+    writeFileSync(join(options.folder, 'new-owner-prompts.md'), render(`Owner prompts since ${since}`, newPrompts.map(prompt => section(prompt, true))), { mode: 0o600 });
+    written.newPrompts = newPrompts.length;
+  }
+  return written;
 }

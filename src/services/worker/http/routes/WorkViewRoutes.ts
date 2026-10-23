@@ -185,7 +185,6 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     dir: ledgerDir,
     openDatabase,
     enabled: () => SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
-    hasUsableAgent: async () => (await detectUsableAgents()).some(agent => agent.authenticated && agent.path),
     runJob: ({ needs, reason }) => runAgentTask(buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase })),
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
   });
@@ -450,7 +449,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}:${this.autoRefresh?.revision ?? 0}` };
+    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
   }
 
   /**

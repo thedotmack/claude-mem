@@ -5,7 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { activitySignature, buildAgentView, readAgentRecords, readEvidence } from './agent-view.mjs';
-import { ledgerSignature, readLedger } from './request-groups.mjs';
+import { goalsAddedSince, ledgerSignature, readLedger } from './request-groups.mjs';
 import { recordedFile } from './work-product.mjs';
 
 const CLOSED = new Set(['done', 'dropped']);
@@ -332,8 +332,8 @@ export class WorkStateSource {
     const goals = this.agentView.goals;
     if (!alignment || !goals) return {};
     const byGoal = new Map([...goals.priorities, ...goals.openAsks].map((goal) => [goal.task, goal]));
-    // "Serves none" was judged against one goals run; a newer run asks again.
-    const unaligned = new Set(alignment.goalsGeneratedAt === goals.generatedAt ? alignment.unaligned ?? [] : []);
+    // "Serves none" holds until a goal is added; then the group is asked again.
+    const unaligned = new Set(goalsAddedSince(alignment, [...byGoal.keys()]).length ? [] : alignment.unaligned ?? []);
     const humanRequests = (this.agentView.humanRequests ?? []).map((request) => {
       if (!request.groupId) return request;
       const links = (alignment.links?.[request.groupId] ?? []).filter((link) => byGoal.has(link.goal)).map((link) => {
