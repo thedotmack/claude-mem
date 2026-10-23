@@ -220,6 +220,8 @@ export function shellTemplateManifest(buildShellCommand, buildCodexWindowsComman
         // Synchronous so the File Read Gate can deny a whole-file Read.
         'PreToolUse.0.0': claudeExecHook(['hook', 'claude-code', 'file-context'], { timeout: FILE_CONTEXT_HOOK_TIMEOUT_SECONDS }, PRE_TOOL_USE_MATCHER),
         'Stop.0.0': claudeExecHook(['hook', 'claude-code', 'summarize'], { timeout: 120, async: true }),
+        // Records that a subagent finished, so My Work stops showing it as working.
+        'SubagentStop.0.0': claudeExecHook(['hook', 'claude-code', 'subagent-stop'], { timeout: 30, async: true }),
         'SessionEnd.0.0': claudeExecHook(['hook', 'claude-code', 'session-end'], { async: true }),
       },
     },

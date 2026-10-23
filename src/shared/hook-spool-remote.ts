@@ -38,6 +38,10 @@ const entrySchema = z.discriminatedUnion('kind', [
     observedBilling: z.string().max(1024).optional(),
   }), enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('session_end'), payload: commonPayload, enqueuedAtEpochMs: timestamp }),
+  z.object({ kind: z.literal('subagent_stop'), payload: commonPayload.extend({
+    agentId: z.string().min(1).max(128),
+    agentType: z.string().max(128).optional(),
+  }), enqueuedAtEpochMs: timestamp }),
   z.object({ kind: z.literal('advisor_calls'), payload: commonPayload.extend({
     transcriptPath: z.string().max(32768).optional(),
     calls: z.array(z.object({
