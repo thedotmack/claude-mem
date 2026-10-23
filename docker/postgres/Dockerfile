@@ -1,9 +1,9 @@
 # postgres-pgvector-textsearch: Postgres with pgvector (search by meaning) and
 # pg_textsearch (bm25 keyword ranking), both from the PostgreSQL project's apt
 # repository (apt.postgresql.org), which the official postgres image already
-# uses. Published as ghcr.io/rich-murphey/postgres-pgvector-textsearch, built
-# from rich-murphey/claude-mem-search-eval; docker-compose.yml pulls that image,
-# and `docker compose up --build` builds this file instead.
+# uses. docker-compose.yml builds this file locally as claude-mem-postgres:17;
+# no prebuilt image is pulled. About 650 MB, against 424 MB for
+# postgres:17-alpine.
 ARG PG_MAJOR=17
 FROM postgres:${PG_MAJOR}-trixie
 ARG PG_MAJOR
