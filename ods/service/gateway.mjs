@@ -24,7 +24,14 @@ http.createServer((request, response) => {
     response.writeHead(404).end();
     return;
   }
-  const probe = http.get({ host: WORKER_HOST, port: WORKER_PORT, path: '/api/health', timeout: HEALTH_TIMEOUT_MS }, upstream => {
+  // The worker refuses untrusted DNS names in Host (DNS-rebinding guard); localhost is trusted.
+  const probe = http.get({
+    host: WORKER_HOST,
+    port: WORKER_PORT,
+    path: '/api/health',
+    headers: { host: `localhost:${WORKER_PORT}` },
+    timeout: HEALTH_TIMEOUT_MS,
+  }, upstream => {
     response.writeHead(upstream.statusCode ?? 502, { 'content-type': 'application/json' });
     upstream.pipe(response);
   });
