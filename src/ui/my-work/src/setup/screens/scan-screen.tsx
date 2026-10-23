@@ -16,7 +16,11 @@ const STATUS: Record<SetupScanPhase, string> = {
 }
 
 /** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
-export function ScanScreen({ scan }: { scan: SetupScanView }) {
+export function ScanScreen({ scan, onImproveProductChange, preferenceError }: {
+  scan: SetupScanView
+  onImproveProductChange: (improveProduct: boolean) => void
+  preferenceError: string | null
+}) {
   const detected = scan.agents.filter((agent) => agent.detected)
   return (
     <section aria-labelledby="scan-title">
@@ -40,7 +44,12 @@ export function ScanScreen({ scan }: { scan: SetupScanView }) {
           <progress max={100} value={scan.percent} aria-label="Scan progress">{scan.percent}%</progress>
           <span className="scan-percent" aria-hidden="true">{scan.percent}%</span>
         </div>
+        <label className="scan-improve-product">
+          <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading'} onChange={(event) => onImproveProductChange(event.target.checked)} />
+          <span>Help make claude-mem smarter for everyone with my anonymized setup results</span>
+        </label>
         <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>
+        {preferenceError && <p className="scan-error" role="alert">{preferenceError}</p>}
         {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}
       </div>
     </section>

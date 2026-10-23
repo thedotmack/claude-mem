@@ -16,7 +16,7 @@ export interface SetupScanAgent {
 }
 
 export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'uploading' | 'done' | 'failed'
-export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null }
+export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null; improveProduct: boolean }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The worker's subsidized hosted setup extraction. */
@@ -59,6 +59,8 @@ export interface SetupChoice { branch: 'home' | 'go'; memoryBilling: 'hosted' | 
 export interface SetupSource {
   readonly kind: 'local' | 'sample'
   subscribe(onData: (data: SetupData) => void): () => void
+  /** Changes the hosted setup results preference without pausing the scan or upload. */
+  setImproveProduct(improveProduct: boolean): Promise<void>
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
   choose(choice: SetupChoice): Promise<void>
   /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
@@ -73,7 +75,7 @@ export interface SetupSource {
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
-  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null },
+  scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null, improveProduct: true },
   reveal: { goals: null, work: null, rules: null },
   extraction: null,
   recentPrompts: [],
@@ -87,7 +89,9 @@ export const EMPTY_SETUP_DATA: SetupData = {
 }
 
 /** The worker's answers, trimmed to what this file reads. */
-interface WorkerScanState extends Omit<SetupScanView, 'agents'> {
+interface WorkerScanState extends Omit<SetupScanView, 'agents' | 'improveProduct'> {
+  /** Older workers do not send the hosted setup preference. */
+  improveProduct?: boolean
   /** An older worker sends no canRunSetup / cannotRunReason. */
   agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'>> & { fromMemory?: number; fromTranscripts?: number }>
   /** The 30-day token usage the same pass sums, once the scan is done. */
@@ -126,8 +130,14 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
     // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
     id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
   })),
-  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error,
+  percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error, improveProduct: scan.improveProduct ?? true,
 })
+
+// Keep rapid checkbox changes in click order; scan and upload never wait on this queue.
+let preferenceWrite: Promise<unknown> = Promise.resolve()
+let desiredImproveProduct: boolean | undefined
+let appliedImproveProduct: boolean | undefined
+let preferenceReady: Promise<void> = Promise.resolve()
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
@@ -139,14 +149,21 @@ export const localSetupSource: SetupSource = {
   subscribe(onData) {
     let data = EMPTY_SETUP_DATA
     let closed = false
+    let scanRevision = 0
+    let ready!: () => void
+    preferenceReady = new Promise<void>((resolve) => { ready = resolve })
     const publish = (changes: Partial<SetupData>) => { if (closed) return; data = { ...data, ...changes }; onData(data) }
-    const applyScan = (scan: WorkerScanState) => publish({
-      scan: toScanView(scan),
-      usage: scan.usage ? toSetupUsage(scan.usage) : null,
-      recentPrompts: scan.recentPrompts ?? [],
-      // Finish Setup pre-ticks the tools the scan found on this machine.
-      detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
-    })
+    const applyScan = (scan: WorkerScanState) => {
+      scanRevision++
+      appliedImproveProduct = scan.improveProduct ?? true
+      publish({
+        scan: toScanView(scan),
+        usage: scan.usage ? toSetupUsage(scan.usage) : null,
+        recentPrompts: scan.recentPrompts ?? [],
+        // Finish Setup pre-ticks the tools the scan found on this machine.
+        detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
+      })
+    }
     const applyState = (state: WorkerSetupState) => publish({
       alreadyPro: state.alreadyPro,
       checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
@@ -171,13 +188,43 @@ export const localSetupSource: SetupSource = {
     stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
     stream.addEventListener('setup-import', (event) => publish({ historyImport: toHistoryImport(JSON.parse((event as MessageEvent<string>).data) as WorkerHistoryImport) }))
     stream.addEventListener('work-view', (event) => applySnapshot(JSON.parse((event as MessageEvent<string>).data) as SnapshotWithSetup))
+    let requestedAtRevision = scanRevision
     void (async () => {
       const [scan, state] = await Promise.all([workerJson<WorkerScanState>('/api/setup/scan'), workerJson<WorkerSetupState>('/api/setup/state')])
+      if (closed) return
       applyState(state)
-      applyScan(scan)
-      if (scan.phase === 'idle') applyScan(await postJson<WorkerScanState>('/api/setup/scan', {}))
-    })().catch((error: unknown) => publish({ scan: { ...data.scan, phase: 'failed', error: error instanceof Error ? error.message : String(error) } }))
-    return () => { closed = true; stream.close() }
+      // The event stream can advance while GET or POST is in flight. Never restore an older phase or preference.
+      if (scanRevision === requestedAtRevision) applyScan(scan)
+      if (data.scan.phase === 'idle') {
+        requestedAtRevision = scanRevision
+        // A click can precede the initial GET. Start with the latest choice, without
+        // delaying the scan for the buffered preference request.
+        const started = await postJson<WorkerScanState>('/api/setup/scan', desiredImproveProduct === undefined ? {} : { improveProduct: desiredImproveProduct })
+        if (scanRevision === requestedAtRevision) applyScan(started)
+      }
+    })().catch((error: unknown) => {
+      // A late startup error must not replace progress or results already received from the stream.
+      if (!closed && (scanRevision === requestedAtRevision || data.scan.phase === 'idle')) {
+        publish({ scan: { ...data.scan, phase: 'failed', error: error instanceof Error ? error.message : String(error) } })
+      }
+    }).finally(ready)
+    return () => { closed = true; stream.close(); ready() }
+  },
+  async setImproveProduct(improveProduct) {
+    desiredImproveProduct = improveProduct
+    const initialized = preferenceReady
+    const write = preferenceWrite.then(async () => {
+      // Buffer early clicks until GET/start establishes the scan. It starts with the latest choice
+      // immediately; an older preference request must not arrive later and overwrite that choice.
+      await initialized
+      // Start may already have accepted this value; a redundant POST after upload would report a false failure.
+      if (desiredImproveProduct === improveProduct && appliedImproveProduct !== improveProduct) {
+        const scan = await postJson<WorkerScanState>('/api/setup/scan/preferences', { improveProduct })
+        appliedImproveProduct = scan.improveProduct ?? improveProduct
+      }
+    })
+    preferenceWrite = write.catch(() => {})
+    await write
   },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
   async checkout() { await postJson('/api/setup/checkout', {}) },
