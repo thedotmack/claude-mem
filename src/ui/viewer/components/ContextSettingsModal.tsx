@@ -501,13 +501,13 @@ export function ContextSettingsModal({
                   {!observerManagesBaseUrl && (
                     <FormField
                       label="Reasoning effort"
-                      tooltip="openrouter.ai models only. None turns reasoning off, for models that spend the output budget thinking. Default sends nothing."
+                      tooltip="openrouter.ai only. Empty (the default) sends reasoning off. Set an effort to opt back in. A custom gateway does not get this field until an empty length-truncated reply retries once."
                     >
                       <select
                         value={formState.CLAUDE_MEM_OPENROUTER_REASONING_EFFORT || ''}
                         onChange={(e) => updateSetting('CLAUDE_MEM_OPENROUTER_REASONING_EFFORT', e.target.value)}
                       >
-                        <option value="">Model default</option>
+                        <option value="">Off (default)</option>
                         <option value="none">None (reasoning off)</option>
                         <option value="minimal">Minimal</option>
                         <option value="low">Low</option>
@@ -582,6 +582,18 @@ export function ContextSettingsModal({
                       onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_MODEL', e.target.value)}
                       placeholder={openAICompatPresetOption(formState.CLAUDE_MEM_OPENAI_COMPAT_PRESET).defaultModel || 'model id'}
                     />
+                  </FormField>
+                  <FormField
+                    label="Reasoning"
+                    tooltip="Off (default) sends reasoning disabled so a reasoning model cannot spend the output cap thinking. On leaves it to the endpoint. A server that rejects the field is retried once without it."
+                  >
+                    <select
+                      value={formState.CLAUDE_MEM_OPENAI_COMPAT_REASONING || ''}
+                      onChange={(e) => updateSetting('CLAUDE_MEM_OPENAI_COMPAT_REASONING', e.target.value)}
+                    >
+                      <option value="">Off (default)</option>
+                      <option value="on">On (endpoint decides)</option>
+                    </select>
                   </FormField>
                   <span className="toggle-description">
                     The API key is set outside the viewer: <code>CLAUDE_MEM_OPENAI_COMPAT_API_KEY</code> in{' '}

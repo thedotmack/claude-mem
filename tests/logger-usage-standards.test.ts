@@ -48,6 +48,7 @@ const EXCLUDED_PATTERNS = [
   /build\/hook-shell-template\.ts$/,  // Pure build-time shell-string generator (no runtime/observability surface); drift is enforced by build-hooks.js + plugin-distribution.test.ts
   /worker\/model-aliases\.ts$/,  // Pure $TIER alias resolver (#2289); side-effect-free passthrough, logging happens at the request-time call site
   /worker\/observer-usage\.ts$/,  // Pure observer token accumulation helpers; logging happens at provider/session completion call sites (#3508)
+  /worker\/observer-auth-method\.ts$/,  // Pure health-endpoint auth label; no I/O of its own
   /worker\/session\/OutputRecovery\.ts$/,  // Pure per-batch rejection counter; the retry and drop are logged at the ResponseProcessor call site (#3624)
   /worker\/session\/abort-reason\.ts$/,  // Pure abort-category authority (enum + preserve set); exits are logged by the handler and runner (#3475)
   /worker\/TimelineService\.ts$/,  // Pure filterByDepth helper after dead-code removal; no side effects (mirrors FallbackErrorHandler)
