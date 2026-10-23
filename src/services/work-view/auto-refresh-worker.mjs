@@ -90,6 +90,8 @@ export class AutoRefreshWorker {
       this.write({
         state: outcome.state, reason, agent: outcome.agent ?? null, startedAt, finishedAt, needs,
         result: outcome.result ?? null, error: outcome.error ?? null, nextAt: this.iso(this.now() + this.checkMs),
+        // Per-step timings for measuring runs; My Work does not show them.
+        ...(outcome.steps ? { steps: outcome.steps } : {}),
       });
       this.log(outcome.state === 'ok' ? 'info' : 'warn', `Work view refresh ${outcome.state} (${reason})`, { agent: outcome.agent, error: outcome.error });
       return outcome.state;

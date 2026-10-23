@@ -758,7 +758,18 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       const details = groupDetails(args[0], ledger, candidates);
       const previous = details.previousReview;
       const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
-      const conversations = amendSince ? details.conversations.map((conversation) => conversation.asks ? { ...conversation, asks: conversation.asks.filter((ask) => Date.parse(ask.at) > Date.parse(amendSince)) } : conversation) : details.conversations;
+      const since2 = amendSince ? Date.parse(amendSince) : 0;
+      const observations = db().prepare(`SELECT o.id, o.type, o.title, o.subtitle, o.created_at_epoch FROM observations o
+        JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+        WHERE s.platform_source = ? AND s.content_session_id = ? AND o.created_at_epoch > ? ORDER BY o.created_at_epoch, o.id`);
+      const conversations = details.conversations.map((conversation) => {
+        const [, platform, sessionId] = JSON.parse(conversation.conversationKey);
+        return {
+          ...conversation,
+          ...conversation.asks && amendSince ? { asks: conversation.asks.filter((ask) => Date.parse(ask.at) > since2) } : {},
+          observations: observations.all(platform, sessionId, since2).map((row) => ({ id: row.id, at: iso(row.created_at_epoch), type: row.type, title: row.title, subtitle: row.subtitle }))
+        };
+      });
       return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());

@@ -1,7 +1,8 @@
 import type { LedgerDatabase, RefreshNeeds } from './request-groups.mjs';
 
 export type RefreshState = 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent';
-export interface RefreshJobOutcome { state: 'ok' | 'failed' | 'waiting-for-agent'; agent: string | null; result: string | null; error: string | null }
+export interface RefreshStepTiming { step: string; agent: string; startedAt: string; finishedAt: string; groups?: number }
+export interface RefreshJobOutcome { state: 'ok' | 'failed' | 'waiting-for-agent'; agent: string | null; result: string | null; error: string | null; steps?: RefreshStepTiming[] }
 export interface RefreshStatus {
   state: RefreshState;
   reason?: string;
@@ -13,6 +14,7 @@ export interface RefreshStatus {
   needs?: RefreshNeeds;
   result?: string | null;
   error?: string | null;
+  steps?: RefreshStepTiming[];
 }
 
 export class AutoRefreshWorker {

@@ -1,4 +1,5 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
+import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
@@ -54,6 +55,13 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
   };
 }
 
+ /** runAgentTask with `spawn` installed as child_process.spawn for the run. */
+function runTask(agentTask: AgentTask, { spawn: fake, ...overrides }: { spawn: typeof spawn } & Parameters<typeof runAgentTask>[1]) {
+  setFakeSpawn(fake);
+  return runAgentTask(agentTask, overrides);
+}
+afterEach(() => setFakeSpawn(null));
+
 const neverQuery = (() => { throw new Error('query must not run'); }) as never;
 const env = async () => ({ PATH: '/bin', CLAUDE_MEM_INTERNAL: '1' });
 
@@ -67,7 +75,7 @@ describe('agent runner', () => {
         yield { type: 'result', subtype: 'success', is_error: false, result: '{"reviews": []}' };
       })();
     }) as never;
-    const result = await runAgentTask(task('/data'), { detect: async () => agents('claude-code', 'codex'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents('claude-code', 'codex'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'claude-code', result: 'inline done: {"reviews": []}', error: null, attempts: [] });
     const { prompt, options } = seen[0];
     expect(prompt).toBe('inline prompt for claude-code');
@@ -95,7 +103,7 @@ describe('agent runner', () => {
         call.child.emit('close', 0);
       });
       const inlineCalls: string[] = [];
-      const result = await runAgentTask(task(cwd, inlineCalls), { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      const result = await runTask(task(cwd, inlineCalls), { detect: async () => agents('codex', 'gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
       expect(result.state).toBe('ok');
       expect(result.agent).toBe('codex');
       expect(result.result).toBe('inline done: {"ok":true}');
@@ -119,7 +127,7 @@ describe('agent runner', () => {
       call.child.stdout.emit('data', JSON.stringify({ response: '{"ok":"gemini"}', stats: {} }));
       call.child.emit('close', 0);
     });
-    const result = await runAgentTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(result).toEqual({ state: 'ok', agent: 'gemini', result: 'inline done: {"ok":"gemini"}', error: null, attempts: [] });
     expect(calls[0].command).toBe('/bin/gemini');
     expect(calls[0].args).toEqual(['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json']);
@@ -136,7 +144,7 @@ describe('agent runner', () => {
     });
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-fallthrough-'));
     try {
-      const result = await runAgentTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
+      const result = await runTask(task(cwd), { detect: async () => agents('claude-code', 'codex', 'gemini'), query, spawn: spawnImpl, buildEnv: env });
       expect(result.state).toBe('ok');
       expect(result.agent).toBe('gemini');
       expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code', 'codex']);
@@ -148,7 +156,7 @@ describe('agent runner', () => {
   it('each step runs on the model its table names, per backend; no entry keeps the CLI default', async () => {
     const seen: any[] = [];
     const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
-    await runAgentTask(task('/data', [], LIGHT_MODELS), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    await runTask(task('/data', [], LIGHT_MODELS), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
     expect(seen[0].options.model).toBe('haiku');
     const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-models-'));
     try {
@@ -158,18 +166,35 @@ describe('agent runner', () => {
         call.child.stdout.emit('data', JSON.stringify({ response: 'ok' }));
         call.child.emit('close', 0);
       });
-      await runAgentTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
-      await runAgentTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
-      await runAgentTask(task(cwd, [], {}), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runTask(task(cwd, [], {}), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
       expect(calls[0].args.slice(-5)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
       expect(calls[1].args.slice(-2)).toEqual(['-m', 'flash-lite']);
       expect(calls[2].args).not.toContain('-m');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 
+  it('each step gets a freshly built environment, so a long run never reuses an old OAuth token', async () => {
+    let built = 0;
+    const query = ((input: any) => (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: input.options.env.TOKEN }; })()) as never;
+    const twoSteps: AgentTask = { ...task('/data'), run: async ask => `${await ask('one', {})} ${await ask('two', {})}` };
+    const result = await runTask(twoSteps, { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: async () => ({ TOKEN: `t${++built}` }) });
+    expect(result.result).toBe('t1 t2');
+  });
+
+  it('an auth failure ends the run as failed with the clear error, after one try', async () => {
+    let queries = 0;
+    const query = (() => { queries++; return (async function* () { yield { type: 'result', subtype: 'success', is_error: true, result: 'Failed to authenticate: OAuth token revoked. Please log in again.' }; })(); }) as never;
+    const result = await runTask(task('/data'), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(result.state).toBe('failed');
+    expect(result.error).toMatch(/OAuth token revoked/);
+    expect(queries).toBe(1);
+  });
+
   it('no logged-in agent: waiting-for-agent, and nothing runs', async () => {
     const calls: SpawnCall[] = [];
-    const result = await runAgentTask(task('/data'), { detect: async () => agents(), query: neverQuery, spawn: fakeSpawn(calls, () => {}), buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents(), query: neverQuery, spawn: fakeSpawn(calls, () => {}), buildEnv: env });
     expect(result.state).toBe('waiting-for-agent');
     expect(calls).toHaveLength(0);
   });
@@ -180,7 +205,7 @@ describe('agent runner', () => {
       setTimeout(() => { call.child.stdout.emit('data', JSON.stringify({ response: 'slow but done' })); call.child.emit('close', 0); }, 1500);
     });
     const started = Date.now();
-    const result = await runAgentTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+    const result = await runTask(task('/data'), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
     expect(Date.now() - started).toBeGreaterThanOrEqual(1400);
     expect(result.state).toBe('ok');
     expect(calls[0].child.killed).toBe(false);

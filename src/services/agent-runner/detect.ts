@@ -27,7 +27,7 @@ import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
 import { findClaudeExecutable } from '../../shared/find-claude-executable.js';
-import { readClaudeOAuthToken, type OAuthTokenResult } from '../../shared/oauth-token.js';
+import { readClaudeOAuthToken } from '../../shared/oauth-token.js';
 import { hasAnthropicApiKey, hasAnthropicAuthToken } from '../../shared/EnvManager.js';
 
 export type UsableAgentId = 'claude-code' | 'codex' | 'gemini';
@@ -63,13 +63,12 @@ export interface CommandOptions {
  * detection, agent runs and the refresh's skill scripts.
  */
 export function runCommand(
-  spawnImplementation: typeof spawn,
   command: string,
   args: string[],
   options: CommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise<CommandResult>(resolve => {
-    const child = spawnImplementation(command, args, {
+    const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
       windowsHide: true,
@@ -113,47 +112,15 @@ export function runCommand(
   }));
 }
 
-export interface AgentDetectionDependencies {
-  spawn: typeof spawn;
-  findClaudeExecutable: () => string;
-  readClaudeOAuthToken: () => Promise<OAuthTokenResult>;
-  hasAnthropicApiKey: () => boolean;
-  hasAnthropicAuthToken: () => boolean;
-  fileExists: (path: string) => boolean;
-  readTextFile: (path: string) => string;
-  environment: NodeJS.ProcessEnv;
-  homeDirectory: () => string;
-  platform: () => NodeJS.Platform;
-  /** Wall clock, for token expiry. */
-  now: () => number;
-}
-
-const defaultDependencies: AgentDetectionDependencies = {
-  spawn,
-  findClaudeExecutable: () => findClaudeExecutable('WORKER'),
-  readClaudeOAuthToken: () => readClaudeOAuthToken(),
-  hasAnthropicApiKey,
-  hasAnthropicAuthToken,
-  fileExists: existsSync,
-  readTextFile: path => readFileSync(path, 'utf8'),
-  environment: process.env,
-  homeDirectory: homedir,
-  platform: () => process.platform,
-  now: Date.now,
-};
-
 function describeError(error: unknown): string {
   const message = error instanceof Error ? error.message : String(error);
   return message.split('\n')[0].trim() || 'unknown error';
 }
 
 /** Resolve a command on PATH the way ide-detection.ts does (`which` / `where.exe`). */
-async function resolveOnPath(
-  dependencies: AgentDetectionDependencies,
-  command: string,
-): Promise<{ path: string } | { path: null; reason: string }> {
-  const lookup = dependencies.platform() === 'win32' ? 'where.exe' : 'which';
-  const result = await runCommand(dependencies.spawn, lookup, [command]);
+async function resolveOnPath(command: string): Promise<{ path: string } | { path: null; reason: string }> {
+  const lookup = process.platform === 'win32' ? 'where.exe' : 'which';
+  const result = await runCommand(lookup, [command]);
   const firstLine = result.stdout.split(/\r?\n/).map(line => line.trim()).find(Boolean);
   if (result.exitCode !== 0 || !firstLine) {
     return { path: null, reason: `not installed: \`${command}\` is not on PATH` };
@@ -167,23 +134,23 @@ function commandFailureReason(command: string, result: CommandResult): string {
   return `\`${command}\` exited ${result.exitCode}${output ? `: ${output}` : ''}`;
 }
 
-async function detectClaudeCode(dependencies: AgentDetectionDependencies): Promise<UsableAgent> {
+async function detectClaudeCode(): Promise<UsableAgent> {
   let path: string;
   try {
-    path = dependencies.findClaudeExecutable();
+    path = findClaudeExecutable('WORKER');
   } catch (error) {
     return { id: 'claude-code', path: null, authenticated: false, reason: `not installed: ${describeError(error)}` };
   }
 
-  if (dependencies.hasAnthropicApiKey()) {
+  if (hasAnthropicApiKey()) {
     return { id: 'claude-code', path, authenticated: true, reason: 'ANTHROPIC_API_KEY in ~/.claude-mem/.env' };
   }
-  if (dependencies.hasAnthropicAuthToken()) {
+  if (hasAnthropicAuthToken()) {
     return { id: 'claude-code', path, authenticated: true, reason: 'ANTHROPIC_AUTH_TOKEN in ~/.claude-mem/.env' };
   }
 
-  const token = await dependencies.readClaudeOAuthToken();
-  if (token.kind === 'present' && (token.expiresAt === undefined || token.expiresAt > dependencies.now())) {
+  const token = await readClaudeOAuthToken();
+  if (token.kind === 'present' && (token.expiresAt === undefined || token.expiresAt > Date.now())) {
     return { id: 'claude-code', path, authenticated: true, reason: `Claude Code OAuth login (${token.source})` };
   }
 
@@ -191,7 +158,7 @@ async function detectClaudeCode(dependencies: AgentDetectionDependencies): Promi
   // refreshed by the CLI itself, and an absent read can be a keychain the
   // worker cannot see. Ask the CLI.
   const tokenSummary = token.kind === 'present' ? 'stored token expired' : `token ${token.kind}: ${token.reason}`;
-  const status = await runCommand(dependencies.spawn, path, ['auth', 'status', '--json']);
+  const status = await runCommand(path, ['auth', 'status', '--json']);
   if (status.exitCode !== 0 && !status.stdout.trim()) {
     return {
       id: 'claude-code',
@@ -218,12 +185,12 @@ async function detectClaudeCode(dependencies: AgentDetectionDependencies): Promi
   return { id: 'claude-code', path, authenticated: false, reason: '`claude auth status` reports logged out' };
 }
 
-async function detectCodex(dependencies: AgentDetectionDependencies): Promise<UsableAgent> {
-  const resolved = await resolveOnPath(dependencies, 'codex');
+async function detectCodex(): Promise<UsableAgent> {
+  const resolved = await resolveOnPath('codex');
   if (resolved.path === null) return { id: 'codex', path: null, authenticated: false, reason: resolved.reason };
   const path = resolved.path;
 
-  const status = await runCommand(dependencies.spawn, path, ['login', 'status']);
+  const status = await runCommand(path, ['login', 'status']);
   // codex-cli prints the status line to stderr.
   const output = `${status.stdout}\n${status.stderr}`;
   if (status.exitCode === 0 && /Logged in/.test(output)) {
@@ -238,24 +205,24 @@ async function detectCodex(dependencies: AgentDetectionDependencies): Promise<Us
   };
 }
 
-async function detectGemini(dependencies: AgentDetectionDependencies): Promise<UsableAgent> {
-  const resolved = await resolveOnPath(dependencies, 'gemini');
+async function detectGemini(): Promise<UsableAgent> {
+  const resolved = await resolveOnPath('gemini');
   if (resolved.path === null) return { id: 'gemini', path: null, authenticated: false, reason: resolved.reason };
   const path = resolved.path;
 
-  if (dependencies.environment.GEMINI_API_KEY?.trim()) {
+  if (process.env.GEMINI_API_KEY?.trim()) {
     return { id: 'gemini', path, authenticated: true, reason: 'GEMINI_API_KEY is set' };
   }
 
-  const geminiDirectory = join(dependencies.homeDirectory(), '.gemini');
+  const geminiDirectory = join(homedir(), '.gemini');
   const settingsPath = join(geminiDirectory, 'settings.json');
   const credentialsPath = join(geminiDirectory, 'oauth_creds.json');
-  if (!dependencies.fileExists(settingsPath)) {
+  if (!existsSync(settingsPath)) {
     return { id: 'gemini', path, authenticated: false, reason: 'no GEMINI_API_KEY and no ~/.gemini/settings.json' };
   }
   let selectedType: unknown;
   try {
-    const settings = JSON.parse(dependencies.readTextFile(settingsPath)) as { security?: { auth?: { selectedType?: unknown } } };
+    const settings = JSON.parse(readFileSync(settingsPath, 'utf8')) as { security?: { auth?: { selectedType?: unknown } } };
     selectedType = settings.security?.auth?.selectedType;
   } catch (error) {
     return { id: 'gemini', path, authenticated: false, reason: `~/.gemini/settings.json is unreadable: ${describeError(error)}` };
@@ -263,19 +230,15 @@ async function detectGemini(dependencies: AgentDetectionDependencies): Promise<U
   if (typeof selectedType !== 'string' || !selectedType) {
     return { id: 'gemini', path, authenticated: false, reason: '~/.gemini/settings.json names no auth type' };
   }
-  if (!dependencies.fileExists(credentialsPath)) {
+  if (!existsSync(credentialsPath)) {
     return { id: 'gemini', path, authenticated: false, reason: `auth type ${selectedType} but no ~/.gemini/oauth_creds.json` };
   }
   return { id: 'gemini', path, authenticated: true, reason: `auth type ${selectedType} with ~/.gemini/oauth_creds.json` };
 }
 
-async function runCheck(
-  id: UsableAgentId,
-  check: (dependencies: AgentDetectionDependencies) => Promise<UsableAgent>,
-  dependencies: AgentDetectionDependencies,
-): Promise<UsableAgent> {
+async function runCheck(id: UsableAgentId, check: () => Promise<UsableAgent>): Promise<UsableAgent> {
   try {
-    return await check(dependencies);
+    return await check();
   } catch (error) {
     return { id, path: null, authenticated: false, reason: `check failed: ${describeError(error)}` };
   }
@@ -285,13 +248,10 @@ async function runCheck(
  * Report Claude Code, Codex and Gemini in priority order, each with whether
  * it is installed (`path`) and logged in (`authenticated`). Never throws.
  */
-export async function detectUsableAgents(
-  overrides: Partial<AgentDetectionDependencies> = {},
-): Promise<UsableAgent[]> {
-  const dependencies = { ...defaultDependencies, ...overrides };
+export async function detectUsableAgents(): Promise<UsableAgent[]> {
   return Promise.all([
-    runCheck('claude-code', detectClaudeCode, dependencies),
-    runCheck('codex', detectCodex, dependencies),
-    runCheck('gemini', detectGemini, dependencies),
+    runCheck('claude-code', detectClaudeCode),
+    runCheck('codex', detectCodex),
+    runCheck('gemini', detectGemini),
   ]);
 }

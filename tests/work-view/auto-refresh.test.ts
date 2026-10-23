@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { setFakeSpawn } from '../helpers/fake-spawn.js';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,7 @@ import { buildRefreshTask, STEP_MODELS } from '../../src/services/work-view/refr
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
+afterEach(() => setFakeSpawn(null));
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
 const PLUGIN_ROOT = join(import.meta.dir, '..', '..', 'plugin');
 
@@ -17,7 +19,7 @@ function fixtureDatabase() {
   db.exec(`CREATE TABLE sdk_sessions (id INTEGER PRIMARY KEY, platform_source TEXT, content_session_id TEXT, memory_session_id TEXT, project TEXT, user_prompt TEXT, started_at_epoch INTEGER);
     CREATE TABLE user_prompts (id INTEGER PRIMARY KEY, session_db_id INTEGER, prompt_number INTEGER, prompt_text TEXT, created_at_epoch INTEGER);
     CREATE TABLE tool_uses (id INTEGER PRIMARY KEY, session_db_id INTEGER, tool_name TEXT, tool_input TEXT, created_at_epoch INTEGER);
-    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, created_at_epoch INTEGER);
+    CREATE TABLE observations (id INTEGER PRIMARY KEY, memory_session_id TEXT, type TEXT, title TEXT, subtitle TEXT, created_at_epoch INTEGER);
     CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER);`);
   db.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(1, 'claude', 'a', 'm1', 'repo/tree', 'Build the release cards', NOW - 3 * DAY);
   db.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(1, 1, 'Build the release cards', NOW - 3 * DAY);
@@ -56,9 +58,10 @@ describe('automatic refresh scheduler', () => {
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('running');
       expect(jobs).toHaveLength(1);
       expect(worker.status().state).toBe('running');
-      finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null });
+      const steps = [{ step: 'review', agent: 'claude-code', startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString(), groups: 1 }];
+      finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, steps });
       expect(await first).toBe('ok');
-      expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString() });
+      expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString(), steps });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -140,6 +143,9 @@ describe('refresh task', () => {
         prompts.push(prompt);
         models.push(stepModels);
         expect(prompt).toMatch(/read-only sandbox/);
+        // Codex and Gemini run without MCP servers: no instruction to search memory, the evidence is inline.
+        expect(prompt).toMatch(/You have no memory tools/);
+        expect(prompt).not.toMatch(/with its MCP tools/);
         expect(prompt).not.toContain('${CLAUDE_SKILL_DIR}');
         const file = /is in (\S+\.json)/.exec(prompt)?.[1];
         if (prompt.includes('Do only section 1')) return '```json\n{"groups": [{"title": "Release cards", "conversations": [' + JSON.stringify(key('a')) + ']}]}\n```';
@@ -183,7 +189,9 @@ describe('parallel reviews', () => {
       const task = buildRefreshTask({ needs: { due: 10, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
       let inFlight = 0, most = 0;
       const bothAsked = deferred<void>();
+      let lastPrompt = '';
       const ask = async (prompt: string) => {
+        lastPrompt = prompt;
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
         const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
         most = Math.max(most, ++inFlight);
@@ -193,7 +201,11 @@ describe('parallel reviews', () => {
         return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
       };
       expect(await task.run(ask, 'claude-code')).toBe('10 requests reviewed, story written.');
+      expect(lastPrompt).toMatch(/Search claude-mem memory with its MCP tools/);
       expect(most).toBe(2);
+      // refresh.json's run record gets one timing per step and review batch.
+      expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['review', 'claude-code', 8], ['review', 'claude-code', 2], ['story', 'claude-code', undefined]]);
+      expect(task.steps.every(timing => timing.startedAt === new Date(NOW).toISOString() && timing.finishedAt === timing.startedAt)).toBe(true);
       expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -224,7 +236,8 @@ describe('incremental owner goals', () => {
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(3, calls) });
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      setFakeSpawn(fakePython(3, calls));
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
@@ -249,7 +262,8 @@ describe('incremental owner goals', () => {
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(0, calls) });
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      setFakeSpawn(fakePython(0, calls));
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
       expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
