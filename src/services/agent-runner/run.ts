@@ -31,7 +31,7 @@ import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@ant
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
-import { detectUsableAgents, type UsableAgent, type UsableAgentId } from './detect.js';
+import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
@@ -131,30 +131,20 @@ function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentR
   };
 }
 
-/** Spawn an agent CLI with the prompt on stdin and wait for it, however long it takes. */
-function runCli(
+/** Run an agent CLI with the prompt on stdin and wait for it, however long it takes. */
+async function runCli(
   dependencies: AgentRunnerDependencies,
   command: string,
   args: string[],
   prompt: string,
   options: { cwd: string; env: NodeJS.ProcessEnv },
-): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = dependencies.spawn(command, args, { cwd: options.cwd, env: options.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
-    child.on('error', reject);
-    child.on('close', exitCode => resolve({ exitCode, stdout, stderr }));
-    child.stdin?.on('error', () => { /* The exit code reports a CLI that stopped reading. */ });
-    child.stdin?.end(prompt);
-  });
+): Promise<CommandResult> {
+  const result = await runCommand(dependencies.spawn, command, args, { ...options, input: prompt });
+  if (result.spawnError) throw result.spawnError;
+  return result;
 }
 
-function failure(name: string, result: { exitCode: number | null; stdout: string; stderr: string }): Error {
+function failure(name: string, result: CommandResult): Error {
   const detail = `${result.stderr}\n${result.stdout}`.trim().split('\n').filter(Boolean).slice(-3).join(' ').slice(0, 500);
   return new Error(`${name} exited ${result.exitCode}${detail ? `: ${detail}` : ''}`);
 }

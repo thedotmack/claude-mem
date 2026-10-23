@@ -204,7 +204,7 @@ describe('incremental owner goals', () => {
   function fakePython(newPrompts: number, calls: Array<{ args: string[]; goals?: any }>) {
     return ((_command: string, args: string[]) => {
       const child: any = new EventEmitter();
-      child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+      child.stdout = Object.assign(new EventEmitter(), { setEncoding() {} }); child.stderr = Object.assign(new EventEmitter(), { setEncoding() {} });
       const call: { args: string[]; goals?: any } = { args };
       calls.push(call);
       queueMicrotask(() => {

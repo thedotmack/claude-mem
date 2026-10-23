@@ -15,6 +15,7 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTask, AskAgent, StepModels } from '../agent-runner/run.js';
+import { runCommand } from '../agent-runner/detect.js';
 import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
@@ -109,14 +110,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       return output;
     };
     /** Runs a skill script; resolves with its output. */
-    const runScript = (args: string[]) => new Promise<string>((resolveRun, reject) => {
-      const child = spawnImpl('python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' }, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
-      let output = '';
-      child.stdout?.on('data', chunk => { output = (output + chunk).slice(-4000); });
-      child.stderr?.on('data', chunk => { output = (output + chunk).slice(-4000); });
-      child.on('error', reject);
-      child.on('close', code => (code === 0 ? resolveRun(output) : reject(new Error(`${args[0].split('/').pop()} exited ${code}: ${output.trim().slice(-800)}`))));
-    });
+    const runScript = async (args: string[]) => {
+      const result = await runCommand(spawnImpl, 'python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' } });
+      if (result.spawnError) throw result.spawnError;
+      if (result.exitCode !== 0) throw new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`);
+      return result.stdout;
+    };
     /** Ask, save, and on a validator's refusal ask once more with the reason. */
     const step = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => {
       let refusal: string | null = null;
