@@ -21,9 +21,6 @@ const INTEGRATION_PATH_PATTERNS: RegExp[] = [
 
 // Unit-test locations whose files still spend real seconds waiting on timers.
 const INTEGRATION_TIMER_HEAVY_FILES = new Set<string>([
-  'tests/services/sync/chroma-mcp-manager-singleton.test.ts',
-  'tests/shared/worker-utils-zombie-port.test.ts',
-  'tests/shared/kill-process-tree-pid-reuse.test.ts',
   'tests/worker/codex-app-server-client.test.ts',
 ]);
 
