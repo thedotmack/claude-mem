@@ -11,7 +11,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { Textarea } from '@/components/ui/textarea'
-import { CopyCommandButton, RefreshButton, SkillLastRun, StateBadge, useWorkspace } from '@/components/bits'
+import { RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
@@ -26,7 +26,6 @@ function useRuleScope(scopeId: string): RuleScope {
   if (!scope) throw new Error(`No rule scope ${scopeId}`)
   return scope
 }
-const REQUEST_PROGRESS_COMMAND = '/claude-mem:request-progress'
 const scopeHeading = (scope: RuleScope) => scope.tier === 'project' ? `In ${scope.name}` : scope.name
 
 /** Strength (§14): times seen × how recent. Shown in words, never as a raw score. */
@@ -543,7 +542,7 @@ function LearningRun() {
       <div className="space-y-1.5 text-xs">
         <p className="flex items-center gap-1.5 font-medium"><SparklesIcon className="size-3.5" />Last learning run</p>
         <p className="text-muted-foreground">{run.lastRunAt} on {run.deviceName}. Read {rulesLearning.reviewsRead} request reviews and found {rulesLearning.preferencesFound} preferences; {rulesLearning.newSuggestions} {rulesLearning.newSuggestions === 1 ? 'waits' : 'wait'} for your decision.</p>
-        <p className="text-muted-foreground">{sourceKind !== 'sample' ? <>Run <code className="font-mono">{REQUEST_PROGRESS_COMMAND}</code> in Claude Code to learn again; it reads your transcripts on this computer.</> : mode === 'web' ? 'From the web, Refresh queues the run for the next machine online; it needs your local transcripts.' : 'Refresh runs on this machine’s worker, which reads your Claude Code and Codex transcripts.'}</p>
+        <p className="text-muted-foreground">{sourceKind !== 'sample' ? 'claude-mem learns again on its own whenever new work is due, using the agent you are logged in to.' : mode === 'web' ? 'From the web, Refresh queues the run for the next machine online; it needs your local transcripts.' : 'Refresh runs on this machine’s worker, which reads your Claude Code and Codex transcripts.'}</p>
       </div>
     </Req>
   )
@@ -620,11 +619,10 @@ function NoRulesYet({ onAdd, readError }: { onAdd: () => void; readError: string
       <Empty className="border bg-card/60">
         <EmptyHeader>
           <EmptyTitle>{readError ? 'Can’t read your rules right now' : 'No rules yet'}</EmptyTitle>
-          <EmptyDescription>{readError ?? <>Run request-progress (<code className="font-mono">{REQUEST_PROGRESS_COMMAND}</code>) in Claude Code to learn how you like to work, or add one.</>}</EmptyDescription>
+          <EmptyDescription>{readError ?? <>claude-mem learns how you like to work from your requests on its own. You can also add one.</>}</EmptyDescription>
         </EmptyHeader>
         {!readError && (
           <EmptyContent className="flex-row justify-center gap-2">
-            <CopyCommandButton command={REQUEST_PROGRESS_COMMAND} />
             <Button size="sm" className="h-11 md:h-8" onClick={onAdd}><PlusIcon />Add rule</Button>
           </EmptyContent>
         )}
@@ -635,7 +633,7 @@ function NoRulesYet({ onAdd, readError }: { onAdd: () => void; readError: string
 
 export function MyRules() {
   const { mode } = useWorkspace()
-  const { sourceKind, rules, ruleScopes, rulesLearning, rulesReadError, lastRuns } = useWorkModel()
+  const { sourceKind, rules, ruleScopes, rulesLearning, rulesReadError, lastRuns, refresh } = useWorkModel()
   const sample = sourceKind === 'sample'
   // Decisions made on this page stay in the queue (with Undo) until you leave; the saved records are the truth.
   const [decisions, setDecisions] = useState<Record<string, Decision>>({})
@@ -764,7 +762,7 @@ export function MyRules() {
             {sample ? <>
               <RefreshButton run={SAMPLE_RUNS.rules} ids={['R14.13']} />
               <Req ids={['R14.10', 'R11.1']}><span className="text-xs leading-tight text-muted-foreground sm:hidden">Last run {SAMPLE_RUNS.rules.lastRunAt.replace('Today, ', '')}<br />on {SAMPLE_DEVICES.find((device) => device.id === SAMPLE_RUNS.rules.deviceId)!.name}</span></Req>
-            </> : lastRuns.progress && <SkillLastRun run={lastRuns.progress} command={REQUEST_PROGRESS_COMMAND} ids={['R14.13']} />}
+            </> : <RefreshStatus refresh={refresh} run={lastRuns.progress} ids={['R14.13']} />}
           </div>
         </div>
 

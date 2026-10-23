@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, type ReactNode } from 'react'
-import { BotIcon, CheckIcon, CopyIcon, CornerLeftUpIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
+import { BotIcon, CornerLeftUpIcon, RefreshCwIcon, UserIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { HoverCard, HoverCardContent, HoverCardTrigger } from '@/components/ui/hover-card'
@@ -9,6 +9,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
 import { agentById, applyPendingWorkModel, deviceById, isSampleHref, measuredEstimate, SAMPLE_DEVICES, useHasPendingWorkModel, useWorkModel, type Device, type LiveState, type Request, type Run, type SkillRun } from '@/data'
+import type { AutoRefresh } from '@/live/work-data-source'
 import { AgentMark } from './brand'
 
 export interface Workspace { mode: 'home' | 'web'; team: boolean; connected: boolean }
@@ -247,32 +248,21 @@ export function RefreshButton({ run, ids }: { run: Run; ids: string[] }) {
   )
 }
 
-/** Copies a Claude Code command. The page can't run a skill yet (plan risk R6), so it hands you the exact command instead. */
-export function CopyCommandButton({ command, className }: { command: string; className?: string }) {
-  const [copied, setCopied] = useState(false)
-  const copy = async () => {
-    await navigator.clipboard.writeText(command)
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
-  }
-  return (
-    <Button variant="outline" size="sm" className={cn('h-11 min-w-11 md:h-8 md:min-w-0', className)} onClick={copy} aria-label={`Copy ${command}`}>
-      {copied ? <CheckIcon /> : <CopyIcon />}
-      {copied ? 'Copied' : 'Copy'}
-    </Button>
-  )
-}
-
-/** A live skill's real last run, plus the command that runs it again in Claude Code. Never a fake run. */
-export function SkillLastRun({ run, command, ids, label = 'Last run' }: { run: SkillRun; command: string; ids: string[]; label?: string }) {
+/**
+ * The worker's automatic refresh: it runs owner-goals and request-progress on
+ * the user's own logged-in agent whenever something is due, so there is no
+ * command to copy. Before its first run, the last saved run shows instead.
+ */
+export function RefreshStatus({ refresh, run, ids, label = 'Last run' }: { refresh: AutoRefresh | null; run: SkillRun | null; ids: string[]; label?: string }) {
+  let text: ReactNode = null
+  if (refresh?.state === 'running') text = <span className="inline-flex items-center gap-1.5"><Spinner />Updating your goals and progress…</span>
+  else if (refresh?.error) text = refresh.state === 'waiting-for-agent' ? <>Waiting to refresh: {refresh.error}</> : <>Refresh failed: {refresh.error}</>
+  else if (refresh?.finishedAt) text = <>Last refreshed {refresh.finishedAt}</>
+  else if (run) text = <>{label} {run.lastRunAt}<br />on {run.deviceName}</>
+  if (!text) return null
   return (
     <Req ids={[...ids, 'R14.10']}>
-      <div className="flex w-full items-center gap-3 sm:w-auto">
-        <span className="min-w-0 flex-1 text-xs leading-tight text-muted-foreground sm:text-right">
-          {label} {run.lastRunAt}<br />on {run.deviceName} · run again with <code className="font-mono">{command}</code>
-        </span>
-        <CopyCommandButton command={command} />
-      </div>
+      <span className="block w-full text-xs leading-tight text-muted-foreground sm:w-auto sm:text-right" aria-live="polite">{text}</span>
     </Req>
   )
 }

@@ -198,4 +198,14 @@ export interface WorkViewSnapshot {
   rulesFile?: WorkViewRulesFile
   /** request-progress reviews and the build story; null when the ledger is empty. Older workers leave it out. */
   story?: { story: WorkViewBuildStory | null } | null
+  /** The worker's automatic refresh of goals and progress (refresh.json); null before its first check. Older workers leave it out. */
+  refresh?: WorkViewRefresh | null
+}
+
+/** refresh.json, written by the worker's automatic refresh (auto-refresh-worker.mjs). */
+export interface WorkViewRefresh {
+  state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'
+  startedAt?: string
+  finishedAt?: string
+  error?: string | null
 }

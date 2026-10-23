@@ -5,9 +5,9 @@ import { assertConsistentRequest, type Agent, type AgentTool, type CurrentPeriod
 import { normalizeRequestStatus, presentStatus, STALE_AFTER_MS, type NormalizedStatus } from './status-normalization.ts'
 import type { MappedWorkModel, RequestReadError } from './work-data-source.ts'
 import type { OwnerRule, RuleQuote, RuleRecord } from '../data-rules.ts'
-import type { BuildStory } from './work-data-source.ts'
+import type { AutoRefresh, BuildStory } from './work-data-source.ts'
 import { measuredEstimate } from './measured-estimate.ts'
-import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
+import type { WorkViewAgent, WorkViewBuildStory, WorkViewGoalItem, WorkViewGoalList, WorkViewHumanRequest, WorkViewProgress, WorkViewRefresh, WorkViewRule, WorkViewSnapshot } from './work-view-api-types.ts'
 
 export const THIS_COMPUTER: Device = { id: 'this-computer', name: 'This computer', syncedMinutesAgo: 0, online: true }
 /** Stands in when a request names no agent the snapshot knows: the card then names the machine (§13.2). */
@@ -344,6 +344,13 @@ export function toRulesModel(snapshot: Pick<WorkViewSnapshot, 'rules' | 'ruleSco
   }
 }
 
+/** refresh.json as My Work shows it: no tokens, costs or internal fields. */
+function toAutoRefresh(raw: WorkViewRefresh | null): AutoRefresh | null {
+  if (!raw) return null
+  const finished = Date.parse(raw.finishedAt ?? '')
+  return { state: raw.state, finishedAt: Number.isFinite(finished) ? formatDateTime(finished) : null, error: raw.state === 'failed' || raw.state === 'waiting-for-agent' ? raw.error?.trim() || null : null }
+}
+
 /** The build story request-progress wrote: its first paragraph is My Work's recap. No story, no recap. */
 export function toBuildStory(story: WorkViewBuildStory | null, now: number): BuildStory | null {
   const blocks = (story?.narrative ?? '').split(/\n\s*\n/).map((block) => block.replace(/\*\*([^*]+)\*\*/g, '$1').replace(/`([^`]+)`/g, '$1').replace(/\s+/g, ' ').trim()).filter(Boolean)
@@ -394,6 +401,7 @@ export function toWorkModel(snapshot: WorkViewSnapshot, now: number): MappedWork
     ...rulesModel,
     buildStory: toBuildStory(snapshot.story?.story ?? null, now),
     lastRuns: { goals: goalsRun, progress: progressRun },
+    refresh: toAutoRefresh(snapshot.refresh ?? null),
     goalOnlyRequests: [],
   }
 }

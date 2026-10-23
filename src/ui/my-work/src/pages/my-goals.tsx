@@ -5,7 +5,7 @@ import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '@/
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible'
 import { Progress } from '@/components/ui/progress'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { AgentIcon, CopyCommandButton, NextMove, ProgressMeter, RefreshButton, SkillLastRun, StateBadge, useWorkspace } from '@/components/bits'
+import { AgentIcon, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { Empty, EmptyContent, EmptyDescription, EmptyHeader, EmptyTitle } from '@/components/ui/empty'
 import { cn } from '@/lib/utils'
 import { Req } from '@/spec/req'
@@ -16,7 +16,6 @@ const PRODUCT_ICON = { PR: GitPullRequestIcon, Commit: GitPullRequestIcon, Page:
 const TOP_COUNT = 5
 const goalAnchor = (goalId: string) => `goal-${goalId}`
 const prefersReducedMotion = () => window.matchMedia('(prefers-reduced-motion: reduce)').matches
-const OWNER_GOALS_COMMAND = '/claude-mem:owner-goals'
 
 /** Every request a goal can link to: the active model's requests (plus, in sample mode only, older fixture requests). */
 function useGoalRequests(): Request[] {
@@ -490,22 +489,20 @@ export function MyGoals({ onOpen, focusGoalId }: { onOpen: (request: Request) =>
   return <GoalsForPeriod onOpen={onOpen} focusGoalId={focusGoalId} />
 }
 
-/** No owner-goals run on this computer yet, or one that couldn't be read: say so, and hand over the command that makes one. */
+/** No owner-goals run on this computer yet, or one that couldn't be read: say so, and show the automatic refresh that makes one. */
 function NoGoalsYet({ readError }: { readError: string | null }) {
+  const { refresh } = useWorkModel()
   return (
     <Req ids={['R12.1', 'R3.8']}>
       <Empty className="border bg-card/60">
         <EmptyHeader>
           <EmptyTitle>{readError ? 'Can’t read your goals right now' : 'No goals yet'}</EmptyTitle>
           <EmptyDescription>
-            {readError ? <>{readError}. Run the owner-goals skill in Claude Code again to rewrite them.</> : <>No goals yet. Run the owner-goals skill in Claude Code to read your recent prompts.</>}
+            {readError ? <>{readError}. claude-mem rewrites them on its next automatic refresh.</> : <>No goals yet. claude-mem reads your recent prompts and fills this in automatically.</>}
           </EmptyDescription>
         </EmptyHeader>
         <EmptyContent>
-          <div className="flex items-center gap-2">
-            <code className="rounded-md border bg-muted px-2 py-1 font-mono text-sm">{OWNER_GOALS_COMMAND}</code>
-            <CopyCommandButton command={OWNER_GOALS_COMMAND} />
-          </div>
+          <RefreshStatus refresh={refresh} run={null} ids={['R3.8']} />
         </EmptyContent>
       </Empty>
     </Req>
@@ -513,7 +510,7 @@ function NoGoalsYet({ readError }: { readError: string | null }) {
 }
 
 function GoalsForPeriod({ onOpen, focusGoalId }: { onOpen: (request: Request) => void; focusGoalId?: string }) {
-  const { sourceKind, priorities, openAsks, currentPeriod, lastRuns } = useWorkModel()
+  const { sourceKind, priorities, openAsks, currentPeriod, lastRuns, refresh } = useWorkModel()
   const knownGoalIds = new Set([...priorities, ...openAsks].map((goal) => goal.id))
   const isHiddenPriority = (goalId: string) => priorities.findIndex((goal) => goal.id === goalId) >= TOP_COUNT
   const [urlGoal] = useState(goalFromUrl)
@@ -546,7 +543,7 @@ function GoalsForPeriod({ onOpen, focusGoalId }: { onOpen: (request: Request) =>
               <TabsTrigger value="now" className="h-11 px-3">This month<span className="hidden sm:inline">· {currentPeriod!.label}</span></TabsTrigger>
               <TabsTrigger value="months" className="h-11 px-3">Month by month</TabsTrigger>
             </TabsList>
-            {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R3.8']} /> : <SkillLastRun run={lastRuns.goals!} command={OWNER_GOALS_COMMAND} ids={['R3.8']} />}
+            {sourceKind === 'sample' ? <RefreshButton run={SAMPLE_RUNS.goals} ids={['R3.8']} /> : <RefreshStatus refresh={refresh} run={lastRuns.goals} ids={['R3.8']} />}
           </div>
           <RunSource />
         </div>

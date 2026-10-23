@@ -71,6 +71,7 @@ var OWNER_GOALS_LIST = "owner-goals";
 var DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), ".claude-mem");
 var LEDGER_DIR = join(DATA_DIR, "work-view");
 var DAY_MS = 864e5;
+var GOALS_STALE_MS = DAY_MS;
 var MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
 var PROGRESS_STATES = ["shipped", "in-progress", "stalled", "abandoned", "unknown"];
 var PREFERENCE_KINDS = ["directive", "correction", "praise", "frustration"];
@@ -412,7 +413,7 @@ function readLedger(dir = LEDGER_DIR) {
     const entry = readJson(join(dir, "progress", name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, readings: readingsOf(entry), title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join(dir, "story.json"), null), alignment: readJson(join(dir, "alignment.json"), null) };
+  return { groups, progress, story: readJson(join(dir, "story.json"), null), alignment: readJson(join(dir, "alignment.json"), null), refresh: readJson(join(dir, "refresh.json"), null) };
 }
 function groupDetails(groupId, ledger, candidatesByKey) {
   const group = ledger.groups.groups[groupId];
@@ -437,6 +438,17 @@ function pendingReviews(ledger, database, sinceEpoch) {
   const ids = [...new Set([...candidates.keys()].map((key) => ledger.groups.conversations[key]).filter(Boolean))];
   const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch)).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
   return { due, ungrouped };
+}
+function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 }) {
+  const ledger = readLedger(dir);
+  const { due, ungrouped } = pendingReviews(ledger, database, now - days * DAY_MS);
+  const goals = readGoals(database);
+  const generated = Date.parse(goals.generatedAt ?? "");
+  const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
+  const aligned = /* @__PURE__ */ new Set([...Object.keys(ledger.alignment?.links ?? {}), ...ledger.alignment?.unaligned ?? []]);
+  const goalsChanged = (ledger.alignment?.goalsGeneratedAt ?? null) !== goals.generatedAt;
+  const unaligned = goals.goals.length ? Object.keys(ledger.groups.groups).filter((id) => goalsChanged || !aligned.has(id)).length : 0;
+  return { due: due.length, ungrouped, goalsStale, unaligned, needed: Boolean(due.length || ungrouped || goalsStale || unaligned) };
 }
 function readInput(source) {
   return JSON.parse(readFileSync(source === "-" ? 0 : source, "utf8"));
@@ -527,7 +539,8 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     writeJsonAtomic(join(dir, "alignment.json"), alignment);
     return print({ aligned: Object.keys(alignment.links).length, unaligned: alignment.unaligned.length });
   }
-  throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment (see file header).");
+  if (command === "refresh-needs") return print(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14) }));
+  throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment|refresh-needs (see file header).");
 }
 
 // src/services/work-view/request-groups-cli.mjs

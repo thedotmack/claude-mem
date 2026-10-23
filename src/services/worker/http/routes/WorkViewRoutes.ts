@@ -5,7 +5,8 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeF
 import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { z } from 'zod';
-import { DATA_DIR, DB_PATH, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { Database } from 'bun:sqlite';
+import { DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
 import { logger } from '../../../../utils/logger.js';
@@ -16,6 +17,10 @@ import { contentFingerprint, LocalReviewStore } from '../../../work-view/review-
 import { MY_RULES_LIST, renderRulesFile, ruleRowFields, type SavedRule } from '../../../work-view/my-rules.mjs';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work-view/human-copy-worker.mjs';
+import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
+import { buildRefreshTask } from '../../../work-view/refresh-task.js';
+import { runAgentTask } from '../../../agent-runner/run.js';
+import { detectUsableAgents } from '../../../agent-runner/detect.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
 import { validateBody } from '../middleware/validateBody.js';
@@ -82,6 +87,8 @@ interface WorkViewOptions {
   pollIntervalMs?: number;
   getLocalDeviceId?: () => string;
   humanCopy?: HumanCopyWorker | null;
+  /** Runs owner-goals and request-progress when something is due. Omitted: on for the default ledger only. */
+  autoRefresh?: AutoRefreshWorker | null;
   /** Overall-request ledger written by the request-progress skill; null disables it. */
   ledgerDir?: string | null;
   /** Saves one work-state row (rule changes). Without it, rules are read-only. */
@@ -109,6 +116,24 @@ export function configuredHumanCopyProvider(settingsPath = USER_SETTINGS_PATH): 
   });
 }
 
+/** My Work's automatic refresh on the user's own logged-in agent, unless
+ * CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH is 'false' (checked on every tick). */
+export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTINGS_PATH): AutoRefreshWorker {
+  const openDatabase = () => {
+    const database = new Database(DB_PATH, { readonly: true, create: false });
+    database.exec('PRAGMA busy_timeout = 1500');
+    return database;
+  };
+  return new AutoRefreshWorker({
+    dir: ledgerDir,
+    openDatabase,
+    enabled: () => SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
+    hasUsableAgent: async () => (await detectUsableAgents()).some(agent => agent.authenticated && agent.path),
+    runJob: ({ needs, reason }) => runAgentTask(buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase })),
+    log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
+  });
+}
+
 export class WorkViewRoutes extends BaseRouteHandler {
   private source: WorkStateSource;
   private reviews: LocalReviewStore;
@@ -120,6 +145,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private pollIntervalMs: number;
   private getLocalDeviceId: () => string;
   private humanCopy: HumanCopyWorker | null;
+  private autoRefresh: AutoRefreshWorker | null;
   private appendWorkStateEntry: ((entry: WorkStateWrite) => void) | null;
   private homeProject: string | undefined;
   private rulesFilePath: string;
@@ -129,16 +155,22 @@ export class WorkViewRoutes extends BaseRouteHandler {
     super();
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
+    const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
     this.source = new WorkStateSource({
       databasePath: options.databasePath ?? DB_PATH,
       pollIntervalMs: this.pollIntervalMs,
-      ledgerDir: options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir,
+      ledgerDir,
     });
     this.reviews = new LocalReviewStore(options.reviewPath ?? join(DATA_DIR, 'work-view-reviews.db'));
     this.humanCopy = options.humanCopy === undefined
       ? new HumanCopyWorker({ provider: configuredHumanCopyProvider(), cachePath: join(DATA_DIR, 'work-view', 'human-copy.json') })
       : options.humanCopy;
     if (this.humanCopy) void this.humanCopy.load().then(() => this.humanCopy?.start());
+    // A test or demo with its own ledger never starts an agent unless it passes one in.
+    this.autoRefresh = options.autoRefresh === undefined
+      ? (options.ledgerDir === undefined && ledgerDir ? defaultAutoRefresh(ledgerDir) : null)
+      : options.autoRefresh;
+    this.autoRefresh?.start();
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
     this.homeProject = options.homeProject;
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
@@ -189,7 +221,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, rulesFile: this.rulesFileStatus(snapshot), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}` };
+    return { ...view, rulesFile: this.rulesFileStatus(snapshot), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}:${this.autoRefresh?.revision ?? 0}` };
   }
 
   private rulesFileStatus(snapshot: WorkViewSnapshot) {
@@ -355,5 +387,6 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.source.close();
     this.reviews.close();
     this.humanCopy?.close();
+    this.autoRefresh?.close();
   }
 }

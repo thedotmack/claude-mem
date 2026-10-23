@@ -3,7 +3,7 @@ import { Database } from 'bun:sqlite';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, runCli, validateAlignment, validateProgress } from '../../src/services/work-view/request-groups.mjs';
+import { appendReading, applyGroupDecisions, groupIdFor, ledgerSignature, linkBackwards, MAX_READINGS, readCandidates, readGoals, readLedger, refreshNeeds, runCli, validateAlignment, validateProgress } from '../../src/services/work-view/request-groups.mjs';
 import { WorkStateSource } from '../../src/services/work-view/data-source.mjs';
 import { buildHumanRequests } from '../../src/services/work-view/request-projection.mjs';
 
@@ -265,6 +265,37 @@ describe('overall requests and progress reviews', () => {
     expect(stored.goalsGeneratedAt).toBe('2026-10-01T10:00:00Z');
     expect(ledgerSignature(dir)).not.toBe(before);
     expect(run(['align-input']).previous.alignedAt).toBe(new Date(NOW).toISOString());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('a refresh is needed for due reviews, stale goals or unaligned groups, and not otherwise', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    expect(refreshNeeds({ dir, database, now: NOW })).toEqual({ due: 0, ungrouped: 3, goalsStale: true, unaligned: 0, needed: true });
+    saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
+    const decisions = join(dir, 'decisions.json');
+    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }, { title: 'Pricing page', conversations: [key('c')] }] }));
+    run(['apply', decisions]);
+    expect(refreshNeeds({ dir, database, now: NOW })).toEqual({ due: 2, ungrouped: 0, goalsStale: true, unaligned: 2, needed: true });
+    for (const groupId of [groupIdFor(key('a')), groupIdFor(key('c'))]) {
+      const review = join(dir, 'review.json');
+      writeFileSync(review, JSON.stringify({ groupId, state: 'in-progress', percent: 50, summary: 'Under way.', reviewBasis: run(['show', groupId]).reviewBasis }));
+      run(['record-progress', review]);
+    }
+    const alignment = join(dir, 'alignment-input.json');
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'Release cards are the cards to ship.' }], unaligned: [groupIdFor(key('c'))] }));
+    expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
+    expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000 })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unaligned: 0, needed: false });
+    expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
+    saveGoals(database, new Date(NOW).toISOString());
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(2);
+    const before = ledgerSignature(dir);
+    writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
+    expect(ledgerSignature(dir)).not.toBe(before);
+    expect(readLedger(dir).refresh).toEqual({ state: 'running' });
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 

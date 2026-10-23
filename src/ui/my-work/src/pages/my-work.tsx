@@ -8,7 +8,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from '@/components/ui/sheet'
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table'
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group'
-import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, SkillLastRun, StateBadge, useWorkspace } from '@/components/bits'
+import { AgentIcon, ATTENTION_ORDER, GoalChip, NextMove, ProgressMeter, RefreshButton, RefreshStatus, StateBadge, useWorkspace } from '@/components/bits'
 import { AgentMark } from '@/components/brand'
 import { RequestCard } from '@/components/request-card'
 import { cn } from '@/lib/utils'
@@ -297,7 +297,7 @@ function RequestReadErrorCard({ readError }: { readError: RequestReadError }) {
 
 export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: Request) => void; onOpenGoal: (goalId: string) => void; onOpenRules: () => void }) {
   const { team } = useWorkspace()
-  const { sourceKind, requests, requestReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns } = useWorkModel()
+  const { sourceKind, requests, requestReadErrors, unlinkedWorkCount, sourceHealth, buildStory, lastRuns, refresh } = useWorkModel()
   const sample = sourceKind === 'sample'
   const [view, setView] = useState<View>('cards')
   const [filter, setFilter] = useState<Filter>('all')
@@ -326,14 +326,14 @@ export function MyWork({ onOpen, onOpenGoal, onOpenRules }: { onOpen: (request: 
             {team && <ToggleGroupItem value="team" className="h-11 px-3.5 md:h-8">Team</ToggleGroupItem>}
           </ToggleGroup>
         </Req>
-        {/* Live mode shows when request-progress last reviewed, and the command that reviews again. No cost. */}
+        {/* Live mode shows the worker's automatic refresh, or the last review before its first run. No cost. */}
         {sample ? (
           <div className="order-last w-full md:ml-auto md:w-auto">
             <RefreshButton run={SAMPLE_RUNS.progress} ids={['R14.12']} />
           </div>
-        ) : lastRuns.progress && (
+        ) : (refresh || lastRuns.progress) && (
           <div className="order-last w-full md:ml-auto md:w-auto">
-            <SkillLastRun run={lastRuns.progress} command="/claude-mem:request-progress" label="Last reviewed" ids={['R14.12']} />
+            <RefreshStatus refresh={refresh} run={lastRuns.progress} label="Last reviewed" ids={['R14.12']} />
           </div>
         )}
         <div className="flex w-full items-center gap-1 md:w-auto">

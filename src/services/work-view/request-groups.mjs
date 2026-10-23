@@ -13,6 +13,7 @@
 //   bun request-groups.mjs record-story <file|->    persist the build story and preferences
 //   bun request-groups.mjs align-input              owner goals + every group, for the alignment agent
 //   bun request-groups.mjs record-alignment <file|-> persist which goals each group serves
+//   bun request-groups.mjs refresh-needs [--days 14]  what the automatic refresh would do now
 import { Database } from 'bun:sqlite';
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs';
@@ -24,6 +25,8 @@ import { OWNER_GOALS_LIST } from './owner-goals.mjs';
 const DATA_DIR = process.env.CLAUDE_MEM_DATA_DIR || join(homedir(), '.claude-mem');
 export const LEDGER_DIR = join(DATA_DIR, 'work-view');
 const DAY_MS = 86400000;
+/** Goals older than this make the automatic refresh run owner-goals again. */
+export const GOALS_STALE_MS = DAY_MS;
 // A list touched by many conversations is a shared bucket, not proof of one goal.
 const MAX_CONVERSATIONS_PER_LINKING_LIST = 8;
 export const PROGRESS_STATES = ['shipped', 'in-progress', 'stalled', 'abandoned', 'unknown'];
@@ -173,7 +176,7 @@ function readJson(path, fallback) {
   catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
 }
 
-function writeJsonAtomic(path, value) {
+export function writeJsonAtomic(path, value) {
   mkdirSync(join(path, '..'), { recursive: true });
   const temp = `${path}.tmp`;
   writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
@@ -345,12 +348,12 @@ export function readLedger(dir = LEDGER_DIR) {
     const entry = readJson(join(dir, 'progress', name), null);
     if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, readings: readingsOf(entry), title: groups.groups[entry.groupId].title };
   }
-  return { groups, progress, story: readJson(join(dir, 'story.json'), null), alignment: readJson(join(dir, 'alignment.json'), null) };
+  return { groups, progress, story: readJson(join(dir, 'story.json'), null), alignment: readJson(join(dir, 'alignment.json'), null), refresh: readJson(join(dir, 'refresh.json'), null) };
 }
 
 /** Cheap change detector for the monitor's one-second poll. */
 export function ledgerSignature(dir = LEDGER_DIR) {
-  return ['request-groups.json', 'progress', 'story.json', 'alignment.json'].map((name) => {
+  return ['request-groups.json', 'progress', 'story.json', 'alignment.json', 'refresh.json'].map((name) => {
     try { const stat = statSync(join(dir, name)); return `${stat.mtimeMs}:${stat.size}`; }
     catch { return 'missing'; }
   }).join('|');
@@ -381,6 +384,21 @@ function pendingReviews(ledger, database, sinceEpoch) {
     .filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch))
     .sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
   return { due, ungrouped };
+}
+
+/** What an automatic refresh would do now; nothing to do means no agent runs.
+ * The window is the request-progress skill's own default, so a finished run
+ * leaves nothing due. With no goals saved there is nothing to align to. */
+export function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 }) {
+  const ledger = readLedger(dir);
+  const { due, ungrouped } = pendingReviews(ledger, database, now - days * DAY_MS);
+  const goals = readGoals(database);
+  const generated = Date.parse(goals.generatedAt ?? '');
+  const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
+  const aligned = new Set([...Object.keys(ledger.alignment?.links ?? {}), ...(ledger.alignment?.unaligned ?? [])]);
+  const goalsChanged = (ledger.alignment?.goalsGeneratedAt ?? null) !== goals.generatedAt;
+  const unaligned = goals.goals.length ? Object.keys(ledger.groups.groups).filter((id) => goalsChanged || !aligned.has(id)).length : 0;
+  return { due: due.length, ungrouped, goalsStale, unaligned, needed: Boolean(due.length || ungrouped || goalsStale || unaligned) };
 }
 
 function readInput(source) {
@@ -482,5 +500,6 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     writeJsonAtomic(join(dir, 'alignment.json'), alignment);
     return print({ aligned: Object.keys(alignment.links).length, unaligned: alignment.unaligned.length });
   }
-  throw new TypeError('Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment (see file header).');
+  if (command === 'refresh-needs') return print(refreshNeeds({ dir, database: db(), now, days: option(args, 'days', 14) }));
+  throw new TypeError('Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment|refresh-needs (see file header).');
 }

@@ -155,3 +155,15 @@ test('the build story recap is its first paragraph; no story hides it', () => {
   assert.deepEqual(model.buildStory?.paragraphs, ['Velocity', 'First part.', 'Second part.'])
   assert.equal(toWorkModel(snapshotWith([]), now).buildStory, null)
 })
+
+test('the automatic refresh maps running, last refreshed and failure text, with nothing else from refresh.json', () => {
+  const base = JSON.parse(readFileSync(new URL('test-fixtures/work-view-snapshot.trimmed.json', new URL('../../', import.meta.url)), 'utf8')) as WorkViewSnapshot
+  const at = Date.parse('2026-10-21T12:00:00Z')
+  assert.equal(toWorkModel(base, at).refresh, null)
+  assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'running', startedAt: '2026-10-21T11:00:00Z' } }, at).refresh, { state: 'running', finishedAt: null, error: null })
+  const ok = toWorkModel({ ...base, refresh: { state: 'ok', startedAt: '2026-10-21T11:00:00Z', finishedAt: '2026-10-21T11:40:00Z', error: null } }, at).refresh
+  assert.equal(ok?.state, 'ok')
+  assert.match(ok!.finishedAt!, /^Oct 21, \d{1,2}:40 [ap]m$/)
+  assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'failed', finishedAt: '2026-10-21T11:40:00Z', error: 'codex exec exited 1' } }, at).refresh?.error, 'codex exec exited 1')
+  assert.deepEqual(toWorkModel({ ...base, refresh: { state: 'waiting-for-agent', error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' } }, at).refresh, { state: 'waiting-for-agent', finishedAt: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' })
+})

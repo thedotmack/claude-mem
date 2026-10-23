@@ -47,11 +47,16 @@ export interface WorkModel {
   buildStory: BuildStory | null
   /** progress: the last request-progress build story. */
   lastRuns: { goals: SkillRun | null; progress: SkillRun | null }
+  /** The worker's automatic refresh of goals and progress. Null in sample mode and on older workers. */
+  refresh: AutoRefresh | null
   /** The backend's own health. `connected: false` means it answered but could not read saved work. */
   sourceHealth: { connected: boolean; error: string | null }
   /** The live feed's health (getConnectionStatus). Only SSE messages renew "live"; an HTTP read never does. */
   connection: ConnectionStatus
 }
+
+/** What the automatic refresh is doing. `finishedAt` is display text. */
+export interface AutoRefresh { state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'; finishedAt: string | null; error: string | null }
 
 /** The last build story request-progress wrote. `writtenAt` is display text; null when not recorded. */
 export interface BuildStory { recap: string; paragraphs: string[]; writtenAt: string | null }

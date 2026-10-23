@@ -312,6 +312,8 @@ export class WorkStateSource {
       // Progress reviews and the build story come from the request-progress
       // skill; they are assessments, separate from recorded lifecycle.
       story: this.ledger ? { reviews: Object.values(this.ledger.progress), story: this.ledger.story, groups: Object.keys(this.ledger.groups.groups).length } : null,
+      // The automatic refresh's last run (refresh.json): running, ok, failed or waiting-for-agent.
+      refresh: this.ledger?.refresh ?? null,
       // Age labels change with the clock without declaring a task or session
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {

@@ -71,6 +71,7 @@ const loadSampleWorkModel = async (): Promise<WorkModel> => ({
     goals: { label: SAMPLE_RUNS.goals.label, lastRunAt: SAMPLE_RUNS.goals.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.goals.deviceId) },
     progress: { label: SAMPLE_RUNS.progress.label, lastRunAt: SAMPLE_RUNS.progress.lastRunAt, deviceName: sampleDeviceName(SAMPLE_RUNS.progress.deviceId) },
   },
+  refresh: null,
   sourceHealth: { connected: true, error: null },
   // Sample mode demonstrates the indicator (LiveIndicator labels it a demonstration); nothing streams.
   connection: getConnectionStatus({ now: 0 }),
