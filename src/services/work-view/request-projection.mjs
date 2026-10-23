@@ -85,6 +85,7 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
   const sessions = new Map((records.sessions ?? []).map((session) => [session.id, session]));
   const prompts = records.prompts ?? [];
   const flattened = (view.agents ?? []).flatMap((agent) => (agent.work ?? []).map((item) => ({ ...item, agentId: agent.id, agentLabel: agent.label, agentSessionId: agent.sessionId })));
+  const subagentIds = new Set((view.agents ?? []).filter((agent) => agent.isSubagent).map((agent) => agent.id));
   const activityPool = new Map();
   for (const agent of view.agents ?? []) for (const activity of agent.activity ?? []) activityPool.set(`${agent.id}:${activity.id}`, { ...activity, agentId: agent.id, agentLabel: agent.label });
   for (const activity of view.recentActivity ?? []) {
@@ -192,6 +193,8 @@ export function buildHumanRequests(view, records = {}, { titleCache = {}, ledger
       stream.items.push(item);
     }
     request.workstreams = [...streams.values()];
+    // The conversation's own agent leads; a subagent it launched only helps.
+    request.agentIds.sort((a, b) => Number(subagentIds.has(a)) - Number(subagentIds.has(b)));
     for (const stream of request.workstreams) stream.activity = activityFor(stream.items, request.id, 20);
     request.activity = activityFor(request.items, request.id, 40);
     const metadata = (key) => request.items.map((item) => ({ item, record: item[key] })).filter(({ record }) => record).sort((a, b) => (b.record.atEpoch ?? 0) - (a.record.atEpoch ?? 0));

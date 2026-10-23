@@ -318,7 +318,8 @@ export class WorkStateSource {
       // live. Stored session status remains separate from recent activity.
       agents: this.agentView.agents.map((agent) => ({ ...agent, presence: {
         ...agent.presence,
-        status: !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
+        // A recorded finish is evidence, not an age label: the clock never changes it.
+        status: agent.presence.status === 'finished' ? 'finished' : !agent.presence.lastActivityAt ? 'unknown' : now - Date.parse(agent.presence.lastActivityAt) <= 15 * 60 * 1000 ? 'recent' : 'quiet',
       } })),
       source: { ...this.source, kind: 'claude-mem-recorded-agent-activity', lastUpdatedAt: this.agentView.agents[0]?.presence.lastActivityAt ?? null, stale: !this.source.connected && this.agentView.agents.length > 0 },
     };

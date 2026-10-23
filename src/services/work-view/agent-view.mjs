@@ -4,6 +4,7 @@ import { buildHumanRequests } from './request-projection.mjs';
 import { OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 import { buildRules, isMyRulesList } from './my-rules.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
+import { agentStopFor, isAgentLifecycleList, readAgentStops } from './agent-lifecycle.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -91,11 +92,56 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   const sessionIds = sessions.map((session) => session.id);
   const prompts = sessionIds.length ? safeRead(database, `SELECT id, session_db_id, prompt_number, substr(prompt_text, 1, 1200) AS prompt_text, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${sessionIds.map(() => '?')}) ORDER BY id DESC LIMIT 12000`, sessionIds) : [];
-  return { calls, observations, summaries, sessions, prompts, productCalls, productObservations };
+  // Subagent lifecycle evidence: the parent's Agent call that launched each one
+  // (and, for a foreground agent, returned when it finished), and the time of
+  // each subagent's latest captured tool call.
+  const contentIds = [...new Set(sessions.map((session) => session.content_session_id).filter(Boolean))];
+  const contentArgs = contentIds.map(() => '?').join(', ');
+  // Fields are pulled out in SQL: a launch response embeds the whole prompt,
+  // so a truncated copy would not parse.
+  const agentLaunches = contentIds.length ? safeRead(database, `SELECT id, session_db_id, content_session_id, platform_source, prompt_number, created_at_epoch,
+    json_extract(tool_response, '$.agentId') AS agent_id, json_extract(tool_response, '$.status') AS status,
+    json_extract(tool_response, '$.isAsync') AS is_async,
+    coalesce(json_extract(tool_input, '$.description'), json_extract(tool_response, '$.description')) AS description,
+    substr(coalesce(json_extract(tool_input, '$.prompt'), json_extract(tool_response, '$.prompt')), 1, 600) AS prompt
+    FROM tool_uses WHERE tool_name IN ('Agent', 'Task') AND json_valid(tool_response) AND json_valid(coalesce(tool_input, '{}'))
+    AND content_session_id IN (${contentArgs}) ORDER BY id DESC LIMIT 2000`, contentIds) : [];
+  const agentToolActivity = contentIds.length ? safeRead(database, `SELECT content_session_id, agent_id, MAX(created_at_epoch) AS last_epoch
+    FROM tool_uses WHERE agent_id IS NOT NULL AND content_session_id IN (${contentArgs}) GROUP BY content_session_id, agent_id`, contentIds) : [];
+  return { calls, observations, summaries, sessions, prompts, productCalls, productObservations, agentLaunches, agentToolActivity };
+}
+
+// The parent's Agent (formerly Task) calls, by [content session, agent id].
+// A foreground call's PostToolUse fires when the subagent returns, so its row
+// is a recorded finish; an async launch only says the subagent started.
+export function readAgentLaunches(rows) {
+  const launches = new Map();
+  for (const row of rows) {
+    const agentId = typeof row.agent_id === 'string' && row.agent_id ? row.agent_id : null;
+    if (!agentId || !row.content_session_id) continue;
+    const key = JSON.stringify([row.content_session_id, agentId]);
+    if (launches.has(key)) continue;
+    const isAsync = row.is_async === 1 || row.is_async === true || row.status === 'async_launched';
+    launches.set(key, {
+      toolUseId: row.id, promptNumber: row.prompt_number ?? null, launchedAtEpoch: row.created_at_epoch,
+      isAsync, returnedAtEpoch: !isAsync && row.status === 'completed' ? row.created_at_epoch : null,
+      description: compactText(row.description, 160), prompt: compactText(row.prompt, 500),
+    });
+  }
+  return launches;
+}
+
+function launchRequest(launch) {
+  if (!launch) return null;
+  const text = launch.description ?? launch.prompt;
+  return text ? { text, source: 'agent-launch', sourceId: launch.toolUseId, url: `/api/work-view/evidence/tool-use/${launch.toolUseId}` } : null;
 }
 
 export function buildAgentView(state, records, { now = Date.now(), workLimit = 240, activityLimit = 160, recentMs = 15 * 60 * 1000, titleCache = {}, ledger = null } = {}) {
-  const { calls = [], observations = [], summaries = [], sessions = [], prompts = [] } = records;
+  const { calls = [], observations = [], summaries = [], sessions = [], prompts = [], agentLaunches = [], agentToolActivity = [] } = records;
+  const launches = readAgentLaunches(agentLaunches);
+  const lastToolEpochs = new Map(agentToolActivity.map((row) => [JSON.stringify([row.content_session_id, row.agent_id]), Number(row.last_epoch) || 0]));
+  const stops = readAgentStops(state);
   const sessionsById = new Map(sessions.map((session) => [session.id, session]));
   const sessionsByMemory = new Map(sessions.filter((session) => session.memory_session_id).map((session) => [session.memory_session_id, session]));
   const scopes = new Set(state.currentProjectScope.map(PROJECT_KEY));
@@ -185,6 +231,12 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
         project, projects: [project], inCurrentScope: scopes.has(PROJECT_KEY(project)),
         identityEvidence: session ? 'captured-session' : owner ? 'explicit-owner-field' : agentId ? 'recorded-agent-id' : 'no-attribution',
         presence: { status: 'unknown', isLive: null, evidence: 'recorded-activity-only', lastActivityAt: null },
+        // A subagent works inside its parent's conversation; only its own
+        // captured tool calls and observations are credited to it. Claude Code
+        // sets agent_id only inside a subagent; other hosts (Codex) also tag
+        // the main thread, so their groups keep the per-prompt layout.
+        isSubagent: Boolean(session && agentId && platform === 'claude'),
+        launch: session && agentId ? launches.get(JSON.stringify([session.content_session_id, agentId])) ?? null : null,
         work: [], activity: [], lastActivityEpoch: 0,
       });
     }
@@ -212,7 +264,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     activity.push({ ...entry, agentGroupId: group.id });
   }
 
-  const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name)).flatMap((list) => [
+  const candidates = state.lists.filter((list) => !isOwnerGoalsList(list.name) && !isMyRulesList(list.name) && !isAgentLifecycleList(list.name)).flatMap((list) => [
     ...list.tasks.map((task) => ({ ...task, list, recordKind: 'task' })),
     ...(Object.keys(list.fields).some((key) => key !== 'task') ? [{ id: list.id, name: list.name, fields: list.fields, status: list.status, isOpen: !CLOSED.has(list.status), updatedAtEpoch: list.stateUpdatedAtEpoch, latestEntryId: state.events.find((event) => event.listId === list.id && event.task === null)?.id ?? 0, list, recordKind: 'list' }] : []),
   ]).sort((a, b) => b.updatedAtEpoch - a.updatedAtEpoch).slice(0, workLimit);
@@ -272,11 +324,15 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   for (const observation of observations) {
     const session = sessionsByMemory.get(observation.memory_session_id);
     const group = getGroup({ session, agentId: observation.agent_id, agentType: observation.agent_type, project: observation.project });
-    const request = requestFor(session, observation.prompt_number);
-    const requestKey = confirmedRequestKey(session, observation.prompt_number);
-    const key = JSON.stringify([group.id, observation.memory_session_id ?? null, observation.content_session_id ?? null, observation.prompt_number ?? null]);
+    // A subagent's observation carries the parent's current prompt number, so
+    // it says nothing about which parent request the subagent was doing. Its
+    // one request is the task it was launched with, under the launching prompt.
+    const subagentLaunch = group.isSubagent ? group.launch : null;
+    const request = group.isSubagent ? launchRequest(subagentLaunch) : requestFor(session, observation.prompt_number);
+    const requestKey = group.isSubagent ? (subagentLaunch ? confirmedRequestKey(session, subagentLaunch.promptNumber) : null) : confirmedRequestKey(session, observation.prompt_number);
+    const key = group.isSubagent ? JSON.stringify([group.id]) : JSON.stringify([group.id, observation.memory_session_id ?? null, observation.content_session_id ?? null, observation.prompt_number ?? null]);
     if (!observationBuckets.has(key)) {
-      const summary = summaryByKey.get(JSON.stringify([observation.memory_session_id, observation.prompt_number]));
+      const summary = group.isSubagent ? null : summaryByKey.get(JSON.stringify([observation.memory_session_id, observation.prompt_number]));
       const row = {
         id: `session-request:${key}`, kind: 'session-request', recordKind: 'session',
         title: request?.text ?? compactText(observation.title, 160) ?? 'Recorded observation',
@@ -287,7 +343,7 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
         outcome: summary?.completed ? { text: compactText(summary.completed), source: 'session-summary', sourceId: summary.id } : null,
         progress: { text: compactText(observation.title), source: 'observation', sourceId: observation.id }, owner: null,
         lastUpdateAt: stamp(observation.created_at_epoch), lastUpdateEpoch: observation.created_at_epoch,
-        attribution: { source: session ? 'observation-session-link' : 'unavailable', meaning: 'recorded-session' },
+        attribution: { source: session ? 'observation-session-link' : 'unavailable', meaning: group.isSubagent ? 'recorded-subagent' : 'recorded-session', agentId: observation.agent_id ?? null },
         sourceRefs: [{ kind: 'observation', id: observation.id }], url: `/api/work-view/evidence/observation/${observation.id}`,
       };
       observationBuckets.set(key, row);
@@ -296,12 +352,34 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
     addActivity(group, { id: `observation:${observation.id}`, requestKey, kind: 'observation', title: compactText(observation.title, 160) ?? 'Recorded observation', detail: compactText(observation.subtitle), project: observation.project, at: stamp(observation.created_at_epoch), atEpoch: observation.created_at_epoch, sourceRef: { kind: 'observation', id: observation.id }, url: `/api/work-view/evidence/observation/${observation.id}` });
   }
 
+  // Finished only on recorded evidence that came after the agent's latest
+  // recorded activity: its SubagentStop (or the owner's Mark finished), the
+  // foreground Agent call returning. (sdk_sessions.completed_at is not used: the
+  // worker also sets it when its observer goes idle, so it does not prove the
+  // conversation ended.) Any captured
+  // tool call or observation after that evidence means the agent resumed.
+  function subagentFinish(group) {
+    const lastToolEpoch = lastToolEpochs.get(JSON.stringify([group.contentSessionId, group.agentId])) ?? 0;
+    const lastActive = Math.max(group.lastActivityEpoch, lastToolEpoch);
+    const evidence = [];
+    const stop = agentStopFor(stops, group.platformSource, group.contentSessionId, group.agentId);
+    if (stop) evidence.push({ evidence: stop.source, atEpoch: stop.stoppedAtEpoch, sourceRef: { kind: 'work-state', id: stop.entryId } });
+    if (group.launch?.returnedAtEpoch) evidence.push({ evidence: 'agent-call-returned', atEpoch: group.launch.returnedAtEpoch, sourceRef: { kind: 'tool-use', id: group.launch.toolUseId } });
+    return evidence.filter((entry) => entry.atEpoch >= lastActive).sort((a, b) => b.atEpoch - a.atEpoch)[0] ?? null;
+  }
+
   const agents = [...groups.values()].map((group) => {
     const { lastActivityEpoch, ...publicGroup } = group;
     const age = Math.max(0, now - lastActivityEpoch);
+    const finished = group.isSubagent ? subagentFinish(group) : null;
+    if (finished) for (const item of group.work) if (item.kind === 'session-request') { item.status = 'finished'; item.isOpen = false; }
     return {
       ...publicGroup,
-      presence: { ...group.presence, status: lastActivityEpoch ? age <= recentMs ? 'recent' : 'quiet' : 'unknown', lastActivityAt: stamp(lastActivityEpoch) },
+      presence: finished
+        ? { ...group.presence, status: 'finished', evidence: finished.evidence, finishedAt: stamp(finished.atEpoch), sourceRef: finished.sourceRef, lastActivityAt: stamp(lastActivityEpoch) }
+        : { ...group.presence, status: lastActivityEpoch ? age <= recentMs ? 'recent' : 'quiet' : 'unknown', lastActivityAt: stamp(lastActivityEpoch) },
+      // The owner may record a stop for a subagent no recorded evidence covers.
+      canMarkFinished: group.isSubagent && !finished,
       work: group.work.sort((a, b) => b.lastUpdateEpoch - a.lastUpdateEpoch),
       activity: group.activity.sort((a, b) => b.atEpoch - a.atEpoch).slice(0, 8),
       counts: { work: group.work.length, open: group.work.filter((item) => item.isOpen).length, done: group.work.filter((item) => item.status === 'done').length },
