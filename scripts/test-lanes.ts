@@ -23,15 +23,8 @@ const INTEGRATION_PATH_PATTERNS: RegExp[] = [
 const INTEGRATION_TIMER_HEAVY_FILES = new Set<string>([
   'tests/services/sync/chroma-mcp-manager-singleton.test.ts',
   'tests/shared/worker-utils-zombie-port.test.ts',
-  'tests/worker/openclaw-tool-completion.test.ts',
   'tests/shared/kill-process-tree-pid-reuse.test.ts',
-  'tests/worker/gemini-concurrent-pacing.test.ts',
   'tests/worker/codex-app-server-client.test.ts',
-  'tests/worker/gemini-pacing-compression.test.ts',
-  'tests/worker/claude-queued-summary-origin.test.ts',
-  'tests/worker/opencode-tool-file-evidence.test.ts',
-  'tests/worker/kimi-read-file-path.test.ts',
-  'tests/worker/claude-served-model.test.ts',
 ]);
 
 // The same names `bun test` treats as test files.
