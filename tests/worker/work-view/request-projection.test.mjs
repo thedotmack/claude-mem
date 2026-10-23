@@ -146,11 +146,13 @@ test('substantive requests in any language link work while priming and filler st
   assert.equal(result.humanRequests[0].original.text, 'Güncellemeyi doğrula');
 });
 
-test('English asks need an action verb, so shell words and fragments never become requests', () => {
-  for (const junk of ['list', 'ps', 'ls -la', 'wowerpoint the childhood skill', 'the', 'on main now', 'npm']) {
+test('English asks need an action, so shell words and fragments never become requests', () => {
+  for (const junk of ['list', 'ps', 'ls -la', 'the', 'on main now', 'about the login', 'npm']) {
     assert.equal(isHumanActionRequest(junk), false, junk);
   }
-  for (const ask of ['fix the login', 'GOAL: one card per request', 'can you check the build', 'merge the PR', 'ship it', 'the login page is broken', 'Why is the worker slow?']) {
+  // Any verb acting on an object counts, not only the listed ones: "wowerpoint" is a skill's own verb.
+  for (const ask of ['fix the login', 'GOAL: one card per request', 'can you check the build', 'merge the PR', 'ship it', 'the login page is broken', 'Why is the worker slow?',
+    'Delete the branch', 'Summarize this file', 'List all tasks', 'please archive these logs', 'wowerpoint the childhood skill']) {
     assert.equal(isHumanActionRequest(ask), true, ask);
   }
 });

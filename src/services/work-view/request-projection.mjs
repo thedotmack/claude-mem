@@ -27,7 +27,10 @@ export function isHumanActionRequest(value) {
   if (/^you can (?:def(?:initely)? )?do (?:real )?tests?[,;.!\s]/i.test(plain) && !/\b(?:fix|build|create|implement|change|update|rename|remove|add)\b/i.test(plain)) return false;
   if (/(?:^|\s)GOAL\s*:\s*\S/i.test(plain)) return true;
   if (ENGLISH_ACTION.test(plain)) return true;
-  // English needs an action verb, so "list", "ps" or a pasted fragment never
+  // Any other verb acting on an object: "Delete the branch", "List all tasks".
+  const opening = IMPERATIVE_OPENING.exec(plain);
+  if (opening && !NOT_A_VERB.test(opening[1])) return true;
+  // English needs an action, so "list", "ps" or a pasted fragment never
   // becomes a request. Text in other scripts counts once two letters remain.
   if (/[^\x00-\x7F]/.test(plain)) return /\p{L}.*\p{L}/u.test(plain);
   // Plain ASCII without an English word (Turkish, Spanish without accents...)
@@ -36,6 +39,10 @@ export function isHumanActionRequest(value) {
 }
 
 const ENGLISH_ACTION = /\b(?:make|build|create|implement|design|fix|investigate|audit|review|write|rewrite|show|see|find|search|explain|compare|help|convert|add|remove|update|rename|run|test|verify|deploy|analyze|analyse|read|tell|open|generate|ship|merge|commit|push|release|publish|set up|i want|i need|can you|could you|would you|how (?:can|do|does|is)|what (?:is|are|does|did)|why (?:is|are|does|did)|do we|do you|(?:is|are|seems?|looks?) (?:broken|failing|wrong)|doesn'?t work|not working)\b/i;
+// An opening word, then a determiner or pronoun naming what it acts on.
+const IMPERATIVE_OPENING = /^(?:please\s+)?([a-z]{3,})\s+(?:the|this|that|these|those|all|every|each|my|our|your|its|it|them|any|some|a|an)\b/i;
+// Opening words that are not verbs: "on main now", "about the login", "now the...".
+const NOT_A_VERB = /^(?:the|and|for|with|from|now|then|just|not|about|after|before|into|onto|over|under|like|also|here|there|when|where|what|which|who|why|how|but|yet|all|any|some|its|our|your|this|that|these|those|they|she|his|her|one|two|three)$/i;
 const ENGLISH_WORDS = /\b(?:the|a|an|this|that|it|is|are|to|of|and|for|with|in|on|my|me|you|we|please|just|all|so|now|then|from|be|not)\b/i;
 
 export function humanRequestTitle(original) {
