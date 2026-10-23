@@ -55,11 +55,17 @@ async function answersTreeSitterVersion(executablePath: string): Promise<TreeSit
         timeout: TREE_SITTER_VERSION_TIMEOUT_MS,
         windowsHide: true,
       }, (error, stdout, stderr) => {
-        if (!error && TREE_SITTER_VERSION_OUTPUT.test((stdout ?? "").trim())) {
+        const stdoutText = String(stdout ?? "");
+        const stderrText = String(stderr ?? "");
+        if (error?.code === "ENOENT") {
+          resolve({ usable: false, reason: "tree-sitter binary not found" });
+          return;
+        }
+        if (!error && TREE_SITTER_VERSION_OUTPUT.test(stdoutText.trim())) {
           resolve({ usable: true });
           return;
         }
-        const detail = (stderr ?? "").trim().split("\n")[0]
+        const detail = stderrText.trim().split("\n")[0]
           || (error?.message ?? "").split("\n")[0]
           || undefined;
         resolve({ usable: false, reason: detail });
