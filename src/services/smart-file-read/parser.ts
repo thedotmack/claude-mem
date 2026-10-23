@@ -146,6 +146,7 @@ const QUERIES: Record<string, string> = {
 (function_declaration name: (identifier) @name) @func
 (method_declaration receiver: (parameter_list (parameter_declaration type: (_) @receiver)) name: (field_identifier) @name) @method
 (type_declaration (type_spec name: (type_identifier) @name)) @tdef
+(type_declaration (type_alias name: (type_identifier) @name)) @tdef
 (import_declaration) @imp
 `,
 
