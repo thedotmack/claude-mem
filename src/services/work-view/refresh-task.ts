@@ -180,9 +180,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
 
       const due: Array<{ groupId: string }> = cli(['pending', '--days', '14', '--limit', '1000000']).groups;
       let reviewed = 0;
-      for (let index = 0; index < due.length; index += REVIEW_BATCH) {
-        // Like step(), but a refusal re-asks only for the groups that were refused.
-        let shows = due.slice(index, index + REVIEW_BATCH).map(group => cli(['show', group.groupId]));
+      /** One batch of reviews. Like step(), but a refusal re-asks only for the groups that were refused. */
+      const reviewBatch = async (groups: Array<{ groupId: string }>) => {
+        let shows = groups.map(group => cli(['show', group.groupId]));
         let refusals: string[] = [];
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const text = await ask([
@@ -203,7 +203,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
           for (const show of shows) if (!refusals.some(line => line.startsWith(`${show.groupId}:`))) refusals.push(`${show.groupId}: no review was given.`);
         }
         if (shows.length) throw new Error(`reviews: ${refusals.join('; ').slice(0, 500)}`);
-      }
+      };
+      // Batches are independent, so they run at once; every batch finishes (and saves) before a failure is reported.
+      const batches: Array<Array<{ groupId: string }>> = [];
+      for (let index = 0; index < due.length; index += REVIEW_BATCH) batches.push(due.slice(index, index + REVIEW_BATCH));
+      const failed = (await Promise.allSettled(batches.map(reviewBatch))).filter(outcome => outcome.status === 'rejected');
+      if (failed.length) throw (failed[0] as PromiseRejectedResult).reason;
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 
       // Only groups not yet aligned to the current goals.

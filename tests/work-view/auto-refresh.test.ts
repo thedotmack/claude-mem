@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
-import { readLedger } from '../../src/services/work-view/request-groups.mjs';
+import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
@@ -163,6 +163,38 @@ describe('refresh task', () => {
       expect(models).toEqual([STEP_MODELS.grouping, STEP_MODELS.review, STEP_MODELS.review, STEP_MODELS.story]);
       expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
       expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('parallel reviews', () => {
+  it('review batches run at the same time, and every batch is saved', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-parallel-'));
+    try {
+      const database = fixtureDatabase();
+      const sessions = 'bcdefghij'.split('');
+      sessions.forEach((session, index) => {
+        database.prepare('INSERT INTO sdk_sessions VALUES (?, ?, ?, ?, ?, ?, ?)').run(index + 2, 'claude', session, `m${index + 2}`, 'repo/tree', `Build feature ${session}`, NOW - 2 * DAY);
+        database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(index + 2, 1, `Build feature ${session}`, NOW - 2 * DAY);
+      });
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: ['a', ...sessions].map(session => ({ title: `Feature ${session}`, conversations: [key(session)] })) }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ needs: { due: 10, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      let inFlight = 0, most = 0;
+      const bothAsked = deferred<void>();
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'Ten features under way.' });
+        const shows = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+        most = Math.max(most, ++inFlight);
+        if (most === 2) bothAsked.resolve();
+        await bothAsked.promise;
+        inFlight--;
+        return JSON.stringify({ reviews: shows.map((show: any) => ({ groupId: show.groupId, state: 'in-progress', percent: 30, summary: 'Under way.', reviewBasis: show.reviewBasis })) });
+      };
+      expect(await task.run(ask, 'claude-code')).toBe('10 requests reviewed, story written.');
+      expect(most).toBe(2);
+      expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
