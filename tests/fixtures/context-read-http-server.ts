@@ -14,7 +14,11 @@ const server = Bun.serve({
       const input = { projects: ['app'], includePriorMessage: false, timePlaceholders: true };
       const result = await generateContextWithStats(input, false, { execution: 'worker' });
       const inline = await generateContextWithStats(input, false);
-      if (result.text !== inline.text) throw new Error('Isolated context bytes differ from the inline render');
+      if (result.text !== inline.text) {
+        let at = 0;
+        while (result.text[at] === inline.text[at]) at++;
+        throw new Error(`Isolated context bytes differ from the inline render at ${at}: ${JSON.stringify(result.text.slice(Math.max(0, at - 80), at + 80))} vs ${JSON.stringify(inline.text.slice(Math.max(0, at - 80), at + 80))}`);
+      }
       return new Response(result.text);
     } catch (error) {
       return new Response(error instanceof Error ? error.message : String(error), { status: 500 });
