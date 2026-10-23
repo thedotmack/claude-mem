@@ -400,11 +400,16 @@ export function isOutputCapFinishReason(finishReason: string | null | undefined)
   return reason === 'length' || reason === 'max_tokens';
 }
 
-/** `<observation>` openings with no matching close: blocks the parser cannot store. */
-export function unclosedObservationBlockCount(text: string): number {
-  const opened = (text.match(/<observation>/gi) ?? []).length;
-  const closed = (text.match(/<\/observation>/gi) ?? []).length;
-  return Math.max(0, opened - closed);
+/**
+ * Whether the reply ends in an `<observation>` the parser cannot store. Every
+ * block the parser does store is removed first, using its own match
+ * (parseObservationBlocks), so an `<observation>` written inside a stored
+ * block's content (CDATA, prose about the format) is not mistaken for an
+ * unfinished block. Any opening left has no close after it, so it begins the
+ * cut-off tail.
+ */
+export function hasUnfinishedObservationBlock(text: string): boolean {
+  return /<observation>/i.test(text.replace(/<observation>[\s\S]*?<\/observation>/gi, ''));
 }
 
 export async function processAgentResponse(
@@ -653,13 +658,13 @@ export async function processAgentResponse(
   // They are stored, but the unfinished tail is lost, so say so: hitting the
   // cap is never silent. A provider that reports no finish reason (the Claude
   // SDK path) still shows a cut reply as an <observation> with no close.
-  const unfinishedObservationBlocks = unclosedObservationBlockCount(text);
-  if (isOutputCapFinishReason(finishReason) || unfinishedObservationBlocks > 0) {
+  const hasUnfinishedBlock = hasUnfinishedObservationBlock(text);
+  if (isOutputCapFinishReason(finishReason) || hasUnfinishedBlock) {
     logger.error('PARSER', `${agentName} reply was cut off; storing its complete blocks, the unfinished tail is lost. Raise CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS if this repeats`, {
       sessionId: session.sessionDbId,
       finishReason,
       completeObservations: parsed.observations.length,
-      unfinishedObservationBlocks,
+      hasUnfinishedObservationBlock: hasUnfinishedBlock,
       hasSummary: parsed.summary !== null,
     });
   }

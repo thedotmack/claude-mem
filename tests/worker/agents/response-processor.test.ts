@@ -113,7 +113,7 @@ import {
   extractObservationFileEvidence,
   isOutputCapFinishReason,
   processAgentResponse,
-  unclosedObservationBlockCount,
+  hasUnfinishedObservationBlock,
   takeObserverSchemaReminder,
   type ResponseContext,
 } from '../../../src/services/worker/agents/ResponseProcessor.js';
@@ -263,7 +263,7 @@ describe('ResponseProcessor', () => {
       expect(mockStoreObservations).toHaveBeenCalled();
       const errors = cutOffErrors();
       expect(errors).toHaveLength(1);
-      expect(errors[0][2]).toMatchObject({ finishReason: 'length', completeObservations: 1, unfinishedObservationBlocks: 1 });
+      expect(errors[0][2]).toMatchObject({ finishReason: 'length', completeObservations: 1, hasUnfinishedObservationBlock: true });
     });
 
     it('reports an unclosed block even when the provider gives no finish reason', async () => {
@@ -277,15 +277,28 @@ describe('ResponseProcessor', () => {
       await processAgentResponse(complete, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
       expect(cutOffErrors()).toHaveLength(0);
     });
+
+    it('stays quiet for a whole reply whose content mentions an <observation> tag', async () => {
+      const aboutXml = '<observation><type>discovery</type><title>Prompt format</title>'
+        + '<narrative><![CDATA[Use <observation> for each result]]> and close it.</narrative></observation>';
+      const session = createMockSession({ lastFinishReason: 'stop' } as Partial<ActiveSession>);
+      await processAgentResponse(aboutXml, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(mockStoreObservations).toHaveBeenCalled();
+      expect(cutOffErrors()).toHaveLength(0);
+    });
   });
 
-  it('classifies output-cap finish reasons and counts unclosed observation blocks', () => {
+  it('classifies output-cap finish reasons and finds an unfinished observation block', () => {
     expect(isOutputCapFinishReason('length')).toBe(true);
     expect(isOutputCapFinishReason('MAX_TOKENS')).toBe(true);
     expect(isOutputCapFinishReason('stop')).toBe(false);
     expect(isOutputCapFinishReason(null)).toBe(false);
-    expect(unclosedObservationBlockCount('<observation>a</observation><observation>b')).toBe(1);
-    expect(unclosedObservationBlockCount('<observation>a</observation>')).toBe(0);
+    expect(hasUnfinishedObservationBlock('<observation>a</observation><observation>b')).toBe(true);
+    expect(hasUnfinishedObservationBlock('<observation>a</observation>')).toBe(false);
+    // A tag inside a stored block's content is content, not a block boundary.
+    expect(hasUnfinishedObservationBlock('<observation><![CDATA[<observation>]]></observation>')).toBe(false);
+    expect(hasUnfinishedObservationBlock('<observation>say "<observation>" twice: <observation></observation>')).toBe(false);
+    expect(hasUnfinishedObservationBlock('<observation>a</observation><observation>cut <![CDATA[<observation>')).toBe(true);
   });
 
   it('does not report a successful observer store when no memory rows were written', async () => {
