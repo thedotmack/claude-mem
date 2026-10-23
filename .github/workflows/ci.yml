@@ -265,6 +265,8 @@ jobs:
     timeout-minutes: 20
     env:
       CLAUDE_MEM_TEST_POSTGRES_URL: postgres://postgres:postgres@127.0.0.1:5432/server_search_test
+      # Fail, rather than skip, a search-by-meaning test that finds no pgvector.
+      CLAUDE_MEM_TEST_PGVECTOR: '1'
     steps:
       - uses: actions/checkout@v4
 
@@ -294,10 +296,17 @@ jobs:
       - name: Install repository dependencies
         run: npm install --no-audit --no-fund
 
-      - name: Search tests (bm25)
+      - name: bm25 and hybrid search, vector writes and backfill
         env:
           CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-search-data
-        run: bun test tests/storage/postgres/postgres-storage.test.ts
+        run: >-
+          bun test
+          tests/storage/postgres/postgres-storage.test.ts
+          tests/storage/postgres/observation-embeddings.test.ts
+          tests/server/embedding-parts-contract.test.ts
+          tests/server/runtime/memories-vector-write.test.ts
+          tests/server/generation/process-generated-response-vectors.test.ts
+          tests/services/vector/local-embedder-encode.test.ts
 
   clean-room-deps:
     name: clean-room dependency closure smoke

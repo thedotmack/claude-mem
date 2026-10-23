@@ -8,7 +8,9 @@ import { fileURLToPath } from 'url';
 
 const IS_WINDOWS = process.platform === 'win32';
 const VERSION_CHECK_LOG_PREFIX = '[version-check]';
-const BUN_INSTALL_ARGS = Object.freeze(['install', '--production']);
+// Optional dependencies are the server's embedder, which `npx claude-mem
+// server start` installs where a server runs (scripts/build-hooks.js).
+const BUN_INSTALL_ARGS = Object.freeze(['install', '--production', '--omit=optional']);
 const BUN_INSTALL_TIMEOUT_MS = 120_000;
 const NODE_MODULES_DIRNAME = 'node_modules';
 // zod ships its public API behind subpath exports that worker-service.cjs

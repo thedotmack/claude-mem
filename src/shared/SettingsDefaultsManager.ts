@@ -293,6 +293,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_MUTATION_TIMEOUT_MS: string;
   CLAUDE_MEM_CHROMA_MAX_PENDING_MUTATIONS: string;
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
+  CLAUDE_MEM_SERVER_VECTOR_SEARCH: string;       // server search by meaning: 'auto', 'true' or 'false'
+  CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: string; // CPU threads for embedding stored rows; '' = half, 0 = all
   CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
@@ -562,6 +564,18 @@ export class SettingsDefaultsManager {
     // memory text to that vendor. Any other value is rejected. Applies to new
     // collections only — changing it requires re-indexing.
     CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: 'default',
+    // The server's search by meaning (pgvector): it embeds every observation
+    // in process, existing rows in the background at startup. 'true'
+    // turns it on and 'false' off. 'auto' turns it on for a new database and
+    // leaves a database from before it keyword-only, so an upgrade adds no
+    // embedding work until that deployment sets 'true'.
+    CLAUDE_MEM_SERVER_VECTOR_SEARCH: 'auto',
+    // A server start that finds stored observations without vectors from the
+    // current model (search by meaning just turned on, or the model changed)
+    // embeds them in the background, which can take hours on a large store.
+    // That start caps the embedder at this many CPU threads until the next
+    // restart: empty is half the machine's threads, 0 is every thread.
+    CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: '',
     CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     CLAUDE_MEM_SEARCH_RECENCY_DAYS: '90',      // Date-less semantic search only ranks matches from the last N days (#4770). 0 = no window (every match eligible); an explicit dateStart/dateEnd always wins. Restart the worker after changing it
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.

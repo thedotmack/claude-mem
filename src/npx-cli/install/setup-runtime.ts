@@ -400,7 +400,16 @@ export async function ensureUv(
   return { uvPath, version };
 }
 
-export async function installPluginDependencies(targetDir: string, bunPath: string): Promise<void> {
+/**
+ * `optional` also installs plugin/package.json's optional dependencies: the
+ * server's embedder, about 300 MB, which only a server runs
+ * (scripts/build-hooks.js), so a plugin install leaves it out.
+ */
+export async function installPluginDependencies(
+  targetDir: string,
+  bunPath: string,
+  options: { optional?: boolean } = {},
+): Promise<void> {
   if (!existsSync(join(targetDir, 'package.json'))) {
     throw new Error(`installPluginDependencies: no package.json at ${targetDir}`);
   }
@@ -415,7 +424,7 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   // resolved path with spaces or shell metacharacters is never parsed.
   const runBunInstall = (): Promise<void> =>
     new Promise<void>((resolve, reject) => {
-      execFile(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts'], {
+      execFile(bunPath, ['install', '--frozen-lockfile', '--ignore-scripts', ...(options.optional ? [] : ['--omit=optional'])], {
         cwd: targetDir,
         timeout: INSTALL_TIMEOUT_MS,
         maxBuffer: 16 * 1024 * 1024,
@@ -433,6 +442,16 @@ export async function installPluginDependencies(targetDir: string, bunPath: stri
   }
 
   verifyCriticalModules(targetDir);
+}
+
+export function hasServerEmbedder(pluginRoot: string): boolean {
+  return existsSync(join(pluginRoot, 'node_modules', '@huggingface', 'transformers', 'package.json'));
+}
+
+/** Install the server's embedder into a plugin root that lacks it. */
+export async function ensureServerEmbedder(pluginRoot: string, bunPath: string): Promise<void> {
+  if (hasServerEmbedder(pluginRoot)) return;
+  await installPluginDependencies(pluginRoot, bunPath, { optional: true });
 }
 
 /**

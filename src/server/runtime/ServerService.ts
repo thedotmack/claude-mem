@@ -22,6 +22,7 @@ import { ServerV1PostgresRoutes } from '../routes/v1/ServerV1PostgresRoutes.js';
 import { SessionsObservationsAdapter } from '../compat/SessionsObservationsAdapter.js';
 import { SessionsSummarizeAdapter } from '../compat/SessionsSummarizeAdapter.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
+import { getVectorSearchStatus } from '../services/ObservationEmbeddingService.js';
 import { ServerViewerRoutes } from './ServerViewerRoutes.js';
 import type { ServerServiceGraph, ServerQueueLaneMetric } from './types.js';
 
@@ -71,6 +72,10 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
     // the lane with `unavailable: true` rather than crashing the route.
     app.get('/v1/info', async (_req, res) => {
       const queueLanes = await collectQueueLaneMetrics(this.graph);
+      const vectorSearch = await getVectorSearchStatus(this.graph.postgres.pool).catch((error: unknown) => ({
+        unavailable: true,
+        error: error instanceof Error ? error.message : String(error),
+      }));
       res.json({
         name: 'claude-mem-server',
         runtime: SERVER_RUNTIME,
@@ -84,6 +89,7 @@ class ServerRuntimeInfoRoutes implements RouteHandler {
           generationWorkerManager: this.graph.generationWorkerManager.getHealth(),
         },
         queueLanes,
+        vectorSearch,
       });
     });
   }
@@ -246,6 +252,7 @@ export class ServerService {
       await Promise.all([
         this.graph.queueManager.close(),
         this.graph.generationWorkerManager.close(),
+        this.graph.stopBackgroundWork?.(),
       ]);
       await this.graph.postgres.pool.end();
     } finally {
