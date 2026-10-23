@@ -1,7 +1,7 @@
 import type { HistoryImportProgress } from '../setup-data'
 import { PageHeading } from './shared'
 
-/** PROTO workspace-data.js history phases, minus "Bringing over your sessions.": the import carries observations only (gap G2). */
+/** The PROTO history-import phases, minus "Bringing over your sessions.": the import carries observations only (gap G2). */
 const PHASES = ['Reading your projects.', 'Importing your memories.', 'Building your cross-project search.']
 
 /** Step 6b, On The Go with history only (PROTO #route-import). */

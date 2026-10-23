@@ -176,12 +176,12 @@ export const localSetupSource: SetupSource = {
   async keepNote(record, text) { await postJson('/api/memory/save', noteFor(record, text)) },
 }
 
-/** D6 plan prices, in cents. Plan prices only; never a usage cost. */
+/** D6 plan prices, in cents. Plan prices only, never per-run spend. */
 export const PLAN = { name: 'CMEM Pro', monthlyCents: 3000, cloudSyncCents: 1200 } as const
 
 export const CMEM_MCP_URL = 'https://cmem.ai/api/mcp'
 
-/** Finish Setup tools. Names, descriptions and steps come from PROTO workspace-data.js and CONNECTOR-EVIDENCE.md. */
+/** Finish Setup tools. Names, descriptions and steps come from the PROTO workspace tool list and CONNECTOR-EVIDENCE.md. */
 export interface SetupTool {
   id: string
   name: string

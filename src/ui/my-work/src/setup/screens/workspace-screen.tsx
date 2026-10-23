@@ -58,6 +58,7 @@ export function WorkspaceScreen({ suggestions, search, keepNote, onContinue }: {
   const run = async (text: string) => {
     const trimmed = text.trim()
     if (!trimmed) { inputRef.current?.focus(); return }
+    setStatus('Searching your memory…')
     let found: MemoryResult[]
     try { found = (await search(trimmed)).filter((record) => !notes.some((note) => note.record.id === record.id)) }
     catch (error) { setStatus(error instanceof Error ? error.message : String(error)); return }
