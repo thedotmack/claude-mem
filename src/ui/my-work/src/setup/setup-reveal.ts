@@ -23,7 +23,12 @@ export interface WorkerExtraction {
   finishedAt: string | null
   error: string | null
 }
-export type SnapshotWithSetup = WorkViewSnapshot & { setup?: { extraction: WorkerExtraction | null } | null; story?: { groups?: number; story: unknown } | null }
+/** One overall request from the request-group ledger (WorkViewRoutes SetupWorkItem). */
+export interface WorkerSetupWork { groupId: string; title: string; platform: string | null; lastActiveAt: string | null; progressPercent: number | null }
+export type SnapshotWithSetup = WorkViewSnapshot & {
+  setup?: { extraction: WorkerExtraction | null; work?: WorkerSetupWork[] | null } | null
+  story?: { groups?: number; story: unknown } | null
+}
 
 const SHOWN = 5
 const pad = (value: number) => String(value).padStart(2, '0')
@@ -53,18 +58,17 @@ export function revealFromSnapshot(snapshot: SnapshotWithSetup): RevealSets {
       .map((item, index) => ({ id: item.id, rank: item.rank ?? index + 1, title: item.title, timesAsked: item.timesAsked ?? item.evidence.length, latestAt: goalStamp(item.latestAt) }))
     : null
 
-  const platformOf = new Map(snapshot.agents.map((agent) => [agent.id, agent.platformSource]))
-  const work: RevealWork[] | null = (snapshot.story?.groups ?? 0) > 0
-    ? [...snapshot.humanRequests]
-      .sort((left, right) => (right.updatedAtEpoch ?? right.startedAtEpoch ?? 0) - (left.updatedAtEpoch ?? left.startedAtEpoch ?? 0)).slice(0, SHOWN)
-      .map((request) => ({
-        id: request.id,
-        title: request.humanCopy?.title || request.title,
-        agent: toolFor(platformOf.get(request.agentIds[0])),
-        lastActiveAt: promptStamp(request.updatedAtEpoch ?? request.startedAtEpoch),
-        // New installs have no evidence of progress: no reading, no bar.
-        ...(request.progress && request.progress.state !== 'unknown' ? { progressPercent: request.progress.percent } : {}),
-      }))
+  // Work comes from the request groups themselves, so a new install (prompts only, no observations) has it too.
+  const groups = snapshot.setup?.work ?? null
+  const work: RevealWork[] | null = groups
+    ? groups.slice(0, SHOWN).map((group) => ({
+      id: group.groupId,
+      title: group.title,
+      agent: toolFor(group.platform),
+      lastActiveAt: promptStamp(group.lastActiveAt),
+      // A review without evidence (every new install) has no percent: no bar.
+      ...(group.progressPercent !== null ? { progressPercent: group.progressPercent } : {}),
+    }))
     : null
 
   const learned = (snapshot.rules ?? []).filter((rule) => RULE_SHOWN_STATUSES.has(rule.status) && rule.quotes.length)

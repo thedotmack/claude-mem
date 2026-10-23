@@ -23,10 +23,18 @@ export type SetupInstallerStage =
 export interface SetupChoice { branch: SetupBranch; memoryBilling: SetupMemoryBilling; chosenAt: string }
 export interface SetupInstallerReport { stage: SetupInstallerStage; error: string | null; updatedAt: string }
 
+/**
+ * On The Go checkout (funnel Phase 8). The page asks (`requested`, counted so a second ask reopens the checkout);
+ * the installer runs the existing pairing checkout and reports `waiting`, then `paid` or `failed`.
+ */
+export type SetupCheckoutState = 'requested' | 'waiting' | 'paid' | 'failed';
+export interface SetupCheckout { state: SetupCheckoutState; requests: number; error: string | null; updatedAt: string }
+
 export interface SetupStateFile {
   status: 'pending' | 'complete';
   choice: SetupChoice | null;
   installer: SetupInstallerReport | null;
+  checkout: SetupCheckout | null;
   completedAt: string | null;
 }
 
@@ -36,7 +44,7 @@ export interface SetupStateView extends SetupStateFile {
   alreadyPro: boolean;
 }
 
-export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, completedAt: null };
+export const INITIAL_SETUP_STATE: SetupStateFile = { status: 'pending', choice: null, installer: null, checkout: null, completedAt: null };
 
 /** Resolved at call time so a CLAUDE_MEM_DATA_DIR set after import is honored (installer tests, clean-HOME runs). */
 export function setupStatePath(): string {
@@ -54,6 +62,7 @@ export function readSetupState(path: string = setupStatePath()): SetupStateFile 
     status: parsed.status,
     choice: parsed.choice ?? null,
     installer: parsed.installer ?? null,
+    checkout: parsed.checkout ?? null,
     completedAt: parsed.completedAt ?? null,
   };
 }

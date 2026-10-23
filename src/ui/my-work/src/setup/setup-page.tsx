@@ -68,6 +68,11 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
   }
   if (flow.importStatus === 'none' && historyAvailable) setFlow((current) => ({ ...current, importStatus: 'available' }))
   if (requested === 'scan' && scanComplete) setRequested('reveal')
+  // The terminal reports the On The Go checkout paid: Finish Setup is next.
+  if (data.checkout?.state === 'paid' && !flow.checkoutReviewed) {
+    setFlow((current) => ({ ...current, checkoutReviewed: true }))
+    if (requested === 'checkout') setRequested('finish-setup')
+  }
   if (requested === 'import' && data.historyImport?.done) {
     setFlow((current) => ({ ...current, importStatus: 'complete' }))
     setRequested('finish-setup')
@@ -123,7 +128,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
         onExistingPlan={() => void toFinishSetup({ memoryBilling: 'existing' })}
         onSkip={() => void toFinishSetup({})} />
     ),
-    checkout: () => <CheckoutScreen onBack={() => setRequested('savings')} onContinue={() => update({ checkoutReviewed: true }, 'finish-setup')} />,
+    checkout: () => <CheckoutScreen checkout={data.checkout} onBack={() => setRequested('savings')} onContinue={() => void handOff(() => source!.checkout())} />,
     'finish-setup': () => (
       <FinishSetupScreen branch={flow.branch} tools={tools} selected={flow.finishTools} onSelect={(finishTools) => update({ finishTools })}
         history={flow.branch === 'go' && historyAvailable ? data.history : null} importStatus={flow.importStatus}

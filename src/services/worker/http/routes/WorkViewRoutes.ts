@@ -20,6 +20,7 @@ import { chatCompletionsHumanCopyProvider, HumanCopyWorker } from '../../../work
 import { AutoRefreshWorker } from '../../../work-view/auto-refresh-worker.mjs';
 import { buildRefreshTask } from '../../../work-view/refresh-task.js';
 import { runAgentTask } from '../../../agent-runner/run.js';
+import { ledgerSignature, readLedger } from '../../../work-view/request-groups.mjs';
 import { detectUsableAgents } from '../../../agent-runner/detect.js';
 import { BaseRouteHandler } from '../BaseRouteHandler.js';
 import { isForeignLoopbackBrowserWrite } from './SettingsRoutes.js';
@@ -109,6 +110,10 @@ interface WorkViewOptions {
   settingsPath?: string;
 }
 
+/** One overall request on the Reveal, read from the request-group ledger so new installs (prompts only) have work too. */
+export interface SetupWorkItem { groupId: string; title: string; platform: string | null; lastActiveAt: string | null; progressPercent: number | null }
+const SETUP_WORK_SHOWN = 5;
+
 const setupScanBody = z.object({}).strict();
 // On The Go is always CMEM Pro: standalone Cloud Sync on your own tokens has no price yet (gap G1).
 const setupChoiceBody = z.object({
@@ -120,7 +125,10 @@ const setupChoiceBody = z.object({
 const setupInstallerBody = z.object({
   stage: z.enum(['waiting-for-choice', 'home-ready', 'go-kept-existing-pro', 'go-awaiting-checkout', 'failed']),
   error: z.string().max(2000).nullable().optional(),
+  /** The installer mirrors the pairing checkout it is running (funnel Phase 8). */
+  checkout: z.enum(['waiting', 'paid', 'failed']).optional(),
 }).strict();
+const setupCheckoutBody = z.object({}).strict();
 const setupCompleteBody = z.object({}).strict();
 
 type HumanCopyProvider = ReturnType<typeof chatCompletionsHumanCopyProvider>;
@@ -178,12 +186,17 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private unsubscribeSetupScan: (() => void) | null = null;
   /** The scan (by start time) whose finish already started the extraction. */
   private extractedScanStartedAt: string | null = null;
+  private ledgerDir: string | null;
+  private databasePath: string;
+  private setupWorkCache: { signature: string; work: SetupWorkItem[] | null } | null = null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
     this.pollIntervalMs = options.pollIntervalMs ?? 1000;
     this.getLocalDeviceId = options.getLocalDeviceId ?? (() => '');
     const ledgerDir = options.ledgerDir === undefined ? join(DATA_DIR, 'work-view') : options.ledgerDir;
+    this.ledgerDir = ledgerDir;
+    this.databasePath = options.databasePath ?? DB_PATH;
     this.source = new WorkStateSource({
       databasePath: options.databasePath ?? DB_PATH,
       pollIntervalMs: this.pollIntervalMs,
@@ -269,6 +282,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     }));
     app.post('/api/setup/choice', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupChoiceBody), this.wrapHandler(this.saveSetupChoice));
     app.post('/api/setup/installer', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupInstallerBody), this.wrapHandler(this.saveInstallerStage));
+    app.post('/api/setup/checkout', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCheckoutBody), this.wrapHandler(this.requestCheckout));
     app.post('/api/setup/complete', workViewLoopbackOnly, requireWorkViewOrigin, validateBody(setupCompleteBody), this.wrapHandler(this.completeSetup));
   }
 
@@ -300,17 +314,38 @@ export class WorkViewRoutes extends BaseRouteHandler {
   };
 
   private saveInstallerStage = (req: Request, res: Response): void => {
-    const { stage, error } = req.body as z.infer<typeof setupInstallerBody>;
+    const { stage, error, checkout } = req.body as z.infer<typeof setupInstallerBody>;
     const state = readSetupState(this.setupStatePath);
-    // A new installer run starts a fresh hand-off: a choice left by an earlier, interrupted run is not applied.
-    const choice = stage === 'waiting-for-choice' ? null : state.choice;
-    this.saveSetupState({ ...state, choice, installer: { stage, error: error ?? null, updatedAt: new Date().toISOString() } }, res);
+    const now = new Date().toISOString();
+    // A new installer run starts a fresh hand-off: a choice or checkout left by an earlier, interrupted run is not applied.
+    const fresh = stage === 'waiting-for-choice';
+    const choice = fresh ? null : state.choice;
+    const checkoutState = fresh ? null : checkout
+      ? { state: checkout, requests: state.checkout?.requests ?? 0, error: checkout === 'failed' ? error ?? null : null, updatedAt: now }
+      : state.checkout;
+    this.saveSetupState({ ...state, choice, checkout: checkoutState, installer: { stage, error: checkout ? state.installer?.error ?? null : error ?? null, updatedAt: now } }, res);
+  };
+
+  /** The page's Continue on Checkout: the installer holding the On The Go pairing opens the checkout (again, on a repeat). */
+  private requestCheckout = (_req: Request, res: Response): void => {
+    const state = readSetupState(this.setupStatePath);
+    if (state.checkout?.state === 'paid') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
+    if (state.choice?.branch !== 'go' || state.installer?.stage !== 'go-awaiting-checkout') {
+      res.status(409).json({ error: 'Checkout opens once the terminal has started your CMEM Pro sign-in.', state: this.setupStateView(state) });
+      return;
+    }
+    const requests = (state.checkout?.requests ?? 0) + 1;
+    this.saveSetupState({ ...state, checkout: { state: 'requested', requests, error: null, updatedAt: new Date().toISOString() } }, res);
   };
 
   private completeSetup = (_req: Request, res: Response): void => {
     const state = readSetupState(this.setupStatePath);
     if (state.status === 'complete') { res.setHeader('Cache-Control', 'no-store'); res.json(this.setupStateView(state)); return; }
     if (!state.choice) { res.status(409).json({ error: 'Choose where to keep your memory before finishing setup.', state: this.setupStateView(state) }); return; }
+    if (state.installer?.stage === 'go-awaiting-checkout' && state.checkout?.state !== 'paid') {
+      res.status(409).json({ error: 'Finish checkout before finishing setup.', state: this.setupStateView(state) });
+      return;
+    }
     this.saveSetupState({ ...state, status: 'complete', completedAt: new Date().toISOString() }, res);
   };
 
@@ -342,11 +377,52 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
     return {
       scan: this.setupScan?.state() ?? null,
+      work: this.setupWork(),
       extraction: refresh ? {
         state: refresh.state, reason: refresh.reason ?? null, step, agent: refresh.agent ?? null,
         startedAt: refresh.startedAt ?? null, finishedAt: refresh.finishedAt ?? null, error: refresh.error ?? null,
       } : null,
     };
+  }
+
+  /**
+   * The newest overall requests in the ledger, with the latest prompt time of their conversations. `null` until the
+   * grouping has run. A review without evidence (state `unknown`, every new install) gives no percent, so no bar.
+   * Re-read only when the ledger changes.
+   */
+  private setupWork(): SetupWorkItem[] | null {
+    if (!this.ledgerDir) return null;
+    const signature = ledgerSignature(this.ledgerDir);
+    if (this.setupWorkCache?.signature === signature) return this.setupWorkCache.work;
+    const ledger = readLedger(this.ledgerDir);
+    const groupIds = Object.keys(ledger.groups.groups);
+    let work: SetupWorkItem[] | null = null;
+    if (groupIds.length) {
+      const conversationsOf = new Map<string, Array<[string, string]>>();
+      for (const [key, groupId] of Object.entries(ledger.groups.conversations as Record<string, string>)) {
+        const [, platform, contentSessionId] = JSON.parse(key) as [string, string, string];
+        if (!conversationsOf.has(groupId)) conversationsOf.set(groupId, []);
+        conversationsOf.get(groupId)!.push([platform, contentSessionId]);
+      }
+      const database = existsSync(this.databasePath) ? new Database(this.databasePath, { readonly: true, create: false }) : null;
+      try {
+        const lastPrompt = database?.prepare(`SELECT MAX(up.created_at_epoch) AS at FROM user_prompts up JOIN sdk_sessions s ON s.id = up.session_db_id
+          WHERE s.platform_source = ? AND s.content_session_id = ?`);
+        work = groupIds.map((groupId) => {
+          const group = ledger.groups.groups[groupId];
+          const lastEpoch = Math.max(0, ...(conversationsOf.get(groupId) ?? []).map(([platform, id]) => Number((lastPrompt?.get(platform, id) as { at: number | null } | null)?.at ?? 0)), group.anchorAsk?.atEpoch ?? 0);
+          const review = ledger.progress[groupId];
+          let platform: string | null = null;
+          try { platform = (JSON.parse(group.anchor) as string[])[1] ?? null; } catch { /* An anchor that is not a conversation key names no agent. */ }
+          return {
+            groupId, title: String(group.title), platform, lastActiveAt: lastEpoch ? new Date(lastEpoch).toISOString() : null,
+            progressPercent: review && review.state !== 'unknown' && Number.isFinite(review.percent) ? review.percent : null,
+          };
+        }).sort((left, right) => String(right.lastActiveAt ?? '').localeCompare(String(left.lastActiveAt ?? ''))).slice(0, SETUP_WORK_SHOWN);
+      } finally { database?.close(); }
+    }
+    this.setupWorkCache = { signature, work };
+    return work;
   }
 
   private rulesFileStatus(snapshot: WorkViewSnapshot) {

@@ -3016,6 +3016,21 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
             onTheGoPairing = await startOnTheGoPairing(version);
             return 'go-awaiting-checkout';
           },
+          // On The Go checkout: the existing pairing → /api/pro/trial/claim (inline login, then Stripe) path, unchanged.
+          checkout: {
+            run: async () => {
+              // A pairing whose checkout failed or was cancelled is not reused; the next ask starts a fresh one.
+              if (!onTheGoPairing) onTheGoPairing = await startOnTheGoPairing(version);
+              const pairing: InstallerOAuthPairing = onTheGoPairing;
+              const delivered = await completeCmemTrialPairing(pairing, version);
+              if (!delivered) onTheGoPairing = null;
+              return Boolean(delivered);
+            },
+            reopen: () => {
+              const pairing = onTheGoPairing as InstallerOAuthPairing | null;
+              if (pairing) openBrowser(pairing.checkoutUrl);
+            },
+          },
         });
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
@@ -3132,7 +3147,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
   // persisted account-backed provider skips login and must not claim it. A
   // persisted claude/host provider holds no claude-mem account at all, so it
   // reports "not required" rather than a kept account.
-  const browserAccountStatus = browserOutcome?.stage === 'go-awaiting-checkout'
+  const browserAccountStatus = browserOutcome?.checkoutPaid
+    ? `CMEM Pro ${PRO_TRIAL_LABEL} active`
+    : browserOutcome?.stage === 'go-awaiting-checkout'
     ? 'CMEM Pro sign-in started (checkout not completed)'
     : browserOutcome?.stage === 'go-kept-existing-pro'
       ? 'Kept existing CMEM Pro account'

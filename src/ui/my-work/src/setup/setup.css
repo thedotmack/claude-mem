@@ -208,6 +208,8 @@
 .checkout-handoff svg { width: 230px; height: auto; margin-bottom: 30px; }
 .checkout-handoff h2 { font-size: 32px; font-weight: 600; letter-spacing: -.025em; }
 .checkout-handoff p { color: var(--muted); font-size: 24px; }
+.checkout-handoff .checkout-status { color: var(--ink); font-size: 18px; font-weight: 600; }
+.checkout-handoff .scan-error { font-size: 16px; }
 
 /* Finish Setup (PROTO #route-finish-setup, sized to 08-configure-ux-09-pass5.png). */
 .step-finish-setup { width: min(1290px, calc(100% - 64px)); margin-top: 0; }

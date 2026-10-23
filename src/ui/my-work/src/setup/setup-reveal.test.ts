@@ -10,10 +10,6 @@ const base = (changes: Partial<SnapshotWithSetup> = {}): SnapshotWithSetup => ({
   goals: null, rules: [], story: null, setup: { extraction: extraction('running') }, ...changes,
 })
 const goalItem = (id: string, rank: number) => ({ id, task: `Priority: ${id}`, kind: 'priority' as const, rank, title: id, product: null, latestAt: '2026-10-21 17:42', timesAsked: 3, status: 'todo', evidence: [{ at: '2026-10-21 17:42', quote: 'ship it' }] })
-const request = (id: string, updatedAtEpoch: number, progress: unknown = null) => ({
-  id, contentFingerprint: 'x', title: `Request ${id}`, original: { text: 'x' }, scopeUpdates: [], humanCopy: null, lifecycle: null, items: [], workstreams: [], activity: [],
-  agentIds: ['a1'], conversationKeys: [], requestedBy: null, startedAtEpoch: updatedAtEpoch, completedAtEpoch: null, updatedAtEpoch, review: null, progress,
-}) as SnapshotWithSetup['humanRequests'][number]
 
 describe('the Reveal from the live snapshot', () => {
   it('nothing landed yet: every set is still extracting', () => {
@@ -25,11 +21,14 @@ describe('the Reveal from the live snapshot', () => {
     assert.deepEqual(reveal.goals, [{ id: 'first', rank: 1, title: 'first', timesAsked: 3, latestAt: '10-21 17:42' }, { id: 'second', rank: 2, title: 'second', timesAsked: 3, latestAt: '10-21 17:42' }])
     assert.equal(reveal.work, null)
   })
-  it('work lands once requests are grouped, newest first; a new install has no progress bar', () => {
-    const reviewed = { state: 'in-progress', percent: 40, summary: '', narrative: '', milestones: [], checkedAt: '', readings: [] }
-    const noEvidence = { ...reviewed, state: 'unknown', percent: 0 }
-    const reveal = revealFromSnapshot(base({ story: { groups: 2, story: null }, humanRequests: [request('old', 1_000, noEvidence), request('new', 2_000, reviewed)] }))
-    assert.deepEqual(reveal.work?.map((work) => [work.id, work.agent, work.progressPercent]), [['new', 'codex', 40], ['old', 'codex', undefined]])
+  it('work lands from the request groups, as the worker orders them; a review without evidence has no bar', () => {
+    const work = [
+      { groupId: 'g_new', title: 'New thing', platform: 'codex', lastActiveAt: '2026-10-21T17:42:00.000Z', progressPercent: 40 },
+      { groupId: 'g_old', title: 'Old thing', platform: 'claude', lastActiveAt: '2026-10-19T11:05:00.000Z', progressPercent: null },
+    ]
+    const reveal = revealFromSnapshot(base({ setup: { extraction: extraction('running'), work } }))
+    assert.deepEqual(reveal.work?.map((item) => [item.id, item.title, item.agent, item.progressPercent, item.lastActiveAt]),
+      [['g_new', 'New thing', 'codex', 40, promptStamp('2026-10-21T17:42:00.000Z')], ['g_old', 'Old thing', 'claude', undefined, promptStamp('2026-10-19T11:05:00.000Z')]])
     assert.equal(reveal.rules, null)
   })
   it('rules land with the story, quoted; dismissed rules and unquoted ones stay out', () => {

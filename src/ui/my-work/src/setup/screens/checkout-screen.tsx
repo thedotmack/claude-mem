@@ -1,5 +1,5 @@
 import { ArrowLeftIcon, ArrowRightIcon, ChevronDownIcon } from 'lucide-react'
-import { PLAN } from '../setup-data'
+import { PLAN, type SetupCheckoutView } from '../setup-data'
 import { money } from '../format'
 import { PageHeading } from './shared'
 
@@ -24,8 +24,12 @@ function SecureCardArt() {
   )
 }
 
-/** Step 5, On The Go only (PROTO #route-checkout-pro). Continue hands off to Stripe in funnel Phase 8. */
-export function CheckoutScreen({ onBack, onContinue }: { onBack: () => void; onContinue: () => void }) {
+/**
+ * Step 5, On The Go only (PROTO #route-checkout-pro). Continue asks the terminal to open the CMEM Pro checkout (sign-in,
+ * then Stripe); the page moves on to Finish Setup when the terminal reports it paid. While it is open, Continue opens it again.
+ */
+export function CheckoutScreen({ checkout, onBack, onContinue }: { checkout: SetupCheckoutView | null; onBack: () => void; onContinue: () => void }) {
+  const open = checkout?.state === 'requested' || checkout?.state === 'waiting'
   return (
     <section aria-labelledby="checkout-title">
       <PageHeading id="checkout-title" title="Checkout" lead="CMEM Pro · Cloud Sync included" />
@@ -54,11 +58,13 @@ export function CheckoutScreen({ onBack, onContinue }: { onBack: () => void; onC
           <SecureCardArt />
           <h2>Secure checkout with Stripe</h2>
           <p>Add your card, then return to finish setup.</p>
+          {open && <p className="checkout-status" role="status">Checkout is open in your browser.</p>}
+          {checkout?.state === 'failed' && <p className="scan-error" role="alert">{checkout.error}</p>}
         </div>
       </div>
       <div className="actions">
         <button type="button" className="secondary" onClick={onBack}><ArrowLeftIcon aria-hidden="true" />Back</button>
-        <button type="button" className="primary" onClick={onContinue}>Continue to Finish Setup <ArrowRightIcon aria-hidden="true" /></button>
+        <button type="button" className="primary" onClick={onContinue}>{open ? 'Open checkout again' : 'Continue to Finish Setup'} <ArrowRightIcon aria-hidden="true" /></button>
       </div>
     </section>
   )

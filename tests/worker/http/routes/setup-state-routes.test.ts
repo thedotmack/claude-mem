@@ -47,7 +47,7 @@ function post(path: string, body: unknown, headers: Record<string, string> = { '
 describe('setup state endpoints', () => {
   it('start pending on a machine that never finished setup, with nothing pre-selected', async () => {
     await start();
-    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, completedAt: null, alreadyPro: false });
+    expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, completedAt: null, alreadyPro: false });
     expect(existsSync(statePath)).toBe(false);
   });
 

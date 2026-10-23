@@ -12,6 +12,8 @@ export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phas
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
 /** The extraction run on the user's own logged-in agent (the worker's automatic refresh). */
+/** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
+export interface SetupCheckoutView { state: 'requested' | 'waiting' | 'paid' | 'failed'; error: string | null }
 export interface SetupExtraction { state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'; step: 'goals' | 'work' | 'rules' | null }
 
 export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-reveal'
@@ -30,6 +32,7 @@ export interface SetupData {
   /** `null` until the worker reports a run. `waiting-for-agent`: no logged-in agent yet, so the Reveal shows prompts only. */
   extraction: SetupExtraction | null
   recentPrompts: SetupRecentPrompt[]
+  checkout: SetupCheckoutView | null
   usage: SetupUsage | null
   alreadyPro: boolean
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
@@ -49,6 +52,8 @@ export interface SetupSource {
   subscribe(onData: (data: SetupData) => void): () => void
   /** Hands the storage choice to the installer waiting in the terminal (POST /api/setup/choice). */
   choose(choice: SetupChoice): Promise<void>
+  /** Asks the installer holding the On The Go sign-in to open checkout (POST /api/setup/checkout). */
+  checkout(): Promise<void>
   /** Finishes setup for this machine; the terminal exits and the funnel does not show again (POST /api/setup/complete). */
   complete(): Promise<void>
   startHistoryImport(): void
@@ -60,6 +65,7 @@ export const EMPTY_SETUP_DATA: SetupData = {
   reveal: { goals: null, work: null, rules: null },
   extraction: null,
   recentPrompts: [],
+  checkout: null,
   usage: null,
   alreadyPro: false,
   detectedTools: [],
@@ -75,7 +81,7 @@ interface WorkerScanState extends SetupScanView {
   usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
 }
-interface WorkerSetupState { status: 'pending' | 'complete'; alreadyPro: boolean }
+interface WorkerSetupState { status: 'pending' | 'complete'; alreadyPro: boolean; checkout?: SetupCheckoutView | null }
 
 async function workerJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { cache: 'no-store', ...init })
@@ -119,7 +125,10 @@ export const localSetupSource: SetupSource = {
       // Finish Setup pre-ticks the tools the scan found on this machine.
       detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
     })
-    const applyState = (state: WorkerSetupState) => publish({ alreadyPro: state.alreadyPro })
+    const applyState = (state: WorkerSetupState) => publish({
+      alreadyPro: state.alreadyPro,
+      checkout: state.checkout ? { state: state.checkout.state, error: state.checkout.error } : null,
+    })
     // Goals, work and rules land in the work view snapshot as the extraction saves each one.
     const applySnapshot = (snapshot: SnapshotWithSetup) => {
       const extraction = snapshot.setup?.extraction ?? null
@@ -139,6 +148,7 @@ export const localSetupSource: SetupSource = {
     return () => { closed = true; stream.close() }
   },
   async choose(choice) { await postJson('/api/setup/choice', choice) },
+  async checkout() { await postJson('/api/setup/checkout', {}) },
   async complete() { await postJson('/api/setup/complete', {}) },
   startHistoryImport() { throw new Error('History import is not connected to the worker yet.') },
   search: async () => [],

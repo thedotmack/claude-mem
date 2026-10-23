@@ -63,6 +63,7 @@ function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: bo
     reveal: { goals: null, work: null, rules: null },
     extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
     recentPrompts: RECENT_PROMPTS,
+    checkout: null,
     usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
@@ -108,6 +109,11 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
     },
     // Review fixtures hand nothing to an installer.
     async choose() {},
+    // Plays the checkout the terminal would open: waiting, then paid.
+    async checkout() {
+      publish({ checkout: { state: 'waiting', error: null } })
+      setTimeout(() => publish({ checkout: { state: 'paid', error: null } }), 1500)
+    },
     async complete() {},
     startHistoryImport() {
       const started = Date.now()

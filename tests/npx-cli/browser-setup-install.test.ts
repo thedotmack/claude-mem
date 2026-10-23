@@ -36,6 +36,10 @@ if (originalOsDefault) Object.defineProperty(scopedOs, 'default', { ...originalO
 mock.module('os', () => scopedOs);
 mock.module('node:os', () => scopedOs);
 Object.defineProperty(process.stdin, 'isTTY', { configurable: true, value: true });
+// The checkout wait listens for Ctrl-C in raw mode, as on a real terminal.
+if (typeof (process.stdin as { setRawMode?: unknown }).setRawMode !== 'function') {
+  Object.defineProperty(process.stdin, 'setRawMode', { configurable: true, value: () => process.stdin });
+}
 process.env.CLAUDE_MEM_DATA_DIR = data;
 process.env.CLAUDE_CONFIG_DIR = join(fixture, 'claude');
 process.env.CLAUDE_MEM_ENV_FILE = join(data, '.env');
@@ -136,8 +140,14 @@ const spawnSyncSpy = spyOn(childProcess, 'spawnSync').mockImplementation(((comma
 
 // Network: loopback to the fixture worker is real; cmem.ai answers only the pairing start; anything else is a failure.
 const realFetch = globalThis.fetch;
-const { CMEM_INSTALLER_OAUTH_START_URL } = await import('../../src/npx-cli/cmem-pro-costs.js');
+const { CMEM_INSTALLER_OAUTH_START_URL, CMEM_INSTALLER_OAUTH_POLL_URL } = await import('../../src/npx-cli/cmem-pro-costs.js');
 const pairingStarts: number[] = [];
+/** What cmem.ai's pairing poll answers next, in order (a 410 is a cancelled or expired checkout). */
+const pollAnswers: Array<{ status: number; body: unknown }> = [];
+const READY_BODY = {
+  status: 'ready', user_id: 'user-1', setup_token: 'sync-token', hub_url: 'https://cmem.ai/api/sync',
+  memory_key: 'pro-memory-key', memory_base_url: 'https://cmem.ai/api/gateway/v1', memory_model: 'cmem-memory', plan: 'trial', trial: { ends_at: '2026-11-22T00:00:00.000Z' },
+};
 const setupRequests: string[] = [];
 const unexpected: string[] = [];
 const pairingId = 'a'.repeat(32);
@@ -147,6 +157,10 @@ const fetchSpy = spyOn(globalThis, 'fetch').mockImplementation((async (input: an
   if (url.startsWith(workerBase)) {
     if (url.includes('/api/setup/')) setupRequests.push(url.slice(workerBase.length));
     return realFetch(input, init);
+  }
+  if (url === CMEM_INSTALLER_OAUTH_POLL_URL) {
+    const answer = pollAnswers.shift() ?? { status: 202, body: { status: 'pending', stage: 'awaiting_checkout' } };
+    return Response.json(answer.body, { status: answer.status });
   }
   if (url === CMEM_INSTALLER_OAUTH_START_URL) {
     pairingStarts.push(Date.now());
@@ -168,7 +182,7 @@ beforeEach(async () => {
   rmSync(statePath, { force: true });
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
   lines.length = 0; questions.length = 0; ranTasks.length = 0; opened.length = 0;
-  pairingStarts.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0;
+  pairingStarts.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
 });
 afterAll(async () => {
   await stopFixtureWorker();
@@ -183,6 +197,13 @@ async function browserState(): Promise<any> {
 async function waitForStage(stage: string): Promise<any> {
   for (;;) {
     try { const state = await browserState(); if (state.installer?.stage === stage) return state; } catch { /* worker not up yet */ }
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+}
+async function waitForCheckout(checkout: string): Promise<any> {
+  for (;;) {
+    const state = await browserState();
+    if (state.checkout?.state === checkout) return state;
     await new Promise(resolve => setTimeout(resolve, 20));
   }
 }
@@ -216,23 +237,53 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(unexpected).toEqual([]);
   });
 
-  it('On The Go: starts the CMEM Pro pairing only after the choice and leaves it waiting for checkout', async () => {
+  it('On The Go: the pairing starts only after the choice, checkout runs when the page asks, and setup finishes once paid', async () => {
     const install = runInstallCommand({});
     await waitForStage('waiting-for-choice');
     expect(pairingStarts).toEqual([]);
+    expect((await browserPost('/api/setup/checkout', {})).status).toBe(409);
     expect((await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' })).status).toBe(200);
     const handOff = await waitForStage('go-awaiting-checkout');
     expect(pairingStarts).toHaveLength(1);
     expect(handOff.choice).toMatchObject({ branch: 'go', memoryBilling: 'hosted' });
+    expect(opened).toEqual([`${workerBase}/?setup=1`]);
+    // Not before checkout.
+    expect((await browserPost('/api/setup/complete', {})).status).toBe(409);
+
+    pollAnswers.push({ status: 200, body: READY_BODY });
+    expect((await browserPost('/api/setup/checkout', {})).status).toBe(200);
+    const paid = await waitForCheckout('paid');
+    expect(paid.alreadyPro).toBe(true);
+    // The existing path: the pairing's checkout URL (/api/pro/trial/claim), opened by the installer.
+    expect(opened).toEqual([`${workerBase}/?setup=1`, `${startOrigin}/api/pro/trial/claim?pairing=${pairingId}&trial=1`]);
+    expect(readSettings()).toMatchObject({ CLAUDE_MEM_PRO_TRIAL_STATE: 'active', CLAUDE_MEM_PRO_MEMORY_KEY: 'pro-memory-key', CLAUDE_MEM_CLOUD_SYNC_TOKEN: 'sync-token' });
+
     expect((await browserPost('/api/setup/complete', {})).status).toBe(200);
     await install;
-
-    // Checkout (funnel Phase 8) has not run: no provider switch, no Pro credentials, no login prompt in the terminal.
-    expect(readSettings().CLAUDE_MEM_PROVIDER ?? 'claude').toBe('claude');
-    expect(readSettings().CLAUDE_MEM_CLAUDE_AUTH_METHOD).toBeUndefined();
-    expect(lines.join('\n')).toContain('CMEM Pro sign-in started (checkout not completed)');
+    expect(lines.join('\n')).toMatch(/Account: .*CMEM Pro .*Free Trial active/);
     expect(lines.join('\n')).not.toContain('Open this URL');
     expect(unexpected).toEqual([]);
+  });
+
+  it('On The Go: a cancelled checkout returns to the checkout screen and the next Continue starts a fresh one', async () => {
+    const install = runInstallCommand({});
+    await waitForStage('waiting-for-choice');
+    await browserPost('/api/setup/choice', { branch: 'go', memoryBilling: 'hosted' });
+    await waitForStage('go-awaiting-checkout');
+
+    pollAnswers.push({ status: 410, body: {} });
+    await browserPost('/api/setup/checkout', {});
+    const failed = await waitForCheckout('failed');
+    expect(failed.checkout.error).toMatch(/Continue to open it again/);
+    expect(readSettings().CLAUDE_MEM_PRO_TRIAL_STATE).toBeUndefined();
+
+    pollAnswers.push({ status: 200, body: READY_BODY });
+    await browserPost('/api/setup/checkout', {});
+    await waitForCheckout('paid');
+    expect(pairingStarts).toHaveLength(2);
+    await browserPost('/api/setup/complete', {});
+    await install;
+    expect(readSettings().CLAUDE_MEM_PRO_TRIAL_STATE).toBe('active');
   });
 
   it('a machine that already finished setup keeps the terminal flow', async () => {
