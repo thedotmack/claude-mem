@@ -2,6 +2,7 @@
 import {
   StrategySearchOptions,
   SearchSelection,
+  SearchResults,
   StrategySearchResult,
   SEARCH_CONSTANTS,
   isCategoryRequested,
@@ -12,7 +13,7 @@ import {
   SessionSummarySearchResult,
   UserPromptSearchResult
 } from '../types.js';
-import { ChromaSync } from '../../../sync/ChromaSync.js';
+import { ChromaSync, type ChromaQueryProgress } from '../../../sync/ChromaSync.js';
 import { SessionStore } from '../../../sqlite/SessionStore.js';
 import { logger } from '../../../../utils/logger.js';
 import { normalizePlatformSource } from '../../../../shared/platform-source.js';
@@ -99,75 +100,86 @@ export class ChromaSearchStrategy {
       ignoreDefaultRecencyWindow: boolean;
     }
   ): Promise<StrategySearchResult> {
-    const chromaResults = await this.chromaSync.queryChroma(
-      query,
-      Math.max(SEARCH_CONSTANTS.CHROMA_BATCH_SIZE, Number(options.offset) + Number(options.limit)),
-      whereFilter
-    );
-
-    if (chromaResults.ids.length === 0) {
-      return {
-        results: { observations: [], sessions: [], prompts: [] },
-        usedChroma: true,
-        strategy: 'chroma'
-      };
-    }
-
-    const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
-    const categorized = this.categorizeByDocType(recentItems, options);
-
-    let observations: ObservationSearchResult[] = [];
-    let sessions: SessionSummarySearchResult[] = [];
-    let prompts: UserPromptSearchResult[] = [];
-
-    const sqlOrderBy = options.orderBy;
     const offset = Number(options.offset);
     const limit = Number(options.limit);
-    const candidateLimit = offset + limit;
+    const requiredResults = offset + limit;
+    // Reuse native observation search's finite 100..1600 windows (#4510):
+    // at most ten transport calls / 13100 requested raw fragments. Explicit
+    // larger budgets (e.g. corpus builds) retain their existing single window.
+    const maxCandidates = Math.max(1600, requiredResults);
+    let candidateLimit: number = requiredResults > 1600 ? requiredResults : SEARCH_CONSTANTS.CHROMA_BATCH_SIZE;
+    const observationCache = new Map<number, ObservationSearchResult | undefined>();
+    const sessionCache = new Map<number, SessionSummarySearchResult | undefined>();
+    const promptCache = new Map<number, UserPromptSearchResult | undefined>();
+    let results: SearchResults = { observations: [], sessions: [], prompts: [] };
+    let budgetReached = false;
+    const sqlOptions = {
+      orderBy: options.orderBy,
+      project: options.project,
+      projects: options.projects,
+      platformSource: options.platformSource,
+    };
 
-    if (categorized.obsIds.length > 0) {
-      const obsOptions = {
-        type: options.obsType,
-        concepts: options.concepts,
-        files: options.files,
-        orderBy: sqlOrderBy,
-        limit: candidateLimit,
-        project: options.project,
-        projects: options.projects,
-        platformSource: options.platformSource
+    while (true) {
+      const progress: ChromaQueryProgress = {};
+      const chromaResults = await this.chromaSync.queryChroma(query, candidateLimit, whereFilter, progress);
+      const recentItems = this.filterByRecency(chromaResults, options.dateRange, options.ignoreDefaultRecencyWindow);
+      const categorized = this.categorizeByDocType(recentItems, options);
+      results = {
+        observations: this.hydrateCandidates(categorized.obsIds, observationCache, ids =>
+          this.sessionStore.getObservationsByIds(ids, { ...sqlOptions, type: options.obsType, concepts: options.concepts, files: options.files }), options.orderBy),
+        sessions: this.hydrateCandidates(categorized.sessionIds, sessionCache, ids =>
+          this.sessionStore.getSessionSummariesByIds(ids, sqlOptions), options.orderBy),
+        prompts: this.hydrateCandidates(categorized.promptIds, promptCache, ids =>
+          this.sessionStore.getUserPromptsByIds(ids, sqlOptions), options.orderBy),
       };
-      observations = this.sessionStore.getObservationsByIds(categorized.obsIds, obsOptions);
-    }
-
-    if (categorized.sessionIds.length > 0) {
-      sessions = this.sessionStore.getSessionSummariesByIds(categorized.sessionIds, {
-        orderBy: sqlOrderBy,
-        limit: candidateLimit,
-        project: options.project,
-        projects: options.projects,
-        platformSource: options.platformSource
-      });
-    }
-
-    if (categorized.promptIds.length > 0) {
-      prompts = this.sessionStore.getUserPromptsByIds(categorized.promptIds, {
-        orderBy: sqlOrderBy,
-        limit: candidateLimit,
-        project: options.project,
-        projects: options.projects,
-        platformSource: options.platformSource
-      });
+      // Each requested category is paged independently. A full prompt page
+      // cannot make a partial observation or summary page sufficient.
+      const enoughResults = (!options.searchObservations || results.observations.length >= requiredResults)
+        && (!options.searchSessions || results.sessions.length >= requiredResults)
+        && (!options.searchPrompts || results.prompts.length >= requiredResults);
+      if (enoughResults || progress.exhausted
+        || (progress.exhausted === undefined && chromaResults.ids.length < candidateLimit)) break;
+      if (candidateLimit >= maxCandidates) {
+        budgetReached = true;
+        break;
+      }
+      candidateLimit = Math.min(candidateLimit * 2, maxCandidates);
     }
 
     return {
       results: {
-        observations: observations.slice(offset, offset + limit),
-        sessions: sessions.slice(offset, offset + limit),
-        prompts: prompts.slice(offset, offset + limit),
+        observations: results.observations.slice(offset, offset + limit),
+        sessions: results.sessions.slice(offset, offset + limit),
+        prompts: results.prompts.slice(offset, offset + limit),
       },
       usedChroma: true,
-      strategy: 'chroma'
+      strategy: 'chroma',
+      ...(budgetReached && { semanticBudgetReached: true }),
     };
+  }
+
+  private hydrateCandidates<T extends { id: number; created_at_epoch: number }>(
+    ids: number[],
+    cache: Map<number, T | undefined>,
+    hydrate: (ids: number[]) => T[],
+    orderBy: 'relevance' | 'date_desc' | 'date_asc'
+  ): T[] {
+    const unseen = ids.filter(id => !cache.has(id));
+    for (let offset = 0; offset < unseen.length; offset += 500) {
+      const batch = unseen.slice(offset, offset + 500);
+      // Cache rejected IDs too. Repeated prefixes must not repeat native work.
+      for (const id of batch) cache.set(id, undefined);
+      for (const row of hydrate(batch)) cache.set(row.id, row);
+    }
+    const rows = ids.flatMap(id => {
+      const row = cache.get(id);
+      return row ? [row] : [];
+    });
+    if (orderBy !== 'relevance') rows.sort((a, b) => orderBy === 'date_asc'
+      ? a.created_at_epoch - b.created_at_epoch || a.id - b.id
+      : b.created_at_epoch - a.created_at_epoch || b.id - a.id);
+    return rows;
   }
 
   private buildWhereFilter(searchType: SearchSelection, readKeys: string[], platformSource?: string): Record<string, any> | undefined {

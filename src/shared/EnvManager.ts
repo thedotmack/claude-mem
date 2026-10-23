@@ -441,7 +441,8 @@ export async function buildIsolatedEnvWithFreshOAuth(
       break;
   }
 
-  if (result.kind !== 'present') return restoreExplicitCredentials(`token ${result.kind}`);
+  // Leave expired logins to the CLI's refresh flow without the spent key taking precedence.
+  if (result.kind === 'absent') return restoreExplicitCredentials('token absent');
   return isolatedEnv;
 }
 

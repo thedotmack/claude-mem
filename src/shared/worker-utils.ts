@@ -10,6 +10,7 @@ import { loadFromFileOnce } from "./hook-settings.js";
 import { isWorkerAutostartDisabled } from "./worker-autostart.js";
 import { viewerBaseUrl } from "./viewer-url.js";
 import { formatHostForUrl } from "./worker-url.js";
+import { WorkerRequestTimeoutError } from "./worker-request-timeout-error.js";
 import { readOwnedWorkerPidInfo } from "../supervisor/index.js";
 import { emitDiagnostic } from "./hook-io.js";
 import { captureCliEvent } from "../services/telemetry/cli-telemetry.js";
@@ -153,7 +154,7 @@ export async function fetchWithTimeout(url: string, init: RequestInit = {}, time
     // callers match on (hook-command.ts, server-beta-client.ts) — the
     // DOMException text is runtime-dependent, so normalize it here.
     if (err instanceof DOMException && err.name === 'TimeoutError') {
-      throw new Error(`Request timed out after ${timeoutMs}ms`);
+      throw new WorkerRequestTimeoutError(timeoutMs);
     }
     throw err;
   }
