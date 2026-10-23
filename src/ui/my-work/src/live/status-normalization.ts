@@ -64,10 +64,12 @@ export interface RequestStatusInput {
   checked: boolean
   /** Ledger progress state, when request-progress has reviewed it. */
   progressState?: string | null
+  /** The latest review's percent. 100 means the work is done, even while recorded items still say doing. */
+  progressPercent?: number | null
 }
 
 /** Lifecycle first (an explicit request_status / request_complete), then item statuses. */
-export function normalizeRequestStatus({ items, lifecycle, checked, progressState }: RequestStatusInput, now: number): NormalizedStatus {
+export function normalizeRequestStatus({ items, lifecycle, checked, progressState, progressPercent }: RequestStatusInput, now: number): NormalizedStatus {
   let status = statusFor(items, now)
   const recordedStatus = lifecycle?.explicit ? normalizeRecordedStatus(lifecycle.status) : null
   const lifecycleStatus = !lifecycle?.explicit ? null
@@ -78,6 +80,8 @@ export function normalizeRequestStatus({ items, lifecycle, checked, progressStat
   if (status === 'done' && !['done', 'shipped'].includes(lifecycleStatus ?? '')) status = 'unknown'
   if (lifecycleStatus && lifecycleStatus in STATUS) status = lifecycleStatus as NormalizedStatus
   if (progressState === 'shipped') status = 'shipped'
+  // Reviewed as finished but not shipped: done, waiting on a person's check, never still "working" at 100%.
+  else if (progressPercent === 100 && ['in-progress', 'todo', 'unknown', 'quiet'].includes(status)) status = 'needs-review'
   if (checked && (status === 'done' || status === 'needs-review')) status = 'checked'
   return status
 }

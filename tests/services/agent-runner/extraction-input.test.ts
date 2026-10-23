@@ -89,7 +89,7 @@ describe('owner prompts from the prompt importer', () => {
     expect(task.claudeCode.prompt).toContain(`step 1 is already done: the owner's prompts from every agent are in ${join(goalsFolder, 'owner-prompts.md')}`);
     expect(task.claudeCode.prompt).not.toContain('export_owner_prompts');
     expect(task.claudeCode.checkTool('Bash', { command: 'python3 "/plugin/skills/owner-goals/scripts/export_owner_prompts.py" --out /x' })).toMatch(/Only these commands/);
-    expect(task.claudeCode.checkTool('Bash', { command: 'python3 "/plugin/skills/owner-goals/scripts/save_goals.py" --goals /x' })).toBe(true);
+    expect(task.claudeCode.checkTool('Bash', { command: `python3 "/plugin/skills/owner-goals/scripts/save_goals.py" --goals "${join(goalsFolder, 'owner-goals.json')}"` })).toBe(true);
 
     const fresh = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }) });
     expect(fresh.prepare).toBeUndefined();

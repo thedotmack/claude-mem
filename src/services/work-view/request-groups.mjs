@@ -52,10 +52,10 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
   const pairs = conversationKeys?.map((key) => JSON.parse(key).slice(1));
   const sessions = pairs
     ? pairs.length ? database.prepare(`${columns} WHERE (platform_source, content_session_id) IN (VALUES ${pairs.map(() => '(?, ?)').join(',')})`).all(...pairs.flat()) : []
-    // Any recent activity counts: a new start, prompt, observation or work-state write.
+    // Any recent activity counts: a new start, prompt, observation or recorded tool use (a commit, a push, a work-state write).
     : database.prepare(`${columns} WHERE started_at_epoch >= ?
         OR id IN (SELECT DISTINCT session_db_id FROM user_prompts WHERE created_at_epoch >= ?)
-        OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE tool_name LIKE '%work_state_write%' AND created_at_epoch >= ?)
+        OR id IN (SELECT DISTINCT session_db_id FROM tool_uses WHERE created_at_epoch >= ?)
         OR memory_session_id IN (SELECT DISTINCT memory_session_id FROM observations WHERE created_at_epoch >= ?)`).all(sinceEpoch, sinceEpoch, sinceEpoch, sinceEpoch);
   if (!sessions.length) return [];
   const ids = sessions.map((session) => session.id);
@@ -67,6 +67,10 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
     FROM observations o JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
     WHERE s.id IN (${placeholders(ids)}) GROUP BY s.id`).all(...ids);
   const observationsBySession = new Map(observations.map((row) => [row.session_db_id, row]));
+  // Work after a review without a new prompt or observation (a commit, a push) still makes the review due again.
+  const toolActivity = database.prepare(`SELECT session_db_id, MAX(created_at_epoch) AS last_epoch FROM tool_uses
+    WHERE session_db_id IN (${placeholders(ids)}) GROUP BY session_db_id`).all(...ids);
+  const lastToolUseBySession = new Map(toolActivity.map((row) => [row.session_db_id, row.last_epoch ?? 0]));
   const promptsBySession = new Map();
   for (const prompt of prompts) {
     if (!promptsBySession.has(prompt.session_db_id)) promptsBySession.set(prompt.session_db_id, []);
@@ -85,7 +89,7 @@ export function readCandidates(database, { sinceEpoch = 0, conversationKeys = nu
     candidates.set(key, {
       conversationKey: key, platform: session.platform_source, project: session.project,
       startedAt: iso(original.atEpoch ?? session.started_at_epoch), startedAtEpoch: original.atEpoch ?? session.started_at_epoch,
-      lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, session.started_at_epoch ?? 0),
+      lastActivityEpoch: Math.max(lastPrompt, observationsBySession.get(session.id)?.last_epoch ?? 0, lastToolUseBySession.get(session.id) ?? 0, session.started_at_epoch ?? 0),
       firstAsk: requestText(original.text, 600), asks: fullAsks ? asks : asks.slice(0, 10), askCount: asks.length, original,
       workLists: [], requestIds: [], observationCount: observationsBySession.get(session.id)?.count ?? 0,
       sessionDbId: session.id,
@@ -212,7 +216,11 @@ export function applyGroupDecisions(stored, decisions, now = Date.now()) {
     const unsupported = decision.conversations.filter((key) => find(key) !== find(decision.conversations[0]));
     if (unsupported.length) throw new TypeError(`${label} joins ${unsupported.join(', ')} without evidence linking it to the anchor.`);
     const id = groupIdFor(decision.conversations[0]);
-    for (const key of decision.conversations) next.conversations[key] = id;
+    for (const key of decision.conversations) {
+      next.conversations[key] = id;
+      // A later decision can correct an earlier ignore; the viewer checks ignored first.
+      if (next.ignored) delete next.ignored[key];
+    }
     next.groups[id] = { title: decision.title.trim(), anchor: decision.conversations[0], links, decidedAt: iso(now), anchorAsk: stored?.groups?.[id]?.anchor === decision.conversations[0] ? stored.groups[id].anchorAsk ?? null : null };
   }
   next.ignored ??= {};

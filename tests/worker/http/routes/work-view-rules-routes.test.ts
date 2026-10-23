@@ -5,8 +5,9 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
-import { MY_RULES_IMPORT_LINE, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { myRulesImportLine, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { ruleIdForPreference } from '../../../../src/services/work-view/my-rules.mjs';
+import { emitContextInvalidation } from '../../../../src/shared/context-invalidation.js';
 
 let directory: string;
 let source: Database;
@@ -135,7 +136,27 @@ describe('My Rules routes', () => {
     expect((await (await load()).json()).rulesFile.loadedInClaudeCode).toBe(true);
     await load();
     const instructions = readFileSync(claudeInstructionsPath, 'utf8');
-    expect(instructions.split(MY_RULES_IMPORT_LINE).length - 1).toBe(1);
+    // The import names the file this worker writes (here a custom folder), not a fixed ~/.claude-mem path.
+    expect(myRulesImportLine(rulesFilePath)).toBe(`@${rulesFilePath}`);
+    expect(instructions.split(myRulesImportLine(rulesFilePath)).length - 1).toBe(1);
     expect(existsSync(rulesFilePath)).toBe(true);
+  });
+
+  it('loading rules rebuilds an existing MY-RULES.md from the saved rules', async () => {
+    await saveRule({ action: 'approve', ruleId: SUGGESTED_ID });
+    writeFileSync(rulesFilePath, '# stale rules from before a sync\n');
+    await fetch(`${origin}/api/work-view/rules/load-in-claude-code`, { method: 'POST', headers: { 'Content-Type': 'application/json', Origin: origin }, body: '{}' });
+    expect(readFileSync(rulesFilePath, 'utf8')).toContain(`- ${PREFERENCE}`);
+  });
+
+  it('rebuilds MY-RULES.md when rule rows arrive through sync', async () => {
+    await saveRule({ action: 'approve', ruleId: SUGGESTED_ID });
+    expect(readFileSync(rulesFilePath, 'utf8')).toContain(PREFERENCE);
+    // Another device turned the rule off; sync writes the row directly, not through the rules route.
+    const fields = JSON.parse((source.prepare("SELECT fields FROM work_state_entries WHERE list_name = 'my-rules' ORDER BY id DESC LIMIT 1").get() as { fields: string }).fields);
+    source.prepare('INSERT INTO work_state_entries VALUES (?, ?, ?, ?, ?)').run(nextId++, 'home', 'my-rules', JSON.stringify({ ...fields, status: 'off' }), Date.now() + 1000);
+    emitContextInvalidation('all', 'SyncApply.applyOps');
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(readFileSync(rulesFilePath, 'utf8')).not.toContain(PREFERENCE);
   });
 });

@@ -50,6 +50,8 @@ export interface WorkViewLifecycle {
   explicit: boolean
   complete?: boolean | null
   url?: string
+  /** When the explicit status was recorded. A review older than this does not override it. */
+  atEpoch?: number | null
 }
 
 export interface WorkViewPrompt { text: string; atEpoch?: number; url?: string }
@@ -65,6 +67,8 @@ export interface WorkViewProgress {
   milestones: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
   checkedAt: string
+  /** ISO time the work shipped; set only when state is shipped. */
+  shippedAt?: string | null
   /** Every review's percent, oldest first; files from before readings existed carry one. */
   readings: { at: string; percent: number }[]
 }
@@ -191,7 +195,7 @@ export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' 
 export interface WorkViewRulesLearning { preferencesFound: number; newSuggestions: number; reviewsRead: number; writtenAt: string | null }
 
 /** ~/.claude-mem/MY-RULES.md, and whether ~/.claude/CLAUDE.md imports it. */
-export interface WorkViewRulesFile { path: string; approvedCount: number; loadedInClaudeCode: boolean }
+export interface WorkViewRulesFile { path: string; instructionsPath?: string; approvedCount: number; loadedInClaudeCode: boolean }
 
 export interface WorkViewSnapshot {
   version: number

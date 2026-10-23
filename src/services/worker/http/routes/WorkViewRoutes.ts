@@ -6,7 +6,8 @@ import { homedir } from 'node:os';
 import { dirname, extname, join } from 'node:path';
 import { z } from 'zod';
 import { Database } from 'bun:sqlite';
-import { DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { CLAUDE_CONFIG_DIR, DATA_DIR, DB_PATH, getPackageRoot, USER_SETTINGS_PATH } from '../../../../shared/paths.js';
+import { onContextInvalidation } from '../../../../shared/context-invalidation.js';
 import { SettingsDefaultsManager } from '../../../../shared/SettingsDefaultsManager.js';
 import { resolveOpenRouterChatCompletionsUrl } from '../../../../shared/openrouter-base-url.js';
 import { logger } from '../../../../utils/logger.js';
@@ -35,7 +36,20 @@ const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
   'done', 'completed', 'complete', 'shipped', 'delivered',
   'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
 ];
-function isReportedReadyForCheck(lifecycle: { explicit?: boolean; complete?: boolean | null; status?: string | null } | null | undefined): boolean {
+type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
+
+/** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
+function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
+  if (!lifecycle?.explicit || !lifecycle.atEpoch) return true;
+  const reviewedAt = Date.parse(review.checkedAt ?? '');
+  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
+}
+
+/** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
+ * The viewer offers "Mark checked" on exactly these requests. */
+export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null }): boolean {
+  const { lifecycle, progress } = request;
+  if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
   if (!lifecycle?.explicit) return false;
   const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
   return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
@@ -80,8 +94,14 @@ const ruleBody = z.object({
   }).strict().optional(),
 }).strict();
 
-/** The line that makes Claude Code load the approved rules with the owner's user-level instructions. */
-export const MY_RULES_IMPORT_LINE = '@~/.claude-mem/MY-RULES.md';
+/** A path as the owner reads it: `~/...` under the home folder, else absolute. */
+const homeRelative = (path: string) => path === homedir() || path.startsWith(`${homedir()}/`) ? `~${path.slice(homedir().length)}` : path;
+
+/** The line that makes Claude Code load the approved rules with the owner's user-level instructions.
+ * It names the rules file the worker actually writes, so a custom data folder is still the one loaded. */
+export function myRulesImportLine(rulesFilePath: string): string {
+  return `@${homeRelative(rulesFilePath)}`;
+}
 
 interface WorkStateWrite { project: string; listName: string; fields: Record<string, string | number | boolean | null> }
 
@@ -99,9 +119,9 @@ interface WorkViewOptions {
   appendWorkStateEntry?: ((entry: WorkStateWrite) => void) | null;
   /** The project rule rows are saved under: the home folder's, like owner-goals. */
   homeProject?: string;
-  /** ~/.claude-mem/MY-RULES.md: approved rules, rebuilt after every rule change. */
+  /** <data dir>/MY-RULES.md: approved rules, rebuilt after every rule change, local or synced. */
   rulesFilePath?: string;
-  /** ~/.claude/CLAUDE.md: the user-level file that imports MY-RULES.md. Never a project's file. */
+  /** <Claude config dir>/CLAUDE.md: the user-level file that imports MY-RULES.md. Never a project's file. */
   claudeInstructionsPath?: string;
   /** The install funnel's prompt scan. Without it the setup scan endpoints answer 503. */
   setupScan?: SetupScan | null;
@@ -224,7 +244,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.appendWorkStateEntry = options.appendWorkStateEntry ?? null;
     this.homeProject = options.homeProject;
     this.rulesFilePath = options.rulesFilePath ?? join(DATA_DIR, 'MY-RULES.md');
-    this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(homedir(), '.claude', 'CLAUDE.md');
+    this.claudeInstructionsPath = options.claudeInstructionsPath ?? join(CLAUDE_CONFIG_DIR, 'CLAUDE.md');
     this.setupScan = options.setupScan ?? null;
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
@@ -241,6 +261,37 @@ export class WorkViewRoutes extends BaseRouteHandler {
           .finally(() => this.publish());
       }
     }) ?? null;
+    // Rule rows pulled from another device change what Claude Code should load; rebuild the file then too.
+    this.stopRulesSync = onContextInvalidation(({ reason }) => {
+      if (reason.startsWith('SyncApply.')) this.scheduleRulesFileRebuild();
+    });
+  }
+
+  private stopRulesSync: () => void;
+  private rulesRebuildScheduled = false;
+
+  private scheduleRulesFileRebuild(): void {
+    if (this.rulesRebuildScheduled || this.closed) return;
+    this.rulesRebuildScheduled = true;
+    setImmediate(() => {
+      this.rulesRebuildScheduled = false;
+      if (this.closed) return;
+      try { this.rebuildRulesFileFromSavedRules(); }
+      catch (error) { logger.warn('HTTP', 'Could not rebuild MY-RULES.md after sync', { error: error instanceof Error ? error.message : String(error) }); }
+    });
+  }
+
+  /** Rewrites MY-RULES.md when the saved rules render differently. Never from an unreadable source, which reads as no rules. */
+  rebuildRulesFileFromSavedRules(): boolean {
+    const view = this.source.read().agentView;
+    if (!view.source.connected) return false;
+    const markdown = renderRulesFile((view.rules ?? []) as SavedRule[]).markdown;
+    let current: string | null = null;
+    try { current = readFileSync(this.rulesFilePath, 'utf8'); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+    if (current === markdown) return false;
+    this.writeRulesFile((view.rules ?? []) as SavedRule[]);
+    return true;
   }
 
   setupRoutes(app: express.Application): void {
@@ -466,14 +517,16 @@ export class WorkViewRoutes extends BaseRouteHandler {
     try { instructions = readFileSync(this.claudeInstructionsPath, 'utf8'); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
     return {
-      path: this.rulesFilePath.startsWith(homedir()) ? `~${this.rulesFilePath.slice(homedir().length)}` : this.rulesFilePath,
+      path: homeRelative(this.rulesFilePath),
+      instructionsPath: homeRelative(this.claudeInstructionsPath),
       approvedCount: renderRulesFile(rules).approvedCount,
-      loadedInClaudeCode: instructions.split('\n').some(line => line.trim() === MY_RULES_IMPORT_LINE),
+      loadedInClaudeCode: instructions.split('\n').some(line => line.trim() === myRulesImportLine(this.rulesFilePath)),
     };
   }
 
   /** Rewrites MY-RULES.md through a temp file beside it, so a reader never sees half a file. */
   private writeRulesFile(rules: SavedRule[]): void {
+    mkdirSync(dirname(this.rulesFilePath), { recursive: true });
     const temp = join(dirname(this.rulesFilePath), `.MY-RULES.md.${process.pid}.tmp`);
     writeFileSync(temp, renderRulesFile(rules).markdown, { mode: 0o644 });
     renameSync(temp, this.rulesFilePath);
@@ -525,17 +578,19 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.publish(updated);
   };
 
-  /** Adds the MY-RULES.md import to ~/.claude/CLAUDE.md once. Never touches a project's CLAUDE.md or AGENTS.md. */
+  /** Adds the MY-RULES.md import to the user-level CLAUDE.md once. Never touches a project's CLAUDE.md or AGENTS.md. */
   private loadRulesInClaudeCode = (_req: Request, res: Response): void => {
     const snapshot = this.snapshot();
-    if (!existsSync(this.rulesFilePath)) this.writeRulesFile((snapshot.rules ?? []) as SavedRule[]);
+    if (!snapshot.source.connected) { res.status(503).json({ error: 'Local work is unavailable. Reconnect before loading rules.' }); return; }
+    // Always from the saved rules: an existing file can predate rule changes received through sync.
+    this.writeRulesFile((snapshot.rules ?? []) as SavedRule[]);
     if (!(snapshot.rulesFile as { loadedInClaudeCode: boolean }).loadedInClaudeCode) {
       let instructions = '';
       try { instructions = readFileSync(this.claudeInstructionsPath, 'utf8'); }
       catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
       const separator = instructions === '' || instructions.endsWith('\n') ? '' : '\n';
       mkdirSync(dirname(this.claudeInstructionsPath), { recursive: true });
-      appendFileSync(this.claudeInstructionsPath, `${separator}${MY_RULES_IMPORT_LINE}\n`);
+      appendFileSync(this.claudeInstructionsPath, `${separator}${myRulesImportLine(this.rulesFilePath)}\n`);
     }
     const updated = this.snapshot();
     res.setHeader('Cache-Control', 'no-store');
@@ -553,7 +608,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(409).json({ error: 'This work changed. Read the latest result before checking it.', snapshot });
       return;
     }
-    if (checked && !isReportedReadyForCheck(request.lifecycle)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
+    if (checked && !isReportedReadyForCheck(request)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
     this.reviews.set(requestId, expectedFingerprint, checked);
     logger.debug('HTTP', 'Local work review updated', { checked });
     const updated = this.snapshot();
@@ -621,6 +676,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.closed = true;
     this.unsubscribeSetupScan?.();
     this.unsubscribeHistoryImport?.();
+    this.stopRulesSync();
     this.stopTimers();
     for (const client of this.clients) client.end();
     this.clients.clear();

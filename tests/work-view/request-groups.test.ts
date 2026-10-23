@@ -56,6 +56,19 @@ describe('overall requests and progress reviews', () => {
   expect(Object.keys(merged.groups)).toEqual([groupIdFor(key('a'))]);
   const ignored = applyGroupDecisions(merged, { groups: [], ignored: [{ conversation: key('c'), reason: 'Automated workspace naming prompt' }] }, NOW);
   expect(ignored.ignored[key('c')]).toBe('Automated workspace naming prompt');
+  const corrected = applyGroupDecisions(ignored, { groups: [{ title: 'Pricing page', conversations: [key('c')] }] }, NOW);
+  expect(corrected.conversations[key('c')]).toBe(groupIdFor(key('c')));
+  expect(corrected.ignored[key('c')]).toBeUndefined();
+});
+
+  it('a commit or push after a review counts as new activity, with no new prompt or observation', () => {
+  const db = fixtureDatabase();
+  db.prepare('INSERT INTO tool_uses (session_db_id, tool_name, tool_input, created_at_epoch) VALUES (?, ?, ?, ?)').run(3, 'Bash', JSON.stringify({ command: 'git push' }), NOW - 1000);
+  const byKey = new Map(readCandidates(db, { sinceEpoch: NOW - 14 * DAY }).map((candidate) => [candidate.conversationKey, candidate]));
+  expect(byKey.get(key('c')).lastActivityEpoch).toBe(NOW - 1000);
+  // Inside a window that only the push falls in, the conversation is still found.
+  const recent = readCandidates(db, { sinceEpoch: NOW - 2000 });
+  expect(recent.map((candidate) => candidate.conversationKey)).toEqual([key('c')]);
 });
 
   it('progress reviews are validated: shipped needs a date and 100%', () => {

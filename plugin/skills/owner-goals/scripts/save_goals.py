@@ -101,7 +101,11 @@ def unverified_quotes(goals, prompts):
 
 def item_fields(kind, item, snapshot, status):
     title = str(item["title"]).strip()
-    evidence = [f'{str(q["at"])[:16]} | {re.sub(r"\s+", " ", str(q["quote"])).strip()[:MAX_QUOTE_CHARS]}' for q in item.get("evidence", [])]
+    evidence = []
+    for quote in item.get("evidence", []):
+        # Keep backslashes out of f-string expressions: Python 3.9-3.11 cannot parse them.
+        text = re.sub(r"\s+", " ", str(quote["quote"])).strip()[:MAX_QUOTE_CHARS]
+        evidence.append(f'{str(quote["at"])[:16]} | {text}')
     fields = {
         "task": f"{KIND_LABELS[kind]}: {title}", "status": status, "goal_kind": kind,
         "rank": item.get("rank"), "title": title, "product": item.get("product"),
