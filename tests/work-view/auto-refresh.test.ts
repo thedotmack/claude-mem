@@ -73,7 +73,11 @@ describe('automatic refresh scheduler', () => {
       expect(await worker.check()).toBe('idle');
       expect(ran).toBe(false);
       expect(worker.status()).toMatchObject({ state: 'idle', needs: { needed: false } });
-      // runNow runs whatever refreshNeeds says (the install funnel after its scan).
+      // The install funnel's runNow after a re-scan that found nothing new starts no agent either.
+      expect(await worker.runNow({ reason: 'setup-scan' })).toBe('idle');
+      expect(ran).toBe(false);
+      // Once something is due (a new conversation), runNow runs right away instead of at the next check.
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('ok');
       expect(ran).toBe(true);
     } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -107,6 +111,7 @@ describe('automatic refresh scheduler', () => {
       writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running', pid: 2 ** 22 + 12345, startedAt: new Date(NOW - DAY).toISOString() }));
       expect(await worker.check()).toBe('idle');
       expect(worker.status()).toMatchObject({ state: 'failed', error: 'The previous refresh stopped before finishing.' });
+      writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: {} }));
       expect(await worker.runNow({ reason: 'manual' })).toBe('failed');
       expect(worker.status()).toMatchObject({ state: 'failed', agent: 'gemini', error: 'gemini exited 1' });
     } finally { rmSync(dir, { recursive: true, force: true }); }

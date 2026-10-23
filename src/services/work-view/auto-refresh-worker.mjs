@@ -69,11 +69,14 @@ export class AutoRefreshWorker {
     return this.run(needs, 'scheduled');
   }
 
-  /** Run now, whatever refreshNeeds() says (the install funnel after its scan). */
+  /** Run now instead of at the next ten-minute check (the install funnel after its scan), when something is due. */
   async runNow({ reason }) {
     if (this.closed) return 'closed';
     if (this.busy) return 'running';
-    return this.run(this.readNeeds(), reason);
+    const needs = this.readNeeds();
+    // A re-scan that found nothing new starts no agent.
+    if (!needs.needed) return 'idle';
+    return this.run(needs, reason);
   }
 
   async run(needs, reason) {
