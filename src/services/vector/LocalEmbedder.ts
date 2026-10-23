@@ -1,4 +1,5 @@
 import type { Embedder } from './types.js';
+import { DEFAULT_EMBEDDING_MODEL, type EmbeddingModel } from './models.js';
 
 /**
  * Documents per forward pass.
@@ -28,24 +29,17 @@ const MAX_TEXT_CHARS = 32 * 1024;
 export const LOAD_RETRY_MS = 5 * 60_000;
 
 /**
- * The length all-MiniLM-L6-v2 was trained at, and where Chroma truncates.
- * The tokenizer's model_max_length says 512.
- */
-const MAX_TOKENS = 256;
-
-/**
- * all-MiniLM-L6-v2 via transformers.js, in-process: the model and
- * dimensionality of Chroma's default embedding function, which the worker's
- * search uses, so the server's vectors match the worker's.
+ * all-MiniLM-L6-v2, or another model from models.ts, via transformers.js,
+ * in-process. all-MiniLM-L6-v2 is the model and dimensionality of Chroma's
+ * default embedding function, which the worker's search uses, so with it the
+ * server's vectors match the worker's.
  *
  * onnxruntime-node is pinned below 1.24 for Intel Macs; see the plugin
  * `overrides` in scripts/build-hooks.js.
  */
 export class LocalEmbedder implements Embedder {
-  // The token limit is part of the identity: the same model truncated
-  // elsewhere produces different vectors for long texts.
-  readonly modelId = `Xenova/all-MiniLM-L6-v2/fp32/mean/l2/${MAX_TOKENS}`;
-  readonly dims = 384;
+  readonly modelId: string;
+  readonly dims: number;
 
   private extractor: { tokenizer: any; model: any } | null = null;
   private loading: Promise<{ tokenizer: any; model: any }> | null = null;
@@ -57,7 +51,15 @@ export class LocalEmbedder implements Embedder {
    * `threads` caps onnxruntime's intra-op threads; unset, it takes every CPU
    * thread. Fixed when the model loads.
    */
-  constructor(readonly threads?: number) {}
+  constructor(
+    private readonly model: EmbeddingModel = DEFAULT_EMBEDDING_MODEL,
+    readonly threads?: number,
+  ) {
+    // The token limit is part of the identity: the same model truncated
+    // elsewhere produces different vectors for long texts.
+    this.modelId = `${model.repo}/${model.dtype}/${model.pooling}/l2/${model.maxTokens}`;
+    this.dims = model.dims;
+  }
 
   /**
    * Model init costs ~3s, so it is deferred until something is actually
@@ -71,9 +73,9 @@ export class LocalEmbedder implements Embedder {
       this.loading = (async () => {
         const { AutoModel, AutoTokenizer } = await import('@huggingface/transformers');
         this.extractor = {
-          tokenizer: await AutoTokenizer.from_pretrained('Xenova/all-MiniLM-L6-v2'),
-          model: await AutoModel.from_pretrained('Xenova/all-MiniLM-L6-v2', {
-            dtype: 'fp32',
+          tokenizer: await AutoTokenizer.from_pretrained(this.model.repo),
+          model: await AutoModel.from_pretrained(this.model.repo, {
+            dtype: this.model.dtype,
             ...(this.threads ? { session_options: { intraOpNumThreads: this.threads } } : {}),
           }),
         };
@@ -102,8 +104,10 @@ export class LocalEmbedder implements Embedder {
     return this.ready().then(() => true, () => false);
   }
 
-  async embed(texts: string[]): Promise<Float32Array[]> {
+  async embed(texts: string[], role: 'query' | 'passage' = 'passage'): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
+    const prefix = role === 'query' ? this.model.queryPrefix : this.model.passagePrefix;
+    if (prefix) texts = texts.map(text => prefix + text);
     const vectors: Float32Array[] = [];
     for (let start = 0; start < texts.length; start += EMBED_CHUNK_SIZE) {
       const chunk = texts.slice(start, start + EMBED_CHUNK_SIZE).map(text => text.slice(0, MAX_TEXT_CHARS));
@@ -118,41 +122,44 @@ export class LocalEmbedder implements Embedder {
    * model_max_length (512) rather than the length the model was trained at:
    * for all-MiniLM-L6-v2 that is 256, which Chroma uses, and a text of 936 to
    * 1,716 tokens embedded at 512 came out at cosine 0.79 to 0.83 from Chroma's
-   * vector. Truncation also drops the closing [SEP], which transformers.js
-   * 4.3.1 adds before cutting (huggingface/tokenizers.js#41); it is restored
-   * here. With both, vectors match Chroma's to cosine 0.9999995.
+   * vector. Truncation also drops the closing [SEP] (or </s>), which
+   * transformers.js 4.3.1 adds before cutting (huggingface/tokenizers.js#41);
+   * it is restored here. With both, vectors match Chroma's to cosine 0.9999995.
    */
   protected async encode(texts: string[]): Promise<Float32Array[]> {
     const { tokenizer, model } = await this.ready();
-    const inputs = tokenizer(texts, { padding: true, truncation: true, max_length: MAX_TOKENS });
+    const maxTokens = this.model.maxTokens;
+    const inputs = tokenizer(texts, { padding: true, truncation: true, max_length: maxTokens });
     const [rows, width] = inputs.input_ids.dims as number[];
     const ids = inputs.input_ids.data as BigInt64Array;
     const mask = inputs.attention_mask.data as BigInt64Array;
     const sep = BigInt(tokenizer.sep_token_id);
-    if (width === MAX_TOKENS) {
+    if (width === maxTokens) {
       for (let r = 0; r < rows; r++) {
-        const last = r * width + MAX_TOKENS - 1;
+        const last = r * width + maxTokens - 1;
         if (mask[last] === 1n && ids[last] !== sep) ids[last] = sep;
       }
     }
     const { last_hidden_state: hidden } = await model(inputs);
     const h = hidden.data as Float32Array;
-    // Mean over the real tokens, then unit length, so cosine reduces to a dot
-    // product at query time.
+    // Mean over the real tokens (or the first token's vector), then unit
+    // length, so cosine reduces to a dot product at query time.
     return texts.map((_, r) => {
       const v = new Float32Array(this.dims);
-      let n = 0;
-      for (let t = 0; t < width; t++) {
-        if (mask[r * width + t] !== 1n) continue;
-        n++;
-        const base = (r * width + t) * this.dims;
-        for (let d = 0; d < this.dims; d++) v[d] += h[base + d];
+      if (this.model.pooling === 'cls') {
+        v.set(h.subarray(r * width * this.dims, r * width * this.dims + this.dims));
+      } else {
+        let n = 0;
+        for (let t = 0; t < width; t++) {
+          if (mask[r * width + t] !== 1n) continue;
+          n++;
+          const base = (r * width + t) * this.dims;
+          for (let d = 0; d < this.dims; d++) v[d] += h[base + d];
+        }
+        for (let d = 0; d < this.dims; d++) v[d] /= n;
       }
       let norm = 0;
-      for (let d = 0; d < this.dims; d++) {
-        v[d] /= n;
-        norm += v[d] * v[d];
-      }
+      for (let d = 0; d < this.dims; d++) norm += v[d] * v[d];
       norm = Math.sqrt(norm);
       for (let d = 0; d < this.dims; d++) v[d] /= norm;
       return v;

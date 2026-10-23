@@ -35,11 +35,13 @@ export type VectorSchemaMode = 'on' | 'off' | 'auto';
 export async function bootstrapServerPostgresSchema(
   client: PostgresQueryable,
   vectors: VectorSchemaMode = 'on',
+  // all-MiniLM-L6-v2's width, the default model's (services/vector/models.ts).
+  embeddingDims = 384,
 ): Promise<void> {
   if (isPostgresPool(client)) {
     const poolClient = await client.connect();
     try {
-      await bootstrapServerPostgresSchema(poolClient, vectors);
+      await bootstrapServerPostgresSchema(poolClient, vectors, embeddingDims);
       bm25InUse.set(client, usesBm25Index(poolClient));
     } finally {
       poolClient.release();
@@ -52,7 +54,7 @@ export async function bootstrapServerPostgresSchema(
     const createVectors = vectors === 'on' || (vectors === 'auto' && await isNewOrVectorDatabase(client));
     await applyPhase1Migration(client);
     await applyBm25Index(client);
-    if (createVectors) await applyVectorSchema(client);
+    if (createVectors) await applyVectorSchema(client, embeddingDims);
     await client.query('COMMIT');
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
@@ -130,7 +132,7 @@ export function usesBm25Index(client: PostgresQueryable): boolean {
 // Search by meaning needs the pgvector extension, which stock postgres images
 // do not ship. Where it is not installable the table is not created and
 // search stays keyword-only, so an existing deployment boots unchanged.
-async function applyVectorSchema(client: PostgresQueryable): Promise<void> {
+async function applyVectorSchema(client: PostgresQueryable, dims: number): Promise<void> {
   const available = await client.query(
     `SELECT 1 FROM pg_available_extensions WHERE name = 'vector'`
   );
@@ -177,7 +179,24 @@ async function applyVectorSchema(client: PostgresQueryable): Promise<void> {
     logger.warn('SYSTEM', 'pgvector is older than 0.8.0; search stays keyword-only');
     return;
   }
-  await client.query(VECTOR_SCHEMA_SQL);
+  // The column's width is the embedding model's (models.ts). Vectors of
+  // another width can be neither indexed with these nor compared to them, so
+  // a model of a different width starts from an empty table, which the
+  // backfill refills; one of the same width keeps the table and is re-embedded
+  // row by row, since rows from another model count as missing.
+  const stored = await client.query<{ dims: number }>(
+    `SELECT atttypmod AS dims FROM pg_attribute
+     WHERE attrelid = to_regclass('observation_embeddings') AND attname = 'embedding' AND NOT attisdropped`
+  );
+  const storedDims = stored.rows[0]?.dims;
+  if (storedDims !== undefined && storedDims !== dims) {
+    logger.warn('SYSTEM', 'embedding model width changed; dropping stored vectors to re-embed them', {
+      from: storedDims,
+      to: dims,
+    });
+    await client.query('DROP TABLE observation_embeddings');
+  }
+  await client.query(vectorSchemaSql(dims));
 }
 
 interface PostgresPoolLike extends PostgresQueryable {
@@ -464,14 +483,14 @@ CREATE INDEX IF NOT EXISTS idx_rate_limit_counters_window ON rate_limit_counters
 // word pieces, about 1,000 characters, and observations average more than
 // that. Part names match the Chroma document suffixes (obs_<id>_<part>,
 // summary_<id>_<part>) so vectors carried over from Chroma line up.
-const VECTOR_SCHEMA_SQL = `
+const vectorSchemaSql = (dims: number) => `
 CREATE TABLE IF NOT EXISTS observation_embeddings (
   observation_id TEXT NOT NULL REFERENCES observations(id) ON DELETE CASCADE,
   project_id TEXT NOT NULL,
   team_id TEXT NOT NULL,
   part TEXT NOT NULL,
   model TEXT NOT NULL,
-  embedding vector(384) NOT NULL,
+  embedding vector(${dims}) NOT NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
   PRIMARY KEY (observation_id, part)
 );

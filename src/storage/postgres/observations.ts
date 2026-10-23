@@ -312,9 +312,9 @@ export class PostgresObservationRepository {
   // alone is main-agent work (transcript-watch seats), and rows with no event
   // source (summaries, direct memories) always stay.
   //
-  // `queryEmbedding` (the query's vector, from embedSearchQuery) turns a query
-  // search hybrid: see searchHybrid. Without it, or without a query, the read
-  // is the keyword/recency one below.
+  // `queryEmbedding` (the query's vector and the model that made it, from
+  // embedSearchQuery) turns a query search hybrid: see searchHybrid. Without
+  // it, or without a query, the read is the keyword/recency one below.
   async search(input: {
     projectId: string;
     teamId: string;
@@ -323,7 +323,7 @@ export class PostgresObservationRepository {
     platformSource?: string | null;
     folderProjects?: string[] | null;
     excludeSubagents?: boolean;
-    queryEmbedding?: ArrayLike<number> | null;
+    queryEmbedding?: { vector: ArrayLike<number>; model: string } | null;
     /** Select summaries (true) or observations (false); omit for both. */
     summary?: boolean;
   }): Promise<PostgresObservation[]> {
@@ -344,8 +344,9 @@ export class PostgresObservationRepository {
         input.excludeSubagents === true,
         input.summary ?? null,
         legCandidates,
-        toVectorLiteral(input.queryEmbedding),
+        toVectorLiteral(input.queryEmbedding.vector),
         legCandidates * (HYBRID_NEAREST_PARTS / HYBRID_LEG_CANDIDATES),
+        input.queryEmbedding.model,
       ]);
     }
     // On postgres-pgvector-textsearch, a query matches any of its terms,
@@ -400,7 +401,9 @@ export class PostgresObservationRepository {
   // The keyword leg ranks as search() does: by bm25 on
   // postgres-pgvector-textsearch, by every term and ts_rank elsewhere. The
   // vector leg takes the project's nearest parts from the HNSW index and ranks
-  // an observation by its nearest part.
+  // an observation by its nearest part. Only parts from the query's own model
+  // are compared: while rows are re-embedded after a model change, the others
+  // are in another model's space, where distance means nothing.
   private async searchHybrid(params: unknown[]): Promise<PostgresObservation[]> {
     // The bm25 candidates come in the index scan's order, numbered as they
     // come; the score is not named outside ORDER BY, so the scan is not
@@ -459,12 +462,12 @@ export class PostgresObservationRepository {
           ON server_sessions.id = observations.server_session_id
           AND server_sessions.project_id = observations.project_id
           AND server_sessions.team_id = observations.team_id
-        WHERE e.project_id = $1 AND e.team_id = $2 AND ${SEARCH_SCOPE_SQL}
+        WHERE e.project_id = $1 AND e.team_id = $2 AND e.model = $12 AND ${SEARCH_SCOPE_SQL}
         ORDER BY e.embedding <=> $10::vector`
         : `
         SELECT observation_id, embedding <=> $10::vector AS distance
         FROM observation_embeddings
-        WHERE project_id = $1 AND team_id = $2
+        WHERE project_id = $1 AND team_id = $2 AND model = $12
         ORDER BY embedding <=> $10::vector`}
         LIMIT $11
       ),

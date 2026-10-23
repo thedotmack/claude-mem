@@ -256,12 +256,14 @@ by keyword: `/v1/search`, `/v1/context` and the MCP `search` and `context`
 tools fuse a keyword ranking with the observations nearest the query's vector,
 so a query finds a memory that shares none of its words. The server embeds
 queries and the generation worker embeds the observations it writes, in-process
-with all-MiniLM-L6-v2; the Docker image includes the model. Without pgvector,
-or while the model cannot load, search is keyword-only.
+with the model `CLAUDE_MEM_EMBEDDING_MODEL` names; the Docker image includes the
+default one, and another downloads at its first use. Without pgvector, or while
+the model cannot load, search is keyword-only.
 
 | Env var | Effect |
 |---------|--------|
 | `CLAUDE_MEM_SERVER_VECTOR_SEARCH` | `auto` (default) is on for a new database and off for one created before search by meaning, so an upgrade adds no embedding work. `true` turns it on; observations already stored get vectors in the background. `false` is keyword-only. Set it the same on the server and the worker. |
+| `CLAUDE_MEM_EMBEDDING_MODEL` | `all-MiniLM-L6-v2` (default), `paraphrase-multilingual-MiniLM-L12-v2`, `multilingual-e5-small` or `granite-embedding-97m-multilingual-r2`. The multilingual models search Chinese, Japanese and Korean far better than the default; embedding costs 1.2 (MiniLM-L12) to 4.3 (granite) times as much. A query only matches vectors from its own model, so after a change stored observations are embedded again in the background, and search by meaning covers them as they are. Set it the same on the server and the worker. |
 | `CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS` | CPU threads the model may use while stored observations still need vectors, until the next restart. Empty (default) is half the machine's threads; `0` is all of them. |
 
 `GET /v1/info` reports `vectorSearch`: whether it is available, the model, how
