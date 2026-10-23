@@ -300,6 +300,72 @@ DELETE /v1/projects/:projectId/memory   # purge a whole project
 GET    /v1/audit?projectId=<id>
 ```
 
+## Keyword search
+
+`/v1/search`, `/v1/context` and the MCP `search` tool match keywords with
+Postgres full-text search (English stemming). How plain words match depends on
+the Postgres the server runs on:
+
+- **With pg_textsearch** (the Docker Compose image): plain words match **any** of
+  the query's terms, ranked by bm25, so rare terms count for more than common ones
+  and a question such as `when did we change the retry limit` finds the memory
+  about the retry limit first. Memories with none of the terms are left out.
+- **Without it** (any other Postgres): plain words must **all** appear, ranked by
+  `ts_rank`, as before.
+
+Web-search syntax means the same on both: `"quoted phrase"` matches the words in
+that order, `-term` excludes memories containing it, and `or` matches either side.
+A query that uses any of them is filtered exactly as before; bm25 only orders the
+matches.
+
+## Upgrading the Postgres image (Docker Compose)
+
+`docker-compose.yml` builds its Postgres image locally from
+`docker/postgres/Dockerfile` as `claude-mem-postgres:17`: Postgres 17 on Debian
+(trixie) with the pgvector and pg_textsearch extensions from the PostgreSQL
+project's apt repository. No prebuilt image is pulled from a third-party
+registry. The image is about 650 MB, against 424 MB for the `postgres:17-alpine`
+image earlier releases used.
+
+Moving from Alpine to Debian changes the C library under your existing data
+volume (musl to glibc), which changes how text sorts. Indexes that order text by
+a C-library collation must be rebuilt, or lookups through them can miss rows.
+The one-shot `postgres-collation` service does this before the server and worker
+start: it finds databases whose recorded collation version differs from the C
+library's, `REINDEX`es only the indexes that order text by collation (vector,
+full-text and jsonb indexes are left alone), and records the new collation
+version. A second start finds nothing to do. New databases use Postgres's
+builtin `C.UTF-8` locale, so later C-library changes cannot affect them.
+
+To upgrade an existing stack:
+
+1. **Back up first.** With the old stack still running:
+   ```bash
+   docker compose exec postgres pg_dumpall -U "$POSTGRES_USER" > claude-mem-backup.sql
+   ```
+   A copy of the volume works too: `docker compose down`, then
+   `docker run --rm -v <project>_postgres-data:/from -v "$PWD":/to alpine tar czf /to/postgres-data.tgz -C /from .`
+2. **Build and start only Postgres** on the new image:
+   ```bash
+   docker compose build postgres
+   docker compose up -d postgres
+   ```
+3. **Dry run** to list the indexes that would be rebuilt, without changing anything:
+   ```bash
+   docker compose run --rm -e DRY_RUN=1 postgres-collation
+   ```
+4. **Start the rest.** `docker compose up -d` runs the rebuild, then the server and
+   worker. The rebuild takes seconds for typical databases.
+
+**Rollback.** Restore the backup from step 1; don't point the old image at the
+upgraded volume. After the rebuild its text indexes are ordered for glibc, and
+once the server has created pgvector or pg_textsearch objects, `postgres:17-alpine`
+(which has neither extension) cannot use them. Check out the previous
+`docker-compose.yml`, then either put the volume copy back
+(`docker compose down`, `docker volume rm <project>_postgres-data`, recreate it and
+untar `postgres-data.tgz` into it) or start the old stack on a fresh volume and load
+the dump with `psql -U "$POSTGRES_USER" -d postgres -f claude-mem-backup.sql`.
+
 ## What's solid vs. what's coming
 
 <Note>

@@ -331,6 +331,18 @@ export class SettingsRoutes extends BaseRouteHandler {
   });
 
   private handleToggleMcp = this.wrapHandler((req: Request, res: Response): void => {
+    // The MCP toggle renames the plugin's .mcp.json, so it gets the same
+    // browser cross-port rejection as POST /api/settings: the viewer's own
+    // page keeps working, another localhost origin cannot flip the MCP server.
+    // Origin-less clients (hooks, CLI, curl) keep the loopback-trust model.
+    if (isForeignLoopbackBrowserWrite(req)) {
+      res.status(403).json({
+        success: false,
+        error: 'Settings writes from a different localhost origin are not allowed'
+      });
+      return;
+    }
+
     const { enabled } = req.body as z.infer<typeof toggleMcpSchema>;
 
     this.toggleMcp(enabled);
