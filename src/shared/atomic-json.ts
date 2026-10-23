@@ -46,7 +46,7 @@ export function ensureDirectoryExists(directoryPath: string): void {
  * targets must resolve against this physical location, not the logical path
  * the link was reached through.
  */
-function physicalPathOf(filePath: string): string {
+export function physicalPathOf(filePath: string): string {
   try {
     return realpathSync(filePath);
   } catch (err) {

@@ -109,6 +109,8 @@ export interface WireCapturePipelineOptions {
   isSessionCapturable?: (identity: WireIdentity) => boolean;
   /** Test seam; defaults to <DATA_DIR>/wire-gateway/usage. */
   usageLedger?: WireUsageLedger;
+  /** More readers of the same collected replies, after the pipeline's own (the live trace feed, Phase 13). */
+  extraReplyConsumers?: RelayReplyConsumer[];
 }
 
 export interface WireCapturePipeline {
@@ -143,6 +145,7 @@ export function createWireCapturePipeline(options: WireCapturePipelineOptions): 
     createWireCaptureConsumer({ recorder, assembler, isSessionCapturable: options.isSessionCapturable }),
     createTurnTrackingConsumer(turnTracker),
     createUsageLedgerConsumer(usageLedger),
+    ...(options.extraReplyConsumers ?? []),
   ]);
   recorder.pruneRecordings();
   try {

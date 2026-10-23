@@ -79,7 +79,10 @@ export function setWireRecordingConsent(recording: boolean, consentFilePath: str
  * is in flight when the files go is refused (or taken back) instead of
  * refilling the store. The recording decision itself is kept. Memories that
  * capture already created stay in claude-mem; this deletes recordings only.
- * (Phase 13's live-feed bodies join this when they exist.)
+ * The live trace feed's bodies (trace/live-trace-feed.ts) are cleared by the
+ * same bump: the running gateway keeps each body under the generation it was
+ * taken in and drops every body of another generation before it answers or
+ * keeps another, so a clear from this process or the CLI reaches them too.
  */
 export function clearWireRecordings(options: { consentFilePath?: string; recordingsDirectory?: string } = {}): WireRecordingConsentFile {
   const consentFilePath = options.consentFilePath ?? paths.wireGatewayConsent();

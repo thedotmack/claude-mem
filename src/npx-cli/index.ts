@@ -58,6 +58,7 @@ ${styleText('bold', 'Runtime Commands')} (requires Bun, delegates to installed p
   ${styleText('cyan', 'npx claude-mem wire routes add <id> --agent <a> --upstream <url>')}  Relay http://127.0.0.1:<port>/r/<id> to a provider (also: routes list, routes remove <id>, routes endless|memory|search <id> on|off|default)
   ${styleText('cyan', 'npx claude-mem wire consent [--record|--off]')}        Show or change consent to raw wire recording (off until you turn it on)
   ${styleText('cyan', 'npx claude-mem wire clear')}                          Delete every raw wire recording
+  ${styleText('cyan', 'npx claude-mem wire magpie enable [--backfill]')}      Follow magpie's recordings into memory capture (also: wire magpie disable)
   ${styleText('cyan', 'npx claude-mem wire connect <agent>')}                 Point an agent's base URLs at the wire gateway (API-key sign-ins only)
   ${styleText('cyan', 'npx claude-mem wire disconnect <agent>')}              Put back what connect changed
   ${styleText('cyan', 'npx claude-mem wire preview <agent> [--disconnect]')}  Show what connect (or disconnect) would change, changing nothing

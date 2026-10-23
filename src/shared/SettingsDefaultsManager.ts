@@ -423,6 +423,8 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: string;
   CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: string;
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: string;
+  CLAUDE_MEM_WIRE_GATEWAY_OTLP: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: string;
 }
 
 export class SettingsDefaultsManager {
@@ -717,6 +719,8 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: 'true',      // captureSource:'wire' routes without their own features.memoryInjection get claude-mem context once per conversation (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: '1500',    // how long a conversation's first request waits for that context (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: 'false',   // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_OTLP: 'true',                  // POST /v1/traces takes OTLP/HTTP JSON spans (magpie, GenAI emitters) into memory capture; 'false' answers 404 (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: '',     // magpie's gateway-conversations folder to follow into memory capture; '' = off (`claude-mem wire magpie enable` sets it; read at gateway start)
   };
 
   static getAllDefaults(): SettingsDefaults {

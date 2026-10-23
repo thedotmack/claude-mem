@@ -60,6 +60,12 @@ export function createWireGatewayFetchHandler(options: {
   statusReport?: () => Promise<unknown>;
   /** MCP over Streamable HTTP at /mcp (Phase 12); without one, /mcp answers 404. */
   mcp?: (request: Request) => Promise<Response>;
+  /** The push endpoint POST /v1/claude-mem/events (Phase 13); without one, it answers 404. */
+  pushEvents?: (request: Request) => Promise<Response>;
+  /** The OTLP/HTTP JSON receiver POST /v1/traces (Phase 13); without one (CLAUDE_MEM_WIRE_GATEWAY_OTLP=false), it answers 404. */
+  otlpTraces?: (request: Request) => Promise<Response>;
+  /** The live call feed GET /wire/trace and GET /wire/call (Phase 13); without one, they answer 404. */
+  liveTrace?: { trace: (request: Request) => Promise<Response>; call: (request: Request) => Response };
 }) {
   return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response | Promise<Response> {
     const refusal = checkLoopbackRequest(request, {
@@ -91,6 +97,26 @@ export function createWireGatewayFetchHandler(options: {
 
     if (pathname === '/wire/launch' && options.launchRegistry) {
       return handleWireLaunchRequest(request, server, options.launchRegistry);
+    }
+
+    // Every path below is loopback-only: the guard above refused anything else
+    // (the shared team gateway's per-client keys are Phase 16).
+    if (pathname === '/v1/claude-mem/events' && options.pushEvents) {
+      return options.pushEvents(request);
+    }
+
+    if (pathname === '/v1/traces' && options.otlpTraces) {
+      return options.otlpTraces(request);
+    }
+
+    if (pathname === '/wire/trace' && options.liveTrace) {
+      // A long-poll is silent for up to 25 s by design: Bun's idle timer must not cut it.
+      server.timeout(request, 0);
+      return options.liveTrace.trace(request);
+    }
+
+    if (pathname === '/wire/call' && options.liveTrace) {
+      return options.liveTrace.call(request);
     }
 
     if (pathname === '/mcp' && options.mcp) {

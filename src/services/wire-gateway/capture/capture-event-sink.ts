@@ -35,7 +35,7 @@ export interface HookSpoolCaptureEventSinkOptions {
  * same pass (the nudge pattern of src/cli/spool-hook-event.ts
  * `nudgeWorkerToDrainHookSpool`).
  */
-function createWorkerNudger(): () => void {
+export function createWorkerNudger(): () => void {
   let nudgeInFlight = false;
   return () => {
     if (nudgeInFlight) return;

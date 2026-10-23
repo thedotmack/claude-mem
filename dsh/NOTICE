@@ -37,3 +37,7 @@ This product includes software and test fixtures ported from magpie
 
 The ported magpie code lives under src/services/wire-gateway/ and the copied
 fixtures under tests/fixtures/wire-gateway/magpie/.
+
+tests/wire-gateway/fixtures/otlp/trace.json is copied from opentelemetry-proto
+(https://github.com/open-telemetry/opentelemetry-proto, commit c56093a32),
+Copyright The OpenTelemetry Authors, used under the Apache License, Version 2.0.

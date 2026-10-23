@@ -184,4 +184,6 @@ export const paths = {
   wireGatewayPort: () => join(WIRE_GATEWAY_DIR, 'state', 'wire-gateway.port'),
   wireGatewayRuntime: () => join(WIRE_GATEWAY_DIR, 'state', 'wire-gateway.runtime.json'),
   wireGatewayProcessRegistry: () => join(WIRE_GATEWAY_DIR, 'state', 'supervisor.json'),
+  wireGatewayMagpieFollowerState: () => join(WIRE_GATEWAY_DIR, 'state', 'magpie-follower.json'),
+  wireGatewayPushEventLedger: () => join(WIRE_GATEWAY_DIR, 'state', 'push-events.jsonl'),
 } as const;

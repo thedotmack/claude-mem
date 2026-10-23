@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
+import { isAbsolute } from 'path';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
 import { USER_SETTINGS_PATH } from '../../shared/paths.js';
 
@@ -48,6 +49,8 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION?: string;
   CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_OTLP?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR?: string;
 }): string | null {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -90,7 +93,7 @@ export function validateWireGatewayListenSettings(settings: {
     && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES)) {
     return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES must be a whole number of bytes';
   }
-  for (const key of ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', 'CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL'] as const) {
+  for (const key of ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', 'CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL', 'CLAUDE_MEM_WIRE_GATEWAY_OTLP'] as const) {
     if (settings[key] !== undefined && settings[key] !== 'true' && settings[key] !== 'false') {
       return `${key} must be "true" or "false"`;
     }
@@ -98,6 +101,10 @@ export function validateWireGatewayListenSettings(settings: {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS !== undefined
     && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS) < 1)) {
     return 'CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS must be a whole number of milliseconds above 0';
+  }
+  const magpieRecordingsDirectory = settings.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR?.trim();
+  if (magpieRecordingsDirectory && !isAbsolute(magpieRecordingsDirectory)) {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR must be an absolute path (magpie\'s gateway-conversations folder) or empty';
   }
   return null;
 }
@@ -117,6 +124,10 @@ export interface WireGatewayConfig {
   outboundRedaction: boolean;
   /** CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS=true: subscription sign-ins are forwarded, not refused (D4 lifted locally). */
   forwardSubscriptionSignIns: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_OTLP: POST /v1/traces takes OTLP/HTTP JSON spans into capture (plan Phase 13 task 2). */
+  otlp: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: magpie's gateway-conversations folder to follow; null when off (plan Phase 13 task 3). */
+  magpieRecordingsDirectory: string | null;
   /** Every setting (settings.json with env overrides), handed to the rewrite stages as `context.settings`. */
   rewriteSettings: Readonly<Record<string, string>>;
 }
@@ -144,6 +155,8 @@ export function loadWireGatewayConfig(settingsPath: string = USER_SETTINGS_PATH)
     recordingForcedOff: settings.CLAUDE_MEM_WIRE_GATEWAY_RECORDING === 'false',
     outboundRedaction: settings.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION === 'true',
     forwardSubscriptionSignIns: settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS === 'true',
+    otlp: settings.CLAUDE_MEM_WIRE_GATEWAY_OTLP !== 'false',
+    magpieRecordingsDirectory: settings.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR.trim() || null,
     rewriteSettings: { ...settings },
   };
 }

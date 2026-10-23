@@ -254,6 +254,32 @@ export class WireCaptureAssembler {
     }
   }
 
+  /**
+   * One tool run reported on its own, outside any request history (a magpie
+   * session-poller `tool` span, plan Phase 13 task 2): observed once per
+   * tool_use_id within its conversation, as a result in a request would be.
+   */
+  observeToolRun(run: { identity: WireIdentity; callId: string; toolName: string; argsText: string; resultText: string }): void {
+    const { identity } = run;
+    if (identity.kind !== 'turn' && identity.kind !== 'subagent') return;
+    const conversation = this.touchConversation(this.conversationKeyOf(identity));
+    const toolUseId = toolUseIdOfResult({ callId: run.callId, toolName: run.toolName, argsText: run.argsText, resultText: run.resultText }, new Map());
+    if (conversation.emittedToolUseIds.has(toolUseId)) return;
+    rememberBounded(conversation.emittedToolUseIds, toolUseId, MAX_EMITTED_TOOL_USE_IDS_PER_CONVERSATION);
+    const contentSessionId = contentSessionIdOf(identity);
+    this.eventSink.emit('observation', {
+      contentSessionId,
+      platformSource: identity.agentId,
+      toolName: run.toolName,
+      toolInput: toolInputOf(run.argsText),
+      toolResponse: run.resultText,
+      toolUseId,
+      ...(identity.kind === 'subagent' && identity.subagent ? { agentId: identity.subagent, agentType: 'subagent' } : {}),
+      ...this.placeOf(identity),
+    });
+    this.noteSessionEvent(identity, contentSessionId);
+  }
+
   /** A turn of the session ended (TurnTracker): ask the worker to summarize it. */
   handleTurnEnd(turnEnd: WireTurnEnd): void {
     const session = this.sessionsWithEvents.get(this.sessionKeyOf(turnEnd.agentId, turnEnd.sessionId));

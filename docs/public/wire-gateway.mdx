@@ -31,6 +31,10 @@ and uploads nothing except the anonymous counters described under
 | Memory injection | on for routes with `captureSource: wire` | Your claude-mem context, once per conversation, at the end of the system prompt | The text injected, word for word, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
 | Hidden `memory_search` | **off** | Extra requests to the provider (billed) carrying the model's searches and claude-mem's answers | Which tool definition was offered, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
 | MCP over HTTP (`/mcp`) | on, loopback only | Nothing beyond what a tool call asks the worker | Nothing | Nothing |
+| Push endpoint (`/v1/claude-mem/events`) | on, loopback only | Nothing | The events you push, secrets scrubbed, in the local hook spool; each accepted event id in `<data dir>/wire-gateway/state/push-events.jsonl` | Spool files until the worker has taken them in; event ids for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
+| OTLP receiver (`/v1/traces`) | on, loopback only | Nothing | Capture events made from the spans' bodies, scrubbed, in the local hook spool | Spool files until the worker has taken them in |
+| magpie follower | **off** until `claude-mem wire magpie enable` | Nothing | Capture events made from magpie's recordings, scrubbed, in the local hook spool; how far it read in `<data dir>/wire-gateway/state/magpie-follower.json` | Spool files until the worker has taken them in |
+| Live trace (`/wire/trace`, `/wire/call`) | on, loopback only | Nothing | In memory only: the last 60 calls without their text; with recording consent, the last 40 calls' bodies (each side at most 256 KiB, secrets scrubbed) | Until the gateway stops; bodies until recording is turned off or `claude-mem wire clear` |
 | Telemetry | follows claude-mem's [telemetry](/telemetry) setting | Counters only | Nothing | Nothing |
 
 Request and response **headers are never stored**, so API keys in
@@ -257,6 +261,140 @@ every search is another billed request to the provider.
   your agent saw.
 - If a later round fails, your agent's reply ends with the provider's error
   and no end marker, so the agent treats it as a broken connection.
+
+## Ways in from outside
+
+Tools the gateway cannot relay can still feed claude-mem through it. All four
+endpoints answer this computer only, on the gateway's port.
+
+### Push endpoint
+
+`POST http://127.0.0.1:<port>/v1/claude-mem/events` takes one event, or an
+array of at most 5000, as `application/json` (32 MiB at most; gzip, br and
+zstd bodies are decoded). Each event is one of claude-mem's own capture events:
+
+```json
+{ "eventId": "run-42-step-3", "kind": "observation", "platformSource": "my-tool",
+  "contentSessionId": "run-42", "toolName": "Read", "toolInput": { "path": "a.ts" },
+  "toolResponse": "export const a = 1;", "cwd": "/Users/me/project" }
+```
+
+| `kind` | Fields beside `eventId` (at most 128 characters), `platformSource` and `contentSessionId` |
+|---|---|
+| `session_init` | `prompt`, `nativePromptId`, `project`, `projectKeySource`, `customTitle`, `cwd` |
+| `observation` | `toolName` (required), `toolInput`, `toolResponse`, `toolUseId`, `cwd`, `agentId`, `agentType`, `project`, `telemetryPlatformSource` |
+| `summarize` | `lastAssistantMessage` (required), `observedModel`, `observedBilling`, `cwd` |
+| `session_end` | none |
+
+A post is all or nothing: one bad event answers 400 with
+`{"error": {"message", "param", "index"}}` and nothing of the post is kept.
+Otherwise the answer is `{"accepted", "skipped", "records": [{"index",
+"eventId", "status"}]}`. An event id already accepted (in this post, earlier,
+or before a restart, for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS`) is
+`skipped`, so a client can safely send again. Events go into the same hook
+spool as everything else the gateway captures, secrets scrubbed, and the
+worker takes them in exactly once.
+
+### OTLP receiver
+
+`POST http://127.0.0.1:<port>/v1/traces` takes OpenTelemetry traces as
+OTLP/HTTP **JSON** (gzip accepted). Protobuf is answered 415: set
+`OTEL_EXPORTER_OTLP_PROTOCOL=http/json`. It reads:
+
+- **magpie's spans with bodies.** Run magpie with `MAGPIE_OTEL_ENABLED=true`,
+  `MAGPIE_OTEL_BODIES=true` and `MAGPIE_OTEL_ENDPOINT=http://127.0.0.1:<port>`.
+  Its gateway spans carry each request and reply; its session spans
+  (`MAGPIE_OTEL_SESSIONS=true`) carry each tool run and each interaction.
+- **GenAI semantic-convention messages**: `gen_ai.input.messages` and
+  `gen_ai.output.messages` (and the older `gen_ai.prompt` / `gen_ai.completion`).
+  The agent is the resource's `service.name`; the session is
+  `gen_ai.conversation.id`.
+
+Spans with neither are counted and ignored. A span whose bodies cannot be read
+is answered with `partialSuccess.rejectedSpans`. `CLAUDE_MEM_WIRE_GATEWAY_OTLP=false`
+turns the receiver off.
+
+### magpie recordings
+
+If you use magpie with its conversation recording on, claude-mem can follow
+those recordings:
+
+```bash
+npx claude-mem wire magpie enable            # from now on
+npx claude-mem wire magpie enable --backfill # also what magpie kept already
+npx claude-mem wire restart
+```
+
+`enable` finds `$XDG_CONFIG_HOME/magpie/gateway-conversations` or
+`~/.config/magpie/gateway-conversations` (`--dir <path>` names another) and sets
+`CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR`. The gateway then looks every 2
+seconds, reads whole lines only (at most 8 MiB a look), and remembers where it
+got to, so a restart never replays a line; a recording magpie replaced or cut
+short is read again from its start. Symlinks under the folder are not followed.
+Each line is decided 30 seconds after the follower first sees it (see below).
+magpie records only calls that name a session (its `X-Magpie-Session` header or
+the agent's own session header); its OTLP export also covers the others.
+
+Running `enable` again for the folder already followed (or followed before)
+goes on from where the follower got to: no line it has not read yet is skipped,
+also when the gateway was down meanwhile. `--backfill` starts every recording
+there again from its beginning. Either takes effect at the follower's next
+look; for another folder, at `claude-mem wire restart`. A failed `enable`
+changes nothing. A request file the follower cannot read is reported once in
+the log and in `wire status`, and following goes on; run `enable` again to
+replace it. `claude-mem wire magpie disable` stops the follower.
+
+**Each exchange is captured once.** Which copy is taken follows what magpie
+does and what reaches claude-mem, never a fixed list of agents:
+
+1. An agent claude-mem already captures, through a wire route or its own
+   integration (Claude Code always stays on its hooks), is skipped by the
+   OTLP receiver and the magpie follower.
+2. magpie's OTLP spans are all taken, session spans and gateway spans alike.
+   magpie sends a gateway span for every call except one its session spans
+   cover: a local, keyless call, not relayed `via` another magpie and not a
+   helper call, of a session its poller traces, which needs
+   `MAGPIE_OTEL_SESSIONS=true` (off by default). So each call reaches
+   claude-mem in exactly one of the two.
+3. A recorded line repeats a call magpie's OTLP export also sends. It is
+   skipped when magpie spans for its agent reached claude-mem within 30
+   seconds of the line (magpie delivers within 19: a 2 s transcript poll, a
+   5 s flush, three 3 s send attempts with 1 s and 2 s backoff), and taken
+   otherwise. Lines written while the gateway was not running are taken:
+   magpie's export to claude-mem failed then.
+4. An agent that sends its own GenAI spans (`service.name` = the agent) is
+   taken from them, since they hold all of its calls; magpie's copies of it
+   (spans and recorded lines) are skipped while its own spans arrive.
+
+| magpie set up with | claude-mem has | Each call is captured from |
+|---|---|---|
+| recording on | the follower | the recorded line |
+| `MAGPIE_OTEL_ENABLED`, `MAGPIE_OTEL_BODIES` | OTLP | the gateway span |
+| the above and `MAGPIE_OTEL_SESSIONS=true` | OTLP | the session span for a call it covers (2), the gateway span for every other call (remote, keyed, `via`, helper, or an agent it does not trace) |
+| recording on, OTLP with bodies (sessions on or off) | the follower and OTLP | the OTLP span, as above; the recorded line only for a call made while the gateway was down |
+| any of the above, and the agent sends its own GenAI spans | OTLP | the agent's own span |
+
+Limits of the rule, all from magpie's own behavior: magpie records nothing for
+a call that names no session, so with the follower alone those calls are not
+captured; a local call made with a gateway key gets both a gateway span and,
+when its agent's session files are traced, a session span (magpie sends both);
+when magpie drops spans (its queue holds 128) while other spans for the same
+agent arrive, the recorded line is still skipped; and `--backfill` takes every
+line magpie kept, including calls OTLP already delivered while claude-mem ran.
+
+### Live trace
+
+`GET /wire/trace?after=<seq>&wait=1` answers `{seq, calls, now}`: the calls that
+changed after `seq`, waiting up to 25 seconds for one (without `wait` it answers
+at once). Send back the `seq` you got; a `seq` ahead of the gateway's (it
+restarted) is read as 0. The feed keeps the last 60 calls: agent, route, model,
+status, timing and tokens, never their text.
+
+`GET /wire/call?id=<call id>` answers `{requestBody, responseBody,
+requestTruncated, responseTruncated}` for one of the last 40 calls, only while
+[raw recording](#raw-recording-needs-your-consent) is on, and only for agents
+the gateway captures. Bodies are scrubbed of secrets and cut at 256 KiB each.
+Turning recording off or `claude-mem wire clear` deletes them.
 
 ## MCP over HTTP
 

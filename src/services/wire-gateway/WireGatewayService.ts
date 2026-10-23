@@ -8,6 +8,8 @@
 // src/ (tests/logger-usage-standards.test.ts) and in this folder (plan Phase 1).
 
 import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { homedir } from 'os';
+import { resolve as resolvePath } from 'path';
 import { fileURLToPath } from 'url';
 import type { Server } from 'bun';
 import { SettingsDefaultsManager } from '../../shared/SettingsDefaultsManager.js';
@@ -52,11 +54,25 @@ import {
   type WireGatewayCaptureSource,
 } from './routes.js';
 import { isLoopbackAddress } from './network-guard.js';
-import { createWireGatewayRelay, relayActivityCounts, type RelayObserver } from './relay/relay.js';
+import { composeRelayObservers, createWireGatewayRelay, relayActivityCounts, type RelayObserver } from './relay/relay.js';
 import { WireLaunchRegistry } from './identity/launch-registry.js';
 import { DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS } from './relay/request-body.js';
 import { createWireCapturePipeline, type WireCapturePipeline, type WireCapturePipelineOptions } from './capture/capture-pipeline.js';
-import { wireCaptureEventActivity } from './capture/capture-event-sink.js';
+import { createWorkerNudger, wireCaptureEventActivity } from './capture/capture-event-sink.js';
+import type { WireRecordingConsent } from './capture/turn-recorder.js';
+import { PushEventLedger, createHookSpoolPushEventSpool, createPushEventsHandler, pushEventActivity, type PushEventSpool } from './ingest/push-events.js';
+import { OtlpTraceReceiver, createOtlpTracesHandler, otlpActivity } from './ingest/otlp-receiver.js';
+import { FOREIGN_SOURCE_SETTLE_MS, WireForeignCapture, foreignCaptureActivity, type CaptureSourceRuleOptions } from './ingest/foreign-capture.js';
+import {
+  MagpieRecordingsFollower,
+  assertNotClaudeMemRecordings,
+  defaultMagpieRecordingsDirectory,
+  magpieFollowerActivity,
+  magpieFollowerRequest,
+  requestMagpieFollowerState,
+} from './ingest/magpie-follower.js';
+import { WireLiveTraceFeed, createLiveTraceHandlers } from './trace/live-trace-feed.js';
+import { updateSettingsDocument } from '../../shared/settings-document.js';
 import { RECORDED_STORE_SOFT_CAP_BYTES } from './capture/turn-recorder.js';
 import {
   FileWireRecordingConsent,
@@ -93,12 +109,15 @@ import { AgentLastSeenTracker, readLastSeenFile, type LastSeenFileReadResult } f
 import { ProbeAnswerCache, probeLookupFor, type ProbeLookup } from './drift/reachability.js';
 import {
   evaluateWireAgentStatuses,
+  formatWireIngestStatus,
   formatWireStatusReport,
+  type WireIngestStatus,
   type WireAgentStatusInputs,
   type WireStatusReport,
 } from './drift/agent-status.js';
 
 const DEFAULT_RETENTION_DAYS = 7;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 // Bun.serve's idle timer, in seconds (max 255). It also bounds the wait before
 // response headers; the relay disables it per relayed request with
@@ -167,6 +186,24 @@ export interface WireGatewayServiceOptions {
   capture?: Partial<WireCapturePipelineOptions>;
   /** Test seam: Bun.serve's idle timer in seconds; defaults to 255. */
   idleTimeoutSeconds?: number;
+  /** CLAUDE_MEM_WIRE_GATEWAY_OTLP: serve POST /v1/traces (plan Phase 13 task 2). Defaults to on. */
+  otlp?: boolean;
+  /** CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: follow magpie's recordings there (plan Phase 13 task 3); null or absent: off. */
+  magpieRecordingsDirectory?: string | null;
+  /** Test seams for the ways in from outside (plan Phase 13). */
+  ingest?: {
+    /** Where pushed events go; defaults to the hook spool plus a worker nudge. */
+    pushSpool?: PushEventSpool;
+    /** The accepted-event ledger; defaults to <DATA_DIR>/wire-gateway/state/push-events.jsonl. */
+    pushLedgerFilePath?: string;
+    /** The follower's state file and pace. */
+    magpieStatePath?: string;
+    magpiePollIntervalMs?: number;
+    /** How long an OTLP delivery counts, and how long the follower waits before deciding a line (foreign-capture.ts). */
+    foreignSourceSettleMs?: number;
+    /** Where the one-source-per-agent rule looks (routes.json, agent descriptors, home). */
+    captureSourceRule?: CaptureSourceRuleOptions;
+  };
   /** Write PID/port/state files and the process-registry entry. Off for in-process tests. */
   persistRuntimeState?: boolean;
   /** Test seam for the Bun gate; defaults to Bun.version. */
@@ -245,6 +282,10 @@ export class WireGatewayService {
   /** Endless Mode's cache of which tool results have an observation, filled in the background. */
   readonly observationLookup: WireObservationLookup;
   private ledgerPruneTimer: ReturnType<typeof setInterval> | null = null;
+  /** The live call feed behind GET /wire/trace and /wire/call (plan Phase 13 task 4); null while stopped. */
+  liveTraceFeed: WireLiveTraceFeed | null = null;
+  /** magpie's recordings, followed into capture (plan Phase 13 task 3); null when off or stopped. */
+  magpieFollower: MagpieRecordingsFollower | null = null;
 
   constructor(options: WireGatewayServiceOptions) {
     this.options = options;
@@ -266,14 +307,49 @@ export class WireGatewayService {
       return;
     }
     ensureWireGatewayDirs();
+    // Fail fast, before any timer starts: following claude-mem's own recordings would capture them twice.
+    if (this.options.magpieRecordingsDirectory) assertNotClaudeMemRecordings(this.options.magpieRecordingsDirectory);
 
+    const retentionDays = this.options.retentionDays ?? DEFAULT_RETENTION_DAYS;
+    const consent: WireRecordingConsent = this.options.capture?.consent
+      ?? new FileWireRecordingConsent({ recordingForcedOff: this.options.recordingForcedOff ?? false });
+    const liveTraceFeed = new WireLiveTraceFeed({ consent });
+    this.liveTraceFeed = liveTraceFeed;
     this.capturePipeline = this.options.relayObserver
       ? null
       : createWireCapturePipeline({
-        retentionDays: this.options.retentionDays ?? DEFAULT_RETENTION_DAYS,
-        consent: new FileWireRecordingConsent({ recordingForcedOff: this.options.recordingForcedOff ?? false }),
+        retentionDays,
+        consent,
         ...this.options.capture,
+        extraReplyConsumers: [liveTraceFeed.replyConsumer],
       });
+    const relayObserver = this.options.relayObserver ?? this.capturePipeline?.relayObserver;
+    const ingest = this.options.ingest ?? {};
+    const pushEvents = createPushEventsHandler({
+      spool: ingest.pushSpool ?? createHookSpoolPushEventSpool({ nudgeWorker: createWorkerNudger() }),
+      ledger: new PushEventLedger(ingest.pushLedgerFilePath ?? paths.wireGatewayPushEventLedger(), retentionDays * DAY_MS),
+      requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs,
+    });
+    // OTLP spans and magpie's recordings feed the relay's own assembler and turn tracker.
+    const foreignCapture = this.capturePipeline
+      ? new WireForeignCapture({ assembler: this.capturePipeline.assembler, turnTracker: this.capturePipeline.turnTracker, settleMs: ingest.foreignSourceSettleMs })
+      : null;
+    const otlpTraces = foreignCapture && (this.options.otlp ?? true)
+      ? createOtlpTracesHandler({
+        // Which copy of an exchange is taken (OTLP, recordings, the agent's own spans): foreign-capture.ts.
+        receiver: new OtlpTraceReceiver(foreignCapture, ingest.captureSourceRule),
+        requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs,
+      })
+      : undefined;
+    if (foreignCapture && this.options.magpieRecordingsDirectory) {
+      this.magpieFollower = new MagpieRecordingsFollower({
+        directory: this.options.magpieRecordingsDirectory,
+        capture: foreignCapture,
+        statePath: ingest.magpieStatePath,
+        pollIntervalMs: ingest.magpiePollIntervalMs,
+        captureSourceRule: ingest.captureSourceRule,
+      });
+    }
     const relay = createWireGatewayRelay({
       routesStore: new WireGatewayRoutesStore({
         routesFilePath: this.options.routesFilePath,
@@ -281,7 +357,7 @@ export class WireGatewayService {
       }),
       maxRequestBytes: this.options.maxRequestBytes,
       requestBodyIdleTimeoutMs: this.options.requestBodyIdleTimeoutMs ?? DEFAULT_REQUEST_BODY_IDLE_TIMEOUT_MS,
-      observer: this.options.relayObserver ?? this.capturePipeline?.relayObserver,
+      observer: relayObserver ? composeRelayObservers(relayObserver, liveTraceFeed.relayObserver) : liveTraceFeed.relayObserver,
       launchRegistry: this.launchRegistry,
       outboundRedaction: {
         placeholders: this.outboundRedactionPlaceholders,
@@ -302,6 +378,9 @@ export class WireGatewayService {
         relay,
         launchRegistry: this.launchRegistry,
         statusReport: () => this.statusReport(),
+        pushEvents,
+        otlpTraces,
+        liveTrace: createLiveTraceHandlers(liveTraceFeed),
         mcp: this.options.serveMcp === false ? undefined : createWireMcpHandler({
           // Loaded on the first /mcp request: the table reads settings and the worker's script path.
           toolTable: () => import('../../servers/mcp-tool-table.js').then(table => table.buildClaudeMemToolTable(directHttpToolEnvironment())),
@@ -329,6 +408,7 @@ export class WireGatewayService {
       },
     });
     this.startedAt = new Date().toISOString();
+    this.magpieFollower?.start();
     if (this.persistRuntimeState || this.options.status?.lastSeenFilePath) this.agentLastSeen.startPersisting();
 
     if (this.persistRuntimeState) {
@@ -421,7 +501,17 @@ export class WireGatewayService {
       readSystemProxy: status.readSystemProxy,
     });
     const memory = memoryStatusOf(this.options.routesFilePath ?? paths.wireGatewayRoutes(), this.options.rewriteSettings ?? {}, this.rewriteSeam.health.states());
-    return memory ? { ...report, memory } : report;
+    const ingest: WireIngestStatus = {
+      push: { ...pushEventActivity },
+      otlp: { enabled: (this.options.otlp ?? true) && this.capturePipeline !== null, ...otlpActivity },
+      magpie: {
+        directory: this.magpieFollower?.directory ?? null,
+        ...magpieFollowerActivity,
+        exchanges: foreignCaptureActivity.magpie.exchanges,
+        skippedOtherSource: foreignCaptureActivity.magpie.skippedOtherSource,
+      },
+    };
+    return { ...report, ...(memory ? { memory } : {}), ingest };
   }
 
   private async drainAndClose(): Promise<void> {
@@ -436,6 +526,7 @@ export class WireGatewayService {
       // while in-flight ones finish; then stop(true) closes every connection.
       // https://bun.sh/docs/api/http#server-stop
       this.draining = true;
+      this.liveTraceFeed?.releaseWaiters();
       const deadline = Date.now() + this.options.drainTimeoutMs;
       while (server.pendingRequests > 0 && Date.now() < deadline) {
         await new Promise(resolve => setTimeout(resolve, DRAIN_POLL_INTERVAL_MS));
@@ -451,6 +542,9 @@ export class WireGatewayService {
       this.server = null;
       this.startedAt = null;
       this.draining = false;
+      this.magpieFollower?.stop();
+      this.magpieFollower = null;
+      this.liveTraceFeed = null;
       // After the drain, so in-flight exchanges were assembled; turn ends still in their quiet are dropped.
       this.capturePipeline?.dispose();
       this.capturePipeline = null;
@@ -576,7 +670,7 @@ async function wireStatusReportForCli(config: WireGatewayConfig): Promise<WireSt
   });
   // The settings as this CLI reads them are what a gateway started now would use.
   const memory = memoryStatusOf(paths.wireGatewayRoutes(), config.rewriteSettings, daemonReport?.memory?.stages ?? null);
-  return memory ? { ...report, memory } : report;
+  return { ...report, ...(memory ? { memory } : {}), ...(daemonReport?.ingest ? { ingest: daemonReport.ingest } : {}) };
 }
 
 // ---------------------------------------------------------------------------
@@ -886,7 +980,10 @@ function printWireGatewayUsage(): void {
   writeStderrLine('  consent            print whether raw recording is on');
   writeStderrLine('  consent --record   turn raw recording on (needs a terminal)');
   writeStderrLine('  consent --off      turn raw recording off');
-  writeStderrLine('  clear              delete every raw recording');
+  writeStderrLine('  clear              delete every raw recording (and the live trace\'s bodies)');
+  writeStderrLine('  magpie enable [--backfill] [--dir <path>]');
+  writeStderrLine('                     follow magpie\'s recordings (~/.config/magpie/gateway-conversations) into memory capture');
+  writeStderrLine('  magpie disable     stop following them');
   writeStderrLine('  connect <agent> [--capture wire|native]');
   writeStderrLine('                     point the agent\'s base URLs at the gateway (and start it at login)');
   writeStderrLine('  disconnect <agent> put back what connect changed');
@@ -986,6 +1083,105 @@ export function runWireClearCli(options: { consentFilePath?: string; recordingsD
   writeLine('Deleted every raw wire recording. Saves still in flight are refused.');
   writeLine('Memories that capture already created stay in claude-mem; manage those from the viewer or the memory tools.');
   return 0;
+}
+
+export interface WireMagpieCliOptions {
+  /** Test seams. */
+  settingsPath?: string;
+  statePath?: string;
+  environment?: { env: NodeJS.ProcessEnv; home: string };
+  writeLine?: (line: string) => void;
+  writeErrorLine?: (line: string) => void;
+}
+
+/**
+ * `claude-mem wire magpie enable [--backfill] [--dir <path>]` and `disable`
+ * (plan Phase 13 task 3): find magpie's recordings, say where the follower
+ * starts, and set CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR. The gateway
+ * reads it at start. Returns the exit code.
+ */
+export function runWireMagpieCli(args: string[], options: WireMagpieCliOptions = {}): number {
+  const writeLine = options.writeLine ?? writeStdoutLine;
+  const writeErrorLine = options.writeErrorLine ?? writeStderrLine;
+  const settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
+  const action = args[0];
+  const flags = args.slice(1);
+  const environment = options.environment ?? { env: process.env, home: homedir() };
+
+  if (action === 'enable') {
+    const backfill = flags.includes('--backfill');
+    const dirFlagIndex = flags.indexOf('--dir');
+    const unknownFlag = flags.find((flag, index) => flag !== '--backfill' && flag !== '--dir' && !(dirFlagIndex >= 0 && index === dirFlagIndex + 1));
+    if (unknownFlag !== undefined || (dirFlagIndex >= 0 && !flags[dirFlagIndex + 1])) {
+      writeErrorLine('Usage: wire magpie enable [--backfill] [--dir <magpie gateway-conversations folder>]');
+      return 1;
+    }
+    const directory = resolvePath(dirFlagIndex >= 0 ? flags[dirFlagIndex + 1] : defaultMagpieRecordingsDirectory(environment));
+    if (!existsSync(directory)) {
+      writeErrorLine(`No magpie recordings at ${directory}.`);
+      writeErrorLine('Turn on magpie\'s conversation recording first, or name the folder: claude-mem wire magpie enable --dir <path>');
+      return 1;
+    }
+    assertNotClaudeMemRecordings(directory);
+    const request = magpieFollowerRequest(directory, backfill);
+    // The setting first, then the request: a running follower acts on a request at once, so it is written only once
+    // nothing else can fail; when it cannot be written, the setting goes back to what it was, so a failed enable changes nothing.
+    const settingKey = 'CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR';
+    let previousSetting: unknown;
+    const written = updateSettingsDocument(settingsPath, {}, {}, target => {
+      previousSetting = target[settingKey];
+      target[settingKey] = directory;
+    });
+    if (written.status === 'refused') {
+      writeErrorLine(`Could not write ${settingsPath}: ${written.error instanceof Error ? written.error.message : String(written.error)}`);
+      return 1;
+    }
+    try {
+      requestMagpieFollowerState(request, options.statePath);
+    } catch (error) {
+      writeErrorLine(`Could not write the follower's start request: ${error instanceof Error ? error.message : String(error)}`);
+      if (written.status === 'created') {
+        rmSync(settingsPath, { force: true });
+      } else if (written.status === 'updated') {
+        const restored = updateSettingsDocument(settingsPath, {}, {}, target => {
+          if (previousSetting === undefined) delete target[settingKey];
+          else target[settingKey] = previousSetting;
+        });
+        if (restored.status === 'refused') {
+          writeErrorLine(`…and ${settingsPath} could not be put back (${restored.error instanceof Error ? restored.error.message : String(restored.error)}): set ${settingKey} back to ${JSON.stringify(previousSetting ?? '')} yourself`);
+        }
+      }
+      return 1;
+    }
+    const settleSeconds = FOREIGN_SOURCE_SETTLE_MS / 1000;
+    writeLine(`Following magpie's recordings in ${directory}`);
+    writeLine(backfill
+      ? '  from the start of every recording there (--backfill): what magpie kept becomes memories too'
+      : `  from now on: the ${Object.keys(request.files).length} recording(s) there now are read from their end, unless the follower already follows this folder (then it goes on from where it got to)`);
+    writeLine('  Agents claude-mem already captures (a wire route, or its own integration such as Claude Code\'s hooks) are skipped.');
+    writeLine(`  Each line is read ${settleSeconds} s after it appears. If magpie's OTLP export (with bodies) also reaches claude-mem, it is used instead:`);
+    writeLine(`  a line is skipped when magpie's spans for its agent arrived within ${settleSeconds} s of it, and so is an agent that sends its own GenAI spans.`);
+    writeLine('  magpie records only calls that name a session; its OTLP export covers the rest, and work outside its gateway (MAGPIE_OTEL_SESSIONS=true).');
+    if (environment.env.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR !== undefined && environment.env.CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR !== directory) {
+      writeLine('  Note: CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR is set in this environment and overrides settings.json.');
+    }
+    writeLine('A gateway already following this folder starts there at its next look (within seconds).');
+    writeLine('Otherwise the gateway reads this at start: claude-mem wire restart');
+    return 0;
+  }
+
+  if (action === 'disable' && flags.length === 0) {
+    const written = updateSettingsDocument(settingsPath, { CLAUDE_MEM_WIRE_GATEWAY_MAGPIE_RECORDINGS_DIR: '' });
+    if (written.status === 'refused') {
+      writeErrorLine(`Could not write ${settingsPath}: ${written.error instanceof Error ? written.error.message : String(written.error)}`);
+      return 1;
+    }
+    writeLine('No longer following magpie\'s recordings. A running gateway stops at its next start: claude-mem wire restart');
+    return 0;
+  }
+
+  writeErrorLine('Usage: wire magpie enable [--backfill] [--dir <path>] | disable');
+  return 1;
 }
 
 /** `--name value` pairs after the positional arguments. Throws on a flag with no value. */
@@ -1156,6 +1352,7 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
       if (running && report.gateway.running) writeStdoutLine(`  PID: ${running.pid}`);
       for (const line of rest) writeStdoutLine(line);
       if (report.memory) for (const line of formatWireMemoryStatus(report.memory, report.gateway.origin)) writeStdoutLine(line);
+      if (report.ingest) for (const line of formatWireIngestStatus(report.ingest)) writeStdoutLine(line);
       return;
     }
 
@@ -1192,6 +1389,11 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
 
     case 'clear': {
       process.exitCode = runWireClearCli();
+      return;
+    }
+
+    case 'magpie': {
+      process.exitCode = runWireMagpieCli(argv.slice(1));
       return;
     }
 

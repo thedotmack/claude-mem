@@ -72,6 +72,45 @@ export interface WireStatusReport {
   agents: WireAgentStatus[];
   /** Per route: memory injection, the hidden memory_search tool and Endless Mode (plan Phase 12); absent when routes.json could not be read. */
   memory?: WireMemoryStatus;
+  /** The ways in from outside (plan Phase 13), from the running gateway only. */
+  ingest?: WireIngestStatus;
+}
+
+/** Content-free counters of the push endpoint, the OTLP receiver and the magpie follower since the gateway started. */
+export interface WireIngestStatus {
+  push: { postsAnswered: number; eventsAccepted: number; eventsSkipped: number; postsRefused: number };
+  otlp: { enabled: boolean; postsAnswered: number; postsFailed: number; spansCaptured: number; spansMetadataOnly: number; spansRejected: number; spansSkippedOtherSource: number };
+  magpie: {
+    /** The folder followed; null when the follower is off. */
+    directory: string | null;
+    polls: number;
+    linesRead: number;
+    linesMalformed: number;
+    linesSkippedHelper: number;
+    oversizedLinesSkipped: number;
+    filesRestarted: number;
+    symlinksSkipped: number;
+    statesTakenUp: number;
+    requestsUnreadable: number;
+    exchanges: number;
+    skippedOtherSource: number;
+  };
+}
+
+/** The `wire status` lines for the ways in from outside. */
+export function formatWireIngestStatus(ingest: WireIngestStatus): string[] {
+  const { push, otlp, magpie } = ingest;
+  return [
+    '',
+    'Ways in from outside (since the gateway started):',
+    `  push  POST /v1/claude-mem/events: ${push.eventsAccepted} event(s) accepted, ${push.eventsSkipped} skipped as already accepted, ${push.postsRefused} post(s) refused`,
+    otlp.enabled
+      ? `  otlp  POST /v1/traces: ${otlp.spansCaptured} span(s) captured, ${otlp.spansMetadataOnly} metadata-only, ${otlp.spansRejected} rejected, ${otlp.spansSkippedOtherSource} skipped (agent captured another way), ${otlp.postsFailed} post(s) failed (answered 503, see the log)`
+      : '  otlp  off (CLAUDE_MEM_WIRE_GATEWAY_OTLP=false)',
+    magpie.directory
+      ? `  magpie following ${magpie.directory}: ${magpie.linesRead} line(s) read, ${magpie.exchanges} captured, ${magpie.skippedOtherSource} skipped (agent captured another way), ${magpie.linesMalformed} malformed${magpie.requestsUnreadable > 0 ? `, ${magpie.requestsUnreadable} unreadable wire magpie enable request(s) (see the log)` : ''}`
+      : '  magpie off (claude-mem wire magpie enable)',
+  ];
 }
 
 export interface WireAgentStatusInputs {
