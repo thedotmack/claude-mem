@@ -147,7 +147,10 @@ export function defaultAutoRefresh(ledgerDir: string, settingsPath = USER_SETTIN
     dir: ledgerDir,
     openDatabase,
     enabled: () => SettingsDefaultsManager.loadFromFile(settingsPath, true, { readOnly: true }).CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH !== 'false',
-    runJob: ({ needs, reason }) => runAgentTask(buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase })),
+    runJob: async ({ needs, reason }) => {
+      const task = buildRefreshTask({ needs, reason, dataDir: DATA_DIR, ledgerDir, pluginRoot: getPackageRoot(), openDatabase });
+      return { ...(await runAgentTask(task)), steps: task.steps };
+    },
     log: (level, message, data) => (level === 'info' ? logger.info : logger.warn).call(logger, 'WORKER', message, data),
   });
 }

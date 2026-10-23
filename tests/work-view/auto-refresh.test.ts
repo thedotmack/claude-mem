@@ -58,9 +58,10 @@ describe('automatic refresh scheduler', () => {
       expect(await worker.runNow({ reason: 'setup-scan' })).toBe('running');
       expect(jobs).toHaveLength(1);
       expect(worker.status().state).toBe('running');
-      finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null });
+      const steps = [{ step: 'review', agent: 'claude-code', startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString(), groups: 1 }];
+      finish.resolve({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, steps });
       expect(await first).toBe('ok');
-      expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString() });
+      expect(worker.status()).toMatchObject({ state: 'ok', agent: 'claude-code', result: 'Reviewed 1 request.', error: null, startedAt: new Date(NOW).toISOString(), finishedAt: new Date(now).toISOString(), steps });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -202,6 +203,9 @@ describe('parallel reviews', () => {
       expect(await task.run(ask, 'claude-code')).toBe('10 requests reviewed, story written.');
       expect(lastPrompt).toMatch(/Search claude-mem memory with its MCP tools/);
       expect(most).toBe(2);
+      // refresh.json's run record gets one timing per step and review batch.
+      expect(task.steps.map(timing => [timing.step, timing.agent, timing.groups])).toEqual([['review', 'claude-code', 8], ['review', 'claude-code', 2], ['story', 'claude-code', undefined]]);
+      expect(task.steps.every(timing => timing.startedAt === new Date(NOW).toISOString() && timing.finishedAt === timing.startedAt)).toBe(true);
       expect(Object.keys(readLedger(dir).progress)).toHaveLength(10);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
