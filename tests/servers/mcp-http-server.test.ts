@@ -245,6 +245,30 @@ describe('mcp http server', () => {
     expect(res.status).toBe(404);
   });
 
+  it('answers an oversized body with 413 instead of dropping the connection', async () => {
+    const res = await raw(open, { body: 'x'.repeat(5 * 1024 * 1024 + 1) });
+    expect(res.status).toBe(413);
+    expect(parseRpc(res.body).error.message).toContain('too large');
+  });
+
+  it('answers malformed JSON with 400 and a JSON-RPC parse error', async () => {
+    const res = await new Promise<{ status: number; body: string }>((resolveResponse, reject) => {
+      const req = request(
+        { host: '127.0.0.1', port: open.port, path: '/mcp', method: 'POST', headers: JSON_HEADERS },
+        (r) => {
+          let body = '';
+          r.setEncoding('utf8');
+          r.on('data', (chunk) => { body += chunk; });
+          r.on('end', () => resolveResponse({ status: r.statusCode ?? 0, body }));
+        },
+      );
+      req.on('error', reject);
+      req.end('{not json');
+    });
+    expect(res.status).toBe(400);
+    expect(parseRpc(res.body).error.code).toBe(-32700);
+  });
+
   it('refuses a new session with a clear 503 once the session cap is reached', async () => {
     expect((await raw(capped, { body: INITIALIZE })).status).toBe(200);
     expect((await raw(capped, { body: INITIALIZE })).status).toBe(200);
