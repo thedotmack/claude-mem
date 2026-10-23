@@ -11,7 +11,7 @@
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
 //   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
 //   bun request-groups.mjs record-progress <file|-> persist one progress review
-//   bun request-groups.mjs story-input              reviews changed since the last story (all without one)
+//   bun request-groups.mjs story-input              reviews whose facts changed since the last story (all without one)
 //   bun request-groups.mjs record-story <file|->    persist the build story and preferences
 //   bun request-groups.mjs align-input              owner goals + the groups still to align
 //   bun request-groups.mjs record-alignment <file|-> persist which goals each group serves
@@ -330,6 +330,14 @@ export function validateProgress(entry, knownGroups) {
   };
 }
 
+/** The parts of a review the build story and learned preferences are told from. */
+function storyFacts(review) {
+  return {
+    state: review.state, percent: review.percent, startedAt: review.startedAt ?? null, shippedAt: review.shippedAt ?? null,
+    milestones: review.milestones ?? [], preferences: review.preferences ?? [], outcome: review.outcome ?? null,
+  };
+}
+
 /** Add one reading: deduplicated by `at`, oldest first, the newest MAX_READINGS kept. */
 export function appendReading(previous, reading) {
   const byAt = new Map((previous?.readings ?? []).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
@@ -415,15 +423,29 @@ export function goalsAddedSince(alignment, goalKeys) {
   return goalKeys.filter((goal) => !seen.has(goal));
 }
 
+/** One request as the alignment step sees it (align-input's group record). */
+function alignmentRecord(ledger, groupId) {
+  const group = ledger.groups.groups[groupId], review = ledger.progress[groupId];
+  return { groupId, title: group.title, firstAsk: group.anchorAsk?.text?.slice(0, 400) ?? null, state: review?.state ?? null, percent: review?.percent ?? null, summary: review?.summary ?? null };
+}
+
+/** What an alignment decision was made on: the request as align-input showed it, and its conversations. */
+function alignmentBasis(ledger, groupId) {
+  const conversations = Object.entries(ledger.groups.conversations).filter(([, id]) => id === groupId).map(([key]) => key).sort();
+  return createHash('sha256').update(JSON.stringify({ ...alignmentRecord(ledger, groupId), conversations })).digest('hex').slice(0, 16);
+}
+
 /** Groups the alignment step still has to decide: groups it has not seen,
- * groups linked to a goal that is gone, and every group when a goal was added
- * (any group may serve it). With no goals there is nothing to align to. */
+ * groups that changed since their decision, groups linked to a goal that is
+ * gone, and every group when a goal was added (any group may serve it). With
+ * no goals there is nothing to align to. Files from before bases were recorded count as current. */
 function alignmentDue(ledger, goals) {
   if (!goals.goals.length) return [];
   const current = goals.goals.map((goal) => goal.goal);
-  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []);
+  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []), basis = ledger.alignment?.basis;
   if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
-  return Object.keys(ledger.groups.groups).filter((id) => links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id));
+  const changed = (id) => basis != null && basis[id] !== alignmentBasis(ledger, id);
+  return Object.keys(ledger.groups.groups).filter((id) => changed(id) || (links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id)));
 }
 
 /** What an automatic refresh would do now; nothing to do means no agent runs.
@@ -620,8 +642,8 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const reviewed = validateProgress(readInput(args[0] ?? '-'), ledger.groups.groups);
     const checkedAt = iso(now);
     const previous = ledger.progress[reviewed.groupId];
-    // The story is retold only from reviews whose state or percent moved.
-    const unchanged = previous && previous.state === reviewed.state && previous.percent === reviewed.percent;
+    // The story is retold only from reviews whose facts moved; reworded prose and review timestamps are not news.
+    const unchanged = previous && JSON.stringify(storyFacts(previous)) === JSON.stringify(storyFacts(reviewed));
     const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join(dir, 'progress', `${entry.groupId}.json`), entry);
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
@@ -629,7 +651,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
   if (command === 'story-input') {
     const { groups, progress, story } = readLedger(dir);
     const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
-    // With a previous story, only reviews whose state or percent changed after it was written.
+    // With a previous story, only reviews whose facts changed after it was written.
     const writtenAt = Date.parse(story?.writtenAt ?? '');
     const update = Number.isFinite(writtenAt);
     return print({ groups: Object.keys(groups.groups).length, update, reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
@@ -643,10 +665,7 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const ledger = readLedger(dir);
     const goals = readGoals(db());
     const due = alignmentDue(ledger, goals);
-    const groups = due.map((groupId) => {
-      const group = ledger.groups.groups[groupId], review = ledger.progress[groupId];
-      return { groupId, title: group.title, firstAsk: group.anchorAsk?.text?.slice(0, 400) ?? null, state: review?.state ?? null, percent: review?.percent ?? null, summary: review?.summary ?? null };
-    });
+    const groups = due.map((groupId) => alignmentRecord(ledger, groupId));
     const previousLinks = Object.fromEntries(due.filter((id) => ledger.alignment?.links?.[id]).map((id) => [id, ledger.alignment.links[id]]));
     return print({ goals, groups, previous: ledger.alignment ? { alignedAt: ledger.alignment.alignedAt ?? null, links: previousLinks } : null });
   }
@@ -663,6 +682,8 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
     const alignment = {
       links: { ...Object.fromEntries(Object.entries(previous.links ?? {}).filter(([id]) => kept(id))), ...decided.links },
       unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
+      // Each decided group's basis, so a later change to the request makes it due again.
+      basis: { ...Object.fromEntries(Object.entries(previous.basis ?? {}).filter(([id]) => kept(id))), ...Object.fromEntries([...decidedIds].map((id) => [id, alignmentBasis(ledger, id)])) },
       goals: goals.goals.map((goal) => goal.goal), alignedAt: iso(now),
     };
     writeJsonAtomic(join(dir, 'alignment.json'), alignment);

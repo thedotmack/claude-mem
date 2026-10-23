@@ -96,7 +96,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 Run this yourself after the reviews (it needs the reviews' summaries):
 
-1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
+1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, groups whose request changed since their decision, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
 2. For each listed group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
 3. Each link needs `evidence` (≤300 chars): name what in the request advances the goal, quoting the goal's or the request's words.
 4. Record it. Every listed group must appear in `links` or `unaligned`; groups it did not list keep their earlier links. The command validates, so fix and retry if it rejects:
@@ -111,7 +111,7 @@ My Work shows the linked goal on each card, "No goal" for an unaligned group, an
 
 ## 4. Write the build story
 
-Run `$CLI story-input`. Without a previous story it returns every review; with one (`update: true`) it returns only the reviews whose state or percent changed since that story was written. If it lists no reviews, skip this step: the story still holds. When updating, keep the previous story's chapters and wording where they still hold and change only what the listed reviews move. Write:
+Run `$CLI story-input`. Without a previous story it returns every review; with one (`update: true`) it returns only the reviews whose facts (state, percent, dates, milestones, preferences or outcome) changed since that story was written. If it lists no reviews, skip this step: the story still holds. When updating, keep the previous story's chapters and wording where they still hold and change only what the listed reviews move. Write:
 
 - `narrative` (markdown, ≤12000 chars, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity (My Work shows it as the recap), then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns.
 - `preferences` (≤30): merge the per-request preferences into distinct, actionable statements of how the owner likes to work with agents. `supportCount` is how many requests showed it; keep up to 3 verbatim quotes with dates. Drop one-off remarks.

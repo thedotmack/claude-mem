@@ -263,7 +263,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         done.push(`${aligned.aligned} linked to goals`);
       }
 
-      // Only reviews whose state or percent moved since the last story; none means the story still holds.
+      // Only reviews whose facts (state, percent, dates, milestones, preferences, outcome) moved since the last story; none means the story still holds.
       const storyInput = cli(['story-input']);
       if (storyInput.reviews.length) {
         await step('story', [
