@@ -16,7 +16,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { CWD_HEADER, startMcpHttpServer, type CwdResolver, type McpHttpHandle } from '../../src/servers/mcp-http.js';
 import { getRequestCwd, runWithCwd } from '../../src/servers/request-context.js';
-import type { WorkerOriginPolicy } from '../../src/services/worker/http/middleware.js';
+import type { WorkerOriginPolicy } from '../../src/services/worker/http/origin-policy.js';
 
 const temp = mkdtempSync(join(tmpdir(), 'cm-http-'));
 const projectA = join(temp, 'project-a');

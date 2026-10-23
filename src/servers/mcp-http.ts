@@ -4,19 +4,35 @@
 // from one process: every MCP session gets its own Server instance and a working
 // directory (the project), so the tools that scope by project still work.
 //
+// Loopback only. The server binds to 127.0.0.1, ::1 or localhost and refuses any
+// other host: it exposes every local tool, work_state_write included, and serving
+// that to a network is a product decision this transport does not make.
+//
 // Where a session's working directory comes from, highest priority first:
 //   1. the `X-Claude-Mem-Cwd` request header (Claude Code: `${CLAUDE_PROJECT_DIR}`),
 //   2. the MCP `roots/list` answer of the client (opencode answers with the project),
 //   3. the server process' own cwd.
+//
+// Trust model for that directory: it becomes the sandbox root of smart_outline,
+// smart_unfold and smart_search (resolveWithinWorkspace). Over stdio the root is the
+// cwd the client started the server in, so the client already picks it; over HTTP
+// the client names it per request instead. Either way the client is a local process
+// of this OS user (loopback peer, loopback Host, no foreign browser Origin), so it can
+// name no directory it could not already read. The header must be an absolute path
+// to an existing directory, and an unusable one is refused (400) rather than
+// silently replaced by the session or process cwd.
 import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { Request as ExpressRequest } from 'express';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest, RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { isLocalhost } from '../server/middleware/request-auth-helpers.js';
+import { isOwnPageOrigin, type WorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 import { logger } from '../utils/logger.js';
 
 export const CWD_HEADER = 'x-claude-mem-cwd';
@@ -24,23 +40,39 @@ export const MCP_HTTP_PATH = '/mcp';
 export const DEFAULT_HTTP_HOST = '127.0.0.1';
 export const DEFAULT_HTTP_PORT = 37790;
 
-const MAX_BODY_BYTES = 4 * 1024 * 1024;
+// The same cap as the worker's JSON body limit (express.json({ limit: '5mb' }) in
+// src/services/worker/http/middleware.ts): tool arguments are forwarded to the worker,
+// so a larger request could never succeed there anyway.
+const MAX_BODY_BYTES = 5 * 1024 * 1024;
+// Reaps sessions whose client went away without a DELETE (abandoned-session memory
+// protection). Reaping a live but idle session is cheap: the MCP Streamable HTTP spec
+// requires a client that gets 404 for its session id to initialize a new one.
 const SESSION_IDLE_MS = 60 * 60 * 1000;
+// How often idle sessions are looked for. It only decides how late past SESSION_IDLE_MS
+// a session goes (at most 5 of 60 minutes); each sweep is a walk over at most
+// MAX_SESSIONS entries.
 const SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+// roots/list blocks the client's first tool call. A client that has not opened its
+// standalone SSE stream cannot answer, and the SDK's default request timeout (60 s)
+// would stall that call a minute. A client that can answer is a local process on
+// loopback.
 const ROOTS_TIMEOUT_MS = 2000;
+// Each failed roots/list attempt can add ROOTS_TIMEOUT_MS to a tool call, so a client
+// that never answers costs at most 6 s in total before the session settles on the
+// process cwd (logged).
 const MAX_ROOTS_ATTEMPTS = 3;
-const LOOPBACK_HOSTS = new Set(['127.0.0.1', 'localhost', '::1']);
+// Abuse protection: every session holds an MCP Server and transport in memory until
+// it is closed or swept. A local client stuck in an initialize loop would otherwise
+// grow the process for an hour. Real use is one session per open editor or agent on
+// this machine, far below this.
+export const MAX_SESSIONS = 256;
+
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '::1'];
 
 export interface McpHttpOptions {
+  /** 127.0.0.1, ::1 or localhost; anything else is refused. */
   host: string;
   port: number;
-  /** Bearer token required on every request. Mandatory for a non-loopback host. */
-  token?: string;
-  /**
-   * Extra Host header names to accept besides loopback and the bind host (DNS-rebinding
-   * protection). A server bound to 0.0.0.0 or :: needs the address its clients use here.
-   */
-  allowedHosts?: string[];
 }
 
 /** Resolves the project directory for one tool call from the request that carries it. */
@@ -48,20 +80,20 @@ export type CwdResolver = (extra?: {
   requestInfo?: { headers?: Record<string, string | string[] | undefined> };
 }) => string;
 
-const HOST_NAME_PATTERN = /^[a-z0-9._:-]+$/;
-
-/** Lower-case host name or address without brackets or port suffix handling; throws on junk. */
-function normalizeAllowedHost(raw: string): string | null {
-  const value = raw.trim().toLowerCase().replace(/^\[|\]$/g, '');
-  if (value.length === 0) return null;
-  if (!HOST_NAME_PATTERN.test(value)) throw new Error(`Invalid MCP HTTP allowed host: ${raw}`);
-  return value;
+/** The loopback host name, without IPv6 brackets; throws for any other host. */
+function loopbackHostOrThrow(raw: string): string {
+  const host = raw.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
+  if (!LOOPBACK_HOSTS.includes(host)) {
+    throw new Error(
+      `Refusing to listen on ${raw}: the MCP HTTP transport binds to loopback only (127.0.0.1, ::1 or localhost).`,
+    );
+  }
+  return host;
 }
 
 /**
  * Read the HTTP options from the command line and environment.
  * Returns null when HTTP mode was not requested (the server then speaks stdio).
- * The token is read from the environment only, so it never shows in a process list.
  */
 export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): McpHttpOptions | null {
   const flag = (name: string): string | undefined => {
@@ -71,31 +103,16 @@ export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): 
     }
     return undefined;
   };
-  const flagAll = (name: string): string[] => {
-    const values: string[] = [];
-    for (let i = 0; i < argv.length; i++) {
-      if (argv[i] === `--${name}` && argv[i + 1] !== undefined) values.push(argv[i + 1]);
-      else if (argv[i].startsWith(`--${name}=`)) values.push(argv[i].slice(name.length + 3));
-    }
-    return values;
-  };
   const requested = argv.includes('--http') || env.CLAUDE_MEM_MCP_HTTP === '1';
   if (!requested) return null;
 
-  const host = flag('host') ?? env.CLAUDE_MEM_MCP_HTTP_HOST ?? DEFAULT_HTTP_HOST;
+  const host = loopbackHostOrThrow(flag('host') ?? env.CLAUDE_MEM_MCP_HTTP_HOST ?? DEFAULT_HTTP_HOST);
   const portText = flag('port') ?? env.CLAUDE_MEM_MCP_HTTP_PORT ?? String(DEFAULT_HTTP_PORT);
   const port = Number(portText);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
     throw new Error(`Invalid MCP HTTP port: ${portText}`);
   }
-  const token = env.CLAUDE_MEM_MCP_HTTP_TOKEN?.trim() || undefined;
-  if (!LOOPBACK_HOSTS.has(host) && !token) {
-    throw new Error(`Refusing to listen on ${host} without CLAUDE_MEM_MCP_HTTP_TOKEN`);
-  }
-  const extraHosts = [...flagAll('allowed-host'), ...(env.CLAUDE_MEM_MCP_HTTP_ALLOWED_HOSTS ?? '').split(',')]
-    .map(normalizeAllowedHost)
-    .filter((h): h is string => h !== null);
-  return { host, port, token, ...(extraHosts.length > 0 ? { allowedHosts: extraHosts } : {}) };
+  return { host, port };
 }
 
 /** The project directory a request names in its X-Claude-Mem-Cwd header, if usable. */
@@ -136,21 +153,11 @@ export function cwdFromRoots(roots: ReadonlyArray<{ uri: string }> | undefined):
   return null;
 }
 
-/** Host header values we answer to (DNS rebinding protection): loopback, the bind host and any extras. */
-export function allowedHosts(bindHost: string, port: number, extra: readonly string[] = []): string[] {
-  const names = new Set([...LOOPBACK_HOSTS, bindHost, ...extra]);
-  const bare = [...names].map((h) => (h.includes(':') ? `[${h}]` : h));
-  return bare.flatMap((h) => [h, `${h}:${port}`]);
-}
-
-/** Constant-time check of an `Authorization: Bearer <token>` header. */
-export function isAuthorized(authorization: string | undefined, token: string | undefined): boolean {
-  if (!token) return true;
-  const match = /^Bearer\s+(.+)$/i.exec(authorization ?? '');
-  if (!match) return false;
-  const given = Buffer.from(match[1].trim());
-  const expected = Buffer.from(token);
-  return given.length === expected.length && timingSafeEqual(given, expected);
+/** Host header values we answer to (DNS rebinding protection): the loopback names, with and without the port. */
+export function allowedHosts(port: number): string[] {
+  return LOOPBACK_HOSTS
+    .map((h) => (h.includes(':') ? `[${h}]` : h))
+    .flatMap((h) => [h, `${h}:${port}`]);
 }
 
 type CwdSource = 'header' | 'roots' | 'default';
@@ -174,14 +181,26 @@ export interface McpHttpHandle {
 }
 
 export interface StartMcpHttpOptions extends McpHttpOptions {
-  /** Build one MCP Server for one session; `getCwd` returns that session's project directory. */
+  /** Build one MCP Server for one session; `resolveCwd` returns the project directory of a call. */
   createServer: (resolveCwd: CwdResolver) => Server;
+  /**
+   * The worker's browser-origin policy (buildWorkerOriginPolicy). A request with an Origin
+   * header passes only if isOwnPageOrigin accepts it, so CLAUDE_MEM_ALLOWED_ORIGINS also
+   * governs this server. Local MCP clients send no Origin.
+   */
+  originPolicy: WorkerOriginPolicy;
+  /** Defaults to MAX_SESSIONS; tests lower it. */
+  maxSessions?: number;
 }
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
   if (res.headersSent) return;
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify({ jsonrpc: '2.0', error: { code, message }, id: null }));
+}
+
+function firstHeader(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value;
 }
 
 function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -209,12 +228,16 @@ function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<McpHttpHandle> {
+  const bindHost = loopbackHostOrThrow(options.host);
+  const maxSessions = options.maxSessions ?? MAX_SESSIONS;
   const sessions = new Map<string, Session>();
+  // Sessions between createSession and the SDK's onsessioninitialized, so concurrent
+  // initialize requests cannot slip past the cap.
+  let initializing = 0;
   const defaultCwd = process.cwd();
 
   const applyHeaderCwd = (session: Session, req: IncomingMessage): void => {
-    const header = req.headers[CWD_HEADER];
-    const cwd = normalizeCwd(Array.isArray(header) ? header[0] : header);
+    const cwd = normalizeCwd(firstHeader(req.headers[CWD_HEADER]));
     if (cwd) {
       session.cwd = cwd;
       session.cwdSource = 'header';
@@ -226,7 +249,6 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     if (!session.server.getClientCapabilities()?.roots) return;
     session.rootsAttempts++;
     try {
-      // A client that has not opened its standalone SSE stream cannot answer; do not wait a minute for it.
       const { roots } = await session.server.listRoots(undefined, { timeout: ROOTS_TIMEOUT_MS });
       const cwd = cwdFromRoots(roots);
       session.rootsStale = false;
@@ -236,7 +258,10 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
         session.cwdSource = 'roots';
       }
     } catch (error) {
-      logger.warn('SYSTEM', 'MCP HTTP: roots/list failed, keeping default cwd', undefined,
+      const givingUp = session.rootsAttempts >= MAX_ROOTS_ATTEMPTS;
+      logger.warn('SYSTEM', givingUp
+        ? `MCP HTTP: roots/list failed ${MAX_ROOTS_ATTEMPTS} times, this session stays on ${session.cwd}`
+        : 'MCP HTTP: roots/list failed, keeping the current cwd', { cwd: session.cwd },
         error instanceof Error ? error : new Error(String(error)));
     }
   };
@@ -271,9 +296,10 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       onsessioninitialized: (sessionId) => {
         sessions.set(sessionId, session);
       },
+      // Kept as a second layer behind the Host check in `handle`. The SDK's Origin check is
+      // not used: it only runs when allowedOrigins is non-empty, so `handle` checks Origin.
       enableDnsRebindingProtection: true,
-      allowedHosts: allowedHosts(options.host, actualPort, options.allowedHosts),
-      allowedOrigins: [],
+      allowedHosts: allowedHosts(actualPort),
     });
     // A request names its own directory in its own header. Reading it from the request, not from
     // shared session state, keeps overlapping requests of one session apart; the session cwd
@@ -290,25 +316,49 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
     return session;
   };
 
+  const refuse = (req: IncomingMessage, res: ServerResponse, status: number, message: string, context: Record<string, unknown>): void => {
+    logger.warn('SECURITY', `MCP HTTP: ${message}`, { ...context, method: req.method, path: req.url });
+    sendJsonRpcError(res, status, -32000, message);
+  };
+
   const handle = async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
+    // Bound to loopback, so every peer should be local; checked anyway so a non-local
+    // peer can never reach the tools, whatever the bind.
+    if (!isLocalhost(req as unknown as ExpressRequest)) {
+      refuse(req, res, 403, 'Forbidden: only loopback clients may connect', { peer: req.socket.remoteAddress });
+      return;
+    }
+    // DNS rebinding: a page whose name was repointed at 127.0.0.1 still sends its own Host.
+    const host = (req.headers.host ?? '').trim().toLowerCase();
+    if (!allowedHosts(actualPort).includes(host)) {
+      refuse(req, res, 403, `Forbidden: Host "${host}" is not a loopback name`, { host });
+      return;
+    }
+    // A browser page other than an allowlisted one must not drive the tools (CSRF).
+    const origin = firstHeader(req.headers.origin);
+    if (origin !== undefined && !isOwnPageOrigin(origin, req.headers.host, options.originPolicy)) {
+      refuse(req, res, 403, `Forbidden: Origin "${origin}" is not allowed (add it to CLAUDE_MEM_ALLOWED_ORIGINS to allow it)`, { origin });
+      return;
+    }
+
     const url = new URL(req.url ?? '/', 'http://localhost');
     if (url.pathname === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', sessions: sessions.size }));
+      res.end(JSON.stringify({ status: 'ok' }));
       return;
     }
     if (url.pathname !== MCP_HTTP_PATH) {
       res.writeHead(404).end();
       return;
     }
-    if (!isAuthorized(req.headers.authorization, options.token)) {
-      res.setHeader('WWW-Authenticate', 'Bearer');
-      sendJsonRpcError(res, 401, -32001, 'Unauthorized');
+
+    const cwdHeader = firstHeader(req.headers[CWD_HEADER]);
+    if (cwdHeader !== undefined && normalizeCwd(cwdHeader) === null) {
+      refuse(req, res, 400, `Bad Request: ${CWD_HEADER} must be an absolute path to an existing directory`, { cwd: cwdHeader });
       return;
     }
 
-    const sessionIdHeader = req.headers['mcp-session-id'];
-    const sessionId = Array.isArray(sessionIdHeader) ? sessionIdHeader[0] : sessionIdHeader;
+    const sessionId = firstHeader(req.headers['mcp-session-id']);
 
     if (sessionId) {
       const session = sessions.get(sessionId);
@@ -333,9 +383,23 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       sendJsonRpcError(res, 400, -32000, 'Bad Request: no valid session; send initialize first');
       return;
     }
-    const session = createSession(req);
-    await session.server.connect(session.transport);
-    await session.transport.handleRequest(req, res, body);
+    if (sessions.size + initializing >= maxSessions) {
+      logger.error('SYSTEM', `MCP HTTP: session limit reached (${maxSessions} open), refusing a new session`, {
+        open: sessions.size,
+        initializing,
+      });
+      sendJsonRpcError(res, 503, -32000,
+        `MCP HTTP session limit reached (${maxSessions} open). Close idle MCP clients or restart the server.`);
+      return;
+    }
+    initializing++;
+    try {
+      const session = createSession(req);
+      await session.server.connect(session.transport);
+      await session.transport.handleRequest(req, res, body);
+    } finally {
+      initializing--;
+    }
   };
 
   let actualPort = options.port;
@@ -349,7 +413,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
 
   await new Promise<void>((resolveListen, rejectListen) => {
     httpServer.once('error', rejectListen);
-    httpServer.listen(options.port, options.host, () => {
+    httpServer.listen(options.port, bindHost, () => {
       httpServer.off('error', rejectListen);
       resolveListen();
     });

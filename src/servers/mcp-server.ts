@@ -60,6 +60,7 @@ import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/pr
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
 import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
+import { buildWorkerOriginPolicy } from '../services/worker/http/origin-policy.js';
 
 /**
  * The checkout of the running tool call, resolved once per directory. Over stdio that is
@@ -1243,8 +1244,6 @@ function createMcpServer(getCwd?: CwdResolver): Server {
   return server;
 }
 
-const server = createMcpServer();
-
 const HEARTBEAT_INTERVAL_MS = 30_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let isCleaningUp = false;
@@ -1356,6 +1355,8 @@ function scheduleWorkerAutostart(): void {
 }
 
 async function main() {
+  // Built here, not at module load, so HTTP mode never creates this unused stdio server.
+  const server = createMcpServer();
   const transport = new StdioServerTransport();
   attachStdioLifecycle();
   await server.connect(transport);
@@ -1373,7 +1374,11 @@ async function main() {
  * and no parent heartbeat, since no single client owns this process.
  */
 async function mainHttp(options: McpHttpOptions) {
-  const handle = await startMcpHttpServer({ ...options, createServer: createMcpServer });
+  const handle = await startMcpHttpServer({
+    ...options,
+    originPolicy: buildWorkerOriginPolicy(loadFromFileOnce()),
+    createServer: createMcpServer,
+  });
   logger.info('SYSTEM', 'Claude-mem MCP HTTP server started', { host: options.host, port: handle.port });
 
   checkMarketplaceMarker();
@@ -1381,8 +1386,23 @@ async function mainHttp(options: McpHttpOptions) {
   scheduleWorkerAutostart();
 }
 
-const httpOptions = parseHttpArgs(process.argv.slice(2), process.env);
-(httpOptions ? mainHttp(httpOptions) : main()).catch((error) => {
+// stdio keeps its historical exit code 0 on a fatal error. HTTP mode, including a
+// refused --host or --port, exits 1 so a process manager reports the failure.
+let fatalExitCode = 0;
+async function start(): Promise<void> {
+  let httpOptions: McpHttpOptions | null;
+  try {
+    httpOptions = parseHttpArgs(process.argv.slice(2), process.env);
+  } catch (error) {
+    fatalExitCode = 1; // parseHttpArgs only throws when HTTP mode was requested.
+    throw error;
+  }
+  if (!httpOptions) return main();
+  fatalExitCode = 1;
+  return mainHttp(httpOptions);
+}
+
+start().catch((error) => {
   logger.error('SYSTEM', 'Fatal error', undefined, error);
-  process.exit(httpOptions ? 1 : 0);
+  process.exit(fatalExitCode);
 });
