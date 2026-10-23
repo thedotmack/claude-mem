@@ -262,7 +262,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
         for (let attempt = 0; attempt < 2 && shows.length; attempt++) {
           const text = await ask([
             requestProgress, '---', readOnly,
-            `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes. Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
+            `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only.` : '',
           ].join('\n\n'));
           let reviews: Array<{ groupId?: string }> = [];

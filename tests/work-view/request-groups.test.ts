@@ -304,6 +304,30 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+  it('show: a re-review with the same conversations amends the previous review from the new asks only', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    const group = groupIdFor(key('a'));
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    const first = run(['show', group]);
+    expect(first).toMatchObject({ mode: 'full', amendSince: null });
+    run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Under way.', reviewBasis: first.reviewBasis })]);
+    database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(1, 2, 'Now add the release date to each card', NOW + DAY);
+    const amend = run(['show', group], NOW + 2 * DAY);
+    expect(amend).toMatchObject({ mode: 'amend', amendSince: new Date(NOW).toISOString(), previousReview: { percent: 40 } });
+    expect(amend.conversations[0].asks.map((ask: { text: string }) => ask.text)).toEqual(['Now add the release date to each card']);
+    // A merged-in conversation changes what was reviewed: a full review again.
+    run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
+    const full = run(['show', group], NOW + 2 * DAY);
+    expect(full.mode).toBe('full');
+    expect(full.conversations.find((conversation: { conversationKey: string }) => conversation.conversationKey === key('a')).asks).toHaveLength(2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
   it('story-input lists every review without a story, then only reviews whose state or percent changed', () => {
   const dir = ledgerDir();
   try {

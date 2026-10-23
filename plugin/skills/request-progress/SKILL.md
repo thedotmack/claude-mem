@@ -77,7 +77,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 > Review the progress of these overall requests from claude-mem memory. For EACH groupId:
 >
-> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), work lists, dates, any previous review and a `reviewBasis`.
+> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), work lists, dates, any previous review and a `reviewBasis`. When `mode` is `"amend"`, the group has the same conversations as its `previousReview`, and `asks` holds only the asks after `amendSince`: start from `previousReview`, search memory only for what happened after `amendSince`, and change only what that new evidence moves (state, percent, dates, summary, new milestones, outcome, preferences). Keep the rest of the previous review as it is. When `mode` is `"full"` (no previous review, or the conversations changed), review from scratch.
 > 2. Search memory (`mem_search`, `timeline`, `get_observations`) for the outcome: merged PRs, releases, deploys, work-state items marked done, the owner confirming or rejecting the result, or work that stopped. Search for the named artifacts in the asks, not generic words. Fetch the observations you rely on.
 > 3. Decide from the evidence only:
 >    - `state`: `shipped` (merged and released or deployed, or the owner confirmed it done) | `in-progress` | `stalled` (no activity for 3+ days and not finished) | `abandoned` (explicitly dropped or replaced) | `unknown` (memory has too little).

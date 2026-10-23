@@ -512,7 +512,11 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
       const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true }).map((candidate) => [candidate.conversationKey, candidate]));
-      return print({ ...groupDetails(args[0], ledger, candidates), reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
+      const details = groupDetails(args[0], ledger, candidates);
+      const previous = details.previousReview;
+      const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
+      const conversations = amendSince ? details.conversations.map((conversation) => conversation.asks ? { ...conversation, asks: conversation.asks.filter((ask) => Date.parse(ask.at) > Date.parse(amendSince)) } : conversation) : details.conversations;
+      return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());
     const limit = option(args, "limit", 48);

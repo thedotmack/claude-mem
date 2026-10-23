@@ -7,7 +7,7 @@
 //                                                   conversations + deterministic links
 //   bun request-groups.mjs apply <file|->            persist group decisions
 //   bun request-groups.mjs pending [--days 14] [--limit 48]   groups needing a progress review
-//   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates
+//   bun request-groups.mjs show <groupId>           one group's asks, work lists and dates (only new asks when amending)
 //   bun request-groups.mjs record-progress <file|-> persist one progress review
 //   bun request-groups.mjs story-input              reviews changed since the last story (all without one)
 //   bun request-groups.mjs record-story <file|->    persist the build story and preferences
@@ -476,8 +476,16 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
       const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true }).map((candidate) => [candidate.conversationKey, candidate]));
+      const details = groupDetails(args[0], ledger, candidates);
+      // Same conversations as the previous review: the reviewer amends it from what happened since.
+      // A membership change (a merge, a split) needs a full review.
+      const previous = details.previousReview;
+      const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
+      const conversations = amendSince
+        ? details.conversations.map((conversation) => conversation.asks ? { ...conversation, asks: conversation.asks.filter((ask) => Date.parse(ask.at) > Date.parse(amendSince)) } : conversation)
+        : details.conversations;
       // The reviewer passes reviewBasis back to record-progress unchanged.
-      return print({ ...groupDetails(args[0], ledger, candidates), reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
+      return print({ ...details, conversations, mode: amendSince ? 'amend' : 'full', amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());
     const limit = option(args, 'limit', 48);
