@@ -30,7 +30,8 @@ import { captureEvent } from '../../../telemetry/telemetry.js';
 import { recordWorkStatePrompt, recordWorkStatePrivacy } from '../../../telemetry/work-state.js';
 import { firstPartySkillFromSlashPrompt } from '../../../telemetry/skill-id.js';
 import { SessionCompletionHandler } from '../../session/SessionCompletionHandler.js';
-import { isSimpleTierMessage } from '../../session/tier-routing.js';
+import { isSimpleTierMessage, namesSameClaudeModel } from '../../session/tier-routing.js';
+import { resolveTierAlias } from '../../model-aliases.js';
 import { USER_PROMPT_DEDUPE_WINDOW_MS } from '../../../../shared/user-prompts.js';
 import {
   CLAUDE_CLI_SETUP_RECHECK_COOLDOWN_MS,
@@ -1095,7 +1096,13 @@ export class SessionRoutes extends BaseRouteHandler {
       const simpleModel = settings.CLAUDE_MEM_TIER_SIMPLE_MODEL;
       if (simpleModel) {
         session.modelOverride = simpleModel;
-        session.simpleTierRun = true;
+        // Hold the run to the simple tier only when that tier is a different
+        // model from the one a non-simple message would get; otherwise ending
+        // the run at the next Bash/Edit/summarize only resends the prompt.
+        session.simpleTierRun = !namesSameClaudeModel(
+          resolveTierAlias(simpleModel, settings),
+          resolveTierAlias(settings.CLAUDE_MEM_MODEL, settings),
+        );
         logger.debug('SESSION', `Tier routing: simple model`, {
           sessionId: session.sessionDbId, model: simpleModel
         });

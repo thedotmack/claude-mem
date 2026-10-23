@@ -60,6 +60,7 @@ describe('tier routing holds for the whole generator (#4963)', () => {
     spies.push(spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue({
       ...SettingsDefaultsManager.getAllDefaults(),
       CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_MODEL: 'claude-sonnet-4-6',
       CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku',
     }));
 
@@ -125,5 +126,73 @@ describe('tier routing holds for the whole generator (#4963)', () => {
     expect(sm.claimNextObservation(55, () => true)).toBeNull();
     session.simpleTierRun = false;
     expect(sm.claimNextObservation(55, () => true)?.toolUseId).toBe('tu-55-a');
+  });
+
+  it('does not end the run in default settings, where the simple tier is the main model', async () => {
+    // Defaults: CLAUDE_MEM_MODEL is a Haiku id and CLAUDE_MEM_TIER_SIMPLE_MODEL is
+    // 'haiku'. Restarting the generator would only resend the prompt to the same model.
+    const sm = new SessionManager(makeDbManager());
+    const routes = new SessionRoutes(sm, {} as any, {} as any, {} as any, {} as any,
+      {} as any, {} as any, {} as any);
+    spies.push(spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(
+      SettingsDefaultsManager.getAllDefaults(),
+    ));
+
+    const session = sm.initializeSession(56, 'do the thing', 1);
+    session.currentProvider = 'claude';
+    queue(sm, 56, 'Read', 'tu-56-a');
+    await (routes as any).applyTierRouting(session);
+    expect(session.simpleTierRun).toBe(false);
+
+    queue(sm, 56, 'Bash', 'tu-56-b');
+    const iterator = sm.getMessageIterator(56);
+    expect((await iterator.next()).value?.toolUseId).toBe('tu-56-a');
+    await sm.confirmClaimedMessages(56);
+    const second = await iterator.next();
+    expect(second.done).toBe(false);
+    expect(second.value?.toolUseId).toBe('tu-56-b');
+    expect(session.abortReason).toBeUndefined();
+    session.abortController.abort();
+    await iterator.return?.(undefined);
+  });
+
+  it('ends a simple-tier run at a summarize, and the next run picks the summary tier', async () => {
+    const sm = new SessionManager(makeDbManager());
+    const routes = new SessionRoutes(sm, {} as any, {} as any, {} as any, {} as any,
+      {} as any, {} as any, {} as any);
+    const settings = {
+      ...SettingsDefaultsManager.getAllDefaults(),
+      CLAUDE_MEM_TIER_ROUTING_ENABLED: 'true',
+      CLAUDE_MEM_MODEL: 'claude-sonnet-4-6',
+      CLAUDE_MEM_TIER_SIMPLE_MODEL: 'haiku',
+      CLAUDE_MEM_TIER_SUMMARY_MODEL: 'opus',
+    };
+    const loadSettings = spyOn(SettingsDefaultsManager, 'loadFromFile').mockReturnValue(settings);
+    spies.push(loadSettings);
+
+    const session = sm.initializeSession(57, 'do the thing', 1);
+    session.currentProvider = 'claude';
+    queue(sm, 57, 'Read', 'tu-57-a');
+    await (routes as any).applyTierRouting(session);
+    expect(session.modelOverride).toBe('haiku');
+    expect(session.simpleTierRun).toBe(true);
+
+    sm.queueSummarize(57, 'done', 1);
+    const iterator = sm.getMessageIterator(57);
+    expect((await iterator.next()).value?.toolUseId).toBe('tu-57-a');
+    await sm.confirmClaimedMessages(57);
+    expect((await iterator.next()).done).toBe(true);
+    expect(session.abortReason).toBe('provider_switch:boundary');
+    expect(sm.getMessageBuffer().getPendingCount(57)).toBe(1);
+
+    await (routes as any).applyTierRouting(session);
+    expect(session.modelOverride).toBe('opus');
+    expect(session.simpleTierRun).toBe(false);
+
+    // With no summary model configured, the summary runs on CLAUDE_MEM_MODEL.
+    loadSettings.mockReturnValue({ ...settings, CLAUDE_MEM_TIER_SUMMARY_MODEL: '' });
+    await (routes as any).applyTierRouting(session);
+    expect(session.modelOverride).toBeUndefined();
+    expect(session.simpleTierRun).toBe(false);
   });
 });
