@@ -38,14 +38,18 @@ import { SessionManager } from './SessionManager.js';
 import { randomUUID } from 'crypto';
 import { ClassifiedProviderError, isClassified, rateLimitUntilNextKey } from './provider-errors.js';
 import {
+  claimReasoningBudgetRetry,
+  combineBilledChatUsage,
   endpointRejectsReasoningField,
   isLengthTruncatedEmptyReply,
   isUnknownReasoningParameter,
   REASONING_DISABLED,
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
+  reasoningBudgetSkippedMessage,
   rememberEndpointRejectsReasoningField,
   resolveOpenAICompatReasoning,
+  startReasoningRetryDeadline,
 } from './reasoning-budget.js';
 import type { PaidSendBudget } from './paid-send-budget.js';
 import { isContextOverflowBody } from './OpenRouterProvider.js';
@@ -83,6 +87,30 @@ interface ChatCompletionResponse {
     total_tokens?: number;
   };
   error?: { message?: string; code?: string | number; type?: string };
+}
+
+/** Last prompt for context size; both requests' completion tokens were billed. */
+function withCombinedCompatUsage(
+  first: ChatCompletionResponse['usage'],
+  retry: ChatCompletionResponse,
+): ChatCompletionResponse {
+  const combined = combineBilledChatUsage(
+    {
+      promptTokens: first?.prompt_tokens,
+      completionTokens: first?.completion_tokens,
+      totalTokens: first?.total_tokens,
+    },
+    {
+      promptTokens: retry.usage?.prompt_tokens,
+      completionTokens: retry.usage?.completion_tokens,
+      totalTokens: retry.usage?.total_tokens,
+    },
+  );
+  const usage: NonNullable<ChatCompletionResponse['usage']> = { ...retry.usage };
+  if (combined.promptTokens !== undefined) usage.prompt_tokens = combined.promptTokens;
+  if (combined.completionTokens !== undefined) usage.completion_tokens = combined.completionTokens;
+  if (combined.totalTokens !== undefined) usage.total_tokens = combined.totalTokens;
+  return { ...retry, usage };
 }
 
 export interface OpenAICompatConfig {
@@ -673,34 +701,46 @@ export class OpenAICompatProvider extends OpenAICompatibleProvider<OpenAICompatC
     warnIfCutOff();
 
     if (isLengthTruncatedEmptyReply(content, finishReason) && !disabledOnSend && !endpointRejectsReasoningField(config.apiUrl)) {
-      logger.error('SDK', reasoningBudgetRetryMessage(label), { model: config.model, finishReason, maxTokens: maxOutputTokens });
-      try {
-        const retrySignal = signal ?? new AbortController().signal;
-        const exchange = await this.requestChatCompletion(
-          config, apiKey, messages, maxOutputTokens, clientAttemptId, retrySignal, liveness, sessionId, true,
-        );
-        const retryData = exchange.body as ChatCompletionResponse;
-        if (retryData.error) {
-          throw classifyOpenAICompatError({
-            status: exchange.status,
-            bodyText: JSON.stringify(retryData),
-            headers: exchange.headers,
-            cause: new Error(`${label} API error: ${retryData.error.code} - ${retryData.error.message}`),
-            endpointLabel: label,
-          });
-        }
-        data = retryData;
-        choice = data.choices?.[0];
-        content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
-        finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
-        warnIfCutOff();
-        if (isLengthTruncatedEmptyReply(content, finishReason)) {
-          logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), { model: config.model });
-        }
-      } catch (error) {
-        logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
+      if (!claimReasoningBudgetRetry(paidSendBudget)) {
+        logger.error('SDK', reasoningBudgetSkippedMessage(label, paidSendBudget?.spentPaidSends ?? 0), {
           model: config.model,
-        }, error instanceof Error ? error : new Error(String(error)));
+          finishReason,
+          maxTokens: maxOutputTokens,
+        });
+      } else {
+        const firstUsage = data.usage;
+        logger.error('SDK', reasoningBudgetRetryMessage(label), { model: config.model, finishReason, maxTokens: maxOutputTokens });
+        const deadline = liveness ? undefined : startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
+        try {
+          const retrySignal = deadline?.signal ?? signal ?? new AbortController().signal;
+          const exchange = await this.requestChatCompletion(
+            config, apiKey, messages, maxOutputTokens, clientAttemptId, retrySignal, liveness, sessionId, true,
+          );
+          const retryData = exchange.body as ChatCompletionResponse;
+          if (retryData.error) {
+            throw classifyOpenAICompatError({
+              status: exchange.status,
+              bodyText: JSON.stringify(retryData),
+              headers: exchange.headers,
+              cause: new Error(`${label} API error: ${retryData.error.code} - ${retryData.error.message}`),
+              endpointLabel: label,
+            });
+          }
+          data = withCombinedCompatUsage(firstUsage, retryData);
+          choice = data.choices?.[0];
+          content = stripLeadingThinkBlock(assistantText(choice?.message?.content));
+          finishReason = typeof choice?.finish_reason === 'string' ? choice.finish_reason : undefined;
+          warnIfCutOff();
+          if (isLengthTruncatedEmptyReply(content, finishReason)) {
+            logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), { model: config.model });
+          }
+        } catch (error) {
+          logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {
+            model: config.model,
+          }, error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          deadline?.finish();
+        }
       }
     } else if (isLengthTruncatedEmptyReply(content, finishReason)) {
       logger.error('SDK', reasoningBudgetGiveUpMessage(label, finishReason), {

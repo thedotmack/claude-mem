@@ -8,6 +8,7 @@ import { withOpenRouterExtraBody } from '../../../shared/openrouter-extra-body.j
 import { isCmemGatewayUrl } from '../../../shared/cmem-gateway.js';
 import { isOpenRouterApiUrl } from '../../../shared/openrouter-base-url.js';
 import {
+  billedTokensAcrossRetry,
   isLengthTruncatedEmptyReply,
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
@@ -52,7 +53,7 @@ export interface OpenRouterObservationProviderOptions {
 
 interface OpenRouterResponse {
   choices?: Array<{ message?: { content?: unknown }; finish_reason?: string }>;
-  usage?: { total_tokens?: number };
+  usage?: { total_tokens?: number; prompt_tokens?: number; completion_tokens?: number };
   error?: { code?: string | number; message?: string };
 }
 
@@ -121,12 +122,15 @@ export class OpenRouterObservationProvider implements ServerGenerationProvider {
     // output budget on reasoning. One retry with reasoning forced off. A
     // custom gateway does not get the field on the first request (strict
     // schemas 400); openrouter.ai and cmem already send it, so they give up
-    // here instead of sending the same body again.
+    // here instead of sending the same body again. Both calls were billed.
     if (isLengthTruncatedEmptyReply(rawText, finishReason)) {
       if (!disabledOnSend) {
+        const firstUsage = data.usage;
         logger.error('SDK', reasoningBudgetRetryMessage('OpenRouter'), { provider: 'openrouter', model: this.model, finishReason });
         try {
           data = await this.postAndRead(this.buildChatBody(prompt, true), signal);
+          const billed = billedTokensAcrossRetry(firstUsage, data.usage);
+          if (billed !== undefined) data = { ...data, usage: { ...data.usage, total_tokens: billed } };
           rawText = assistantText(data.choices?.[0]?.message?.content, '').trim();
           finishReason = typeof data.choices?.[0]?.finish_reason === 'string' ? data.choices[0].finish_reason : undefined;
           if (isLengthTruncatedEmptyReply(rawText, finishReason)) {

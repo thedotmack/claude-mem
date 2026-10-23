@@ -24,7 +24,13 @@ import {
 import { readGeminiAnswerText, type GeminiPart } from '../../shared/gemini-answer-text.js';
 import { OpenAICompatibleProvider, type ProviderQueryResult } from './OpenAICompatibleProvider.js';
 import { resolveContextWindowTokens, resolveObserverMaxOutputTokens } from './context-window.js';
-import { isLengthTruncatedEmptyReply } from './reasoning-budget.js';
+import {
+  claimReasoningBudgetRetry,
+  combineBilledGeminiUsage,
+  isLengthTruncatedEmptyReply,
+  reasoningBudgetSkippedMessage,
+  startReasoningRetryDeadline,
+} from './reasoning-budget.js';
 
 // v1beta is required: the current Gemini 3.x models and the Google-maintained
 // `-latest` aliases are only exposed under v1beta, and the retired v1-only 2.x
@@ -537,38 +543,50 @@ export class GeminiProvider extends OpenAICompatibleProvider<GeminiConfig> {
     }
 
     // Thoughts spend maxOutputTokens and come back as an empty MAX_TOKENS
-    // reply. Retry once with thinking off. Not the default: mandatory-thinking
-    // models reject thinkingBudget 0.
+    // reply. Retry once with thinking off, on the same paid-send allowance and
+    // the same per-attempt deadline as the first request. Not the default:
+    // mandatory-thinking models reject thinkingBudget 0.
     if (isLengthTruncatedEmptyReply(text, finishReason)) {
-      logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; retrying with thinking disabled', { model, finishReason });
-      try {
-        const response = await this.fetchGenerateContent(
-          url, contents, system, maxOutputTokens, clientAttemptId, signal ?? new AbortController().signal, true,
-        );
-        finalRequestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id') ?? finalRequestId;
-        if (!response.ok) {
-          const errorBody = await readCappedErrorBody(response);
-          logger.error('SDK', `Gemini reply was empty because thinking consumed the output budget, and disabling thinking was rejected (status ${response.status}); this turn stores no observations`, {
-            model,
-            body: errorBody.slice(0, 300),
-          });
-        } else {
-          const retryData = await response.json() as GeminiResponse;
-          const retryCandidate = retryData.candidates?.[0];
-          const retryReason = typeof retryCandidate?.finishReason === 'string' ? retryCandidate.finishReason : undefined;
-          const retryText = readGeminiAnswerText(retryCandidate?.content?.parts);
-          data = retryData;
-          candidate = retryCandidate;
-          finishReason = retryReason;
-          text = retryText;
-          if (isLengthTruncatedEmptyReply(text, finishReason)) {
-            logger.error('SDK', `Gemini reply was empty with finish_reason=${finishReason ?? 'unknown'} even though thinking was disabled; thinking consumed the output budget and the model ignored the flag or thinking is mandatory, so this turn stores no observations`, { model });
+      if (!claimReasoningBudgetRetry(paidSendBudget)) {
+        logger.error('SDK', reasoningBudgetSkippedMessage('Gemini', paidSendBudget?.spentPaidSends ?? 0), { model, finishReason });
+      } else {
+        const firstUsage = data.usageMetadata;
+        logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; retrying with thinking disabled', { model, finishReason });
+        const deadline = startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
+        try {
+          const response = await this.fetchGenerateContent(
+            url, contents, system, maxOutputTokens, clientAttemptId, deadline.signal, true,
+          );
+          finalRequestId = response.headers.get('x-goog-request-id') ?? response.headers.get('x-request-id') ?? finalRequestId;
+          if (!response.ok) {
+            const errorBody = await readCappedErrorBody(response);
+            logger.error('SDK', `Gemini reply was empty because thinking consumed the output budget, and disabling thinking was rejected (status ${response.status}); this turn stores no observations`, {
+              model,
+              body: errorBody.slice(0, 300),
+            });
+          } else {
+            const retryData = await response.json() as GeminiResponse;
+            const retryCandidate = retryData.candidates?.[0];
+            const retryReason = typeof retryCandidate?.finishReason === 'string' ? retryCandidate.finishReason : undefined;
+            const retryText = readGeminiAnswerText(retryCandidate?.content?.parts);
+            data = {
+              ...retryData,
+              usageMetadata: combineBilledGeminiUsage(firstUsage, retryData.usageMetadata),
+            };
+            candidate = retryCandidate;
+            finishReason = retryReason;
+            text = retryText;
+            if (isLengthTruncatedEmptyReply(text, finishReason)) {
+              logger.error('SDK', `Gemini reply was empty with finish_reason=${finishReason ?? 'unknown'} even though thinking was disabled; thinking consumed the output budget and the model ignored the flag or thinking is mandatory, so this turn stores no observations`, { model });
+            }
           }
+        } catch (error) {
+          logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; disabling thinking failed, so this turn stores no observations', {
+            model,
+          }, error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          deadline.finish();
         }
-      } catch (error) {
-        logger.error('SDK', 'Gemini reply was empty because thinking consumed the output budget; disabling thinking failed, so this turn stores no observations', {
-          model,
-        }, error instanceof Error ? error : new Error(String(error)));
       }
     }
 

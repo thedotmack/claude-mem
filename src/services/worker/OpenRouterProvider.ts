@@ -39,10 +39,14 @@ import {
 } from './context-window.js';
 import { isContextOverflowObserverOutput } from '../../sdk/output-classifier.js';
 import {
+  claimReasoningBudgetRetry,
+  combineBilledChatUsage,
   isLengthTruncatedEmptyReply,
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
+  reasoningBudgetSkippedMessage,
   requestDisablesReasoning,
+  startReasoningRetryDeadline,
 } from './reasoning-budget.js';
 import { namesPeriodRateLimit } from '../../shared/period-rate-limit.js';
 
@@ -339,6 +343,42 @@ const CHARS_PER_TOKEN_ESTIMATE = 4;
 
 function openRouterRequestId(headers: Headers | undefined): string | undefined {
   return headers?.get('x-request-id') ?? headers?.get('x-openrouter-request-id') ?? undefined;
+}
+
+function openRouterReportedCost(usage: OpenRouterResponse['usage']): number | undefined {
+  const orCost = typeof usage?.cost === 'number' ? usage.cost : undefined;
+  const upstreamCost = typeof usage?.cost_details?.upstream_inference_cost === 'number'
+    ? usage.cost_details.upstream_inference_cost
+    : undefined;
+  if (orCost === undefined && upstreamCost === undefined) return undefined;
+  return (orCost ?? 0) + (upstreamCost ?? 0);
+}
+
+/** Last prompt for context size; both requests' completion tokens and cost were billed. */
+function withCombinedOpenRouterUsage(first: OpenRouterResponse['usage'], retry: OpenRouterResponse): OpenRouterResponse {
+  const combined = combineBilledChatUsage(
+    {
+      promptTokens: first?.prompt_tokens,
+      completionTokens: first?.completion_tokens,
+      totalTokens: first?.total_tokens,
+      costUsd: openRouterReportedCost(first),
+    },
+    {
+      promptTokens: retry.usage?.prompt_tokens,
+      completionTokens: retry.usage?.completion_tokens,
+      totalTokens: retry.usage?.total_tokens,
+      costUsd: openRouterReportedCost(retry.usage),
+    },
+  );
+  const usage: NonNullable<OpenRouterResponse['usage']> = { ...retry.usage };
+  if (combined.promptTokens !== undefined) usage.prompt_tokens = combined.promptTokens;
+  if (combined.completionTokens !== undefined) usage.completion_tokens = combined.completionTokens;
+  if (combined.totalTokens !== undefined) usage.total_tokens = combined.totalTokens;
+  if (combined.costUsd !== undefined) {
+    usage.cost = combined.costUsd;
+    if (usage.cost_details) usage.cost_details = { ...usage.cost_details, upstream_inference_cost: undefined };
+  }
+  return { ...retry, usage };
 }
 
 interface OpenRouterResponse {
@@ -982,51 +1022,66 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
     warnIfCutOff(finishReason, data, content.length);
 
     // Empty + length is the reasoning budget burning the answer (#2995). One
-    // retry, outside withRetry, so a paid-send budget is not multiplied.
+    // retry, outside withRetry's loop, but counted on the same paid-send
+    // allowance. A non-streamed retry gets the same per-attempt deadline
+    // withRetry would have armed; a streamed one is already capped by liveness.
     // Already-disabled requests (openrouter.ai, cmem, effort "none") give up
     // loudly instead of sending the same body again.
     if (isLengthTruncatedEmptyReply(content, finishReason) && !disabledOnSend) {
-      logger.error('SDK', reasoningBudgetRetryMessage('OpenRouter'), {
-        model: data.model ?? model,
-        requestId: finalRequestId,
-        finishReason,
-        maxTokens: maxOutputTokens,
-      });
-      try {
-        const retrySignal = signal ?? new AbortController().signal;
-        const exchange = await this.requestChatCompletion(
-          apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, retrySignal,
-          maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label, true,
-        );
-        const requestId = openRouterRequestId(exchange.headers);
-        finalRequestId = requestId;
-        const retryData = exchange.body as OpenRouterResponse;
-        if (retryData.error) {
-          throw classifyOpenRouterError({
-            status: exchange.status,
-            bodyText: JSON.stringify(retryData),
-            headers: exchange.headers,
-            cause: new Error(`OpenRouter API error: ${retryData.error.code} - ${retryData.error.message}`),
-            ...(requestId ? { requestId } : {}),
-          });
-        }
-        data = retryData;
-        const retryChoice = data.choices?.[0];
-        message = retryChoice?.message;
-        content = assistantText(message?.content);
-        finishReason = typeof retryChoice?.finish_reason === 'string' ? retryChoice.finish_reason : undefined;
-        warnIfCutOff(finishReason, data, content.length);
-        if (isLengthTruncatedEmptyReply(content, finishReason)) {
-          logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
-            model: data.model ?? model,
-            requestId: finalRequestId,
-          });
-        }
-      } catch (error) {
-        logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
-          model,
+      if (!claimReasoningBudgetRetry(paidSendBudget)) {
+        logger.error('SDK', reasoningBudgetSkippedMessage('OpenRouter', paidSendBudget?.spentPaidSends ?? 0), {
+          model: data.model ?? model,
           requestId: finalRequestId,
-        }, error instanceof Error ? error : new Error(String(error)));
+          finishReason,
+          maxTokens: maxOutputTokens,
+        });
+      } else {
+        const firstUsage = data.usage;
+        logger.error('SDK', reasoningBudgetRetryMessage('OpenRouter'), {
+          model: data.model ?? model,
+          requestId: finalRequestId,
+          finishReason,
+          maxTokens: maxOutputTokens,
+        });
+        const deadline = liveness ? undefined : startReasoningRetryDeadline(signal, perAttemptTimeoutMs);
+        try {
+          const retrySignal = deadline?.signal ?? signal ?? new AbortController().signal;
+          const exchange = await this.requestChatCompletion(
+            apiUrl, apiKey, model, fallbackModels, messages, siteUrl, appName, clientAttemptId, retrySignal,
+            maxOutputTokens, liveness, plainText, extraBody, reasoningEffort, label, true,
+          );
+          const requestId = openRouterRequestId(exchange.headers);
+          finalRequestId = requestId;
+          const retryData = exchange.body as OpenRouterResponse;
+          if (retryData.error) {
+            throw classifyOpenRouterError({
+              status: exchange.status,
+              bodyText: JSON.stringify(retryData),
+              headers: exchange.headers,
+              cause: new Error(`OpenRouter API error: ${retryData.error.code} - ${retryData.error.message}`),
+              ...(requestId ? { requestId } : {}),
+            });
+          }
+          data = withCombinedOpenRouterUsage(firstUsage, retryData);
+          const retryChoice = data.choices?.[0];
+          message = retryChoice?.message;
+          content = assistantText(message?.content);
+          finishReason = typeof retryChoice?.finish_reason === 'string' ? retryChoice.finish_reason : undefined;
+          warnIfCutOff(finishReason, data, content.length);
+          if (isLengthTruncatedEmptyReply(content, finishReason)) {
+            logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
+              model: data.model ?? model,
+              requestId: finalRequestId,
+            });
+          }
+        } catch (error) {
+          logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {
+            model,
+            requestId: finalRequestId,
+          }, error instanceof Error ? error : new Error(String(error)));
+        } finally {
+          deadline?.finish();
+        }
       }
     } else if (isLengthTruncatedEmptyReply(content, finishReason)) {
       logger.error('SDK', reasoningBudgetGiveUpMessage('OpenRouter', finishReason), {

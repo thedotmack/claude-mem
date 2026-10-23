@@ -12,6 +12,8 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import type { PaidSendBudget } from './paid-send-budget.js';
+import { resolveLlmTimeoutMs } from './retry.js';
 
 export const REASONING_DISABLED: { enabled: false } = { enabled: false };
 
@@ -89,19 +91,22 @@ function isMandatoryReasoningRejection(lower: string): boolean {
     || lower.includes('cannot be disabled')
     || lower.includes('cannot disable')
     || lower.includes('does not support none')
-    || lower.includes('reasoning is required');
+    || lower.includes('reasoning is required')
+    || lower.includes('requires reasoning');
 }
 
 /**
- * A 400/422 that names `reasoning` as an unknown field. A model that refuses
- * to disable reasoning (mandatory) is not this: stripping the field and
- * resending would hide that refusal.
+ * A 400/422 that names `reasoning` as a field the schema does not have.
+ * Only that shape is stripped and retried. "unsupported", "invalid
+ * parameter", and "requires reasoning" are value or policy refusals: a model
+ * that will not disable reasoning must not have the field forgotten for
+ * every later request to that URL.
  */
 export function isUnknownReasoningParameter(text: string): boolean {
   const lower = text.toLowerCase();
-  if (isMandatoryReasoningRejection(lower)) return false;
   if (!lower.includes('reasoning')) return false;
-  return /unknown|unsupported|unrecognized|unexpected|extra field|additional propert|not permitted|invalid parameter/.test(lower);
+  if (isMandatoryReasoningRejection(lower)) return false;
+  return /unknown (?:parameter|field|argument)|unrecognized (?:parameter|field|argument)|unexpected (?:parameter|field|argument)|extra fields?|additional propert|not permitted/.test(lower);
 }
 
 export function reasoningBudgetRetryMessage(label: string): string {
@@ -110,4 +115,117 @@ export function reasoningBudgetRetryMessage(label: string): string {
 
 export function reasoningBudgetGiveUpMessage(label: string, finishReason: string | undefined): string {
   return `${label} reply was empty with finish_reason=${finishReason ?? 'unknown'} even though reasoning was disabled; reasoning consumed the output budget and the model ignored the flag or reasoning is mandatory, so this turn stores no observations`;
+}
+
+/** The batch already used its paid-send allowance, so the reasoning retry is not bought. */
+export function reasoningBudgetSkippedMessage(label: string, spentPaidSends: number): string {
+  return `${label} reply was empty because reasoning consumed the output budget; not retrying because this batch already made ${spentPaidSends} paid sends, so this turn stores no observations`;
+}
+
+/**
+ * One more paid send for the reasoning-off retry, counted on the same budget
+ * withRetry already charged for this batch. False when the allowance is spent:
+ * the caller logs and keeps the empty reply instead of buying another request.
+ * No budget (an init turn) still allows the single retry.
+ */
+export function claimReasoningBudgetRetry(budget: PaidSendBudget | undefined): boolean {
+  if (budget && !budget.hasRemainingPaidSend()) return false;
+  budget?.recordPaidSend();
+  return true;
+}
+
+/**
+ * The same per-attempt deadline withRetry arms. A reasoning retry that runs
+ * outside that loop used to pass a signal nothing ever aborted.
+ */
+export function startReasoningRetryDeadline(
+  external: AbortSignal | undefined,
+  perAttemptTimeoutMs?: number,
+): { signal: AbortSignal; finish(): void } {
+  const controller = new AbortController();
+  const timeoutMs = perAttemptTimeoutMs ?? resolveLlmTimeoutMs();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const onExternal = () => controller.abort();
+  if (external?.aborted) controller.abort();
+  else external?.addEventListener('abort', onExternal, { once: true });
+  return {
+    signal: controller.signal,
+    finish() {
+      clearTimeout(timer);
+      external?.removeEventListener('abort', onExternal);
+    },
+  };
+}
+
+export interface BilledChatUsage {
+  promptTokens?: number;
+  completionTokens?: number;
+  totalTokens?: number;
+  costUsd?: number;
+}
+
+function sumDefined(left: number | undefined, right: number | undefined): number | undefined {
+  if (typeof left !== 'number' && typeof right !== 'number') return undefined;
+  return (typeof left === 'number' ? left : 0) + (typeof right === 'number' ? right : 0);
+}
+
+/**
+ * Context size is the retry's prompt (the conversation we kept). Billed output
+ * and cost add both requests: the empty length reply was paid for too.
+ * totalTokens follows that split when both sides exist, so it does not count
+ * the first prompt a second time.
+ */
+export function combineBilledChatUsage(
+  first: BilledChatUsage | undefined,
+  retry: BilledChatUsage | undefined,
+): BilledChatUsage {
+  const promptTokens = typeof retry?.promptTokens === 'number' ? retry.promptTokens : first?.promptTokens;
+  const completionTokens = sumDefined(first?.completionTokens, retry?.completionTokens);
+  const totalTokens = typeof promptTokens === 'number' && typeof completionTokens === 'number'
+    ? promptTokens + completionTokens
+    : sumDefined(first?.totalTokens, retry?.totalTokens);
+  return {
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    costUsd: sumDefined(first?.costUsd, retry?.costUsd),
+  };
+}
+
+export interface BilledGeminiUsage {
+  promptTokenCount?: number;
+  candidatesTokenCount?: number;
+  thoughtsTokenCount?: number;
+  totalTokenCount?: number;
+}
+
+/** Gemini's split of {@link combineBilledChatUsage}: last prompt, both answers and both thought counts. */
+export function combineBilledGeminiUsage(
+  first: BilledGeminiUsage | undefined,
+  retry: BilledGeminiUsage | undefined,
+): BilledGeminiUsage {
+  const promptTokenCount = typeof retry?.promptTokenCount === 'number' ? retry.promptTokenCount : first?.promptTokenCount;
+  const candidatesTokenCount = sumDefined(first?.candidatesTokenCount, retry?.candidatesTokenCount);
+  const thoughtsTokenCount = sumDefined(first?.thoughtsTokenCount, retry?.thoughtsTokenCount);
+  const hasOutput = typeof candidatesTokenCount === 'number' || typeof thoughtsTokenCount === 'number';
+  const totalTokenCount = typeof promptTokenCount === 'number' && hasOutput
+    ? promptTokenCount + (candidatesTokenCount ?? 0) + (thoughtsTokenCount ?? 0)
+    : sumDefined(first?.totalTokenCount, retry?.totalTokenCount);
+  return { promptTokenCount, candidatesTokenCount, thoughtsTokenCount, totalTokenCount };
+}
+
+/**
+ * Tokens a server job should meter after a reasoning retry. Unlike the worker,
+ * the server has one billed quantity and no context-size counter, so both
+ * requests' totals are added (each prompt was sent and billed).
+ */
+export function billedTokensAcrossRetry(
+  first: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined,
+  retry: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined,
+): number | undefined {
+  const totalOf = (usage: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number } | undefined) => {
+    if (typeof usage?.total_tokens === 'number') return usage.total_tokens;
+    return sumDefined(usage?.prompt_tokens, usage?.completion_tokens);
+  };
+  return sumDefined(totalOf(first), totalOf(retry));
 }
