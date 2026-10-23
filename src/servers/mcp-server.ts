@@ -22,7 +22,8 @@ import { parseFile, formatFoldedView, unfoldSymbol, formatAvailableSymbols } fro
 import { treeSitterCliUnavailableMessage } from '../services/smart-file-read/tree-sitter-bin-path.js';
 import { resolveWithinWorkspace } from '../services/smart-file-read/workspace-path.js';
 import { readFile } from 'node:fs/promises';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+import { marketplaceDirectoryCandidates } from '../shared/known-marketplace-location.js';
 import { dirname, resolve } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -1278,27 +1279,11 @@ function cleanup(reason: string = 'shutdown') {
 process.on('SIGTERM', cleanup);
 process.on('SIGINT', cleanup);
 
-// Directory-source marketplaces (`/plugin marketplace add <local path>`) live
-// wherever the user points them; Claude Code records that in known_marketplaces.json.
-function knownMarketplaceLocation(home: string): string | null {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || resolve(home, '.claude');
-  try {
-    const known = JSON.parse(readFileSync(resolve(configDir, 'plugins', 'known_marketplaces.json'), 'utf-8'));
-    const location = known?.thedotmack?.installLocation;
-    return typeof location === 'string' && location ? location : null;
-  } catch {
-    return null;
-  }
-}
-
 function detectMissingMarketplaceMarker(): void {
   const home = homedir();
-  const marketplaceCandidates = [
-    resolve(home, '.claude', 'plugins', 'marketplaces', 'thedotmack'),
-    resolve(home, '.config', 'claude', 'plugins', 'marketplaces', 'thedotmack'),
-  ];
-  const knownLocation = knownMarketplaceLocation(home);
-  if (knownLocation) marketplaceCandidates.push(knownLocation);
+  // Includes the installLocation Claude Code records for a marketplace added
+  // from a local folder (`/plugin marketplace add <path>`).
+  const marketplaceCandidates = marketplaceDirectoryCandidates(home);
   const present = marketplaceCandidates.some(p => p && existsSync(p));
   const cacheCandidates = [
     resolve(home, '.claude', 'plugins', 'cache', 'thedotmack', 'claude-mem'),
