@@ -111,6 +111,8 @@ const QUERIES: Record<string, string> = {
 (interface_declaration name: (type_identifier) @name) @iface
 (type_alias_declaration name: (type_identifier) @name) @tdef
 (enum_declaration name: (identifier) @name) @enm
+(internal_module name: (_) @name) @namespace_def
+(module name: (_) @name) @namespace_def
 (import_statement) @imp
 (export_statement) @exp
 `,
