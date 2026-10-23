@@ -14,6 +14,7 @@ import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
 import type { AgentTask, AskAgent, StepModels } from '../agent-runner/run.js';
+import type { UsableAgentId } from '../agent-runner/detect.js';
 import { runCommand } from '../agent-runner/detect.js';
 import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
@@ -90,7 +91,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
 
-  const run = async (ask: AskAgent): Promise<string> => {
+  const run = async (ask: AskAgent, agent: UsableAgentId): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
     mkdirSync(runDir, { recursive: true });
     let fileNumber = 0;
@@ -123,7 +124,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       }
       throw new Error(`${name}: ${refusal}`);
     };
-    const readOnly = 'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question. Search claude-mem memory with its MCP tools if you have them.';
+    const readOnly = [
+      'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
+      agent === 'claude-code'
+        ? 'Search claude-mem memory with its MCP tools (search, timeline, get_observations) for evidence beyond the input files.'
+        : 'You have no memory tools: the input files hold the evidence (each conversation\'s asks and observations). Where the skill says to search memory, use them instead.',
+    ].join(' ');
 
     try {
       const done: string[] = [];

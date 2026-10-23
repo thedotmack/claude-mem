@@ -483,9 +483,19 @@ export function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now
       // A membership change (a merge, a split) needs a full review.
       const previous = details.previousReview;
       const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
-      const conversations = amendSince
-        ? details.conversations.map((conversation) => conversation.asks ? { ...conversation, asks: conversation.asks.filter((ask) => Date.parse(ask.at) > Date.parse(amendSince)) } : conversation)
-        : details.conversations;
+      const since = amendSince ? Date.parse(amendSince) : 0;
+      // The conversations' own observations (only the new ones when amending), so a reviewer without memory tools has the evidence.
+      const observations = db().prepare(`SELECT o.id, o.type, o.title, o.subtitle, o.created_at_epoch FROM observations o
+        JOIN sdk_sessions s ON o.memory_session_id = s.memory_session_id
+        WHERE s.platform_source = ? AND s.content_session_id = ? AND o.created_at_epoch > ? ORDER BY o.created_at_epoch, o.id`);
+      const conversations = details.conversations.map((conversation) => {
+        const [, platform, sessionId] = JSON.parse(conversation.conversationKey);
+        return {
+          ...conversation,
+          ...(conversation.asks && amendSince ? { asks: conversation.asks.filter((ask) => Date.parse(ask.at) > since) } : {}),
+          observations: observations.all(platform, sessionId, since).map((row) => ({ id: row.id, at: iso(row.created_at_epoch), type: row.type, title: row.title, subtitle: row.subtitle })),
+        };
+      });
       // The reviewer passes reviewBasis back to record-progress unchanged.
       return print({ ...details, conversations, mode: amendSince ? 'amend' : 'full', amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
