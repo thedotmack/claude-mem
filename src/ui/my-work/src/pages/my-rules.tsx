@@ -472,11 +472,11 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
           {rulesFile && !rulesFile.loadedInClaudeCode && (
             <div className="space-y-1.5 border-t pt-2">
               <Button size="sm" className="h-11 text-xs sm:h-8" onClick={load}>Load my rules into Claude Code</Button>
-              <p className="text-xs text-muted-foreground">Only rules you approved are loaded. Adds one line to ~/.claude/CLAUDE.md.</p>
+              <p className="text-xs text-muted-foreground">Only rules you approved are loaded. Adds one line to {rulesFile.instructionsPath ?? '~/.claude/CLAUDE.md'}.</p>
               {loadError && <p role="alert" className="text-xs text-attention-foreground">{loadError}</p>}
             </div>
           )}
-          {rulesFile?.loadedInClaudeCode && sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">Loaded in Claude Code from ~/.claude/CLAUDE.md.</p>}
+          {rulesFile?.loadedInClaudeCode && sourceKind !== 'sample' && <p className="text-xs text-muted-foreground">Loaded in Claude Code from {rulesFile.instructionsPath ?? '~/.claude/CLAUDE.md'}.</p>}
         </ArtifactHeader>
       </Artifact>
       <Dialog open={open} onOpenChange={onOpenChange}>
@@ -484,7 +484,7 @@ function AgentFile({ rules, changed, open, onOpenChange }: { rules: OwnerRule[];
           <DialogHeader>
             <DialogTitle className="font-mono text-sm">{path}</DialogTitle>
             <DialogDescription>
-              Rebuilt from the synced rule records, so every machine gets the same file{mode === 'web' ? ' once it pulls your web changes' : ''}. Claude Code imports it from ~/.claude/CLAUDE.md. Suggested rules are not in it until you approve them.
+              Rebuilt from the synced rule records, so every machine gets the same file{mode === 'web' ? ' once it pulls your web changes' : ''}. Claude Code imports it from {rulesFile?.instructionsPath ?? '~/.claude/CLAUDE.md'}. Suggested rules are not in it until you approve them.
             </DialogDescription>
           </DialogHeader>
           <pre className="max-h-[60svh] overflow-auto rounded-lg border border-terminal-border bg-terminal p-3 font-mono text-[11px] leading-relaxed whitespace-pre-wrap text-terminal-foreground">

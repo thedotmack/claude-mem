@@ -193,7 +193,7 @@ export interface WorkViewRuleScope { id: string; tier: 'everywhere' | 'project' 
 export interface WorkViewRulesLearning { preferencesFound: number; newSuggestions: number; reviewsRead: number; writtenAt: string | null }
 
 /** ~/.claude-mem/MY-RULES.md, and whether ~/.claude/CLAUDE.md imports it. */
-export interface WorkViewRulesFile { path: string; approvedCount: number; loadedInClaudeCode: boolean }
+export interface WorkViewRulesFile { path: string; instructionsPath?: string; approvedCount: number; loadedInClaudeCode: boolean }
 
 export interface WorkViewSnapshot {
   version: number

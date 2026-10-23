@@ -129,8 +129,8 @@ export const SAMPLE_OWNER_RULES: OwnerRule[] = [
 export interface RulesLearning { preferencesFound: number; newSuggestions: number; reviewsRead: number }
 export const SAMPLE_RULES_LEARNING: RulesLearning = { preferencesFound: 14, newSuggestions: 3, reviewsRead: 23 }
 
-/** The file agents load: approved rules only. `loadedInClaudeCode`: ~/.claude/CLAUDE.md imports it. */
-export interface RulesFile { path: string; approvedCount: number; loadedInClaudeCode: boolean }
+/** The file agents load: approved rules only. `loadedInClaudeCode`: the user-level CLAUDE.md (`instructionsPath`) imports it. */
+export interface RulesFile { path: string; instructionsPath?: string; approvedCount: number; loadedInClaudeCode: boolean }
 
 /** One saved change to My Rules (POST /api/work-view/rules). */
 export interface RuleDraft { scopeTier: RuleTier; scopeName: string; when: string; then: string }
