@@ -114,14 +114,24 @@ function goalIdFor(raw: WorkViewHumanRequest): string | null | undefined {
   return (raw.goals.find((goal) => goal.kind === 'priority') ?? raw.goals[0]).goalId
 }
 
+/** The worker's check route uses the same rule (WorkViewRoutes.ts reviewIsNewerThanLifecycle). */
+export function reviewIsNewerThanLifecycle(review: Pick<WorkViewProgress, 'checkedAt'>, lifecycle: WorkViewHumanRequest['lifecycle']): boolean {
+  if (!lifecycle?.explicit || !lifecycle.atEpoch) return true
+  const reviewedAt = Date.parse(review.checkedAt)
+  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch
+}
+
 /** One human request → one Request. Throws when the result breaks the lifecycle rules; the caller turns that into a read-error card. */
 export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], now: number): Request {
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
-  const review = raw.progress ?? null
-  // A memory review can be newer than the recorded items: its shipped state and its 100% both count here.
-  const status = normalizeRequestStatus({ items: raw.items, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: review?.state, progressPercent: review?.percent }, now)
+  const recordedReview = raw.progress ?? null
+  // A memory review can be newer than the recorded items: its shipped state and its 100% both count then.
+  // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
+  const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
+  const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
+  const status = normalizeRequestStatus({ items: raw.items, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
@@ -161,7 +171,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
       history: readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
-    estimate: measuredEstimate(readings, status === 'shipped' || review?.state === 'shipped'),
+    estimate: measuredEstimate(readings, status === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
     terminal: raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean),
     activityWord: copyReady ? 'Working' : 'Translating',

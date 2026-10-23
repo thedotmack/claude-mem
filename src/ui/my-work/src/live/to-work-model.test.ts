@@ -155,6 +155,23 @@ test('a review newer than its items wins: shipped ships, and 100% is done, never
   assert.equal(finishedCard.progress.percent, 100)
 })
 
+test('an explicit status recorded after a review wins over it: a reopened request is not shipped or done', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const doing = [{ ...baseRequest.items[0], kind: 'work-state' as const, status: 'doing', lastUpdateEpoch: now - 60000 }]
+  const reopened = { status: 'in-progress', explicit: true, complete: false, atEpoch: Date.parse('2026-10-22T11:30:00Z') }
+  const review = { summary: 'Done.', narrative: '', milestones: [], checkedAt: '2026-10-22T11:00:00Z', readings: [{ at: '2026-10-22T11:00:00Z', percent: 100 }] }
+  const wasShipped = { ...syntheticRequest(), id: 'was-shipped', items: doing, lifecycle: reopened, progress: { ...review, state: 'shipped' as const, percent: 100, shippedAt: '2026-10-22T10:00:00Z' } }
+  const wasDone = { ...syntheticRequest(), id: 'was-done', items: doing, lifecycle: reopened, progress: { ...review, state: 'in-progress' as const, percent: 100 } }
+  const partway = { ...syntheticRequest(), id: 'partway', items: doing, lifecycle: reopened, progress: { ...review, state: 'in-progress' as const, percent: 60, readings: [{ at: '2026-10-22T11:00:00Z', percent: 60 }] } }
+  const model = toWorkModel(snapshotWith([wasShipped, wasDone, partway]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  for (const request of model.requests.slice(0, 2)) {
+    assert.equal(request.state, 'working')
+    assert.equal(request.progress.percent, null, 'an older 100% is not shown on a reopened request')
+  }
+  assert.equal(model.requests[2].progress.percent, 60, 'an older partial review still shows')
+})
+
 test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
   const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
   const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }

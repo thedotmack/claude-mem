@@ -5,7 +5,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Server } from 'node:http';
-import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { isReportedReadyForCheck, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 import { contentFingerprint } from '../../../../src/services/work-view/review-store.js';
 import { reduceWorkState } from '../../../../src/services/work-view/data-source.mjs';
 import { HumanCopyWorker } from '../../../../src/services/work-view/human-copy-worker.mjs';
@@ -173,6 +173,16 @@ describe('local work view', () => {
     const request = (await snapshot()).humanRequests[0];
     expect((await review(request)).status).toBe(409);
     expect((await snapshot()).humanRequests[0].review.checked).toBe(false);
+  });
+
+  it('a memory review at 100% makes a request checkable, unless an explicit status came after it', () => {
+    const at = Date.parse('2026-10-22T12:00:00Z');
+    const doing = { explicit: true, status: 'in-progress', complete: null, atEpoch: at - 60000 };
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    expect(isReportedReadyForCheck({ lifecycle: doing, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(true);
+    // Reopened after the review: the older 100% no longer counts.
+    expect(isReportedReadyForCheck({ lifecycle: { ...doing, atEpoch: at + 60000 }, progress: { percent: 100, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
+    expect(isReportedReadyForCheck({ lifecycle: null, progress: { percent: 90, checkedAt: '2026-10-22T12:00:00Z' } })).toBe(false);
   });
 
   it('lets a request waiting for review be checked and unchecked', async () => {

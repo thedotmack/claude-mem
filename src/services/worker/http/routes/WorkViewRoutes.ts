@@ -32,7 +32,20 @@ const READY_FOR_CHECK_LIFECYCLE_STATUSES = [
   'done', 'completed', 'complete', 'shipped', 'delivered',
   'needs-review', 'review', 'in-review', 'awaiting-review', 'ready-for-review',
 ];
-function isReportedReadyForCheck(lifecycle: { explicit?: boolean; complete?: boolean | null; status?: string | null } | null | undefined): boolean {
+type RecordedLifecycle = { explicit?: boolean; complete?: boolean | null; status?: string | null; atEpoch?: number | null } | null | undefined;
+
+/** Mirrors the viewer's reviewIsNewerThanLifecycle (src/ui/my-work/src/live/to-work-model.ts). */
+function reviewIsNewerThanLifecycle(review: { checkedAt?: string | null }, lifecycle: RecordedLifecycle): boolean {
+  if (!lifecycle?.explicit || !lifecycle.atEpoch) return true;
+  const reviewedAt = Date.parse(review.checkedAt ?? '');
+  return Number.isFinite(reviewedAt) && reviewedAt >= lifecycle.atEpoch;
+}
+
+/** Ready for a person's check: the explicit lifecycle says so, or a memory review newer than it reached 100%.
+ * The viewer offers "Mark checked" on exactly these requests. */
+export function isReportedReadyForCheck(request: { lifecycle?: RecordedLifecycle; progress?: { percent?: number; checkedAt?: string | null } | null }): boolean {
+  const { lifecycle, progress } = request;
+  if (progress?.percent === 100 && reviewIsNewerThanLifecycle(progress, lifecycle)) return true;
   if (!lifecycle?.explicit) return false;
   const status = String(lifecycle.status ?? '').trim().toLowerCase().replace(/[_ ]/g, '-');
   return lifecycle.complete === true || READY_FOR_CHECK_LIFECYCLE_STATUSES.includes(status);
@@ -359,7 +372,7 @@ export class WorkViewRoutes extends BaseRouteHandler {
       res.status(409).json({ error: 'This work changed. Read the latest result before checking it.', snapshot });
       return;
     }
-    if (checked && !isReportedReadyForCheck(request.lifecycle)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
+    if (checked && !isReportedReadyForCheck(request)) { res.status(409).json({ error: 'This request has not been reported complete.', snapshot }); return; }
     this.reviews.set(requestId, expectedFingerprint, checked);
     logger.debug('HTTP', 'Local work review updated', { checked });
     const updated = this.snapshot();

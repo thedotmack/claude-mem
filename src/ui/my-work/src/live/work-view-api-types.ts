@@ -50,6 +50,8 @@ export interface WorkViewLifecycle {
   explicit: boolean
   complete?: boolean | null
   url?: string
+  /** When the explicit status was recorded. A review older than this does not override it. */
+  atEpoch?: number | null
 }
 
 export interface WorkViewPrompt { text: string; atEpoch?: number; url?: string }
