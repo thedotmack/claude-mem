@@ -137,6 +137,24 @@ test('a reviewed request shows the review percent, its readings, the measured ET
   assert.equal(single.progress.readings, 1)
 })
 
+test('a review newer than its items wins: shipped ships, and 100% is done, never an error card', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const doing = [{ ...baseRequest.items[0], kind: 'work-state' as const, status: 'doing', lastUpdateEpoch: now - 60000 }]
+  const review = { summary: 'Done.', narrative: '', milestones: [], checkedAt: '2026-10-22T11:00:00Z', readings: [{ at: '2026-10-22T11:00:00Z', percent: 100 }] }
+  const shipped = { ...syntheticRequest(), id: 'shipped', items: doing, progress: { ...review, state: 'shipped' as const, percent: 100, shippedAt: '2026-10-22T10:00:00Z' } }
+  const finished = { ...syntheticRequest(), id: 'finished', items: doing, progress: { ...review, state: 'in-progress' as const, percent: 100 } }
+  const model = toWorkModel(snapshotWith([shipped, finished]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  const [shippedCard, finishedCard] = model.requests
+  assert.equal(shippedCard.state, 'shipped')
+  assert.equal(shippedCard.stage, 'Shipped')
+  assert.equal(shippedCard.progress.percent, 100)
+  assert.ok(shippedCard.progress.completedAt, 'the review\'s shippedAt is the completion date')
+  assert.equal(finishedCard.state, 'needs-check')
+  assert.equal(finishedCard.next.who, 'human')
+  assert.equal(finishedCard.progress.percent, 100)
+})
+
 test('goal links: absent is not linked yet, empty is no goal, and an open ask lists the requests that serve it', () => {
   const goalItem = (id: string, kind: 'priority' | 'open-ask') => ({ id, task: id, kind, rank: 1, title: id, product: null, latestAt: null, timesAsked: 1, status: 'todo', evidence: [] })
   const goals = { listId: 'l', listName: 'owner-goals', history: false, project: 'p', updatedAt: '2026-10-22T00:00:00Z', periodStart: null, periodEnd: null, summary: null, generatedAt: '2026-10-22T00:00:00Z', windowDays: 30, sourcePromptCount: 10, mapPath: null, priorities: [goalItem('ship', 'priority')], openAsks: [goalItem('ask', 'open-ask')] }

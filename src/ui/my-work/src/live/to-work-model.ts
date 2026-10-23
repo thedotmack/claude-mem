@@ -119,14 +119,17 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   const copy = raw.humanCopy
   const copyReady = !!copy && ['current', 'outdated'].includes(copy.state)
   const updatedAt = raw.updatedAtEpoch ?? Math.max(0, ...raw.items.map((item) => item.lastUpdateEpoch || 0))
-  const status = normalizeRequestStatus({ items: raw.items, lifecycle: raw.lifecycle, checked: raw.review?.checked === true }, now)
+  const review = raw.progress ?? null
+  // A memory review can be newer than the recorded items: its shipped state and its 100% both count here.
+  const status = normalizeRequestStatus({ items: raw.items, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: review?.state, progressPercent: review?.percent }, now)
+  const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
+  const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
     || NEXT_STEP_NOT_RECORDED
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
-  const review = raw.progress ?? null
   const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
   const readings = review?.readings ?? []
   const evidence = [
@@ -146,7 +149,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     agentId,
     startedAt: started ? formatDateTime(started) : 'Start not recorded',
     startedAtIso: started ? new Date(started).toISOString() : undefined,
-    runningFor: started ? formatDuration((raw.completedAtEpoch ?? now) - started) : 'Not recorded',
+    runningFor: started ? formatDuration((completedEpoch ?? now) - started) : 'Not recorded',
     stage,
     state,
     closed: status === 'closed' || undefined,
@@ -156,7 +159,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
       history: readings.map((reading) => reading.percent),
-      completedAt: status === 'shipped' && raw.completedAtEpoch ? formatDateTime(raw.completedAtEpoch) : undefined,
+      completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped' || review?.state === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },

@@ -65,6 +65,8 @@ export interface WorkViewProgress {
   milestones: { at: string | null; text: string }[]
   /** ISO time the review was recorded. */
   checkedAt: string
+  /** ISO time the work shipped; set only when state is shipped. */
+  shippedAt?: string | null
   /** Every review's percent, oldest first; files from before readings existed carry one. */
   readings: { at: string; percent: number }[]
 }
