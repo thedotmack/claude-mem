@@ -15,6 +15,8 @@ const UNRECORDED_AGENT: Agent = { id: 'agent-not-recorded', tool: 'other', name:
 /** In solo mode every human request comes from the owner's own prompts. */
 const SOLO_REQUESTER = 'You'
 const NEXT_STEP_NOT_RECORDED = 'Next step not recorded'
+/** A request is built from its prompts; until an agent records work it has only asks. */
+const NO_WORK_YET = 'No agent work recorded yet'
 const KNOWN_TOOLS: AgentTool[] = ['claude', 'codex', 'gemini']
 const PLATFORM_LABEL: Record<string, string> = { claude: 'Claude Code', codex: 'Codex', gemini: 'Gemini' }
 const EVIDENCE_URL = /^\/api\/work-view\/evidence\/(work-state|observation|prompt|summary|session)\/\d+$/
@@ -131,13 +133,15 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   // An explicit status recorded after the review (a reopen) wins, and the older review cannot claim it finished.
   const reviewCounts = !!recordedReview && reviewIsNewerThanLifecycle(recordedReview, raw.lifecycle)
   const review = reviewCounts || (recordedReview && recordedReview.percent < 100) ? recordedReview : null
-  const status = normalizeRequestStatus({ items: raw.items, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
+  // With only asks, the latest ask is the request's last update.
+  const statusItems = raw.items.length ? raw.items : [{ kind: 'prompt', status: '', lastUpdateEpoch: updatedAt }]
+  const status = normalizeRequestStatus({ items: statusItems, lifecycle: raw.lifecycle, checked: raw.review?.checked === true, progressState: reviewCounts ? review?.state : null, progressPercent: reviewCounts ? review?.percent : null }, now)
   const shippedAt = review?.state === 'shipped' && review.shippedAt ? Date.parse(review.shippedAt) : NaN
   const completedEpoch = raw.completedAtEpoch ?? (Number.isFinite(shippedAt) ? shippedAt : null)
   const { state, stage, who } = presentStatus(status, now - updatedAt <= STALE_AFTER_MS)
   const recordedNext = (copyReady && cleanText(copy.next, 240))
     || cleanText(raw.items.find((item) => item.nextStep?.text)?.nextStep?.text, 140)
-    || NEXT_STEP_NOT_RECORDED
+    || (raw.items.length ? NEXT_STEP_NOT_RECORDED : NO_WORK_YET)
   const agentId = agents.some((agent) => agent.id === raw.agentIds[0]) ? raw.agentIds[0] : UNRECORDED_AGENT.id
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
@@ -173,7 +177,10 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
     },
     estimate: measuredEstimate(readings, status === 'shipped'),
     next: { who, text: nextTextFor(status, recordedNext) },
-    terminal: raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean),
+    // No agent activity yet: the card shows the human's own asks instead.
+    terminal: raw.activity.length
+      ? raw.activity.slice(0, 4).reverse().map((activity) => cleanText(`${activity.kind} ${activity.title}${activity.detail ? `: ${activity.detail}` : ''}`, 160)).filter(Boolean)
+      : [raw.original, ...raw.scopeUpdates].slice(-4).map((prompt) => cleanText(`ask ${prompt.text}`, 160)).filter(Boolean),
     activityWord: copyReady ? 'Working' : 'Translating',
     workstreams: raw.workstreams.map((stream) => ({
       title: cleanText(copy?.workstreams?.find((entry) => entry.id === stream.id)?.title, 115) || 'Supporting work',

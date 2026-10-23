@@ -4,6 +4,7 @@ import { buildHumanRequests } from './request-projection.mjs';
 import { OWNER_GOALS_LIST, isOwnerGoalsList } from './owner-goals.mjs';
 import { buildRules, isMyRulesList } from './my-rules.mjs';
 import { isWorkProductField, productsFromFields, readProductRecords } from './work-product.mjs';
+import { withDerivedProjects } from './session-project.mjs';
 const PROJECT_KEY = (value) => String(value ?? '').replace(/[A-Z]/g, (c) => c.toLowerCase());
 const CLOSED = new Set(['done', 'dropped', 'completed', 'failed']);
 const PLATFORMS = { codex: 'Codex', claude: 'Claude Code', 'gemini-cli': 'Gemini CLI', kimi: 'Kimi', 'hermes-cli': 'Hermes', 'pi-agent': 'Pi' };
@@ -70,7 +71,10 @@ export function activitySignature(database) {
 
 // Bounds are deliberate: observers can have years of history. Full legacy
 // work-state history remains on /api/state; this view only needs a recent slice.
-export function readAgentRecords(database, { observationLimit = 300, summaryLimit = 100, workCallLimit = 5000, workState } = {}) {
+// Request cards come from prompts, so the conversations a ledger group holds
+// and conversations with a recent ask are read even before any work exists.
+export const REQUEST_WINDOW_MS = 14 * 86400000;
+export function readAgentRecords(database, { observationLimit = 300, summaryLimit = 100, workCallLimit = 5000, requestSessionLimit = 600, workState, ledger = null, now = Date.now() } = {}) {
   const recentWorkTimes = workState?.lists.flatMap((list) => [list.stateUpdatedAtEpoch, ...list.tasks.map((task) => task.updatedAtEpoch)]).filter(Boolean).sort((a, b) => b - a).slice(0, 240);
   const workSinceEpoch = recentWorkTimes?.length ? recentWorkTimes.at(-1) - 5000 : 0;
   const calls = safeRead(database, `SELECT id, project, platform_source, agent_id, agent_type, session_db_id, memory_session_id, content_session_id, prompt_number, tool_input, created_at_epoch
@@ -86,8 +90,21 @@ export function readAgentRecords(database, { observationLimit = 300, summaryLimi
   const predicates = [], args = [];
   if (ids.length) { predicates.push(`id IN (${ids.map(() => '?')})`); args.push(...ids); }
   if (memoryIds.length) { predicates.push(`memory_session_id IN (${memoryIds.map(() => '?')})`); args.push(...memoryIds); }
-  const sessions = predicates.length ? safeRead(database, `SELECT id, project, platform_source, content_session_id, memory_session_id, user_prompt, custom_title, status, started_at_epoch, completed_at_epoch
-    FROM sdk_sessions WHERE ${predicates.join(' OR ')}`, args) : [];
+  const columns = 'id, project, platform_source, content_session_id, memory_session_id, user_prompt, custom_title, status, started_at_epoch, completed_at_epoch';
+  const loaded = new Map((predicates.length ? safeRead(database, `SELECT ${columns} FROM sdk_sessions WHERE ${predicates.join(' OR ')}`, args) : []).map((session) => [session.id, session]));
+  const recentAsks = safeRead(database, `SELECT ${columns} FROM sdk_sessions WHERE id IN (
+    SELECT session_db_id FROM user_prompts WHERE created_at_epoch >= ? GROUP BY session_db_id ORDER BY MAX(created_at_epoch) DESC LIMIT ?)`, [now - REQUEST_WINDOW_MS, requestSessionLimit]);
+  const grouped = Object.keys(ledger?.groups?.conversations ?? {}).flatMap((key) => {
+    try { const parsed = JSON.parse(key); return parsed?.[0] === 'conversation' && parsed.length === 3 ? [[parsed[1], parsed[2]]] : []; } catch { return []; }
+  });
+  const groupedSessions = [];
+  for (let index = 0; index < grouped.length; index += 400) {
+    const chunk = grouped.slice(index, index + 400);
+    groupedSessions.push(...safeRead(database, `SELECT ${columns} FROM sdk_sessions WHERE (platform_source, content_session_id) IN (VALUES ${chunk.map(() => '(?, ?)').join(',')})`, chunk.flat()));
+  }
+  for (const session of [...recentAsks, ...groupedSessions]) if (!loaded.has(session.id)) loaded.set(session.id, session);
+  // A session started from an agent scratch folder takes the repo its tool calls touched.
+  const sessions = withDerivedProjects(database, [...loaded.values()]);
   const sessionIds = sessions.map((session) => session.id);
   const prompts = sessionIds.length ? safeRead(database, `SELECT id, session_db_id, prompt_number, substr(prompt_text, 1, 1200) AS prompt_text, created_at_epoch
     FROM user_prompts WHERE session_db_id IN (${sessionIds.map(() => '?')}) ORDER BY id DESC LIMIT 12000`, sessionIds) : [];
