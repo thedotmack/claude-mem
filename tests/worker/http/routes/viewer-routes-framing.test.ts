@@ -104,6 +104,10 @@ describe('static /viewer.html', () => {
     it(`refuses framing for ${rawPath}, so the same page cannot be framed by file URL`, async () => {
       await withWorkerStaticMount(async (baseUrl) => {
         const response = await getRaw(baseUrl, rawPath);
+        // `/Viewer.html` only reaches the file on a case-insensitive disk
+        // (macOS, Windows); elsewhere it is a 404 with no page to frame.
+        if (rawPath === '/Viewer.html' && response.status === 404) return;
+        expect(response.status).toBe(200);
         expect(response.headers['content-security-policy']).toContain("frame-ancestors 'none'");
         expect(response.headers['x-frame-options']).toBe('DENY');
       });
