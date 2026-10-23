@@ -322,9 +322,16 @@ export async function ingestObservation(payload: ObservationPayload, handoff: In
     tool_response: cleanedToolResponse,
     prompt_number: promptNumber,
     cwd: cwd || (() => {
-      logger.error('INGEST', 'Missing cwd when ingesting observation', {
+      // A host with no checkout (ODS, other HTTP hosts) names its project at
+      // session init and never sends a cwd; that is expected. Without a
+      // project from init, a missing cwd is a capture fault.
+      const sessionProject = store.getSessionById(sessionDbId)?.project;
+      const hostHasNoCheckout = !!sessionProject && sessionProject !== 'unknown';
+      const log = hostHasNoCheckout ? logger.debug : logger.error;
+      log.call(logger, 'INGEST', 'Missing cwd when ingesting observation', {
         sessionId: sessionDbId,
         toolName: payload.toolName,
+        project: sessionProject,
       });
       return '';
     })(),
