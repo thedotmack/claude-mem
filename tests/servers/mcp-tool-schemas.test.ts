@@ -51,7 +51,7 @@ describe('MCP tool inputSchema declarations', () => {
     expect(section).toContain("callWorker('/api/work-state/entries'");
     expect(section).toContain("name: 'work_state_read'");
     expect(section).toContain("callWorker('/api/work-state'");
-    expect(section.match(/cwd: process\.cwd\(\)/g)).toHaveLength(2);
+    expect(section.match(/cwd: getRequestCwd\(\)/g)).toHaveLength(2);
   });
 
   it('session_start_context exposes worker SessionStart renderer parameters', async () => {
