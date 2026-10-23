@@ -362,6 +362,34 @@ describe('orphaned worktree adoption (#2864)', () => {
     }
   }, 30_000);
 
+  it('does not adopt an isolated child environment whose name resembles a worktree key (#4782)', async () => {
+    tempRoot = mkdtempSync(path.join(tmpdir(), 'claude-mem-4782-adoption-'));
+    const mainRepo = path.join(tempRoot, 'workspace');
+    const child = path.join(mainRepo, 'business-a');
+    const dataDirectory = path.join(tempRoot, 'data');
+    initRepo(mainRepo);
+    mkdirSync(child);
+    mkdirSync(dataDirectory);
+    const saved = process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+    process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = JSON.stringify([
+      { name: 'workspace/business-a', patterns: [`${child}/**`], inherit: [] },
+    ]);
+    try {
+      const dbPath = path.join(dataDirectory, 'claude-mem.db');
+      const store = new SessionStore(dbPath);
+      seedSessionWithCheckout(store, 'isolated-content', 'workspace/business-a', 'isolated-memory', child, 'environment');
+      const id = seedObservation(store, 'isolated-memory', 'workspace/business-a');
+      store.close();
+      const result = await adoptMergedWorktrees({ repoPath: mainRepo, dataDirectory });
+      expect(result.errors).toEqual([]);
+      expect(result.orphanedWorktrees).toEqual([]);
+      expect(mergedInto(dbPath, id)).toBeNull();
+    } finally {
+      if (saved === undefined) delete process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS;
+      else process.env.CLAUDE_MEM_PROJECT_ENVIRONMENTS = saved;
+    }
+  }, 30_000);
+
   // #2827 — worktree composites are folder-based keys. With git-remote naming
   // on, a deleted worktree's rows from before the switch are still folded into
   // the repository's folder-based key (which the repository keeps reading), and

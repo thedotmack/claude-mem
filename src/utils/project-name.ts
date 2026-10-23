@@ -190,7 +190,7 @@ let environmentsCache: { raw: unknown; environments: ProjectEnvironment[] } | nu
 /**
  * Named environments (CLAUDE_MEM_PROJECT_ENVIRONMENTS, env wins), read live
  * like the other identity settings and re-parsed only when the raw value
- * changes, so an invalid value warns once rather than on every resolution.
+ * changes, so invalid legacy values warn once rather than on every resolution.
  */
 export function loadProjectEnvironments(): ProjectEnvironment[] {
   const raw = process.env[PROJECT_ENVIRONMENTS_SETTING] ?? readIdentitySettings().CLAUDE_MEM_PROJECT_ENVIRONMENTS;
@@ -281,7 +281,7 @@ export function getProjectName(
   // identity, so it wins over every derived name.
   const environment = matchProjectEnvironment(expanded, loadProjectEnvironments());
   if (environment) {
-    return environment;
+    return environment.name;
   }
 
   // #2663 — inside a repo, the git root names the project so the name is stable
@@ -382,20 +382,25 @@ export function getProjectContext(
   const derivedContext = slug ? withPrimaryKey(pathContext, slug, 'git-remote') : pathContext;
 
   // #2737 — a configured environment wins over every derived name, and the
-  // derived keys stay readable so memory stored before the environment existed
-  // is not hidden (`project merge` folds it in permanently).
+  // derived keys stay readable by default. An explicit inherit list replaces
+  // them, letting a child project choose its own read boundary (#4782).
   const environment = matchProjectEnvironment(expandedCwd, loadProjectEnvironments());
-  return environment ? withPrimaryKey(derivedContext, environment, 'environment') : derivedContext;
+  return environment ? withPrimaryKey(derivedContext, environment.name, 'environment', environment.inherit) : derivedContext;
 }
 
-/** Re-key a context to `primary`, keeping every key it already read as a read-only alias. */
-function withPrimaryKey(context: ProjectContext, primary: string, keySource: ProjectKeySource): ProjectContext {
+/** Re-key a context, retaining its read keys unless an explicit scope replaces them. */
+function withPrimaryKey(
+  context: ProjectContext,
+  primary: string,
+  keySource: ProjectKeySource,
+  readKeys: string[] = context.allProjects,
+): ProjectContext {
   return {
     primary,
     parent: null,
     isWorktree: context.isWorktree,
     isSubmodule: context.isSubmodule,
-    allProjects: [...context.allProjects.filter(key => key !== primary), primary],
+    allProjects: [...new Set(readKeys.filter(key => key !== primary)), primary],
     keySource,
   };
 }
