@@ -128,7 +128,7 @@ export class SearchRoutes extends BaseRouteHandler {
     // Records each live SessionStart render so the hook can read it from disk
     // next time (liveness plan, Phase 6). Null in tests and tools that only
     // need the route.
-    private contextCache: (Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> & Partial<Pick<ContextCacheService, 'invalidationGenerationNow'>>) | null = null,
+    private contextCache: (Pick<ContextCacheService, 'recordLiveRender' | 'removalGenerationNow' | 'warmVariant'> & Partial<Pick<ContextCacheService, 'invalidationGenerationNow' | 'beginRenderSequence'>>) | null = null,
     // Cloud sync's pull loop (null when sync is off). Structural so tests can stub it.
     private syncClient: { pullOnce(options?: { timeoutMs?: number }): Promise<void>; isSocketLive(): boolean } | null = null,
     private contextReader: ContextReadWorkerClient | null = null,
@@ -258,6 +258,7 @@ export class SearchRoutes extends BaseRouteHandler {
     try {
       res.json(progressiveSearchToolResult(await this.progressiveSearch.run(input as ProgressiveSearchInput, projects)));
     } catch (error) {
+      logger.warn('HTTP', 'Progressive memory search failed', { projectCount: Array.isArray(projects) ? projects.length : projects ? 1 : 0 }, error instanceof Error ? error : new Error(String(error)));
       res.json(progressiveSearchToolError(error));
     }
   });
@@ -430,6 +431,8 @@ export class SearchRoutes extends BaseRouteHandler {
     // A delete that lands while this renders must not see its row written back to the cache.
     const removalGenerationAtRenderStart = this.contextCache?.removalGenerationNow();
     const invalidationGenerationAtStart = this.contextCache?.invalidationGenerationNow?.();
+    // A queued re-render that starts after this one must win, even if it finishes first.
+    const renderSequenceAtStart = this.contextCache?.beginRenderSequence?.();
     let rendered: ContextInjectRender;
     try {
       rendered = await this.renderContextInjectBody({ projects, platformSource, forHuman, full, cwd: hostCwd || undefined, sessionId: hostSessionId, includePriorMessage: showLastMessage });
@@ -481,6 +484,7 @@ export class SearchRoutes extends BaseRouteHandler {
             },
             respondedAtEpochMs,
             removalGenerationAtRenderStart,
+            renderSequenceAtStart,
           );
         }
       } catch (error) {

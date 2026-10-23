@@ -7,6 +7,7 @@ import { resolveRuntimeContext } from '../hooks/runtime-selector.js';
 import { SQLITE_BUSY_TIMEOUT_MS } from '../sqlite/connection.js';
 import { projectReadKeys } from '../sqlite/project-read-keys.js';
 import { getWorkStateEntries, scopeWorkStateEntries } from '../sqlite/work-state.js';
+import { SessionSearch } from '../sqlite/SessionSearch.js';
 import { countObservationsByProjects } from './ObservationCompiler.js';
 import { generateContextWithStats } from './ContextBuilder.js';
 import type { ContextReadReply, ContextReadRequest } from './ContextReadProtocol.js';
@@ -23,6 +24,30 @@ function readDatabase<T>(read: (db: Database) => T): T {
   } finally {
     db.close();
   }
+}
+
+/**
+ * Keyword search keeps one read-only connection for the life of this thread.
+ * It is not `query_only`: SessionSearch builds fts5vocab tables in the
+ * connection's temp schema to pick rare terms (#4804), and query_only refuses
+ * even temp DDL, which silently degraded long and multi-word queries. The
+ * read-only open still refuses every write to the database. Keeping the
+ * connection also reuses those vocab tables and never closes a connection
+ * under SessionSearch's prepared statements.
+ */
+let keywordSearch: SessionSearch | null = null;
+
+function keywordSearchReader(): SessionSearch {
+  if (keywordSearch) return keywordSearch;
+  const db = new Database(DB_PATH, { readonly: true, create: false });
+  try {
+    db.run(`PRAGMA busy_timeout = ${SQLITE_BUSY_TIMEOUT_MS}`);
+    keywordSearch = new SessionSearch(db, { readOnly: true });
+  } catch (error) {
+    db.close();
+    throw error;
+  }
+  return keywordSearch;
 }
 
 async function execute(request: ContextReadRequest): Promise<unknown> {
@@ -42,6 +67,12 @@ async function execute(request: ContextReadRequest): Promise<unknown> {
       return readDatabase(db => countObservationsByProjects({ db }, request.input.projects, request.input.platformSource) > 0);
     case 'projectsForCwd':
       return getProjectContext(request.input.cwd).allProjects;
+    case 'searchObservations':
+      return keywordSearchReader().searchObservations(request.input.query, request.input.options);
+    case 'searchSessions':
+      return keywordSearchReader().searchSessions(request.input.query, request.input.options);
+    case 'searchUserPrompts':
+      return keywordSearchReader().searchUserPrompts(request.input.query, request.input.options);
   }
 }
 
