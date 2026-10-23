@@ -103,13 +103,16 @@ function SectionLabel({ children }: { children: ReactNode }) {
 function RequestRow({ request, onOpen }: { request: Request; onOpen: (request: Request) => void }) {
   return (
     <Req ids={['R3.1', 'R2.1']}>
-      <button type="button" onClick={() => onOpen(request)} className="grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 rounded-lg border bg-card px-3 py-2.5 text-left hover:bg-surface-cool sm:grid-cols-[auto_minmax(0,1fr)_auto_10rem_auto]">
-        <AgentIcon agentId={request.agentId} />
-        <span className={cn('line-clamp-2 text-sm sm:truncate', request.title ? 'font-medium' : 'text-muted-foreground italic')}>{requestTitle(request)}</span>
-        <ChevronRightIcon className="size-4 text-muted-foreground sm:order-last" />
-        <span className="col-start-2 flex sm:col-start-auto"><StateBadge state={request.state} /></span>
-        <span className="col-span-2 col-start-2 sm:col-span-1 sm:col-start-auto"><ProgressMeter request={request} compact /></span>
-      </button>
+      {/* Sized by its own width: inside a priority card the row is far narrower than the viewport. */}
+      <div className="@container">
+        <button type="button" onClick={() => onOpen(request)} className="grid min-h-12 w-full grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1.5 rounded-lg border bg-card px-3 py-2.5 text-left hover:bg-surface-cool @xl:grid-cols-[auto_minmax(0,1fr)_auto_10rem_auto]">
+          <AgentIcon agentId={request.agentId} />
+          <span className={cn('line-clamp-2 text-sm @xl:truncate', request.title ? 'font-medium' : 'text-muted-foreground italic')}>{requestTitle(request)}</span>
+          <ChevronRightIcon className="size-4 text-muted-foreground @xl:order-last" />
+          <span className="col-start-2 flex @xl:col-start-auto"><StateBadge state={request.state} /></span>
+          <span className="col-span-2 col-start-2 @xl:col-span-1 @xl:col-start-auto"><ProgressMeter request={request} compact /></span>
+        </button>
+      </div>
     </Req>
   )
 }
@@ -190,7 +193,7 @@ function PriorityItem({ goal, highlighted, onOpen }: { goal: GoalItem; highlight
   const shippedBefore = askedAgainAfter(goal, requests)
   return (
     <Req ids={['D1', 'R3.8']}>
-      <AccordionItem value={goal.id} id={goalAnchor(goal.id)} className={cn('scroll-mt-24 px-3 sm:px-4 motion-safe:transition-colors motion-safe:duration-700', highlighted && 'bg-accent')}>
+      <AccordionItem value={goal.id} id={goalAnchor(goal.id)} className={cn('@container scroll-mt-24 px-3 sm:px-4 motion-safe:transition-colors motion-safe:duration-700', highlighted && 'bg-accent')}>
         <AccordionTrigger className="min-h-16 items-center gap-3 py-3 hover:no-underline">
           <span className={cn('flex size-7 shrink-0 items-center justify-center self-start rounded-md bg-muted text-xs tabular-nums', goal.rank === 1 ? 'font-semibold text-foreground' : 'text-muted-foreground')}>{goal.rank}</span>
           <span className="min-w-0 flex-1 space-y-1">
@@ -201,9 +204,9 @@ function PriorityItem({ goal, highlighted, onOpen }: { goal: GoalItem; highlight
               <GoalStatusText status={status} />
               <span>· {timesLabel(goal.timesAsked)}, last {formatPromptDay(goal.latestAt)}<span className="hidden sm:inline"> · {goal.product}</span></span>
             </span>
-            <Rollup status={status} requests={requests} className="pt-1 font-normal sm:hidden" />
+            <Rollup status={status} requests={requests} className="pt-1 font-normal @2xl:hidden" />
           </span>
-          <Rollup status={status} requests={requests} className="hidden w-56 shrink-0 font-normal sm:block" />
+          <Rollup status={status} requests={requests} className="hidden w-56 shrink-0 font-normal @2xl:block" />
         </AccordionTrigger>
         <AccordionContent className="space-y-4 pb-3 sm:pl-10 [&_a]:no-underline [&_p:not(:last-child)]:mb-0">
           {requests.length > 0 ? (
@@ -341,7 +344,7 @@ function Lead() {
     <Req ids={['R12.3', 'R12.2', 'R3.9']}>
       <div className="space-y-2">
         <p className="text-base leading-snug font-semibold text-balance sm:text-lg">
-          Your work is moving {count('moving')} of your top {top.length} priorities. {count('your-move')} is waiting on you, and {count('nothing')} has nothing working on it.
+          Your work is moving {count('moving')} of your top {top.length} priorities. {count('your-move')} {count('your-move') === 1 ? 'is' : 'are'} waiting on you, and {count('nothing')} {count('nothing') === 1 ? 'has' : 'have'} nothing working on it.
         </p>
         <p className="hidden text-sm text-muted-foreground lg:block">
           {unserved.length} open asks have no request yet.{mostAsked && <> The one you’ve asked for most is “{mostAsked.title}”, {mostAsked.timesAsked} times.</>}
@@ -393,9 +396,9 @@ function NowView({ onOpen, focus }: { onOpen: (request: Request) => void; focus:
         <div className="contents lg:block lg:space-y-8">
           <Req ids={['R3.1', 'R3.9']}>
             <section className="order-1 space-y-2 lg:order-none">
-              <div className="flex items-baseline justify-between">
-                <h2 className="text-base font-semibold">Top priorities</h2>
-                <span className="hidden text-xs text-muted-foreground sm:inline">ranked by how recent, how often and how strongly you asked</span>
+              <div className="flex items-baseline justify-between gap-3">
+                <h2 className="shrink-0 text-base font-semibold">Top priorities</h2>
+                <span className="hidden text-right text-xs text-muted-foreground sm:inline">ranked by how recent, how often and how strongly you asked</span>
               </div>
               <div className="overflow-hidden rounded-xl border bg-card">
                 <Accordion type="multiple" value={focus.openGoals} onValueChange={focus.setOpenGoals}>
