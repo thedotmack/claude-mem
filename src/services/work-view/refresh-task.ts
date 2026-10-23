@@ -173,7 +173,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
     needs.goalsStale
       ? `1. Run the /claude-mem:owner-goals skill. Use the folder ${goalsFolder} for its files.\n2. Then run the /claude-mem:request-progress skill.`
       : '1. Run the /claude-mem:request-progress skill.',
-    'Do every step of request-progress over its default 14-day window: group every ungrouped conversation, review every due group (run `pending` again after each round until `due` is 0; there is no group cap), link the groups to the goals, and write the build story. Take as long as the work needs.',
+    'Run request-progress over its default 14-day window and do only what is due: group every ungrouped conversation, review every due group (run `pending` again after each round until `due` is 0; there is no group cap), link only the groups `align-input` lists (skip section 3 when it lists none), and update the build story only from the reviews `story-input` lists (skip section 4 when it lists none). Take as long as the work needs.',
     'Rules for this run:',
     `- Call the CLI by its full path in every command, for example: bun "${paths.cli}" pending --days 14 --limit 48. Do not define shell variables. Bash may run only bun "${paths.cli}", python3 "${paths.exportScript}" and python3 "${paths.saveScript}", one command per call, with JSON passed through a quoted heredoc.`,
     `- Write files only inside ${goalsFolder}.`,
@@ -281,22 +281,24 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       }
       if (reviewed) done.push(`${reviewed} requests reviewed`);
 
+      // Only groups not yet aligned to the current goals.
       const alignInput = cli(['align-input']);
-      if (alignInput.goals.goals.length) {
+      if (alignInput.groups.length) {
         const aligned = await step('alignment', [
           requestProgress, '---', readOnly,
-          `Do only section 3 (link each request to the goals it serves). The \`align-input\` output is in ${writeInput('align-input', alignInput)}. Reply with only the JSON that \`record-alignment\` takes ({"links": [...], "unaligned": [...]}); every group must appear in one of them.`,
+          `Do only section 3 (link each request to the goals it serves) for the groups in the \`align-input\` output in ${writeInput('align-input', alignInput)}. Reply with only the JSON that \`record-alignment\` takes ({"links": [...], "unaligned": [...]}); every listed group must appear in one of them.`,
         ].join('\n\n'), answer => cli(['record-alignment'], answer));
         done.push(`${aligned.aligned} linked to goals`);
       }
 
+      // Only reviews whose state or percent moved since the last story; none means the story still holds.
       const storyInput = cli(['story-input']);
-      if (reviewed || (!storyInput.previousStory && storyInput.reviews.length)) {
+      if (storyInput.reviews.length) {
         await step('build story', [
           requestProgress, '---', readOnly,
-          `Do only section 4 (write the build story). The \`story-input\` output is in ${writeInput('story-input', storyInput)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
+          `Do only section 4 (${storyInput.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', storyInput)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
         ].join('\n\n'), answer => cli(['record-story'], answer));
-        done.push('story rewritten');
+        done.push(storyInput.update ? 'story updated' : 'story written');
       }
       return done.length ? `${done.join(', ')}.` : 'Nothing was due.';
     } finally {

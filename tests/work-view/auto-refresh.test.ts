@@ -210,7 +210,7 @@ describe('refresh task', () => {
         if (prompt.includes('Do only section 4')) return JSON.stringify({ narrative: 'One request is under way.', preferences: [] });
         throw new Error(`Unexpected prompt: ${prompt.slice(-200)}`);
       };
-      expect(await task.inline(ask, 'codex')).toBe('1 conversations in 1 groups, 1 requests reviewed, story rewritten.');
+      expect(await task.inline(ask, 'codex')).toBe('1 conversations in 1 groups, 1 requests reviewed, story written.');
       const ledger = readLedger(dir);
       expect(Object.values(ledger.groups.groups).map((group: any) => group.title)).toEqual(['Release cards']);
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);

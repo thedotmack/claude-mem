@@ -281,6 +281,51 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
+  it('align-input lists only groups still to align; record-alignment keeps the other groups\' links', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    saveGoals(database, '2026-10-01T10:00:00Z');
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    run(['record-alignment', write('a1.json', { links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'The cards.' }] })]);
+    run(['apply', write('d2.json', { groups: [{ title: 'Pricing page', conversations: [key('c')] }] })]);
+    // Only the new group is listed; the aligned one is not sent again.
+    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('c'))]);
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(1);
+    expect(() => run(['record-alignment', write('a2.json', { links: [] })])).toThrow(/missing g_/);
+    expect(run(['record-alignment', write('a3.json', { links: [], unaligned: [groupIdFor(key('c'))] })])).toEqual({ aligned: 0, unaligned: 1 });
+    const stored = readLedger(dir).alignment;
+    expect(stored.links[groupIdFor(key('a'))][0].evidence).toBe('The cards.');
+    expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
+    expect(run(['align-input']).groups).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('story-input lists every review without a story, then only reviews whose state or percent changed', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    const review = (session: string, percent: number, now: number) => run(['record-progress', write('r.json', { groupId: groupIdFor(key(session)), state: 'in-progress', percent, summary: 'Under way.', reviewBasis: run(['show', groupIdFor(key(session))], now).reviewBasis })], now);
+    review('a', 40, NOW); review('c', 40, NOW);
+    expect(run(['story-input'])).toMatchObject({ update: false, reviews: [{ percent: 40 }, { percent: 40 }] });
+    run(['record-story', write('s.json', { narrative: 'Two requests under way.' })], NOW + 1000);
+    // Re-reviewed with the same state and percent: the story still holds.
+    review('a', 40, NOW + 2000);
+    expect(run(['story-input'])).toMatchObject({ update: true, reviews: [] });
+    review('c', 60, NOW + 3000);
+    const input = run(['story-input']);
+    expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
+    expect(input.previousStory.narrative).toBe('Two requests under way.');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
   it('a refresh is needed for due reviews, stale goals or unaligned groups, and not otherwise', () => {
   const dir = ledgerDir();
   try {
