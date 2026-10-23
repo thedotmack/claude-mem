@@ -29,6 +29,13 @@ export async function startWireGatewayForTest(
     // Captured events go nowhere unless a test asks for them: a default sink
     // would nudge whatever worker listens on this machine's worker port.
     capture: { eventSink: { emit: () => undefined }, recordingCleanupIntervalMs: 0, ...options.capture },
+    // Memory injection is on for wire routes by default (plan D9): a test
+    // must never reach whatever worker listens on this machine, so the
+    // memory stages see no worker unless a test gives them one.
+    memory: {
+      injection: { fetchContext: () => Promise.reject(new Error('no worker in this test')), ...options.memory?.injection },
+      search: { searcher: () => Promise.reject(new Error('no worker in this test')), ...options.memory?.search },
+    },
   });
   await service.start();
   const port = service.port;

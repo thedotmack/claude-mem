@@ -22,6 +22,8 @@ export interface DirectHttpRequest {
   jsonBody?: unknown;
   timeoutMs: number;
   maximumResponseBytes?: number;
+  /** Gives up when it aborts (null; requestDirectlyWithOutcome says `aborted`). */
+  signal?: AbortSignal;
 }
 
 export interface DirectHttpResponse {
@@ -94,37 +96,63 @@ export async function readResponseTextWithinLimit(response: Response, maximumRes
   return Buffer.concat(chunks).toString('utf-8');
 }
 
-async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<DirectHttpResponse | null> {
+/** Why a direct request has no answer. */
+export type DirectHttpFailure =
+  | { reason: 'aborted' }
+  | { reason: 'timeout'; timeoutMs: number }
+  | { reason: 'unreachable'; detail: string }
+  | { reason: 'too_large'; maximumResponseBytes: number }
+  | { reason: 'not_http' }
+  | { reason: 'bad_url'; detail: string };
+
+export type DirectHttpOutcome = { response: DirectHttpResponse } | { failure: DirectHttpFailure };
+
+/** A failure as words, for an error message: `what` names the server asked ("the worker"). */
+export function describeDirectHttpFailure(failure: DirectHttpFailure, what: string): string {
+  switch (failure.reason) {
+    case 'aborted': return `the request to ${what} was aborted`;
+    case 'timeout': return `no answer from ${what} within ${failure.timeoutMs} ms`;
+    case 'unreachable': return `${what} could not be reached (${failure.detail})`;
+    case 'too_large': return `${what} answered more than ${failure.maximumResponseBytes} bytes`;
+    case 'not_http': return `${what} answered something that is not HTTP`;
+    case 'bad_url': return `${what} has no usable address (${failure.detail})`;
+  }
+}
+
+async function requestOverFetch(url: URL, request: DirectHttpRequest): Promise<DirectHttpOutcome> {
+  const maximumResponseBytes = request.maximumResponseBytes ?? DIRECT_HTTP_DEFAULT_MAXIMUM_RESPONSE_BYTES;
   try {
     const response = await fetch(url, {
       method: request.method ?? 'GET',
       headers: request.jsonBody === undefined ? { accept: 'application/json' } : { accept: 'application/json', 'content-type': 'application/json' },
       body: request.jsonBody === undefined ? undefined : JSON.stringify(request.jsonBody),
       redirect: 'manual',
-      signal: AbortSignal.timeout(request.timeoutMs),
+      signal: request.signal ? AbortSignal.any([request.signal, AbortSignal.timeout(request.timeoutMs)]) : AbortSignal.timeout(request.timeoutMs),
     });
-    const bodyText = await readResponseTextWithinLimit(response, request.maximumResponseBytes ?? DIRECT_HTTP_DEFAULT_MAXIMUM_RESPONSE_BYTES);
-    return bodyText === null ? null : { statusCode: response.status, bodyText };
-  } catch {
-    // Unreachable, refused or timed out: no answer.
-    return null;
+    const bodyText = await readResponseTextWithinLimit(response, maximumResponseBytes);
+    return bodyText === null ? { failure: { reason: 'too_large', maximumResponseBytes } } : { response: { statusCode: response.status, bodyText } };
+  } catch (error) {
+    // Aborted by the caller, timed out, or unreachable: said apart.
+    if (request.signal?.aborted) return { failure: { reason: 'aborted' } };
+    if (error instanceof Error && error.name === 'TimeoutError') return { failure: { reason: 'timeout', timeoutMs: request.timeoutMs } };
+    return { failure: { reason: 'unreachable', detail: error instanceof Error ? error.message : String(error) } };
   }
 }
 
 /**
- * One HTTP/1.1 request, never through a proxy (for http://). Resolves null
- * when nothing answers in time, the answer is not HTTP, or it is larger than
- * the cap (https:// too) — never throws.
+ * One HTTP/1.1 request, never through a proxy (for http://), and why there is
+ * no answer when there is none: aborted, timed out, unreachable, larger than
+ * the cap (https:// too), not HTTP. Never throws.
  */
-export function requestDirectly(request: DirectHttpRequest): Promise<DirectHttpResponse | null> {
+export function requestDirectlyWithOutcome(request: DirectHttpRequest): Promise<DirectHttpOutcome> {
   let url: URL;
   try {
     url = new URL(request.url);
-  } catch {
-    return Promise.resolve(null);
+  } catch (error) {
+    return Promise.resolve({ failure: { reason: 'bad_url', detail: error instanceof Error ? error.message : String(error) } });
   }
   if (url.protocol === 'https:') return requestOverFetch(url, request);
-  if (url.protocol !== 'http:') return Promise.resolve(null);
+  if (url.protocol !== 'http:') return Promise.resolve({ failure: { reason: 'bad_url', detail: `${url.protocol} is not http: or https:` } });
   const maximumResponseBytes = request.maximumResponseBytes ?? DIRECT_HTTP_DEFAULT_MAXIMUM_RESPONSE_BYTES;
   const bodyBytes = request.jsonBody === undefined ? null : Buffer.from(JSON.stringify(request.jsonBody), 'utf-8');
   const headLines = [
@@ -134,21 +162,25 @@ export function requestDirectly(request: DirectHttpRequest): Promise<DirectHttpR
     'Connection: close',
     ...(bodyBytes ? ['Content-Type: application/json', `Content-Length: ${bodyBytes.length}`] : []),
   ];
+  if (request.signal?.aborted) return Promise.resolve({ failure: { reason: 'aborted' } });
   const host = url.hostname.replace(/^\[|\]$/g, '');
   const port = Number(url.port || 80);
-  return new Promise<DirectHttpResponse | null>((resolve) => {
+  return new Promise<DirectHttpOutcome>((resolve) => {
     const received: Buffer[] = [];
     let receivedBytes = 0;
     let settled = false;
-    const finish = (answer: DirectHttpResponse | null) => {
+    const onAbort = () => finish({ failure: { reason: 'aborted' } });
+    const finish = (outcome: DirectHttpOutcome) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      request.signal?.removeEventListener('abort', onAbort);
       socket.destroy();
-      resolve(answer);
+      resolve(outcome);
     };
     const socket = connect({ host, port });
-    const timer = setTimeout(() => finish(null), request.timeoutMs);
+    const timer = setTimeout(() => finish({ failure: { reason: 'timeout', timeoutMs: request.timeoutMs } }), request.timeoutMs);
+    request.signal?.addEventListener('abort', onAbort, { once: true });
     socket.on('connect', () => {
       socket.write(`${headLines.join('\r\n')}\r\n\r\n`);
       if (bodyBytes) socket.write(bodyBytes);
@@ -156,14 +188,27 @@ export function requestDirectly(request: DirectHttpRequest): Promise<DirectHttpR
     socket.on('data', (chunk: Buffer) => {
       receivedBytes += chunk.length;
       if (receivedBytes > maximumResponseBytes) {
-        finish(null);
+        finish({ failure: { reason: 'too_large', maximumResponseBytes } });
         return;
       }
       received.push(chunk);
     });
-    socket.on('end', () => finish(parseRawHttpResponse(Buffer.concat(received))));
-    socket.on('error', () => finish(null));
+    socket.on('end', () => {
+      const response = parseRawHttpResponse(Buffer.concat(received));
+      finish(response ? { response } : { failure: { reason: 'not_http' } });
+    });
+    socket.on('error', (error: Error) => finish({ failure: { reason: 'unreachable', detail: error.message } }));
   });
+}
+
+/**
+ * One HTTP/1.1 request, never through a proxy (for http://). Resolves null
+ * when nothing answers in time, the answer is not HTTP, or it is larger than
+ * the cap (https:// too) — never throws. requestDirectlyWithOutcome says which.
+ */
+export async function requestDirectly(request: DirectHttpRequest): Promise<DirectHttpResponse | null> {
+  const outcome = await requestDirectlyWithOutcome(request);
+  return 'response' in outcome ? outcome.response : null;
 }
 
 /** requestDirectly with the body parsed as JSON (`body: null` when it is not JSON); null when nothing answered. */

@@ -59,7 +59,7 @@ describe('MCP runtime-aware tool visibility', () => {
   });
 
   it('tools/list path references the helper so discovery is runtime-aware', () => {
-    const mcpServerPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-server.ts');
+    const mcpServerPath = join(import.meta.dir, '..', '..', 'src', 'servers', 'mcp-tool-table.ts');
     const mcpServerSrc = readFileSync(mcpServerPath, 'utf-8');
 
     expect(mcpServerSrc).toContain('getAdvertisedMcpToolsForRuntime(tools, selectRuntime())');

@@ -67,3 +67,54 @@ export function splitSseEvent(event: string): SplitSseEvent | null {
   if (data === '' || (data[0] !== '{' && data[0] !== '[')) return null;
   return { name, data, before: event.slice(0, offset + dataStart), after: event.slice(offset + line.length) };
 }
+
+/**
+ * A reply's bytes, held until whole SSE events can be taken off the front
+ * (one event's end may arrive chunks later). Shared by the placeholder
+ * restorer, the response stages and the memory_search stitchers.
+ */
+export class SseEventBuffer {
+  private buffered: Uint8Array = new Uint8Array(0);
+  /** How far `buffered` was already searched for an event's end, less the separator's own length. */
+  private searchedUpTo = 0;
+
+  get heldBytes(): number {
+    return this.buffered.length;
+  }
+
+  append(chunk: Uint8Array): void {
+    if (chunk.length === 0) return;
+    if (this.buffered.length === 0) {
+      this.buffered = chunk;
+      return;
+    }
+    const joined = new Uint8Array(this.buffered.length + chunk.length);
+    joined.set(this.buffered, 0);
+    joined.set(chunk, this.buffered.length);
+    this.buffered = joined;
+  }
+
+  /** Every whole event held, each with its blank line, in order. */
+  takeEvents(): Uint8Array[] {
+    const events: Uint8Array[] = [];
+    for (;;) {
+      const end = findSseEventEnd(this.buffered, this.searchedUpTo);
+      if (!end) {
+        this.searchedUpTo = Math.max(0, this.buffered.length - 3);
+        return events;
+      }
+      const eventEnd = end.index + end.separatorLength;
+      events.push(this.buffered.subarray(0, eventEnd));
+      this.buffered = this.buffered.subarray(eventEnd);
+      this.searchedUpTo = 0;
+    }
+  }
+
+  /** Everything still held (no whole event left, or a whole reply), and the buffer emptied. */
+  takeRest(): Uint8Array {
+    const rest = this.buffered;
+    this.buffered = new Uint8Array(0);
+    this.searchedUpTo = 0;
+    return rest;
+  }
+}

@@ -16,7 +16,7 @@
 import { logger } from '../../../utils/logger.js';
 import { rewriteJsonStringsInText } from '../json/string-walker.js';
 import { EventStreamSniffer } from '../relay/protocols.js';
-import { findSseEventEnd, splitSseEvent } from '../relay/sse-event-framing.js';
+import { SseEventBuffer, splitSseEvent } from '../relay/sse-event-framing.js';
 import { isKeptReplyString, valueHoldsJson, type OutboundRedactionPlaceholders } from './outbound-redaction.js';
 
 type RestoringMode = 'undecided' | 'stream' | 'whole' | 'as_is';
@@ -42,14 +42,6 @@ interface HeldEvent {
 
 const utf8Encoder = new TextEncoder();
 const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
-
-function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
-  if (first.length === 0) return second;
-  const joined = new Uint8Array(first.length + second.length);
-  joined.set(first, 0);
-  joined.set(second, first.length);
-  return joined;
-}
 
 /** What says which text an event goes on with (magpie `eventCtx`). */
 function eventContinuationKey(data: string): string {
@@ -93,9 +85,7 @@ export class PlaceholderRestoringResponse {
   private readonly placeholders: OutboundRedactionPlaceholders;
   private readonly contentType: string;
   private mode: RestoringMode;
-  private buffered: Uint8Array = new Uint8Array(0);
-  /** How far `buffered` was already searched for an event's end, less the separator's own length. */
-  private searchedUpTo = 0;
+  private readonly buffer = new SseEventBuffer();
   private held: HeldEvent | null = null;
   private finished = false;
   private readonly firstBytesSniffer = new EventStreamSniffer();
@@ -129,19 +119,11 @@ export class PlaceholderRestoringResponse {
   push(chunk: Uint8Array): Uint8Array[] {
     if (this.mode === 'undecided') return this.decideThenPush(chunk, false);
     if (this.mode === 'as_is') return [chunk];
-    if (this.buffered.length + chunk.length > this.maxHeldBytes) return this.giveUpHolding(chunk);
-    this.buffered = concatBytes(this.buffered, chunk);
+    if (this.buffer.heldBytes + chunk.length > this.maxHeldBytes) return this.giveUpHolding(chunk);
+    this.buffer.append(chunk);
     if (this.mode === 'whole') return [];
     const output: string[] = [];
-    for (;;) {
-      const end = findSseEventEnd(this.buffered, this.searchedUpTo);
-      if (!end) {
-        this.searchedUpTo = Math.max(0, this.buffered.length - 3);
-        break;
-      }
-      const eventBytes = this.buffered.subarray(0, end.index + end.separatorLength);
-      this.buffered = this.buffered.slice(end.index + end.separatorLength);
-      this.searchedUpTo = 0;
+    for (const eventBytes of this.buffer.takeEvents()) {
       this.handleEvent(eventBytes, output);
     }
     return output.map(text => utf8Encoder.encode(text));
@@ -150,13 +132,12 @@ export class PlaceholderRestoringResponse {
   /** Over the bound: everything held goes out as it came, then the rest of the reply as it comes. */
   private giveUpHolding(chunk: Uint8Array): Uint8Array[] {
     logger.warn('WIRE', 'Outbound redaction: a reply is too large to hold; the rest is relayed with its placeholders', {
-      heldBytes: this.buffered.length, maxHeldBytes: this.maxHeldBytes,
+      heldBytes: this.buffer.heldBytes, maxHeldBytes: this.maxHeldBytes,
     });
     const output: Uint8Array[] = [];
     if (this.held) output.push(utf8Encoder.encode(this.held.full));
     this.held = null;
-    output.push(this.buffered, chunk);
-    this.buffered = new Uint8Array(0);
+    output.push(this.buffer.takeRest(), chunk);
     this.mode = 'as_is';
     return output;
   }
@@ -171,8 +152,7 @@ export class PlaceholderRestoringResponse {
 
   private finishDecided(): Uint8Array[] {
     if (this.mode === 'whole') {
-      const body = this.buffered;
-      this.buffered = new Uint8Array(0);
+      const body = this.buffer.takeRest();
       let text: string;
       try {
         text = strictUtf8Decoder.decode(body);
@@ -188,9 +168,8 @@ export class PlaceholderRestoringResponse {
       output.push(utf8Encoder.encode(this.held.full));
       this.held = null;
     }
-    if (this.buffered.length > 0) {
-      const rest = this.buffered;
-      this.buffered = new Uint8Array(0);
+    if (this.buffer.heldBytes > 0) {
+      const rest = this.buffer.takeRest();
       try {
         output.push(utf8Encoder.encode(this.placeholders.restore(strictUtf8Decoder.decode(rest), false)));
       } catch {

@@ -58,6 +58,8 @@ export function createWireGatewayFetchHandler(options: {
    * probe answers only, so it never waits on a probe.
    */
   statusReport?: () => Promise<unknown>;
+  /** MCP over Streamable HTTP at /mcp (Phase 12); without one, /mcp answers 404. */
+  mcp?: (request: Request) => Promise<Response>;
 }) {
   return function handleWireGatewayRequest(request: Request, server: Server<undefined>): Response | Promise<Response> {
     const refusal = checkLoopbackRequest(request, {
@@ -89,6 +91,12 @@ export function createWireGatewayFetchHandler(options: {
 
     if (pathname === '/wire/launch' && options.launchRegistry) {
       return handleWireLaunchRequest(request, server, options.launchRegistry);
+    }
+
+    if (pathname === '/mcp' && options.mcp) {
+      // A tool call may be long and silent (a corpus build): Bun's idle timer must not cut it.
+      server.timeout(request, 0);
+      return options.mcp(request);
     }
 
     if (pathname === '/r' || pathname.startsWith('/r/')) {

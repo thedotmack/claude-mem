@@ -28,6 +28,9 @@ and uploads nothing except the anonymous counters described under
 | Raw recording | **off** until you consent | Nothing | Each exchange's text in `<data dir>/wire-gateway/recordings/<date>/…/turns.jsonl` | `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days), at most 256 MiB in all, oldest removed first |
 | Outbound redaction | **off** | The request with secrets swapped for placeholders such as `{{API_KEY_k3v9x2mq}}` | A random 32-byte key in `<data dir>/wire-gateway/redact.key` (owner-only) | The key until you delete it; the values behind placeholders in memory only, until the gateway stops |
 | Endless Mode | **off** | The request with old tool results replaced by their observations' text | Each replacement, word for word, in `<data dir>/wire-gateway/ledger/<conversation>.jsonl`; token counts per request in `usage/<date>.jsonl` | Ledgers 30 days after a conversation's last request; usage lines for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
+| Memory injection | on for routes with `captureSource: wire` | Your claude-mem context, once per conversation, at the end of the system prompt | The text injected, word for word, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
+| Hidden `memory_search` | **off** | Extra requests to the provider (billed) carrying the model's searches and claude-mem's answers | Which tool definition was offered, in the conversation's ledger | Ledgers 30 days after a conversation's last request |
+| MCP over HTTP (`/mcp`) | on, loopback only | Nothing beyond what a tool call asks the worker | Nothing | Nothing |
 | Telemetry | follows claude-mem's [telemetry](/telemetry) setting | Counters only | Nothing | Nothing |
 
 Request and response **headers are never stored**, so API keys in
@@ -181,3 +184,92 @@ What gets replaced, and when:
 the prompt cache's read-to-write ratio before and after each conversation's
 first replacement, and the tokens the replacements took out.
 
+## Memory injection
+
+An agent wired through the gateway gets the same claude-mem context a Claude
+Code session gets at its start: the gateway asks the worker for the context of
+the folder the agent works in (`GET /api/context/inject`) and adds it, wrapped in
+`<claude-mem-context>…</claude-mem-context>`, at the end of the conversation's
+system prompt. It is on for routes with `captureSource: wire`; a route whose
+agent has its own claude-mem integration (`captureSource: native`) already gets
+context that way and is left alone unless you turn it on for that route.
+
+```bash
+claude-mem wire routes memory <route> on        # on for this route (a native route too)
+claude-mem wire routes memory <route> off       # off for this route
+claude-mem wire routes memory <route> default   # follow CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION again
+```
+
+- Only conversations that began under the gateway, and only on their first
+  request. The gateway waits for the worker at most
+  `CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS` (1500 ms). If the worker is down,
+  slow, has no context for the folder, or the agent did not say its folder, the
+  request goes as the agent sent it and that conversation is never injected
+  later: adding to a system prompt part way through would throw away the
+  provider's prompt cache.
+- The text is frozen in the conversation's ledger and added the same, byte for
+  byte, on every later request and after a restart.
+- It is appended, never prepended: Claude Code's attribution block stays first
+  and unchanged, a block-form system prompt gets one more text block (with no
+  cache breakpoint of its own, so the breakpoint count does not change), and a
+  string system prompt gets the text after a blank line. Chat requests with no
+  system message get one at the top; Responses requests get it at the end of
+  `instructions`; Gemini requests at the end of `systemInstruction`.
+- A system prompt that already holds `<claude-mem-context>` is left alone.
+- Capture strips `<claude-mem-context>`, so injected memory never becomes new
+  memory.
+- Turning it off for a route after a conversation was injected sends that
+  conversation without it from then on, for good.
+
+## Hidden memory_search
+
+With `CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL=true` (and `claude-mem wire
+restart`), or per route with `claude-mem wire routes search <route> on`, the
+model of a conversation that began under the gateway is offered one more tool,
+`memory_search` (`claude_mem_memory_search` when the agent already has a tool by
+that name). Your agent never sees it: when the model calls only that tool, the
+gateway runs the search in claude-mem, asks the model again with the answer, and
+passes the rounds on to your agent as one reply. It is off by default because
+every search is another billed request to the provider.
+
+- The tool is added at the end of the tool list on the conversation's first
+  request and kept the same on every later one; a conversation that began without
+  it never gets it.
+- What your agent receives stays one coherent reply: the search calls and their
+  results are left out, block, item and sequence numbers stay continuous, text
+  after a search follows a blank line, and the usage it reports is the sum of
+  every round.
+- If the model calls your agent's own tools in the same reply, the reply goes to
+  your agent with the model's own stop reason; the search calls in it are
+  neither shown nor run.
+- A request runs at most 5 real searches. If the model asks a 6th time, it is
+  told "No more searches" instead of getting results; if it still asks on the 7th
+  round, the reply ends there with a plain stop. So one request can make up to 7
+  calls to the provider.
+- With outbound redaction on, every extra round is masked the way the first one
+  was, search results included.
+- While a search runs, your agent is kept from timing out the way its protocol
+  expects (`ping` for Anthropic, `response.in_progress` for Responses, a
+  `: keepalive` comment for Chat); Gemini clients get nothing, as they fail on
+  comments.
+- The extra rounds go straight to the provider with your agent's own headers;
+  they are never recorded as exchanges of their own, and capture sees only what
+  your agent saw.
+- If a later round fails, your agent's reply ends with the provider's error
+  and no end marker, so the agent treats it as a broken connection.
+
+## MCP over HTTP
+
+claude-mem's MCP tools (the same ones the stdio server offers) answer at
+`http://127.0.0.1:<port>/mcp` on the gateway, over Streamable HTTP, statelessly:
+each `POST` is answered with JSON. Only this computer can reach it.
+
+The gateway is not running in any project folder, so tools here never guess one:
+`save_memory` and `team_brief` need `project`, searches cover every project
+unless you name one, and folder tools (`smart_search`, `smart_outline`,
+`work_state_*`) refuse. Use the stdio MCP server inside a workspace for those.
+
+`claude-mem wire status` shows, per route, whether memory injection, the hidden
+`memory_search` tool and Endless Mode are on, and whether the route or the
+setting decided; with the gateway running, it also shows each stage's calls and
+failures.

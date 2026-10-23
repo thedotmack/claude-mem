@@ -9,9 +9,12 @@
 //
 // Request order: memory injection → Endless Mode → memory_search tool
 // definition (Phases 11–12 register them), then the relay's outbound mask,
-// which is not a stage because it fails CLOSED. Response order: restore
-// placeholders (relay) → the stages' onEvent/onResponse (memory_search
-// stitcher, Phase 12) → the client-facing tee (recorder, live feed, usage).
+// which is not a stage because it fails CLOSED. Response order: the
+// memory_search stitcher (Phase 12, stitchReply) takes the upstream body
+// over first, because it talks to the vendor in the vendor's terms (masked
+// placeholders included) → restore placeholders (relay) → the stages'
+// onEvent/onResponse → the client-facing tee (recorder, live feed, usage),
+// which so sees the stitched reply the agent sees.
 //
 // Fail open (D7.7): a hook that throws, takes longer than its budget, or
 // returns something it may not leaves its input as it was; the stage's
@@ -94,6 +97,37 @@ export interface WireRewriteContext {
 
 export type MaybePromise<T> = T | Promise<T>;
 
+/**
+ * What a stage that takes over the upstream reply is handed (the hidden
+ * memory_search loop, plan Phase 12 task 2): the first round's reply and a
+ * way to ask the same upstream again, the agent's own way.
+ */
+export interface WireReplyStitchInput {
+  /** The bytes that went upstream (decoded: a stage changed them). */
+  forwardedBody: Uint8Array;
+  status: number;
+  /** The reply's content type, null when it named none. */
+  contentType: string | null;
+  /** The first round's reply body, unread. */
+  firstReplyBody: ReadableStream<Uint8Array>;
+  /**
+   * Send `body` to the same upstream URL with the agent's headers, as the
+   * relay sent the first round. The gateway's own request: it never passes
+   * the relay's observers, so it is never recorded on its own.
+   */
+  askUpstreamAgain(body: Uint8Array): Promise<Response>;
+  /** Aborts when the client goes away. */
+  signal: AbortSignal;
+  /**
+   * Outbound redaction is on for the route: placeholders the model wrote
+   * back as their values, for what the gateway does locally (a search
+   * query); never for anything sent upstream. Absent when redaction is off.
+   */
+  restorePlaceholders?: (text: string) => string;
+  /** A failure of the stitched reply after it began, for the stage's health (wire status). Set by the run. */
+  noteFailure(error: unknown): void;
+}
+
 export interface WireRewriteStage {
   name: string;
   /** onRequest's and onResponse's budget; defaults to REQUEST_STAGE_BUDGET_MS. */
@@ -120,6 +154,15 @@ export interface WireRewriteStage {
   onEvent?(context: WireRewriteContext, event: WireRewriteStreamEvent): MaybePromise<WireRewriteStreamEvent | null | undefined>;
   /** A whole (non-stream) reply's new bytes, or undefined to keep them. */
   onResponse?(context: WireRewriteContext, body: Uint8Array): MaybePromise<Uint8Array | undefined>;
+  /**
+   * Take over the upstream reply: return the stream the client gets instead
+   * (built from `input.firstReplyBody` and further rounds), or undefined to
+   * leave the reply as it came. Asked only when this stage's request bytes
+   * went upstream and the reply is a 200 in identity encoding; at most one
+   * stage stitches. Synchronous: it only sets the stream up. A throw leaves
+   * the reply as it came.
+   */
+  stitchReply?(context: WireRewriteContext, input: WireReplyStitchInput): ReadableStream<Uint8Array> | undefined;
 }
 
 export interface WireRewriteStageState {
@@ -330,6 +373,33 @@ export class WireRewriteRun {
 
   get hasResponseStages(): boolean {
     return this.stages.some(stage => stage.onResponse);
+  }
+
+  /** Whether a stage whose bytes went upstream may take over the reply. */
+  hasReplyStitcherAmong(appliedStageNames: readonly string[]): boolean {
+    return this.stages.some(stage => stage.stitchReply && appliedStageNames.includes(stage.name));
+  }
+
+  /**
+   * The client's stream from the first stage (among those whose request
+   * bytes went) that takes the reply over; null when none does. A stage that
+   * throws is noted as failed and the reply goes as it came.
+   */
+  stitchReply(appliedStageNames: readonly string[], input: Omit<WireReplyStitchInput, 'noteFailure'>): ReadableStream<Uint8Array> | null {
+    for (const stage of this.stages) {
+      if (!stage.stitchReply || !appliedStageNames.includes(stage.name)) continue;
+      const startedAt = performance.now();
+      const noteFailure = (error: unknown) => this.health.noteFailure(stage.name, 'stitchReply', error);
+      try {
+        const stitched = stage.stitchReply(this.contextOf(stage), { ...input, noteFailure });
+        this.health.noteCall(stage.name, performance.now() - startedAt);
+        if (stitched) return stitched;
+      } catch (error) {
+        this.health.noteCall(stage.name, performance.now() - startedAt);
+        this.health.noteFailure(stage.name, 'stitchReply', error);
+      }
+    }
+    return null;
   }
 
   private contextOf(stage: WireRewriteStage): WireRewriteContext {

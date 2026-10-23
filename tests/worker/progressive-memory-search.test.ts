@@ -126,6 +126,25 @@ describe('worker Dumb search with real SQLite fixtures', () => {
     }
   });
 
+  it('scopes the HTTP route to a folder\'s project keys when a host sends only its cwd (the wire gateway)', async () => {
+    const app = express();
+    app.use(express.json());
+    new SearchRoutes(manager).setupRoutes(app);
+    const server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
+    try {
+      const address = server.address() as { port: number };
+      const ask = async (body: Record<string, unknown>) => (await fetch(`http://127.0.0.1:${address.port}/api/dumb-search`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      })).json();
+      const byFolder = await ask({ query: 'authentication', cwd: `/no/such/dir/${project}` });
+      expect(byFolder).toEqual(progressiveSearchToolResult(await progressive.run({ query: 'authentication' }, [project])));
+      expect(await ask({ query: 'authentication', cwd: '/no/such/dir/some-other-project' })).not.toEqual(byFolder);
+    } finally {
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
+
   it('preserves JSON examples in selected SQLite narratives and the HTTP text response', async () => {
     const target = 'literal-json-fixture';
     const bodies = ['{"timeoutSeconds":30}', '["use staging"]'];

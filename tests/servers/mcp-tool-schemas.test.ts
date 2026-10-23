@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'bun:test';
 import { fileURLToPath } from 'node:url';
 
-const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
+// The tool table moved out of the stdio entry point (wire gateway Phase 12),
+// so the schema checks read it; the entry point keeps the runtime checks.
+const mcpServerPath = fileURLToPath(new URL('../../src/servers/mcp-tool-table.ts', import.meta.url));
+const mcpStdioEntryPath = fileURLToPath(new URL('../../src/servers/mcp-server.ts', import.meta.url));
 
 describe('MCP tool inputSchema declarations', () => {
   let tools: any[];
@@ -51,7 +54,8 @@ describe('MCP tool inputSchema declarations', () => {
     expect(section).toContain("callWorker('/api/work-state/entries'");
     expect(section).toContain("name: 'work_state_read'");
     expect(section).toContain("callWorker('/api/work-state'");
-    expect(section.match(/cwd: process\.cwd\(\)/g)).toHaveLength(2);
+    // The stdio server's workspace folder (process.cwd()); a server with none refuses.
+    expect(section.match(/cwd: scope\.requiredWorkspaceFolder\('work_state_(write|read)'\)/g)).toHaveLength(2);
   });
 
   it('session_start_context exposes worker SessionStart renderer parameters', async () => {
@@ -142,7 +146,7 @@ describe('MCP tool inputSchema declarations', () => {
   });
 
   it('mcp-server skips worker auto-start when runtime=server (anti-pattern guard)', async () => {
-    const src = await Bun.file(mcpServerPath).text();
+    const src = await Bun.file(mcpStdioEntryPath).text();
     // Phase 1a (cmem-sdk rename): canonical runtime literal is `'server'`.
     // `selectRuntime()` normalizes the legacy `'server-beta'` to `'server'`.
     expect(src).toContain("selectRuntime() === 'server'");
@@ -150,8 +154,10 @@ describe('MCP tool inputSchema declarations', () => {
   });
 
   it('mcp-server does NOT import WorkerService (anti-pattern guard, plan line 772)', async () => {
-    const src = await Bun.file(mcpServerPath).text();
-    expect(src).not.toMatch(/from\s+['"][^'"]*WorkerService[^'"]*['"]/);
-    expect(src).not.toMatch(/import\s+\{[^}]*WorkerService[^}]*\}/);
+    for (const path of [mcpServerPath, mcpStdioEntryPath]) {
+      const src = await Bun.file(path).text();
+      expect(src).not.toMatch(/from\s+['"][^'"]*WorkerService[^'"]*['"]/);
+      expect(src).not.toMatch(/import\s+\{[^}]*WorkerService[^}]*\}/);
+    }
   });
 });

@@ -1,0 +1,5 @@
+{ "max_tokens" : 1024,"model":"claude-x", "metadata":{"user_id":"u_1"},
+ "system":[{"type":"text","text":"x-anthropic-billing-header: cc_version=2.1.300; cc_entrypoint=cli; cch=0f3a;"},{"type":"text","text":"You are é \/ \"careful\" <b> & co\n\ttabs","cache_control":{"type":"ephemeral"}}],
+ "tools":[{"name":"Read","description":"Reads a file","input_schema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]},"cache_control":{"type":"ephemeral"}}],
+ "messages":[{"role":"user","content":[{"type":"text","text":"<cwd>/work/app</cwd>"},{"type":"text","text":"read it \u00e9 1.50e2","cache_control":{"type":"ephemeral"}}]}],
+ "temperature":0.70, "stream":true, "unknown_field":{"kept":[1,2,{"x":null}]}}

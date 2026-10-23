@@ -420,6 +420,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: string;
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: string;
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: string;
+  CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: string;
 }
 
 export class SettingsDefaultsManager {
@@ -711,6 +714,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'false',         // routes without their own features.endlessMode swap old bulky tool results for their observations (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '3',    // Endless Mode swaps a result only once more than this many user turns have begun after it (read at gateway start)
     CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: '2048', // ... and only a result at least this many bytes long
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION: 'true',      // captureSource:'wire' routes without their own features.memoryInjection get claude-mem context once per conversation (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS: '1500',    // how long a conversation's first request waits for that context (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL: 'false',   // routes without their own features.memorySearchTool get the hidden memory_search tool (extra billed rounds; read at gateway start)
   };
 
   static getAllDefaults(): SettingsDefaults {

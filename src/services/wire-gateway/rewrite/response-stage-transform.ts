@@ -10,7 +10,7 @@
 // as it came from that point on.
 
 import { logger } from '../../../utils/logger.js';
-import { findSseEventEnd, splitSseEvent } from '../relay/sse-event-framing.js';
+import { SseEventBuffer, splitSseEvent } from '../relay/sse-event-framing.js';
 import type { WireRewriteRun } from './rewrite-stage.js';
 
 /** The most of a whole reply, or of one unfinished event, held for the stages. */
@@ -20,14 +20,6 @@ type TransformMode = 'undecided' | 'stream' | 'whole' | 'as_is';
 
 const utf8Encoder = new TextEncoder();
 const strictUtf8Decoder = new TextDecoder('utf-8', { fatal: true });
-
-function concatBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
-  if (first.length === 0) return second;
-  const joined = new Uint8Array(first.length + second.length);
-  joined.set(first, 0);
-  joined.set(second, first.length);
-  return joined;
-}
 
 export interface ResponseStageTransformOptions {
   run: WireRewriteRun;
@@ -47,8 +39,7 @@ export class ResponseStageTransform {
   private readonly status: number;
   private readonly maxHeldBytes: number;
   private mode: TransformMode;
-  private buffered: Uint8Array = new Uint8Array(0);
-  private searchedUpTo = 0;
+  private readonly buffer = new SseEventBuffer();
   private finished = false;
 
   constructor(options: ResponseStageTransformOptions) {
@@ -79,19 +70,11 @@ export class ResponseStageTransform {
   async push(chunk: Uint8Array): Promise<Uint8Array[]> {
     if (this.mode === 'undecided') this.decideFromFirstBytes(chunk);
     if (this.mode === 'as_is') return [chunk];
-    if (this.buffered.length + chunk.length > this.maxHeldBytes) return this.giveUpHolding(chunk);
-    this.buffered = concatBytes(this.buffered, chunk);
+    if (this.buffer.heldBytes + chunk.length > this.maxHeldBytes) return this.giveUpHolding(chunk);
+    this.buffer.append(chunk);
     if (this.mode === 'whole') return [];
     const output: Uint8Array[] = [];
-    for (;;) {
-      const end = findSseEventEnd(this.buffered, this.searchedUpTo);
-      if (!end) {
-        this.searchedUpTo = Math.max(0, this.buffered.length - 3);
-        break;
-      }
-      const eventBytes = this.buffered.subarray(0, end.index + end.separatorLength);
-      this.buffered = this.buffered.slice(end.index + end.separatorLength);
-      this.searchedUpTo = 0;
+    for (const eventBytes of this.buffer.takeEvents()) {
       const rewritten = await this.rewriteEvent(eventBytes);
       if (rewritten) output.push(rewritten);
     }
@@ -100,10 +83,9 @@ export class ResponseStageTransform {
 
   private giveUpHolding(chunk: Uint8Array): Uint8Array[] {
     logger.warn('WIRE', 'A reply is too large to hold for the rewrite stages; the rest is relayed as it came', {
-      heldBytes: this.buffered.length, maxHeldBytes: this.maxHeldBytes,
+      heldBytes: this.buffer.heldBytes, maxHeldBytes: this.maxHeldBytes,
     });
-    const output = [this.buffered, chunk];
-    this.buffered = new Uint8Array(0);
+    const output = [this.buffer.takeRest(), chunk];
     this.mode = 'as_is';
     return output;
   }
@@ -131,8 +113,7 @@ export class ResponseStageTransform {
   async finish(replyComplete: boolean): Promise<Uint8Array[]> {
     if (this.finished) return [];
     this.finished = true;
-    const held = this.buffered;
-    this.buffered = new Uint8Array(0);
+    const held = this.buffer.takeRest();
     if (held.length === 0) return [];
     if (this.mode === 'whole' && replyComplete) return [await this.run.runResponseStages(held, this.status)];
     return [held];

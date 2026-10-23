@@ -45,6 +45,9 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE?: string;
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL?: string;
 }): string | null {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -86,6 +89,15 @@ export function validateWireGatewayListenSettings(settings: {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES !== undefined
     && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES)) {
     return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES must be a whole number of bytes';
+  }
+  for (const key of ['CLAUDE_MEM_WIRE_GATEWAY_MEMORY_INJECTION', 'CLAUDE_MEM_WIRE_GATEWAY_MEMORY_SEARCH_TOOL'] as const) {
+    if (settings[key] !== undefined && settings[key] !== 'true' && settings[key] !== 'false') {
+      return `${key} must be "true" or "false"`;
+    }
+  }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS !== undefined
+    && (!/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS) || Number(settings.CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS) < 1)) {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_CONTEXT_TIMEOUT_MS must be a whole number of milliseconds above 0';
   }
   return null;
 }

@@ -19,6 +19,7 @@
 // 114-261 (Drift, bypassed) and 802-837 (lastJSONLTime), MIT, Copyright (c)
 // 2026 yetone. A file that cannot be read gives `unknown`, never `ok`.
 
+import type { WireMemoryStatus } from '../memory/memory-status.js';
 import { closeSync, fstatSync, openSync, readSync } from 'fs';
 import { isSecretFieldName } from '../../../utils/redaction.js';
 import { readConfigFileBytes } from '../edit/config-file.js';
@@ -69,6 +70,8 @@ export interface WireStatusReport {
   /** Files that could not be read, so some agents may be missing or unknown. */
   problems: string[];
   agents: WireAgentStatus[];
+  /** Per route: memory injection, the hidden memory_search tool and Endless Mode (plan Phase 12); absent when routes.json could not be read. */
+  memory?: WireMemoryStatus;
 }
 
 export interface WireAgentStatusInputs {

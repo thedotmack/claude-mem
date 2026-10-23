@@ -590,6 +590,9 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     };
 
     relayActivityCounts.exchangesRelayed++;
+    // The headers of every round sent for this exchange (the hidden tool loop
+    // sends more), kept before fetch may touch them.
+    const roundHeaders = new Headers(forwardedHeaders);
     let upstreamResponse: Response;
     try {
       upstreamResponse = await fetch(upstreamUrl, {
@@ -647,6 +650,42 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     if (!upstreamResponse.body || request.method === 'HEAD' || NULL_BODY_STATUSES.has(upstreamResponse.status)) {
       finishExchange('complete', upstreamResponse.status);
       return new Response(null, responseInit);
+    }
+
+    // The hidden memory_search loop (plan Phase 12 task 2): a stage whose
+    // request bytes went upstream may take the reply over and stitch further
+    // rounds into it. Only a 200 in identity encoding; with no such stage
+    // (every feature off) nothing here runs and the reply goes as it came.
+    let replyBody = upstreamResponse.body;
+    const replyContentEncoding = (upstreamResponse.headers.get('content-encoding') ?? '').trim().toLowerCase();
+    if (rewriteRun && stagedBody && upstreamResponse.status === 200
+      && (replyContentEncoding === '' || replyContentEncoding === 'identity')
+      && rewriteRun.hasReplyStitcherAmong(rewriteOutcome.appliedStageNames)) {
+      const stitched = rewriteRun.stitchReply(rewriteOutcome.appliedStageNames, {
+        forwardedBody,
+        status: upstreamResponse.status,
+        contentType: replyContentType,
+        firstReplyBody: upstreamResponse.body,
+        signal: request.signal,
+        ...(outboundRedaction && outboundRedactionOn
+          ? { restorePlaceholders: (text: string) => outboundRedaction.placeholders.restore(text, false) }
+          : {}),
+        // The same request options as the first round (see above for each).
+        // A later round carries what the model said and claude-mem's search
+        // results: with outbound redaction on, it is masked as the first
+        // round was, and a body that cannot be masked is never sent.
+        askUpstreamAgain: body => fetch(upstreamUrl, {
+          method: request.method,
+          headers: new Headers(roundHeaders),
+          body: outboundRedaction && outboundRedactionOn ? outboundRedaction.placeholders.maskRequestBody(body).bytes : body,
+          redirect: 'manual',
+          decompress: false,
+          signal: request.signal,
+          keepalive: false,
+          timeout: false,
+        } as RequestInit),
+      });
+      if (stitched) replyBody = stitched as typeof replyBody;
     }
 
     const endDetectorFor = (isEventStream: boolean): StreamEndMarkerDetector | null =>
@@ -714,7 +753,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       sendToClient(controller, [...restored, ...held]);
     };
 
-    const upstreamReader = upstreamResponse.body.getReader();
+    const upstreamReader = replyBody.getReader();
     let releaseCutHold: () => void = () => undefined;
     const cutHold = new Promise<void>(resolve => {
       releaseCutHold = resolve;
