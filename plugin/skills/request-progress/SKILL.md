@@ -77,7 +77,7 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 > Review the progress of these overall requests from claude-mem memory. For EACH groupId:
 >
-> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), work lists, dates, any previous review and a `reviewBasis`.
+> 1. Run `<CLI> show <groupId>` for its conversations, every human ask in full (with prompt ids and times), work lists, dates, any previous review and a `reviewBasis`. When `mode` is `"amend"`, the group has the same conversations as its `previousReview`, and `asks` holds only the asks after `amendSince`: start from `previousReview`, search memory only for what happened after `amendSince`, and change only what that new evidence moves (state, percent, dates, summary, new milestones, outcome, preferences). Keep the rest of the previous review as it is. When `mode` is `"full"` (no previous review, or the conversations changed), review from scratch.
 > 2. Search memory (`mem_search`, `timeline`, `get_observations`) for the outcome: merged PRs, releases, deploys, work-state items marked done, the owner confirming or rejecting the result, or work that stopped. Search for the named artifacts in the asks, not generic words. Fetch the observations you rely on.
 > 3. Decide from the evidence only:
 >    - `state`: `shipped` (merged and released or deployed, or the owner confirmed it done) | `in-progress` | `stalled` (no activity for 3+ days and not finished) | `abandoned` (explicitly dropped or replaced) | `unknown` (memory has too little).
@@ -99,10 +99,10 @@ Split the due groups into batches of about 8 and give each batch to a subagent, 
 
 Run this yourself after the reviews (it needs the reviews' summaries):
 
-1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), every request group (title, first ask, progress state and summary) and the previous alignment. If it lists no goals, skip this step: the owner-goals skill has not run, and every card keeps "Goal not linked yet".
-2. For each group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
+1. Run `$CLI align-input`. It returns the owner's current goals (each with an exact `goal` key, title, product and the owner's own quotes, from the owner-goals list), the request groups still to align (title, first ask, progress state and summary: groups this step has not seen, or every group when the goals changed) and their previous links. If it lists no groups, skip this step: every group is already aligned, or the owner-goals skill has not run and every card keeps "Goal not linked yet".
+2. For each listed group, pick the goals it directly advances: usually one, at most three. A request serves a goal when delivering it moves that goal forward. The same product area alone is not enough. Groups that serve no current goal go in `unaligned`. Keep a previous link unless the goals or the request changed.
 3. Each link needs `evidence` (≤300 chars): name what in the request advances the goal, quoting the goal's or the request's words.
-4. Record it. Every group must appear in `links` or `unaligned`; the command validates, so fix and retry if it rejects:
+4. Record it. Every listed group must appear in `links` or `unaligned`; groups it did not list keep their earlier links. The command validates, so fix and retry if it rejects:
 
 ```bash
 $CLI record-alignment - <<'JSON'
@@ -114,7 +114,7 @@ My Work shows the linked goal on each card, "No goal" for an unaligned group, an
 
 ## 4. Write the build story
 
-Run `$CLI story-input`. It returns every review and the previous story. Write:
+Run `$CLI story-input`. Without a previous story it returns every review; with one (`update: true`) it returns only the reviews whose state or percent changed since that story was written. If it lists no reviews, skip this step: the story still holds. When updating, keep the previous story's chapters and wording where they still hold and change only what the listed reviews move. Write:
 
 - `narrative` (markdown, ≤12000 chars, blocks separated by blank lines, `## ` headings for chapters): a chronological build story. Lead with a short paragraph on shipping velocity (My Work shows it as the recap), then what was set out, what shipped and when, how long ask-to-ship took, where work stalled or was reworked, and what that teaches. Use only the dated facts in the reviews. Refer to the person as "the owner" or "they"; never guess pronouns.
 - `preferences` (≤30): merge the per-request preferences into distinct, actionable statements of how the owner likes to work with agents. `supportCount` is how many requests showed it; keep up to 3 verbatim quotes with dates. Drop one-off remarks.

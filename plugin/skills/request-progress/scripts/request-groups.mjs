@@ -217,7 +217,7 @@ function readGoals(database) {
       return { at, quote: quote.join(" | ") };
     })
   })).sort((a, b) => (a.kind === b.kind ? 0 : a.kind === "priority" ? -1 : 1) || (a.rank ?? Infinity) - (b.rank ?? Infinity));
-  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, goals };
+  return { summary: listState.human_summary ?? null, generatedAt: listState.generated_at ?? null, mapPath: listState.map_path ?? null, goals };
 }
 function validateAlignment(input, { groups, goals }) {
   const goalNames = new Set(goals.map((goal) => goal.goal));
@@ -380,12 +380,8 @@ function validateProgress(entry, knownGroups) {
     reviewedConversations: [...new Set(basis.conversations)].sort()
   };
 }
-function readingsOf(entry) {
-  if (Array.isArray(entry?.readings)) return entry.readings;
-  return entry?.checkedAt && Number.isInteger(entry.percent) ? [{ at: entry.checkedAt, percent: entry.percent }] : [];
-}
 function appendReading(previous, reading) {
-  const byAt = new Map(readingsOf(previous).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
+  const byAt = new Map((previous?.readings ?? []).filter((item) => Number.isFinite(Date.parse(item?.at)) && Number.isInteger(item?.percent)).map((item) => [item.at, item]));
   byAt.set(reading.at, { at: reading.at, percent: reading.percent });
   return [...byAt.values()].sort((a, b) => Date.parse(a.at) - Date.parse(b.at)).slice(-MAX_READINGS);
 }
@@ -419,7 +415,7 @@ function readLedger(dir = LEDGER_DIR) {
   }
   for (const name of names) {
     const entry = readJson(join(dir, "progress", name), null);
-    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, readings: readingsOf(entry), title: groups.groups[entry.groupId].title };
+    if (entry?.groupId && groups.groups[entry.groupId]) progress[entry.groupId] = { ...entry, title: groups.groups[entry.groupId].title };
   }
   return {
     groups,
@@ -454,15 +450,24 @@ function pendingReviews(ledger, database, sinceEpoch) {
   const due = ids.map((id) => groupDetails(id, ledger, candidates)).filter((group) => !reviewIsCurrent(group.previousReview, group.conversations.map((conversation) => conversation.conversationKey), group.lastActivityEpoch)).sort((a, b) => b.lastActivityEpoch - a.lastActivityEpoch);
   return { due, ungrouped };
 }
+function goalsAddedSince(alignment, goalKeys) {
+  const seen = new Set(alignment?.goals ?? goalKeys);
+  return goalKeys.filter((goal) => !seen.has(goal));
+}
+function alignmentDue(ledger, goals) {
+  if (!goals.goals.length) return [];
+  const current = goals.goals.map((goal) => goal.goal);
+  const links = ledger.alignment?.links ?? {}, unaligned = new Set(ledger.alignment?.unaligned ?? []);
+  if (goalsAddedSince(ledger.alignment, current).length) return Object.keys(ledger.groups.groups);
+  return Object.keys(ledger.groups.groups).filter((id) => links[id] ? links[id].some((link) => !current.includes(link.goal)) : !unaligned.has(id));
+}
 function refreshNeeds({ dir = LEDGER_DIR, database, now = Date.now(), days = 14 }) {
   const ledger = readLedger(dir);
   const { due, ungrouped } = pendingReviews(ledger, database, now - days * DAY_MS);
   const goals = readGoals(database);
   const generated = Date.parse(goals.generatedAt ?? "");
   const goalsStale = !Number.isFinite(generated) || now - generated > GOALS_STALE_MS;
-  const aligned = /* @__PURE__ */ new Set([...Object.keys(ledger.alignment?.links ?? {}), ...ledger.alignment?.unaligned ?? []]);
-  const goalsChanged = (ledger.alignment?.goalsGeneratedAt ?? null) !== goals.generatedAt;
-  const unaligned = goals.goals.length ? Object.keys(ledger.groups.groups).filter((id) => goalsChanged || !aligned.has(id)).length : 0;
+  const unaligned = alignmentDue(ledger, goals).length;
   return { due: due.length, ungrouped, goalsStale, unaligned, needed: Boolean(due.length || ungrouped || goalsStale || unaligned) };
 }
 function readInput(source) {
@@ -518,7 +523,11 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
       if (!ledger.groups.groups[args[0]]) throw new TypeError(`Unknown group ${args[0]}.`);
       const keys = Object.entries(ledger.groups.conversations).filter(([, id]) => id === args[0]).map(([key]) => key);
       const candidates = new Map(readCandidates(db(), { conversationKeys: keys, fullAsks: true, excludedPromptIds: ledger.agentWrittenPromptIds }).map((candidate) => [candidate.conversationKey, candidate]));
-      return print({ ...groupDetails(args[0], ledger, candidates), reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
+      const details = groupDetails(args[0], ledger, candidates);
+      const previous = details.previousReview;
+      const amendSince = previous && reviewIsCurrent(previous, keys, 0) ? previous.reviewedThrough : null;
+      const conversations = amendSince ? details.conversations.map((conversation) => conversation.asks ? { ...conversation, asks: conversation.asks.filter((ask) => Date.parse(ask.at) > Date.parse(amendSince)) } : conversation) : details.conversations;
+      return print({ ...details, conversations, mode: amendSince ? "amend" : "full", amendSince, reviewBasis: { checkedThrough: iso(now), conversations: keys.sort() } });
     }
     const { due, ungrouped } = pendingReviews(ledger, db(), since());
     const limit = option(args, "limit", 48);
@@ -528,13 +537,18 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
     const ledger = readLedger(dir);
     const reviewed = validateProgress(readInput(args[0] ?? "-"), ledger.groups.groups);
     const checkedAt = iso(now);
-    const entry = { ...reviewed, checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
+    const previous = ledger.progress[reviewed.groupId];
+    const unchanged = previous && previous.state === reviewed.state && previous.percent === reviewed.percent;
+    const entry = { ...reviewed, checkedAt, changedAt: unchanged ? previous.changedAt ?? previous.checkedAt : checkedAt, readings: appendReading(ledger.progress[reviewed.groupId], { at: checkedAt, percent: reviewed.percent }) };
     writeJsonAtomic(join(dir, "progress", `${entry.groupId}.json`), entry);
     return print({ recorded: entry.groupId, state: entry.state, percent: entry.percent, readings: entry.readings.length });
   }
   if (command === "story-input") {
     const { groups, progress, story } = readLedger(dir);
-    return print({ groups: Object.keys(groups.groups).length, reviews: Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt))), previousStory: story });
+    const reviews = Object.values(progress).sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+    const writtenAt = Date.parse(story?.writtenAt ?? "");
+    const update = Number.isFinite(writtenAt);
+    return print({ groups: Object.keys(groups.groups).length, update, reviews: update ? reviews.filter((review) => Date.parse(review.changedAt ?? review.checkedAt) > writtenAt) : reviews, previousStory: story });
   }
   if (command === "record-story") {
     const story = { ...validateStory(readInput(args[0] ?? "-")), writtenAt: iso(now) };
@@ -543,18 +557,32 @@ function runCli(argv, { dir = LEDGER_DIR, database = null, now = Date.now(), pri
   }
   if (command === "align-input") {
     const ledger = readLedger(dir);
-    const groups = Object.entries(ledger.groups.groups).map(([groupId, group]) => {
-      const review = ledger.progress[groupId];
+    const goals = readGoals(db());
+    const due = alignmentDue(ledger, goals);
+    const groups = due.map((groupId) => {
+      const group = ledger.groups.groups[groupId], review = ledger.progress[groupId];
       return { groupId, title: group.title, firstAsk: group.anchorAsk?.text?.slice(0, 400) ?? null, state: review?.state ?? null, percent: review?.percent ?? null, summary: review?.summary ?? null };
     });
-    return print({ goals: readGoals(db()), groups, previous: ledger.alignment });
+    const previousLinks = Object.fromEntries(due.filter((id) => ledger.alignment?.links?.[id]).map((id) => [id, ledger.alignment.links[id]]));
+    return print({ goals, groups, previous: ledger.alignment ? { alignedAt: ledger.alignment.alignedAt ?? null, links: previousLinks } : null });
   }
   if (command === "record-alignment") {
     const ledger = readLedger(dir);
     const goals = readGoals(db());
-    const alignment = { ...validateAlignment(readInput(args[0] ?? "-"), { groups: ledger.groups.groups, goals: goals.goals }), goalsGeneratedAt: goals.generatedAt, alignedAt: iso(now) };
+    const decided = validateAlignment(readInput(args[0] ?? "-"), { groups: ledger.groups.groups, goals: goals.goals });
+    const decidedIds = /* @__PURE__ */ new Set([...Object.keys(decided.links), ...decided.unaligned]);
+    const missing = alignmentDue(ledger, goals).filter((id) => !decidedIds.has(id));
+    if (missing.length) throw new TypeError(`Every group align-input listed must appear in links or unaligned; missing ${missing.join(", ")}.`);
+    const kept = (id) => ledger.groups.groups[id] && !decidedIds.has(id);
+    const previous = ledger.alignment ?? {};
+    const alignment = {
+      links: { ...Object.fromEntries(Object.entries(previous.links ?? {}).filter(([id]) => kept(id))), ...decided.links },
+      unaligned: [...(previous.unaligned ?? []).filter(kept), ...decided.unaligned],
+      goals: goals.goals.map((goal) => goal.goal),
+      alignedAt: iso(now)
+    };
     writeJsonAtomic(join(dir, "alignment.json"), alignment);
-    return print({ aligned: Object.keys(alignment.links).length, unaligned: alignment.unaligned.length });
+    return print({ aligned: Object.keys(decided.links).length, unaligned: decided.unaligned.length });
   }
   if (command === "refresh-needs") return print(refreshNeeds({ dir, database: db(), now, days: option(args, "days", 14) }));
   throw new TypeError("Usage: request-groups.mjs candidates|apply|pending|show|record-progress|story-input|record-story|align-input|record-alignment|refresh-needs (see file header).");

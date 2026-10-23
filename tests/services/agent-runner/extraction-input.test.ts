@@ -25,8 +25,8 @@ const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
 function geminiTask(events: string[], prepare?: () => Promise<void>): AgentTask {
   return {
     reason: 'test', cwd: '/data', prepare,
-    claudeCode: { prompt: '', plugins: [], skills: [], tools: [], allowedTools: [], checkTool: () => 'no' },
-    inline: async () => { events.push('inline'); return 'done'; },
+    claudeCode: { plugins: [], tools: [], allowedTools: [] },
+    run: async () => { events.push('run'); return 'done'; },
   };
 }
 const neverQuery = (() => { throw new Error('query must not run'); }) as never;
@@ -37,7 +37,7 @@ describe('agent runner prepare step', () => {
     const events: string[] = [];
     const prepare = async () => { events.push('prepare'); };
     expect((await runAgentTask(geminiTask(events, prepare), { detect: async () => agents('codex'), query: neverQuery, buildEnv: env })).state).toBe('ok');
-    expect(events).toEqual(['prepare', 'inline']);
+    expect(events).toEqual(['prepare', 'run']);
     events.length = 0;
     expect((await runAgentTask(geminiTask(events, prepare), { detect: async () => agents(), query: neverQuery, buildEnv: env })).state).toBe('waiting-for-agent');
     expect(events).toEqual([]);
@@ -77,19 +77,18 @@ describe('owner prompts from the prompt importer', () => {
 
   it('the refresh task prepares owner-prompts.md for every backend and never runs the export script', async () => {
     const database = new Database(':memory:');
-    const folders: string[] = [];
+    database.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
+    const folders: Array<[string, string | null]> = [];
     const task = buildRefreshTask({
       needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'setup-scan', dataDir: '/data', ledgerDir: '/data/work-view',
       pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }), now: () => FIXTURE_NOW,
-      writeOwnerPrompts: async folder => { folders.push(folder); },
+      writeOwnerPrompts: async (folder, sinceMinute) => { folders.push([folder, sinceMinute]); return { path: join(folder, 'owner-prompts.md'), ownerPrompts: 0, excludedAgentWritten: 0, newPrompts: 0 }; },
     });
     await task.prepare!();
     const goalsFolder = join('/data/work-view/owner-goals', new Date(FIXTURE_NOW).toLocaleDateString('en-CA'));
-    expect(folders).toEqual([goalsFolder]);
-    expect(task.claudeCode.prompt).toContain(`step 1 is already done: the owner's prompts from every agent are in ${join(goalsFolder, 'owner-prompts.md')}`);
-    expect(task.claudeCode.prompt).not.toContain('export_owner_prompts');
-    expect(task.claudeCode.checkTool('Bash', { command: 'python3 "/plugin/skills/owner-goals/scripts/export_owner_prompts.py" --out /x' })).toMatch(/Only these commands/);
-    expect(task.claudeCode.checkTool('Bash', { command: `python3 "/plugin/skills/owner-goals/scripts/save_goals.py" --goals "${join(goalsFolder, 'owner-goals.json')}"` })).toBe(true);
+    // No saved goals yet: the whole window, no since minute.
+    expect(folders).toEqual([[goalsFolder, null]]);
+    expect(JSON.stringify(task)).not.toContain('export_owner_prompts');
 
     const fresh = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }) });
     expect(fresh.prepare).toBeUndefined();

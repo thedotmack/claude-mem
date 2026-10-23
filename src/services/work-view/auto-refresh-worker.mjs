@@ -19,12 +19,12 @@ export class AutoRefreshWorker {
    * @param {string} options.dir                ledger folder (~/.claude-mem/work-view)
    * @param {() => any} options.openDatabase    read-only claude-mem.db handle with close()
    * @param {(job: {needs: object, reason: string}) => Promise<{state: string, agent: string|null, result: string|null, error: string|null}>} options.runJob
-   * @param {() => Promise<boolean>} [options.hasUsableAgent]  is a logged-in agent installed? (agent-runner/detect.ts)
+   *   runs the job on the first logged-in agent; 'waiting-for-agent' when there is none yet (agent-runner/run.ts)
    * @param {() => boolean} [options.enabled]   CLAUDE_MEM_WORK_VIEW_AUTO_REFRESH, read on every check
    */
-  constructor({ dir, openDatabase, runJob, hasUsableAgent = async () => true, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {} }) {
-    Object.assign(this, { dir, openDatabase, runJob, hasUsableAgent, enabled, checkMs, now, log });
-    this.timer = null; this.closed = false; this.busy = false; this.revision = 0;
+  constructor({ dir, openDatabase, runJob, enabled = () => true, checkMs = TEN_MINUTES_MS, now = Date.now, log = () => {} }) {
+    Object.assign(this, { dir, openDatabase, runJob, enabled, checkMs, now, log });
+    this.timer = null; this.closed = false; this.busy = false;
   }
 
   path() { return join(this.dir, 'refresh.json'); }
@@ -34,7 +34,7 @@ export class AutoRefreshWorker {
     catch (error) { if (error.code === 'ENOENT') return null; throw error; }
   }
 
-  write(status) { writeJsonAtomic(this.path(), status); this.revision++; }
+  write(status) { writeJsonAtomic(this.path(), status); }
 
   start() { this.tick(); this.timer = setInterval(() => this.tick(), this.checkMs); this.timer.unref?.(); }
 
@@ -82,11 +82,7 @@ export class AutoRefreshWorker {
   async run(needs, reason) {
     this.busy = true;
     try {
-      // No agent yet: say so, and the next ten-minute check tries again.
-      if (!(await this.hasUsableAgent())) {
-        this.write({ state: 'waiting-for-agent', reason, checkedAt: this.iso(), needs, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', nextAt: this.iso(this.now() + this.checkMs) });
-        return 'waiting-for-agent';
-      }
+      // With no logged-in agent yet the job says 'waiting-for-agent', and the next ten-minute check tries again.
       const startedAt = this.iso();
       this.write({ state: 'running', pid: process.pid, reason, startedAt, needs, nextAt: null });
       this.log('info', `Work view refresh started (${reason})`, { needs });

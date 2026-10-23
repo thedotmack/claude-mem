@@ -8,17 +8,19 @@
  * with an error, never because it is slow. The next agent is tried only when
  * a run actually fails.
  *
- *   - Claude Code: one Agent SDK `query` with the claude-mem plugin's skills
- *     loaded, an explicit allowed-tools list plus a `canUseTool` check for
- *     everything else, `cwd` = the data dir and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> -`
+ *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
+ *     loaded for its memory-search MCP tools, only the task's allowed tools
+ *     (everything else is denied), `cwd` = the data dir and no session persistence.
+ *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers.
- *   - Gemini: `gemini -p <line> --approval-mode plan --skip-trust -e none --allowed-mcp-server-names <none> -o json`
+ *   - Gemini: `gemini -p <line> --approval-mode plan --skip-trust -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
+ *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
  *
- * Codex and Gemini run read-only with no MCP tools, so they cannot save anything themselves.
- * The task's `inline` function drives them one step at a time and saves each
- * answer through claude-mem's own validators.
+ * No agent can save anything itself. The task's `run` function drives every
+ * backend the same way, one step at a time: code runs claude-mem's CLI, the
+ * agent answers one JSON question per step, and code saves each answer
+ * through claude-mem's own validators.
  */
 
 import { spawn } from 'child_process';
@@ -29,26 +31,23 @@ import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@ant
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
-import { detectUsableAgents, type UsableAgent, type UsableAgentId } from './detect.js';
+import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
-/** Ask a read-only agent one prompt and get its final answer text. */
-export type AskAgent = (prompt: string) => Promise<string>;
+/** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
+ * A missing entry or field leaves that CLI's own default. */
+export interface StepModel { model?: string; reasoningEffort?: string }
+export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
+
+/** Ask a read-only agent one prompt, on the step's model, and get its final answer text. */
+export type AskAgent = (prompt: string, models: StepModels) => Promise<string>;
 
 export interface ClaudeCodeTaskOptions {
-  prompt: string;
-  /** Plugins whose skills (and MCP servers) the run needs. */
+  /** Plugins whose MCP servers the steps need. */
   plugins: SdkPluginConfig[];
-  /** Skills the run may call, `plugin:skill`. */
-  skills: string[];
   /** The built-in tools the model can see at all. */
   tools: string[];
-  /** Auto-approved tool rules (read-only tools and restricted Bash prefixes). */
+  /** The only tools a step may use (read-only); every other tool is denied. */
   allowedTools: string[];
-  /**
-   * Final check for any tool the allowed list did not approve: true allows it,
-   * a string denies it with that message.
-   */
-  checkTool: (toolName: string, input: Record<string, unknown>) => true | string;
 }
 
 export interface AgentTask {
@@ -57,8 +56,8 @@ export interface AgentTask {
   /** Working directory for every backend: the claude-mem data dir. */
   cwd: string;
   claudeCode: ClaudeCodeTaskOptions;
-  /** Drives a read-only Codex or Gemini step by step; returns a short result line. */
-  inline: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  /** Drives the agent step by step; returns a short result line. */
+  run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
   /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
   prepare?: () => Promise<void>;
 }
@@ -96,68 +95,58 @@ const defaultDependencies: AgentRunnerDependencies = {
 
 const describeError = (error: unknown) => (error instanceof Error ? error.message : String(error)).trim() || 'unknown error';
 
-/** One Agent SDK run. Resolves with the final result text; rejects when the run fails. */
-async function runClaudeCode(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies): Promise<string> {
+/** One Agent SDK query per step, with read-only tools only. */
+function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
   const { claudeCode } = task;
-  const canUseTool: CanUseTool = async (toolName, input) => {
-    const verdict = claudeCode.checkTool(toolName, input);
-    if (verdict === true) return { behavior: 'allow', updatedInput: input };
-    logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`, { reason: verdict });
-    return { behavior: 'deny', message: verdict };
+  const canUseTool: CanUseTool = async toolName => {
+    logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`);
+    return { behavior: 'deny', message: `${toolName} is not available to this read-only step.` };
   };
-  let stderr = '';
-  const options: Options = {
-    pathToClaudeCodeExecutable: agent.path!,
-    cwd: task.cwd,
-    env: await dependencies.buildEnv(),
-    persistSession: false,
-    settingSources: [],
-    plugins: claudeCode.plugins,
-    skills: claudeCode.skills,
-    tools: claudeCode.tools,
-    allowedTools: claudeCode.allowedTools,
-    permissionMode: 'default',
-    canUseTool,
-    stderr: data => { stderr = (stderr + data).slice(-4000); },
-  };
-  type FinalResult = { is_error?: boolean; subtype?: string; result?: string };
-  let final = null as FinalResult | null;
-  try {
-    for await (const message of dependencies.query({ prompt: claudeCode.prompt, options })) {
-      if (message.type === 'result') final = message as FinalResult;
+  return async (prompt, models) => {
+    let stderr = '';
+    const options: Options = {
+      pathToClaudeCodeExecutable: agent.path!,
+      model: models['claude-code']?.model,
+      cwd: task.cwd,
+      env,
+      persistSession: false,
+      settingSources: [],
+      plugins: claudeCode.plugins,
+      tools: claudeCode.tools,
+      allowedTools: claudeCode.allowedTools,
+      permissionMode: 'default',
+      canUseTool,
+      stderr: data => { stderr = (stderr + data).slice(-4000); },
+    };
+    type FinalResult = { is_error?: boolean; subtype?: string; result?: string };
+    let final = null as FinalResult | null;
+    try {
+      for await (const message of dependencies.query({ prompt, options })) {
+        if (message.type === 'result') final = message as FinalResult;
+      }
+    } catch (error) {
+      throw new Error(`Claude Code stopped: ${describeError(error)}${stderr.trim() ? ` (${stderr.trim().split('\n').pop()})` : ''}`);
     }
-  } catch (error) {
-    throw new Error(`Claude Code stopped: ${describeError(error)}${stderr.trim() ? ` (${stderr.trim().split('\n').pop()})` : ''}`);
-  }
-  if (!final) throw new Error('Claude Code ended without a result.');
-  if (final.is_error || final.subtype !== 'success') throw new Error(`Claude Code run failed (${final.subtype ?? 'error'}): ${String(final.result ?? '').slice(0, 500)}`);
-  return String(final.result ?? '');
+    if (!final) throw new Error('Claude Code ended without a result.');
+    if (final.is_error || final.subtype !== 'success') throw new Error(`Claude Code run failed (${final.subtype ?? 'error'}): ${String(final.result ?? '').slice(0, 500)}`);
+    return String(final.result ?? '');
+  };
 }
 
-/** Spawn an agent CLI with the prompt on stdin and wait for it, however long it takes. */
-function runCli(
+/** Run an agent CLI with the prompt on stdin and wait for it, however long it takes. */
+async function runCli(
   dependencies: AgentRunnerDependencies,
   command: string,
   args: string[],
   prompt: string,
   options: { cwd: string; env: NodeJS.ProcessEnv },
-): Promise<{ exitCode: number | null; stdout: string; stderr: string }> {
-  return new Promise((resolve, reject) => {
-    const child = dependencies.spawn(command, args, { cwd: options.cwd, env: options.env, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
-    let stdout = '';
-    let stderr = '';
-    child.stdout?.setEncoding('utf8');
-    child.stderr?.setEncoding('utf8');
-    child.stdout?.on('data', (chunk: string) => { stdout += chunk; });
-    child.stderr?.on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-4000); });
-    child.on('error', reject);
-    child.on('close', exitCode => resolve({ exitCode, stdout, stderr }));
-    child.stdin?.on('error', () => { /* The exit code reports a CLI that stopped reading. */ });
-    child.stdin?.end(prompt);
-  });
+): Promise<CommandResult> {
+  const result = await runCommand(dependencies.spawn, command, args, { ...options, input: prompt });
+  if (result.spawnError) throw result.spawnError;
+  return result;
 }
 
-function failure(name: string, result: { exitCode: number | null; stdout: string; stderr: string }): Error {
+function failure(name: string, result: CommandResult): Error {
   const detail = `${result.stderr}\n${result.stdout}`.trim().split('\n').filter(Boolean).slice(-3).join(' ').slice(0, 500);
   return new Error(`${name} exited ${result.exitCode}${detail ? `: ${detail}` : ''}`);
 }
@@ -169,7 +158,10 @@ function failure(name: string, result: { exitCode: number | null; stdout: string
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string) => ['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath, '-'];
+const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffort }: StepModel = {}) => [
+  'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
+  ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
+];
 
 /** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
 export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
@@ -178,12 +170,12 @@ export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
-  return async prompt => {
+  return async (prompt, models) => {
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
     const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
     try {
-      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath), prompt, { cwd: task.cwd, env });
+      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
@@ -193,8 +185,9 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
 }
 
 function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
-  return async prompt => {
-    const result = await runCli(dependencies, agent.path!, GEMINI_ARGS, prompt, { cwd: task.cwd, env });
+  return async (prompt, models) => {
+    const model = models.gemini?.model;
+    const result = await runCli(dependencies, agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }
@@ -226,12 +219,9 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {
-      let result: string;
-      if (agent.id === 'claude-code') result = await runClaudeCode(agent, task, dependencies);
-      else {
-        const env = await dependencies.buildEnv();
-        result = await task.inline(agent.id === 'codex' ? codexAsk(agent, task, dependencies, env) : geminiAsk(agent, task, dependencies, env), agent.id);
-      }
+      const env = await dependencies.buildEnv();
+      const ask = { 'claude-code': claudeCodeAsk, codex: codexAsk, gemini: geminiAsk }[agent.id](agent, task, dependencies, env);
+      const result = await task.run(ask, agent.id);
       logger.info('WORKER', `Agent run (${task.reason}) finished on ${agent.id}`);
       return { state: 'ok', agent: agent.id, result: result.slice(0, 4000), error: null, attempts };
     } catch (error) {

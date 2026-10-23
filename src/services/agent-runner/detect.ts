@@ -50,19 +50,30 @@ export interface CommandResult {
   spawnError?: Error;
 }
 
+export interface CommandOptions {
+  cwd?: string;
+  env?: NodeJS.ProcessEnv;
+  /** Written to stdin, which is then closed; without it stdin is ignored. */
+  input?: string;
+}
+
 /**
  * Run a command with argv (no shell) and wait for it to exit, however long
- * that takes. Never rejects. Same shape as `spawnGit` in WorktreeAdoption.ts.
+ * that takes. Never rejects. The one spawn-and-collect helper for agent
+ * detection, agent runs and the refresh's skill scripts.
  */
 export function runCommand(
   spawnImplementation: typeof spawn,
   command: string,
   args: string[],
+  options: CommandOptions = {},
 ): Promise<CommandResult> {
   return new Promise<CommandResult>(resolve => {
     const child = spawnImplementation(command, args, {
+      cwd: options.cwd,
+      env: options.env,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: [options.input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
     });
     child.stdout?.setEncoding('utf8');
     child.stderr?.setEncoding('utf8');
@@ -89,6 +100,11 @@ export function runCommand(
     child.on('close', code => {
       settle({ exitCode: code, stdout, stderr, spawnError });
     });
+    if (options.input !== undefined) {
+      child.stdin?.on('error', () => { /* The exit code reports a command that stopped reading. */ });
+      child.stdin?.end(options.input);
+    }
+  // A spawn that throws synchronously (bad arguments) rejects the executor; report it like a failed start.
   }).catch((error: unknown) => ({
     exitCode: null,
     stdout: '',

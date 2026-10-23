@@ -275,9 +275,78 @@ describe('overall requests and progress reviews', () => {
     const stored = readLedger(dir).alignment;
     expect(stored.links[groupIdFor(key('a'))][0].goal).toBe('Priority: Ship cards');
     expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
-    expect(stored.goalsGeneratedAt).toBe('2026-10-01T10:00:00Z');
+    expect(stored.goals).toEqual(['Priority: Ship cards']);
     expect(ledgerSignature(dir)).not.toBe(before);
     expect(run(['align-input']).previous.alignedAt).toBe(new Date(NOW).toISOString());
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('align-input lists only groups still to align; record-alignment keeps the other groups\' links', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    saveGoals(database, '2026-10-01T10:00:00Z');
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    run(['apply', write('d1.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    run(['record-alignment', write('a1.json', { links: [{ groupId: groupIdFor(key('a')), goal: 'Priority: Ship cards', evidence: 'The cards.' }] })]);
+    run(['apply', write('d2.json', { groups: [{ title: 'Pricing page', conversations: [key('c')] }] })]);
+    // Only the new group is listed; the aligned one is not sent again.
+    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('c'))]);
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(1);
+    expect(() => run(['record-alignment', write('a2.json', { links: [] })])).toThrow(/missing g_/);
+    expect(run(['record-alignment', write('a3.json', { links: [], unaligned: [groupIdFor(key('c'))] })])).toEqual({ aligned: 0, unaligned: 1 });
+    const stored = readLedger(dir).alignment;
+    expect(stored.links[groupIdFor(key('a'))][0].evidence).toBe('The cards.');
+    expect(stored.unaligned).toEqual([groupIdFor(key('c'))]);
+    expect(run(['align-input']).groups).toEqual([]);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('show: a re-review with the same conversations amends the previous review from the new asks only', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    const group = groupIdFor(key('a'));
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }] })]);
+    const first = run(['show', group]);
+    expect(first).toMatchObject({ mode: 'full', amendSince: null });
+    run(['record-progress', write('r.json', { groupId: group, state: 'in-progress', percent: 40, summary: 'Under way.', reviewBasis: first.reviewBasis })]);
+    database.prepare('INSERT INTO user_prompts (session_db_id, prompt_number, prompt_text, created_at_epoch) VALUES (?, ?, ?, ?)').run(1, 2, 'Now add the release date to each card', NOW + DAY);
+    const amend = run(['show', group], NOW + 2 * DAY);
+    expect(amend).toMatchObject({ mode: 'amend', amendSince: new Date(NOW).toISOString(), previousReview: { percent: 40 } });
+    expect(amend.conversations[0].asks.map((ask: { text: string }) => ask.text)).toEqual(['Now add the release date to each card']);
+    // A merged-in conversation changes what was reviewed: a full review again.
+    run(['apply', write('d2.json', { groups: [{ title: 'Release cards', conversations: [key('a'), key('b')], links: [{ kind: 'shared-work-list', conversations: [key('a'), key('b')], evidence: 'work list "release-cards" in repo/tree' }] }] })]);
+    const full = run(['show', group], NOW + 2 * DAY);
+    expect(full.mode).toBe('full');
+    expect(full.conversations.find((conversation: { conversationKey: string }) => conversation.conversationKey === key('a')).asks).toHaveLength(2);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+  it('story-input lists every review without a story, then only reviews whose state or percent changed', () => {
+  const dir = ledgerDir();
+  try {
+    const database = fixtureDatabase();
+    let output: any;
+    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
+    const write = (name: string, value: unknown) => { const path = join(dir, name); writeFileSync(path, JSON.stringify(value)); return path; };
+    run(['apply', write('d.json', { groups: [{ title: 'Release cards', conversations: [key('a')] }, { title: 'Pricing page', conversations: [key('c')] }] })]);
+    const review = (session: string, percent: number, now: number) => run(['record-progress', write('r.json', { groupId: groupIdFor(key(session)), state: 'in-progress', percent, summary: 'Under way.', reviewBasis: run(['show', groupIdFor(key(session))], now).reviewBasis })], now);
+    review('a', 40, NOW); review('c', 40, NOW);
+    expect(run(['story-input'])).toMatchObject({ update: false, reviews: [{ percent: 40 }, { percent: 40 }] });
+    run(['record-story', write('s.json', { narrative: 'Two requests under way.' })], NOW + 1000);
+    // Re-reviewed with the same state and percent: the story still holds.
+    review('a', 40, NOW + 2000);
+    expect(run(['story-input'])).toMatchObject({ update: true, reviews: [] });
+    review('c', 60, NOW + 3000);
+    const input = run(['story-input']);
+    expect(input.reviews.map((entry: { groupId: string }) => entry.groupId)).toEqual([groupIdFor(key('c'))]);
+    expect(input.previousStory.narrative).toBe('Two requests under way.');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -303,8 +372,25 @@ describe('overall requests and progress reviews', () => {
     expect(run(['record-alignment', alignment])).toEqual({ aligned: 1, unaligned: 1 });
     expect(refreshNeeds({ dir, database, now: NOW - 2 * DAY + 1000 })).toEqual({ due: 0, ungrouped: 0, goalsStale: false, unaligned: 0, needed: false });
     expect(run(['refresh-needs'], NOW - 2 * DAY + 1000).needed).toBe(false);
+    // A goals update that keeps the same goals (new ranks, quotes or summary) needs no new alignment.
     saveGoals(database, new Date(NOW).toISOString());
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
+    // Ship cards is replaced by Pricing.
+    const goalWrite = database.prepare('INSERT INTO work_state_entries (project, list_name, fields, created_at_epoch) VALUES (?, ?, ?, ?)');
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Ship cards', status: 'dropped' }), 3);
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Pricing', status: 'todo', goal_kind: 'priority', rank: 1, title: 'Pricing' }), 4);
+    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a')), groupIdFor(key('c'))]);
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }], unaligned: [groupIdFor(key('a'))] }));
+    run(['record-alignment', alignment]);
+    expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(0);
+    // A new goal: any group may serve it, so every group is asked (keeping its previous links).
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'todo', goal_kind: 'priority', rank: 2, title: 'Docs' }), 5);
     expect(refreshNeeds({ dir, database, now: NOW }).unaligned).toBe(2);
+    writeFileSync(alignment, JSON.stringify({ links: [{ groupId: groupIdFor(key('c')), goal: 'Priority: Pricing', evidence: 'The pricing page.' }, { groupId: groupIdFor(key('a')), goal: 'Priority: Docs', evidence: 'Card docs.' }] }));
+    run(['record-alignment', alignment]);
+    // A goal that is gone: only the group linked to it is asked again.
+    goalWrite.run('owner', 'owner-goals', JSON.stringify({ task: 'Priority: Docs', status: 'dropped' }), 6);
+    expect(run(['align-input']).groups.map((group: { groupId: string }) => group.groupId)).toEqual([groupIdFor(key('a'))]);
     const before = ledgerSignature(dir);
     writeFileSync(join(dir, 'refresh.json'), JSON.stringify({ state: 'running' }));
     expect(ledgerSignature(dir)).not.toBe(before);
@@ -338,38 +424,21 @@ describe('overall requests and progress reviews', () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-  it('a review written before readings existed is seeded with its single reading', () => {
-  const dir = ledgerDir();
-  try {
-    const database = fixtureDatabase();
-    let output: any;
-    const run = (argv: string[], now = NOW) => { runCli(argv, { dir, database, now, print: (value: unknown) => { output = value; } }); return output; };
-    const decisions = join(dir, 'decisions.json');
-    writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Pricing page', conversations: [key('c')] }] }));
-    run(['apply', decisions]);
-    const groupId = groupIdFor(key('c'));
-    mkdirSync(join(dir, 'progress'), { recursive: true });
-    writeFileSync(join(dir, 'progress', `${groupId}.json`), JSON.stringify({ groupId, state: 'in-progress', percent: 40, summary: 'Old.', checkedAt: '2026-10-19T10:00:00.000Z' }));
-    expect(readLedger(dir).progress[groupId].readings).toEqual([{ at: '2026-10-19T10:00:00.000Z', percent: 40 }]);
-    const file = join(dir, 'review.json');
-    writeFileSync(file, JSON.stringify({ groupId, state: 'in-progress', percent: 65, summary: 'Further.', reviewBasis: run(['show', groupId]).reviewBasis }));
-    expect(run(['record-progress', file]).readings).toBe(2);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
-});
-
   it('the snapshot joins alignment onto requests: linked, explicitly none, or not linked yet', () => {
   const source = new WorkStateSource({ ledgerDir: null });
   const goal = { id: '["owner","owner-goals"]-ship', task: 'Priority: Ship cards', title: 'Ship cards', kind: 'priority' };
   source.agentView = { ...source.agentView, goals: { generatedAt: '2026-10-01T10:00:00Z', priorities: [goal], openAsks: [] }, humanRequests: [{ id: 'r1', groupId: 'g_1' }, { id: 'r2', groupId: 'g_2' }, { id: 'r3', groupId: 'g_3' }, { id: 'r4', groupId: null }] } as any;
-  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goalsGeneratedAt: '2026-10-01T10:00:00Z', alignedAt: '2026-10-02T00:00:00Z' } } as any;
+  source.ledger = { alignment: { links: { g_1: [{ goal: 'Priority: Ship cards', evidence: 'The cards.' }], g_3: [{ goal: 'Priority: Gone', evidence: 'An old goal.' }] }, unaligned: ['g_2'], goals: ['Priority: Ship cards', 'Priority: Gone'], alignedAt: '2026-10-02T00:00:00Z' } } as any;
   const { humanRequests, goals } = source.goalLinks() as any;
   expect(humanRequests[0].goals).toEqual([{ goalId: goal.id, goal: goal.task, title: 'Ship cards', kind: 'priority', evidence: 'The cards.' }]);
   expect(humanRequests[1].goals).toEqual([]);
   expect(humanRequests[2].goals).toBeUndefined();
   expect(humanRequests[3].goals).toBeUndefined();
   expect(goals.alignedAt).toBe('2026-10-02T00:00:00Z');
-  // A newer goals run makes "serves none" a question again.
+  // A newer goals run with the same goals keeps "serves none"; an added goal makes it a question again.
   source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, generatedAt: '2026-10-05T10:00:00Z' } } as any;
+  expect((source.goalLinks() as any).humanRequests[1].goals).toEqual([]);
+  source.agentView = { ...source.agentView, goals: { ...source.agentView.goals, openAsks: [{ ...goal, id: 'new', task: 'Open ask: Docs', title: 'Docs', kind: 'open-ask' }] } } as any;
   expect((source.goalLinks() as any).humanRequests[1].goals).toBeUndefined();
 });
 
