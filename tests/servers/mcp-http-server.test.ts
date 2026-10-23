@@ -14,7 +14,7 @@ import {
   ListRootsRequestSchema,
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
-import { CWD_HEADER, startMcpHttpServer, type McpHttpHandle } from '../../src/servers/mcp-http.js';
+import { CWD_HEADER, startMcpHttpServer, type CwdResolver, type McpHttpHandle } from '../../src/servers/mcp-http.js';
 import { getRequestCwd, runWithCwd } from '../../src/servers/request-context.js';
 
 const temp = mkdtempSync(join(tmpdir(), 'cm-http-'));
@@ -23,42 +23,57 @@ const projectB = join(temp, 'project-b');
 mkdirSync(projectA);
 mkdirSync(projectB);
 
-/** A stand-in for the claude-mem Server: one tool that reports the cwd the handler sees. */
-function createFakeServer(getCwd: () => string): Server {
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * A stand-in for the claude-mem Server: one tool that reports the cwd the handler sees.
+ * It waits before answering, so overlapping requests of one session really overlap.
+ */
+function createFakeServer(resolveCwd: CwdResolver): Server {
   const server = new Server({ name: 'fake', version: '0.0.0' }, { capabilities: { tools: {} } });
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: [{ name: 'whoami', description: 'cwd of the call', inputSchema: { type: 'object' as const } }],
   }));
-  server.setRequestHandler(CallToolRequestSchema, async () => ({
-    content: [{ type: 'text' as const, text: await runWithCwd(getCwd(), async () => getRequestCwd()) }],
-  }));
+  server.setRequestHandler(CallToolRequestSchema, async (_request, extra) => {
+    const cwd = resolveCwd(extra);
+    await sleep(60);
+    return { content: [{ type: 'text' as const, text: await runWithCwd(cwd, async () => getRequestCwd()) }] };
+  });
   return server;
 }
 
 let open: McpHttpHandle;
 let secured: McpHttpHandle;
+let lan: McpHttpHandle;
 const clients: Client[] = [];
 
 beforeAll(async () => {
   open = await startMcpHttpServer({ host: '127.0.0.1', port: 0, createServer: createFakeServer });
   secured = await startMcpHttpServer({ host: '127.0.0.1', port: 0, token: 's3cret', createServer: createFakeServer });
+  lan = await startMcpHttpServer({ host: '127.0.0.1', port: 0, allowedHosts: ['lan.test'], createServer: createFakeServer });
 });
 
 afterAll(async () => {
   await Promise.allSettled(clients.map((c) => c.close()));
   await open.close();
   await secured.close();
+  await lan.close();
   rmSync(temp, { recursive: true, force: true });
 });
 
 async function connect(
   handle: McpHttpHandle,
   headers: Record<string, string>,
-  roots?: string,
+  roots?: { current: string },
 ): Promise<Client> {
-  const client = new Client({ name: 't', version: '0' }, { capabilities: roots ? { roots: {} } : {} });
+  const client = new Client(
+    { name: 't', version: '0' },
+    { capabilities: roots ? { roots: { listChanged: true } } : {} },
+  );
   if (roots) {
-    client.setRequestHandler(ListRootsRequestSchema, async () => ({ roots: [{ uri: pathToFileURL(roots).href }] }));
+    client.setRequestHandler(ListRootsRequestSchema, async () => ({
+      roots: [{ uri: pathToFileURL(roots.current).href }],
+    }));
   }
   await client.connect(new StreamableHTTPClientTransport(
     new URL(`http://127.0.0.1:${handle.port}/mcp`),
@@ -76,10 +91,22 @@ async function whoami(client: Client): Promise<string> {
 async function eventually<T>(read: () => Promise<T>, done: (value: T) => boolean): Promise<T> {
   let value = await read();
   for (let i = 0; i < 30 && !done(value); i++) {
-    await new Promise((r) => setTimeout(r, 100));
+    await sleep(100);
     value = await read();
   }
   return value;
+}
+
+const JSON_HEADERS = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
+const INITIALIZE = {
+  jsonrpc: '2.0', id: 1, method: 'initialize',
+  params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'raw', version: '0' } },
+};
+
+/** The JSON-RPC result of an SSE or JSON response body. */
+function parseRpc(text: string): any {
+  const data = text.split('\n').find((line) => line.startsWith('data:'));
+  return JSON.parse(data ? data.slice(5) : text);
 }
 
 describe('mcp http server', () => {
@@ -92,15 +119,47 @@ describe('mcp http server', () => {
   });
 
   it('falls back to the client roots/list answer when there is no header', async () => {
-    const client = await connect(open, {}, projectB);
+    const client = await connect(open, {}, { current: projectB });
     const seen = await eventually(() => whoami(client), (cwd) => cwd === resolve(projectB));
     expect(seen).toBe(resolve(projectB));
   });
 
   it('prefers the header over roots', async () => {
-    const client = await connect(open, { [CWD_HEADER]: projectA }, projectB);
-    await new Promise((r) => setTimeout(r, 300));
+    const client = await connect(open, { [CWD_HEADER]: projectA }, { current: projectB });
+    await sleep(300);
     expect(await whoami(client)).toBe(resolve(projectA));
+  });
+
+  it('follows the client when its roots change (roots/list_changed)', async () => {
+    const roots = { current: projectA };
+    const client = await connect(open, {}, roots);
+    expect(await eventually(() => whoami(client), (cwd) => cwd === resolve(projectA))).toBe(resolve(projectA));
+
+    roots.current = projectB;
+    await client.sendRootsListChanged();
+    const seen = await eventually(() => whoami(client), (cwd) => cwd === resolve(projectB));
+    expect(seen).toBe(resolve(projectB));
+  });
+
+  it('keeps overlapping requests of one session in their own directories', async () => {
+    const init = await fetch(`http://127.0.0.1:${open.port}/mcp`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, [CWD_HEADER]: projectA },
+      body: JSON.stringify(INITIALIZE),
+    });
+    const sessionId = init.headers.get('mcp-session-id');
+    expect(sessionId).toBeTruthy();
+    await init.text();
+    const post = (cwd: string, id: number) => fetch(`http://127.0.0.1:${open.port}/mcp`, {
+      method: 'POST',
+      headers: { ...JSON_HEADERS, 'Mcp-Session-Id': sessionId!, [CWD_HEADER]: cwd },
+      body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call', params: { name: 'whoami', arguments: {} } }),
+    }).then(async (res) => parseRpc(await res.text()).result.content[0].text as string);
+
+    // The second request arrives while the first is still being handled.
+    const [first, second] = await Promise.all([post(projectA, 2), sleep(10).then(() => post(projectB, 3))]);
+    expect(first).toBe(resolve(projectA));
+    expect(second).toBe(resolve(projectB));
   });
 
   it('answers /health and 404s other paths', async () => {
@@ -113,7 +172,7 @@ describe('mcp http server', () => {
   it('requires the bearer token when one is configured', async () => {
     const denied = await fetch(`http://127.0.0.1:${secured.port}/mcp`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
+      headers: JSON_HEADERS,
       body: '{}',
     });
     expect(denied.status).toBe(401);
@@ -121,22 +180,25 @@ describe('mcp http server', () => {
     expect(await whoami(client)).toBe(resolve(projectA));
   });
 
-  it('rejects a foreign Host header (DNS rebinding)', async () => {
-    const status = await new Promise<number>((resolveStatus, reject) => {
+  it('rejects a foreign Host header (DNS rebinding) unless it is explicitly allowed', async () => {
+    const statusFor = (handle: McpHttpHandle, host: string) => new Promise<number>((resolveStatus, reject) => {
       const req = request(
-        { host: '127.0.0.1', port: open.port, path: '/mcp', method: 'POST', headers: { Host: 'evil.example', 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' } },
+        { host: '127.0.0.1', port: handle.port, path: '/mcp', method: 'POST', headers: { Host: host, ...JSON_HEADERS } },
         (res) => { res.resume(); resolveStatus(res.statusCode ?? 0); },
       );
       req.on('error', reject);
-      req.end(JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: {}, clientInfo: { name: 'x', version: '0' } } }));
+      req.end(JSON.stringify(INITIALIZE));
     });
-    expect(status).toBe(403);
+    expect(await statusFor(open, 'evil.example')).toBe(403);
+    expect(await statusFor(lan, 'evil.example')).toBe(403);
+    expect(await statusFor(lan, 'lan.test')).toBe(200);
+    expect(await statusFor(lan, `lan.test:${lan.port}`)).toBe(200);
   });
 
   it('rejects a session id it does not know', async () => {
     const res = await fetch(`http://127.0.0.1:${open.port}/mcp`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', 'Mcp-Session-Id': 'nope' },
+      headers: { ...JSON_HEADERS, 'Mcp-Session-Id': 'nope' },
       body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
     });
     expect(res.status).toBe(404);

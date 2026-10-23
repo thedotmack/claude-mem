@@ -6,6 +6,7 @@ import { pathToFileURL } from 'node:url';
 import {
   allowedHosts,
   cwdFromRoots,
+  headerCwd,
   isAuthorized,
   normalizeCwd,
   parseHttpArgs,
@@ -132,6 +133,49 @@ describe('allowedHosts', () => {
       expect(hosts).toContain(host);
       expect(hosts).toContain(`${host}:1234`);
     }
+  });
+
+  it('adds the extra names clients use, brackets for IPv6', () => {
+    const hosts = allowedHosts('0.0.0.0', 1234, ['192.168.1.20', 'laptop.lan', 'fe80::1']);
+    for (const host of ['192.168.1.20', 'laptop.lan', '[fe80::1]']) {
+      expect(hosts).toContain(host);
+      expect(hosts).toContain(`${host}:1234`);
+    }
+    expect(allowedHosts('127.0.0.1', 1234)).not.toContain('laptop.lan');
+  });
+});
+
+describe('allowed hosts option', () => {
+  const base = ['--http', '--host=0.0.0.0'];
+  const env = { CLAUDE_MEM_MCP_HTTP_TOKEN: 'secret' };
+
+  it('collects repeated flags and a comma separated environment value', () => {
+    const parsed = parseHttpArgs(
+      [...base, '--allowed-host', 'Laptop.LAN', '--allowed-host=192.168.1.20'],
+      { ...env, CLAUDE_MEM_MCP_HTTP_ALLOWED_HOSTS: ' [fe80::1] , ,desk.lan ' },
+    );
+    expect(parsed?.allowedHosts).toEqual(['laptop.lan', '192.168.1.20', 'fe80::1', 'desk.lan']);
+  });
+
+  it('leaves the option out when nothing was given', () => {
+    expect(parseHttpArgs(base, env)).toEqual({ host: '0.0.0.0', port: 37790, token: 'secret' });
+  });
+
+  it('rejects values that are not host names', () => {
+    for (const bad of ['evil.example/path', 'a b', 'user@host', 'http://host']) {
+      expect(() => parseHttpArgs([...base, `--allowed-host=${bad}`], env)).toThrow('Invalid MCP HTTP allowed host');
+    }
+  });
+});
+
+describe('headerCwd', () => {
+  it('reads the header case-insensitively and validates the directory', () => {
+    expect(headerCwd({ 'x-claude-mem-cwd': firstDir })).toBe(resolve(firstDir));
+    expect(headerCwd({ 'X-Claude-Mem-Cwd': [secondDir, firstDir] })).toBe(resolve(secondDir));
+    expect(headerCwd({ 'x-claude-mem-cwd': missing })).toBeNull();
+    expect(headerCwd({ 'x-claude-mem-cwd': 'relative' })).toBeNull();
+    expect(headerCwd({ other: firstDir })).toBeNull();
+    expect(headerCwd(undefined)).toBeNull();
   });
 });
 

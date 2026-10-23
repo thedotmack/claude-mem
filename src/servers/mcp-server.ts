@@ -58,7 +58,7 @@ import { withWorkerRestartOnRefusedConnection } from './worker-restart.js';
 import { ProgressiveSearchError, progressiveSearchToolError } from '../shared/progressive-search.js';
 import { formatMcpPayload, formatWorkerMcpResponse, mcpTextResult, workerFailureText, serverFailureText, type McpTextPurpose } from './mcp-text-format.js';
 import { getRequestCwd, runWithCwd } from './request-context.js';
-import { parseHttpArgs, startMcpHttpServer, type McpHttpOptions } from './mcp-http.js';
+import { parseHttpArgs, startMcpHttpServer, type CwdResolver, type McpHttpOptions } from './mcp-http.js';
 
 /**
  * The checkout of the running tool call, resolved once per directory. Over stdio that is
@@ -1162,10 +1162,11 @@ function teamBrainJoined(): boolean {
 
 /**
  * One MCP Server. Over stdio there is exactly one; over HTTP every session gets its own.
- * `getCwd` returns the session's project directory and is read for every tool call, so
- * the project-scoped tools see the caller's project. Without it they use process.cwd().
+ * `getCwd` returns the project directory of the request carrying a tool call, resolved
+ * for every call, so the project-scoped tools see the caller's project. Without it they
+ * use process.cwd().
  */
-function createMcpServer(getCwd?: () => string): Server {
+function createMcpServer(getCwd?: CwdResolver): Server {
   const server = new Server(
     {
       name: 'claude-mem',
@@ -1193,7 +1194,7 @@ function createMcpServer(getCwd?: () => string): Server {
     };
   });
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const tool = tools.find(t => t.name === request.params.name);
 
     if (!tool) {
@@ -1221,7 +1222,7 @@ function createMcpServer(getCwd?: () => string): Server {
 
     try {
       const args = request.params.arguments || {};
-      const result = await (getCwd ? runWithCwd(getCwd(), () => tool.handler(args)) : tool.handler(args));
+      const result = await (getCwd ? runWithCwd(getCwd(extra), () => tool.handler(args)) : tool.handler(args));
       spoolWorkStateMcpResult(tool.name, result);
       return result;
     } catch (error: unknown) {

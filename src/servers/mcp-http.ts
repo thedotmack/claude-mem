@@ -16,7 +16,7 @@ import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { isInitializeRequest, RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { logger } from '../utils/logger.js';
 
 export const CWD_HEADER = 'x-claude-mem-cwd';
@@ -36,6 +36,26 @@ export interface McpHttpOptions {
   port: number;
   /** Bearer token required on every request. Mandatory for a non-loopback host. */
   token?: string;
+  /**
+   * Extra Host header names to accept besides loopback and the bind host (DNS-rebinding
+   * protection). A server bound to 0.0.0.0 or :: needs the address its clients use here.
+   */
+  allowedHosts?: string[];
+}
+
+/** Resolves the project directory for one tool call from the request that carries it. */
+export type CwdResolver = (extra?: {
+  requestInfo?: { headers?: Record<string, string | string[] | undefined> };
+}) => string;
+
+const HOST_NAME_PATTERN = /^[a-z0-9._:-]+$/;
+
+/** Lower-case host name or address without brackets or port suffix handling; throws on junk. */
+function normalizeAllowedHost(raw: string): string | null {
+  const value = raw.trim().toLowerCase().replace(/^\[|\]$/g, '');
+  if (value.length === 0) return null;
+  if (!HOST_NAME_PATTERN.test(value)) throw new Error(`Invalid MCP HTTP allowed host: ${raw}`);
+  return value;
 }
 
 /**
@@ -51,6 +71,14 @@ export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): 
     }
     return undefined;
   };
+  const flagAll = (name: string): string[] => {
+    const values: string[] = [];
+    for (let i = 0; i < argv.length; i++) {
+      if (argv[i] === `--${name}` && argv[i + 1] !== undefined) values.push(argv[i + 1]);
+      else if (argv[i].startsWith(`--${name}=`)) values.push(argv[i].slice(name.length + 3));
+    }
+    return values;
+  };
   const requested = argv.includes('--http') || env.CLAUDE_MEM_MCP_HTTP === '1';
   if (!requested) return null;
 
@@ -64,7 +92,18 @@ export function parseHttpArgs(argv: readonly string[], env: NodeJS.ProcessEnv): 
   if (!LOOPBACK_HOSTS.has(host) && !token) {
     throw new Error(`Refusing to listen on ${host} without CLAUDE_MEM_MCP_HTTP_TOKEN`);
   }
-  return { host, port, token };
+  const extraHosts = [...flagAll('allowed-host'), ...(env.CLAUDE_MEM_MCP_HTTP_ALLOWED_HOSTS ?? '').split(',')]
+    .map(normalizeAllowedHost)
+    .filter((h): h is string => h !== null);
+  return { host, port, token, ...(extraHosts.length > 0 ? { allowedHosts: extraHosts } : {}) };
+}
+
+/** The project directory a request names in its X-Claude-Mem-Cwd header, if usable. */
+export function headerCwd(headers: Record<string, string | string[] | undefined> | undefined): string | null {
+  if (!headers) return null;
+  const key = Object.keys(headers).find((k) => k.toLowerCase() === CWD_HEADER);
+  const value = key ? headers[key] : undefined;
+  return normalizeCwd(Array.isArray(value) ? value[0] : value);
 }
 
 /** A usable project directory from a header value or file:// URI, or null. */
@@ -97,9 +136,9 @@ export function cwdFromRoots(roots: ReadonlyArray<{ uri: string }> | undefined):
   return null;
 }
 
-/** Host header values we answer to (DNS rebinding protection): the loopback names plus the bind host. */
-export function allowedHosts(bindHost: string, port: number): string[] {
-  const names = new Set([...LOOPBACK_HOSTS, bindHost]);
+/** Host header values we answer to (DNS rebinding protection): loopback, the bind host and any extras. */
+export function allowedHosts(bindHost: string, port: number, extra: readonly string[] = []): string[] {
+  const names = new Set([...LOOPBACK_HOSTS, bindHost, ...extra]);
   const bare = [...names].map((h) => (h.includes(':') ? `[${h}]` : h));
   return bare.flatMap((h) => [h, `${h}:${port}`]);
 }
@@ -123,6 +162,8 @@ interface Session {
   cwdSource: CwdSource;
   lastSeen: number;
   rootsAttempts: number;
+  /** The client said its roots changed: ask again before the next request. */
+  rootsStale: boolean;
   rootsInFlight?: Promise<void>;
 }
 
@@ -134,7 +175,7 @@ export interface McpHttpHandle {
 
 export interface StartMcpHttpOptions extends McpHttpOptions {
   /** Build one MCP Server for one session; `getCwd` returns that session's project directory. */
-  createServer: (getCwd: () => string) => Server;
+  createServer: (resolveCwd: CwdResolver) => Server;
 }
 
 function sendJsonRpcError(res: ServerResponse, status: number, code: number, message: string): void {
@@ -188,6 +229,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       // A client that has not opened its standalone SSE stream cannot answer; do not wait a minute for it.
       const { roots } = await session.server.listRoots(undefined, { timeout: ROOTS_TIMEOUT_MS });
       const cwd = cwdFromRoots(roots);
+      session.rootsStale = false;
       // The header may have arrived while we waited for the client's answer.
       if (cwd && (session.cwdSource as CwdSource) !== 'header') {
         session.cwd = cwd;
@@ -204,7 +246,11 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
   const ensureCwd = async (session: Session, body: unknown): Promise<void> => {
     const method = (body as { method?: unknown } | undefined)?.method;
     if (typeof method !== 'string' || method === 'initialize' || method.startsWith('notifications/')) return;
-    if (session.cwdSource !== 'default' || session.rootsAttempts >= MAX_ROOTS_ATTEMPTS) return;
+    // Roots decide the directory only while no header ever did. They are asked again when the
+    // client reports a change (notifications/roots/list_changed), before the next request runs.
+    if (session.cwdSource === 'header') return;
+    if (session.cwdSource !== 'default' && !session.rootsStale) return;
+    if (session.rootsAttempts >= MAX_ROOTS_ATTEMPTS) return;
     session.rootsInFlight ??= refreshRoots(session).finally(() => {
       session.rootsInFlight = undefined;
     });
@@ -217,6 +263,7 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
       cwdSource: 'default' as CwdSource,
       lastSeen: Date.now(),
       rootsAttempts: 0,
+      rootsStale: false,
     } as Session;
     applyHeaderCwd(session, req);
     session.transport = new StreamableHTTPServerTransport({
@@ -225,10 +272,17 @@ export async function startMcpHttpServer(options: StartMcpHttpOptions): Promise<
         sessions.set(sessionId, session);
       },
       enableDnsRebindingProtection: true,
-      allowedHosts: allowedHosts(options.host, actualPort),
+      allowedHosts: allowedHosts(options.host, actualPort, options.allowedHosts),
       allowedOrigins: [],
     });
-    session.server = options.createServer(() => session.cwd);
+    // A request names its own directory in its own header. Reading it from the request, not from
+    // shared session state, keeps overlapping requests of one session apart; the session cwd
+    // (last header, else roots) only serves requests that carry no header.
+    session.server = options.createServer((extra) => headerCwd(extra?.requestInfo?.headers) ?? session.cwd);
+    session.server.setNotificationHandler(RootsListChangedNotificationSchema, async () => {
+      session.rootsStale = true;
+      session.rootsAttempts = 0;
+    });
     session.transport.onclose = () => {
       const id = session.transport.sessionId;
       if (id) sessions.delete(id);
