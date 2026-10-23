@@ -159,13 +159,15 @@ const QUERIES: Record<string, string> = {
 (use_declaration) @imp
 `,
 
+  // Only the Ruby calls that load code are imports, and only without a
+  // receiver: `YAML.load(text)` and `items.each do … end` are not.
   ruby: `
 (method name: (identifier) @name) @func
 (singleton_method object: (_) @receiver name: (identifier) @name) @method
 (singleton_class value: (self)) @singleton_scope
 (class name: [(constant) (scope_resolution)] @name) @cls
 (module name: [(constant) (scope_resolution)] @name) @cls
-(call method: (identifier) @name) @imp
+((call !receiver method: (identifier) @name) @imp (#match? @name "^(require|require_relative|load|autoload)$"))
 `,
 
   java: `
@@ -732,9 +734,8 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       if (cap.tag === "imp") {
         // Outlines go straight into an agent's context, so each entry is one
         // line capped at the 200-char signature budget: a Go `import ( … )`
-        // group, a Ruby call with a `do … end` block or an SCSS `@include { … }`
-        // is one capture that can span a whole file. Keep both ends, because an
-        // import's module source comes last.
+        // group or an SCSS `@include { … }` is one capture that can span many
+        // rows. Keep both ends, because an import's module source comes last.
         const importText = captureText(lines, cap);
         imports.push(importText.length > 200
           ? `${importText.slice(0, 140)} … ${importText.slice(-55)}`
