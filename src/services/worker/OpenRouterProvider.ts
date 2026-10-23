@@ -45,6 +45,7 @@ import {
   reasoningBudgetGiveUpMessage,
   reasoningBudgetRetryMessage,
   reasoningBudgetSkippedMessage,
+  OBSERVER_REASONING_BUDGET_TOKENS,
   requestDisablesReasoning,
   startReasoningRetryDeadline,
 } from './reasoning-budget.js';
@@ -533,6 +534,26 @@ function openRouterRequestLabels(label: ObserverRequestLabel): Record<string, un
 }
 
 /**
+ * Tokens added to the answer's cap because this request turns reasoning on:
+ * OBSERVER_REASONING_BUDGET_TOKENS for a typed effort other than `none` sent
+ * to openrouter.ai, else 0 (every other request sends reasoning off, or no
+ * reasoning field at all). Shared by the body and the #4003 resend so both
+ * carry the same cap.
+ */
+export function openRouterReasoningBudgetTokens(input: {
+  apiUrl: string;
+  plainText?: boolean;
+  reasoningEffort?: OpenRouterReasoningEffort;
+  label?: ObserverRequestLabel;
+  forceReasoningOff?: boolean;
+}): number {
+  const answerOnly = (input.plainText || input.label?.kind === 'field_compression') && input.forceReasoningOff !== true;
+  const typedReasoning = isOpenRouterApiUrl(input.apiUrl) && !answerOnly && input.forceReasoningOff !== true
+    && input.reasoningEffort !== undefined;
+  return typedReasoning && input.reasoningEffort !== 'none' ? OBSERVER_REASONING_BUDGET_TOKENS : 0;
+}
+
+/**
  * Build the chat-completions request body.
  *
  * Exported so the body shape is testable without a network round trip, which
@@ -589,7 +610,9 @@ export function buildOpenRouterRequestBody(input: {
       : { model: input.model }),
     messages: input.messages,
     temperature: 0.3,  // Lower temperature for structured extraction
-    max_tokens: input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS,
+    // The answer's budget, plus reasoning's own budget when this request
+    // turns reasoning on, so thinking never spends the answer's tokens.
+    max_tokens: (input.maxOutputTokens ?? DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS) + openRouterReasoningBudgetTokens(input),
     // Streamed, so liveness (tokens, `:` pings) rather than a guessed deadline
     // decides when a request is dead; the reply is assembled back into one
     // chat.completion (streamed-chat-completion.ts), usage from the final
@@ -907,7 +930,10 @@ export class OpenRouterProvider extends OpenAICompatibleProvider<OpenRouterConfi
       body: buildOpenRouterRequestBody({
         model, fallbackModels, messages, apiUrl, plainText, maxOutputTokens, extraBody, reasoningEffort, label, forceReasoningOff,
       }),
-      maxOutputTokens,
+      // The #4003 resend carries the body's whole cap: answer plus reasoning.
+      maxOutputTokens: maxOutputTokens + openRouterReasoningBudgetTokens({
+        apiUrl, plainText, reasoningEffort, label, forceReasoningOff,
+      }),
       signal: attemptSignal,
       liveness,
       label: 'OpenRouter',

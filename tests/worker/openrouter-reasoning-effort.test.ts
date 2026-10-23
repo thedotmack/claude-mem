@@ -7,11 +7,13 @@ import { join } from 'path';
 import {
   OPENROUTER_REASONING_EFFORTS,
   buildOpenRouterRequestBody,
+  openRouterReasoningBudgetTokens,
   parseOpenRouterReasoningEffort,
   resolveOpenRouterConfig,
 } from '../../src/services/worker/OpenRouterProvider.js';
 import { SettingsRoutes } from '../../src/services/worker/http/routes/SettingsRoutes.js';
 import { logger } from '../../src/utils/logger.js';
+import { OBSERVER_REASONING_BUDGET_TOKENS } from '../../src/services/worker/reasoning-budget.js';
 
 // CLAUDE_MEM_OPENROUTER_REASONING_EFFORT (#3001, #2995): a typed reasoning
 // control for openrouter.ai. Unset disables reasoning on openrouter.ai and the
@@ -100,6 +102,31 @@ describe('buildOpenRouterRequestBody reasoning effort', () => {
     expect(body.thinking).toEqual({ type: 'disabled' });
     expect(body.reasoning).toEqual({ effort: 'low' });
     expect(body.response_format).toBeUndefined();
+  });
+});
+
+describe('reasoning gets its own budget, separate from the answer', () => {
+  it('adds the reasoning budget on top of the answer cap only when a typed effort turns reasoning on', () => {
+    for (const effort of ['minimal', 'low', 'medium', 'high'] as const) {
+      const body = buildOpenRouterRequestBody({ ...base, apiUrl: OPENROUTER_URL, reasoningEffort: effort });
+      expect(body.max_tokens).toBe(base.maxOutputTokens + OBSERVER_REASONING_BUDGET_TOKENS);
+    }
+  });
+
+  it('keeps the answer cap alone when reasoning is off', () => {
+    const cases = [
+      { apiUrl: OPENROUTER_URL },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'none' as const },
+      { apiUrl: 'https://cmem.ai/api/inference/v1/chat/completions', reasoningEffort: 'high' as const },
+      { apiUrl: 'https://api.deepseek.com/chat/completions', reasoningEffort: 'high' as const },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'high' as const, plainText: true },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'high' as const, label: { kind: 'field_compression' as const, sessionId: 's' } },
+      { apiUrl: OPENROUTER_URL, reasoningEffort: 'high' as const, forceReasoningOff: true },
+    ];
+    for (const input of cases) {
+      expect(openRouterReasoningBudgetTokens(input)).toBe(0);
+      expect(buildOpenRouterRequestBody({ ...base, ...input }).max_tokens).toBe(base.maxOutputTokens);
+    }
   });
 });
 

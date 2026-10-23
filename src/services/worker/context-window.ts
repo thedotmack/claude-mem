@@ -290,7 +290,15 @@ export function condenseInputMaxTokens(contextWindowTokens: number | undefined):
   return Math.floor((contextWindowTokens || FALLBACK_CONTEXT_WINDOW_TOKENS) * CONDENSE_INPUT_SHARE);
 }
 
-/** Output-token cap per observer reply when CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS is unset or invalid. */
+/**
+ * Output-token cap per observer reply when CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS
+ * is unset or invalid. It is the answer's budget only: a request that turns
+ * reasoning on adds OBSERVER_REASONING_BUDGET_TOKENS (reasoning-budget.ts).
+ * Reason: measured 2026-10-23, six real observer inputs through the production
+ * routing (deepseek-v4-flash-0731, reasoning off): replies used 360-1,268
+ * tokens, a 1,024 cap cut 1 of 6 mid-observation, 4,096 cut none. Unused
+ * budget is not billed; a reply that hits it is reported (ResponseProcessor).
+ */
 export const DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS = 4096;
 
 /** Fewer cannot hold an observation or a summary; more is a typo. */
@@ -307,9 +315,18 @@ export const OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS = { min: 256, max: 1_000_000 } as
 export function resolveObserverMaxOutputTokens(settingsPath: string = USER_SETTINGS_PATH): number {
   const raw: unknown = SettingsDefaultsManager.loadFromFile(settingsPath).CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS;
   const trimmed = typeof raw === 'string' || typeof raw === 'number' ? String(raw).trim() : '';
-  if (!/^\d+$/.test(trimmed)) return DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS;
-  const parsed = Number(trimmed);
-  return parsed >= OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.min && parsed <= OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.max
-    ? parsed
-    : DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS;
+  if (trimmed === '') return DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS;
+  const parsed = /^\d+$/.test(trimmed) ? Number(trimmed) : NaN;
+  if (parsed >= OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.min && parsed <= OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.max) return parsed;
+  warnIgnoredObserverMaxOutputTokens(trimmed);
+  return DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS;
+}
+
+let lastWarnedObserverMaxOutputTokens: string | null = null;
+
+/** A typed cap that is not used is reported, once per value (the resolver runs per request). */
+function warnIgnoredObserverMaxOutputTokens(value: string): void {
+  if (lastWarnedObserverMaxOutputTokens === value) return;
+  lastWarnedObserverMaxOutputTokens = value;
+  logger.warn('SDK', `Ignoring CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS "${value}": use a whole number from ${OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.min} to ${OBSERVER_MAX_OUTPUT_TOKENS_BOUNDS.max}; using ${DEFAULT_OBSERVER_MAX_OUTPUT_TOKENS}`);
 }

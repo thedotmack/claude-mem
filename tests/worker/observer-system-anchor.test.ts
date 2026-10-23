@@ -231,6 +231,25 @@ describe('CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS', () => {
     }
   });
 
+  it('reports a typed cap it ignores, once per value, instead of falling back silently', () => {
+    const warnSpy = spyOn(logger, 'warn').mockImplementation(() => {});
+    try {
+      outputTokensSetting = '';
+      resolveObserverMaxOutputTokens();
+      expect(warnSpy).not.toHaveBeenCalled();
+      outputTokensSetting = '128';
+      resolveObserverMaxOutputTokens();
+      resolveObserverMaxOutputTokens();
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(String(warnSpy.mock.calls[0][1])).toContain('Ignoring CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS "128"');
+      outputTokensSetting = '3k';
+      resolveObserverMaxOutputTokens();
+      expect(warnSpy).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('reaches OpenRouter as max_tokens, and as max_completion_tokens on the compatibility retry', async () => {
     outputTokensSetting = '2048';
     let call = 0;

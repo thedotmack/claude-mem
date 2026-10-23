@@ -111,7 +111,9 @@ mock.module('../../../src/services/domain/ModeManager.js', () => ({
 
 import {
   extractObservationFileEvidence,
+  isOutputCapFinishReason,
   processAgentResponse,
+  unclosedObservationBlockCount,
   takeObserverSchemaReminder,
   type ResponseContext,
 } from '../../../src/services/worker/agents/ResponseProcessor.js';
@@ -247,6 +249,44 @@ describe('ResponseProcessor', () => {
       ...overrides,
     } as ActiveSession;
   }
+
+  describe('reply cut off at the output-token cap', () => {
+    const complete = '<observation><type>discovery</type><title>Kept</title><narrative>Whole block</narrative></observation>';
+    const cut = `${complete}\n<observation><type>change</type><title>Unfinished`;
+    const cutOffErrors = () => (loggerSpies[3] as ReturnType<typeof spyOn>).mock.calls
+      .filter(call => String(call[1]).includes('reply was cut off'));
+
+    it('stores the complete blocks and reports the lost tail when finish_reason is length', async () => {
+      const session = createMockSession({ lastFinishReason: 'length' } as Partial<ActiveSession>);
+      const result = await processAgentResponse(cut, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(result).not.toBeNull();
+      expect(mockStoreObservations).toHaveBeenCalled();
+      const errors = cutOffErrors();
+      expect(errors).toHaveLength(1);
+      expect(errors[0][2]).toMatchObject({ finishReason: 'length', completeObservations: 1, unfinishedObservationBlocks: 1 });
+    });
+
+    it('reports an unclosed block even when the provider gives no finish reason', async () => {
+      const session = createMockSession();
+      await processAgentResponse(cut, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(cutOffErrors()).toHaveLength(1);
+    });
+
+    it('stays quiet for a whole reply that stopped normally', async () => {
+      const session = createMockSession({ lastFinishReason: 'stop' } as Partial<ActiveSession>);
+      await processAgentResponse(complete, session, mockDbManager, mockSessionManager, mockWorker, 0, null, 'TestAgent');
+      expect(cutOffErrors()).toHaveLength(0);
+    });
+  });
+
+  it('classifies output-cap finish reasons and counts unclosed observation blocks', () => {
+    expect(isOutputCapFinishReason('length')).toBe(true);
+    expect(isOutputCapFinishReason('MAX_TOKENS')).toBe(true);
+    expect(isOutputCapFinishReason('stop')).toBe(false);
+    expect(isOutputCapFinishReason(null)).toBe(false);
+    expect(unclosedObservationBlockCount('<observation>a</observation><observation>b')).toBe(1);
+    expect(unclosedObservationBlockCount('<observation>a</observation>')).toBe(0);
+  });
 
   it('does not report a successful observer store when no memory rows were written', async () => {
     const store = new SessionStore(':memory:');

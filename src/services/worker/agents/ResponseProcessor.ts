@@ -394,6 +394,19 @@ function clearDebtForAnsweredWork(session: ActiveSession): void {
   session.consecutiveUnattendedGatewayResumes = 0;
 }
 
+/** finish_reason values that mean the reply hit its output-token cap (OpenAI-style and Gemini). */
+export function isOutputCapFinishReason(finishReason: string | null | undefined): boolean {
+  const reason = (finishReason ?? '').trim().toLowerCase();
+  return reason === 'length' || reason === 'max_tokens';
+}
+
+/** `<observation>` openings with no matching close: blocks the parser cannot store. */
+export function unclosedObservationBlockCount(text: string): number {
+  const opened = (text.match(/<observation>/gi) ?? []).length;
+  const closed = (text.match(/<\/observation>/gi) ?? []).length;
+  return Math.max(0, opened - closed);
+}
+
 export async function processAgentResponse(
   text: string,
   session: ActiveSession,
@@ -536,7 +549,7 @@ export async function processAgentResponse(
     const replyDiagnostics = {
       // An HTTP reply cut off at the output-token cap reads as xml/prose here;
       // name it, so a truncation is not mistaken for a skip (#3868).
-      ...(finishReason ? { finishReason, truncated: finishReason === 'length' || finishReason === 'MAX_TOKENS' } : {}),
+      ...(finishReason ? { finishReason, truncated: isOutputCapFinishReason(finishReason) } : {}),
       // Only an idle turn has a shape worth naming: blank text, thinking or
       // tool_use blocks only, or no content blocks at all (#3454).
       ...(outputClass === 'idle' && emptyOutputReason ? { emptyOutputReason } : {}),
@@ -634,6 +647,21 @@ export async function processAgentResponse(
       sessionId: session.sessionDbId,
     });
     return null;
+  }
+
+  // A reply cut off at the output-token cap can still hold complete blocks.
+  // They are stored, but the unfinished tail is lost, so say so: hitting the
+  // cap is never silent. A provider that reports no finish reason (the Claude
+  // SDK path) still shows a cut reply as an <observation> with no close.
+  const unfinishedObservationBlocks = unclosedObservationBlockCount(text);
+  if (isOutputCapFinishReason(finishReason) || unfinishedObservationBlocks > 0) {
+    logger.error('PARSER', `${agentName} reply was cut off; storing its complete blocks, the unfinished tail is lost. Raise CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS if this repeats`, {
+      sessionId: session.sessionDbId,
+      finishReason,
+      completeObservations: parsed.observations.length,
+      unfinishedObservationBlocks,
+      hasSummary: parsed.summary !== null,
+    });
   }
 
   // Valid parse — clear the invalid-output counter so transient misses don't

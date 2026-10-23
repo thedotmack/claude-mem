@@ -17,6 +17,17 @@ import { resolveLlmTimeoutMs } from './retry.js';
 
 export const REASONING_DISABLED: { enabled: false } = { enabled: false };
 
+/**
+ * Reasoning's own token budget. A request that turns reasoning on asks for this
+ * many tokens on top of the answer's CLAUDE_MEM_OBSERVER_MAX_OUTPUT_TOKENS, so
+ * thinking cannot spend the answer's budget (reasoning tokens count against
+ * max_tokens on OpenRouter). Reason: measured 2026-10-23 on six real observer
+ * inputs through the production routing (deepseek-v4-flash-0731): 56-423
+ * reasoning tokens at effort "low", up to 1,098 with the provider's default
+ * effort; 4,096 is 3.7x the largest. Unused budget is not billed.
+ */
+export const OBSERVER_REASONING_BUDGET_TOKENS = 4096;
+
 /** '' | off | false | disabled | none → off. on | true | enabled → on. Anything else is invalid. */
 export function parseOpenAICompatReasoning(raw: unknown): 'off' | 'on' | undefined {
   const value = typeof raw === 'string' ? raw.trim().toLowerCase() : '';
