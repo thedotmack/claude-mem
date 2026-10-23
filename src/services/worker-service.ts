@@ -153,6 +153,7 @@ import { SearchRoutes } from './worker/http/routes/SearchRoutes.js';
 import { SettingsRoutes } from './worker/http/routes/SettingsRoutes.js';
 import { LogsRoutes } from './worker/http/routes/LogsRoutes.js';
 import { MemoryRoutes } from './worker/http/routes/MemoryRoutes.js';
+import { WireRoutes } from './worker/http/routes/WireRoutes.js';
 import { MemoryFileWatcher } from './memory/file-watcher.js';
 import { parseMemoryWatchRoots } from './memory/config.js';
 import { saveMemory } from './memory/save-memory.js';
@@ -578,6 +579,7 @@ export class WorkerService implements WorkerRef {
     this.server.registerRoutes(new SettingsRoutes(this.settingsManager));
     this.server.registerRoutes(new LogsRoutes());
     this.server.registerRoutes(new MemoryRoutes(this.dbManager, 'claude-mem'));
+    this.server.registerRoutes(new WireRoutes(this.dbManager));
     this.server.registerRoutes(new MemoryIngestRoutes(this.dbManager));
     this.server.registerRoutes(new DedupRoutes(this.dbManager));
     this.server.registerRoutes(new ServerV1Routes({

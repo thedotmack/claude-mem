@@ -385,6 +385,41 @@ export function getToolUsesByIds(
   `).all(...params) as ToolUseRow[];
 }
 
+/** A tool use's observation as the wire gateway's Endless Mode needs it: no tool bodies. */
+export interface ToolUseObservationRow {
+  tool_use_id: string;
+  observation_id: number;
+  title: string | null;
+  narrative: string | null;
+  facts: string | null;
+}
+
+/**
+ * For each of `toolUseIds` of one session that is linked to an observation,
+ * that observation's title, narrative and facts (POST
+ * /api/wire/tool-observations). Ids with no observation yet are left out.
+ */
+export function getToolUseObservations(
+  db: Database,
+  query: { contentSessionId: string; platformSource?: string; toolUseIds: string[] },
+): ToolUseObservationRow[] {
+  const toolUseIds = [...new Set(query.toolUseIds.filter(id => typeof id === 'string' && id.length > 0))];
+  if (toolUseIds.length === 0) return [];
+  const params: Array<string | number> = [query.contentSessionId, ...toolUseIds];
+  const conditions = ['t.content_session_id = ?', `t.tool_use_id IN (${toolUseIds.map(() => '?').join(',')})`];
+  const platform = mapPlatformFilter(query.platformSource);
+  if (platform) {
+    conditions.push(platform.clause.replace('platform_source', 't.platform_source'));
+    params.push(platform.param);
+  }
+  return db.prepare(`
+    SELECT t.tool_use_id AS tool_use_id, o.id AS observation_id, o.title AS title, o.narrative AS narrative, o.facts AS facts
+    FROM tool_uses t
+    JOIN observations o ON o.id = t.observation_id
+    WHERE ${conditions.join(' AND ')}
+  `).all(...params) as ToolUseObservationRow[];
+}
+
 /**
  * Index-shaped listing for Receipt tallies and for finding ids to hand to
  * `getToolUsesByIds`. Deliberately still returns full rows — callers that want

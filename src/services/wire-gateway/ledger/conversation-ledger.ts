@@ -37,10 +37,26 @@ export type WireLedgerEntry =
   | { type: 'injection'; text: string | null }
   /** The hidden tool's definition as appended to `tools`, or null when it was not added. */
   | { type: 'tool'; name: string; definitionJson: string | null }
-  /** A tool result replaced by an observation's text (Endless Mode). */
-  | { type: 'swap'; callId: string; replacementText: string; firstRequestAt: string }
-  /** Thinking blocks are dropped after this message index (Endless Mode, Anthropic). */
-  | { type: 'thinkingDrop'; boundaryMessageIndex: number };
+  /**
+   * A tool result replaced by an observation's text (Endless Mode): the
+   * observation it shows, or, with `coveredByCallId`, the earlier call whose
+   * replacement already shows it.
+   */
+  | { type: 'swap'; callId: string; replacementText: string; firstRequestAt: string; observationId: number; coveredByCallId?: string }
+  /**
+   * Thinking blocks are dropped from the assistant messages after
+   * `boundaryMessageIndex` and before `untilMessageIndex` (Endless Mode,
+   * Anthropic): the user turn that added the swaps, so what the model said
+   * after it, with the swaps in place, keeps its thinking.
+   */
+  | { type: 'thinkingDrop'; boundaryMessageIndex: number; untilMessageIndex: number }
+  /**
+   * A stage was off for a request of this conversation after it had
+   * rewritten it: that request went with the original history, so the
+   * stage never rewrites this conversation again (turning it back on
+   * would change history the model has since answered).
+   */
+  | { type: 'suspended'; stage: string; at: string };
 
 export type WireLedgerEntryType = WireLedgerEntry['type'];
 
@@ -54,7 +70,9 @@ export function ledgerEntryIdOf(entry: WireLedgerEntry): string {
     case 'swap':
       return `swap:${entry.callId}`;
     case 'thinkingDrop':
-      return `thinkingDrop:${entry.boundaryMessageIndex}`;
+      return `thinkingDrop:${entry.boundaryMessageIndex}:${entry.untilMessageIndex}`;
+    case 'suspended':
+      return `suspended:${entry.stage}`;
   }
 }
 
@@ -81,14 +99,23 @@ function ledgerEntryFromLine(line: string): WireLedgerEntry | null {
       return isString(record.name) && (isString(record.definitionJson) || record.definitionJson === null)
         ? { type: 'tool', name: record.name, definitionJson: record.definitionJson as string | null }
         : null;
-    case 'swap':
-      return isString(record.callId) && isString(record.replacementText) && isString(record.firstRequestAt)
-        ? { type: 'swap', callId: record.callId, replacementText: record.replacementText, firstRequestAt: record.firstRequestAt }
+    case 'swap': {
+      if (!isString(record.callId) || !isString(record.replacementText) || !isString(record.firstRequestAt)
+        || !Number.isInteger(record.observationId)) return null;
+      const swap: WireLedgerEntry = {
+        type: 'swap', callId: record.callId, replacementText: record.replacementText, firstRequestAt: record.firstRequestAt, observationId: record.observationId as number,
+      };
+      if (record.coveredByCallId === undefined) return swap;
+      return isString(record.coveredByCallId) ? { ...swap, coveredByCallId: record.coveredByCallId } : null;
+    }
+    case 'thinkingDrop': {
+      const isMessageIndex = (value: unknown): value is number => Number.isInteger(value) && (value as number) >= 0;
+      return isMessageIndex(record.boundaryMessageIndex) && isMessageIndex(record.untilMessageIndex)
+        ? { type: 'thinkingDrop', boundaryMessageIndex: record.boundaryMessageIndex, untilMessageIndex: record.untilMessageIndex }
         : null;
-    case 'thinkingDrop':
-      return Number.isInteger(record.boundaryMessageIndex) && (record.boundaryMessageIndex as number) >= 0
-        ? { type: 'thinkingDrop', boundaryMessageIndex: record.boundaryMessageIndex as number }
-        : null;
+    }
+    case 'suspended':
+      return isString(record.stage) && isString(record.at) ? { type: 'suspended', stage: record.stage, at: record.at } : null;
     default:
       return null;
   }
@@ -154,6 +181,8 @@ export class WireConversationLedger {
   private readonly retentionDays: number;
   private readonly now: () => number;
   private readonly cachedConversations = new Map<string, CachedConversation>();
+  /** Conversations openExisting found no ledger for (open forgets them: it may write one). */
+  private readonly conversationsWithoutLedger = new Set<string>();
 
   constructor(options: WireConversationLedgerOptions = {}) {
     this.directory = options.directory ?? wireGatewaySubdirPath('ledger');
@@ -174,12 +203,36 @@ export class WireConversationLedger {
   open(identity: Pick<WireIdentity, 'agentId' | 'sessionId' | 'subagent' | 'kind' | 'userTurnOrdinal'>, request: WireRequest): WireConversationLedgerView | null {
     if (!identityHasConversationLedger(identity)) return null;
     const conversationKey = conversationKeyOf(identity);
+    this.conversationsWithoutLedger.delete(conversationKey);
     let conversation = this.cachedConversations.get(conversationKey);
     if (!conversation) {
       conversation = this.readConversation(conversationKey) ?? this.firstSight(conversationKey, request, identity.userTurnOrdinal);
       this.remember(conversationKey, conversation);
     } else {
       this.touchIfDue(conversationKey, conversation);
+    }
+    return this.viewOf(conversationKey, conversation);
+  }
+
+  /**
+   * The ledger of a conversation already seen or already on disk, without
+   * judging or creating anything: for a stage that is off and only needs
+   * to know what was done before. Null when there is none.
+   */
+  openExisting(identity: Pick<WireIdentity, 'agentId' | 'sessionId' | 'subagent' | 'kind'>): WireConversationLedgerView | null {
+    if (!identityHasConversationLedger(identity)) return null;
+    const conversationKey = conversationKeyOf(identity);
+    let conversation = this.cachedConversations.get(conversationKey);
+    if (!conversation) {
+      if (this.conversationsWithoutLedger.has(conversationKey)) return null;
+      const read = this.readConversation(conversationKey);
+      if (!read) {
+        if (this.conversationsWithoutLedger.size >= CACHED_CONVERSATIONS_MAX) this.conversationsWithoutLedger.clear();
+        this.conversationsWithoutLedger.add(conversationKey);
+        return null;
+      }
+      conversation = read;
+      this.remember(conversationKey, conversation);
     }
     return this.viewOf(conversationKey, conversation);
   }

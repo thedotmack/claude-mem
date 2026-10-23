@@ -3,12 +3,12 @@ import { runWireGatewayCommand } from './runtime.js';
 
 const WIRE_LIFECYCLE_COMMANDS = new Set(['start', 'stop', 'restart', 'status']);
 const WIRE_SERVICE_ACTIONS = new Set(['install', 'uninstall']);
-const WIRE_ROUTES_ACTIONS = new Set(['add', 'list', 'remove']);
+const WIRE_ROUTES_ACTIONS = new Set(['add', 'list', 'remove', 'endless']);
 const WIRE_AGENT_COMMANDS = new Set(['connect', 'disconnect', 'preview', 'run']);
 
 function printWireUsage(): void {
   console.error(`Usage: ${styleText('bold', 'npx claude-mem wire <command>')}`);
-  console.error('Commands: start [--foreground], stop, restart, status, service install|uninstall, routes add|list|remove, consent [--record|--off], clear,');
+  console.error('Commands: start [--foreground], stop, restart, status [--endless], service install|uninstall, routes add|list|remove|endless, consent [--record|--off], clear,');
   console.error('          connect <agent> [--capture wire|native], disconnect <agent>, preview <agent> [--disconnect], run <agent> -- <args>');
 }
 
@@ -41,7 +41,7 @@ export function runWireCommand(argv: string[] = []): void {
       return;
     }
     console.error(styleText('red', `Unknown wire routes action: ${action ?? '(none)'}`));
-    console.error('Usage: npx claude-mem wire routes add <routeId> --agent <id> --upstream <url> [--capture wire|native] | list | remove <routeId>');
+    console.error('Usage: npx claude-mem wire routes add <routeId> --agent <id> --upstream <url> [--capture wire|native] | list | remove <routeId> | endless <routeId> on|off|default');
     process.exit(1);
   }
 

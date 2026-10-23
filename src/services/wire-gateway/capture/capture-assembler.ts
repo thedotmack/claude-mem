@@ -98,6 +98,30 @@ function sha256Hex(...fields: string[]): string {
   return hash.digest('hex');
 }
 
+/**
+ * The tool_use_id a tool result is observed under: its call id, or, for a
+ * Gemini call with only a positional id (or none), one derived from its
+ * name, arguments and result, counted by `derivedIdOccurrences` (shared
+ * across one request's results, in order) so the same call made twice keeps
+ * two ids. `resultText` is the result's text with "\n[image]" when it
+ * carried images. Endless Mode looks observations up by the same id.
+ */
+export function toolUseIdOfResult(
+  result: { callId: string | undefined; toolName: string; argsText: string; resultText: string },
+  derivedIdOccurrences: Map<string, number>,
+): string {
+  if (result.callId && !GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(result.callId)) return result.callId;
+  const derived = sha256Hex(result.toolName, result.argsText, result.resultText);
+  const occurrence = derivedIdOccurrences.get(derived) ?? 0;
+  derivedIdOccurrences.set(derived, occurrence + 1);
+  return `gemini-${sha256Hex(derived, String(occurrence)).slice(0, 32)}`;
+}
+
+/** The session the events of `identity` are captured under: a Codex subagent's are filed under the thread it was made from. */
+export function contentSessionIdOf(identity: Pick<WireIdentity, 'kind' | 'sessionId' | 'parentSessionId'>): string {
+  return identity.kind === 'subagent' && identity.parentSessionId ? identity.parentSessionId : identity.sessionId;
+}
+
 function itemKeyOf(message: WireMessage, part: WirePart): string {
   return createHash('sha1')
     .update(message.role).update('\u0000')
@@ -289,11 +313,6 @@ export class WireCaptureAssembler {
     return conversation;
   }
 
-  /** The session the events of `identity` belong to: a Codex subagent's are filed under the thread it was made from. */
-  private contentSessionIdOf(identity: WireIdentity): string {
-    return identity.kind === 'subagent' && identity.parentSessionId ? identity.parentSessionId : identity.sessionId;
-  }
-
   /** `cwd` when the folder is known; otherwise the `<agentId>-unattributed` project, counted. */
   private placeOf(identity: WireIdentity): { cwd: string } | { project: string } {
     if (identity.workDir !== undefined) return { cwd: identity.workDir };
@@ -356,7 +375,7 @@ export class WireCaptureAssembler {
     }
     // How often each derived Gemini id was seen, so the same call made twice keeps two ids.
     const derivedIdOccurrences = new Map<string, number>();
-    const contentSessionId = this.contentSessionIdOf(identity);
+    const contentSessionId = contentSessionIdOf(identity);
 
     items.forEach((item, itemIndex) => {
       const { part } = item;
@@ -368,15 +387,7 @@ export class WireCaptureAssembler {
       const argsText = call?.argsJson ?? pendingCall?.argsText ?? '{}';
       const resultText = (part.text ?? '') + (part.hasImages ? '\n[image]' : '');
 
-      let toolUseId: string;
-      if (callId && !GEMINI_REQUEST_POSITIONAL_CALL_ID_PATTERN.test(callId)) {
-        toolUseId = callId;
-      } else {
-        const derived = sha256Hex(toolName, argsText, resultText);
-        const occurrence = derivedIdOccurrences.get(derived) ?? 0;
-        derivedIdOccurrences.set(derived, occurrence + 1);
-        toolUseId = `gemini-${sha256Hex(derived, String(occurrence)).slice(0, 32)}`;
-      }
+      const toolUseId = toolUseIdOfResult({ callId, toolName, argsText, resultText }, derivedIdOccurrences);
       if (itemIndex < firstNewItemIndex || conversation.emittedToolUseIds.has(toolUseId)) return;
       if (!toolName) {
         logger.debug('WIRE', 'Tool result with no call to pair it with; not observed', { agentId: identity.agentId, callId });

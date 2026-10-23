@@ -42,6 +42,9 @@ export function validateWireGatewayListenSettings(settings: {
   CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS?: string;
   CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION?: string;
   CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS?: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES?: string;
 }): string | null {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_PORT) {
     const port = parseInt(settings.CLAUDE_MEM_WIRE_GATEWAY_PORT, 10);
@@ -71,6 +74,18 @@ export function validateWireGatewayListenSettings(settings: {
   if (settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== undefined
     && settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS !== 'false') {
     return 'CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS must be "true" or "false"';
+  }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE !== undefined
+    && settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE !== 'true' && settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE !== 'false') {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE must be "true" or "false"';
+  }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS !== undefined
+    && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS)) {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS must be a whole number of user turns';
+  }
+  if (settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES !== undefined
+    && !/^\d+$/.test(settings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES)) {
+    return 'CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES must be a whole number of bytes';
   }
   return null;
 }

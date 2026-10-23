@@ -72,18 +72,32 @@ describe('conversation ledger', () => {
     const view = ledger.open(identityFor('fww'), firstRequest)!;
     expect(view.record({ type: 'injection', text: 'first' })).toEqual({ type: 'injection', text: 'first' });
     expect(view.record({ type: 'injection', text: 'second' })).toEqual({ type: 'injection', text: 'first' });
-    view.record({ type: 'swap', callId: 'c1', replacementText: 'r1', firstRequestAt: '2026-10-15T00:00:00.000Z' });
-    view.record({ type: 'swap', callId: 'c1', replacementText: 'other', firstRequestAt: '2026-10-16T00:00:00.000Z' });
-    view.record({ type: 'swap', callId: 'c2', replacementText: 'r2', firstRequestAt: '2026-10-15T00:00:00.000Z' });
-    view.record({ type: 'thinkingDrop', boundaryMessageIndex: 3 });
+    view.record({ type: 'swap', callId: 'c1', replacementText: 'r1', firstRequestAt: '2026-10-15T00:00:00.000Z', observationId: 1 });
+    view.record({ type: 'swap', callId: 'c1', replacementText: 'other', firstRequestAt: '2026-10-16T00:00:00.000Z', observationId: 1 });
+    view.record({ type: 'swap', callId: 'c2', replacementText: 'r2', firstRequestAt: '2026-10-15T00:00:00.000Z', observationId: 1, coveredByCallId: 'c1' });
+    view.record({ type: 'thinkingDrop', boundaryMessageIndex: 3, untilMessageIndex: 6 });
+    view.record({ type: 'thinkingDrop', boundaryMessageIndex: 3, untilMessageIndex: 9 });
+    view.record({ type: 'suspended', stage: 'endless-mode', at: '2026-10-17T00:00:00.000Z' });
     view.record({ type: 'tool', name: 'memory_search', definitionJson: '{"name":"memory_search"}' });
 
     const restarted = new WireConversationLedger({ directory: ledgerDirectory }).open(identityFor('fww', laterRequest), laterRequest)!;
     expect(restarted.status).toBe('born');
     expect(restarted.get('injection')).toEqual({ type: 'injection', text: 'first' });
     expect(restarted.get('swap:c1')).toMatchObject({ replacementText: 'r1' });
-    expect(restarted.entries().map(ledgerEntryIdOf)).toEqual(['born', 'injection', 'swap:c1', 'swap:c2', 'thinkingDrop:3', 'tool']);
-    expect(readFileSync(join(ledgerDirectory, `${restarted.conversationKey}.jsonl`), 'utf8').trim().split('\n')).toHaveLength(6);
+    expect(restarted.entries().map(ledgerEntryIdOf)).toEqual(['born', 'injection', 'swap:c1', 'swap:c2', 'thinkingDrop:3:6', 'thinkingDrop:3:9', 'suspended:endless-mode', 'tool']);
+    expect(readFileSync(join(ledgerDirectory, `${restarted.conversationKey}.jsonl`), 'utf8').trim().split('\n')).toHaveLength(8);
+  });
+
+  it('opens an existing ledger without creating one, and still judges a later first sight', () => {
+    const ledger = new WireConversationLedger({ directory: ledgerDirectory });
+    expect(ledger.openExisting(identityFor('existing-none'))).toBeNull();
+    expect(existsSync(join(ledgerDirectory, `${conversationKeyOf(identityFor('existing-none'))}.jsonl`))).toBe(false);
+    // A conversation openExisting found nothing for is still born by its first request.
+    expect(ledger.open(identityFor('existing-none'), firstRequest)!.status).toBe('born');
+    expect(ledger.openExisting(identityFor('existing-none'))!.status).toBe('born');
+    ledger.open(identityFor('existing-on-disk'), firstRequest)!.record({ type: 'injection', text: 'kept' });
+    const restarted = new WireConversationLedger({ directory: ledgerDirectory });
+    expect(restarted.openExisting(identityFor('existing-on-disk'))!.get('injection')).toEqual({ type: 'injection', text: 'kept' });
   });
 
   it('keeps the first of two lines with one id even when the file holds both', () => {

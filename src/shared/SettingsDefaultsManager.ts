@@ -417,6 +417,9 @@ export interface SettingsDefaults {
   CLAUDE_MEM_WIRE_GATEWAY_RECORDING: string;
   CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: string;
   CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: string;
+  CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: string;
 }
 
 export class SettingsDefaultsManager {
@@ -705,6 +708,9 @@ export class SettingsDefaultsManager {
     CLAUDE_MEM_WIRE_GATEWAY_RECORDING: '',                 // 'false' forces raw recording off; nothing here turns it on (consent.json decides)
     CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION: 'false',   // routes without their own setting swap secrets for placeholders before the provider sees them
     CLAUDE_MEM_WIRE_GATEWAY_FORWARD_SUBSCRIPTION_SIGNINS: 'false', // 'true' lifts D4 locally: subscription sign-ins are forwarded instead of refused
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE: 'false',         // routes without their own features.endlessMode swap old bulky tool results for their observations (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS: '3',    // Endless Mode swaps a result only once more than this many user turns have begun after it (read at gateway start)
+    CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES: '2048', // ... and only a result at least this many bytes long
   };
 
   static getAllDefaults(): SettingsDefaults {

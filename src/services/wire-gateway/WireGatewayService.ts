@@ -48,6 +48,7 @@ import {
   addWireGatewayRoute,
   readWireGatewayRoutesFile,
   removeWireGatewayRoute,
+  setWireGatewayRouteFeature,
   type WireGatewayCaptureSource,
 } from './routes.js';
 import { isLoopbackAddress } from './network-guard.js';
@@ -66,6 +67,11 @@ import {
 import { OutboundRedactionPlaceholders } from './privacy/outbound-redaction.js';
 import { WireConversationLedger } from './ledger/conversation-ledger.js';
 import { WireRewriteSeam, type WireRewriteStage } from './rewrite/rewrite-stage.js';
+import { createEndlessModeStage } from './endless/endless-mode-stage.js';
+import { WireObservationLookup } from './endless/observation-lookup.js';
+import { buildEndlessModeReport, formatEndlessModeReport } from './endless/endless-report.js';
+import { WireUsageLedger } from './metrics/usage-ledger.js';
+import { BUILT_IN_AGENT_DESCRIPTORS } from './agents/builtin-agents.js';
 import { captureEvent, shutdownTelemetry } from '../telemetry/telemetry.js';
 import { runWireAgentCli, type WireAgentCliRuntime } from './wiring/wire-agent-cli.js';
 import { requestJsonDirectly } from './direct-http.js';
@@ -123,11 +129,13 @@ export interface WireGatewayServiceOptions {
   /** Test seam: the placeholder table; defaults to one keyed by <DATA_DIR>/wire-gateway/redact.key. */
   outboundRedactionPlaceholders?: OutboundRedactionPlaceholders;
   /**
-   * The rewrite stages, in request order (plan Phase 10). Phases 11–12
-   * register Endless Mode, memory injection and the hidden tool here;
-   * absent, no stage runs.
+   * The rewrite stages, in request order (plan Phase 10). Absent: the
+   * gateway's own, Endless Mode (Phase 11), each off until its setting or a
+   * route's feature turns it on.
    */
   rewriteStages?: WireRewriteStage[];
+  /** Test seam: where Endless Mode learns which tool results have an observation; defaults to asking the worker. */
+  observationLookup?: WireObservationLookup;
   /** The settings handed to rewrite stages (loadWireGatewayConfig's `rewriteSettings`). */
   rewriteSettings?: Readonly<Record<string, string>>;
   /** Test seam: the conversation ledger; defaults to one in <DATA_DIR>/wire-gateway/ledger. */
@@ -157,6 +165,16 @@ export interface WireGatewayServiceOptions {
     agentEnvironment?: AgentEnvironment;
     userAgentsDirectory?: string;
   } & Pick<WireAgentStatusInputs, 'probeIdentity' | 'probeThroughProxy' | 'readSystemProxy'>;
+}
+
+/** The agent's edit tools, from its built-in descriptor. */
+function editToolNamesOfAgent(agentId: string): readonly string[] {
+  return BUILT_IN_AGENT_DESCRIPTORS.find(descriptor => descriptor.id === agentId)?.editToolNames ?? [];
+}
+
+/** The stages the gateway runs, in request order: Endless Mode (Phase 11). */
+function defaultRewriteStages(observationLookup: WireObservationLookup): WireRewriteStage[] {
+  return [createEndlessModeStage({ observationLookup, editToolNamesOf: editToolNamesOfAgent })];
 }
 
 export interface WireGatewayRuntimeState {
@@ -194,6 +212,8 @@ export class WireGatewayService {
   readonly conversationLedger: WireConversationLedger;
   /** The rewrite stages and their health. */
   readonly rewriteSeam: WireRewriteSeam;
+  /** Endless Mode's cache of which tool results have an observation, filled in the background. */
+  readonly observationLookup: WireObservationLookup;
   private ledgerPruneTimer: ReturnType<typeof setInterval> | null = null;
 
   constructor(options: WireGatewayServiceOptions) {
@@ -203,7 +223,8 @@ export class WireGatewayService {
     // The key file is read (or written) on first use only.
     this.outboundRedactionPlaceholders = options.outboundRedactionPlaceholders ?? new OutboundRedactionPlaceholders();
     this.conversationLedger = options.conversationLedger ?? new WireConversationLedger();
-    this.rewriteSeam = new WireRewriteSeam({ stages: options.rewriteStages ?? [] });
+    this.observationLookup = options.observationLookup ?? new WireObservationLookup();
+    this.rewriteSeam = new WireRewriteSeam({ stages: options.rewriteStages ?? defaultRewriteStages(this.observationLookup) });
   }
 
   async start(): Promise<void> {
@@ -790,12 +811,17 @@ function printWireGatewayUsage(): void {
   writeStderrLine('  restart            stop, then start in the background');
   writeStderrLine('  status [--json]    print whether it runs, and each wired agent\'s state (ok, unwired, replaced,');
   writeStderrLine('                     unreachable, proxied, bypassed, unknown) with a fix');
+  writeStderrLine('  status --endless [--json]');
+  writeStderrLine('                     Endless Mode per agent: cache read:write before and after the first swap, tokens saved');
   writeStderrLine('  service install    start it at login (launchd, systemd --user, or a logon task)');
   writeStderrLine('  service uninstall  remove that login item');
   writeStderrLine('  routes add <routeId> --agent <id> --upstream <url> [--capture wire|native]');
   writeStderrLine('                     relay http://<host>:<port>/r/<routeId>/… to <url>/…');
   writeStderrLine('  routes list        print every route');
   writeStderrLine('  routes remove <routeId>');
+  writeStderrLine('  routes endless <routeId> on|off|default');
+  writeStderrLine('                     turn Endless Mode on or off for one route, live (default: CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE,');
+  writeStderrLine('                     read at start: change it, then restart)');
   writeStderrLine('  consent            print whether raw recording is on');
   writeStderrLine('  consent --record   turn raw recording on (needs a terminal)');
   writeStderrLine('  consent --off      turn raw recording off');
@@ -969,8 +995,26 @@ function runWireGatewayRoutesCli(args: string[], config: WireGatewayConfig): voi
       return;
     }
     for (const [routeId, route] of routes) {
-      writeStdoutLine(`${routeId}  agent=${route.agentId}  capture=${route.captureSource}  upstream=${route.upstreamBaseUrl}`);
+      const endless = route.features?.endlessMode;
+      const endlessText = endless === undefined ? '' : `  endless=${endless ? 'on' : 'off'}`;
+      writeStdoutLine(`${routeId}  agent=${route.agentId}  capture=${route.captureSource}  upstream=${route.upstreamBaseUrl}${endlessText}`);
     }
+    return;
+  }
+
+  if (action === 'endless') {
+    // The per-route kill switch (plan Phase 11 task 6): `off` wins over the setting.
+    const [routeId, state] = positional;
+    const enabledByState: Record<string, boolean | undefined> = { on: true, off: false, default: undefined };
+    if (!routeId || state === undefined || !Object.hasOwn(enabledByState, state)) {
+      throw new Error('Usage: routes endless <routeId> on|off|default');
+    }
+    if (!setWireGatewayRouteFeature(routeId, 'endlessMode', enabledByState[state])) {
+      throw new Error(`No route ${routeId}`);
+    }
+    const followsSetting = `follows CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE (${config.rewriteSettings.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE ?? 'false'}; `
+      + 'a running gateway reads that setting at start, so a change to it needs claude-mem wire restart)';
+    writeStdoutLine(`Endless Mode for route ${routeId}: ${state === 'default' ? followsSetting : state} (a running gateway applies the route change within a second)`);
     return;
   }
 
@@ -1022,6 +1066,15 @@ export async function runWireGatewayServiceCli(argv: string[] = process.argv.sli
     }
 
     case 'status': {
+      if (argv.slice(1).includes('--endless')) {
+        const endlessReport = buildEndlessModeReport(new WireUsageLedger({ retentionDays: config.retentionDays }).read());
+        if (argv.slice(1).includes('--json')) {
+          writeStdoutLine(JSON.stringify({ agents: endlessReport }, null, 2));
+          return;
+        }
+        for (const line of formatEndlessModeReport(endlessReport, config.retentionDays)) writeStdoutLine(line);
+        return;
+      }
       const report = await wireStatusReportForCli(config);
       if (argv.slice(1).includes('--json')) {
         writeStdoutLine(JSON.stringify(report, null, 2));

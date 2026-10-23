@@ -26,6 +26,8 @@ import {
   linkToolUsesToObservation as linkToolUsesToObservationRows,
   isToolUseLinkedToObservation as isToolUseLinkedToObservationRow,
   getToolUsesByIds as getToolUsesByIdsRows,
+  getToolUseObservations as getToolUseObservationsRows,
+  type ToolUseObservationRow,
   queryToolUses as queryToolUsesRows,
   countToolUses as countToolUsesRows,
   type ToolUseRow,
@@ -3177,6 +3179,10 @@ export class SessionStore {
 
   queryToolUses(filters: ToolUseQueryFilters = {}): ToolUseRow[] {
     return queryToolUsesRows(this.db, filters);
+  }
+
+  getToolUseObservations(query: { contentSessionId: string; platformSource?: string; toolUseIds: string[] }): ToolUseObservationRow[] {
+    return getToolUseObservationsRows(this.db, query);
   }
 
   appendWorkStateEntry(entry: { project: string; listName: string; fields: WorkStateFields; createdAtEpoch?: number }): number {

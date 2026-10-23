@@ -1053,6 +1053,9 @@ describe('SettingsDefaultsManager', () => {
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS).toBe('7');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_RECORDING).toBe('');
       expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_OUTBOUND_REDACTION).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE).toBe('false');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS).toBe('3');
+      expect(defaults.CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES).toBe('2048');
     });
 
     it('cloud sync content flush knobs default to 40 ops / 90s', () => {

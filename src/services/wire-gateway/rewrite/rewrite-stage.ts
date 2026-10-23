@@ -98,6 +98,21 @@ export interface WireRewriteStage {
   name: string;
   /** onRequest's and onResponse's budget; defaults to REQUEST_STAGE_BUDGET_MS. */
   budgetMs?: number;
+  /**
+   * Whether the stage is turned on for a route at all (its setting, the
+   * route's feature flag). Checked before anything is opened: when no stage
+   * is on for a route, the relay neither opens nor writes a conversation
+   * ledger for it. Absent: on everywhere.
+   */
+  enabledFor?(route: WireGatewayRoute, settings: Readonly<Record<string, string>>): boolean;
+  /**
+   * Told of a request that goes while the stage is off for its route, with
+   * the conversation's ledger when one already exists (none is created).
+   * A stage records here what it must remember of a request it did not
+   * rewrite (Endless Mode: never resume after its swaps went missing).
+   * Writes go straight to the ledger; a throw is noted and ignored.
+   */
+  whileOff?(ledger: WireConversationLedgerView): void;
   /** Whether the stage takes part in this exchange at all; none of its hooks run when false. */
   appliesTo?(context: WireRewriteContext): boolean;
   onRequest?(context: WireRewriteContext, body: Uint8Array): MaybePromise<WireRewriteRequestResult>;
@@ -448,6 +463,37 @@ export class WireRewriteSeam {
     this.health = options.health ?? new WireRewriteStageHealth();
   }
 
+  /** Whether any stage is on for `route` (see WireRewriteStage.enabledFor); a stage whose check throws counts as off. */
+  hasStageEnabledFor(route: WireGatewayRoute, settings: Readonly<Record<string, string>>): boolean {
+    return this.stages.some(stage => {
+      if (!stage.enabledFor) return true;
+      try {
+        return stage.enabledFor(route, settings) === true;
+      } catch (error) {
+        this.health.noteFailure(stage.name, 'enabledFor', error);
+        return false;
+      }
+    });
+  }
+
+  /**
+   * Hand the stages that are off for `route` (and have a whileOff) the
+   * conversation's existing ledger, opened only when one of them needs it.
+   */
+  noteStagesOff(route: WireGatewayRoute, settings: Readonly<Record<string, string>>, openExistingLedger: () => WireConversationLedgerView | null): void {
+    let ledger: WireConversationLedgerView | null | undefined;
+    for (const stage of this.stages) {
+      if (!stage.whileOff || !stage.enabledFor) continue;
+      try {
+        if (stage.enabledFor(route, settings) === true) continue;
+        if (ledger === undefined) ledger = openExistingLedger();
+        if (ledger) stage.whileOff(ledger);
+      } catch (error) {
+        this.health.noteFailure(stage.name, 'whileOff', error);
+      }
+    }
+  }
+
   /**
    * The run for one exchange, or null when no stage applies to it (the
    * relay then does exactly what it did before the seam existed). A stage
@@ -460,6 +506,12 @@ export class WireRewriteSeam {
     const heldLedgerWrites = base.ledger ? new HeldLedgerWrites(base.ledger) : null;
     const run = new WireRewriteRun(applying, contextsByStage, this.health, heldLedgerWrites);
     for (const stage of this.stages) {
+      try {
+        if (stage.enabledFor && stage.enabledFor(base.route, base.settings) !== true) continue;
+      } catch (error) {
+        this.health.noteFailure(stage.name, 'enabledFor', error);
+        continue;
+      }
       const ledger = heldLedgerWrites ? heldLedgerWrites.viewFor(stage.name) : null;
       const context: WireRewriteContext = { ...base, ledger, state: {}, estimates: run.estimates };
       let applies: boolean;

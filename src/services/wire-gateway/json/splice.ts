@@ -153,6 +153,38 @@ export function insertObjectMember(bytes: Uint8Array, objectSpan: JsonSpan, key:
 }
 
 /**
+ * The splices that take the elements `shouldRemove` picks out of the array,
+ * commas and the whitespace between them with them; [] when it picks none.
+ * For a caller that applies them together with other splices of the same
+ * bytes (they touch nothing outside the array).
+ */
+export function arrayItemRemovalSplices(
+  bytes: Uint8Array,
+  arraySpan: JsonSpan,
+  shouldRemove: (elementSpan: JsonSpan, index: number) => boolean,
+): ByteSplice[] {
+  requireContainer(arraySpan, 'array');
+  const elements = [...arrayElements(bytes, arraySpan)];
+  const removed = elements.map((element, index) => shouldRemove(element, index));
+  if (!removed.includes(true)) return [];
+  const firstKeptIndex = removed.indexOf(false);
+  if (firstKeptIndex < 0) {
+    // All of them: keep only the brackets.
+    return [{ start: arraySpan.start + 1, end: arraySpan.end - 1, replacement: new Uint8Array(0) }];
+  }
+  const splices: ByteSplice[] = [];
+  elements.forEach((element, index) => {
+    if (!removed[index]) return;
+    // Before the first kept element: the element and what follows it up to the next one.
+    // After it: what precedes the element (from the previous element's end) and the element.
+    splices.push(index < firstKeptIndex
+      ? { start: element.start, end: elements[index + 1].start, replacement: new Uint8Array(0) }
+      : { start: elements[index - 1].end, end: element.end, replacement: new Uint8Array(0) });
+  });
+  return splices;
+}
+
+/**
  * The elements `shouldRemove` picks taken out of the array, commas and the
  * whitespace between them with them. Idempotent when `shouldRemove` decides
  * by an element's content (what it removed is gone, so a second pass finds
@@ -164,23 +196,5 @@ export function removeArrayItems(
   arraySpan: JsonSpan,
   shouldRemove: (elementSpan: JsonSpan, index: number) => boolean,
 ): Uint8Array {
-  requireContainer(arraySpan, 'array');
-  const elements = [...arrayElements(bytes, arraySpan)];
-  const removed = elements.map((element, index) => shouldRemove(element, index));
-  if (!removed.includes(true)) return bytes;
-  const firstKeptIndex = removed.indexOf(false);
-  if (firstKeptIndex < 0) {
-    // All of them: keep only the brackets.
-    return applyByteSplices(bytes, [{ start: arraySpan.start + 1, end: arraySpan.end - 1, replacement: new Uint8Array(0) }]);
-  }
-  const splices: ByteSplice[] = [];
-  elements.forEach((element, index) => {
-    if (!removed[index]) return;
-    // Before the first kept element: the element and what follows it up to the next one.
-    // After it: what precedes the element (from the previous element's end) and the element.
-    splices.push(index < firstKeptIndex
-      ? { start: element.start, end: elements[index + 1].start, replacement: new Uint8Array(0) }
-      : { start: elements[index - 1].end, end: element.end, replacement: new Uint8Array(0) });
-  });
-  return applyByteSplices(bytes, splices);
+  return applyByteSplices(bytes, arrayItemRemovalSplices(bytes, arraySpan, shouldRemove));
 }

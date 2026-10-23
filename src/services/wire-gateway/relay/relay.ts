@@ -418,9 +418,17 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
     const rewriteOutcome: RelayExchangeRewrite = { appliedStageNames: [], injectedTokensEst: 0, swappedTokensEst: 0, forwardedRequest: null };
     let rewriteRun: WireRewriteRun | null = null;
     let stagedBody: Uint8Array | null = null;
-    // With no stage registered nothing is opened or written: a conversation
-    // first seen after stages exist is judged by that request (unknown ≠ empty).
-    if (options.rewriteSeam && options.rewriteSeam.stages.length > 0 && classification.protocol && parsedRequest && methodHasBody && decodedCopy?.kind === 'decoded') {
+    const rewriteSettings = options.rewriteSettings ?? {};
+    // A stage that is off for this route still hears of the request when its
+    // conversation already has a ledger (no ledger is created for it).
+    if (options.rewriteSeam && options.conversationLedger && classification.protocol && parsedRequest && methodHasBody) {
+      const conversationLedger = options.conversationLedger;
+      options.rewriteSeam.noteStagesOff(route, rewriteSettings, () => conversationLedger.openExisting(identity));
+    }
+    // With no stage registered, or none turned on for this route, nothing is
+    // opened or written: a conversation first seen after a stage is on is
+    // judged by that request (unknown ≠ empty).
+    if (options.rewriteSeam && options.rewriteSeam.hasStageEnabledFor(route, rewriteSettings) && classification.protocol && parsedRequest && methodHasBody && decodedCopy?.kind === 'decoded') {
       const protocol = classification.protocol;
       const decodedBody = decodedCopy.bytes;
       const parsedByBody = new Map<Uint8Array, WireRequest>([[decodedBody, parsedRequest]]);
@@ -435,7 +443,7 @@ export function createWireGatewayRelay(options: WireGatewayRelayOptions) {
       try {
         const ledger = openConversationLedger(options.conversationLedger, identity, parsedRequest, routeId);
         rewriteRun = options.rewriteSeam.begin({
-          routeId, route, identity, ledger, protocol, settings: options.rewriteSettings ?? {}, requestOf,
+          routeId, route, identity, ledger, protocol, settings: rewriteSettings, requestOf,
         });
         if (rewriteRun) {
           const staged = await rewriteRun.runRequestStages(decodedBody);

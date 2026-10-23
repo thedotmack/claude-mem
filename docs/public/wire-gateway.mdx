@@ -27,6 +27,7 @@ and uploads nothing except the anonymous counters described under
 | Memory capture | on for routes with `captureSource: wire` | Nothing beyond the relay | Capture events (your prompt, each tool call and its result, the last reply) in the local hook spool, which the claude-mem worker turns into memories | Spool files until the worker has taken them in; memories as long as you keep them |
 | Raw recording | **off** until you consent | Nothing | Each exchange's text in `<data dir>/wire-gateway/recordings/<date>/…/turns.jsonl` | `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days), at most 256 MiB in all, oldest removed first |
 | Outbound redaction | **off** | The request with secrets swapped for placeholders such as `{{API_KEY_k3v9x2mq}}` | A random 32-byte key in `<data dir>/wire-gateway/redact.key` (owner-only) | The key until you delete it; the values behind placeholders in memory only, until the gateway stops |
+| Endless Mode | **off** | The request with old tool results replaced by their observations' text | Each replacement, word for word, in `<data dir>/wire-gateway/ledger/<conversation>.jsonl`; token counts per request in `usage/<date>.jsonl` | Ledgers 30 days after a conversation's last request; usage lines for `CLAUDE_MEM_WIRE_GATEWAY_RETENTION_DAYS` (7 days) |
 | Telemetry | follows claude-mem's [telemetry](/telemetry) setting | Counters only | Nothing | Nothing |
 
 Request and response **headers are never stored**, so API keys in
@@ -116,3 +117,67 @@ and once a day: the number of routes, exchanges relayed, capture events and
 rewritten requests. No body, URL, path, header, route id or agent name is ever
 sent. It follows the same opt-out as the rest of claude-mem; see
 [Telemetry](/telemetry).
+
+## Endless Mode
+
+A long session resends every tool result it ever got on every request. Endless
+Mode replaces the old, large ones with the observation claude-mem already made
+of them, so the history the provider reads gets shorter while your agent's own
+copy stays as it was.
+
+Turn it on for every route with `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE=true` and
+`claude-mem wire restart` (the gateway reads its settings at start), or per
+route, with no restart:
+
+```bash
+claude-mem wire routes endless <route> on        # on for this route
+claude-mem wire routes endless <route> off       # off for this route, whatever the setting says
+claude-mem wire routes endless <route> default   # follow CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MODE again
+claude-mem wire status --endless                 # what it saved, per agent
+```
+
+A running gateway picks up a route change within a second. Turning Endless Mode
+off for a route sends its conversations' history as your agent wrote it from
+the next request on. A conversation that sent even one request that way is
+never changed again, even after you turn it back on: the model has answered the
+original history since. Turning it off and back on with no request in between
+changes nothing.
+
+What gets replaced, and when:
+
+- Only conversations that began under the gateway: the first request it saw
+  held one message of yours and no reply. A conversation it first sees part way
+  through is never changed.
+- Only tool results at least `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_RESULT_BYTES`
+  (2048) long, older than `CLAUDE_MEM_WIRE_GATEWAY_ENDLESS_MIN_AGE_TURNS` (3) of
+  your turns (so from the fourth turn you start after one), whose observation
+  already exists. The gateway never waits for an observation: it asks the worker
+  in the background, and a result whose observation is not there yet stays as
+  it is and is asked about again less and less often. With the worker down,
+  requests go exactly as your agent sent them.
+- Never errors, results that carry images, results with a cache breakpoint of
+  their own, or the results of tools that edit files (`Edit`, `Write`,
+  `MultiEdit`, `NotebookEdit`, `apply_patch`, `replace`, `write_file`, and any
+  tool named for edit, write or patch).
+- New replacements are made only when you start a new turn, never while the
+  agent is running tools. Each one is written to the conversation's ledger the
+  first time and sent the same, byte for byte, on every later request and after
+  a restart, so the provider's prompt cache is rebuilt once and then holds.
+- A replaced result keeps its call id and its place, and reads
+  `[claude-mem: this <tool> result (call_id=…) was replaced by observation #<id>]`
+  followed by the observation's title, narrative and facts, at most 4,000
+  characters. When several calls share one observation, the later ones point to
+  the first.
+- The system prompt and tool definitions are never changed. Signatures and
+  sealed reasoning (Gemini thought signatures, OpenAI encrypted reasoning) are
+  never touched. For Anthropic, the thinking blocks of replies that came after a
+  replaced result and before the turn that replaced it are left out, because the
+  provider no longer accepts them once the history before them changed. A later
+  replacement in the same place leaves out the thinking said since, too. If that
+  would leave a reply empty, nothing new is replaced that turn.
+- If anything goes wrong, the request goes as your agent sent it.
+
+`claude-mem wire status --endless` reads the usage ledger and shows, per agent,
+the prompt cache's read-to-write ratio before and after each conversation's
+first replacement, and the tokens the replacements took out.
+

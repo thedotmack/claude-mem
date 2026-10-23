@@ -108,6 +108,7 @@ const claudeCode: AgentDescriptor = {
   name: 'Claude Code',
   aliases: ['claude', 'cc'],
   userAgentPrefixes: ['claude-cli', 'claude-code'],
+  editToolNames: ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'],
   detect: { bins: ['claude'], directories: (environment) => [claudeConfigDirectory(environment)] },
   files: [{ key: 'settings', format: 'json', candidatePaths: (environment) => [join(claudeConfigDirectory(environment), 'settings.json')] }],
   targets: [{ file: 'settings', keyPath: 'env.ANTHROPIC_BASE_URL', protocol: 'anthropic', defaultUpstream: ANTHROPIC_API_BASE_URL }],
@@ -182,6 +183,7 @@ const codex: AgentDescriptor = {
   name: 'Codex',
   aliases: ['codex-cli'],
   userAgentPrefixes: ['codex', 'acp-extension-codex'],
+  editToolNames: ['apply_patch'],
   detect: { bins: ['codex'], directories: (environment) => [codexHome(environment)] },
   files: [
     { key: 'config', format: 'toml', candidatePaths: (environment) => [join(codexHome(environment), 'config.toml')] },
@@ -234,6 +236,7 @@ const geminiCli: AgentDescriptor = {
   name: 'Gemini CLI',
   aliases: ['gemini'],
   userAgentPrefixes: ['geminicli', 'gemini-cli'],
+  editToolNames: ['replace', 'write_file'],
   detect: { bins: ['gemini'], directories: (environment) => [geminiDirectory(environment)] },
   files: [
     { key: 'env', format: 'env', candidatePaths: (environment) => [join(geminiDirectory(environment), '.env')] },

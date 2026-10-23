@@ -199,6 +199,31 @@ export function removeWireGatewayRoute(routeId: string, routesFilePath: string =
   return withWireGatewayRoutesFileLock(routesFilePath, () => removeWireGatewayRouteWhileRoutesFileIsLocked(routeId, routesFilePath));
 }
 
+/**
+ * Set (true/false) or clear (undefined: the global setting decides) one of a
+ * route's features: the per-route switch, e.g. Endless Mode's kill switch.
+ * A running gateway sees it within a second (WireGatewayRoutesStore).
+ * Returns false when there is no route by that id.
+ */
+export function setWireGatewayRouteFeature(
+  routeId: string,
+  feature: keyof WireGatewayRouteFeatures,
+  enabled: boolean | undefined,
+  routesFilePath: string = paths.wireGatewayRoutes(),
+): boolean {
+  return withWireGatewayRoutesFileLock(routesFilePath, () => {
+    const routesFile = readWireGatewayRoutesFile(routesFilePath);
+    if (!Object.hasOwn(routesFile.routes, routeId)) return false;
+    const route = routesFile.routes[routeId];
+    const features: WireGatewayRouteFeatures = { ...(route.features ?? {}) };
+    if (enabled === undefined) delete features[feature];
+    else features[feature] = enabled;
+    routesFile.routes[routeId] = { ...route, features };
+    writeWireGatewayRoutesFile(routesFile, routesFilePath);
+    return true;
+  });
+}
+
 export type WireGatewayRouteLookup =
   | { kind: 'found'; route: WireGatewayRoute }
   | { kind: 'not_found' }

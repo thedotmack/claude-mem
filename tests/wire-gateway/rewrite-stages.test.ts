@@ -188,7 +188,7 @@ describe('ledger writes during request stages', () => {
   const recordingStage = (name: string, callId: string, after: () => unknown = () => undefined): WireRewriteStage => ({
     name,
     onRequest: context => {
-      context.ledger!.record({ type: 'swap', callId, replacementText: 'x', firstRequestAt: 't' });
+      context.ledger!.record({ type: 'swap', callId, replacementText: 'x', firstRequestAt: 't', observationId: 1 });
       return after() as undefined;
     },
   });
@@ -231,7 +231,7 @@ describe('ledger writes during request stages', () => {
       onRequest: context => new Promise(resolve => {
         lateWrite = new Promise(done => setTimeout(() => {
           try {
-            context.ledger!.record({ type: 'thinkingDrop', boundaryMessageIndex: 3 });
+            context.ledger!.record({ type: 'thinkingDrop', boundaryMessageIndex: 3, untilMessageIndex: 5 });
             done('recorded');
           } catch (error) {
             done((error as Error).message);
