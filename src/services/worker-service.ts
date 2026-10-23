@@ -143,6 +143,7 @@ import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SetupScan } from './prompt-import/setup-scan.js';
+import { AGENT_WRITTEN_PROMPTS_FILE, writeJsonAtomic } from './work-view/request-groups.mjs';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -570,7 +571,11 @@ export class WorkerService implements WorkerRef {
         this.dbManager.getCloudSync()?.notify();
       },
       // The install funnel's Scan step stores typed prompts read from every agent's transcripts.
-      setupScan: new SetupScan({ getStore: () => this.dbManager.getSessionStore() }),
+      // Hook rows an agent wrote are kept out of goals, work and rules extraction.
+      setupScan: new SetupScan({
+        getStore: () => this.dbManager.getSessionStore(),
+        saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
+      }),
     });
     this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));

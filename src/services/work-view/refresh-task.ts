@@ -14,6 +14,7 @@ import { randomBytes } from 'crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { isAbsolute, join, relative, resolve } from 'path';
 import type { AgentTask, AskAgent } from '../agent-runner/run.js';
+import { writeOwnerPromptsFile } from '../prompt-import/owner-prompts-file.js';
 import { runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: memory reads and work state. */
@@ -33,6 +34,8 @@ export interface RefreshTaskOptions {
   openDatabase: () => LedgerDatabase & { close(): void };
   now?: () => number;
   spawnImpl?: typeof spawn;
+  /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
+  writeOwnerPrompts?: (folder: string) => Promise<unknown>;
 }
 
 const quoted = (path: string) => [path, `"${path}"`, `'${path}'`];
@@ -71,7 +74,6 @@ function skillPaths(pluginRoot: string) {
     requestProgressSkill: join(skills, 'request-progress', 'SKILL.md'),
     ownerGoalsSkill: join(skills, 'owner-goals', 'SKILL.md'),
     cli: join(skills, 'request-progress', 'scripts', 'request-groups.mjs'),
-    exportScript: join(skills, 'owner-goals', 'scripts', 'export_owner_prompts.py'),
     saveScript: join(skills, 'owner-goals', 'scripts', 'save_goals.py'),
   };
 }
@@ -100,17 +102,20 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const spawnImpl = options.spawnImpl ?? spawn;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
-  const programs: Array<[string, string]> = [['bun', paths.cli], ['python3', paths.exportScript], ['python3', paths.saveScript]];
+  const writeOwnerPrompts = options.writeOwnerPrompts ?? (folder => writeOwnerPromptsFile({ folder }));
+  const ownerPromptsPath = join(goalsFolder, 'owner-prompts.md');
+  // Step 1 of owner-goals is the prompt importer's (one filter for every agent), so its export script never runs here.
+  const programs: Array<[string, string]> = [['bun', paths.cli], ['python3', paths.saveScript]];
 
   const prompt = [
     'You are claude-mem\'s automatic refresh for My Work. You run in the background on the owner\'s computer with read-only tools; nobody is watching, so never ask a question.',
     `What is due now: ${JSON.stringify(needs)}.`,
     needs.goalsStale
-      ? `1. Run the /claude-mem:owner-goals skill. Use the folder ${goalsFolder} for its files.\n2. Then run the /claude-mem:request-progress skill.`
+      ? `1. Run the /claude-mem:owner-goals skill. Use the folder ${goalsFolder} for its files. Its step 1 is already done: the owner's prompts from every agent are in ${ownerPromptsPath}, so start at step 2.\n2. Then run the /claude-mem:request-progress skill.`
       : '1. Run the /claude-mem:request-progress skill.',
     'Do every step of request-progress over its default 14-day window: group every ungrouped conversation, review every due group (run `pending` again after each round until `due` is 0; there is no group cap), link the groups to the goals, and write the build story. Take as long as the work needs.',
     'Rules for this run:',
-    `- Call the CLI by its full path in every command, for example: bun "${paths.cli}" pending --days 14 --limit 48. Do not define shell variables. Bash may run only bun "${paths.cli}", python3 "${paths.exportScript}" and python3 "${paths.saveScript}", one command per call, with JSON passed through a quoted heredoc.`,
+    `- Call the CLI by its full path in every command, for example: bun "${paths.cli}" pending --days 14 --limit 48. Do not define shell variables. Bash may run only bun "${paths.cli}" and python3 "${paths.saveScript}", one command per call, with JSON passed through a quoted heredoc.`,
     `- Write files only inside ${goalsFolder}.`,
     '- Search memory with the claude-mem MCP tools (search, timeline, get_observations).',
     'When you finish, reply with one line: how many conversations were grouped, how many requests were reviewed and linked to goals, and whether the goals and the build story were refreshed.',
@@ -165,10 +170,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
     try {
       const done: string[] = [];
       if (needs.goalsStale) {
-        await runScript([paths.exportScript, '--out', goalsFolder, '--days', '31']);
         await step('owner goals', [
           inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
-          `Step 1 is done: the owner's prompts are in ${join(goalsFolder, 'owner-prompts.md')}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
+          `Step 1 is done: the owner's prompts are in ${ownerPromptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
         ].join('\n\n'), async answer => {
           if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
           writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
@@ -251,5 +255,6 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       checkTool,
     },
     inline,
+    prepare: needs.goalsStale ? async () => { await writeOwnerPrompts(goalsFolder); } : undefined,
   };
 }

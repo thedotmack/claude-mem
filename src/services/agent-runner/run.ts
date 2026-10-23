@@ -59,6 +59,8 @@ export interface AgentTask {
   claudeCode: ClaudeCodeTaskOptions;
   /** Drives a read-only Codex or Gemini step by step; returns a short result line. */
   inline: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
+  prepare?: () => Promise<void>;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
@@ -200,6 +202,12 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
   }
   const attempts: AgentAttempt[] = [];
+  try { await task.prepare?.(); }
+  catch (error) {
+    const message = describeError(error).slice(0, 500);
+    logger.warn('WORKER', `Agent run (${task.reason}) could not prepare its input`, { error: message });
+    return { state: 'failed', agent: null, result: null, error: `Preparing the run failed: ${message}`, attempts };
+  }
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {

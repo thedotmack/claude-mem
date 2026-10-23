@@ -66,6 +66,11 @@ export interface SetupScanOptions {
   scanOptions?: Omit<PromptScanOptions, 'sinceEpochMs' | 'memoryPrompts' | 'onProgress'>;
   readTokenUsage?: typeof scanTokenUsage;
   now?: () => number;
+  /**
+   * Receives the hook-recorded prompts in the window that the owner did not type (an agent wrote them, or the
+   * transcripts hold that session without them), so extraction leaves them out.
+   */
+  saveAgentWrittenPromptIds?: (promptIds: number[]) => void;
   /** Minimum gap between progress notifications while a phase runs. */
   progressIntervalMs?: number;
 }
@@ -202,6 +207,10 @@ export class SetupScan {
         const transcriptOnly = fromTranscripts.get(agent.id) ?? 0;
         return { ...agent, detected: summary.detected, fromMemory, fromTranscripts: transcriptOnly, prompts: fromMemory + transcriptOnly };
       });
+      const sessionsByPlatform = new Map(result.agents.map(summary => [summary.platformSource, summary.sessions]));
+      const notTyped = memoryPrompts.filter(prompt => !result.ownerMemoryPromptIds.has(prompt.id)
+        || (!claimedHookRowIds.has(prompt.id) && Boolean(sessionsByPlatform.get(prompt.platformSource)?.has(prompt.contentSessionId))));
+      this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
       const finishedAt = this.now();
       this.update({
