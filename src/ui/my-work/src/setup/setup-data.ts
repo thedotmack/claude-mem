@@ -3,18 +3,19 @@
 // setup-sample.ts instead, and only then.
 import type { AgentTool } from '@/data'
 import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
+import { revealFromSnapshot, type SnapshotWithSetup } from './setup-reveal'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent { id: string; label: string; detected: boolean; prompts: number }
 export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'done' | 'failed'
 export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null }
+/** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
+export interface SetupRecentPrompt { agent: string; at: string; text: string }
+/** The extraction run on the user's own logged-in agent (the worker's automatic refresh). */
+export interface SetupExtraction { state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'; step: 'goals' | 'work' | 'rules' | null }
 
-/** One overall request. New installs have no progress readings, so `progressPercent` is absent and no bar shows. */
-export interface RevealWork { id: string; title: string; agent: AgentTool; lastActiveAt: string; progressPercent?: number }
-export interface RevealGoal { id: string; rank: number; title: string; timesAsked: number; latestAt: string }
-export interface RevealRule { id: string; text: string; quote: string; quotedAt: string }
-/** `null` while that set is still being extracted. */
-export interface RevealSets { goals: RevealGoal[] | null; work: RevealWork[] | null; rules: RevealRule[] | null }
+export type { RevealGoal, RevealRule, RevealSets, RevealWork } from './setup-reveal'
+import type { RevealSets } from './setup-reveal'
 
 export type { Persona, SetupScanUsage, SetupUsage, UsageCoverage } from './setup-usage'
 
@@ -26,6 +27,9 @@ export interface MemoryResult { id: string; title: string; body: string; project
 export interface SetupData {
   scan: SetupScanView
   reveal: RevealSets
+  /** `null` until the worker reports a run. `waiting-for-agent`: no logged-in agent yet, so the Reveal shows prompts only. */
+  extraction: SetupExtraction | null
+  recentPrompts: SetupRecentPrompt[]
   usage: SetupUsage | null
   alreadyPro: boolean
   /** Finish Setup tool ids found on this machine; they come pre-ticked. */
@@ -54,6 +58,8 @@ export interface SetupSource {
 export const EMPTY_SETUP_DATA: SetupData = {
   scan: { agents: [], percent: 0, phase: 'idle', done: false, error: null },
   reveal: { goals: null, work: null, rules: null },
+  extraction: null,
+  recentPrompts: [],
   usage: null,
   alreadyPro: false,
   detectedTools: [],
@@ -67,6 +73,7 @@ interface WorkerScanState extends SetupScanView {
   agents: Array<SetupScanAgent & { fromMemory?: number; fromTranscripts?: number }>
   /** The 30-day token usage the same pass sums, once the scan is done. */
   usage?: SetupScanUsage | null
+  recentPrompts?: SetupRecentPrompt[]
 }
 interface WorkerSetupState { status: 'pending' | 'complete'; alreadyPro: boolean }
 
@@ -96,8 +103,8 @@ const toScanView = (scan: WorkerScanState): SetupScanView => ({
 
 /**
  * The local worker: the prompt scan (started here when it has not run, then followed on the work view's event
- * stream), the 30-day token usage that scan sums, and the setup state. Extraction, usage, search and import land in funnel Phases 5-10; until then those
- * parts stay empty.
+ * stream), the 30-day token usage that scan sums, the setup state, and the Reveal's sets from the work view snapshot. Search and import land in funnel
+ * Phases 9-10; until then those parts stay empty.
  */
 export const localSetupSource: SetupSource = {
   kind: 'local',
@@ -108,14 +115,21 @@ export const localSetupSource: SetupSource = {
     const applyScan = (scan: WorkerScanState) => publish({
       scan: toScanView(scan),
       usage: scan.usage ? toSetupUsage(scan.usage) : null,
+      recentPrompts: scan.recentPrompts ?? [],
       // Finish Setup pre-ticks the tools the scan found on this machine.
       detectedTools: scan.agents.filter((agent) => agent.detected).map((agent) => agent.id).filter((id) => SETUP_TOOLS.some((tool) => tool.id === id)),
     })
     const applyState = (state: WorkerSetupState) => publish({ alreadyPro: state.alreadyPro })
+    // Goals, work and rules land in the work view snapshot as the extraction saves each one.
+    const applySnapshot = (snapshot: SnapshotWithSetup) => {
+      const extraction = snapshot.setup?.extraction ?? null
+      publish({ reveal: revealFromSnapshot(snapshot), extraction: extraction && { state: extraction.state, step: extraction.step } })
+    }
     onData(data)
     const stream = new EventSource('/api/work-view/events')
     stream.addEventListener('setup-scan', (event) => applyScan(JSON.parse((event as MessageEvent<string>).data) as WorkerScanState))
     stream.addEventListener('setup-state', (event) => applyState(JSON.parse((event as MessageEvent<string>).data) as WorkerSetupState))
+    stream.addEventListener('work-view', (event) => applySnapshot(JSON.parse((event as MessageEvent<string>).data) as SnapshotWithSetup))
     void (async () => {
       const [scan, state] = await Promise.all([workerJson<WorkerScanState>('/api/setup/scan'), workerJson<WorkerSetupState>('/api/setup/state')])
       applyState(state)

@@ -47,7 +47,14 @@ export interface SetupScanState {
   usage: SetupTokenUsage | null;
   /** Why the token totals could not be read; the prompt scan itself still finished. */
   usageError: string | null;
+  /** The owner's newest typed prompts, newest first, quoted as typed (the Reveal shows them while no agent can extract). */
+  recentPrompts: SetupRecentPrompt[];
 }
+
+export interface SetupRecentPrompt { agent: PromptAgentId; at: string; text: string }
+
+const RECENT_PROMPTS = 5;
+const RECENT_PROMPT_CHARACTERS = 280;
 
 /** The SessionStore methods the scan uses. */
 export interface SetupScanStore {
@@ -83,7 +90,7 @@ function idleState(): SetupScanState {
   return {
     agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0 })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
-    added: 0, skippedSources: 0, error: null, usage: null, usageError: null,
+    added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
   };
 }
 
@@ -212,9 +219,11 @@ export class SetupScan {
         || (!claimedHookRowIds.has(prompt.id) && Boolean(sessionsByPlatform.get(prompt.platformSource)?.has(prompt.contentSessionId))));
       this.options.saveAgentWrittenPromptIds?.(notTyped.map(prompt => prompt.id));
       const { usage, usageError } = await this.tokenSavings(store, tokenUsage);
+      const recentPrompts = [...result.ownerPrompts].sort((left, right) => right.at - left.at).slice(0, RECENT_PROMPTS)
+        .map(prompt => ({ agent: prompt.agent, at: new Date(prompt.at).toISOString(), text: prompt.text.trim().slice(0, RECENT_PROMPT_CHARACTERS) }));
       const finishedAt = this.now();
       this.update({
-        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length, usage, usageError,
+        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length, usage, usageError, recentPrompts,
         finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
       }, true);
       logger.info('IMPORT', 'Setup prompt scan finished', { added, durationMs: finishedAt - startedAt });

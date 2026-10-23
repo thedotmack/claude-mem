@@ -50,10 +50,19 @@ function sampleUsage(kind: SampleUsage, newInstall: boolean): SetupScanUsage {
   return { windowDays: 30, agents, totalTokens, coverage: kind, persona: kind === 'complete' ? 'Heavy AI User' : null, efficiencyPercent: newInstall ? null : 50 }
 }
 
-function sampleData(newInstall: boolean, usage: SampleUsage): SetupData {
+/** Invented prompts for the waiting-for-agent Reveal (`&agent=none`). */
+const RECENT_PROMPTS = [
+  { agent: 'claude-code', at: '2026-10-21T17:42:00.000Z', text: 'make the signup screens use the new copy and keep the old layout' },
+  { agent: 'codex', at: '2026-10-19T11:05:00.000Z', text: 'add CSV and QuickBooks formats to the invoice export' },
+  { agent: 'claude-code', at: '2026-10-14T09:30:00.000Z', text: 'the mobile list is slow on my old phone, find out why' },
+]
+
+function sampleData(newInstall: boolean, usage: SampleUsage, waitingForAgent: boolean): SetupData {
   return {
     scan: { agents: [], percent: 0, phase: 'reading', done: false, error: null },
     reveal: { goals: null, work: null, rules: null },
+    extraction: waitingForAgent ? { state: 'waiting-for-agent', step: null } : null,
+    recentPrompts: RECENT_PROMPTS,
     usage: toSetupUsage(sampleUsage(usage, newInstall)),
     alreadyPro: false,
     detectedTools: ['claude-code', 'codex', 'chatgpt'],
@@ -64,8 +73,8 @@ function sampleData(newInstall: boolean, usage: SampleUsage): SetupData {
 }
 
 /** Plays the scan, then lands Goals, Work and Rules one after another, as the live screen will. */
-export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, usage: SampleUsage = 'complete'): SetupSource {
-  let data = sampleData(newInstall, usage)
+export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: number | null, usage: SampleUsage = 'complete', waitingForAgent = false): SetupSource {
+  let data = sampleData(newInstall, usage, waitingForAgent)
   const listeners = new Set<(data: SetupData) => void>()
   const publish = (changes: Partial<SetupData>) => { data = { ...data, ...changes }; for (const listener of listeners) listener(data) }
   let playing = false
@@ -83,6 +92,7 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
       publish({ scan: { agents, percent: Math.floor(share * 100), phase: done ? 'done' : share < 0.5 ? 'reading' : share < 0.95 ? 'checking' : 'saving', done, error: null } })
       if (!done) return
       clearInterval(timer)
+      if (waitingForAgent) return
       setTimeout(() => publish({ reveal: { ...data.reveal, goals: GOALS } }), REVEAL_GAP_MS)
       setTimeout(() => publish({ reveal: { ...data.reveal, work: WORK } }), REVEAL_GAP_MS * 2)
       setTimeout(() => publish({ reveal: { ...data.reveal, rules: RULES } }), REVEAL_GAP_MS * 3)

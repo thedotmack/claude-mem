@@ -26,7 +26,7 @@ function useSetupSource(): SetupSource | null {
   useEffect(() => {
     if (!SAMPLE_REQUESTED) return
     let current = true
-    import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', PARAMS.has('scan') ? Number(PARAMS.get('scan')) : null, (['partial', 'none'] as const).find((kind) => kind === PARAMS.get('usage')))) })
+    import('./setup-sample').then(({ createSampleSetupSource }) => { if (current) setSource(createSampleSetupSource(PARAMS.get('sample') === 'new', PARAMS.has('scan') ? Number(PARAMS.get('scan')) : null, (['partial', 'none'] as const).find((kind) => kind === PARAMS.get('usage')), PARAMS.get('agent') === 'none')) })
     return () => { current = false }
   }, [])
   return source
@@ -115,7 +115,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
 
   const screens: Record<SetupStep, () => ReactNode> = {
     scan: () => <ScanScreen scan={data.scan} />,
-    reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} onContinue={() => update({ revealContinued: true }, 'choice')} />,
+    reveal: () => <RevealScreen agents={data.scan.agents} reveal={data.reveal} extraction={data.extraction} recentPrompts={data.recentPrompts} onContinue={() => update({ revealContinued: true }, 'choice')} />,
     choice: () => <ChoiceScreen branch={flow.branch} onChoose={(branch) => update({ branch, memoryBilling: branch === 'go' ? 'hosted' : 'existing', choiceContinued: true, savingsComplete: false, checkoutReviewed: false, setupComplete: false, finishTools: [] }, 'savings')} />,
     savings: () => (
       <SavingsScreen usage={data.usage} branch={flow.branch}

@@ -176,6 +176,8 @@ export class WorkViewRoutes extends BaseRouteHandler {
   private setupStatePath: string;
   private settingsPath: string;
   private unsubscribeSetupScan: (() => void) | null = null;
+  /** The scan (by start time) whose finish already started the extraction. */
+  private extractedScanStartedAt: string | null = null;
 
   constructor(options: WorkViewOptions = {}) {
     super();
@@ -204,8 +206,17 @@ export class WorkViewRoutes extends BaseRouteHandler {
     this.setupScan = options.setupScan ?? null;
     this.setupStatePath = options.setupStatePath ?? setupStatePath();
     this.settingsPath = options.settingsPath ?? USER_SETTINGS_PATH;
-    // Scan progress rides the work view's event stream, as `setup-scan` events.
-    this.unsubscribeSetupScan = this.setupScan?.subscribe(state => this.broadcast('setup-scan', state)) ?? null;
+    // Scan progress rides the work view's event stream, as `setup-scan` events. A finished scan starts the
+    // extraction right away (funnel Phase 5): goals, then work, then rules land in the snapshot as each is saved.
+    this.unsubscribeSetupScan = this.setupScan?.subscribe(state => {
+      this.broadcast('setup-scan', state);
+      if (state.phase === 'done' && state.startedAt !== this.extractedScanStartedAt) {
+        this.extractedScanStartedAt = state.startedAt;
+        void this.autoRefresh?.runNow({ reason: 'setup-scan' })
+          .catch(error => logger.warn('WORKER', 'Setup extraction did not start', { error: String((error as Error)?.message ?? error) }))
+          .finally(() => this.publish());
+      }
+    }) ?? null;
   }
 
   setupRoutes(app: express.Application): void {
@@ -318,7 +329,24 @@ export class WorkViewRoutes extends BaseRouteHandler {
     const reviewRevision = createHash('sha256').update(JSON.stringify(snapshot.humanRequests.map(request => [request.id, request.contentFingerprint, request.review]))).digest('hex').slice(0, 16);
     // Generated wording is display only: it never changes what was reviewed.
     const view = this.humanCopy ? this.humanCopy.observe(snapshot) as WorkViewSnapshot : snapshot;
-    return { ...view, rulesFile: this.rulesFileStatus(snapshot), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}:${this.autoRefresh?.revision ?? 0}` };
+    return { ...view, rulesFile: this.rulesFileStatus(snapshot), setup: this.setupView(view), revision: `${snapshot.revision}:${reviewRevision}:${this.humanCopy?.revision ?? 0}:${this.autoRefresh?.revision ?? 0}` };
+  }
+
+  /**
+   * The funnel's view of setup: the scan and the extraction run (the automatic refresh's status). `step` is what is
+   * being extracted now, read from what has landed: goals first, then work (request groups), then rules (the story).
+   */
+  private setupView(snapshot: WorkViewSnapshot) {
+    const refresh = this.autoRefresh?.status() ?? null;
+    const view = snapshot as unknown as { goals?: unknown; story?: { groups?: number; story?: unknown } | null };
+    const step = refresh?.state !== 'running' ? null : !view.goals ? 'goals' : !view.story?.groups ? 'work' : 'rules';
+    return {
+      scan: this.setupScan?.state() ?? null,
+      extraction: refresh ? {
+        state: refresh.state, reason: refresh.reason ?? null, step, agent: refresh.agent ?? null,
+        startedAt: refresh.startedAt ?? null, finishedAt: refresh.finishedAt ?? null, error: refresh.error ?? null,
+      } : null,
+    };
   }
 
   private rulesFileStatus(snapshot: WorkViewSnapshot) {
