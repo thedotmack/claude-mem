@@ -149,7 +149,8 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       mkdirSync(failedDir, { recursive: true });
       const answerPath = join(failedDir, `${new Date(now()).toISOString().replaceAll(':', '-')}-${name}-${agent}.txt`);
       writeFileSync(answerPath, answer, { mode: 0o600 });
-      throw new Error(`${name}: ${String(refusal).slice(0, 300)} (raw answer: ${answerPath})`);
+      // The path goes first: the runner keeps only the first 500 characters of an error.
+      throw new Error(`${name} (raw answer: ${answerPath}): ${refusal}`);
     });
     const readOnly = [
       'You are running in a read-only sandbox for claude-mem\'s automatic refresh: you cannot run commands that write or save. Nobody is watching, so never ask a question.',
@@ -252,7 +253,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
       if (alignInput.groups.length) {
         const aligned = await step('alignment', [
           requestProgress, '---', readOnly,
-          `Do only section 3 (link each request to the goals it serves) for the groups in the \`align-input\` output in ${writeInput('align-input', alignInput)}. Reply with only the JSON that \`record-alignment\` takes ({"links": [...], "unaligned": [...]}); every listed group must appear in one of them.`,
+          // Inline with every id named, like grouping: on a file path Codex's light model linked 2 of 60 groups (Oct 23).
+          `Do only section 3 (link each request to the goals it serves) for the groups in this \`align-input\` output (also saved in ${writeInput('align-input', alignInput)}):\n\n\`\`\`json\n${JSON.stringify(alignInput, null, 2)}\n\`\`\``,
+          `Decide each of these ${alignInput.groups.length} groups, in "links" or "unaligned": ${alignInput.groups.map((group: { groupId: string }) => group.groupId).join(', ')}. Reply with only the JSON that \`record-alignment\` takes ({"links": [...], "unaligned": [...]}); every listed group must appear in one of them.`,
         ].join('\n\n'), answer => cli(['record-alignment'], answer));
         done.push(`${aligned.aligned} linked to goals`);
       }

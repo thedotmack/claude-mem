@@ -210,12 +210,40 @@ describe('Codex grouping answers', () => {
       const prompts: string[] = [];
       const ask = async (prompt: string) => { prompts.push(prompt); return malformed; };
       const error = await groupingTask(dir, fixtureDatabase()).run(ask, 'codex').then(() => null, failure => failure as Error);
-      expect(error?.message).toMatch(/^grouping: JSON Parse error.*\(raw answer: (.+failed-answers.+-grouping-codex\.txt)\)$/);
-      expect(readFileSync(/\(raw answer: (.+)\)$/.exec(error!.message)![1], 'utf8')).toBe(malformed);
+      expect(error?.message).toMatch(/^grouping \(raw answer: .+failed-answers.+-grouping-codex\.txt\): JSON Parse error/);
+      expect(readFileSync(/\(raw answer: (.+?\.txt)\)/.exec(error!.message)![1], 'utf8')).toBe(malformed);
       // Asked once more with the reason before failing; nothing was grouped.
       expect(prompts).toHaveLength(2);
       expect(prompts[1]).toMatch(/Your previous answer was refused: JSON Parse error/);
       expect(Object.keys(readLedger(dir).groups.groups)).toEqual([]);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
+});
+
+describe('alignment prompt', () => {
+  it('carries the align-input inline and names every group to decide', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-align-'));
+    try {
+      const database = fixtureDatabase();
+      saveGoals(database, new Date(NOW).toISOString());
+      const decisions = join(dir, 'decisions.json');
+      writeFileSync(decisions, JSON.stringify({ groups: [{ title: 'Release cards', conversations: [key('a')] }] }));
+      runCli(['apply', decisions], { dir, database, now: NOW, print: () => {} });
+      const task = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 1, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      const ask = async (prompt: string) => {
+        if (prompt.includes('Do only section 2')) {
+          const [show] = JSON.parse(readFileSync(/is in (\S+\.json)/.exec(prompt)![1], 'utf8'));
+          return JSON.stringify({ reviews: [{ groupId: show.groupId, state: 'in-progress', percent: 10, summary: 'Started.', reviewBasis: show.reviewBasis }] });
+        }
+        if (prompt.includes('Do only section 3')) {
+          const input = JSON.parse(/```json\n([\s\S]*?)\n```/.exec(prompt.slice(prompt.indexOf('Do only section 3')))![1]);
+          expect(JSON.parse(readFileSync(/also saved in (\S+\.json)/.exec(prompt)![1], 'utf8'))).toEqual(input);
+          expect(prompt).toContain(`Decide each of these 1 groups, in "links" or "unaligned": ${input.groups[0].groupId}.`);
+          return JSON.stringify({ links: [], unaligned: [input.groups[0].groupId] });
+        }
+        return JSON.stringify({ narrative: 'Started.', preferences: [] });
+      };
+      expect(await task.run(ask, 'codex')).toBe('1 requests reviewed, 0 linked to goals, story written.');
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
