@@ -26,7 +26,7 @@ function append(fields: Record<string, unknown>) {
 }
 
 async function start(humanCopy: HumanCopyWorker | null = null) {
-  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir: null });
+  routes = new WorkViewRoutes({ databasePath, reviewPath, pollIntervalMs: 20, humanCopy, ledgerDir: null, setupStatePath: join(directory, 'setup-state.json') });
   const app = express();
   app.use(express.json());
   routes.setupRoutes(app);
@@ -445,5 +445,24 @@ describe('review content versions', () => {
     expect(request.humanCopy.state).toBe('current');
     expect(request.humanCopy.summary).toBe('The viewer is ready to use.');
     expect(request.contentFingerprint).toBe(before.contentFingerprint);
+  });
+
+  it('does not spend user tokens on display copy during hosted setup, then resumes after completion', async () => {
+    await stop();
+    let calls = 0;
+    const humanCopy = new HumanCopyWorker({ cachePath: null, quietMs: 0, minIntervalMs: 0, provider: async (input: any) => {
+      calls++;
+      return { output: { title: 'Build a local work viewer', summary: 'The viewer is ready.', next: '',
+        workstreams: input.workstreams.map((stream: { id: string }) => ({ id: stream.id, title: 'Viewer', summary: 'Ready.' })) } };
+    } });
+    const setupPath = join(directory, 'setup-state.json');
+    writeFileSync(setupPath, JSON.stringify({ status: 'pending' }));
+    await start(humanCopy);
+    await snapshot();
+    expect(calls).toBe(0);
+    expect(humanCopy.status().queued).toBe(0);
+    writeFileSync(setupPath, JSON.stringify({ status: 'complete' }));
+    await snapshot();
+    expect(calls).toBe(1);
   });
 });

@@ -10,12 +10,12 @@ const STATUS: Record<SetupScanPhase, string> = {
   reading: 'Looking for usage history.',
   checking: 'Checking repeated context.',
   saving: 'Preparing your usage summary.',
+  uploading: 'Finding your goals, work and rules.',
   done: 'Preparing your usage summary.',
   failed: 'Preparing your usage summary.',
 }
 
-/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days.
- * An agent whose account cannot run setup (e.g. Google refuses the Gemini account) says so, with the reason. */
+/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
 export function ScanScreen({ scan }: { scan: SetupScanView }) {
   const detected = scan.agents.filter((agent) => agent.detected)
   return (

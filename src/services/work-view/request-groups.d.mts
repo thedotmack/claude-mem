@@ -6,6 +6,7 @@ export interface LedgerDatabase { prepare(sql: string): { all(...params: unknown
 export interface SavedGoal { goal: string; kind: 'priority' | 'open-ask'; rank: number | null; title: string; product: string | null; latestAt: string | null; timesAsked: number | null; evidence: Array<{ at: string; quote: string }> }
 export interface SavedGoals { summary: string | null; generatedAt: string | null; mapPath: string | null; goals: SavedGoal[] }
 export function readGoals(database: LedgerDatabase): SavedGoals;
+export function groupIdFor(anchorConversationKey: string): string;
 export function refreshNeeds(options: { dir?: string; database: LedgerDatabase; now?: number; days?: number }): RefreshNeeds;
 export function goalsAddedSince(alignment: { goals?: string[] } | null | undefined, goalKeys: string[]): string[];
 export function writeJsonAtomic(path: string, value: unknown): void;

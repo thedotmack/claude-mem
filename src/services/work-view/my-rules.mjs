@@ -46,15 +46,17 @@ export const ruleScopeId = (tier, name) => tier === 'everywhere' ? 'everywhere' 
 function suggestionsFromStory(story) {
   const preferences = Array.isArray(story?.preferences) ? story.preferences : [];
   return preferences.filter((preference) => text(preference?.preference)).map((preference) => {
-    const quotes = (preference.quotes ?? []).filter((quote) => text(quote?.quote)).slice(0, MAX_QUOTES)
-      .map((quote) => ({ at: quote.at ?? null, quote: shortQuote(text(quote.quote)), kind: preference.kind }));
+    const originalQuotes = (preference.quotes ?? []).filter((quote) => text(quote?.quote));
+    // Cloud already validates its quote budget; retain that evidence in full in the setup snapshot.
+    const quotes = (story.source === 'hosted-intent' ? originalQuotes : originalQuotes.slice(0, MAX_QUOTES))
+      .map((quote) => ({ at: quote.at ?? null, quote: story.source === 'hosted-intent' ? String(quote.quote) : shortQuote(text(quote.quote)), kind: preference.kind }));
     const latest = quotes.map((quote) => Date.parse(quote.at ?? '')).filter(Number.isFinite);
     return {
       ruleId: ruleIdForPreference(preference.preference),
       scopeTier: 'everywhere', scopeName: 'Everywhere',
       // Preferences are single sentences: the whole preference is the "then".
       // Splitting a when out of it would need a model call, which this view never makes.
-      when: '', then: text(preference.preference),
+      when: '', then: story.source === 'hosted-intent' ? String(preference.preference) : text(preference.preference),
       setBy: 'learned', status: 'suggested', kind: preference.kind ?? 'directive', source: 'request-progress',
       timesSeen: Number.isInteger(preference.supportCount) && preference.supportCount > 0 ? preference.supportCount : 1,
       latestAt: latest.length ? new Date(Math.max(...latest)).toISOString() : story.writtenAt ?? null,

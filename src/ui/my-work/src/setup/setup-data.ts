@@ -15,11 +15,11 @@ export interface SetupScanAgent {
   cannotRunReason: string | null
 }
 
-export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'done' | 'failed'
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'uploading' | 'done' | 'failed'
 export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
 export interface SetupRecentPrompt { agent: string; at: string; text: string }
-/** The extraction run on the user's own logged-in agent (the worker's automatic refresh). */
+/** The worker's subsidized hosted setup extraction. */
 /** On The Go checkout, mirrored from the installer that runs it (`null` until the page asks). */
 export interface SetupCheckoutView { state: 'requested' | 'waiting' | 'paid' | 'failed'; error: string | null }
 export interface SetupExtraction { state: 'idle' | 'running' | 'ok' | 'failed' | 'waiting-for-agent'; step: 'goals' | 'work' | 'rules' | null }
@@ -38,7 +38,7 @@ export type { MemoryResult } from './setup-search'
 export interface SetupData {
   scan: SetupScanView
   reveal: RevealSets
-  /** `null` until the worker reports a run. `waiting-for-agent`: no logged-in agent yet, so the Reveal shows prompts only. */
+  /** `null` until the worker reports a run. Older workers may still report waiting-for-agent. */
   extraction: SetupExtraction | null
   recentPrompts: SetupRecentPrompt[]
   checkout: SetupCheckoutView | null
@@ -122,8 +122,9 @@ export async function setupPending(): Promise<boolean> {
 }
 
 const toScanView = (scan: WorkerScanState): SetupScanView => ({
-  agents: scan.agents.map(({ id, label, detected, prompts, canRunSetup, cannotRunReason }) => ({
-    id, label, detected, prompts, canRunSetup: canRunSetup ?? null, cannotRunReason: cannotRunReason ?? null,
+  agents: scan.agents.map(({ id, label, detected, prompts }) => ({
+    // Agent login is irrelevant to hosted setup; the transcript scan only reports which tools were found.
+    id, label, detected, prompts, canRunSetup: null, cannotRunReason: null,
   })),
   percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error,
 })
