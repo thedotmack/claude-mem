@@ -215,6 +215,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: string;
   CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: string;
   CLAUDE_MEM_OPENAI_COMPAT_MODEL: string;
+  CLAUDE_MEM_OPENAI_COMPAT_REASONING: string;
   // Quota fallback. Both empty (the default) = off: dispatch is unchanged.
   CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: string;
   CLAUDE_MEM_QUOTA_FALLBACK_MODEL: string;
@@ -476,12 +477,13 @@ export class SettingsDefaultsManager {
     // JSON object of provider-specific request fields, e.g. {"reasoning":{"enabled":false}}.
     // Settings file or env only (never the HTTP settings API); never sent to the cmem gateway.
     CLAUDE_MEM_OPENROUTER_EXTRA_BODY: '',
-    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // none | minimal | low | medium | high. Empty sends nothing. openrouter.ai only.
+    CLAUDE_MEM_OPENROUTER_REASONING_EFFORT: '',  // none | minimal | low | medium | high. Empty disables reasoning on openrouter.ai and the cmem gateway. A set effort is openrouter.ai only.
     CLAUDE_MEM_OPENAI_COMPAT_PRESET: '',  // Named endpoint preset for the openai-compatible provider (nvidia-nim, deepseek, groq, together, vllm, ollama, lmstudio). Empty = 'custom', configure the base URL by hand.
     CLAUDE_MEM_OPENAI_COMPAT_API_KEY: '',  // Key for the openai-compatible provider. Never shares the OpenRouter key or its attribution headers.
     CLAUDE_MEM_OPENAI_COMPAT_API_KEYS: '',  // Optional extra keys (newline/comma separated) for the openai-compatible provider.
     CLAUDE_MEM_OPENAI_COMPAT_BASE_URL: '',  // OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1. Overrides the preset's base URL when set.
     CLAUDE_MEM_OPENAI_COMPAT_MODEL: '',  // Model id passed verbatim. Empty = the preset's default model.
+    CLAUDE_MEM_OPENAI_COMPAT_REASONING: '',  // off | on. Empty = off: every openai-compatible request sends reasoning:{enabled:false}. "on" leaves reasoning to the endpoint.
     CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER: 'claude',  // 'claude' (the Anthropic plan; '' means this too) | 'gemini' | 'openrouter' | 'openai-compatible' | 'off': where observer work goes while the selected provider cannot serve (spent allowance, rate limit or over capacity past its retries, outage, repeated unusable replies). Claude is used only when a Claude login or key exists
     CLAUDE_MEM_QUOTA_FALLBACK_MODEL: '',     // Claude model for a Claude fallback run; '' = CLAUDE_MEM_MODEL and tier routing. Ignored for other fallbacks (only ClaudeProvider reads modelOverride)
     CLAUDE_MEM_QUOTA_FALLBACK_AUTH_METHOD: '', // '' (off) | 'subscription' | 'api-key': the Claude credential to run on while the primary one is held for quota. 'subscription': the Claude Code login, for a spent ANTHROPIC_API_KEY. 'api-key': ANTHROPIC_FALLBACK_API_KEY from .env, for a login that is spent or paused by the quota guard. Tried before CLAUDE_MEM_QUOTA_FALLBACK_PROVIDER

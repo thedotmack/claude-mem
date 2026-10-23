@@ -650,7 +650,8 @@ describe('openai-compatible requests follow the shared observer contract', () =>
     await query([{ role: 'user', content: 'hi' }]);
 
     const [body] = sentBodies(fetchSpy);
-    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'stream', 'stream_options', 'temperature']);
+    expect(Object.keys(body).sort()).toEqual(['max_tokens', 'messages', 'model', 'reasoning', 'stream', 'stream_options', 'temperature']);
+    expect(body.reasoning).toEqual({ enabled: false });
     expect(body.stream).toBe(true);
     expect(body.stream_options).toEqual({ include_usage: true });
     expect(body.max_tokens).toBe(9000);
