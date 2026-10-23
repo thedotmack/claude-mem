@@ -1,9 +1,10 @@
 
 import path from 'path';
-import { existsSync } from 'fs';
+import { existsSync, realpathSync } from 'fs';
 import { spawn } from 'child_process';
 import { logger } from '../../utils/logger.js';
 import { getPathModeProjectContext, getProjectContext } from '../../utils/project-name.js';
+import { bareRepositoryProjectName } from '../../utils/worktree.js';
 import { ChromaSync, MergedIntoProjectTarget } from '../sync/ChromaSync.js';
 import { emitRemapProject, hasSyncLane } from '../sync/remap-outbox.js';
 import { paths } from '../../shared/paths.js';
@@ -26,6 +27,10 @@ export interface AdoptionResult {
   orphanedWorktrees: string[];
   adoptedObservations: number;
   adoptedSummaries: number;
+  /** Bare-repo worktree rows moved off the folder-only key they were stored under before #4958. */
+  rekeyedSessions: number;
+  rekeyedObservations: number;
+  rekeyedSummaries: number;
   chromaUpdates: number;
   chromaFailed: number;
   dryRun: boolean;
@@ -197,10 +202,77 @@ async function resolveMainRepoPath(cwd: string): Promise<string | null> {
     return existsSync(superprojectRoot) ? superprojectRoot : null;
   }
 
-  const mainRoot = commonDir.endsWith('/.git')
-    ? path.dirname(commonDir)
-    : commonDir.replace(/\.git$/, '');
+  if (commonDir.endsWith('/.git')) {
+    const mainRoot = path.dirname(commonDir);
+    return existsSync(mainRoot) ? mainRoot : null;
+  }
+
+  // A bare repository (`app.git`, `project/.bare`) has no checkout of its own:
+  // the repository is the bare directory, and detectWorktree keys its worktrees
+  // under bareRepositoryProjectName (#4958).
+  if (await gitCapture(commonDir, ['rev-parse', '--is-bare-repository']) === 'true') {
+    return commonDir;
+  }
+
+  const mainRoot = commonDir.replace(/\.git$/, '');
   return existsSync(mainRoot) ? mainRoot : null;
+}
+
+/** Whether `candidate` is `directory` or inside it, comparing real paths where they exist. */
+function isPathInside(candidate: string, directory: string): boolean {
+  const real = (p: string) => {
+    try { return realpathSync(p); } catch { return path.resolve(p); }
+  };
+  const relative = path.relative(real(directory), real(candidate));
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+/**
+ * Before #4958 a worktree of a bare repository was not recognised as one, so its
+ * rows were keyed on the worktree folder alone (`main`), a key every bare
+ * repository's `main` worktree shared. Re-key the sessions whose recorded
+ * checkout is inside this live worktree, with their observations and summaries,
+ * to the worktree's `<repo>/<worktree>` key. Sessions recorded elsewhere, or
+ * keyed from a git-remote slug or an environment name, keep their key.
+ */
+function rekeyBareWorktreeSessions(
+  db: import('bun:sqlite').Database,
+  worktreePath: string,
+  legacyKey: string,
+  worktreeKey: string,
+  evidence: WriterEvidence,
+  syncLane: boolean
+): { sessions: number; observations: number; summaries: number } {
+  const counts = { sessions: 0, observations: 0, summaries: 0 };
+  if (!evidence.sessionCwd) return counts;
+  const keySource = evidence.sessionKeySource ? 'project_key_source' : 'NULL';
+  const sessions = db.prepare(
+    `SELECT id, memory_session_id, cwd, ${keySource} AS key_source FROM sdk_sessions
+      WHERE project = ? AND cwd IS NOT NULL AND cwd != ''`
+  ).all(legacyKey) as Array<{ id: number; memory_session_id: string | null; cwd: string; key_source: string | null }>;
+
+  const updateSession = db.prepare('UPDATE sdk_sessions SET project = ? WHERE id = ?');
+  const updateObs = db.prepare('UPDATE observations SET project = ? WHERE project = ? AND memory_session_id = ?');
+  const updateSum = db.prepare('UPDATE session_summaries SET project = ? WHERE project = ? AND memory_session_id = ?');
+  for (const session of sessions) {
+    if (session.key_source !== null && session.key_source !== 'path') continue;
+    if (!isPathInside(session.cwd, worktreePath)) continue;
+    counts.sessions += updateSession.run(worktreeKey, session.id).changes;
+    if (!session.memory_session_id) continue;
+    if (syncLane) {
+      const remap = emitRemapProject(
+        db,
+        { project: legacyKey, memory_session_id: session.memory_session_id },
+        { project: worktreeKey }
+      );
+      counts.observations += remap.observations;
+      counts.summaries += remap.summaries;
+    } else {
+      counts.observations += updateObs.run(worktreeKey, legacyKey, session.memory_session_id).changes;
+      counts.summaries += updateSum.run(worktreeKey, legacyKey, session.memory_session_id).changes;
+    }
+  }
+  return counts;
 }
 
 async function listWorktrees(mainRepo: string): Promise<WorktreeEntry[]> {
@@ -433,7 +505,14 @@ export async function adoptMergedWorktrees(opts: {
   // names the repository now: with a git-remote slug (#2827), rows a worktree
   // wrote before the switch are still folded when it merges or is deleted, into
   // a key the repository keeps reading.
-  const parentProject = mainRepo ? getPathModeProjectContext(mainRepo).primary : '';
+  // A bare repository has no `.git` of its own; its worktrees key under the
+  // same name detectWorktree gives it (`app.git` → `app`, `app/.bare` → `app`).
+  const mainRepoIsBare = mainRepo !== null && !existsSync(path.join(mainRepo, '.git'));
+  const parentProject = !mainRepo
+    ? ''
+    : mainRepoIsBare
+      ? bareRepositoryProjectName(mainRepo) ?? ''
+      : getPathModeProjectContext(mainRepo).primary;
   const currentProject = mainRepo ? getProjectContext(mainRepo).primary : '';
 
   const result: AdoptionResult = {
@@ -444,6 +523,9 @@ export async function adoptMergedWorktrees(opts: {
     orphanedWorktrees: [],
     adoptedObservations: 0,
     adoptedSummaries: 0,
+    rekeyedSessions: 0,
+    rekeyedObservations: 0,
+    rekeyedSummaries: 0,
     chromaUpdates: 0,
     chromaFailed: 0,
     dryRun,
@@ -600,6 +682,18 @@ export async function adoptMergedWorktrees(opts: {
       .filter(target => target.project !== parentProject);
 
     const tx = db.transaction(() => {
+      // Runs first, so the adoption below sees the re-keyed rows (#4958).
+      if (mainRepoIsBare) {
+        for (const worktree of childWorktrees) {
+          const legacyKey = path.basename(worktree.path);
+          const worktreeKey = getPathModeProjectContext(worktree.path).primary;
+          if (worktreeKey === legacyKey || !existsSync(worktree.path)) continue;
+          const rekeyed = rekeyBareWorktreeSessions(db!, worktree.path, legacyKey, worktreeKey, writerEvidence, syncLane);
+          result.rekeyedSessions += rekeyed.sessions;
+          result.rekeyedObservations += rekeyed.observations;
+          result.rekeyedSummaries += rekeyed.summaries;
+        }
+      }
       for (const target of adoptionTargets) {
         try {
           adoptWorktreeInTransaction(target.project);
@@ -665,6 +759,7 @@ export async function adoptMergedWorktrees(opts: {
   if (
     result.adoptedObservations > 0 ||
     result.adoptedSummaries > 0 ||
+    result.rekeyedSessions > 0 ||
     result.chromaUpdates > 0 ||
     result.errors.length > 0
   ) {
@@ -676,6 +771,9 @@ export async function adoptMergedWorktrees(opts: {
       orphanedWorktrees: result.orphanedWorktrees,
       adoptedObservations: result.adoptedObservations,
       adoptedSummaries: result.adoptedSummaries,
+      rekeyedSessions: result.rekeyedSessions,
+      rekeyedObservations: result.rekeyedObservations,
+      rekeyedSummaries: result.rekeyedSummaries,
       chromaUpdates: result.chromaUpdates,
       chromaFailed: result.chromaFailed,
       errors: result.errors.length

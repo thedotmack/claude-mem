@@ -123,6 +123,10 @@ const { SettingsDefaultsManager } = await import('../../src/shared/SettingsDefau
 const loadSettings = spyOn(SettingsDefaultsManager, 'loadFromFile');
 const { runInstallCommand } = await import('../../src/npx-cli/commands/install.js');
 let original: Buffer;
+// The mode the fixture provisions, captured after setup: Windows cannot
+// express POSIX owner-only bits, so the refusal check asserts the installer
+// left the mode untouched rather than a hardcoded 0o600.
+let provisionedMode: number;
 beforeEach(() => {
   original = Buffer.from(JSON.stringify({
     theme: 'keep-peer',
@@ -131,6 +135,7 @@ beforeEach(() => {
   }, null, 2) + '\n');
   writeFileSync(settingsPath, original, { mode: 0o600 });
   chmodSync(settingsPath, 0o600);
+  provisionedMode = statSync(settingsPath).mode & 0o7777;
   // Reset after import effects and fixture setup. Observe only the public call.
   loadSettings.mockClear(); exit.mockClear(); http.mockClear();
   stderr.mockClear(); stdout.mockClear(); lines.length = 0;
@@ -173,7 +178,7 @@ describe('non-TTY public installer refusal before personal provider getters', ()
           expect(lines.join('\n')).toContain('require --runtime worker');
           expect(loadSettings).not.toHaveBeenCalled();
           expect(readFileSync(settingsPath)).toEqual(original);
-          expect(statSync(settingsPath).mode & 0o7777).toBe(0o600);
+          expect(statSync(settingsPath).mode & 0o7777).toBe(provisionedMode);
           expect(bootstrapCalls).toBe(0); expect(keyPersistenceCalls).toBe(0);
           expect(taskBoundaryCalls).toBe(0); expect(runtimeTaskCalls).toBe(0);
           expect(integrationCalls).toBe(0); expect(httpCalls).toBe(0);
