@@ -402,14 +402,18 @@ export function isOutputCapFinishReason(finishReason: string | null | undefined)
 
 /**
  * Whether the reply ends in an `<observation>` the parser cannot store. Every
- * block the parser does store is removed first, using its own match
- * (parseObservationBlocks), so an `<observation>` written inside a stored
- * block's content (CDATA, prose about the format) is not mistaken for an
- * unfinished block. Any opening left has no close after it, so it begins the
- * cut-off tail.
+ * whole block the parser reads is removed first, using its own matches
+ * (parseAgentXml: observations, the summary, a skip_summary), so an
+ * `<observation>` written inside a block's content (CDATA, prose about the
+ * format) is not mistaken for an unfinished block. Any opening left has no
+ * close after it, so it begins the cut-off tail.
  */
 export function hasUnfinishedObservationBlock(text: string): boolean {
-  return /<observation>/i.test(text.replace(/<observation>[\s\S]*?<\/observation>/gi, ''));
+  const outsideWholeBlocks = text
+    .replace(/<observation>[\s\S]*?<\/observation>/gi, '')
+    .replace(/<summary>[\s\S]*?<\/summary>/gi, '')
+    .replace(/<skip_summary(?:\s+reason="[^"]*")?\s*\/>/gi, '');
+  return /<observation>/i.test(outsideWholeBlocks);
 }
 
 export async function processAgentResponse(
