@@ -167,6 +167,9 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
         try { saved = readGoals(database); } finally { database.close(); }
         // With saved goals, update them from the prompts typed since; otherwise map the whole window.
         const since = saved.goals.length && Number.isFinite(Date.parse(saved.generatedAt ?? '')) ? localMinute(Date.parse(saved.generatedAt!)) : null;
+        // The saved goals cover the prompts up to the export, so the next --since starts there: prompts typed
+        // while the agent answers are read by the next update (--since is inclusive of its minute).
+        const exportedAt = new Date(now()).toISOString();
         const exported = JSON.parse((await timed('goals-export', () => runScript([paths.exportScript, '--out', goalsFolder, '--days', '31', ...(since ? ['--since', since] : [])]))).trim().split('\n').pop()!);
         const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
         const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
@@ -181,19 +184,19 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
           ].join('\n\n'), async answer => {
             if (typeof answer.map !== 'string' || !answer.goals || typeof answer.goals !== 'object') throw new Error('Answer needs "map" (markdown) and "goals" (object).');
             writeFileSync(join(goalsFolder, 'owner-map.md'), answer.map, { mode: 0o600 });
-            await save(answer.goals, join(goalsFolder, 'owner-map.md'));
+            await save({ ...answer.goals, generated_at: exportedAt }, join(goalsFolder, 'owner-map.md'));
           });
           done.push('goals mapped');
         } else if (!exported.new_prompts) {
           // Nothing new typed: the saved goals still hold; re-save them as current.
-          await save({ ...goalsJson(saved), generated_at: new Date(now()).toISOString() }, previousMap);
+          await save({ ...goalsJson(saved), generated_at: exportedAt }, previousMap);
           done.push('goals unchanged');
         } else {
           const previousPath = writeInput('previous-owner-goals', goalsJson(saved));
           await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
             `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${exported.new_prompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
-          ].join('\n\n'), answer => save({ ...answer, generated_at: new Date(now()).toISOString() }, previousMap));
+          ].join('\n\n'), answer => save({ ...answer, generated_at: exportedAt }, previousMap));
           done.push('goals updated');
         }
       }

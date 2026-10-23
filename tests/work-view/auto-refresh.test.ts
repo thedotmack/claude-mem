@@ -311,11 +311,14 @@ describe('incremental owner goals', () => {
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      let clock = NOW;
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => clock });
       setFakeSpawn(fakePython(3, calls));
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
+        // The agent takes five minutes; a prompt typed meanwhile is not in this export.
+        clock += 5 * 60000;
         const previous = JSON.parse(readFileSync(/saved goals are in (\S+\.json)/.exec(prompt)![1], 'utf8'));
         expect(previous.priorities.map((item: any) => item.title)).toEqual(['Ship cards']);
         return JSON.stringify({ ...previous, priorities: [{ ...previous.priorities[0], rank: 2 }] });
@@ -326,6 +329,7 @@ describe('incremental owner goals', () => {
       expect(prompts[0]).toContain('3 prompts the owner typed since');
       const exportCall = calls[0].args;
       expect(exportCall.slice(exportCall.indexOf('--since'), exportCall.indexOf('--since') + 2)).toEqual(['--since', new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
+      // The next --since starts at the export, not the answer, so prompts typed while the agent worked are read next time.
       expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, priorities: [{ title: 'Ship cards', rank: 2 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
