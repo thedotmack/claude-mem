@@ -5,11 +5,13 @@
  * The install funnel extracts Work, Goals and Rules with whatever agent the
  * user already has and is already logged in to, so the user never logs in to
  * anything extra. This module only looks: it never starts a login, never
- * writes agent config, and makes no network call of its own. Every check runs
+ * writes agent config, and makes no network call of its own (the agent CLIs
+ * it runs may sign in to their own accounts). Every check runs
  * commands with `spawn` (argv, never a shell), waits as long as the CLI takes
  * (owner rule, Oct 22: no time limits or skip-if-slow fallbacks), and never
  * throws. An agent is "not usable" only when its CLI is not installed, says it
- * is logged out, or exits with an error: `{ authenticated: false, reason }`.
+ * is logged out, its account is refused, or it exits with an error:
+ * `{ authenticated: false, reason }`.
  *
  * Priority order (the first authenticated agent wins downstream):
  * Claude Code → Codex → Gemini.
@@ -17,12 +19,23 @@
  * Commands used, verified against local `--help` output:
  *   - `claude auth status --json`  (Claude Code 2.1.308: `--json  Output as JSON (default)`)
  *   - `codex login status`         (codex-cli 0.163.0: prints "Logged in using ChatGPT" to stderr, exit 0)
- *   - Gemini has no status subcommand (gemini 0.49.0), so its auth is read from
+ *   - Gemini has no status subcommand (gemini 0.49.0). Its login is found in
  *     `~/.gemini/settings.json` `security.auth.selectedType` + `~/.gemini/oauth_creds.json`,
- *     or `GEMINI_API_KEY`.
+ *     or `GEMINI_API_KEY`. Credential files alone are not proof: Google can refuse the
+ *     account (`IneligibleTierError`, e.g. "This client is no longer supported for Gemini
+ *     Code Assist for individuals"). So a Google login is checked with the account probe below.
+ *
+ * Gemini account probe: `gemini --skip-trust -e none --allowed-mcp-server-names <none> -o json`
+ * with empty stdin. Headless startup signs in and sets up the Code Assist account first
+ * (`refreshAuth` → `setupUser`, the call that throws `IneligibleTierError`), printing
+ * "Error authenticating: <error>" to stderr on failure. With no prompt it then exits 42
+ * ("No input provided via stdin") before any model request, so the probe uses no generation.
+ * Verified against gemini 0.49.0's bundle and on the owner's Mac (about 6 s). One probe per
+ * worker lifetime and login: cached until `oauth_creds.json`'s refresh token or the auth type changes.
  */
 
 import { spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { existsSync, readFileSync } from 'fs';
 import { homedir } from 'os';
 import { join } from 'path';
@@ -126,7 +139,15 @@ export interface AgentDetectionDependencies {
   platform: () => NodeJS.Platform;
   /** Wall clock, for token expiry. */
   now: () => number;
+  /** Gemini account probe results by login (see the header), kept for the worker's lifetime. */
+  geminiAccountChecks: Map<string, Promise<UsableAgent>>;
 }
+
+/** Gemini with no MCP server allowed (none is named this), so no MCP server starts. */
+export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
+/** gemini 0.49.0 ExitCodes.FATAL_INPUT_ERROR: startup (including sign-in) finished, no prompt was given. */
+const GEMINI_NO_INPUT_EXIT_CODE = 42;
+const GEMINI_ACCOUNT_PROBE_ARGS = ['--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 const defaultDependencies: AgentDetectionDependencies = {
   spawn,
@@ -140,6 +161,7 @@ const defaultDependencies: AgentDetectionDependencies = {
   homeDirectory: homedir,
   platform: () => process.platform,
   now: Date.now,
+  geminiAccountChecks: new Map(),
 };
 
 function describeError(error: unknown): string {
@@ -266,7 +288,46 @@ async function detectGemini(dependencies: AgentDetectionDependencies): Promise<U
   if (!dependencies.fileExists(credentialsPath)) {
     return { id: 'gemini', path, authenticated: false, reason: `auth type ${selectedType} but no ~/.gemini/oauth_creds.json` };
   }
-  return { id: 'gemini', path, authenticated: true, reason: `auth type ${selectedType} with ~/.gemini/oauth_creds.json` };
+  const loginKey = [path, selectedType, geminiLoginFingerprint(dependencies, credentialsPath)].join('\0');
+  let check = dependencies.geminiAccountChecks.get(loginKey);
+  if (!check) {
+    check = probeGeminiAccount(dependencies, path, selectedType);
+    dependencies.geminiAccountChecks.set(loginKey, check);
+  }
+  return check;
+}
+
+/** A hash of the stored refresh token (it changes only on a new login), never the token itself. */
+function geminiLoginFingerprint(dependencies: AgentDetectionDependencies, credentialsPath: string): string {
+  let material: string;
+  try {
+    const credentials = JSON.parse(dependencies.readTextFile(credentialsPath)) as { refresh_token?: unknown };
+    material = typeof credentials.refresh_token === 'string' ? credentials.refresh_token : JSON.stringify(credentials);
+  } catch (error) {
+    material = `unreadable: ${describeError(error)}`;
+  }
+  return createHash('sha256').update(material).digest('hex');
+}
+
+/** Starts Gemini headless with no prompt: it signs in, then exits before any model request (see the header). */
+async function probeGeminiAccount(dependencies: AgentDetectionDependencies, path: string, selectedType: string): Promise<UsableAgent> {
+  // CLAUDE_MEM_INTERNAL=1 keeps claude-mem's own Gemini hooks from recording the probe.
+  const result = await runCommand(dependencies.spawn, path, GEMINI_ACCOUNT_PROBE_ARGS, {
+    cwd: dependencies.homeDirectory(), env: { ...dependencies.environment, CLAUDE_MEM_INTERNAL: '1' }, input: '',
+  });
+  const authenticationError = /Error authenticating:\s*(.+)/.exec(result.stderr)?.[1]?.trim();
+  if (authenticationError) {
+    const googleMessage = authenticationError.replace(/^[A-Za-z]*Error:\s*/, '');
+    const reason = /IneligibleTierError/.test(authenticationError)
+      ? `Gemini is installed, but this Google account can't use it: ${googleMessage}`
+      : `Gemini is installed, but its Google sign-in failed: ${googleMessage}`;
+    return { id: 'gemini', path, authenticated: false, reason };
+  }
+  // 42 = signed in, then stopped for lack of a prompt; 0 = a startup hook supplied one and Gemini answered it.
+  if (result.exitCode === GEMINI_NO_INPUT_EXIT_CODE || result.exitCode === 0) {
+    return { id: 'gemini', path, authenticated: true, reason: `auth type ${selectedType}: Gemini signed in to this Google account` };
+  }
+  return { id: 'gemini', path, authenticated: false, reason: commandFailureReason('gemini (account check)', result) };
 }
 
 async function runCheck(

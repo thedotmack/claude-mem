@@ -205,12 +205,12 @@ describe('parallel reviews', () => {
 });
 
 describe('incremental owner goals', () => {
-  /** The prompt importer's stand-in: reports `newPrompts` prompts since the saved goals and records the `since` it got. */
-  function fakeOwnerPrompts(newPrompts: number, sinces: Array<string | null>) {
-    return async (folder: string, since: string | null) => {
-      sinces.push(since);
+  /** The prompt importer stand-in: 40 owner prompts, `newPrompts` of them since the saved goals; records each since minute. */
+  function fakeOwnerPrompts(newPrompts: number, sinceMinutes: Array<string | null>) {
+    return async (folder: string, sinceMinute: string | null) => {
+      sinceMinutes.push(sinceMinute);
       mkdirSync(folder, { recursive: true });
-      return { ownerPrompts: 40, ...(since ? { newPrompts } : {}) };
+      return { path: join(folder, 'owner-prompts.md'), ownerPrompts: 40, excludedAgentWritten: 0, newPrompts: sinceMinute ? newPrompts : 0 };
     };
   }
   /** A python3 stand-in: save_goals records its goals file. */
@@ -234,9 +234,9 @@ describe('incremental owner goals', () => {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
-      const calls: Array<{ args: string[]; goals?: any }> = [];
-      const sinces: Array<string | null> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, sinces) });
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(3, sinceMinutes) });
+      await task.prepare!();
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
@@ -248,7 +248,7 @@ describe('incremental owner goals', () => {
       expect(prompts).toHaveLength(1);
       expect(prompts[0]).toContain('new-owner-prompts.md');
       expect(prompts[0]).toContain('3 prompts the owner typed since');
-      expect(sinces).toEqual([new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
+      expect(sinceMinutes).toEqual([new Date(NOW - 2 * DAY).toLocaleString('sv').slice(0, 16)]);
       expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), source_prompt_count: 40, priorities: [{ title: 'Ship cards', rank: 2 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
@@ -259,9 +259,9 @@ describe('incremental owner goals', () => {
       const database = fixtureDatabase();
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
-      const calls: Array<{ args: string[]; goals?: any }> = [];
-      const sinces: Array<string | null> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(0, sinces) });
+      const calls: Array<{ args: string[]; goals?: any }> = [], sinceMinutes: Array<string | null> = [];
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(calls), writeOwnerPrompts: fakeOwnerPrompts(0, sinceMinutes) });
+      await task.prepare!();
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
       expect(calls[0].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }

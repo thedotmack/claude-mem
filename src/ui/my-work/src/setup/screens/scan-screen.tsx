@@ -1,6 +1,7 @@
 import { CheckIcon } from 'lucide-react'
 import { AgentMark } from '@/components/brand'
 import { agentToolFor, type SetupScanPhase, type SetupScanView } from '../setup-data'
+import { scanAgentStatus } from '../setup-scan-status'
 import { PageHeading } from './shared'
 
 /** PROTO savings.js status phrases, one per scan phase. */
@@ -13,7 +14,8 @@ const STATUS: Record<SetupScanPhase, string> = {
   failed: 'Preparing your usage summary.',
 }
 
-/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
+/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days.
+ * An agent whose account cannot run setup (e.g. Google refuses the Gemini account) says so, with the reason. */
 export function ScanScreen({ scan }: { scan: SetupScanView }) {
   const detected = scan.agents.filter((agent) => agent.detected)
   return (
@@ -21,14 +23,18 @@ export function ScanScreen({ scan }: { scan: SetupScanView }) {
       <PageHeading id="scan-title" title="Checking your AI usage." lead={detected.map((agent) => agent.label).join(' · ') || undefined} />
       <div className="panel is-memory scan-panel">
         <ul className="scan-agents" aria-label="Agents found on this computer">
-          {detected.map((agent) => (
-            <li key={agent.id}>
-              <span className="check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
-              <AgentMark tool={agentToolFor(agent.id)} className="mark" />
-              <span>{agent.label} <span className="detected">(detected)</span></span>
-              <span className="count">{agent.prompts.toLocaleString('en-US')} prompts</span>
-            </li>
-          ))}
+          {detected.map((agent) => {
+            const status = scanAgentStatus(agent)
+            return (
+              <li key={agent.id} className={status.note ? 'cannot-run' : undefined}>
+                <span className="check" aria-hidden="true"><CheckIcon strokeWidth={3} /></span>
+                <AgentMark tool={agentToolFor(agent.id)} className="mark" />
+                <span>{agent.label} <span className="detected">({status.label})</span></span>
+                <span className="count">{agent.prompts.toLocaleString('en-US')} prompts</span>
+                {status.note && <span className="scan-agent-note">{status.note}</span>}
+              </li>
+            )
+          })}
         </ul>
         <div className="scan-meter">
           <progress max={100} value={scan.percent} aria-label="Scan progress">{scan.percent}%</progress>

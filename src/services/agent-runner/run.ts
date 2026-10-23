@@ -31,10 +31,12 @@ import { query, type CanUseTool, type Options, type SdkPluginConfig } from '@ant
 import { buildIsolatedEnvWithFreshOAuth } from '../../shared/EnvManager.js';
 import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
-import { detectUsableAgents, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
+import { detectUsableAgents, GEMINI_NO_MCP_SERVERS, runCommand, type CommandResult, type UsableAgent, type UsableAgentId } from './detect.js';
 
 /** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
  * A missing entry or field leaves that CLI's own default. */
+export { GEMINI_NO_MCP_SERVERS };
+
 export interface StepModel { model?: string; reasoningEffort?: string }
 export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
 
@@ -58,6 +60,8 @@ export interface AgentTask {
   claudeCode: ClaudeCodeTaskOptions;
   /** Drives the agent step by step; returns a short result line. */
   run: (ask: AskAgent, agent: UsableAgentId) => Promise<string>;
+  /** Input every backend reads, prepared once a logged-in agent is found (e.g. the owner's prompts file). */
+  prepare?: () => Promise<void>;
 }
 
 export interface AgentAttempt { agent: UsableAgentId; error: string }
@@ -161,10 +165,9 @@ const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffo
   ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
 ];
 
-/** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
-export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 // --skip-trust: in a folder Gemini never trusted, headless runs exit 55 and drop plan mode. It trusts the data dir for
 // this one session only, so plan (read-only) mode holds; it approves no tools.
+// Gemini with no extensions and no MCP server, so plan mode is the only tool surface.
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '--skip-trust', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
@@ -208,6 +211,12 @@ export async function runAgentTask(task: AgentTask, overrides: Partial<AgentRunn
     return { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', attempts: [] };
   }
   const attempts: AgentAttempt[] = [];
+  try { await task.prepare?.(); }
+  catch (error) {
+    const message = describeError(error).slice(0, 500);
+    logger.warn('WORKER', `Agent run (${task.reason}) could not prepare its input`, { error: message });
+    return { state: 'failed', agent: null, result: null, error: `Preparing the run failed: ${message}`, attempts };
+  }
   for (const agent of usable) {
     logger.info('WORKER', `Agent run (${task.reason}) starting on ${agent.id}`);
     try {

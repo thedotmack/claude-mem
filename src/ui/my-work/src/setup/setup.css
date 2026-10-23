@@ -93,6 +93,8 @@
 .scan-agents .mark { width: 30px; height: 30px; }
 .scan-agents .detected { color: var(--muted); }
 .scan-agents .count { color: var(--muted); font-size: 20px; font-variant-numeric: tabular-nums; }
+.scan-agents .cannot-run .check { background: var(--muted); }
+.scan-agents .scan-agent-note { grid-column: 3 / -1; color: var(--muted); font-size: 16px; line-height: 1.4; }
 .scan-meter { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 28px; }
 .scan-meter progress, .import-panel progress { appearance: none; display: block; width: 100%; height: 20px; border: 0; border-radius: 999px; overflow: hidden; background: #d9dcfb; }
 .scan-meter progress::-webkit-progress-bar, .import-panel progress::-webkit-progress-bar { background: #d9dcfb; border-radius: 999px; }

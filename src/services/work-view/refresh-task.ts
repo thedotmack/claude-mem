@@ -45,9 +45,8 @@ export interface RefreshTaskOptions {
   openDatabase: () => LedgerDatabase & { close(): void };
   now?: () => number;
   spawnImpl?: typeof spawn;
-  /** Owner-goals step 1: writes owner-prompts.md (and, with `since`, new-owner-prompts.md) into the folder from every
-   * agent's transcripts (prompt importer). */
-  writeOwnerPrompts?: (folder: string, since: string | null) => Promise<Pick<OwnerPromptsFile, 'ownerPrompts' | 'newPrompts'>>;
+  /** Owner-goals step 1: writes owner-prompts.md into the folder from every agent's transcripts (prompt importer). */
+  writeOwnerPrompts?: (folder: string, sinceMinute: string | null) => Promise<OwnerPromptsFile>;
 }
 
 function skillPaths(pluginRoot: string) {
@@ -95,7 +94,18 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const spawnImpl = options.spawnImpl ?? spawn;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
-  const writeOwnerPrompts = options.writeOwnerPrompts ?? ((folder, since) => writeOwnerPromptsFile({ folder, since }));
+  const writeOwnerPrompts = options.writeOwnerPrompts ?? ((folder, sinceMinute) => writeOwnerPromptsFile({ folder, sinceMinute }));
+  // Owner-goals step 1 is the prompt importer's (one filter for every agent), run once as the task's prepare step:
+  // with saved goals, it also writes the prompts typed since they were saved (new-owner-prompts.md).
+  let savedGoals: ReturnType<typeof readGoals> | null = null;
+  let since: string | null = null;
+  let exported: OwnerPromptsFile | null = null;
+  const prepareGoals = async () => {
+    const database = openDatabase();
+    try { savedGoals = readGoals(database); } finally { database.close(); }
+    since = savedGoals.goals.length && Number.isFinite(Date.parse(savedGoals.generatedAt ?? '')) ? localMinute(Date.parse(savedGoals.generatedAt!)) : null;
+    exported = await writeOwnerPrompts(goalsFolder, since);
+  };
 
   const run = async (ask: AskAgent): Promise<string> => {
     const runDir = join(ledgerDir, 'agent-runs', randomBytes(6).toString('hex'));
@@ -135,16 +145,12 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
     try {
       const done: string[] = [];
       if (needs.goalsStale) {
-        const database = openDatabase();
-        let saved: ReturnType<typeof readGoals>;
-        try { saved = readGoals(database); } finally { database.close(); }
         // With saved goals, update them from the prompts typed since; otherwise map the whole window.
-        const since = saved.goals.length && Number.isFinite(Date.parse(saved.generatedAt ?? '')) ? localMinute(Date.parse(saved.generatedAt!)) : null;
-        // Step 1 of owner-goals is the prompt importer's (one filter for every agent), so its export script never runs here.
-        const exported = await writeOwnerPrompts(goalsFolder, since);
+        if (!savedGoals || !exported) throw new Error('The owner prompts were not prepared.');
+        const saved: ReturnType<typeof readGoals> = savedGoals, { ownerPrompts, newPrompts } = exported as OwnerPromptsFile;
         const goalsPath = join(goalsFolder, 'owner-goals.json'), promptsPath = join(goalsFolder, 'owner-prompts.md');
         const save = async (goals: Record<string, unknown>, mapPath: string | null) => {
-          writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: exported.ownerPrompts }, null, 2), { mode: 0o600 });
+          writeFileSync(goalsPath, JSON.stringify({ ...goals, source_prompt_count: ownerPrompts }, null, 2), { mode: 0o600 });
           await runScript([paths.saveScript, '--goals', goalsPath, '--prompts', promptsPath, ...(mapPath ? ['--map', mapPath] : [])]);
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
@@ -158,7 +164,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
             await save(answer.goals, join(goalsFolder, 'owner-map.md'));
           });
           done.push('goals mapped');
-        } else if (!exported.newPrompts) {
+        } else if (!newPrompts) {
           // Nothing new typed: the saved goals still hold; re-save them as current.
           await save({ ...goalsJson(saved), generated_at: new Date(now()).toISOString() }, previousMap);
           done.push('goals unchanged');
@@ -166,7 +172,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
           const previousPath = writeInput('previous-owner-goals', goalsJson(saved));
           await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
-            `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${exported.newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
+            `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${newPrompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
           ].join('\n\n'), answer => save({ ...answer, generated_at: new Date(now()).toISOString() }, previousMap));
           done.push('goals updated');
         }
@@ -250,5 +256,6 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       allowedTools: ['Read', 'Grep', 'Glob', ...MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`)],
     },
     run,
+    prepare: needs.goalsStale ? prepareGoals : undefined,
   };
 }

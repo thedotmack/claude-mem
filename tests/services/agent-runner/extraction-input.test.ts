@@ -6,6 +6,8 @@ import { spawnSync } from 'child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import { runAgentTask, type AgentTask } from '../../../src/services/agent-runner/run.js';
+import type { UsableAgent } from '../../../src/services/agent-runner/detect.js';
 import { writeOwnerPromptsFile } from '../../../src/services/prompt-import/owner-prompts-file.js';
 import { SetupScan } from '../../../src/services/prompt-import/setup-scan.js';
 import { SessionStore } from '../../../src/services/sqlite/SessionStore.js';
@@ -19,6 +21,35 @@ const SAVE_GOALS = join(PLUGIN_ROOT, 'skills', 'owner-goals', 'scripts', 'save_g
 
 const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
   (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? `/bin/${id}` : null, authenticated: ids.includes(id), reason: 'test' }));
+
+function geminiTask(events: string[], prepare?: () => Promise<void>): AgentTask {
+  return {
+    reason: 'test', cwd: '/data', prepare,
+    claudeCode: { plugins: [], tools: [], allowedTools: [] },
+    run: async () => { events.push('run'); return 'done'; },
+  };
+}
+const neverQuery = (() => { throw new Error('query must not run'); }) as never;
+const env = async () => ({ PATH: '/bin' });
+
+describe('agent runner prepare step', () => {
+  it('runs once, before the first agent, and not at all without a logged-in agent', async () => {
+    const events: string[] = [];
+    const prepare = async () => { events.push('prepare'); };
+    expect((await runAgentTask(geminiTask(events, prepare), { detect: async () => agents('codex'), query: neverQuery, buildEnv: env })).state).toBe('ok');
+    expect(events).toEqual(['prepare', 'run']);
+    events.length = 0;
+    expect((await runAgentTask(geminiTask(events, prepare), { detect: async () => agents(), query: neverQuery, buildEnv: env })).state).toBe('waiting-for-agent');
+    expect(events).toEqual([]);
+  });
+
+  it('a failed prepare is reported and no agent runs', async () => {
+    const events: string[] = [];
+    const result = await runAgentTask(geminiTask(events, async () => { throw new Error('transcripts unreadable'); }), { detect: async () => agents('codex'), query: neverQuery, buildEnv: env });
+    expect(result).toMatchObject({ state: 'failed', agent: null, error: 'Preparing the run failed: transcripts unreadable' });
+    expect(events).toEqual([]);
+  });
+});
 
 describe('owner prompts from the prompt importer', () => {
   it('writes every agent\'s typed prompts in the export script\'s format, and save_goals.py verifies quotes against it', async () => {
@@ -44,36 +75,23 @@ describe('owner prompts from the prompt importer', () => {
     } finally { rmSync(folder, { recursive: true, force: true }); }
   });
 
-  it('writes new-owner-prompts.md with only the prompts from the `since` minute on', async () => {
-    const folder = mkdtempSync(join(tmpdir(), 'owner-prompts-file-'));
-    try {
-      const all = await writeOwnerPromptsFile({ folder, now: FIXTURE_NOW, scanOptions: { homeDirectory: FIXTURE_HOME } });
-      expect(all.newPrompts).toBeUndefined();
-      const minutes = [...readFileSync(all.path, 'utf8').matchAll(/\n## (\d{4}-\d{2}-\d{2} \d{2}:\d{2}) · /g)].map(match => match[1]).sort();
-      const since = minutes[minutes.length - 3];
-      const written = await writeOwnerPromptsFile({ folder, since, now: FIXTURE_NOW, scanOptions: { homeDirectory: FIXTURE_HOME } });
-      expect(written.newPrompts).toBe(minutes.filter(minute => minute >= since).length);
-      expect(readFileSync(join(folder, 'new-owner-prompts.md'), 'utf8')).toStartWith(`# Owner prompts since ${since}\n\n${written.newPrompts} prompts, oldest first.`);
-    } finally { rmSync(folder, { recursive: true, force: true }); }
-  });
-
-  it('the refresh task reads owner prompts from the prompt importer and never runs the export script', async () => {
+  it('the refresh task prepares owner-prompts.md for every backend and never runs the export script', async () => {
     const database = new Database(':memory:');
-    database.run('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
-    const dir = mkdtempSync(join(tmpdir(), 'refresh-owner-prompts-'));
-    try {
-      const folders: Array<[string, string | null]> = [];
-      const scripts: string[] = [];
-      const task = buildRefreshTask({
-        needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'setup-scan', dataDir: dir, ledgerDir: dir,
-        pluginRoot: PLUGIN_ROOT, openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }), now: () => FIXTURE_NOW,
-        writeOwnerPrompts: async (folder, since) => { folders.push([folder, since]); throw new Error('stop after step 1'); },
-        spawnImpl: ((_command: string, args: string[]) => { scripts.push(args[0]); throw new Error('no script may run'); }) as never,
-      });
-      await expect(task.run(async () => '{}', 'codex')).rejects.toThrow('stop after step 1');
-      expect(folders).toEqual([[join(dir, 'owner-goals', new Date(FIXTURE_NOW).toLocaleDateString('en-CA')), null]]);
-      expect(scripts).toEqual([]);
-    } finally { rmSync(dir, { recursive: true, force: true }); }
+    database.exec('CREATE TABLE work_state_entries (id INTEGER PRIMARY KEY, project TEXT, list_name TEXT, fields TEXT, created_at_epoch INTEGER)');
+    const folders: Array<[string, string | null]> = [];
+    const task = buildRefreshTask({
+      needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'setup-scan', dataDir: '/data', ledgerDir: '/data/work-view',
+      pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }), now: () => FIXTURE_NOW,
+      writeOwnerPrompts: async (folder, sinceMinute) => { folders.push([folder, sinceMinute]); return { path: join(folder, 'owner-prompts.md'), ownerPrompts: 0, excludedAgentWritten: 0, newPrompts: 0 }; },
+    });
+    await task.prepare!();
+    const goalsFolder = join('/data/work-view/owner-goals', new Date(FIXTURE_NOW).toLocaleDateString('en-CA'));
+    // No saved goals yet: the whole window, no since minute.
+    expect(folders).toEqual([[goalsFolder, null]]);
+    expect(JSON.stringify(task)).not.toContain('export_owner_prompts');
+
+    const fresh = buildRefreshTask({ needs: { due: 1, ungrouped: 0, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: () => ({ prepare: database.prepare.bind(database), close() {} }) });
+    expect(fresh.prepare).toBeUndefined();
   });
 });
 
