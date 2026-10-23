@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'bun:test';
+import { afterEach, describe, expect, it } from 'bun:test';
 import { Database } from 'bun:sqlite';
+import { setFakeSpawn } from '../helpers/fake-spawn.js';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,6 +10,7 @@ import { buildRefreshTask, STEP_MODELS } from '../../src/services/work-view/refr
 import { readLedger, runCli } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
+afterEach(() => setFakeSpawn(null));
 const key = (session: string) => JSON.stringify(['conversation', 'claude', session]);
 const PLUGIN_ROOT = join(import.meta.dir, '..', '..', 'plugin');
 
@@ -224,7 +226,8 @@ describe('incremental owner goals', () => {
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(3, calls) });
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      setFakeSpawn(fakePython(3, calls));
       const prompts: string[] = [];
       const ask = async (prompt: string) => {
         prompts.push(prompt);
@@ -249,7 +252,8 @@ describe('incremental owner goals', () => {
       saveGoals(database, new Date(NOW - 2 * DAY).toISOString());
       writeFileSync(join(dir, 'request-groups.json'), JSON.stringify({ version: 1, conversations: {}, groups: {}, ignored: { [key('a')]: 'not a goal' } }));
       const calls: Array<{ args: string[]; goals?: any }> = [];
-      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW, spawnImpl: fakePython(0, calls) });
+      const task = buildRefreshTask({ needs: { due: 0, ungrouped: 0, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
+      setFakeSpawn(fakePython(0, calls));
       expect(await task.run(async () => { throw new Error('no agent needed'); }, 'codex')).toBe('goals unchanged.');
       expect(calls[1].goals).toMatchObject({ generated_at: new Date(NOW).toISOString(), priorities: [{ title: 'Ship cards', rank: 1 }] });
     } finally { rmSync(dir, { recursive: true, force: true }); }

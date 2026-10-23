@@ -23,7 +23,6 @@
  * through claude-mem's own validators.
  */
 
-import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { mkdirSync, readFileSync, rmSync } from 'fs';
 import { join } from 'path';
@@ -73,7 +72,6 @@ export interface AgentRunResult {
 export interface AgentRunnerDependencies {
   detect: () => Promise<UsableAgent[]>;
   query: typeof query;
-  spawn: typeof spawn;
   /** Environment for the agent process: the worker's isolated credentials, never tracked by claude-mem's own hooks. */
   buildEnv: () => Promise<NodeJS.ProcessEnv>;
 }
@@ -87,7 +85,6 @@ async function defaultEnv(): Promise<NodeJS.ProcessEnv> {
 const defaultDependencies: AgentRunnerDependencies = {
   detect: () => detectUsableAgents(),
   query,
-  spawn,
   buildEnv: defaultEnv,
 };
 
@@ -133,13 +130,12 @@ function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentR
 
 /** Run an agent CLI with the prompt on stdin and wait for it, however long it takes. */
 async function runCli(
-  dependencies: AgentRunnerDependencies,
   command: string,
   args: string[],
   prompt: string,
   options: { cwd: string; env: NodeJS.ProcessEnv },
 ): Promise<CommandResult> {
-  const result = await runCommand(dependencies.spawn, command, args, { ...options, input: prompt });
+  const result = await runCommand(command, args, { ...options, input: prompt });
   if (result.spawnError) throw result.spawnError;
   return result;
 }
@@ -171,7 +167,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
     mkdirSync(directory, { recursive: true });
     const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
     try {
-      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, models.codex), prompt, { cwd: task.cwd, env });
+      const result = await runCli(agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
@@ -183,7 +179,7 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
 function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
   return async (prompt, models) => {
     const model = models.gemini?.model;
-    const result = await runCli(dependencies, agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
+    const result = await runCli(agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }

@@ -10,7 +10,6 @@
  * skills' CLI uses.
  */
 
-import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
@@ -43,7 +42,6 @@ export interface RefreshTaskOptions {
   pluginRoot: string;
   openDatabase: () => LedgerDatabase & { close(): void };
   now?: () => number;
-  spawnImpl?: typeof spawn;
 }
 
 function skillPaths(pluginRoot: string) {
@@ -89,7 +87,6 @@ function goalsJson(saved: ReturnType<typeof readGoals>) {
 export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
   const { needs, reason, dataDir, ledgerDir, pluginRoot, openDatabase } = options;
   const now = options.now ?? Date.now;
-  const spawnImpl = options.spawnImpl ?? spawn;
   const paths = skillPaths(pluginRoot);
   const goalsFolder = join(ledgerDir, 'owner-goals', localDay(now()));
 
@@ -111,7 +108,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
     };
     /** Runs a skill script; resolves with its output. */
     const runScript = async (args: string[]) => {
-      const result = await runCommand(spawnImpl, 'python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' } });
+      const result = await runCommand('python3', args, { cwd: dataDir, env: { ...process.env, CLAUDE_MEM_INTERNAL: '1' } });
       if (result.spawnError) throw result.spawnError;
       if (result.exitCode !== 0) throw new Error(`${args[0].split('/').pop()} exited ${result.exitCode}: ${`${result.stdout}\n${result.stderr}`.trim().slice(-800)}`);
       return result.stdout;
