@@ -110,6 +110,11 @@ describe('POST /v1/context/semantic limits', () => {
     const table = await pool.query<{ present: boolean }>(`SELECT to_regclass('observation_embeddings') IS NOT NULL AS present`);
     const vectors = table.rows[0]?.present === true;
     const model = await getSharedEmbedder().embed(['probe']).then(() => true, () => false);
+    // The search CI job (CLAUDE_MEM_TEST_PGVECTOR=1) has both; there a
+    // missing one fails these tests instead of passing them untested.
+    if (process.env.CLAUDE_MEM_TEST_PGVECTOR === '1') {
+      expect({ vectors, model }).toEqual({ vectors: true, model: true });
+    }
     if (!vectors || !model) console.warn('vector search or the embedding model is unavailable; semantic answers not tested');
     return vectors && model;
   }
