@@ -57,7 +57,7 @@ import {
 } from '../cmem-memory-credentials.js';
 import { parseTeamBrainTeamRef, type TeamBrainTeamRef } from '../../shared/teambrain.js';
 import { relayedLine } from '../../shared/relayed-text.js';
-import { readSetupState } from '../../shared/setup-state.js';
+import { INITIAL_SETUP_STATE, readSetupState, setupStatePath, writeSetupState } from '../../shared/setup-state.js';
 import { runBrowserSetup, settingsChangesNeedingRestart, shouldUseBrowserSetup, waitForBackgroundWorkToFinish, type BrowserSetupOutcome } from '../install/browser-setup.js';
 
 function getSetting<K extends keyof SettingsDefaults>(key: K): SettingsDefaults[K] {
@@ -2987,6 +2987,9 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
     runtime: selectedRuntime,
     setupComplete: readSetupState().status === 'complete',
   })) {
+    // Mark this GUI setup before the worker's first refresh tick: its scan uses hosted extraction,
+    // so existing prompts must not launch a local agent while the browser is still opening.
+    writeSetupState({ ...INITIAL_SETUP_STATE });
     settingsBeforeBrowserSetup = readSettingsSnapshot();
     await runTasks([{
       title: 'Starting worker daemon',
@@ -2996,6 +2999,8 @@ async function runInstallCommandInner(options: InstallOptions, summary: InstallS
       },
     }]);
     if ((workerStartResult as WorkerStartResult) === 'dead') {
+      // No browser hand-off started. Leave the terminal flow without a pending GUI marker that would pause future refreshes.
+      rmSync(setupStatePath(), { force: true });
       log.warn('The setup page needs the worker, which did not start. Continuing setup here in the terminal.');
     } else {
       try {

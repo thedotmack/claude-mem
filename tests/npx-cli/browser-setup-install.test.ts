@@ -74,6 +74,8 @@ const questions: string[] = [];
 const ranTasks: string[] = [];
 const offeredTasks: string[] = [];
 let workerStarts = 0;
+const workerStartStates: unknown[] = [];
+let fixtureWorkerResult: 'ready' | 'dead' = 'ready';
 mock.module('@clack/prompts', () => ({
   ...prompts,
   intro: () => {}, outro: (value: string) => lines.push(value), cancel: (value: string) => lines.push(value),
@@ -135,7 +137,14 @@ async function stopFixtureWorker(): Promise<void> {
 }
 mock.module('../../src/services/worker-spawner.js', () => ({
   ...spawner,
-  ensureWorkerStarted: async () => { workerStarts++; if (extraction.running) extraction.restartsWhileRunning++; await startFixtureWorker(); return 'ready'; },
+  ensureWorkerStarted: async () => {
+    workerStarts++;
+    workerStartStates.push(existsSync(statePath) ? JSON.parse(readFileSync(statePath, 'utf8')) : null);
+    if (extraction.running) extraction.restartsWhileRunning++;
+    if (fixtureWorkerResult === 'dead') return 'dead';
+    await startFixtureWorker();
+    return 'ready';
+  },
   getLastWorkerBootFailure: () => undefined,
 }));
 
@@ -193,6 +202,8 @@ beforeEach(async () => {
   writeFileSync(settingsPath, JSON.stringify(baseSettings, null, 2));
   lines.length = 0; questions.length = 0; ranTasks.length = 0; offeredTasks.length = 0; opened.length = 0;
   pairingStarts.length = 0; setupRequests.length = 0; unexpected.length = 0; workerStarts = 0; pollAnswers.length = 0;
+  workerStartStates.length = 0;
+  fixtureWorkerResult = 'ready';
   extraction.running = false; extraction.restartsWhileRunning = 0;
 });
 afterAll(async () => {
@@ -228,6 +239,7 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     await waitForStage('waiting-for-choice');
     // The worker is up before any login or provider question, and the page is open.
     expect(workerStarts).toBe(1);
+    expect(workerStartStates).toEqual([{ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null }]);
     expect(opened).toEqual([`${workerBase}/?setup=1`]);
     expect(pairingStarts).toEqual([]);
 
@@ -246,6 +258,20 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
     expect(lines.join('\n')).toContain('claude-mem installed successfully!');
     expect(ranTasks).toContain('Claude Code: registering plugin');
     expect(unexpected).toEqual([]);
+  });
+
+  it('clears an interrupted GUI hand-off before the worker starts', async () => {
+    writeFileSync(statePath, JSON.stringify({ status: 'pending', choice: { branch: 'go', memoryBilling: 'hosted', chosenAt: 'earlier' },
+      installer: { stage: 'go-awaiting-checkout', error: null, updatedAt: 'earlier' },
+      checkout: { state: 'requested', requests: 1, error: null, updatedAt: 'earlier' }, tools: ['codex'], completedAt: null }));
+    const install = runInstallCommand({});
+    await waitForStage('waiting-for-choice');
+    expect(workerStartStates[0]).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null });
+    expect(pairingStarts).toEqual([]);
+    await browserPost('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await waitForStage('home-ready');
+    await browserPost('/api/setup/complete', {});
+    await install;
   });
 
   it('Finish Setup: local tools picked in the browser that this run did not install are set up after the page finishes', async () => {
@@ -360,13 +386,25 @@ describe('install in GUI mode (interactive TTY, no --provider)', () => {
   });
 
   it('a machine that already finished setup keeps the terminal flow', async () => {
-    writeFileSync(statePath, JSON.stringify({ status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' }));
+    const completed = { status: 'complete', choice: { branch: 'home', memoryBilling: 'existing', chosenAt: 'x' }, installer: null, completedAt: 'x' };
+    writeFileSync(statePath, JSON.stringify(completed));
     // The terminal flow's login step reaches cmem.ai, which this fixture refuses outside the pairing start.
     // Stopping at the login boundary is enough to show no browser hand-off ran.
     fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
     await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
     expect(opened).toEqual([]);
     expect(setupRequests).toEqual([]);
+    expect(JSON.parse(readFileSync(statePath, 'utf8'))).toEqual(completed);
+  });
+
+  it('removes the pending GUI marker when the worker fails and setup falls back to the terminal', async () => {
+    fixtureWorkerResult = 'dead';
+    fetchSpy.mockImplementationOnce(async () => { throw new Error('OWNED_LOGIN_BOUNDARY'); });
+    await expect(runInstallCommand({})).rejects.toThrow('EXIT_1');
+    expect(workerStartStates[0]).toMatchObject({ status: 'pending' });
+    expect(existsSync(statePath)).toBe(false);
+    expect(opened).toEqual([]);
+    expect(lines.join('\n')).toContain('Continuing setup here in the terminal.');
   });
 });
 
@@ -380,6 +418,7 @@ describe('install with --provider claude (interactive TTY)', () => {
     expect(readSettings()).toMatchObject({ CLAUDE_MEM_PROVIDER: 'claude', CLAUDE_MEM_CLAUDE_AUTH_METHOD: 'subscription' });
     expect(lines.join('\n')).toContain('--provider claude runs memory on your own Anthropic plan.');
     expect(existsSync(statePath)).toBe(false);
+    expect(workerStartStates.every(state => state === null)).toBe(true);
   });
 });
 

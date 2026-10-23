@@ -101,6 +101,9 @@
 .scan-meter progress::-webkit-progress-value, .import-panel progress::-webkit-progress-value { background: linear-gradient(90deg, #5d5fe8, #6d70f2); border-radius: 999px; }
 .scan-meter progress::-moz-progress-bar, .import-panel progress::-moz-progress-bar { background: #6366f1; border-radius: 999px; }
 .scan-percent { font-size: 22px; font-variant-numeric: tabular-nums; }
+.scan-improve-product { display: flex; align-items: baseline; gap: 8px; margin-top: 16px; color: var(--muted); font-size: 14px; cursor: pointer; }
+.scan-improve-product input { flex: none; accent-color: var(--violet); }
+.scan-improve-product:has(input:disabled) { cursor: default; }
 .scan-status { margin-top: 24px !important; color: var(--muted); font-size: 20px; }
 .scan-error { margin-top: 18px !important; color: #922837; font-size: 16px; }
 

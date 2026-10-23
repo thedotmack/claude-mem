@@ -318,8 +318,16 @@ export function buildAgentView(state, records, { now = Date.now(), workLimit = 2
   };
 }
 
-// Evidence is saved as one string field, a line per quote: "YYYY-MM-DD HH:MM | quote".
-function goalEvidence(value) {
+// Hosted quotes retain their structure: a quote may contain newlines, so the legacy line format cannot represent it losslessly.
+function goalEvidence(value, structuredValue = null) {
+  if (structuredValue !== null) {
+    const evidence = JSON.parse(structuredValue);
+    if (!Array.isArray(evidence) || !evidence.every(item => item && typeof item.at === 'string' && typeof item.quote === 'string')) {
+      throw new TypeError('Hosted goal evidence must contain dated quote objects.');
+    }
+    return evidence;
+  }
+  // Legacy evidence is a line per quote: "YYYY-MM-DD HH:MM | quote".
   if (typeof value !== 'string') return [];
   return value.split('\n').flatMap((line) => {
     const match = /^(\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?)\s*\|\s*(.+)$/.exec(line.trim());
@@ -332,20 +340,29 @@ function goalEvidence(value) {
 // a past month (saved closed, as history) shows everything but dropped items.
 function goalsFromList(list, history) {
   const count = (value) => typeof value === 'number' && Number.isFinite(value) ? value : null;
-  const items = list.tasks.filter((task) => history ? task.status !== 'dropped' : task.isOpen).map((task) => ({
-    id: task.id, task: task.name, kind: task.fields.goal_kind === 'open-ask' ? 'open-ask' : 'priority',
-    rank: count(task.fields.rank), title: compactText(task.fields.title ?? task.name, 240),
-    product: compactText(task.fields.product, 60), latestAt: compactText(task.fields.latest_at, 20),
-    timesAsked: count(task.fields.times_asked), status: task.status, evidence: goalEvidence(task.fields.evidence),
-  })).sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.title.localeCompare(b.title));
+  // A later local refresh changes generated_at/snapshot; its older hosted fields must not override the new result.
+  const hosted = list.fields.source === 'hosted-intent' && list.fields.hosted_generated_at === list.fields.generated_at;
+  const originalText = value => typeof value === 'string' ? value : null;
+  const listText = (value, max) => hosted ? originalText(value) : compactText(value, max);
+  const items = list.tasks.filter((task) => history ? task.status !== 'dropped' : task.isOpen).map((task) => {
+    const hostedTask = task.fields.source === 'hosted-intent' && task.fields.hosted_snapshot === task.fields.snapshot;
+    const taskText = (value, max) => hostedTask ? originalText(value) : compactText(value, max);
+    return {
+      id: task.id, task: task.name, kind: task.fields.goal_kind === 'open-ask' ? 'open-ask' : 'priority',
+      rank: count(task.fields.rank), title: taskText(task.fields.title ?? task.name, 240),
+      product: taskText(task.fields.product, 60), latestAt: taskText(task.fields.latest_at, 20),
+      timesAsked: count(task.fields.times_asked), status: task.status,
+      evidence: goalEvidence(task.fields.evidence, hostedTask ? task.fields.evidence_json ?? null : null),
+    };
+  }).sort((a, b) => (a.rank ?? Infinity) - (b.rank ?? Infinity) || a.title.localeCompare(b.title));
   const day = (value) => /^\d{4}-\d{2}-\d{2}$/.test(String(value ?? '')) ? String(value) : null;
   return {
     listId: list.id, listName: list.name, history, project: list.project, updatedAt: list.updatedAt,
     periodStart: day(list.fields.period_start) ?? (history ? day(list.name.slice(OWNER_GOALS_LIST.length + 1)) : null),
     periodEnd: day(list.fields.period_end),
-    summary: compactText(list.fields.human_summary, 1600), generatedAt: compactText(list.fields.generated_at, 40),
+    summary: listText(list.fields.human_summary, 1600), generatedAt: listText(list.fields.generated_at, 40),
     windowDays: count(list.fields.window_days), sourcePromptCount: count(list.fields.source_prompt_count),
-    mapPath: compactText(list.fields.map_path, 400),
+    mapPath: listText(list.fields.map_path, 400),
     priorities: items.filter((item) => item.kind === 'priority'), openAsks: items.filter((item) => item.kind === 'open-ask'),
   };
 }

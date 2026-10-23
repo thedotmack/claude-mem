@@ -3,7 +3,7 @@ import express from 'express';
 import type { Server } from 'node:http';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
+import { defaultAutoRefresh, WorkViewRoutes } from '../../../../src/services/worker/http/routes/WorkViewRoutes.js';
 
 const FIXTURE_HOME = join(import.meta.dir, '..', '..', '..', 'fixtures', 'prompt-import', 'home');
 // Project-local scratch (gitignored), never the system temp folder.
@@ -49,6 +49,24 @@ describe('setup state endpoints', () => {
     await start();
     expect(await state()).toEqual({ status: 'pending', choice: null, installer: null, checkout: null, tools: null, completedAt: null, alreadyPro: false, history: { projects: 0, sessions: 0, observations: 0 }, historyImport: null, backgroundWorkRunning: [] });
     expect(existsSync(statePath)).toBe(false);
+  });
+
+  it('pauses local auto refresh only for active setup, preserving non-GUI installs and completed setup', async () => {
+    await start();
+    let scanning = false;
+    const refresh = defaultAutoRefresh(dir, settingsPath, statePath, () => scanning);
+    const enabled = () => (refresh as unknown as { enabled: () => boolean }).enabled();
+    expect(enabled()).toBe(true); // Non-GUI installs do not write a funnel marker.
+    scanning = true;
+    expect(enabled()).toBe(false);
+    scanning = false;
+    await post('/api/setup/installer', { stage: 'waiting-for-choice' });
+    expect(enabled()).toBe(false);
+    await post('/api/setup/choice', { branch: 'home', memoryBilling: 'existing' });
+    await post('/api/setup/installer', { stage: 'home-ready' });
+    await post('/api/setup/complete', {});
+    expect(enabled()).toBe(true);
+    refresh.close();
   });
 
   it('report a live extraction run as background work (the installer holds any restart for it), not one a restart cut off', async () => {

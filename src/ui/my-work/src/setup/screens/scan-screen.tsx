@@ -10,13 +10,17 @@ const STATUS: Record<SetupScanPhase, string> = {
   reading: 'Looking for usage history.',
   checking: 'Checking repeated context.',
   saving: 'Preparing your usage summary.',
+  uploading: 'Finding your goals, work and rules.',
   done: 'Preparing your usage summary.',
   failed: 'Preparing your usage summary.',
 }
 
-/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days.
- * An agent whose account cannot run setup (e.g. Google refuses the Gemini account) says so, with the reason. */
-export function ScanScreen({ scan }: { scan: SetupScanView }) {
+/** Step 1: each detected agent ticks in and its prompt count climbs while the worker reads the last 30 days. */
+export function ScanScreen({ scan, onImproveProductChange, preferenceError }: {
+  scan: SetupScanView
+  onImproveProductChange: (improveProduct: boolean) => void
+  preferenceError: string | null
+}) {
   const detected = scan.agents.filter((agent) => agent.detected)
   return (
     <section aria-labelledby="scan-title">
@@ -40,7 +44,12 @@ export function ScanScreen({ scan }: { scan: SetupScanView }) {
           <progress max={100} value={scan.percent} aria-label="Scan progress">{scan.percent}%</progress>
           <span className="scan-percent" aria-hidden="true">{scan.percent}%</span>
         </div>
+        <label className="scan-improve-product">
+          <input type="checkbox" checked={scan.improveProduct} disabled={scan.phase === 'uploading'} onChange={(event) => onImproveProductChange(event.target.checked)} />
+          <span>Help make claude-mem smarter for everyone with my anonymized setup results</span>
+        </label>
         <p className="scan-status" role="status" aria-live="polite">{STATUS[scan.phase]}</p>
+        {preferenceError && <p className="scan-error" role="alert">{preferenceError}</p>}
         {scan.error && <p className="scan-error" role="alert">{scan.error}</p>}
       </div>
     </section>

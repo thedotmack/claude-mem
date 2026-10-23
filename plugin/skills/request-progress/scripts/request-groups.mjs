@@ -212,7 +212,8 @@ function readGoals(database) {
     product: item.product ?? null,
     latestAt: item.latest_at ?? null,
     timesAsked: Number(item.times_asked) || null,
-    evidence: String(item.evidence ?? "").split("\n").filter(Boolean).map((line) => {
+    // A later local refresh changes snapshot, so it cannot reuse an older hosted JSON evidence field.
+    evidence: item.source === "hosted-intent" && item.hosted_snapshot === item.snapshot ? JSON.parse(item.evidence_json) : String(item.evidence ?? "").split("\n").filter(Boolean).map((line) => {
       const [at, ...quote] = line.split(" | ");
       return { at, quote: quote.join(" | ") };
     })
