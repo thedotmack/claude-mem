@@ -50,9 +50,9 @@ export interface StepTiming { step: string; agent: UsableAgentId; startedAt: str
 export interface RefreshTaskOptions {
   needs: RefreshNeeds;
   reason: string;
-  /** ~/.claude-mem: every backend's working directory. */
+  /** ~/.claude-mem: where the skill scripts run. */
   dataDir: string;
-  /** ~/.claude-mem/work-view */
+  /** ~/.claude-mem/work-view: every backend's working directory, and the only folder Claude Code may read. */
   ledgerDir: string;
   /** The installed plugin folder holding skills/ and .mcp.json. */
   pluginRoot: string;
@@ -280,12 +280,15 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask & { ste
 
   return {
     reason,
-    cwd: dataDir,
+    // The work-view folder holds every input file; the data dir above it holds .env and settings.json.
+    cwd: ledgerDir,
     claudeCode: {
-      // The plugin is loaded for its memory-search MCP server; steps read files and search memory, nothing else.
+      // The plugin is loaded for its memory-search MCP server; steps read their input files and search memory, nothing else.
       plugins: [{ type: 'local', path: pluginRoot }],
       tools: ['Read', 'Grep', 'Glob'],
-      allowedTools: ['Read', 'Grep', 'Glob', ...MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`)],
+      allowedTools: MEMORY_TOOLS.map(tool => `${PLUGIN_MCP_PREFIX}${tool}`),
+      // Prompts carry untrusted conversation text, so file reads are held to the input files' folder.
+      readableFolders: [ledgerDir],
     },
     run,
     steps,

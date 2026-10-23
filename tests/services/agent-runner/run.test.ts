@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { setFakeSpawn } from '../../helpers/fake-spawn.js';
 import { EventEmitter } from 'events';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { spawn } from 'child_process';
@@ -45,7 +45,8 @@ function task(cwd: string, inlineCalls: string[] = [], models: Record<string, un
     claudeCode: {
       plugins: [{ type: 'local', path: '/plugin' }],
       tools: ['Read'],
-      allowedTools: ['Read', 'mcp__plugin_claude-mem_mcp-search__search'],
+      allowedTools: ['mcp__plugin_claude-mem_mcp-search__search'],
+      readableFolders: [cwd],
     },
     run: async (ask, agent) => {
       const answer = await ask(`inline prompt for ${agent}`, models);
@@ -66,6 +67,38 @@ const neverQuery = (() => { throw new Error('query must not run'); }) as never;
 const env = async () => ({ PATH: '/bin', CLAUDE_MEM_INTERNAL: '1' });
 
 describe('agent runner', () => {
+  it('Claude Code reads only inside the task\'s readable folders: never the data dir\'s .env, even through a link', async () => {
+    const dataDir = mkdtempSync(join(tmpdir(), 'agent-runner-read-'));
+    try {
+      const ledger = join(dataDir, 'work-view');
+      mkdirSync(ledger);
+      writeFileSync(join(dataDir, '.env'), 'ANTHROPIC_API_KEY=secret');
+      writeFileSync(join(ledger, 'show.json'), '{}');
+      symlinkSync(join(dataDir, '.env'), join(ledger, 'env-link'));
+      const seen: any[] = [];
+      const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
+      const readTask: AgentTask = { ...task(ledger), claudeCode: { plugins: [], tools: ['Read', 'Grep', 'Glob'], allowedTools: [], readableFolders: [ledger] } };
+      await runTask(readTask, { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+      const { canUseTool } = seen[0].options;
+      const decide = async (tool: string, input: Record<string, unknown>) => (await canUseTool(tool, input, { signal: new AbortController().signal })).behavior;
+      expect(await decide('Read', { file_path: join(ledger, 'show.json') })).toBe('allow');
+      expect(await decide('Read', { file_path: 'show.json' })).toBe('allow');
+      expect(await decide('Read', { file_path: join(dataDir, '.env') })).toBe('deny');
+      expect(await decide('Read', { file_path: join(ledger, '..', '.env') })).toBe('deny');
+      expect(await decide('Read', { file_path: join(ledger, 'env-link') })).toBe('deny');
+      expect(await decide('Grep', { pattern: 'KEY' })).toBe('allow');
+      expect(await decide('Grep', { pattern: 'KEY', path: dataDir })).toBe('deny');
+      expect(await decide('Glob', { pattern: '*.json' })).toBe('allow');
+      expect(await decide('Glob', { pattern: join(dataDir, '*') })).toBe('deny');
+      expect(await decide('Glob', { pattern: '../*' })).toBe('deny');
+    } finally { rmSync(dataDir, { recursive: true, force: true }); }
+  });
+
+  it('a task that auto-approves Read, Grep or Glob is refused before any agent runs', async () => {
+    const autoRead: AgentTask = { ...task('/data'), claudeCode: { plugins: [], tools: ['Read'], allowedTools: ['Read'], readableFolders: ['/data'] } };
+    await expect(runTask(autoRead, { detect: async () => agents('claude-code'), query: neverQuery, spawn: fakeSpawn([], () => {}), buildEnv: env })).rejects.toThrow(/Read/);
+  });
+
   it('Claude Code: one SDK query per step, read-only tools only, no bypass and no session persistence', async () => {
     const seen: any[] = [];
     const query = ((input: any) => {
@@ -85,7 +118,7 @@ describe('agent runner', () => {
     expect(options.settingSources).toEqual([]);
     expect(options.permissionMode).toBe('default');
     expect(JSON.stringify(options)).not.toMatch(/bypass|dangerous|skip/i);
-    expect(options.allowedTools).toEqual(['Read', 'mcp__plugin_claude-mem_mcp-search__search']);
+    expect(options.allowedTools).toEqual(['mcp__plugin_claude-mem_mcp-search__search']);
     expect(options.tools).toEqual(['Read']);
     expect(options.plugins).toEqual([{ type: 'local', path: '/plugin' }]);
     expect(options.env.CLAUDE_MEM_INTERNAL).toBe('1');

@@ -121,9 +121,13 @@ describe('refresh task', () => {
   it('Claude Code gets only read-only tools: Read, Grep, Glob and memory search, with no Bash, Write or bypass', () => {
     const task = buildRefreshTask({ needs: { due: 2, ungrouped: 1, goalsStale: true, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: '/data', ledgerDir: '/data/work-view', pluginRoot: '/plugin', openDatabase: handle(fixtureDatabase()), now: () => NOW });
     const { claudeCode } = task;
-    expect(task.cwd).toBe('/data');
+    // The work-view folder, not the data dir that holds .env and settings.json.
+    expect(task.cwd).toBe('/data/work-view');
     expect(claudeCode.plugins).toEqual([{ type: 'local', path: '/plugin' }]);
     expect(claudeCode.tools).toEqual(['Read', 'Grep', 'Glob']);
+    // File tools are approved per call, only inside the work-view folder.
+    expect(claudeCode.readableFolders).toEqual(['/data/work-view']);
+    expect(claudeCode.allowedTools.filter(tool => ['Read', 'Grep', 'Glob'].includes(tool))).toEqual([]);
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__search');
     expect(claudeCode.allowedTools).toContain('mcp__plugin_claude-mem_mcp-search__work_state_read');
     // No raw work-state writes: they would skip the skills' validators.
