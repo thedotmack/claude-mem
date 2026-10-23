@@ -241,10 +241,12 @@ jobs:
         working-directory: services/sync-api
         run: bun install --frozen-lockfile
 
-      - name: Generation attempt ownership (Postgres)
+      # Every Postgres-backed server and storage suite, generation attempt
+      # ownership included; without a test database they skip.
+      - name: Server and storage tests (Postgres)
         env:
           CLAUDE_MEM_DATA_DIR: ${{ runner.temp }}/claude-mem-generation-data
-        run: CLAUDE_MEM_TEST_POSTGRES_URL="$DATABASE_URL" bun test tests/server/generation/generation-attempt-fencing.test.ts
+        run: CLAUDE_MEM_TEST_POSTGRES_URL="$DATABASE_URL" bun test tests/server tests/storage tests/cli/server-jobs.test.ts
 
       - name: sync-api unit and protocol tests
         working-directory: services/sync-api

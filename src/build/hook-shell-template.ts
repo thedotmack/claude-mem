@@ -349,6 +349,17 @@ export function buildCodexWindowsCommand(
 }
 
 /**
+ * An extraEnv value is a shell word: anything with a space, quote, or
+ * metacharacter would split the assignment or run as a separate command.
+ * Values that are already safe stay bare so the generated commands for the
+ * shipped hosts do not churn; everything else is single-quoted.
+ */
+function shellEnvValue(value: string): string {
+  if (/^[A-Za-z0-9_@%+=:,./-]*$/.test(value)) return value;
+  return `'${value.replace(/'/g, `'\\''`)}'`;
+}
+
+/**
  * Build the full single-line shell command string for a Rule A site.
  * The output is byte-compatible with the hand-authored command strings in
  * the host-managed config files.
@@ -384,7 +395,7 @@ export function buildShellCommand(options: ShellTemplateOptions): string {
 
   const envPrefix = options.extraEnv
     ? Object.entries(options.extraEnv)
-        .map(([key, value]) => `${key}=${value} `)
+        .map(([key, value]) => `${key}=${shellEnvValue(value)} `)
         .join('')
     : '';
 
