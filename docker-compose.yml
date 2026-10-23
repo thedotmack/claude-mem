@@ -151,8 +151,10 @@ services:
       # does. This split keeps HTTP latency unaffected by provider calls.
       CLAUDE_MEM_GENERATION_DISABLED: "true"
       # Search by meaning: the server embeds queries and the worker embeds the
-      # observations it generates, so both containers take the same setting.
+      # observations it generates, so both containers take the same settings:
+      # a query only matches vectors from the model it was embedded with.
       CLAUDE_MEM_SERVER_VECTOR_SEARCH: ${CLAUDE_MEM_SERVER_VECTOR_SEARCH:-auto}
+      CLAUDE_MEM_EMBEDDING_MODEL: ${CLAUDE_MEM_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
     ports:
       - "37877:37877"
     volumes:
@@ -205,6 +207,7 @@ services:
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       # Search by meaning; the same as the server's (see the server service above).
       CLAUDE_MEM_SERVER_VECTOR_SEARCH: ${CLAUDE_MEM_SERVER_VECTOR_SEARCH:-auto}
+      CLAUDE_MEM_EMBEDDING_MODEL: ${CLAUDE_MEM_EMBEDDING_MODEL:-all-MiniLM-L6-v2}
     volumes:
       - claude-mem-data:/data/claude-mem
       # #2558 — credentials-file mount (see server service above). Keeps

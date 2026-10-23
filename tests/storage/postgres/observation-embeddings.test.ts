@@ -147,8 +147,30 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     const query = 'which machine compiles our meaning-based lookup';
     expect(await repo.search({ projectId, teamId, query })).toEqual([]);
 
-    const results = await repo.search({ projectId, teamId, query, queryEmbedding: axis(1) });
+    const results = await repo.search({ projectId, teamId, query, queryEmbedding: { vector: axis(1), model: 'test' } });
     expect(results[0]?.id).toBe(ids.indexer);
+  });
+
+  it('compares the query only with parts embedded by its own model', async () => {
+    if (!vectorAvailable) return;
+    const storage = createPostgresStorageRepositories(pool);
+    const content = 'Written before the model changed.';
+    const stale = await storage.observations.create({ projectId, teamId, content, metadata: { narrative: content } });
+    await new PostgresObservationEmbeddingsRepository(pool).upsert({
+      observationId: stale.id,
+      model: 'previous',
+      parts: [{ part: 'narrative', text: content }],
+      vectors: [axis(1)],
+    });
+    const repo = new PostgresObservationRepository(pool);
+    const query = 'which machine compiles our meaning-based lookup';
+
+    const current = (await repo.search({ projectId, teamId, query, queryEmbedding: { vector: axis(1), model: 'test' } })).map(o => o.id);
+    expect(current[0]).toBe(ids.indexer);
+    expect(current).not.toContain(stale.id);
+
+    const previous = (await repo.search({ projectId, teamId, query, queryEmbedding: { vector: axis(1), model: 'previous' } })).map(o => o.id);
+    expect(previous).toEqual([stale.id]);
   });
 
   it('ranks an observation found by both keyword and vector above one found by either', async () => {
@@ -157,7 +179,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     // while "backup" is the second-nearest vector and matches no keyword.
     const nearGatewayThenBackup = axis(2);
     nearGatewayThenBackup[3] = 0.5;
-    const results = await repo.search({ projectId, teamId, query: 'gateway', queryEmbedding: nearGatewayThenBackup });
+    const results = await repo.search({ projectId, teamId, query: 'gateway', queryEmbedding: { vector: nearGatewayThenBackup, model: 'test' } });
     expect(results[0]?.id).toBe(ids.gateway);
     expect(results.map(o => o.id)).toContain(ids.backup);
   });
@@ -186,7 +208,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
 
     const query = 'which machine compiles our meaning-based lookup';
     const repo = new PostgresObservationRepository(pool);
-    expect((await repo.search({ projectId, teamId, query, queryEmbedding: nearer }))[0]?.id).toBe(ids.indexer);
+    expect((await repo.search({ projectId, teamId, query, queryEmbedding: { vector: nearer, model: 'test' } }))[0]?.id).toBe(ids.indexer);
 
     // A store this small is read through the scope index; a large one is read
     // through HNSW, where only an iterative scan gets past the other project's
@@ -197,7 +219,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
       options: `-c search_path=${schemaName},public -c enable_seqscan=off`,
     });
     try {
-      const results = await new PostgresObservationRepository(hnswOnly).search({ projectId, teamId, query, queryEmbedding: nearer });
+      const results = await new PostgresObservationRepository(hnswOnly).search({ projectId, teamId, query, queryEmbedding: { vector: nearer, model: 'test' } });
       expect(results[0]?.id).toBe(ids.indexer);
     } finally {
       await hnswOnly.end();
@@ -226,7 +248,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     );
     const query = 'which machine compiles our meaning-based lookup';
     const search = (p: pg.Pool) => new PostgresObservationRepository(p)
-      .search({ projectId, teamId, query, queryEmbedding: nearer, folderProjects: ['here'] });
+      .search({ projectId, teamId, query, queryEmbedding: { vector: nearer, model: 'test' }, folderProjects: ['here'] });
     expect((await search(pool)).map(o => o.id)).toEqual([ids.indexer]);
 
     // Through HNSW too, where the folder filter has to hold before the cutoff.
@@ -248,7 +270,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
       [projectId, teamId],
     );
     const results = await new PostgresObservationRepository(pool)
-      .search({ projectId, teamId, query: 'gateway', limit: 150, queryEmbedding: axis(1) });
+      .search({ projectId, teamId, query: 'gateway', limit: 150, queryEmbedding: { vector: axis(1), model: 'test' } });
     expect(results.length).toBe(150);
   });
 
@@ -271,7 +293,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     const query = axis(5);
     query[3] = 0.5;
     const results = await new PostgresObservationRepository(pool)
-      .search({ projectId, teamId, query: 'zzqx nothing matches this', queryEmbedding: query });
+      .search({ projectId, teamId, query: 'zzqx nothing matches this', queryEmbedding: { vector: query, model: 'test' } });
     const found = results.map(row => row.id);
     expect(found.filter(id => id.startsWith('heavy-')).length).toBe(7);
     expect(found).toContain(ids.backup);
@@ -280,7 +302,7 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
   it('searches with a limit whose nearest-part count exceeds pgvector\'s ef_search maximum', async () => {
     // 4 x 300 nearest parts would ask for ef_search 1200; pgvector allows 1000.
     const results = await new PostgresObservationRepository(pool)
-      .search({ projectId, teamId, query: 'gateway', limit: 300, queryEmbedding: axis(1) });
+      .search({ projectId, teamId, query: 'gateway', limit: 300, queryEmbedding: { vector: axis(1), model: 'test' } });
     expect(results.map(row => row.id)).toContain(ids.gateway);
   });
 
@@ -569,6 +591,23 @@ describe.skipIf(!vectorAvailable)('hybrid observation search', () => {
     }
     // DROP DATABASE forces a checkpoint, which takes seconds after a busy run.
   }, 30_000);
+
+  it('keeps the vectors when the model\'s width is unchanged, and starts over when it changes', async () => {
+    if (!vectorAvailable) return;
+    const stored = async () => {
+      const result = await pool.query(
+        `SELECT (SELECT atttypmod FROM pg_attribute
+                 WHERE attrelid = 'observation_embeddings'::regclass AND attname = 'embedding') AS dims,
+                (SELECT count(*)::int FROM observation_embeddings) AS rows`
+      );
+      return result.rows[0];
+    };
+    await bootstrapServerPostgresSchema(pool, 'on', 384);
+    expect(await stored()).toEqual({ dims: 384, rows: 3 });
+
+    await bootstrapServerPostgresSchema(pool, 'on', 768);
+    expect(await stored()).toEqual({ dims: 768, rows: 0 });
+  });
 
   it('deletes an observation\'s vectors with it', async () => {
     await pool.query('DELETE FROM observations WHERE id = $1', [ids.indexer]);

@@ -1,12 +1,13 @@
 import { describe, expect, it } from 'bun:test';
 import { LocalEmbedder } from '../../../src/services/vector/LocalEmbedder.js';
+import { DEFAULT_EMBEDDING_MODEL } from '../../../src/services/vector/models.js';
 
 // Runs the real tokenizer and model (all-MiniLM-L6-v2, about 90 MB, fetched
 // on first use). Without them, say offline, these tests skip, except under
 // CLAUDE_MEM_TEST_PGVECTOR=1 (the search CI job), where a model that cannot
 // load fails them instead of letting them pass untested.
 const requireModel = process.env.CLAUDE_MEM_TEST_PGVECTOR === '1';
-const embedder = new LocalEmbedder();
+const embedder = new LocalEmbedder(DEFAULT_EMBEDDING_MODEL);
 const probe = await embedder.embed(['probe']).then(() => null, (error: unknown) => error);
 if (probe && !requireModel) {
   console.warn('embedding model unavailable; LocalEmbedder encode not tested:', probe instanceof Error ? probe.message : probe);
@@ -29,8 +30,8 @@ describe.skipIf(probe !== null && !requireModel)('LocalEmbedder encode', () => {
   });
 
   it('places a paraphrase nearer than an unrelated text', async () => {
-    const [query, paraphrase, unrelated] = await embedder.embed([
-      'which machine builds the search index',
+    const [query] = await embedder.embed(['which machine builds the search index'], 'query');
+    const [paraphrase, unrelated] = await embedder.embed([
       'The code-search indexer runs nightly on the build host.',
       'Lunch is at noon on Fridays.',
     ]);

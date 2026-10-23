@@ -295,6 +295,7 @@ export interface SettingsDefaults {
   CLAUDE_MEM_CHROMA_EMBEDDING_FUNCTION: string;  // chroma-mcp embedding function for new collections
   CLAUDE_MEM_SERVER_VECTOR_SEARCH: string;       // server search by meaning: 'auto', 'true' or 'false'
   CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: string; // CPU threads for embedding stored rows; '' = half, 0 = all
+  CLAUDE_MEM_EMBEDDING_MODEL: string;            // in-process embedding model for server search by meaning
   CLAUDE_MEM_CHROMA_UVX_PATH: string;            // uvx binary (or its folder) to launch chroma-mcp with
   CLAUDE_MEM_SEARCH_RECENCY_DAYS: string;        // Implicit 90-day recency window on date-less semantic searches (#4770); 0 = no window
   // Worker-native cloud sync. Active ⇔ TOKEN, USER_ID, and HUB_URL are all
@@ -576,6 +577,13 @@ export class SettingsDefaultsManager {
     // That start caps the embedder at this many CPU threads until the next
     // restart: empty is half the machine's threads, 0 is every thread.
     CLAUDE_MEM_EMBEDDING_BACKFILL_THREADS: '',
+    // Embedding model the server's search by meaning uses: a key of
+    // EMBEDDING_MODELS in src/services/vector/models.ts, which lists them and
+    // their vector widths. 'all-MiniLM-L6-v2' is Chroma's default
+    // (English-tuned). Any other value is rejected. Changing it re-embeds
+    // every observation, and search by meaning covers only rows already
+    // re-embedded until that finishes.
+    CLAUDE_MEM_EMBEDDING_MODEL: 'all-MiniLM-L6-v2',
     CLAUDE_MEM_CHROMA_UVX_PATH: '',            // Empty = search uv's install folders, then PATH (#4195)
     CLAUDE_MEM_SEARCH_RECENCY_DAYS: '90',      // Date-less semantic search only ranks matches from the last N days (#4770). 0 = no window (every match eligible); an explicit dateStart/dateEnd always wins. Restart the worker after changing it
     // Worker-native cloud sync: credentials come from cmem.ai → Connect.
