@@ -14,7 +14,8 @@ Input is the goals JSON the map step writes:
 Every evidence quote is checked against owner-prompts.md: it has to appear in a prompt headed with that
 minute. Quotes may skip words with "..." between the pieces. Unverified quotes stop the save and are listed.
 A quote dated before the first prompt in owner-prompts.md has aged out of the window (an updated snapshot
-carries older quotes forward): it is dropped, and so is an item left with no quote.
+carries older quotes forward): it is dropped, and so is an item left with no quote. With no prompts in the file,
+every quote has aged out. When every item ages out, the snapshot is saved empty, which clears the old goals.
 
 Storage is the "owner-goals" work-state list, written through the local worker (the same endpoint as the
 work_state_write tool) under the home folder's project key so there is one list per computer:
@@ -86,14 +87,15 @@ def prompts_by_minute(prompts_path):
 
 
 def drop_aged_quotes(goals, prompts):
-    """Remove quotes older than the prompts file's first minute, and items they leave without one. Returns those items' titles."""
-    first_minute = min(prompts, default="")
+    """Remove quotes older than the prompts file's first minute, and items they leave without one. Returns those items' titles.
+    With no prompts in the window, every quote is outside it."""
+    first_minute = min(prompts, default=None)
     aged_out = []
     for kind_key in ("priorities", "open_asks"):
         kept = []
         for item in goals.get(kind_key, []):
             quotes = item.get("evidence") or []
-            item["evidence"] = [quote for quote in quotes if str(quote.get("at", ""))[:16] >= first_minute]
+            item["evidence"] = [quote for quote in quotes if first_minute is not None and str(quote.get("at", ""))[:16] >= first_minute]
             if quotes and not item["evidence"]:
                 aged_out.append(item.get("title"))
             else:
@@ -159,7 +161,9 @@ def main():
     aged_out = drop_aged_quotes(goals, prompts)
     items = [("priority", item) for item in goals.get("priorities", [])] + [("open-ask", item) for item in goals.get("open_asks", [])]
     missing = [f'{kind} {item.get("title")!r}' for kind, item in items if not item.get("title") or not item.get("evidence")]
-    if not items or missing:
+    # An empty snapshot is valid only when the window emptied it (every quote aged out, or no prompts in it);
+    # an answer that names no goals while there are prompts is refused.
+    if (not items and not aged_out and prompts) or missing:
         sys.exit("every priority and open ask needs a title and at least one evidence quote: " + ", ".join(missing or ["no items"]))
     problems = unverified_quotes(goals, prompts)
     if problems:

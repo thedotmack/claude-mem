@@ -63,4 +63,28 @@ describe('save_goals.py', () => {
       expect(save({ priorities: [{ title: 'Made up', evidence: [{ at: '2026-10-20 10:00', quote: 'never typed' }] }] }).exitCode).not.toBe(0);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
+
+  it('clears the goals when every saved quote has aged out, instead of refusing to save forever', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'save-goals-'));
+    try {
+      const save = (prompts: string, goals: unknown) => {
+        writeFileSync(join(dir, 'owner-prompts.md'), prompts);
+        writeFileSync(join(dir, 'goals.json'), JSON.stringify(goals));
+        return Bun.spawnSync(['python3', join(SKILLS, 'owner-goals', 'scripts', 'save_goals.py'), '--goals', join(dir, 'goals.json'), '--prompts', join(dir, 'owner-prompts.md'), '--dry-run']);
+      };
+      const aged = { generated_at: '2026-10-20T10:00:00Z', priorities: [{ rank: 1, title: 'Old', evidence: [{ at: '2026-09-02 09:00', quote: 'older words' }] }] };
+      // Newer prompts exist, but none was quoted: the saved goal's only quote is older than the window.
+      const later = save('# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nunrelated words\n', aged);
+      expect(later.stderr.toString()).toBe('');
+      expect(later.exitCode).toBe(0);
+      const output = JSON.parse(later.stdout.toString());
+      expect(output.writes).toHaveLength(1);
+      expect(output.writes[0]).toMatchObject({ generated_at: '2026-10-20T10:00:00Z', status: 'open' });
+      // No prompts in the window at all: every quote is outside it.
+      expect(save('# Owner prompts\n', aged).exitCode).toBe(0);
+      expect(save('# Owner prompts\n', { priorities: [] }).exitCode).toBe(0);
+      // An answer with no goals at all, while prompts exist, is still refused.
+      expect(save('# Owner prompts\n\n## 2026-10-20 10:00 · claude · repo\nsession `a`\n\nunrelated words\n', { priorities: [] }).exitCode).not.toBe(0);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
 });
