@@ -136,8 +136,8 @@ const QUERIES: Record<string, string> = {
 
   python: `
 (decorated_definition definition: (_) @decorated_inner) @decorated_outer
-(function_definition name: (identifier) @name) @func
-(class_definition name: (identifier) @name) @cls
+(function_definition name: (identifier) @name type_parameters: (_)? @sig_end parameters: (_) @sig_end return_type: (_)? @sig_end) @func
+(class_definition name: (identifier) @name type_parameters: (_)? @sig_end superclasses: (_)? @sig_end) @cls
 (import_statement) @imp
 (import_from_statement) @imp
 `,
@@ -162,10 +162,10 @@ const QUERIES: Record<string, string> = {
   // Only the Ruby calls that load code are imports, and only without a
   // receiver: `YAML.load(text)` and `items.each do … end` are not.
   ruby: `
-(method name: (identifier) @name) @func
-(singleton_method object: (_) @receiver name: (identifier) @name) @method
+(method name: (identifier) @name parameters: (_)? @sig_end) @func
+(singleton_method object: (_) @receiver name: (identifier) @name parameters: (_)? @sig_end) @method
 (singleton_class value: (self)) @singleton_scope
-(class name: [(constant) (scope_resolution)] @name) @cls
+(class name: [(constant) (scope_resolution)] @name superclass: (_)? @sig_end) @cls
 (module name: [(constant) (scope_resolution)] @name) @cls
 ((call !receiver method: (identifier) @name) @imp (#match? @name "^(require|require_relative|load|autoload)$"))
 `,
@@ -233,10 +233,10 @@ const QUERIES: Record<string, string> = {
   lua: `
 (assignment_statement
   (variable_list . name: [(identifier) (dot_index_expression) (bracket_index_expression)] @name .)
-  (expression_list . value: (function_definition) .)) @const_func
-(function_declaration name: (identifier) @name) @func
-(function_declaration name: (dot_index_expression) @name) @func
-(function_declaration name: (method_index_expression) @name) @func
+  (expression_list . value: (function_definition parameters: (_) @sig_end) .)) @const_func
+(function_declaration name: (identifier) @name parameters: (_) @sig_end) @func
+(function_declaration name: (dot_index_expression) @name parameters: (_) @sig_end) @func
+(function_declaration name: (method_index_expression) @name parameters: (_) @sig_end) @func
 `,
 
   scala: `
@@ -580,6 +580,9 @@ const KIND_MAP: Record<string, CodeSymbol["kind"]> = {
 
 const CONTAINER_KINDS = new Set(["class", "struct", "impl", "trait", "interface", "namespace"]);
 
+// Languages whose query marks the end of a signature with @sig_end captures.
+const SIGNATURE_END_LANGUAGES = new Set(["python", "ruby", "lua"]);
+
 // Kinds that own nested symbols only in some languages: a PHP enum holds its
 // methods, and a Haskell function holds its `where`/`let` helpers.
 const LANGUAGE_CONTAINER_KINDS: Partial<Record<string, ReadonlySet<CodeSymbol["kind"]>>> = {
@@ -815,6 +818,18 @@ function buildSymbols(matches: RawMatch[], lines: string[], language: string): {
       signature = "---frontmatter---";
     } else if (language === "markdown" && kind === "reference") {
       signature = lines[startRow]?.trim() || name;
+    } else if (SIGNATURE_END_LANGUAGES.has(language)) {
+      // A Python, Ruby or Lua body is not braced: a `{` in it opens a dict, a
+      // hash, a block or a table. The parse tree marks where the signature ends,
+      // after the last of its parameters, return type or superclass, or else
+      // after the name.
+      const end = match.captures
+        .filter(c => c.tag === "sig_end")
+        .reduce<RawCapture | undefined>((last, c) => !last || c.endRow > last.endRow
+          || (c.endRow === last.endRow && c.endCol > last.endCol) ? c : last, undefined)
+        ?? nameCapture ?? kindCapture;
+      signature = captureText(lines, { ...kindCapture, endRow: end.endRow, endCol: end.endCol });
+      if (signature.length > 200) signature = signature.slice(0, 197) + "...";
     } else {
       // Export wrappers start before their direct declaration. Preserve only
       // the export keywords that end that prefix: decorators belong to the
