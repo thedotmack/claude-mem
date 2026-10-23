@@ -1,0 +1,192 @@
+/**
+ * The install funnel's Scan step: read every agent's transcripts for the last
+ * 30 days, store the owner's typed prompts in claude-mem's DB, and report live
+ * progress. Works the same for a new install (empty DB: everything comes from
+ * transcripts) and an upgrade (hooks already recorded most prompts: those are
+ * matched, never stored twice, and counted as `fromMemory`).
+ *
+ * One scan runs at a time; a second start returns the running scan's state.
+ * There is no time limit: the scan reports `done` only after every file is read.
+ */
+
+import { logger } from '../../utils/logger.js';
+import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
+
+/** How far apart the hook's time and the transcript's time may be for one prompt (measured: under 7 s on the owner's Mac). */
+export const HOOK_MATCH_WINDOW_MS = 10 * 60_000;
+
+export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'done' | 'failed';
+
+export interface SetupScanAgent {
+  id: PromptAgentId;
+  label: string;
+  detected: boolean;
+  /** The owner's prompts in the window: fromMemory + fromTranscripts. */
+  prompts: number;
+  /** Already in claude-mem's memory, recorded by its hooks. */
+  fromMemory: number;
+  /** Only in the agent's transcripts; stored by this import (now or by an earlier scan). */
+  fromTranscripts: number;
+}
+
+export interface SetupScanState {
+  agents: SetupScanAgent[];
+  percent: number;
+  phase: SetupScanPhase;
+  done: boolean;
+  windowStart: string | null;
+  startedAt: string | null;
+  finishedAt: string | null;
+  durationMs: number | null;
+  /** Prompts newly stored by the last scan. */
+  added: number;
+  skippedSources: number;
+  error: string | null;
+}
+
+/** The SessionStore methods the scan uses. */
+export interface SetupScanStore {
+  listHookRecordedPrompts(sinceEpochMs: number): Array<MemoryPrompt & { project: string }>;
+  importTranscriptUserPrompt(prompt: {
+    platformSource: string; contentSessionId: string; project: string; nativePromptId: string; promptText: string;
+    createdAtEpoch: number; hookTextVariants?: string[]; hookMatchWindowMs: number; claimedHookRowIds: Set<number>;
+  }): { reason: 'new' | 'already-imported' | 'recorded-by-hook' | 'private'; hookRowId?: number };
+}
+
+export interface SetupScanOptions {
+  getStore: () => SetupScanStore;
+  scan?: typeof scanOwnerPrompts;
+  scanOptions?: Omit<PromptScanOptions, 'sinceEpochMs' | 'memoryPrompts' | 'onProgress'>;
+  now?: () => number;
+  /** Minimum gap between progress notifications while a phase runs. */
+  progressIntervalMs?: number;
+}
+
+const AGENT_LABELS: Array<[PromptAgentId, string]> = [
+  ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['gemini-cli', 'Gemini CLI'], ['antigravity-cli', 'Antigravity CLI'], ['opencode', 'OpenCode'],
+];
+
+function idleState(): SetupScanState {
+  return {
+    agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0 })),
+    percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
+    added: 0, skippedSources: 0, error: null,
+  };
+}
+
+export class SetupScan {
+  private current: SetupScanState = idleState();
+  private running: Promise<void> | null = null;
+  private listeners = new Set<(state: SetupScanState) => void>();
+  private lastNotified = 0;
+  private now: () => number;
+
+  constructor(private options: SetupScanOptions) {
+    this.now = options.now ?? Date.now;
+  }
+
+  state(): SetupScanState {
+    return structuredClone(this.current);
+  }
+
+  subscribe(listener: (state: SetupScanState) => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Starts a scan unless one is running. Resolves with the state at start. */
+  start(): SetupScanState {
+    if (!this.running) {
+      this.running = this.run().finally(() => { this.running = null; });
+    }
+    return this.state();
+  }
+
+  /** Waits for the running scan, if any (tests and the CLI). */
+  async finished(): Promise<SetupScanState> {
+    await this.running;
+    return this.state();
+  }
+
+  private update(changes: Partial<SetupScanState>, force = false): void {
+    this.current = { ...this.current, ...changes };
+    const now = this.now();
+    if (!force && now - this.lastNotified < (this.options.progressIntervalMs ?? 200)) return;
+    this.lastNotified = now;
+    const snapshot = this.state();
+    for (const listener of this.listeners) listener(snapshot);
+  }
+
+  private async run(): Promise<void> {
+    const startedAt = this.now();
+    const windowStart = scanWindowStart(startedAt);
+    this.current = { ...idleState(), phase: 'reading', windowStart: new Date(windowStart).toISOString(), startedAt: new Date(startedAt).toISOString() };
+    this.update({}, true);
+    try {
+      const store = this.options.getStore();
+      const memoryPrompts = store.listHookRecordedPrompts(windowStart);
+      let lastPhase: PromptScanProgress['phase'] = 'reading';
+      const result = await (this.options.scan ?? scanOwnerPrompts)({
+        ...this.options.scanOptions,
+        sinceEpochMs: windowStart,
+        memoryPrompts,
+        onProgress: progress => {
+          const share = progress.bytesTotal ? progress.bytesDone / progress.bytesTotal : 1;
+          const percent = Math.floor(progress.phase === 'reading' ? share * 50 : 50 + share * 45);
+          const agents = this.current.agents.map(agent => {
+            const summary = progress.agents.find(entry => entry.id === agent.id);
+            return summary ? { ...agent, detected: summary.detected, prompts: summary.typed } : agent;
+          });
+          this.update({ phase: progress.phase, percent, agents }, progress.phase !== lastPhase);
+          lastPhase = progress.phase;
+        },
+      });
+
+      this.update({ phase: 'saving', percent: 95 }, true);
+      const claimedHookRowIds = new Set<number>();
+      const fromTranscripts = new Map<string, number>();
+      let added = 0;
+      result.ownerPrompts.forEach((prompt: OwnerPrompt, index) => {
+        let outcome: ReturnType<SetupScanStore['importTranscriptUserPrompt']>;
+        try {
+          outcome = store.importTranscriptUserPrompt({
+            platformSource: prompt.platformSource, contentSessionId: prompt.sessionId, project: prompt.project,
+            nativePromptId: prompt.nativePromptId, promptText: prompt.text, createdAtEpoch: prompt.at,
+            hookTextVariants: prompt.hookTextVariants, hookMatchWindowMs: HOOK_MATCH_WINDOW_MS, claimedHookRowIds,
+          });
+        } catch (error) {
+          logger.warn('IMPORT', 'Could not store an imported prompt', { agent: prompt.agent, sessionId: prompt.sessionId, error: String(error) });
+          return;
+        }
+        if (outcome.reason === 'new') added++;
+        if (outcome.reason === 'new' || outcome.reason === 'already-imported') {
+          fromTranscripts.set(prompt.agent, (fromTranscripts.get(prompt.agent) ?? 0) + 1);
+        }
+        this.update({ percent: 95 + Math.floor((index / Math.max(1, result.ownerPrompts.length)) * 5) });
+      });
+
+      // Hook-recorded prompts count once: matched to a transcript copy, or, when
+      // the transcripts no longer hold that session, on their own. A hook row in
+      // a session the transcripts hold but did not match was not typed by the owner.
+      const agents = this.current.agents.map(agent => {
+        const summary = result.agents.find(entry => entry.id === agent.id);
+        if (!summary) return { ...agent, prompts: 0, fromMemory: 0, fromTranscripts: 0 };
+        const fromMemory = memoryPrompts.filter(prompt => prompt.platformSource === summary.platformSource
+          && result.ownerMemoryPromptIds.has(prompt.id)
+          && (claimedHookRowIds.has(prompt.id) || !summary.sessions.has(prompt.contentSessionId))).length;
+        const transcriptOnly = fromTranscripts.get(agent.id) ?? 0;
+        return { ...agent, detected: summary.detected, fromMemory, fromTranscripts: transcriptOnly, prompts: fromMemory + transcriptOnly };
+      });
+      const finishedAt = this.now();
+      this.update({
+        phase: 'done', done: true, percent: 100, agents, added, skippedSources: result.skippedSources.length,
+        finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt,
+      }, true);
+      logger.info('IMPORT', 'Setup prompt scan finished', { added, durationMs: finishedAt - startedAt });
+    } catch (error) {
+      const finishedAt = this.now();
+      logger.error('IMPORT', 'Setup prompt scan failed', {}, error as Error);
+      this.update({ phase: 'failed', done: true, error: error instanceof Error ? error.message : String(error), finishedAt: new Date(finishedAt).toISOString(), durationMs: finishedAt - startedAt }, true);
+    }
+  }
+}

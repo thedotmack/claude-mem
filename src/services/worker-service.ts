@@ -142,6 +142,7 @@ import { emitContextInvalidation } from '../shared/context-invalidation.js';
 import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
+import { SetupScan } from './prompt-import/setup-scan.js';
 import { WorkViewRoutes } from './worker/http/routes/WorkViewRoutes.js';
 import { SessionRoutes } from './worker/http/routes/SessionRoutes.js';
 import { DataRoutes } from './worker/http/routes/DataRoutes.js';
@@ -568,6 +569,8 @@ export class WorkerService implements WorkerRef {
         this.dbManager.getSessionStore().appendWorkStateEntry(entry);
         this.dbManager.getCloudSync()?.notify();
       },
+      // The install funnel's Scan step stores typed prompts read from every agent's transcripts.
+      setupScan: new SetupScan({ getStore: () => this.dbManager.getSessionStore() }),
     });
     this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));

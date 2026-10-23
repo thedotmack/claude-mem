@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import { MotionConfig } from 'motion/react'
 import { GoalIcon, InboxIcon, ListChecksIcon, UsersIcon } from 'lucide-react'
 import { Badge } from '@/components/ui/badge'
@@ -24,8 +24,10 @@ import { localSource } from '@/live/local-source'
 import { sampleSource } from '@/live/sample-source'
 import type { WorkDataSource } from '@/live/work-data-source'
 
-type Page = 'work' | 'goals' | 'rules'
-const PAGES: { id: Page; label: string; icon: typeof InboxIcon; section: string }[] = [
+/** `setup` is the install funnel (`?setup=1`): a full page outside the nav that becomes My Work when it completes. */
+type Page = 'setup' | 'work' | 'goals' | 'rules'
+type NavPage = Exclude<Page, 'setup'>
+const PAGES: { id: NavPage; label: string; icon: typeof InboxIcon; section: string }[] = [
   { id: 'work', label: 'My Work', icon: InboxIcon, section: 'Monitor' },
   { id: 'goals', label: 'My Goals', icon: GoalIcon, section: 'Steer' },
   { id: 'rules', label: 'My Rules', icon: ListChecksIcon, section: 'Steer' },
@@ -84,8 +86,34 @@ function readReadingSignals(): ReadingSignals {
   }
 }
 
-/** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
+const SetupPage = lazy(() => import('@/setup/setup-page'))
+const SETUP_REQUESTED = new URLSearchParams(window.location.search).get('setup') === '1'
+const SAMPLE_REQUESTED = new URLSearchParams(window.location.search).get('source') === 'sample'
+
 export default function App() {
+  // The funnel shows once per machine until setup completes, upgrades included, so My Work asks the worker first.
+  const [page, setPage] = useState<Page | 'checking'>(SETUP_REQUESTED ? 'setup' : SAMPLE_REQUESTED ? 'work' : 'checking')
+  useEffect(() => {
+    if (page !== 'checking') return
+    // A worker without the endpoint (older) has no funnel to show; one that can't be reached says so in My Work.
+    fetch('/api/setup/state', { cache: 'no-store' })
+      .then((response) => (response.ok ? response.json() as Promise<{ status?: string }> : null))
+      .then((state) => setPage(state?.status === 'pending' ? 'setup' : 'work'), () => setPage('work'))
+  }, [page])
+  if (page === 'checking') return null
+  if (page !== 'setup') return <WorkApp />
+  const finishSetup = () => {
+    const url = new URL(window.location.href)
+    url.searchParams.delete('setup')
+    window.history.replaceState(null, '', url)
+    window.scrollTo(0, 0)
+    setPage('work')
+  }
+  return <Suspense fallback={null}><SetupPage onComplete={finishSetup} /></Suspense>
+}
+
+/** Reads the active source once and subscribes to its live feed, then renders the app. A failed load says so plainly instead of showing anything made up. */
+function WorkApp() {
   const load = useWorkModelLoad()
   useEffect(() => {
     const unsubscribe = ACTIVE_SOURCE.subscribeToLiveUpdates((model) => receiveLiveWorkModel(model, readReadingSignals()), receiveConnectionStatus)
@@ -115,7 +143,7 @@ export default function App() {
 function LoadedApp() {
   const { sourceKind } = useWorkModel()
   const sample = sourceKind === 'sample'
-  const [page, setPage] = useState<Page>('work')
+  const [page, setPage] = useState<NavPage>('work')
   const [workspaceChoice, setWorkspace] = useState<Workspace>({ mode: 'home', team: false, connected: false })
   // Outside sample mode the place comes from the source: the local worker is at home, cmem.ai is on the go.
   const workspace: Workspace = sample ? workspaceChoice : { ...workspaceChoice, mode: sourceKind === 'cloud' ? 'web' : 'home' }
@@ -129,7 +157,7 @@ function LoadedApp() {
   const liveOpenRequest = openRequest ? requestById(openRequest.id) ?? openRequest : null
   // The demo flip is sample data; it never runs against real requests.
   useEffect(() => (sample ? playDemoUpdates() : undefined), [sample])
-  const goToPage = (next: Page) => { setFocusGoalId(undefined); setPage(next) }
+  const goToPage = (next: NavPage) => { setFocusGoalId(undefined); setPage(next) }
   const goToGoal = (goalId: string) => { setOpenRequest(null); setFocusGoalId(goalId); setPage('goals') }
 
   return (
