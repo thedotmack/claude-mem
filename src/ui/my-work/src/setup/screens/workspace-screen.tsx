@@ -5,9 +5,10 @@ import { prefersReducedMotion } from '../format'
 
 const formatDay = (day: string) => new Date(`${day}T12:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
 
-interface KeptNote { record: MemoryResult; text: string }
+/** `saved` is the text last written to memory; an edit saves again when the note loses focus. */
+interface KeptNote { record: MemoryResult; text: string; saved: string }
 
-function ResultCard({ record, note, onDiscard, onKeep, onEdit }: { record: MemoryResult; note?: KeptNote; onDiscard: () => void; onKeep?: () => void; onEdit?: (text: string) => void }) {
+function ResultCard({ record, note, onDiscard, onKeep, onEdit, onSave }: { record: MemoryResult; note?: KeptNote; onDiscard: () => void; onKeep?: () => void; onEdit?: (text: string) => void; onSave?: () => void }) {
   const source = `${record.project} · ${record.agent} · ${record.session} · ${formatDay(record.date)}`
   return (
     <article className="panel workspace-card" data-record-id={record.id}>
@@ -15,7 +16,7 @@ function ResultCard({ record, note, onDiscard, onKeep, onEdit }: { record: Memor
       {note ? (
         <>
           <p className="source">{source}</p>
-          <textarea value={note.text} maxLength={4000} aria-label={`Edit note: ${record.title}`} onChange={(event) => onEdit?.(event.target.value)} />
+          <textarea value={note.text} maxLength={4000} aria-label={`Edit note: ${record.title}`} onChange={(event) => onEdit?.(event.target.value)} onBlur={onSave} />
           <div className="footer"><div className="card-actions"><button type="button" className="text-action" onClick={onDiscard}>Discard</button></div></div>
         </>
       ) : (
@@ -38,7 +39,9 @@ function ResultCard({ record, note, onDiscard, onKeep, onEdit }: { record: Memor
  * Step 8, "What's next?" (PROTO #route-workspace, D7). Suggestion chips come from the person's own goals and open asks.
  * Results stack as cards: Discard hides one, Keep as note makes an editable copy; the source memory never changes.
  */
-export function WorkspaceScreen({ suggestions, search, onContinue }: { suggestions: string[]; search: (query: string) => Promise<MemoryResult[]>; onContinue: () => void }) {
+export function WorkspaceScreen({ suggestions, search, keepNote, onContinue }: {
+  suggestions: string[]; search: (query: string) => Promise<MemoryResult[]>; keepNote: (record: MemoryResult, text: string) => Promise<void>; onContinue: () => void
+}) {
   const inputRef = useRef<HTMLInputElement>(null)
   const formRef = useRef<HTMLFormElement>(null)
   const [query, setQuery] = useState('')
@@ -55,17 +58,29 @@ export function WorkspaceScreen({ suggestions, search, onContinue }: { suggestio
   const run = async (text: string) => {
     const trimmed = text.trim()
     if (!trimmed) { inputRef.current?.focus(); return }
-    const found = (await search(trimmed)).filter((record) => !notes.some((note) => note.record.id === record.id))
+    let found: MemoryResult[]
+    try { found = (await search(trimmed)).filter((record) => !notes.some((note) => note.record.id === record.id)) }
+    catch (error) { setStatus(error instanceof Error ? error.message : String(error)); return }
     setResults(found)
     setStatus(found.length === 0 ? 'No matching memories found.' : found.length === 1 ? '1 memory found across your projects.' : `${found.length} memories found across your projects.`)
   }
   const submit = (event: FormEvent) => { event.preventDefault(); void run(query) }
   const discard = (id: string) => { setResults((current) => current.filter((record) => record.id !== id)); setStatus('Removed from this view.'); inputRef.current?.focus() }
-  const keep = (record: MemoryResult) => {
-    setNotes((current) => [{ record, text: record.body }, ...current])
+  // A kept note is a new memory; the result it came from is never changed.
+  const save = async (record: MemoryResult, text: string, message: string) => {
+    try { await keepNote(record, text) } catch (error) { setStatus(error instanceof Error ? error.message : String(error)); return false }
+    setStatus(message)
+    return true
+  }
+  const keep = async (record: MemoryResult) => {
+    if (!await save(record, record.body, 'Kept as a note in your memory.')) return
+    setNotes((current) => [{ record, text: record.body, saved: record.body }, ...current])
     setResults((current) => current.filter((entry) => entry.id !== record.id))
-    setStatus('Kept as an editable note.')
     requestAnimationFrame(() => document.querySelector<HTMLTextAreaElement>(`[data-record-id="${record.id}"] textarea`)?.focus())
+  }
+  const saveEdit = async (note: KeptNote) => {
+    if (!note.text.trim() || note.text === note.saved) return
+    if (await save(note.record, note.text, 'Note saved.')) setNotes((current) => current.map((entry) => entry.record.id === note.record.id ? { ...entry, saved: note.text } : entry))
   }
 
   return (
@@ -89,7 +104,7 @@ export function WorkspaceScreen({ suggestions, search, onContinue }: { suggestio
       <p className="workspace-status" role="status" aria-live="polite">{status}</p>
       {results.length > 0 && (
         <div className="workspace-results" aria-label="Memory search results">
-          {results.map((record) => <ResultCard key={record.id} record={record} onDiscard={() => discard(record.id)} onKeep={() => keep(record)} />)}
+          {results.map((record) => <ResultCard key={record.id} record={record} onDiscard={() => discard(record.id)} onKeep={() => void keep(record)} />)}
         </div>
       )}
       {notes.length > 0 && (
@@ -99,6 +114,7 @@ export function WorkspaceScreen({ suggestions, search, onContinue }: { suggestio
             {notes.map((note) => (
               <ResultCard key={note.record.id} record={note.record} note={note}
                 onEdit={(text) => setNotes((current) => current.map((entry) => entry.record.id === note.record.id ? { ...entry, text } : entry))}
+                onSave={() => void saveEdit(note)}
                 onDiscard={() => { setNotes((current) => current.filter((entry) => entry.record.id !== note.record.id)); setStatus('Note removed.'); inputRef.current?.focus() }} />
             ))}
           </div>

@@ -4,6 +4,7 @@
 import type { AgentTool } from '@/data'
 import { toSetupUsage, type SetupScanUsage, type SetupUsage } from './setup-usage'
 import { revealFromSnapshot, type SnapshotWithSetup } from './setup-reveal'
+import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
 export interface SetupScanAgent { id: string; label: string; detected: boolean; prompts: number }
@@ -25,7 +26,7 @@ export interface SetupHistory { projects: number; sessions: number; observations
 /** The worker's history upload. `imported` counts observations cmem.ai wrote; `error` is why a run stopped. */
 export interface HistoryImportProgress { percent: number; done: boolean; imported: number; error: string | null }
 
-export interface MemoryResult { id: string; title: string; body: string; project: string; agent: string; session: string; date: string }
+export type { MemoryResult } from './setup-search'
 
 export interface SetupData {
   scan: SetupScanView
@@ -60,6 +61,8 @@ export interface SetupSource {
   /** Uploads this machine's observations to the CMEM account (POST /api/setup/import). */
   startHistoryImport(): Promise<void>
   search(query: string): Promise<MemoryResult[]>
+  /** Keep as note: saves `text` as a new memory (POST /api/memory/save). */
+  keepNote(record: MemoryResult, text: string): Promise<void>
 }
 
 export const EMPTY_SETUP_DATA: SetupData = {
@@ -143,7 +146,13 @@ export const localSetupSource: SetupSource = {
     // Goals, work and rules land in the work view snapshot as the extraction saves each one.
     const applySnapshot = (snapshot: SnapshotWithSetup) => {
       const extraction = snapshot.setup?.extraction ?? null
-      publish({ reveal: revealFromSnapshot(snapshot), extraction: extraction && { state: extraction.state, step: extraction.step } })
+      const goals = snapshot.goals ? [...snapshot.goals.priorities, ...snapshot.goals.openAsks].map((item) => item.title) : []
+      publish({
+        reveal: revealFromSnapshot(snapshot),
+        extraction: extraction && { state: extraction.state, step: extraction.step },
+        // "What's next?" chips: the person's own goals and open asks.
+        suggestions: [...new Set(goals)].slice(0, 4),
+      })
     }
     onData(data)
     const stream = new EventSource('/api/work-view/events')
@@ -163,7 +172,8 @@ export const localSetupSource: SetupSource = {
   async checkout() { await postJson('/api/setup/checkout', {}) },
   async complete(tools) { await postJson('/api/setup/complete', { tools }) },
   async startHistoryImport() { await postJson('/api/setup/import', {}) },
-  search: async () => [],
+  async search(query) { return toMemoryResults(await workerJson<WorkerSearchResult>(searchUrl(query))) },
+  async keepNote(record, text) { await postJson('/api/memory/save', noteFor(record, text)) },
 }
 
 /** D6 plan prices, in cents. Plan prices only; never a usage cost. */

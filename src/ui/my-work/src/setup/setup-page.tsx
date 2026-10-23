@@ -145,7 +145,7 @@ export default function SetupPage({ onComplete }: { onComplete: () => void }) {
     ),
     import: () => <ImportScreen progress={data.historyImport} />,
     launch: () => <LaunchScreen tools={pickedTools} onDone={() => setRequested('workspace')} />,
-    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} onContinue={() => void handOff(() => source!.complete(flow.finishTools)).then((done) => { if (done) onComplete() })} />,
+    workspace: () => <WorkspaceScreen suggestions={data.suggestions} search={(query) => source!.search(query)} keepNote={(record, text) => source!.keepNote(record, text)} onContinue={() => void handOff(() => source!.complete(flow.finishTools)).then((done) => { if (done) onComplete() })} />,
   }
 
   return (

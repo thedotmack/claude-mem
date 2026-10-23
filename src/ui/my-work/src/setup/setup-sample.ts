@@ -123,6 +123,7 @@ export function createSampleSetupSource(newInstall: boolean, holdScanAtPercent: 
         if (percent === 100) clearInterval(timer)
       }, TICK_MS)
     },
+    async keepNote() {},
     async search(query) {
       const words = query.toLowerCase().match(/[a-z0-9]+/g)?.filter((word) => word.length > 3) ?? []
       return RECORDS.filter((record) => words.some((word) => `${record.title} ${record.body} ${record.project} ${record.session}`.toLowerCase().includes(word)))
