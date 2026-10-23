@@ -154,9 +154,12 @@ Claude-mem stores data locally in `~/.claude-mem/`:
 - **Logs:** `~/.claude-mem/logs/`
 - **Settings:** `~/.claude-mem/settings.json`
 
-All claude-mem state files (database, vector store, logs, settings, supervisor and PID files) are written to the local user directory and are not uploaded by claude-mem itself. Claude-mem does not collect telemetry.
+All claude-mem state files (database, vector store, logs, settings, supervisor and PID files) are written to the local user directory. Local storage does not mean that no data leaves the device:
 
-However, by design claude-mem invokes upstream model providers and optional integrations to do its work, so observation/transcript/prompt content can leave the machine through those channels:
+- **Telemetry (on by default, opt-out):** Usage analytics and redacted error messages and stack traces are sent to PostHog, identified by a random install UUID. To disable both analytics and exception reporting, run `npx claude-mem telemetry disable` or set `DO_NOT_TRACK=1`. See [Telemetry](docs/public/telemetry.mdx) for collected fields, setting precedence, and the independent error-reporting opt-out.
+- **Optional cloud sync:** When configured, cloud sync uploads observations, session summaries, and user prompts to the sync hub under your cmem.ai account. It also uploads agent to-do lists and working state when the hub supports `work_state`. See [Cloud Sync](docs/public/cloud-sync.mdx) for setup and privacy details.
+
+Claude-mem also invokes upstream model providers and optional integrations to do its work, so observation/transcript/prompt content can leave the machine through these channels:
 
 - **Claude Agent SDK** (default summarization/observation path): sends prompts and transcript context to Anthropic's API.
 - **Alternate providers** (`gemini`, `openrouter`): when configured, send the same context to those providers instead.

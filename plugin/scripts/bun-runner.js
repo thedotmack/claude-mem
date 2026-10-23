@@ -21,6 +21,44 @@ function fixBrokenScriptPath(argPath) {
 }
 
 function findBun() {
+  const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
+  const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
+  const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
+
+  // Explicit overrides + BUN_INSTALL (official installer) + well-known homes.
+  // Hook PATH from Git Bash often omits ~/.bun/bin (#3224).
+  const bunPaths = IS_WINDOWS
+    ? [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun.exe') : '',
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun.exe') : '',
+        join(homedir(), '.bun', 'bin', 'bun.exe'),
+      ]
+    : [
+        bunEnv,
+        bunPathEnv,
+        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
+        bunInstall ? join(bunInstall, 'bun') : '',
+        join(homedir(), '.bun', 'bin', 'bun'),
+        '/usr/local/bin/bun',
+        '/opt/homebrew/bin/bun',
+        '/home/linuxbrew/.linuxbrew/bin/bun'
+      ];
+
+  // Windows: an explicit or well-known Bun wins over PATH, so the usual
+  // ~/.bun install never pays a synchronous `where bun`, which can stall for
+  // seconds over a long PATH and blow the hook timeout (#4934). This matches
+  // the compiled launcher (src/launcher/bun-runtime.ts).
+  if (IS_WINDOWS) {
+    for (const bunPath of bunPaths) {
+      if (bunPath && existsSync(bunPath)) {
+        return bunPath;
+      }
+    }
+  }
+
   const pathCheck = IS_WINDOWS
     ? spawnSync('where', ['bun'], {
         encoding: 'utf-8',
@@ -74,32 +112,6 @@ function findBun() {
       return 'bun';
     }
   }
-
-  const bunInstall = typeof process.env.BUN_INSTALL === 'string' ? process.env.BUN_INSTALL.trim() : '';
-  const bunEnv = typeof process.env.BUN === 'string' ? process.env.BUN.trim() : '';
-  const bunPathEnv = typeof process.env.BUN_PATH === 'string' ? process.env.BUN_PATH.trim() : '';
-
-  // Explicit overrides + BUN_INSTALL (official installer) + well-known homes.
-  // Hook PATH from Git Bash often omits ~/.bun/bin (#3224).
-  const bunPaths = IS_WINDOWS
-    ? [
-        bunEnv,
-        bunPathEnv,
-        bunInstall ? join(bunInstall, 'bin', 'bun.exe') : '',
-        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
-        bunInstall ? join(bunInstall, 'bun.exe') : '',
-        join(homedir(), '.bun', 'bin', 'bun.exe'),
-      ]
-    : [
-        bunEnv,
-        bunPathEnv,
-        bunInstall ? join(bunInstall, 'bin', 'bun') : '',
-        bunInstall ? join(bunInstall, 'bun') : '',
-        join(homedir(), '.bun', 'bin', 'bun'),
-        '/usr/local/bin/bun',
-        '/opt/homebrew/bin/bun',
-        '/home/linuxbrew/.linuxbrew/bin/bun'
-      ];
 
   for (const bunPath of bunPaths) {
     if (bunPath && existsSync(bunPath)) {

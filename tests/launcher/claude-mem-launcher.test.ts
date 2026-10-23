@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, w
 import { spawnSync } from 'child_process';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { LAUNCHER_PROTOCOL } from '../../src/launcher/launcher-protocol.js';
 
 // Runs the BUILT bundle (plugin/scripts/claude-mem-launcher.cjs) under Bun, the
 // same file the installer compiles onto PATH. Case shapes mirror the Rule A
@@ -161,7 +162,7 @@ describe('claude-mem launcher', () => {
   it('prints the integer LAUNCHER_PROTOCOL for --version', () => {
     const result = runLauncher(['--version'], { temporaryHome: makeTemporaryHome() });
     expect(result.status).toBe(0);
-    expect(result.stdout.trim()).toBe('1');
+    expect(result.stdout.trim()).toBe(String(LAUNCHER_PROTOCOL));
   });
 
   it('prints usage on stderr and exits 0 with no arguments', () => {

@@ -34,7 +34,12 @@ describe('skill docs placement (#1651)', () => {
       expect(content).toContain(language);
     }
 
-    expect(content).toContain('Files with unrecognized extensions are parsed as plain text');
+    expect(content).toContain('Files with unrecognized extensions do not produce structured symbols');
+    expect(content).toContain('`smart_search` is not a general file-content');
+    expect(content).toContain('Use `rg` or another text-search tool');
+    expect(content).not.toContain('Files with unrecognized extensions are parsed as plain text');
+    expect(content).toContain('Custom tree-sitter grammars cannot currently be registered through `.claude-mem.json`');
+    expect(content).not.toContain('### Adding Custom Grammars');
   });
 
   it('mem-search/SKILL.md does NOT contain tree-sitter or language grammar docs', () => {

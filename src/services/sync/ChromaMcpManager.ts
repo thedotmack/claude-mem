@@ -874,9 +874,11 @@ export class ChromaMcpManager {
   private static isChromaWriterLockAbandoned(lockPath: string): boolean {
     try {
       return Date.now() - fs.statSync(lockPath).mtimeMs >= CHROMA_WRITER_LOCK_UNREADABLE_GRACE_MS;
-    } catch {
-      // Vanished between the failed create and the stat: nothing left to reap.
-      return true;
+    } catch (error) {
+      // Only ENOENT proves the lock vanished between the failed create and the stat;
+      // transient stat errors (e.g. EMFILE, EIO, EACCES) must not reap a live lock (#4951).
+      const errno = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      return errno === 'ENOENT';
     }
   }
 

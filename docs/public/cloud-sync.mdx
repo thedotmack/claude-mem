@@ -27,6 +27,9 @@ Three kinds of rows are replicated between your devices:
 - **Session summaries** — the per-session overview records.
 - **User prompts** — the prompts you typed. A prompt over 200&nbsp;KB uploads as its first 200&nbsp;KB plus a truncation note; the full prompt stays on the device that captured it.
 
+When the sync hub supports it, **agent work state** also syncs: the to-do lists
+and working state agents save, including each entry's fields.
+
 Alongside the rows, three kinds of **mutations** travel through the same log
 so later edits converge everywhere: session **title** changes, **prompt→session
 repairs** (a prompt captured before its session registered is re-linked on
