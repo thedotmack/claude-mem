@@ -60,8 +60,22 @@ const quoted = (path: string) => [path, `"${path}"`, `'${path}'`];
 export interface ScriptArguments { within: string; options: Record<string, 'path' | 'value' | 'switch'> }
 export type RefreshProgram = [bin: string, path: string, args?: ScriptArguments];
 
-/** Shell words of an operator-free command: "a b", 'a b' or a bare word. */
-const shellWords = (text: string) => [...text.matchAll(/"([^"]*)"|'([^']*)'|(\S+)/g)].map(match => match[1] ?? match[2] ?? match[3]);
+/** Shell words of an operator-free command, the way the shell splits them: quotes can open
+ * mid-word (--out="/a b") and are removed, and only unquoted whitespace ends a word. */
+export function shellWords(text: string): string[] {
+  const words: string[] = [];
+  let word: string | null = null;
+  let quote: string | null = null;
+  for (const char of text) {
+    if (quote) { if (char === quote) quote = null; else word += char; continue; }
+    if (char === '"' || char === "'") { quote = char; word ??= ''; continue; }
+    if (/\s/.test(char)) { if (word !== null) words.push(word); word = null; continue; }
+    word = (word ?? '') + char;
+  }
+  if (quote) throw new Error('Close every quote in the command.');
+  if (word !== null) words.push(word);
+  return words;
+}
 
 function checkScriptArguments(words: string[], { within, options }: ScriptArguments): string | null {
   for (let index = 0; index < words.length; index++) {
@@ -91,7 +105,10 @@ export function checkRefreshCommand(command: string, programs: RefreshProgram[])
   const program = programs.find(([bin, path]) => quoted(path).some(form => head === `${bin} ${form}` || head.startsWith(`${bin} ${form} `)))!;
   if (program[2]) {
     const prefix = quoted(program[1]).map(form => `${program[0]} ${form}`).find(form => head === form || head.startsWith(`${form} `))!;
-    const problem = checkScriptArguments(shellWords(head.slice(prefix.length)), program[2]);
+    let words: string[];
+    try { words = shellWords(head.slice(prefix.length)); }
+    catch (error) { return (error as Error).message; }
+    const problem = checkScriptArguments(words, program[2]);
     if (problem) return problem;
   }
   if (heredocAt === -1) return null;

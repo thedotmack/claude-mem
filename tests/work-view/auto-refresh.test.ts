@@ -156,6 +156,9 @@ describe('refresh task', () => {
     expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}" --days 31` })).toBe(true);
     expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals "${goalsFolder}/owner-goals.json" --prompts "${goalsFolder}/owner-prompts.md" --map "${goalsFolder}/owner-map.md" --dry-run` })).toBe(true);
     expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out=${goalsFolder}` })).toBe(true);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out="${goalsFolder}"` })).toBe(true);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${saveScript}" --goals '${goalsFolder}/my goals.json' --prompts "${goalsFolder}/owner-prompts.md"` })).toBe(true);
+    expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}` })).toMatch(/Close every quote/);
     expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "/Users/someone/repo" --days 31` })).toMatch(/inside/);
     expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out "${goalsFolder}/../../.."` })).toMatch(/inside/);
     expect(claudeCode.checkTool('Bash', { command: `python3 "${exportScript}" --out owner-goals` })).toMatch(/inside/);
