@@ -11,10 +11,11 @@
  *   - Claude Code: one Agent SDK `query` per step with the claude-mem plugin
  *     loaded for its memory-search MCP tools, only the task's allowed tools
  *     (everything else is denied), `cwd` = the data dir and no session persistence.
- *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> -`
+ *   - Codex: `codex exec -s read-only --ephemeral --ignore-user-config --skip-git-repo-check -C <cwd> -o <file> [-m <model>] [-c model_reasoning_effort="<effort>"] -`
  *     (codex-cli 0.163.0 `exec --help`), prompt on stdin, no MCP servers.
- *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json`
+ *   - Gemini: `gemini -p <line> --approval-mode plan -e none --allowed-mcp-server-names <none> -o json [-m <model>]`
  *     (gemini 0.49.0 `--help`: plan = read-only mode), prompt on stdin, no extensions or MCP servers.
+ *   Each step names its model per backend (the task's table); Claude Code takes it as the SDK `model` option.
  *
  * No agent can save anything itself. The task's `run` function drives every
  * backend the same way, one step at a time: code runs claude-mem's CLI, the
@@ -32,8 +33,13 @@ import { sanitizeEnv } from '../../supervisor/env-sanitizer.js';
 import { logger } from '../../utils/logger.js';
 import { detectUsableAgents, type UsableAgent, type UsableAgentId } from './detect.js';
 
-/** Ask a read-only agent one prompt and get its final answer text. */
-export type AskAgent = (prompt: string) => Promise<string>;
+/** The model one step runs on: a Claude Code alias, a Codex model id (with reasoning effort) or a Gemini alias.
+ * A missing entry or field leaves that CLI's own default. */
+export interface StepModel { model?: string; reasoningEffort?: string }
+export type StepModels = Partial<Record<UsableAgentId, StepModel>>;
+
+/** Ask a read-only agent one prompt, on the step's model, and get its final answer text. */
+export type AskAgent = (prompt: string, models: StepModels) => Promise<string>;
 
 export interface ClaudeCodeTaskOptions {
   /** Plugins whose MCP servers the steps need. */
@@ -94,10 +100,11 @@ function claudeCodeAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentR
     logger.warn('WORKER', `Agent run (${task.reason}) was refused ${toolName}`);
     return { behavior: 'deny', message: `${toolName} is not available to this read-only step.` };
   };
-  return async prompt => {
+  return async (prompt, models) => {
     let stderr = '';
     const options: Options = {
       pathToClaudeCodeExecutable: agent.path!,
+      model: models['claude-code']?.model,
       cwd: task.cwd,
       env,
       persistSession: false,
@@ -159,19 +166,22 @@ function failure(name: string, result: { exitCode: number | null; stdout: string
  * `--ignore-user-config` skips that file, so the run has no MCP tools; auth
  * still comes from CODEX_HOME. Every save goes through the worker's validators.
  */
-const CODEX_EXEC_ARGS = (cwd: string, answerPath: string) => ['exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath, '-'];
+const CODEX_EXEC_ARGS = (cwd: string, answerPath: string, { model, reasoningEffort }: StepModel = {}) => [
+  'exec', '-s', 'read-only', '--ephemeral', '--ignore-user-config', '--skip-git-repo-check', '-C', cwd, '-o', answerPath,
+  ...(model ? ['-m', model] : []), ...(reasoningEffort ? ['-c', `model_reasoning_effort="${reasoningEffort}"`] : []), '-',
+];
 
 /** Gemini with no extensions and no MCP server (none is named this), so plan mode is the only tool surface. */
 export const GEMINI_NO_MCP_SERVERS = 'claude-mem-refresh-uses-no-mcp-servers';
 const GEMINI_ARGS = ['-p', 'Follow the instructions above.', '--approval-mode', 'plan', '-e', 'none', '--allowed-mcp-server-names', GEMINI_NO_MCP_SERVERS, '-o', 'json'];
 
 function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
-  return async prompt => {
+  return async (prompt, models) => {
     const directory = join(task.cwd, 'agent-runs');
     mkdirSync(directory, { recursive: true });
     const answerPath = join(directory, `codex-${randomBytes(6).toString('hex')}.txt`);
     try {
-      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath), prompt, { cwd: task.cwd, env });
+      const result = await runCli(dependencies, agent.path!, CODEX_EXEC_ARGS(task.cwd, answerPath, models.codex), prompt, { cwd: task.cwd, env });
       if (result.exitCode !== 0) throw failure('codex exec', result);
       return readFileSync(answerPath, 'utf8');
     } finally {
@@ -181,8 +191,9 @@ function codexAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunner
 }
 
 function geminiAsk(agent: UsableAgent, task: AgentTask, dependencies: AgentRunnerDependencies, env: NodeJS.ProcessEnv): AskAgent {
-  return async prompt => {
-    const result = await runCli(dependencies, agent.path!, GEMINI_ARGS, prompt, { cwd: task.cwd, env });
+  return async (prompt, models) => {
+    const model = models.gemini?.model;
+    const result = await runCli(dependencies, agent.path!, [...GEMINI_ARGS, ...(model ? ['-m', model] : [])], prompt, { cwd: task.cwd, env });
     if (result.exitCode !== 0) throw failure('gemini', result);
     let output: { response?: unknown; error?: { message?: string } };
     try { output = JSON.parse(result.stdout); }

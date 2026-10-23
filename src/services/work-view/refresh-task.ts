@@ -14,7 +14,7 @@ import { spawn } from 'child_process';
 import { randomBytes } from 'crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import type { AgentTask, AskAgent } from '../agent-runner/run.js';
+import type { AgentTask, AskAgent, StepModels } from '../agent-runner/run.js';
 import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './request-groups.mjs';
 
 /** claude-mem MCP tools a refresh may call: reads only. Saves go through the skills' scripts and their
@@ -22,6 +22,14 @@ import { readGoals, runCli, type LedgerDatabase, type RefreshNeeds } from './req
 export const MEMORY_TOOLS = ['search', 'dumb_search', 'smart_search', 'timeline', 'get_observations', 'get_tool_uses', 'smart_outline', 'smart_unfold', 'work_state_read'];
 const PLUGIN_MCP_PREFIX = 'mcp__plugin_claude-mem_mcp-search__';
 const REVIEW_BATCH = 8;
+
+/** The model each step runs on. Small, fast models match conversations and goals; stronger ones judge
+ * progress, write the story and pick verbatim quotes. Codex's careful steps use its CLI default model.
+ * Ids checked against claude --help (aliases), codex-cli 0.163.0 models_cache.json and gemini 0.49.0 aliases. */
+const LIGHT: StepModels = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
+const CAREFUL: StepModels = { 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } };
+export const STEP_MODELS = { goals: CAREFUL, grouping: LIGHT, review: CAREFUL, alignment: LIGHT, story: CAREFUL } as const;
+type Step = keyof typeof STEP_MODELS;
 
 export interface RefreshTaskOptions {
   needs: RefreshNeeds;
@@ -110,10 +118,10 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       child.on('close', code => (code === 0 ? resolveRun(output) : reject(new Error(`${args[0].split('/').pop()} exited ${code}: ${output.trim().slice(-800)}`))));
     });
     /** Ask, save, and on a validator's refusal ask once more with the reason. */
-    const step = async <T>(name: string, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => {
+    const step = async <T>(name: Step, question: string, save: (answer: any) => T | Promise<T>): Promise<T> => {
       let refusal: string | null = null;
       for (let attempt = 0; attempt < 2; attempt++) {
-        const answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question);
+        const answer = await ask(refusal ? `${question}\n\nYour previous answer was refused: ${refusal}\nFix it and answer again.` : question, STEP_MODELS[name]);
         try { return await save(parseAgentJson(answer)); }
         catch (error) { refusal = error instanceof Error ? error.message : String(error); }
       }
@@ -137,7 +145,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
         };
         const previousMap = saved.mapPath && existsSync(saved.mapPath) ? saved.mapPath : null;
         if (!since) {
-          await step('owner goals', [
+          await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
             `Step 1 is done: the owner's prompts are in ${promptsPath}. Do step 2 yourself (no subagent). Instead of writing owner-map.md and owner-goals.json, reply with only one JSON object: {"map": "<the owner-map.md markdown>", "goals": <the owner-goals.json object>}. The worker saves it with step 3.`,
           ].join('\n\n'), async answer => {
@@ -152,7 +160,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
           done.push('goals unchanged');
         } else {
           const previousPath = writeInput('previous-owner-goals', goalsJson(saved));
-          await step('owner goals', [
+          await step('goals', [
             inlineSkill(paths.ownerGoalsSkill), '---', readOnly,
             `Do "Update the saved goals" yourself (no subagent). The saved goals are in ${previousPath}; the ${exported.new_prompts} prompts the owner typed since they were saved are in ${join(goalsFolder, 'new-owner-prompts.md')}. Reply with only the updated owner-goals.json object. The worker saves it with step 3.`,
           ].join('\n\n'), answer => save({ ...answer, generated_at: new Date(now()).toISOString() }, previousMap));
@@ -181,7 +189,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
             requestProgress, '---', readOnly,
             `Do only section 2's review for the groups whose \`show\` output is in ${writeInput('show', shows)}: decide each one from the evidence as the reviewer task describes (amend the previous review for a group in "amend" mode). Reply with only {"reviews": [<one record-progress input per group, with reviewBasis copied verbatim from its show output>]}.`,
             refusals.length ? `Your previous answer was refused for these groups:\n${refusals.join('\n')}\nFix them and answer again for those groups only.` : '',
-          ].join('\n\n'));
+          ].join('\n\n'), STEP_MODELS.review);
           let reviews: Array<{ groupId?: string }> = [];
           try { const answer = parseAgentJson(text); reviews = Array.isArray(answer.reviews) ? answer.reviews : []; }
           catch { /* Every group in this batch is refused below as "no review was given". */ }
@@ -211,7 +219,7 @@ export function buildRefreshTask(options: RefreshTaskOptions): AgentTask {
       // Only reviews whose state or percent moved since the last story; none means the story still holds.
       const storyInput = cli(['story-input']);
       if (storyInput.reviews.length) {
-        await step('build story', [
+        await step('story', [
           requestProgress, '---', readOnly,
           `Do only section 4 (${storyInput.update ? 'update' : 'write'} the build story). The \`story-input\` output is in ${writeInput('story-input', storyInput)}. Reply with only the JSON that \`record-story\` takes ({"narrative": "...", "preferences": [...]}).`,
         ].join('\n\n'), answer => cli(['record-story'], answer));

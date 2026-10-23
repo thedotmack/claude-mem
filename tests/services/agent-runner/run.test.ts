@@ -35,7 +35,9 @@ function fakeSpawn(calls: SpawnCall[], answer: (call: SpawnCall) => void): typeo
 const agents = (...ids: Array<UsableAgent['id']>): UsableAgent[] =>
   (['claude-code', 'codex', 'gemini'] as const).map(id => ({ id, path: ids.includes(id) ? `/bin/${id}` : null, authenticated: ids.includes(id), reason: 'test' }));
 
-function task(cwd: string, inlineCalls: string[] = []): AgentTask {
+const LIGHT_MODELS = { 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } };
+
+function task(cwd: string, inlineCalls: string[] = [], models: Record<string, unknown> = {}): AgentTask {
   return {
     reason: 'test',
     cwd,
@@ -45,7 +47,7 @@ function task(cwd: string, inlineCalls: string[] = []): AgentTask {
       allowedTools: ['Read', 'mcp__plugin_claude-mem_mcp-search__search'],
     },
     run: async (ask, agent) => {
-      const answer = await ask(`inline prompt for ${agent}`);
+      const answer = await ask(`inline prompt for ${agent}`, models);
       inlineCalls.push(answer);
       return `inline done: ${answer}`;
     },
@@ -140,6 +142,28 @@ describe('agent runner', () => {
       expect(result.attempts.map(attempt => attempt.agent)).toEqual(['claude-code', 'codex']);
       expect(result.attempts[0].error).toMatch(/quota/);
       expect(result.attempts[1].error).toMatch(/codex exec exited 1: not signed in/);
+    } finally { rmSync(cwd, { recursive: true, force: true }); }
+  });
+
+  it('each step runs on the model its table names, per backend; no entry keeps the CLI default', async () => {
+    const seen: any[] = [];
+    const query = ((input: any) => { seen.push(input); return (async function* () { yield { type: 'result', subtype: 'success', is_error: false, result: 'ok' }; })(); }) as never;
+    await runAgentTask(task('/data', [], LIGHT_MODELS), { detect: async () => agents('claude-code'), query, spawn: fakeSpawn([], () => {}), buildEnv: env });
+    expect(seen[0].options.model).toBe('haiku');
+    const cwd = mkdtempSync(join(tmpdir(), 'agent-runner-models-'));
+    try {
+      const calls: SpawnCall[] = [];
+      const spawnImpl = fakeSpawn(calls, call => {
+        if (call.command === '/bin/codex') { writeFileSync(call.args[call.args.indexOf('-o') + 1], 'ok'); call.child.emit('close', 0); return; }
+        call.child.stdout.emit('data', JSON.stringify({ response: 'ok' }));
+        call.child.emit('close', 0);
+      });
+      await runAgentTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runAgentTask(task(cwd, [], LIGHT_MODELS), { detect: async () => agents('gemini'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      await runAgentTask(task(cwd, [], {}), { detect: async () => agents('codex'), query: neverQuery, spawn: spawnImpl, buildEnv: env });
+      expect(calls[0].args.slice(-5)).toEqual(['-m', 'gpt-6-luna', '-c', 'model_reasoning_effort="low"', '-']);
+      expect(calls[1].args.slice(-2)).toEqual(['-m', 'flash-lite']);
+      expect(calls[2].args).not.toContain('-m');
     } finally { rmSync(cwd, { recursive: true, force: true }); }
   });
 

@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AutoRefreshWorker } from '../../src/services/work-view/auto-refresh-worker.mjs';
-import { buildRefreshTask } from '../../src/services/work-view/refresh-task.js';
+import { buildRefreshTask, STEP_MODELS } from '../../src/services/work-view/refresh-task.js';
 import { readLedger } from '../../src/services/work-view/request-groups.mjs';
 
 const DAY = 86400000, NOW = 100 * DAY;
@@ -134,9 +134,11 @@ describe('refresh task', () => {
       const database = fixtureDatabase();
       const task = buildRefreshTask({ needs: { due: 0, ungrouped: 1, goalsStale: false, unaligned: 0, needed: true }, reason: 'scheduled', dataDir: dir, ledgerDir: dir, pluginRoot: PLUGIN_ROOT, openDatabase: handle(database), now: () => NOW });
       const prompts: string[] = [];
+      const models: unknown[] = [];
       let reviewAnswers = 0;
-      const ask = async (prompt: string) => {
+      const ask = async (prompt: string, stepModels: unknown) => {
         prompts.push(prompt);
+        models.push(stepModels);
         expect(prompt).toMatch(/read-only sandbox/);
         expect(prompt).not.toContain('${CLAUDE_SKILL_DIR}');
         const file = /is in (\S+\.json)/.exec(prompt)?.[1];
@@ -157,6 +159,10 @@ describe('refresh task', () => {
       expect(Object.values(ledger.progress).map((review: any) => review.percent)).toEqual([40]);
       expect(ledger.story.narrative).toBe('One request is under way.');
       expect(prompts.filter(prompt => prompt.includes('section 3'))).toHaveLength(0);
+      // Grouping runs on the light models; reviews and the story on the careful ones.
+      expect(models).toEqual([STEP_MODELS.grouping, STEP_MODELS.review, STEP_MODELS.review, STEP_MODELS.story]);
+      expect(STEP_MODELS.grouping).toEqual({ 'claude-code': { model: 'haiku' }, codex: { model: 'gpt-6-luna', reasoningEffort: 'low' }, gemini: { model: 'flash-lite' } });
+      expect(STEP_MODELS.review).toEqual({ 'claude-code': { model: 'sonnet' }, codex: {}, gemini: { model: 'flash' } });
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 });
