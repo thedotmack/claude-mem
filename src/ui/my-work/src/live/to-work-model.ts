@@ -156,6 +156,8 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
   const started = raw.startedAtEpoch
   const reviewedAt = review ? Date.parse(review.checkedAt) : NaN
   const readings = review?.readings ?? []
+  // A recorded ship completes the request at 100%; review readings that stopped short of it are not its trace.
+  const readingsStopShort = status === 'shipped' && !!review && review.percent < 100
   const evidence = [
     ...(raw.original.url ? [{ title: `${EVIDENCE_KIND_LABEL.prompt}: ${cleanText(raw.original.text, 80)}`, href: raw.original.url }] : []),
     ...raw.items.map((item) => ({ title: `${EVIDENCE_KIND_LABEL[item.url.split('/')[4]] ?? 'Record'}: ${cleanText(item.title, 80)}`, href: item.url })),
@@ -182,7 +184,7 @@ export function toRequest(raw: WorkViewHumanRequest, agents: WorkViewAgent[], no
       percent: status === 'shipped' ? 100 : review ? review.percent : null,
       readings: review ? Math.max(1, readings.length) : 0,
       reviewedAt: Number.isFinite(reviewedAt) ? formatRecordTime(reviewedAt, now) : 'Not reviewed yet',
-      history: readings.map((reading) => reading.percent),
+      history: readingsStopShort ? undefined : readings.map((reading) => reading.percent),
       completedAt: status === 'shipped' && completedEpoch ? formatDateTime(completedEpoch) : undefined,
     },
     estimate: measuredEstimate(readings, status === 'shipped'),

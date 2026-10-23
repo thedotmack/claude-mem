@@ -172,6 +172,23 @@ test('an explicit status recorded after a review wins over it: a reopened reques
   assert.equal(model.requests[2].progress.percent, 60, 'an older partial review still shows')
 })
 
+test('a request shipped after a partial review is a shipped card at 100%, not a read-error card', () => {
+  const now = Date.parse('2026-10-22T12:00:00Z')
+  const partial = { summary: 'Under way.', narrative: '', milestones: [], checkedAt: '2026-10-22T09:00:00Z', state: 'in-progress' as const, percent: 60, readings: [{ at: '2026-10-22T08:00:00Z', percent: 30 }, { at: '2026-10-22T09:00:00Z', percent: 60 }] }
+  const shippedLater = { status: 'shipped', explicit: true, complete: true, atEpoch: Date.parse('2026-10-22T11:00:00Z') }
+  // Shipped after the review, and shipped before a newer partial review.
+  const after = { ...syntheticRequest(), id: 'shipped-after', lifecycle: shippedLater, completedAtEpoch: shippedLater.atEpoch, progress: partial }
+  const before = { ...syntheticRequest(), id: 'shipped-before', lifecycle: { ...shippedLater, atEpoch: Date.parse('2026-10-22T08:30:00Z') }, completedAtEpoch: Date.parse('2026-10-22T08:30:00Z'), progress: partial }
+  const model = toWorkModel(snapshotWith([after, before]), now)
+  assert.deepEqual(model.requestReadErrors, [])
+  for (const card of model.requests) {
+    assert.equal(card.state, 'shipped')
+    assert.equal(card.progress.percent, 100, 'the recorded ship completes it')
+    assert.ok(card.progress.completedAt)
+    assert.equal(card.progress.readings, 2, 'the reviews still count')
+  }
+})
+
 test('a request with only asks maps cleanly: its asks show, no activity, and a fresh ask reads as working', () => {
   const now = Date.parse('2026-10-22T12:00:00Z')
   const asked = { ...syntheticRequest(), updatedAtEpoch: now - 60000, scopeUpdates: [{ text: 'Keep the existing design.', atEpoch: now - 60000 }] }
