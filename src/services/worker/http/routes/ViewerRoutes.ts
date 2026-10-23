@@ -237,6 +237,11 @@ export class ViewerRoutes extends BaseRouteHandler {
   });
 
   private handleViewerUI = this.wrapHandler((req: Request, res: Response): void => {
+    // The viewer can delete observations and save settings, and its requests
+    // are same-origin, so the worker's foreign-page guards treat them as its
+    // own. Refuse framing here like the work-view and restart routes do.
+    res.setHeader('Content-Security-Policy', "frame-ancestors 'none'");
+    res.setHeader('X-Frame-Options', 'DENY');
     const viewerHtmlBytes = getViewerHtmlBytes();
     if (!viewerHtmlBytes) {
       sendUiMissingPage(res, 'Viewer');
