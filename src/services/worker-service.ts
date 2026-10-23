@@ -143,6 +143,7 @@ import { SyncClient } from './sync/SyncClient.js';
 
 import { ViewerRoutes } from './worker/http/routes/ViewerRoutes.js';
 import { SetupScan } from './prompt-import/setup-scan.js';
+import { detectUsableAgents } from './agent-runner/detect.js';
 import { AGENT_WRITTEN_PROMPTS_FILE, writeJsonAtomic } from './work-view/request-groups.mjs';
 import { HistoryImport } from './setup/history-import.js';
 import { cmemProOrigin } from '../shared/cmem-gateway.js';
@@ -577,6 +578,8 @@ export class WorkerService implements WorkerRef {
       // Hook rows an agent wrote are kept out of goals, work and rules extraction.
       setupScan: new SetupScan({
         getStore: () => this.dbManager.getSessionStore(),
+        // Scan shows which found agents can actually run setup (Gemini credentials Google refuses cannot).
+        detectAgents: () => detectUsableAgents(),
         saveAgentWrittenPromptIds: promptIds => writeJsonAtomic(path.join(DATA_DIR, 'work-view', AGENT_WRITTEN_PROMPTS_FILE), { promptIds, updatedAt: new Date().toISOString() }),
       }),
       // Finish Setup's history upload to CMEM Pro, with the setup token checkout saved.

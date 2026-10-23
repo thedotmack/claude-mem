@@ -37,6 +37,29 @@ beforeEach(() => { store = new SessionStore(':memory:'); });
 afterEach(() => { store.close(); });
 
 describe('setup prompt scan', () => {
+  it('marks each found agent that cannot run setup, with the detection\'s reason (Gemini credentials Google refuses)', async () => {
+    const reason = "Gemini is installed, but this Google account can't use it: This client is no longer supported for Gemini Code Assist for individuals.";
+    const scan = new SetupScan({
+      getStore: () => store, now: () => NOW,
+      scanOptions: { homeDirectory: FIXTURE_HOME, resolveProject: cwd => (cwd ?? 'unknown').split('/').pop()! },
+      detectAgents: async () => [
+        { id: 'claude-code', path: '/bin/claude', authenticated: true, reason: 'logged in' },
+        { id: 'codex', path: null, authenticated: false, reason: 'not installed: `codex` is not on PATH' },
+        { id: 'gemini', path: '/bin/gemini', authenticated: false, reason },
+      ],
+    });
+    scan.start();
+    const state = await scan.finished();
+    const runners = Object.fromEntries(state.agents.map(agent => [agent.id, [agent.detected, agent.canRunSetup, agent.cannotRunReason]]));
+    expect(runners).toEqual({
+      'claude-code': [true, true, null],
+      codex: [true, false, 'not installed: `codex` is not on PATH'],
+      'gemini-cli': [true, false, reason],
+      'antigravity-cli': [true, null, null],
+      opencode: [true, null, null],
+    });
+  });
+
   it('new install: an empty DB is filled from every agent transcript, and a re-scan adds nothing', async () => {
     const scan = setupScan();
     const events: SetupScanState[] = [];

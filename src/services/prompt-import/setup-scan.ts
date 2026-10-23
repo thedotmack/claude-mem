@@ -10,6 +10,7 @@
  */
 
 import { logger } from '../../utils/logger.js';
+import type { UsableAgent, UsableAgentId } from '../agent-runner/detect.js';
 import { observationTokenEconomics, scanTokenUsage, summarizeTokenUsage, type SetupTokenUsage } from './token-usage.js';
 import { scanOwnerPrompts, scanWindowStart, type MemoryPrompt, type OwnerPrompt, type PromptAgentId, type PromptScanOptions, type PromptScanProgress } from './index.js';
 
@@ -28,6 +29,13 @@ export interface SetupScanAgent {
   fromMemory: number;
   /** Only in the agent's transcripts; stored by this import (now or by an earlier scan). */
   fromTranscripts: number;
+  /**
+   * Whether this agent can run setup's extraction here (installed, logged in, account accepted), from the agent
+   * runner's detection. `null` for an agent the runner does not use, or until the check finishes.
+   */
+  canRunSetup: boolean | null;
+  /** Why it cannot, in the detection's words (e.g. "Gemini is installed, but this Google account can't use it: ..."). */
+  cannotRunReason: string | null;
 }
 
 export interface SetupScanState {
@@ -78,9 +86,14 @@ export interface SetupScanOptions {
    * transcripts hold that session without them), so extraction leaves them out.
    */
   saveAgentWrittenPromptIds?: (promptIds: number[]) => void;
+  /** The agent runner's detection (installed, logged in, account usable). Waited for, however long it takes. */
+  detectAgents?: () => Promise<UsableAgent[]>;
   /** Minimum gap between progress notifications while a phase runs. */
   progressIntervalMs?: number;
 }
+
+/** The agent runner's ids as the scan names those agents. */
+const RUNNER_AGENT_IDS: Record<UsableAgentId, PromptAgentId> = { 'claude-code': 'claude-code', codex: 'codex', gemini: 'gemini-cli' };
 
 const AGENT_LABELS: Array<[PromptAgentId, string]> = [
   ['claude-code', 'Claude Code'], ['codex', 'Codex'], ['gemini-cli', 'Gemini CLI'], ['antigravity-cli', 'Antigravity CLI'], ['opencode', 'OpenCode'],
@@ -88,7 +101,7 @@ const AGENT_LABELS: Array<[PromptAgentId, string]> = [
 
 function idleState(): SetupScanState {
   return {
-    agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0 })),
+    agents: AGENT_LABELS.map(([id, label]) => ({ id, label, detected: false, prompts: 0, fromMemory: 0, fromTranscripts: 0, canRunSetup: null, cannotRunReason: null })),
     percent: 0, phase: 'idle', done: false, windowStart: null, startedAt: null, finishedAt: null, durationMs: null,
     added: 0, skippedSources: 0, error: null, usage: null, usageError: null, recentPrompts: [],
   };
@@ -149,12 +162,27 @@ export class SetupScan {
     }
   }
 
+  /** Marks each agent the runner uses as able or unable to run setup here. Detection never throws. */
+  private async checkRunners(): Promise<void> {
+    if (!this.options.detectAgents) return;
+    const runners = await this.options.detectAgents();
+    this.update({
+      agents: this.current.agents.map(agent => {
+        const runner = runners.find(entry => RUNNER_AGENT_IDS[entry.id] === agent.id);
+        if (!runner) return agent;
+        const canRunSetup = runner.authenticated && runner.path !== null;
+        return { ...agent, canRunSetup, cannotRunReason: canRunSetup ? null : runner.reason };
+      }),
+    }, true);
+  }
+
   private async run(): Promise<void> {
     const startedAt = this.now();
     const windowStart = scanWindowStart(startedAt);
     this.current = { ...idleState(), phase: 'reading', windowStart: new Date(windowStart).toISOString(), startedAt: new Date(startedAt).toISOString() };
     this.update({}, true);
     try {
+      const runnerCheck = this.checkRunners();
       const store = this.options.getStore();
       const memoryPrompts = store.listHookRecordedPrompts(windowStart);
       // Token totals are read alongside the prompts, from the same transcripts and window.
@@ -202,6 +230,7 @@ export class SetupScan {
         this.update({ percent: 95 + Math.floor((index / Math.max(1, result.ownerPrompts.length)) * 5) });
       });
 
+      await runnerCheck;
       // Hook-recorded prompts count once: matched to a transcript copy, or, when
       // the transcripts no longer hold that session, on their own. A hook row in
       // a session the transcripts hold but did not match was not typed by the owner.

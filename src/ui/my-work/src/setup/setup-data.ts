@@ -7,7 +7,14 @@ import { revealFromSnapshot, type SnapshotWithSetup } from './setup-reveal'
 import { noteFor, searchUrl, toMemoryResults, type MemoryResult, type WorkerSearchResult } from './setup-search'
 
 /** Mirrors the worker's SetupScanState (src/services/prompt-import/setup-scan.ts), trimmed to what the screen shows. */
-export interface SetupScanAgent { id: string; label: string; detected: boolean; prompts: number }
+export interface SetupScanAgent {
+  id: string; label: string; detected: boolean; prompts: number
+  /** Whether the agent can run setup's extraction here (the worker's agent detection); `null` when unknown or not a runner. */
+  canRunSetup: boolean | null
+  /** Why it cannot, e.g. "Gemini is installed, but this Google account can't use it: ...". */
+  cannotRunReason: string | null
+}
+
 export type SetupScanPhase = 'idle' | 'reading' | 'checking' | 'saving' | 'done' | 'failed'
 export interface SetupScanView { agents: SetupScanAgent[]; percent: number; phase: SetupScanPhase; done: boolean; error: string | null }
 /** The owner's newest typed prompts, quoted as typed (SetupScanState.recentPrompts). */
@@ -80,8 +87,9 @@ export const EMPTY_SETUP_DATA: SetupData = {
 }
 
 /** The worker's answers, trimmed to what this file reads. */
-interface WorkerScanState extends SetupScanView {
-  agents: Array<SetupScanAgent & { fromMemory?: number; fromTranscripts?: number }>
+interface WorkerScanState extends Omit<SetupScanView, 'agents'> {
+  /** An older worker sends no canRunSetup / cannotRunReason. */
+  agents: Array<Omit<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'> & Partial<Pick<SetupScanAgent, 'canRunSetup' | 'cannotRunReason'>> & { fromMemory?: number; fromTranscripts?: number }>
   /** The 30-day token usage the same pass sums, once the scan is done. */
   usage?: SetupScanUsage | null
   recentPrompts?: SetupRecentPrompt[]
@@ -114,7 +122,9 @@ export async function setupPending(): Promise<boolean> {
 }
 
 const toScanView = (scan: WorkerScanState): SetupScanView => ({
-  agents: scan.agents.map(({ id, label, detected, prompts }) => ({ id, label, detected, prompts })),
+  agents: scan.agents.map(({ id, label, detected, prompts, canRunSetup, cannotRunReason }) => ({
+    id, label, detected, prompts, canRunSetup: canRunSetup ?? null, cannotRunReason: cannotRunReason ?? null,
+  })),
   percent: scan.percent, phase: scan.phase, done: scan.done, error: scan.error,
 })
 
