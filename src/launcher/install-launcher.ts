@@ -473,15 +473,9 @@ export type LauncherCodesignRunner = (binaryPath: string) => {
   stderr: string;
 };
 
-/**
- * Ad-hoc re-signs the freshly compiled launcher (`codesign --force --sign -`).
- * Bun's `--compile` output carries an invalid code signature, and macOS 27
- * enforces signatures: the kernel SIGKILLs the binary on exec, before it can
- * print the protocol for the check that follows (#4778). Ad-hoc signing makes
- * the signature valid without any developer identity.
- */
-const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
-  const invocation = buildSpawnSyncInvocation('codesign', ['--force', '--sign', '-', binaryPath], {
+/** Runs one `codesign` invocation with its stderr captured for the caller's report. */
+const runCodesignCommand = (codesignArguments: readonly string[]): ReturnType<LauncherCodesignRunner> => {
+  const invocation = buildSpawnSyncInvocation('codesign', codesignArguments, {
     encoding: 'utf-8',
     // stdout is piped, never inherited: in a SessionStart hook it would be
     // injected into Claude's context.
@@ -494,6 +488,47 @@ const runAdhocCodesign: LauncherCodesignRunner = (binaryPath) => {
     stderr: codesignResult.stderr || (codesignResult.error ? codesignResult.error.message : ''),
   };
 };
+
+/** The `codesign` argv lists that ad-hoc sign `binaryPath`, in the order they must run. */
+const adhocCodesignArguments = (binaryPath: string): [clearSignature: string[], sign: string[]] => [
+  ['--remove-signature', binaryPath],
+  ['--force', '--sign', '-', binaryPath],
+];
+
+/**
+ * Ad-hoc re-signs the freshly compiled launcher.
+ *
+ * Bun's `--compile` output carries an invalid code signature, and macOS 27
+ * enforces signatures: the kernel SIGKILLs the binary on exec, before it can
+ * print the protocol for the check that follows (#4778). Ad-hoc signing makes
+ * the signature valid without any developer identity.
+ *
+ * The existing signature is removed first. `--force` replaces a signature
+ * codesign can parse, but refuses a malformed one — Bun 1.3.12's output fails
+ * with "invalid or unsupported format for signature", and the binary is then
+ * left unsigned (#4947). Removing first makes the re-sign succeed on that
+ * output and is harmless on a cleanly signed binary.
+ *
+ * Clearing is best effort: its result is ignored, so a missing signature, a
+ * missing `codesign`, or any other clear failure cannot stop the signing step.
+ * Bailing on a failed clear would skip signing entirely and leave the launcher
+ * unexecutable on macOS 27.
+ *
+ * `runCommand` is a seam for tests; production passes the real `codesign`
+ * spawn. The factory keeps the two-step order under test without spawning a
+ * process, so the order cannot drift from what the installer runs.
+ */
+export function createAdhocCodesigner(
+  runCommand: (codesignArguments: readonly string[]) => ReturnType<LauncherCodesignRunner>,
+): LauncherCodesignRunner {
+  return (binaryPath) => {
+    const [clearSignature, sign] = adhocCodesignArguments(binaryPath);
+    runCommand(clearSignature);
+    return runCommand(sign);
+  };
+}
+
+const runAdhocCodesign = createAdhocCodesigner(runCodesignCommand);
 
 /**
  * Who runs the ensure flow. The SessionStart self-heal never downgrades (an
@@ -696,10 +731,12 @@ export function ensureLauncherOnPath(options: {
     // Best effort: when signing is unavailable or fails (no codesign on the
     // machine, odd filesystem), probe anyway and report through the existing
     // errors — the probe, not the signing, decides whether the binary runs.
+    let codesignFailure: string | null = null;
     if (host.platform === 'darwin') {
       const codesignResult = runCodesign(temporaryOutfilePath);
       if (codesignResult.status !== 0) {
-        logger.warn(`codesign --force --sign - failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}; the launcher may not start on macOS versions that enforce valid code signatures`);
+        codesignFailure = `codesign --force --sign - failed (exit ${codesignResult.status}): ${codesignResult.stderr.trim().split('\n').pop() ?? ''}`;
+        logger.warn(`${codesignFailure}; the launcher may not start on macOS versions that enforce valid code signatures`);
       }
     }
     // Verified before the move: after it, a concurrent session may already
@@ -707,7 +744,11 @@ export function ensureLauncherOnPath(options: {
     const compiledProbe = probeCompiledLauncher(temporaryOutfilePath, host.platform);
     if (compiledProbe.protocol !== LAUNCHER_PROTOCOL) {
       const probeFailure = compiledProbe.failure ? ` (--version ${compiledProbe.failure})` : '';
-      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}`);
+      // An unusable signature is the usual reason the probe cannot run the
+      // binary (macOS SIGKILLs it on exec), and its stderr is the actionable
+      // half: the protocol message alone reads like a broken build.
+      const signFailure = codesignFailure ? `; ${codesignFailure}` : '';
+      throw new Error(`compiled launcher printed protocol ${compiledProbe.protocol}, expected ${LAUNCHER_PROTOCOL}${probeFailure}${signFailure}`);
     }
     moveCompiledLauncherIntoPlace(temporaryOutfilePath, binaryPath, binDirectory, host.platform);
   } finally {

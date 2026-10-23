@@ -12,6 +12,13 @@ import type { PostgresPool } from '../../storage/postgres/pool.js';
 import { getRedisQueueConfig } from '../queue/redis-config.js';
 import { ActiveServerQueueManager } from './ActiveServerQueueManager.js';
 import { ActiveServerGenerationWorkerManager } from './ActiveServerGenerationWorkerManager.js';
+import {
+  backfillMissingEmbeddings,
+  capEmbedderThreadsForBackfill,
+  getSharedEmbedder,
+  vectorSearchMode,
+  warmSharedEmbedder,
+} from '../services/ObservationEmbeddingService.js';
 import { ClaudeObservationProvider } from '../generation/providers/ClaudeObservationProvider.js';
 import { ServerClassifiedProviderError } from '../generation/providers/shared/error-classification.js';
 import { GEMINI_API_URL, GeminiObservationProvider } from '../generation/providers/GeminiObservationProvider.js';
@@ -217,9 +224,41 @@ export async function createServerService(
     generationWorkerManager,
   };
 
-  if (generationWorkerManager instanceof ActiveServerGenerationWorkerManager) {
-    generationWorkerManager.start();
+  // Rows written while vectors were unavailable (pgvector just installed,
+  // the model failed to load, or the rows predate this feature) get them in
+  // the background, so search by meaning covers the whole store. A generation
+  // worker runs the backfill, and so does a server that has none (no queue or
+  // provider), whose manual memories would otherwise never get vectors. Only a
+  // server told to run HTTP only, because a separate worker does, leaves it to
+  // that worker. Of several processes, one backfills at a time.
+  const active = generationWorkerManager instanceof ActiveServerGenerationWorkerManager;
+  const withoutWorker = !generationDisabled && options.generationWorkerManager === undefined;
+  if (active || withoutWorker) {
+    await capEmbedderThreadsForBackfill(pool).catch((error: unknown) => {
+      logger.warn('SYSTEM', 'could not size the embedding backfill; it runs uncapped', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    if (active) generationWorkerManager.start();
+    const stop = new AbortController();
+    const backfill = backfillMissingEmbeddings(pool, { signal: stop.signal }).then(() => {}, (error: unknown) => {
+      logger.warn('SYSTEM', 'embedding backfill stopped; it resumes at the next start', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+    graph.stopBackgroundWork = async () => {
+      stop.abort();
+      await backfill;
+    };
   }
+  // Every role embeds (the server its queries, the worker its observations),
+  // so every role starts loading the model now rather than at the first
+  // request; after the thread cap above, which fixes the embedder it loads.
+  await warmSharedEmbedder(pool).catch((error: unknown) => {
+    logger.warn('SYSTEM', 'could not start loading the embedding model', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  });
 
   return new ServerService({ graph });
 }
@@ -442,7 +481,7 @@ async function initializePostgres(pool: PostgresPool, bootstrapSchema: boolean):
     return { initialized: false, schemaVersion: null, appliedAt: null };
   }
 
-  await bootstrapServerPostgresSchema(pool);
+  await bootstrapServerPostgresSchema(pool, vectorSearchMode(), getSharedEmbedder().dims);
   const result = await pool.query(
     `
       SELECT version, applied_at

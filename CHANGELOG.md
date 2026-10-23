@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [15.0.2] - 2026-10-23
+
+# Stop observer reasoning from consuming the output budget
+
+Observer requests to OpenRouter, the cmem.ai gateway, and OpenAI-compatible endpoints now disable reasoning by default, so reasoning tokens no longer fill the output budget and leave a session with zero observations.
+
+- An empty reply with finish_reason=length is logged and retried once with reasoning forced off. That retry counts against the existing paid-send budget and is bounded by the per-attempt timeout.
+- Billed usage keeps the retry's prompt size and adds completion tokens and cost from both attempts.
+- Health status names the active OpenRouter credential, including a custom OPENROUTER_BASE_URL.
+- OpenAI "Unsupported parameter" responses drop the reasoning field and remember the endpoint. Mandatory-reasoning and invalid-effort refusals are left in place.
+- Empty replies that finish with stop stay accepted.
+
+Ships the observer repair from #5029.
+
 ## [15.0.1] - 2026-10-20
 
 # Keep Smart recall consistent across merged projects

@@ -16,6 +16,7 @@ import { HOOK_EXIT_CODES, HOOK_TIMEOUTS } from '../../shared/hook-constants.js';
 import { shouldTrackProject as defaultShouldTrackProject } from '../../shared/should-track-project.js';
 import { loadFromFileOnce as defaultLoadFromFileOnce } from '../../shared/hook-settings.js';
 import { normalizePlatformSource } from '../../shared/platform-source.js';
+import { SEMANTIC_CONTEXT_MIN_QUERY_CHARS } from '../../shared/semantic-context.js';
 import { workStatePlatform } from '../../shared/work-state-telemetry.js';
 import { isCodexInternalPrompt, isGrokBotInternalPrompt, isInternalProtocolPayload } from '../../utils/tag-stripping.js';
 import {
@@ -246,9 +247,23 @@ const sessionInit = {
             Math.floor(sessionInitTimeoutMs / SESSION_INIT_SERVER_TIMEOUT_DIVISOR),
           ),
         );
-        // Server does not currently support the same context-injection
-        // protocol as the worker. Skip semantic injection in server mode
-        // until the server context endpoint exists.
+        if (semanticInject && prompt.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS && prompt !== '[media prompt]') {
+          const additionalContext = await fetchServerSemanticContext(
+            runtime,
+            prompt,
+            settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT,
+            platformSource,
+            projectContext.allProjects,
+            remainingSessionInitTimeoutMs(sessionInitStartedAt, sessionInitTimeoutMs),
+          );
+          if (additionalContext) {
+            return {
+              continue: true,
+              suppressOutput: true,
+              hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext },
+            };
+          }
+        }
         return { continue: true, suppressOutput: true };
       } catch (error: unknown) {
         if (isServerClientError(error) && error.isFallbackEligible()) {
@@ -339,7 +354,7 @@ const sessionInit = {
 
     let additionalContext = '';
 
-    if (semanticInject && prompt && prompt.length >= 20 && prompt !== '[media prompt]') {
+    if (semanticInject && prompt && prompt.length >= SEMANTIC_CONTEXT_MIN_QUERY_CHARS && prompt !== '[media prompt]') {
       const limit = settings.CLAUDE_MEM_SEMANTIC_INJECT_LIMIT || '5';
       const semanticTimeoutMs = remainingSessionInitTimeoutMs(sessionInitStartedAt, sessionInitTimeoutMs);
       if (semanticTimeoutMs < SESSION_INIT_MIN_REMAINING_TIMEOUT_MS) {
@@ -405,6 +420,42 @@ async function startServerSession(
     contentSessionId: sessionId,
     project,
   });
+}
+
+/**
+ * The server's /v1/context/semantic answer for a prompt, or '' when it has
+ * none, the budget is spent, or the call fails: injection never holds up or
+ * fails the prompt.
+ */
+async function fetchServerSemanticContext(
+  runtime: ServerRuntimeContext,
+  prompt: string,
+  limit: string | number,
+  platformSource: string,
+  folderProjects: string[],
+  timeoutMs: number,
+): Promise<string> {
+  if (timeoutMs < SESSION_INIT_MIN_REMAINING_TIMEOUT_MS) {
+    logger.warn('HOOK', 'session-init: skipping semantic injection because the prompt budget is spent', {
+      remainingMs: timeoutMs,
+    });
+    return '';
+  }
+  try {
+    const result = await runtime.client.semanticContext({
+      projectId: runtime.projectId,
+      query: prompt,
+      limit: parseSemanticInjectLimit(limit),
+      platformSource,
+      folderProjects,
+    }, { timeoutMs });
+    return result.context ?? '';
+  } catch (error: unknown) {
+    logger.warn('HOOK', 'session-init: server semantic injection failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return '';
+  }
 }
 
 function parseSemanticInjectLimit(value: string | number): number {
