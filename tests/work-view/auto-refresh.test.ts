@@ -83,14 +83,15 @@ describe('automatic refresh scheduler', () => {
   it('no logged-in agent: waiting-for-agent, then runs on the check after one appears', async () => {
     const dir = mkdtempSync(join(tmpdir(), 'auto-refresh-'));
     try {
-      let agentInstalled = false, runs = 0;
-      const worker = new AutoRefreshWorker({ dir, openDatabase: handle(fixtureDatabase()), now: () => NOW, hasUsableAgent: async () => agentInstalled, runJob: async () => { runs++; return { state: 'ok', agent: 'codex', result: 'done', error: null }; } });
+      // runAgentTask detects agents once per run and answers waiting-for-agent without running anything.
+      let agentInstalled = false;
+      const worker = new AutoRefreshWorker({ dir, openDatabase: handle(fixtureDatabase()), now: () => NOW, runJob: async () => agentInstalled
+        ? { state: 'ok', agent: 'codex', result: 'done', error: null }
+        : { state: 'waiting-for-agent', agent: null, result: null, error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' } });
       expect(await worker.check()).toBe('waiting-for-agent');
-      expect(worker.status()).toMatchObject({ state: 'waiting-for-agent', error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.' });
-      expect(runs).toBe(0);
+      expect(worker.status()).toMatchObject({ state: 'waiting-for-agent', error: 'No logged-in Claude Code, Codex or Gemini on this computer yet.', nextAt: new Date(NOW + 10 * 60000).toISOString() });
       agentInstalled = true;
       expect(await worker.check()).toBe('ok');
-      expect(runs).toBe(1);
     } finally { rmSync(dir, { recursive: true, force: true }); }
   });
 
