@@ -77,7 +77,14 @@ export function launchChrome(pageUrl: string, options: {
     process: child, profileDirectory,
     async close() {
       child.kill();
-      const exitedInTime = await Promise.race([child.exited.then(() => true), Bun.sleep(5000).then(() => false)]);
+      // SIGKILL after 5 s if Chrome ignores SIGTERM. The timer is cleared once
+      // Chrome exits so it never keeps the test process alive.
+      let sigkillTimer: ReturnType<typeof setTimeout> | undefined;
+      const exitedInTime = await Promise.race([
+        child.exited.then(() => true),
+        new Promise<boolean>(resolveTimeout => { sigkillTimer = setTimeout(() => resolveTimeout(false), 5000); }),
+      ]);
+      clearTimeout(sigkillTimer);
       if (!exitedInTime) { child.kill('SIGKILL'); await child.exited; }
       rmSync(profileDirectory, { recursive: true, force: true, maxRetries: 3 });
     },
