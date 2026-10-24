@@ -9,6 +9,7 @@ import { USER_SETTINGS_PATH } from '../../../../shared/paths.js';
 import { getProjectContext } from '../../../../utils/project-name.js';
 import { logger } from '../../../../utils/logger.js';
 import type { WorkStateFields } from '../../../sqlite/work-state.js';
+import { isMyRulesList } from '../../../work-view/my-rules.mjs';
 import {
   fitWorkStateLines,
   renderWorkStateLines,
@@ -67,6 +68,13 @@ export class WorkStateRoutes extends BaseRouteHandler {
     if (isProjectExcluded(cwd, settings.CLAUDE_MEM_EXCLUDED_PROJECTS)) {
       logger.debug('WORKER', 'Work state write skipped for an excluded project', { cwd, list });
       res.send('Not saved: this project is excluded from claude-mem (CLAUDE_MEM_EXCLUDED_PROJECTS).');
+      return;
+    }
+
+    // My Rules rows become the user-level CLAUDE.md import (MY-RULES.md), so they are written only by the
+    // origin-checked /api/work-view/rules handler, never by an agent session or another local page.
+    if (isMyRulesList(list)) {
+      res.status(403).send(`Not saved: "${list}" is written only from My Rules in the claude-mem viewer.`);
       return;
     }
 

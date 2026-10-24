@@ -1,0 +1,909 @@
+{
+  "version": 1,
+  "generatedAt": "2026-10-20T23:41:39.359Z",
+  "revision": "927:2a4b73bf8c4db36c:87",
+  "source": {
+    "kind": "claude-mem-recorded-agent-activity",
+    "mode": "read-only-sqlite",
+    "connected": true,
+    "pollIntervalMs": 1000,
+    "lastCheckedAt": "2026-10-20T23:41:48.779Z",
+    "lastUpdatedAt": "2026-10-20T23:21:38.416Z",
+    "error": null,
+    "stale": false
+  },
+  "agents": [
+    {
+      "id": "[\"session\",\"claude\",\"150781\",\"ee6e9168d6b942a37\"]",
+      "label": "Claude Code",
+      "platformSource": "claude",
+      "sessionTitle": null,
+      "project": "example-project-1",
+      "contentSessionId": "68addede-aaba-4f7f-8625-152d91c54841"
+    },
+    {
+      "id": "[\"session\",\"claude\",\"150781\",\"a7a7a67bc93ede3b8\"]",
+      "label": "Claude Code",
+      "platformSource": "claude",
+      "sessionTitle": null,
+      "project": "example-project-1",
+      "contentSessionId": "68addede-aaba-4f7f-8625-152d91c54841"
+    },
+    {
+      "id": "[\"session\",\"codex\",\"150779\",\"4705e121-a2f8-4890-8f54-4440d9f9d7e0\"]",
+      "label": "Codex",
+      "platformSource": "codex",
+      "sessionTitle": null,
+      "project": "example-project-2",
+      "contentSessionId": "360ea093-16c6-40b7-827e-59df783de600"
+    },
+    {
+      "id": "[\"session\",\"codex\",\"150779\",\"51ec276b-cbf3-456e-83a2-d82982802fae\"]",
+      "label": "Codex",
+      "platformSource": "codex",
+      "sessionTitle": null,
+      "project": "example-project-2",
+      "contentSessionId": "360ea093-16c6-40b7-827e-59df783de600"
+    },
+    {
+      "id": "[\"session\",\"claude\",\"150778\",\"unidentified\"]",
+      "label": "Claude Code",
+      "platformSource": "claude",
+      "sessionTitle": null,
+      "project": "example-project-1",
+      "contentSessionId": "a781d4fd-5e98-4dc4-8c2c-591df98a31b0"
+    },
+    {
+      "id": "[\"session\",\"codex\",\"150780\",\"unidentified\"]",
+      "label": "Codex",
+      "platformSource": "codex",
+      "sessionTitle": null,
+      "project": "example-project-3",
+      "contentSessionId": "3d88e8e9-c274-4442-82d1-28a0efdba7ae"
+    },
+    {
+      "id": "[\"session\",\"claude\",\"150758\",\"unidentified\"]",
+      "label": "Claude Code",
+      "platformSource": "claude",
+      "sessionTitle": null,
+      "project": "example-project-4",
+      "contentSessionId": "610dc554-b017-4580-897b-d001a498ff4f"
+    }
+  ],
+  "humanRequests": [
+    {
+      "id": "[\"conversation\",\"claude\",\"68addede-aaba-4f7f-8625-152d91c54841\"]",
+      "contentFingerprint": "ffc12289b8b8e757280a13d2442d2ed0c0bd76356f3c1241b5d768554309ddcc",
+      "title": "Placeholder title 1",
+      "original": {
+        "text": "Placeholder text 1",
+        "atEpoch": 1792535346798,
+        "url": "/api/work-view/evidence/prompt/27732"
+      },
+      "scopeUpdates": [
+        {
+          "text": "Placeholder text 2",
+          "atEpoch": 1792538124852,
+          "url": "/api/work-view/evidence/prompt/27735"
+        }
+      ],
+      "humanCopy": {
+        "state": "outdated",
+        "title": "Placeholder title 2",
+        "summary": "Placeholder summary 1",
+        "next": "Placeholder next 1",
+        "stage": "In progress",
+        "workstreams": [
+          {
+            "id": "[\"agent-session\",\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"7efd6a7a9a91ec107\\\"]\"]",
+            "title": "Placeholder title 3"
+          },
+          {
+            "id": "[\"agent-session\",\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"e8b9e472464fc117e\\\"]\"]",
+            "title": "Placeholder title 4"
+          }
+        ],
+        "generatedAt": 1792539344940
+      },
+      "lifecycle": null,
+      "items": [
+        {
+          "id": "session-request:[\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"ee6e9168d6b942a37\\\"]\",\"openrouter-68addede-aaba-4f7f-8625-152d91c54841-bf6e01ee6dc20\",null,4]",
+          "kind": "session-request",
+          "title": "Placeholder title 5",
+          "status": "unknown",
+          "nextStep": {
+            "text": "- Placeholder text 3",
+            "source": "session-summary",
+            "sourceId": 14260
+          },
+          "lastUpdateEpoch": 1792538498416,
+          "sourceRefs": [
+            {
+              "kind": "observation",
+              "id": 199144
+            }
+          ],
+          "url": "/api/work-view/evidence/observation/199144"
+        },
+        {
+          "id": "session-request:[\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"a7a7a67bc93ede3b8\\\"]\",\"openrouter-68addede-aaba-4f7f-8625-152d91c54841-bf6e01ee6dc20\",null,4]",
+          "kind": "session-request",
+          "title": "Placeholder title 6",
+          "status": "unknown",
+          "nextStep": {
+            "text": "- Placeholder text 4",
+            "source": "session-summary",
+            "sourceId": 14260
+          },
+          "lastUpdateEpoch": 1792538497163,
+          "sourceRefs": [
+            {
+              "kind": "observation",
+              "id": 199143
+            }
+          ],
+          "url": "/api/work-view/evidence/observation/199143"
+        },
+        {
+          "id": "session-request:[\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"e9b02b9dc84fc2691\\\"]\",\"openrouter-68addede-aaba-4f7f-8625-152d91c54841-bf6e01ee6dc20\",null,4]",
+          "kind": "session-request",
+          "title": "Placeholder title 7",
+          "status": "unknown",
+          "nextStep": {
+            "text": "- Placeholder text 5",
+            "source": "session-summary",
+            "sourceId": 14260
+          },
+          "lastUpdateEpoch": 1792538488059,
+          "sourceRefs": [
+            {
+              "kind": "observation",
+              "id": 199139
+            }
+          ],
+          "url": "/api/work-view/evidence/observation/199139"
+        }
+      ],
+      "workstreams": [
+        {
+          "id": "[\"agent-session\",\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"ee6e9168d6b942a37\\\"]\"]",
+          "title": "Placeholder title 8",
+          "items": [
+            {
+              "id": "session-request:[\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"ee6e9168d6b942a37\\\"]\",\"openrouter-68addede-aaba-4f7f-8625-152d91c54841-bf6e01ee6dc20\",null,4]",
+              "kind": "session-request",
+              "title": "Placeholder title 9",
+              "status": "unknown",
+              "nextStep": {
+                "text": "- Placeholder text 6",
+                "source": "session-summary",
+                "sourceId": 14260
+              },
+              "lastUpdateEpoch": 1792538498416,
+              "sourceRefs": [
+                {
+                  "kind": "observation",
+                  "id": 199144
+                }
+              ],
+              "url": "/api/work-view/evidence/observation/199144"
+            }
+          ]
+        },
+        {
+          "id": "[\"agent-session\",\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"a7a7a67bc93ede3b8\\\"]\"]",
+          "title": "Placeholder title 10",
+          "items": [
+            {
+              "id": "session-request:[\"[\\\"session\\\",\\\"claude\\\",\\\"150781\\\",\\\"a7a7a67bc93ede3b8\\\"]\",\"openrouter-68addede-aaba-4f7f-8625-152d91c54841-bf6e01ee6dc20\",null,4]",
+              "kind": "session-request",
+              "title": "Placeholder title 11",
+              "status": "unknown",
+              "nextStep": {
+                "text": "- Placeholder text 7",
+                "source": "session-summary",
+                "sourceId": 14260
+              },
+              "lastUpdateEpoch": 1792538497163,
+              "sourceRefs": [
+                {
+                  "kind": "observation",
+                  "id": 199143
+                }
+              ],
+              "url": "/api/work-view/evidence/observation/199143"
+            }
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "id": "observation:199144",
+          "kind": "observation",
+          "title": "Placeholder title 12",
+          "detail": "Placeholder detail 1",
+          "atEpoch": 1792538498416,
+          "url": "/api/work-view/evidence/observation/199144"
+        },
+        {
+          "id": "observation:199143",
+          "kind": "observation",
+          "title": "Placeholder title 13",
+          "detail": "Placeholder detail 2",
+          "atEpoch": 1792538497163,
+          "url": "/api/work-view/evidence/observation/199143"
+        },
+        {
+          "id": "observation:199142",
+          "kind": "observation",
+          "title": "Placeholder title 14",
+          "detail": "Placeholder detail 3",
+          "atEpoch": 1792538495088,
+          "url": "/api/work-view/evidence/observation/199142"
+        },
+        {
+          "id": "observation:199141",
+          "kind": "observation",
+          "title": "Placeholder title 15",
+          "detail": "Placeholder detail 4",
+          "atEpoch": 1792538491640,
+          "url": "/api/work-view/evidence/observation/199141"
+        },
+        {
+          "id": "observation:199140",
+          "kind": "observation",
+          "title": "Placeholder title 16",
+          "detail": "Placeholder detail 5",
+          "atEpoch": 1792538488266,
+          "url": "/api/work-view/evidence/observation/199140"
+        }
+      ],
+      "agentIds": [
+        "[\"session\",\"claude\",\"150781\",\"ee6e9168d6b942a37\"]",
+        "[\"session\",\"claude\",\"150781\",\"a7a7a67bc93ede3b8\"]"
+      ],
+      "conversationKeys": [
+        "[\"conversation\",\"claude\",\"68addede-aaba-4f7f-8625-152d91c54841\"]"
+      ],
+      "requestedBy": null,
+      "startedAtEpoch": 1792535346798,
+      "completedAtEpoch": null,
+      "updatedAtEpoch": 1792538498416,
+      "review": {
+        "checked": false,
+        "checkedAtEpoch": null,
+        "available": true
+      }
+    },
+    {
+      "id": "[\"conversation\",\"codex\",\"360ea093-16c6-40b7-827e-59df783de600\"]",
+      "contentFingerprint": "c9e8629e24b7fcc28d594ce25b37c39280a7bf40cde55790e2c72bb8487f4651",
+      "title": "Placeholder title 17",
+      "original": {
+        "text": "Placeholder text 8",
+        "atEpoch": 1792529510076,
+        "url": "/api/work-view/evidence/prompt/27728"
+      },
+      "scopeUpdates": [
+        {
+          "text": "Placeholder text 9",
+          "atEpoch": 1792529541909,
+          "url": "/api/work-view/evidence/prompt/27729"
+        }
+      ],
+      "humanCopy": {
+        "state": "current",
+        "title": "Placeholder title 18",
+        "summary": "Placeholder summary 2",
+        "next": "Placeholder next 2",
+        "stage": "Final verification",
+        "workstreams": [
+          {
+            "id": "[\"agent-session\",\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"51ec276b-cbf3-456e-83a2-d82982802fae\\\"]\"]",
+            "title": "Placeholder title 19"
+          },
+          {
+            "id": "[\"agent-session\",\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"4705e121-a2f8-4890-8f54-4440d9f9d7e0\\\"]\"]",
+            "title": "Placeholder title 20"
+          }
+        ],
+        "generatedAt": 1792538735617
+      },
+      "lifecycle": null,
+      "items": [
+        {
+          "id": "session-request:[\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"4705e121-a2f8-4890-8f54-4440d9f9d7e0\\\"]\",\"openrouter-360ea093-16c6-40b7-827e-59df783de600-16b2af0153878\",null,2]",
+          "kind": "session-request",
+          "title": "Placeholder title 21",
+          "status": "unknown",
+          "nextStep": null,
+          "lastUpdateEpoch": 1792538460053,
+          "sourceRefs": [
+            {
+              "kind": "observation",
+              "id": 199078
+            }
+          ],
+          "url": "/api/work-view/evidence/observation/199078"
+        },
+        {
+          "id": "session-request:[\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"51ec276b-cbf3-456e-83a2-d82982802fae\\\"]\",\"openrouter-360ea093-16c6-40b7-827e-59df783de600-16b2af0153878\",null,2]",
+          "kind": "session-request",
+          "title": "Placeholder title 22",
+          "status": "unknown",
+          "nextStep": null,
+          "lastUpdateEpoch": 1792538448076,
+          "sourceRefs": [
+            {
+              "kind": "observation",
+              "id": 199072
+            }
+          ],
+          "url": "/api/work-view/evidence/observation/199072"
+        },
+        {
+          "id": "session-request:[\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"unidentified\\\"]\",\"openrouter-360ea093-16c6-40b7-827e-59df783de600-16b2af0153878\",null,2]",
+          "kind": "session-request",
+          "title": "Placeholder title 23",
+          "status": "unknown",
+          "nextStep": null,
+          "lastUpdateEpoch": 1792538128628,
+          "sourceRefs": [
+            {
+              "kind": "observation",
+              "id": 199047
+            }
+          ],
+          "url": "/api/work-view/evidence/observation/199047"
+        }
+      ],
+      "workstreams": [
+        {
+          "id": "[\"agent-session\",\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"4705e121-a2f8-4890-8f54-4440d9f9d7e0\\\"]\"]",
+          "title": "Placeholder title 24",
+          "items": [
+            {
+              "id": "session-request:[\"[\\\"session\\\",\\\"codex\\\",\\\"150779\\\",\\\"4705e121-a2f8-4890-8f54-4440d9f9d7e0\\\"]\",\"openrouter-360ea093-16c6-40b7-827e-59df783de600-16b2af0153878\",null,2]",
+              "kind": "session-request",
+              "title": "Placeholder title 25",
+              "status": "unknown",
+              "nextStep": null,
+              "lastUpdateEpoch": 1792538460053,
+              "sourceRefs": [
+                {
+                  "kind": "observation",
+                  "id": 199078
+                }
+              ],
+              "url": "/api/work-view/evidence/observation/199078"
+            }
+          ]
+        },
+        {
+          "id": "[\"example-project-1\",\"example-list-1\"]",
+          "title": "Placeholder title 26",
+          "items": [
+            {
+              "id": "[\"example-project-1\",\"example-list-1\"]",
+              "kind": "work-state",
+              "title": "Placeholder title 27",
+              "status": "open",
+              "nextStep": {
+                "text": "Placeholder text 10",
+                "source": "work-state-field",
+                "sourceId": null
+              },
+              "lastUpdateEpoch": 1792537106731,
+              "sourceRefs": [
+                {
+                  "kind": "work-state",
+                  "id": 4526
+                },
+                {
+                  "kind": "tool-use",
+                  "id": 175985
+                }
+              ],
+              "url": "/api/work-view/evidence/work-state/4526"
+            }
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "id": "observation:199078",
+          "kind": "observation",
+          "title": "Placeholder title 28",
+          "detail": "Placeholder detail 6",
+          "atEpoch": 1792538460053,
+          "url": "/api/work-view/evidence/observation/199078"
+        },
+        {
+          "id": "observation:199077",
+          "kind": "observation",
+          "title": "Placeholder title 29",
+          "detail": "Placeholder detail 7",
+          "atEpoch": 1792538460053,
+          "url": "/api/work-view/evidence/observation/199077"
+        },
+        {
+          "id": "observation:199076",
+          "kind": "observation",
+          "title": "Placeholder title 30",
+          "detail": "Placeholder detail 8",
+          "atEpoch": 1792538460053,
+          "url": "/api/work-view/evidence/observation/199076"
+        },
+        {
+          "id": "observation:199072",
+          "kind": "observation",
+          "title": "Placeholder title 31",
+          "detail": "Placeholder detail 9",
+          "atEpoch": 1792538448076,
+          "url": "/api/work-view/evidence/observation/199072"
+        },
+        {
+          "id": "observation:199071",
+          "kind": "observation",
+          "title": "Placeholder title 32",
+          "detail": "Placeholder detail 10",
+          "atEpoch": 1792538442271,
+          "url": "/api/work-view/evidence/observation/199071"
+        }
+      ],
+      "agentIds": [
+        "[\"session\",\"codex\",\"150779\",\"4705e121-a2f8-4890-8f54-4440d9f9d7e0\"]",
+        "[\"session\",\"codex\",\"150779\",\"51ec276b-cbf3-456e-83a2-d82982802fae\"]"
+      ],
+      "conversationKeys": [
+        "[\"conversation\",\"codex\",\"360ea093-16c6-40b7-827e-59df783de600\"]"
+      ],
+      "requestedBy": null,
+      "startedAtEpoch": 1792529510076,
+      "completedAtEpoch": null,
+      "updatedAtEpoch": 1792538460053,
+      "review": {
+        "checked": false,
+        "checkedAtEpoch": null,
+        "available": true
+      }
+    },
+    {
+      "id": "[\"conversation\",\"claude\",\"a781d4fd-5e98-4dc4-8c2c-591df98a31b0\"]",
+      "contentFingerprint": "ee469d7c6059f574f6cbdb14524d15c30e7cb4313aed3d505adae51f9e6bf4b8",
+      "title": "Placeholder title 33",
+      "original": {
+        "text": "Placeholder text 11",
+        "atEpoch": 1792527883348,
+        "url": "/api/work-view/evidence/prompt/27719"
+      },
+      "scopeUpdates": [
+        {
+          "text": "Placeholder text 12",
+          "atEpoch": 1792528453461,
+          "url": "/api/work-view/evidence/prompt/27723"
+        }
+      ],
+      "humanCopy": {
+        "state": "current",
+        "title": "Placeholder title 34",
+        "summary": "Placeholder summary 3",
+        "next": "Placeholder next 3",
+        "stage": "needs review",
+        "workstreams": [
+          {
+            "id": "[\"example-project-2\",\"example-list-2\"]",
+            "title": "Placeholder title 35"
+          }
+        ],
+        "generatedAt": 1792538565618
+      },
+      "lifecycle": {
+        "status": "needs-review",
+        "explicit": true,
+        "complete": null,
+        "url": "/api/work-view/evidence/work-state/4511"
+      },
+      "items": [
+        {
+          "id": "[\"[\\\"example-project-2\\\",\\\"example-list-2\\\"]\",\"Placeholder task-1\"]",
+          "kind": "work-state",
+          "title": "Placeholder title 36",
+          "status": "done",
+          "nextStep": null,
+          "lastUpdateEpoch": 1792535071238,
+          "sourceRefs": [
+            {
+              "kind": "work-state",
+              "id": 4511
+            },
+            {
+              "kind": "tool-use",
+              "id": 175239
+            }
+          ],
+          "url": "/api/work-view/evidence/work-state/4511"
+        },
+        {
+          "id": "[\"example-project-2\",\"example-list-2\"]",
+          "kind": "work-state",
+          "title": "Placeholder title 37",
+          "status": "open",
+          "nextStep": {
+            "text": "Placeholder text 13",
+            "source": "work-state-field",
+            "sourceId": null
+          },
+          "lastUpdateEpoch": 1792530117091,
+          "sourceRefs": [
+            {
+              "kind": "work-state",
+              "id": 4458
+            },
+            {
+              "kind": "tool-use",
+              "id": 173464
+            }
+          ],
+          "url": "/api/work-view/evidence/work-state/4458"
+        },
+        {
+          "id": "[\"[\\\"example-project-2\\\",\\\"example-list-2\\\"]\",\"Placeholder task-2\"]",
+          "kind": "work-state",
+          "title": "Placeholder title 38",
+          "status": "done",
+          "nextStep": null,
+          "lastUpdateEpoch": 1792530115820,
+          "sourceRefs": [
+            {
+              "kind": "work-state",
+              "id": 4457
+            },
+            {
+              "kind": "tool-use",
+              "id": 173463
+            }
+          ],
+          "url": "/api/work-view/evidence/work-state/4457"
+        }
+      ],
+      "workstreams": [
+        {
+          "id": "[\"example-project-2\",\"example-list-2\"]",
+          "title": "Placeholder title 39",
+          "items": [
+            {
+              "id": "[\"[\\\"example-project-2\\\",\\\"example-list-2\\\"]\",\"Placeholder task-1\"]",
+              "kind": "work-state",
+              "title": "Placeholder title 40",
+              "status": "done",
+              "nextStep": null,
+              "lastUpdateEpoch": 1792535071238,
+              "sourceRefs": [
+                {
+                  "kind": "work-state",
+                  "id": 4511
+                },
+                {
+                  "kind": "tool-use",
+                  "id": 175239
+                }
+              ],
+              "url": "/api/work-view/evidence/work-state/4511"
+            },
+            {
+              "id": "[\"example-project-2\",\"example-list-2\"]",
+              "kind": "work-state",
+              "title": "Placeholder title 41",
+              "status": "open",
+              "nextStep": {
+                "text": "Placeholder text 14",
+                "source": "work-state-field",
+                "sourceId": null
+              },
+              "lastUpdateEpoch": 1792530117091,
+              "sourceRefs": [
+                {
+                  "kind": "work-state",
+                  "id": 4458
+                },
+                {
+                  "kind": "tool-use",
+                  "id": 173464
+                }
+              ],
+              "url": "/api/work-view/evidence/work-state/4458"
+            }
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "id": "work-state:4511",
+          "kind": "work-state",
+          "title": "Placeholder title 42",
+          "detail": null,
+          "atEpoch": 1792535071238,
+          "url": "/api/work-view/evidence/work-state/4511"
+        },
+        {
+          "id": "work-state:4458",
+          "kind": "work-state",
+          "title": "Placeholder title 43",
+          "detail": "Placeholder detail 11",
+          "atEpoch": 1792530117091,
+          "url": "/api/work-view/evidence/work-state/4458"
+        },
+        {
+          "id": "work-state:4457",
+          "kind": "work-state",
+          "title": "Placeholder title 44",
+          "detail": null,
+          "atEpoch": 1792530115820,
+          "url": "/api/work-view/evidence/work-state/4457"
+        },
+        {
+          "id": "work-state:4454",
+          "kind": "work-state",
+          "title": "Placeholder title 45",
+          "detail": null,
+          "atEpoch": 1792529911346,
+          "url": "/api/work-view/evidence/work-state/4454"
+        },
+        {
+          "id": "work-state:4447",
+          "kind": "work-state",
+          "title": "Placeholder title 46",
+          "detail": null,
+          "atEpoch": 1792529614403,
+          "url": "/api/work-view/evidence/work-state/4447"
+        }
+      ],
+      "agentIds": [
+        "[\"session\",\"claude\",\"150778\",\"unidentified\"]"
+      ],
+      "conversationKeys": [
+        "[\"conversation\",\"claude\",\"a781d4fd-5e98-4dc4-8c2c-591df98a31b0\"]"
+      ],
+      "requestedBy": null,
+      "startedAtEpoch": 1792527883348,
+      "completedAtEpoch": null,
+      "updatedAtEpoch": 1792535071238,
+      "review": {
+        "checked": false,
+        "checkedAtEpoch": null,
+        "available": true
+      }
+    },
+    {
+      "id": "[\"conversation\",\"codex\",\"3d88e8e9-c274-4442-82d1-28a0efdba7ae\"]",
+      "contentFingerprint": "d49b5309eabf27f160e6ced65975e501373a4b0427f945d7691639df33e94468",
+      "title": "Placeholder title 47",
+      "original": {
+        "text": "Placeholder text 15",
+        "atEpoch": 1792534783653,
+        "url": "/api/work-view/evidence/prompt/27731"
+      },
+      "scopeUpdates": [],
+      "humanCopy": {
+        "state": "current",
+        "title": "Placeholder title 48",
+        "summary": "Placeholder summary 4",
+        "next": "",
+        "stage": "",
+        "workstreams": [
+          {
+            "id": "[\"example-project-3\",\"example-list-3\"]",
+            "title": "Placeholder title 49"
+          }
+        ],
+        "generatedAt": 1792538395738
+      },
+      "lifecycle": null,
+      "items": [
+        {
+          "id": "[\"[\\\"example-project-3\\\",\\\"example-list-3\\\"]\",\"Placeholder task-3\"]",
+          "kind": "work-state",
+          "title": "Placeholder title 50",
+          "status": "done",
+          "nextStep": null,
+          "lastUpdateEpoch": 1792534992517,
+          "sourceRefs": [
+            {
+              "kind": "work-state",
+              "id": 4508
+            },
+            {
+              "kind": "tool-use",
+              "id": 175194
+            }
+          ],
+          "url": "/api/work-view/evidence/work-state/4508"
+        }
+      ],
+      "workstreams": [
+        {
+          "id": "[\"example-project-3\",\"example-list-3\"]",
+          "title": "Placeholder title 51",
+          "items": [
+            {
+              "id": "[\"[\\\"example-project-3\\\",\\\"example-list-3\\\"]\",\"Placeholder task-3\"]",
+              "kind": "work-state",
+              "title": "Placeholder title 52",
+              "status": "done",
+              "nextStep": null,
+              "lastUpdateEpoch": 1792534992517,
+              "sourceRefs": [
+                {
+                  "kind": "work-state",
+                  "id": 4508
+                },
+                {
+                  "kind": "tool-use",
+                  "id": 175194
+                }
+              ],
+              "url": "/api/work-view/evidence/work-state/4508"
+            }
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "id": "work-state:4508",
+          "kind": "work-state",
+          "title": "Placeholder title 53",
+          "detail": null,
+          "atEpoch": 1792534992517,
+          "url": "/api/work-view/evidence/work-state/4508"
+        }
+      ],
+      "agentIds": [
+        "[\"session\",\"codex\",\"150780\",\"unidentified\"]"
+      ],
+      "conversationKeys": [
+        "[\"conversation\",\"codex\",\"3d88e8e9-c274-4442-82d1-28a0efdba7ae\"]"
+      ],
+      "requestedBy": null,
+      "startedAtEpoch": 1792534783653,
+      "completedAtEpoch": null,
+      "updatedAtEpoch": 1792534992517,
+      "review": {
+        "checked": false,
+        "checkedAtEpoch": null,
+        "available": true
+      }
+    },
+    {
+      "id": "[\"conversation\",\"claude\",\"610dc554-b017-4580-897b-d001a498ff4f\"]",
+      "contentFingerprint": "38a5c6212f76cec036c6f89235fac51858819da5dee52426f8375bda9a8e32d8",
+      "title": "Placeholder title 54",
+      "original": {
+        "text": "Placeholder text 16",
+        "atEpoch": 1792410486549,
+        "url": "/api/work-view/evidence/prompt/27655"
+      },
+      "scopeUpdates": [
+        {
+          "text": "Placeholder text 17",
+          "atEpoch": 1792412461592,
+          "url": "/api/work-view/evidence/prompt/27657"
+        }
+      ],
+      "humanCopy": {
+        "state": "current",
+        "title": "Placeholder title 55",
+        "summary": "Placeholder summary 5",
+        "next": "Placeholder next 4",
+        "stage": "",
+        "workstreams": [
+          {
+            "id": "[\"example-project-4\",\"example-list-4\"]",
+            "title": "Placeholder title 56"
+          }
+        ],
+        "generatedAt": 1792533130670
+      },
+      "lifecycle": null,
+      "items": [
+        {
+          "id": "[\"example-project-4\",\"example-list-4\"]",
+          "kind": "work-state",
+          "title": "Placeholder title 57",
+          "status": "open",
+          "nextStep": {
+            "text": "Placeholder text 18",
+            "source": "work-state-field",
+            "sourceId": null
+          },
+          "lastUpdateEpoch": 1792419769629,
+          "sourceRefs": [
+            {
+              "kind": "work-state",
+              "id": 4374
+            },
+            {
+              "kind": "tool-use",
+              "id": 170476
+            }
+          ],
+          "url": "/api/work-view/evidence/work-state/4374"
+        }
+      ],
+      "workstreams": [
+        {
+          "id": "[\"example-project-4\",\"example-list-4\"]",
+          "title": "Placeholder title 58",
+          "items": [
+            {
+              "id": "[\"example-project-4\",\"example-list-4\"]",
+              "kind": "work-state",
+              "title": "Placeholder title 59",
+              "status": "open",
+              "nextStep": {
+                "text": "Placeholder text 19",
+                "source": "work-state-field",
+                "sourceId": null
+              },
+              "lastUpdateEpoch": 1792419769629,
+              "sourceRefs": [
+                {
+                  "kind": "work-state",
+                  "id": 4374
+                },
+                {
+                  "kind": "tool-use",
+                  "id": 170476
+                }
+              ],
+              "url": "/api/work-view/evidence/work-state/4374"
+            }
+          ]
+        }
+      ],
+      "activity": [
+        {
+          "id": "work-state:4374",
+          "kind": "work-state",
+          "title": "Placeholder title 60",
+          "detail": "Placeholder detail 12",
+          "atEpoch": 1792419769629,
+          "url": "/api/work-view/evidence/work-state/4374"
+        }
+      ],
+      "agentIds": [
+        "[\"session\",\"claude\",\"150758\",\"unidentified\"]"
+      ],
+      "conversationKeys": [
+        "[\"conversation\",\"claude\",\"610dc554-b017-4580-897b-d001a498ff4f\"]"
+      ],
+      "requestedBy": null,
+      "startedAtEpoch": 1792410486549,
+      "completedAtEpoch": null,
+      "updatedAtEpoch": 1792419769629,
+      "review": {
+        "checked": false,
+        "checkedAtEpoch": null,
+        "available": true
+      }
+    }
+  ],
+  "unlinkedWork": [
+    {
+      "kind": "work-state",
+      "title": "Placeholder title 61",
+      "status": "done"
+    },
+    {
+      "kind": "work-state",
+      "title": "Placeholder title 62",
+      "status": "done"
+    },
+    {
+      "kind": "work-state",
+      "title": "Placeholder title 63",
+      "status": "done"
+    }
+  ]
+}

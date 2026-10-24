@@ -561,7 +561,14 @@ export class WorkerService implements WorkerRef {
       SettingsDefaultsManager.loadFromFile(USER_SETTINGS_PATH).CLAUDE_MEM_WORKER_INGEST_MAX_BYTES,
     ));
 
-    this.workViewRoutes = new WorkViewRoutes({ getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '' });
+    this.workViewRoutes = new WorkViewRoutes({
+      getLocalDeviceId: () => this.dbManager.getCloudSync()?.status().deviceId ?? '',
+      // My Rules saves as work-state rows, so a rule change syncs like any other write.
+      appendWorkStateEntry: (entry) => {
+        this.dbManager.getSessionStore().appendWorkStateEntry(entry);
+        this.dbManager.getCloudSync()?.notify();
+      },
+    });
     this.server.registerRoutes(this.workViewRoutes);
     this.server.registerRoutes(new ViewerRoutes(this.sseBroadcaster, this.dbManager, this.sessionManager));
     const sessionRoutes = new SessionRoutes(this.sessionManager, this.dbManager, this.sdkAgent, this.geminiAgent, this.openRouterAgent, this.sessionEventBroadcaster, this, this.completionHandler, this.codexAgent, this.openAICompatAgent);

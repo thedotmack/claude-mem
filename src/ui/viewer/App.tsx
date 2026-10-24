@@ -295,10 +295,23 @@ export function App() {
   const hasMore = pagination.observations.hasMore || pagination.summaries.hasMore || pagination.prompts.hasMore;
   const activeTab: ViewTab = route.view === 'timeline' ? 'timeline' : 'sessions';
   const tabs = (
-    <ViewTabs
-      active={activeTab}
-      onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
-    />
+    <>
+      <div className="memory-page-heading">
+        <div>
+          <p className="memory-eyebrow">Your saved context</p>
+          <h2>{route.view === 'timeline' ? 'Memory timeline' : route.view === 'sessions' ? 'Sessions' : 'Session memory'}</h2>
+          <p>{route.view === 'timeline'
+            ? 'Browse observations, summaries, and prompts from your work.'
+            : route.view === 'sessions'
+              ? 'Open a session to revisit what happened and what was learned.'
+              : 'Review the context captured during this session.'}</p>
+        </div>
+        <ViewTabs
+          active={activeTab}
+          onSelect={tab => navigate(tab === 'sessions' ? sessionsHash() : '')}
+        />
+      </div>
+    </>
   );
 
   let content: React.ReactNode;
@@ -384,7 +397,9 @@ export function App() {
       <button
         className="console-toggle-btn"
         onClick={toggleLogsModal}
-        title="Toggle Console"
+        title="Open memory logs"
+        aria-label={logsModalOpen ? 'Close memory logs' : 'Open memory logs'}
+        aria-expanded={logsModalOpen}
       >
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5"></polyline>
